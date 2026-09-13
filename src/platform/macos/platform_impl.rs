@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! `impl Platform for MacOSPlatform` — the main trait implementation.
 
 #![allow(deprecated)] // Cocoa 0.24 fallback; remove when objc2 backend fully replaces cocoa
@@ -536,14 +539,10 @@ impl Platform for MacOSPlatform {
                 );
                 return 0;
             }
-            return self.register_state_only_handle(
-                HandleKind::LineEdit,
-                text,
-                x,
-                y,
-                width,
-                height,
-            );
+            let id =
+                self.register_state_only_handle(HandleKind::LineEdit, text, x, y, width, height);
+            self.state.set_read_only(id, true);
+            return id;
         }
         // SAFETY: ObjC messages for NSScrollView and NSTextView use valid class
         // names and selectors from the Cocoa runtime. alloc/init pairs are balanced.
@@ -588,6 +587,11 @@ impl Platform for MacOSPlatform {
                 height,
                 text_view as usize,
             );
+            // The native text view above is created with `setEditable: NO`, so on
+            // macOS a line edit starts read-only. Record that so the uniform
+            // read-only query reports the control's real state instead of the
+            // cross-platform default (`false`), which would be a lie here.
+            self.state.set_read_only(id, true);
             pool.drain();
             id
         }
@@ -601,14 +605,12 @@ impl Platform for MacOSPlatform {
                 log::error!("[macos] create_slider: unknown parent {} rejected off-main", parent);
                 return 0;
             }
-            return self.register_state_only_handle(
-                HandleKind::Slider,
-                "Slider",
-                x,
-                y,
-                width,
-                height,
-            );
+            let id =
+                self.register_state_only_handle(HandleKind::Slider, "Slider", x, y, width, height);
+            self.state.set_range(id, 0.0, 100.0);
+            self.state.set_value(id, 0.0);
+            self.state.set_step(id, 1.0);
+            return id;
         }
         // SAFETY: NSSlider class exists in the Cocoa runtime. alloc/init/frame
         // messages use valid selectors. Parent handle is validated by add_to_parent_window.
@@ -626,6 +628,11 @@ impl Platform for MacOSPlatform {
                 height,
                 slider as usize,
             );
+            // Seed the uniform property model so the API answers concretely from
+            // creation, matching the native control's own 0..=100 / step 1 start.
+            self.state.set_range(id, 0.0, 100.0);
+            self.state.set_value(id, 0.0);
+            self.state.set_step(id, 1.0);
             pool.drain();
             id
         }
@@ -642,7 +649,7 @@ impl Platform for MacOSPlatform {
                 );
                 return 0;
             }
-            return self.register_state_only_handle(
+            let id = self.register_state_only_handle(
                 HandleKind::ProgressBar,
                 "ProgressBar",
                 x,
@@ -650,6 +657,10 @@ impl Platform for MacOSPlatform {
                 width,
                 height,
             );
+            self.state.set_range(id, 0.0, 100.0);
+            self.state.set_value(id, 0.0);
+            self.state.set_indeterminate(id, false);
+            return id;
         }
         // SAFETY: NSProgressIndicator is a standard Cocoa class. All selectors used
         // (setIndeterminate:, setMinValue:, etc.) are valid. Parent validated by
@@ -673,6 +684,9 @@ impl Platform for MacOSPlatform {
                 height,
                 progress as usize,
             );
+            self.state.set_range(id, 0.0, 100.0);
+            self.state.set_value(id, 0.0);
+            self.state.set_indeterminate(id, false);
             pool.drain();
             id
         }
@@ -1641,6 +1655,315 @@ impl Platform for MacOSPlatform {
     fn is_widget_visible(&self, widget_id: u64) -> bool {
         self.state.visible(widget_id)
     }
+
+    fn set_widget_value(&self, widget_id: u64, value: f64) -> bool {
+        let Some(handle) = self.get_handle(widget_id) else {
+            return false;
+        };
+        // The kind decides whether a numeric value exists at all. Writing
+        // `setDoubleValue:` to an NSButton would raise `NSInvalidArgumentException`
+        // (a foreign exception that aborts the process), so the check is a safety
+        // requirement, not just an honesty one.
+        match handle.kind {
+            HandleKind::Slider
+            | HandleKind::ProgressBar
+            | HandleKind::SpinBox
+            | HandleKind::DoubleSpinBox
+            | HandleKind::ScrollBar
+            | HandleKind::ActivityIndicator
+            | HandleKind::ProgressDialog => {}
+            _ => return false,
+        }
+        // Mirror first: the state model is authoritative for off-main calls and
+        // for handles created off the UI thread (ptr == 0).
+        self.state.set_value(widget_id, value);
+        if handle.ptr == 0 || !super::types::is_main_thread() {
+            log::debug!(
+                "[rust_widgets] set_widget_value: state-only handle or not on the AppKit main \
+                 thread; value kept in state"
+            );
+            return true;
+        }
+        // SAFETY: handle.ptr is a live NSControl of one of the kinds matched
+        // above; `setDoubleValue:` is a valid NSControl selector and the call is
+        // on the AppKit main thread.
+        unsafe {
+            let native = Self::as_id(handle);
+            let _: () = msg_send![native, setDoubleValue: value];
+        }
+        true
+    }
+
+    fn widget_value(&self, widget_id: u64) -> Option<f64> {
+        let handle = self.get_handle(widget_id)?;
+        let supported = matches!(
+            handle.kind,
+            HandleKind::Slider
+                | HandleKind::ProgressBar
+                | HandleKind::SpinBox
+                | HandleKind::DoubleSpinBox
+                | HandleKind::ScrollBar
+                | HandleKind::ActivityIndicator
+                | HandleKind::ProgressDialog
+        );
+        if !supported {
+            return None;
+        }
+        // Read the live control when possible so the answer reflects AppKit's own
+        // clamping, and fall back to the mirror off-main / for state-only handles.
+        if handle.ptr != 0 && super::types::is_main_thread() {
+            // SAFETY: handle.ptr is a live NSControl; `doubleValue` is a valid
+            // NSControl getter and the call is on the AppKit main thread.
+            unsafe {
+                let native = Self::as_id(handle);
+                let value: f64 = msg_send![native, doubleValue];
+                return Some(value);
+            }
+        }
+        self.state.value(widget_id)
+    }
+
+    fn set_widget_range(&self, widget_id: u64, min: f64, max: f64) -> bool {
+        let Some(handle) = self.get_handle(widget_id) else {
+            return false;
+        };
+        match handle.kind {
+            HandleKind::Slider | HandleKind::SpinBox | HandleKind::DoubleSpinBox => {}
+            _ => return false,
+        }
+        self.state.set_range(widget_id, min, max);
+        if handle.ptr == 0 || !super::types::is_main_thread() {
+            return true;
+        }
+        // SAFETY: handle.ptr is a live NSSlider/NSStepper; `setMinValue:` and
+        // `setMaxValue:` are valid NSControl selectors; calls are on the main
+        // thread. AppKit clamps the current value itself, and the mirror above
+        // does the same so the two stay in step.
+        unsafe {
+            let native = Self::as_id(handle);
+            let _: () = msg_send![native, setMinValue: min];
+            let _: () = msg_send![native, setMaxValue: max];
+        }
+        true
+    }
+
+    fn widget_range(&self, widget_id: u64) -> Option<(f64, f64)> {
+        let handle = self.get_handle(widget_id)?;
+        if !matches!(
+            handle.kind,
+            HandleKind::Slider | HandleKind::SpinBox | HandleKind::DoubleSpinBox
+        ) {
+            return None;
+        }
+        if handle.ptr != 0 && super::types::is_main_thread() {
+            // SAFETY: live NSControl; `minValue`/`maxValue` are valid getters on
+            // the main thread.
+            unsafe {
+                let native = Self::as_id(handle);
+                let min: f64 = msg_send![native, minValue];
+                let max: f64 = msg_send![native, maxValue];
+                return Some((min, max));
+            }
+        }
+        self.state.range(widget_id)
+    }
+
+    fn set_widget_selected_index(&self, widget_id: u64, index: Option<usize>) -> bool {
+        let Some(handle) = self.get_handle(widget_id) else {
+            return false;
+        };
+        match handle.kind {
+            HandleKind::ComboBox | HandleKind::FontComboBox => {
+                // Reuse the specialised path: it owns the item side table and does
+                // the bounds check, so a bad index is rejected rather than silently
+                // selecting nothing.
+                let Some(selected) = index else {
+                    return false;
+                };
+                self.combo_box_set_current_index(widget_id, selected)
+            }
+            HandleKind::ListBox => {
+                let Some(selected) = index else {
+                    return false;
+                };
+                self.list_box_set_current_index(widget_id, selected)
+            }
+            _ => false,
+        }
+    }
+
+    fn widget_selected_index(&self, widget_id: u64) -> Option<usize> {
+        match self.get_handle(widget_id)?.kind {
+            HandleKind::ComboBox | HandleKind::FontComboBox => {
+                self.combo_box_current_index(widget_id)
+            }
+            HandleKind::ListBox => self.list_box_current_index(widget_id),
+            _ => None,
+        }
+    }
+
+    fn set_widget_checked(&self, widget_id: u64, checked: bool) -> bool {
+        let Some(handle) = self.get_handle(widget_id) else {
+            return false;
+        };
+        if !matches!(
+            handle.kind,
+            HandleKind::CheckBox | HandleKind::RadioButton | HandleKind::ToggleButton
+        ) {
+            return false;
+        }
+        self.state.set_checked(widget_id, checked);
+        if handle.ptr == 0 || !super::types::is_main_thread() {
+            return true;
+        }
+        // SAFETY: handle.ptr is a live NSButton; AppKit represents its check state
+        // as `NSControlStateValueOff` (0) / `NSControlStateValueOn` (1). Calls are
+        // on the AppKit main thread.
+        unsafe {
+            let native = Self::as_id(handle);
+            let new_state: isize = if checked { 1 } else { 0 };
+            let _: () = msg_send![native, setState: new_state];
+        }
+        true
+    }
+
+    fn is_widget_checked(&self, widget_id: u64) -> Option<bool> {
+        let handle = self.get_handle(widget_id)?;
+        if !matches!(
+            handle.kind,
+            HandleKind::CheckBox | HandleKind::RadioButton | HandleKind::ToggleButton
+        ) {
+            return None;
+        }
+        if handle.ptr != 0 && super::types::is_main_thread() {
+            // SAFETY: live NSButton; `state` is a valid getter on the main thread.
+            unsafe {
+                let native = Self::as_id(handle);
+                let state: isize = msg_send![native, state];
+                return Some(state == 1);
+            }
+        }
+        self.state.checked(widget_id)
+    }
+
+    fn set_widget_step(&self, widget_id: u64, step: f64) -> bool {
+        let Some(handle) = self.get_handle(widget_id) else {
+            return false;
+        };
+        // A progress bar has no user-driven stride; only slider/spin box (and the
+        // NSStepper inside a spin box) do.
+        if !matches!(
+            handle.kind,
+            HandleKind::Slider | HandleKind::SpinBox | HandleKind::DoubleSpinBox
+        ) {
+            return false;
+        }
+        self.state.set_step(widget_id, step);
+        if handle.ptr == 0 || !super::types::is_main_thread() {
+            return true;
+        }
+        // SAFETY: handle.ptr is a live NSControl; `setAltIncrementValue:` is the
+        // AppKit selector for the arrow-key stride on NSSlider/NSStepper, and the
+        // call is on the AppKit main thread.
+        unsafe {
+            let native = Self::as_id(handle);
+            let _: () = msg_send![native, setAltIncrementValue: step];
+        }
+        true
+    }
+
+    fn widget_step(&self, widget_id: u64) -> Option<f64> {
+        let handle = self.get_handle(widget_id)?;
+        if !matches!(
+            handle.kind,
+            HandleKind::Slider | HandleKind::SpinBox | HandleKind::DoubleSpinBox
+        ) {
+            return None;
+        }
+        self.state.step(widget_id)
+    }
+
+    fn set_widget_indeterminate(&self, widget_id: u64, indeterminate: bool) -> bool {
+        let Some(handle) = self.get_handle(widget_id) else {
+            return false;
+        };
+        if !matches!(handle.kind, HandleKind::ProgressBar | HandleKind::ProgressDialog) {
+            return false;
+        }
+        self.state.set_indeterminate(widget_id, indeterminate);
+        if handle.ptr == 0 || !super::types::is_main_thread() {
+            return true;
+        }
+        // SAFETY: handle.ptr is a live NSProgressIndicator; `setIndeterminate:`
+        // then `startAnimation:`/`stopAnimation:` is the documented AppKit
+        // sequence for a busy bar, and the calls are on the main thread.
+        unsafe {
+            let native = Self::as_id(handle);
+            let flag: BOOL = if indeterminate { YES } else { NO };
+            let _: () = msg_send![native, setIndeterminate: flag];
+            if indeterminate {
+                let _: () = msg_send![native, startAnimation: nil];
+            } else {
+                let _: () = msg_send![native, stopAnimation: nil];
+            }
+        }
+        true
+    }
+
+    fn is_widget_indeterminate(&self, widget_id: u64) -> Option<bool> {
+        let handle = self.get_handle(widget_id)?;
+        if !matches!(handle.kind, HandleKind::ProgressBar | HandleKind::ProgressDialog) {
+            return None;
+        }
+        if handle.ptr != 0 && super::types::is_main_thread() {
+            // SAFETY: live NSProgressIndicator; `isIndeterminate` is a valid
+            // getter on the main thread.
+            unsafe {
+                let native = Self::as_id(handle);
+                let flag: BOOL = msg_send![native, isIndeterminate];
+                return Some(flag != NO);
+            }
+        }
+        self.state.indeterminate(widget_id)
+    }
+
+    fn set_widget_read_only(&self, widget_id: u64, read_only: bool) -> bool {
+        let Some(handle) = self.get_handle(widget_id) else {
+            return false;
+        };
+        if !matches!(handle.kind, HandleKind::LineEdit) {
+            return false;
+        }
+        self.state.set_read_only(widget_id, read_only);
+        if handle.ptr == 0 || !super::types::is_main_thread() {
+            return true;
+        }
+        // SAFETY: handle.ptr is an NSTextField; `setEditable:` toggles user
+        // editing and the call is on the AppKit main thread.
+        unsafe {
+            let native = Self::as_id(handle);
+            let flag: BOOL = if read_only { NO } else { YES };
+            let _: () = msg_send![native, setEditable: flag];
+        }
+        true
+    }
+
+    fn is_widget_read_only(&self, widget_id: u64) -> Option<bool> {
+        let handle = self.get_handle(widget_id)?;
+        if !matches!(handle.kind, HandleKind::LineEdit) {
+            return None;
+        }
+        if handle.ptr != 0 && super::types::is_main_thread() {
+            // SAFETY: live NSTextField; `isEditable` is a valid getter on the main
+            // thread.
+            unsafe {
+                let native = Self::as_id(handle);
+                let editable: BOOL = msg_send![native, isEditable];
+                return Some(editable == NO);
+            }
+        }
+        self.state.read_only(widget_id)
+    }
     fn set_widget_ime_enabled(&self, widget_id: u64, enabled: bool) -> bool {
         self.state.set_ime_enabled(widget_id, enabled)
     }
@@ -1902,7 +2225,19 @@ impl Platform for MacOSPlatform {
         if self.state.kind_of(parent).is_none() {
             return 0;
         }
-        self.state.create_widget(HandleKind::SpinBox, "spin_box", x, y, width, height)
+        // macOS has no free-standing AppKit spinner that fits this crate's model,
+        // so the control is state-only. Register it as such so the uniform
+        // property API still finds a handle and can store/read its value; without
+        // this the widget exists in state but every property call reports "unknown
+        // id".
+        let id =
+            self.register_state_only_handle(HandleKind::SpinBox, "spin_box", x, y, width, height);
+        // Seed the conventional value/range so a read right after creation answers
+        // concretely instead of reporting an unset value.
+        self.state.set_range(id, 0.0, 100.0);
+        self.state.set_value(id, 0.0);
+        self.state.set_step(id, 1.0);
+        id
     }
     fn create_list_view(
         &self,

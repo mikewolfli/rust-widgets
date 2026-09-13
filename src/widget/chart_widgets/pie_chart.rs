@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! PieChart widget — a circular statistical chart with colored sectors.
 //!
 //! The PieChart widget displays data as slices of a circle, with optional

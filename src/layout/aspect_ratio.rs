@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Aspect ratio layout manager — constrains a child to a specific aspect ratio.
 //!
 //! The child is sized to fit within the parent while maintaining the given

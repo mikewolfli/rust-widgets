@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! GPU adapter detection and selection with hardware auto-detection.
 //!
 //! This module provides intelligent GPU adapter selection with the following priority:

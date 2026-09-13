@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Spinner widget — rotating loading indicator (BLUE13 R2.2).
 //!
 //! A `Spinner` displays an animated circular arc that rotates to indicate

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! macOS IME bridge — real `NSTextInputContext` integration.
 //!
 //! Provides a state-tracking IME bridge that correctly manages marked text

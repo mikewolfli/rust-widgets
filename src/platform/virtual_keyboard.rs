@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Virtual keyboard integration for touch-based text input (BLUE8 P4-7).
 //!
 //! This module provides a `VirtualKeyboard` controller that manages

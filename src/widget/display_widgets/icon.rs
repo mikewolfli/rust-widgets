@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Icon widget — renders simple geometric icon representations.
 //!
 //! The Icon widget displays recognizable geometric shapes for common icon names

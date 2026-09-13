@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Shared macOS accelerator parsing for the objc2 and cocoa backends.
 //!
 //! # Why this is not in either backend

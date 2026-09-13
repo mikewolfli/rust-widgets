@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Keyboard widget — on-screen virtual keyboard (BLUE13 R2.6).
 //!
 //! Displays a grid of keys (QWERTY layout by default). Each key generates

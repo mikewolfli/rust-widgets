@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Wrap layout manager — auto-wrap flow layout that places items in rows or columns,
 //! breaking to the next line/column when the available space is exhausted.
 use super::{Layout, LayoutContext};

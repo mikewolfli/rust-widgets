@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 // Modern widget-set create methods (BLUE13 R2.1-R2.14 + mobile/Cupertino/media
 // widget families).
 //

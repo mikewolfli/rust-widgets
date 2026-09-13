@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! MultiSelectComboBox widget — a combo box that allows multiple selections.
 //!
 //! The MultiSelectComboBox widget displays a text summary of selected items

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Projection screen rendering adaptation (BLUE8 P4-5b).
 //!
 //! This module provides projection/presentation-mode rendering support

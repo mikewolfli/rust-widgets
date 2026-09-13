@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Container utilities: SoftwareSurface lifecycle management, configuration,
 //! frame operations, text shaping, gradient fill, and clip stack.
 //!

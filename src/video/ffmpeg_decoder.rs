@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Real video decoder powered by FFmpeg (via ffmpeg-next).
 //! Gated behind `#[cfg(feature = "video-codecs")]` which provides
 //! hardware-accelerated decoding for MP4, AVI, MKV, WebM, FLV, WMV, MOV

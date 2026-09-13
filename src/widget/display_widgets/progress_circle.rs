@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! ProgressCircle widget — a circular progress indicator.
 //!
 //! The ProgressCircle widget displays a circular progress track with a filled arc

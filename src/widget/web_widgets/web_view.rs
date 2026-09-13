@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! WebView is now an alias for `WebEngineView`.
 //!
 //! All functionality has been merged into `WebEngineView`, which provides

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! CupertinoDatePicker widget — an iOS UIPickerView-style scrolling wheel date picker.
 //!
 //! The CupertinoDatePicker presents three scrolling columns (year, month, day)

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Native surface for **self-drawn** widgets on Windows.
 //!
 //! Registers a dedicated child window class (`RustWidgetsCanvasClass`) whose

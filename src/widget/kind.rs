@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Widget kind enum — discrete categories supported by the widget model layer.
 
 #[cfg(all(feature = "serde", not(any(feature = "mini", feature = "embedded"))))]

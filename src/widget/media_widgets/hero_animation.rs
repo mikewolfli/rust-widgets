@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! HeroAnimation widget — shared element transition (hero animation).
 //!
 //! The HeroAnimation widget interpolates between a source and target widget

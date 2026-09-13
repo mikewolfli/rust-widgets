@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Web navigation types: entries, history, resources, settings.
 use alloc::collections::VecDeque;
 const MAX_HISTORY_SIZE: usize = 100;

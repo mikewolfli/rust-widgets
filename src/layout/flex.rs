@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Flex layout manager — CSS Flexbox-style layout with grow, shrink, and alignment.
 use super::{Layout, LayoutContext};
 use crate::core::{ObjectId, Rect, Size};

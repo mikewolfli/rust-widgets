@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Per-widget dirty state tracking.
 use crate::core::{ObjectId, Rect};
 use std::collections::{HashMap, HashSet};

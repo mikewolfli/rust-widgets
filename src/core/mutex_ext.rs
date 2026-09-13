@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Extension trait for standardized mutex lock handling.
 //!
 //! Provides a `.lock_guard()` method that recovers from poisoned

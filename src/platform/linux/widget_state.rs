@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 use super::types::{LinuxHandleKind, LinuxPlatform};
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]
 use crate::core::MutexExt;
@@ -160,6 +163,362 @@ impl LinuxPlatform {
         // disagree with the value just written by `set_widget_visible`.
         self.state.visible(widget_id)
     }
+
+    /// Whether this Linux handle kind carries a primary numeric value.
+    ///
+    /// The backend's own answer about the GTK widgets it creates: GTK stores them
+    /// type-erased in `native.widgets`, so the recorded kind is what selects the
+    /// correct downcast.
+    pub(crate) fn kind_accepts_numeric_value(kind: LinuxHandleKind) -> bool {
+        matches!(
+            kind,
+            LinuxHandleKind::Slider
+                | LinuxHandleKind::ProgressBar
+                | LinuxHandleKind::SpinBox
+                | LinuxHandleKind::DoubleSpinBox
+                | LinuxHandleKind::ScrollBar
+                | LinuxHandleKind::ActivityIndicator
+                | LinuxHandleKind::ProgressDialog
+        )
+    }
+
+    pub(crate) fn set_widget_value_impl(&self, widget_id: u64, value: f64) -> bool {
+        let Some(kind) = self.kind_of(widget_id) else {
+            return false;
+        };
+        if !Self::kind_accepts_numeric_value(kind) {
+            return false;
+        }
+        self.state.set_value(widget_id, value);
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            let native = self.native.lock_guard();
+            if let Some(widget) = native.widgets.get(&widget_id) {
+                if let Ok(scale) = widget.clone().downcast::<gtk::Scale>() {
+                    scale.set_value(value);
+                } else if let Ok(spin) = widget.clone().downcast::<gtk::SpinButton>() {
+                    spin.set_value(value);
+                } else if let Ok(progress) = widget.clone().downcast::<gtk::ProgressBar>() {
+                    // GtkProgressBar's natural model is a 0..=1 fraction, while the
+                    // rest of the crate uses an arbitrary numeric value; convert so
+                    // the two agree with the value stored in `state`.
+                    let (min, max) = self.state.range(widget_id).unwrap_or((0.0, 100.0));
+                    let span = (max - min).abs().max(f64::EPSILON);
+                    progress.set_fraction(((value - min) / span).clamp(0.0, 1.0));
+                } else if let Ok(adjustment) = widget.clone().downcast::<gtk::Scrollbar>() {
+                    adjustment.adjustment().set_value(value);
+                }
+            }
+        }
+        true
+    }
+
+    pub(crate) fn widget_value_impl(&self, widget_id: u64) -> Option<f64> {
+        let kind = self.kind_of(widget_id)?;
+        if !Self::kind_accepts_numeric_value(kind) {
+            return None;
+        }
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            let native = self.native.lock_guard();
+            if let Some(widget) = native.widgets.get(&widget_id) {
+                if let Ok(scale) = widget.clone().downcast::<gtk::Scale>() {
+                    return Some(scale.value());
+                }
+                if let Ok(spin) = widget.clone().downcast::<gtk::SpinButton>() {
+                    return Some(spin.value());
+                }
+            }
+        }
+        self.state.value(widget_id)
+    }
+
+    pub(crate) fn set_widget_range_impl(&self, widget_id: u64, min: f64, max: f64) -> bool {
+        let Some(kind) = self.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(kind, LinuxHandleKind::Slider | LinuxHandleKind::SpinBox) {
+            return false;
+        }
+        self.state.set_range(widget_id, min, max);
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            let native = self.native.lock_guard();
+            if let Some(widget) = native.widgets.get(&widget_id) {
+                if let Ok(scale) = widget.clone().downcast::<gtk::Scale>() {
+                    let adjustment = scale.adjustment();
+                    adjustment.set_lower(min);
+                    adjustment.set_upper(max);
+                } else if let Ok(spin) = widget.clone().downcast::<gtk::SpinButton>() {
+                    let adjustment = spin.adjustment();
+                    adjustment.set_lower(min);
+                    adjustment.set_upper(max);
+                }
+            }
+        }
+        true
+    }
+
+    pub(crate) fn widget_range_impl(&self, widget_id: u64) -> Option<(f64, f64)> {
+        let kind = self.kind_of(widget_id)?;
+        if !matches!(kind, LinuxHandleKind::Slider | LinuxHandleKind::SpinBox) {
+            return None;
+        }
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            let native = self.native.lock_guard();
+            if let Some(widget) = native.widgets.get(&widget_id) {
+                if let Ok(scale) = widget.clone().downcast::<gtk::Scale>() {
+                    let adjustment = scale.adjustment();
+                    return Some((adjustment.lower(), adjustment.upper()));
+                }
+                if let Ok(spin) = widget.clone().downcast::<gtk::SpinButton>() {
+                    let adjustment = spin.adjustment();
+                    return Some((adjustment.lower(), adjustment.upper()));
+                }
+            }
+        }
+        self.state.range(widget_id)
+    }
+
+    pub(crate) fn set_widget_selected_index_impl(
+        &self,
+        widget_id: u64,
+        index: Option<usize>,
+    ) -> bool {
+        let Some(kind) = self.kind_of(widget_id) else {
+            return false;
+        };
+        match (kind, index) {
+            (LinuxHandleKind::ComboBox, Some(selected)) => {
+                // Reuse the specialised path so the item table and bounds check stay
+                // authoritative.
+                crate::platform::Platform::combo_box_set_current_index(self, widget_id, selected)
+            }
+            (LinuxHandleKind::ListBox, Some(selected)) => {
+                crate::platform::Platform::list_box_set_current_index(self, widget_id, selected)
+            }
+            (LinuxHandleKind::ComboBox | LinuxHandleKind::ListBox, None) => {
+                // GTK selection models do not represent "cleared"; report the
+                // limitation rather than faking a selection change.
+                false
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn widget_selected_index_impl(&self, widget_id: u64) -> Option<usize> {
+        match self.kind_of(widget_id)? {
+            LinuxHandleKind::ComboBox => {
+                crate::platform::Platform::combo_box_current_index(self, widget_id)
+            }
+            LinuxHandleKind::ListBox => {
+                crate::platform::Platform::list_box_current_index(self, widget_id)
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn set_widget_checked_impl(&self, widget_id: u64, checked: bool) -> bool {
+        let Some(kind) = self.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(
+            kind,
+            LinuxHandleKind::CheckBox
+                | LinuxHandleKind::RadioButton
+                | LinuxHandleKind::ToggleButton
+        ) {
+            return false;
+        }
+        self.state.set_checked(widget_id, checked);
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            let native = self.native.lock_guard();
+            if let Some(widget) = native.widgets.get(&widget_id) {
+                if let Ok(check) = widget.clone().downcast::<gtk::ToggleButton>() {
+                    check.set_active(checked);
+                }
+            }
+        }
+        true
+    }
+
+    pub(crate) fn is_widget_checked_impl(&self, widget_id: u64) -> Option<bool> {
+        let kind = self.kind_of(widget_id)?;
+        if !matches!(
+            kind,
+            LinuxHandleKind::CheckBox
+                | LinuxHandleKind::RadioButton
+                | LinuxHandleKind::ToggleButton
+        ) {
+            return None;
+        }
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            let native = self.native.lock_guard();
+            if let Some(widget) = native.widgets.get(&widget_id) {
+                if let Ok(check) = widget.clone().downcast::<gtk::ToggleButton>() {
+                    return Some(check.is_active());
+                }
+            }
+        }
+        self.state.checked(widget_id)
+    }
+
+    pub(crate) fn set_widget_step_impl(&self, widget_id: u64, step: f64) -> bool {
+        let Some(kind) = self.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(kind, LinuxHandleKind::Slider | LinuxHandleKind::SpinBox) {
+            return false;
+        }
+        self.state.set_step(widget_id, step);
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            let native = self.native.lock_guard();
+            if let Some(widget) = native.widgets.get(&widget_id) {
+                if let Ok(scale) = widget.clone().downcast::<gtk::Scale>() {
+                    let adjustment = scale.adjustment();
+                    adjustment.set_step_increment(step);
+                } else if let Ok(spin) = widget.clone().downcast::<gtk::SpinButton>() {
+                    let adjustment = spin.adjustment();
+                    adjustment.set_step_increment(step);
+                }
+            }
+        }
+        true
+    }
+
+    pub(crate) fn widget_step_impl(&self, widget_id: u64) -> Option<f64> {
+        let kind = self.kind_of(widget_id)?;
+        if !matches!(kind, LinuxHandleKind::Slider | LinuxHandleKind::SpinBox) {
+            return None;
+        }
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            let native = self.native.lock_guard();
+            if let Some(widget) = native.widgets.get(&widget_id) {
+                if let Ok(scale) = widget.clone().downcast::<gtk::Scale>() {
+                    return Some(scale.adjustment().step_increment());
+                }
+                if let Ok(spin) = widget.clone().downcast::<gtk::SpinButton>() {
+                    return Some(spin.adjustment().step_increment());
+                }
+            }
+        }
+        self.state.step(widget_id)
+    }
+
+    pub(crate) fn set_widget_indeterminate_impl(
+        &self,
+        widget_id: u64,
+        indeterminate: bool,
+    ) -> bool {
+        let Some(kind) = self.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(kind, LinuxHandleKind::ProgressBar | LinuxHandleKind::ActivityIndicator) {
+            return false;
+        }
+        self.state.set_indeterminate(widget_id, indeterminate);
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            let native = self.native.lock_guard();
+            if let Some(widget) = native.widgets.get(&widget_id) {
+                if let Ok(progress) = widget.clone().downcast::<gtk::ProgressBar>() {
+                    // GTK has no persistent indeterminate flag: `pulse()` advances
+                    // the bar a step, and a timer pulsing it is what produces the
+                    // animation. Setting pulse_step lets the application's own
+                    // pulse cadence look like a marquee rather than a jump.
+                    if indeterminate {
+                        progress.pulse();
+                    } else {
+                        progress.set_fraction(0.0);
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    pub(crate) fn is_widget_indeterminate_impl(&self, widget_id: u64) -> Option<bool> {
+        let kind = self.kind_of(widget_id)?;
+        if !matches!(kind, LinuxHandleKind::ProgressBar | LinuxHandleKind::ActivityIndicator) {
+            return None;
+        }
+        self.state.indeterminate(widget_id)
+    }
+
+    pub(crate) fn set_widget_read_only_impl(&self, widget_id: u64, read_only: bool) -> bool {
+        let Some(kind) = self.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(kind, LinuxHandleKind::LineEdit) {
+            return false;
+        }
+        self.state.set_read_only(widget_id, read_only);
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            let native = self.native.lock_guard();
+            if let Some(widget) = native.widgets.get(&widget_id) {
+                if let Ok(entry) = widget.clone().downcast::<gtk::Entry>() {
+                    entry.set_editable(!read_only);
+                }
+            }
+        }
+        true
+    }
+
+    pub(crate) fn is_widget_read_only_impl(&self, widget_id: u64) -> Option<bool> {
+        let kind = self.kind_of(widget_id)?;
+        if !matches!(kind, LinuxHandleKind::LineEdit) {
+            return None;
+        }
+        self.state.read_only(widget_id)
+    }
+
+    pub(crate) fn set_widget_max_length_impl(&self, widget_id: u64, max_length: u32) -> bool {
+        let Some(kind) = self.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(kind, LinuxHandleKind::LineEdit) {
+            return false;
+        }
+        self.state.set_max_length(widget_id, max_length);
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            let native = self.native.lock_guard();
+            if let Some(widget) = native.widgets.get(&widget_id) {
+                if let Ok(entry) = widget.clone().downcast::<gtk::Entry>() {
+                    // GTK models "unlimited" as -1; a u32 sentinel of 0 is not a
+                    // real limit, so only apply a plausible positive bound.
+                    let limit = if max_length >= i32::MAX as u32 { -1 } else { max_length as i32 };
+                    entry.set_max_length(limit);
+                }
+            }
+        }
+        true
+    }
+
+    pub(crate) fn widget_max_length_impl(&self, widget_id: u64) -> Option<u32> {
+        let kind = self.kind_of(widget_id)?;
+        if !matches!(kind, LinuxHandleKind::LineEdit) {
+            return None;
+        }
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            let native = self.native.lock_guard();
+            if let Some(widget) = native.widgets.get(&widget_id) {
+                if let Ok(entry) = widget.clone().downcast::<gtk::Entry>() {
+                    let limit = entry.max_length();
+                    return Some(if limit < 0 { u32::MAX } else { limit as u32 });
+                }
+            }
+        }
+        self.state.max_length(widget_id)
+    }
+
     pub(crate) fn set_widget_ime_enabled_impl(&self, widget_id: u64, enabled: bool) -> bool {
         self.state.set_ime_enabled(widget_id, enabled)
     }

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Frame time monitor for tracking rendering performance.
 /// Frame time monitor for tracking rendering performance with lightweight statistics.
 #[derive(Debug, Clone)]

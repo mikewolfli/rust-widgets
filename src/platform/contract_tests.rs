@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Cross-backend contract-consistency tests.
 //!
 //! The platform-consistency gates in `tools/` are static: they class impost and
@@ -297,4 +300,111 @@ fn contract_holds_for_mobile_platform() {
     use crate::platform::mobile::AndroidMobilePlatform;
     let platform = AndroidMobilePlatform::new();
     assert_contract(&platform);
+}
+
+// ─── Uniform native-control property API ─────────────────────────────────────
+//
+// The property methods unify the *shape* of the call, not the capabilities of
+// the controls: an OS control may carry a value/range/selection/checked state or
+// not, and that difference is legitimate. What every backend must guarantee is
+// that the *same* call compiles and runs everywhere, and that when it reports
+// success the value read back is the one written. These tests pin those two
+// guarantees and nothing more.
+
+/// Where a backend supports a slider value, the value must round-trip.
+///
+/// The backend may honestly refuse (`false`) when its control has no numeric
+/// value; the contract only forbids reporting success and then not storing it.
+#[test]
+fn contract_slider_value_round_trips_when_supported() {
+    let platform = get_platform();
+    platform.init();
+    let window = Platform::create_window(platform, "w", 0, 0, 400, 300);
+    assert_ne!(window, 0, "{}: window creation must succeed", platform.backend_name());
+
+    let slider = Platform::create_slider(platform, window, 0, 0, 200, 20);
+    assert_ne!(slider, 0, "{}: slider creation must succeed", platform.backend_name());
+
+    let _ = Platform::set_widget_range(platform, slider, 0.0, 200.0);
+    if Platform::set_widget_value(platform, slider, 42.0) {
+        assert_eq!(
+            Platform::widget_value(platform, slider),
+            Some(42.0),
+            "{}: a successful write must read back the written value",
+            platform.backend_name()
+        );
+    }
+}
+
+/// Where a backend supports a checked state, it must round-trip.
+#[test]
+fn contract_checkbox_checked_round_trips_when_supported() {
+    let platform = get_platform();
+    platform.init();
+    let window = Platform::create_window(platform, "w", 0, 0, 400, 300);
+    let checkbox = Platform::create_checkbox(platform, window, "on", 0, 0, 120, 24);
+    assert_ne!(checkbox, 0);
+
+    if Platform::set_widget_checked(platform, checkbox, true) {
+        assert_eq!(
+            Platform::is_widget_checked(platform, checkbox),
+            Some(true),
+            "{}: a successful checked write must read back true",
+            platform.backend_name()
+        );
+    }
+}
+
+/// Writes to an unknown id are refused everywhere — this one *is* uniform, since
+/// it describes the API, not control capabilities.
+#[test]
+fn contract_property_write_unknown_id_is_refused() {
+    let platform = get_platform();
+    platform.init();
+    let bogus = 11_111_111u64;
+    assert!(!Platform::set_widget_value(platform, bogus, 5.0));
+    assert!(!Platform::set_widget_range(platform, bogus, 0.0, 10.0));
+    assert!(!Platform::set_widget_checked(platform, bogus, true));
+    assert!(!Platform::set_widget_selected_index(platform, bogus, Some(0)));
+    assert_eq!(Platform::widget_value(platform, bogus), None);
+    assert_eq!(Platform::widget_selected_index(platform, bogus), None);
+    assert_eq!(Platform::is_widget_checked(platform, bogus), None);
+}
+
+/// The new property calls follow the same shape rules: unknown ids are refused,
+/// and a successful write reads back where the backend supports reading.
+#[test]
+fn contract_step_indeterminate_read_only_shape() {
+    let platform = get_platform();
+    platform.init();
+    let bogus = 22_222_222u64;
+    assert!(!Platform::set_widget_step(platform, bogus, 1.0));
+    assert!(!Platform::set_widget_indeterminate(platform, bogus, true));
+    assert!(!Platform::set_widget_read_only(platform, bogus, true));
+    assert!(!Platform::set_widget_max_length(platform, bogus, 10));
+    assert_eq!(Platform::widget_step(platform, bogus), None);
+    assert_eq!(Platform::is_widget_indeterminate(platform, bogus), None);
+    assert_eq!(Platform::is_widget_read_only(platform, bogus), None);
+    assert_eq!(Platform::widget_max_length(platform, bogus), None);
+
+    let window = Platform::create_window(platform, "w", 0, 0, 400, 300);
+    let slider = Platform::create_slider(platform, window, 0, 0, 200, 20);
+    if Platform::set_widget_step(platform, slider, 5.0) {
+        assert_eq!(
+            Platform::widget_step(platform, slider),
+            Some(5.0),
+            "{}: a successful step write must read back",
+            platform.backend_name()
+        );
+    }
+
+    let progress = Platform::create_progress_bar(platform, window, 0, 0, 200, 20);
+    if Platform::set_widget_indeterminate(platform, progress, true) {
+        assert_eq!(
+            Platform::is_widget_indeterminate(platform, progress),
+            Some(true),
+            "{}: a successful indeterminate write must read back",
+            platform.backend_name()
+        );
+    }
 }

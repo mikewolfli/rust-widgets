@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Unified error system for rust_widgets.
 //!
 //! Provides `ErrorId` for FFI-safe error codes and `RwError` for

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Image processing module — format detection, decoding, encoding, transform, color conversion.
 //!
 //! # Format support matrix (truthful)

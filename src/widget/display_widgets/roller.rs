@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Roller widget — scroll-wheel style selector (BLUE13 R2.3).
 //!
 //! Displays a scroll-wheel list of options where one item is highlighted in the

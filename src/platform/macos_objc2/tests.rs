@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Integration tests for the macOS objc2 migration preview backend.
 //!
 //! These tests verify parity between the objc2 preview backend and the

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Platform abstraction types and capability contracts.
 
 use crate::core::{ObjectId, PlatformFamily};
@@ -919,6 +922,155 @@ pub trait Platform: Send + Sync {
     fn is_widget_enabled(&self, widget_id: ObjectId) -> bool;
     fn set_widget_visible(&self, widget_id: ObjectId, visible: bool);
     fn is_widget_visible(&self, widget_id: ObjectId) -> bool;
+
+    // ─────────────────────────────────────────────────────────────
+    // Uniform native-control properties (one API, every OS)
+    // ─────────────────────────────────────────────────────────────
+    //
+    // Native controls carry more state than text: a slider has a value and a
+    // range, a combo box has a selected index, a checkbox has a checked state.
+    // Before these methods existed the only OS-independent way to reach that
+    // state was [`Platform::set_widget_text`], which (on backends that support
+    // it) parses the string into a number — lossy for any control whose payload
+    // is not its display text, and unavailable for selection indices.
+    //
+    // These methods unify the *shape* of the call, not the capabilities of the
+    // controls. Each backend maps them onto whatever its own native control
+    // actually exposes and reports honestly when it cannot (see below). The
+    // point is that a caller writes **one** expression — `set_widget_value(id,
+    // v)` — and it compiles and runs on every OS without `cfg(target_os)` or a
+    // per-OS `if`/`else`, which is the whole purpose of this trait (principle
+    // #35/#36).
+    //
+    // # Per-OS capability differences are allowed
+    //
+    // A control may be value-carrying on one OS and not on another; that is a
+    // genuine platform difference, not a defect. The defaults return `false` /
+    // `None` — never a made-up value — so a backend that has no such property
+    // reports it as *absent* (principle #37) and the caller branches on the
+    // result at runtime if it cares. What is forbidden is a backend pretending
+    // a write took effect when nothing changed.
+
+    /// Set a control's primary numeric value (slider, progress bar, spin box,
+    /// scroll bar, dial, ... wherever the OS control has one).
+    ///
+    /// Returns `true` when the backend wrote the value to a real native control
+    /// (or an authoritative state model). Returns `false` when this backend's
+    /// control has no numeric value, or the widget id is unknown; the caller
+    /// must treat `false` as "the value did not change".
+    fn set_widget_value(&self, _widget_id: ObjectId, _value: f64) -> bool {
+        false
+    }
+
+    /// Read a control's primary numeric value.
+    ///
+    /// `None` when this backend's control has no numeric value (unknown id, or
+    /// a control without one). When it returns `Some`, the value must reflect
+    /// what the native control actually holds, not a cached default.
+    fn widget_value(&self, _widget_id: ObjectId) -> Option<f64> {
+        None
+    }
+
+    /// Set a control's `(min, max)` range (slider, spin box, scroll bar).
+    ///
+    /// Returns `false` when this backend's control has no range or the widget id
+    /// is unknown. Clamping the current value against the new range is the
+    /// backend's job, exactly as the native control does it.
+    fn set_widget_range(&self, _widget_id: ObjectId, _min: f64, _max: f64) -> bool {
+        false
+    }
+
+    /// Read a control's `(min, max)` range.
+    fn widget_range(&self, _widget_id: ObjectId) -> Option<(f64, f64)> {
+        None
+    }
+
+    /// Set a control's selection index (combo box, list box, tab widget).
+    ///
+    /// `index == None` clears the selection where this OS control supports it.
+    /// Returns `false` when this backend's control has no selection model, the
+    /// id is unknown, or the index is out of bounds.
+    fn set_widget_selected_index(&self, _widget_id: ObjectId, _index: Option<usize>) -> bool {
+        false
+    }
+
+    /// Read a control's current selection index.
+    fn widget_selected_index(&self, _widget_id: ObjectId) -> Option<usize> {
+        None
+    }
+
+    /// Set a checkable control's checked state (check box, radio button, toggle
+    /// button).
+    ///
+    /// Returns `false` when this backend's control is not checkable or the id is
+    /// unknown.
+    fn set_widget_checked(&self, _widget_id: ObjectId, _checked: bool) -> bool {
+        false
+    }
+
+    /// Read a checkable control's checked state.
+    fn is_widget_checked(&self, _widget_id: ObjectId) -> Option<bool> {
+        None
+    }
+
+    /// Set a control's increment step (slider, spin box, scroll bar).
+    ///
+    /// The step is how far a single keyboard/arrow interaction moves the value.
+    /// Returns `false` when this backend's control has no settable step (a
+    /// progress bar, for example) or the id is unknown.
+    fn set_widget_step(&self, _widget_id: ObjectId, _step: f64) -> bool {
+        false
+    }
+
+    /// Read a control's increment step.
+    fn widget_step(&self, _widget_id: ObjectId) -> Option<f64> {
+        None
+    }
+
+    /// Set an indeterminate (busy) state on a progress-style control.
+    ///
+    /// The three desktop toolkits all express this natively — AppKit
+    /// `setIndeterminate:`, Win32 `PBS_MARQUEE`, GTK `pulse()` — so the control
+    /// animates instead of showing a fixed fraction. Returns `false` when this
+    /// backend's control has no indeterminate mode or the id is unknown.
+    fn set_widget_indeterminate(&self, _widget_id: ObjectId, _indeterminate: bool) -> bool {
+        false
+    }
+
+    /// Read a progress-style control's indeterminate state.
+    fn is_widget_indeterminate(&self, _widget_id: ObjectId) -> Option<bool> {
+        None
+    }
+
+    /// Set a text-entry control's read-only state.
+    ///
+    /// AppKit uses `setEditable:`, Win32 `EM_SETREADONLY`, GTK
+    /// `set_editable(false)`. Returns `false` when this backend's control is not
+    /// a text entry or the id is unknown.
+    fn set_widget_read_only(&self, _widget_id: ObjectId, _read_only: bool) -> bool {
+        false
+    }
+
+    /// Read a text-entry control's read-only state.
+    fn is_widget_read_only(&self, _widget_id: ObjectId) -> Option<bool> {
+        None
+    }
+
+    /// Set a text-entry control's maximum accepted length in characters.
+    ///
+    /// Win32 uses `EM_SETLIMITTEXT` and GTK `set_max_length`; AppKit's
+    /// `NSTextField` has no direct equivalent (it is enforced through a delegate),
+    /// so the macOS backend honestly returns `false` here. Callers that need the
+    /// limit on every OS must enforce it themselves.
+    fn set_widget_max_length(&self, _widget_id: ObjectId, _max_length: u32) -> bool {
+        false
+    }
+
+    /// Read a text-entry control's maximum accepted length.
+    fn widget_max_length(&self, _widget_id: ObjectId) -> Option<u32> {
+        None
+    }
+
     /// Enable or disable IME input handling for a widget.
     fn set_widget_ime_enabled(&self, _widget_id: ObjectId, _enabled: bool) -> bool {
         false

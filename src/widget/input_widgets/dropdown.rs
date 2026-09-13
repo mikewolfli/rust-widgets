@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Dropdown widget — standalone dropdown list selector (BLUE13 R2.4).
 //!
 //! A button-like label showing the current selection. When clicked, it

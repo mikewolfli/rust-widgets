@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Bridge that selects between objc2 and cocoa backend (BLUE11 R1.5, R2.5).
 //! Priority: objc2 (default, via objc2-macos feature) → cocoa (cocoa-legacy fallback).
 //!

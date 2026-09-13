@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! InplaceEditor widget — an in-place text editing control for table/cell editing.
 //!
 //! Displays text normally, and when activated (double-click), switches to an

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! MiniCanvas widget — simplified drawing surface for mini builds (BLUE13 R2.11).
 use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};

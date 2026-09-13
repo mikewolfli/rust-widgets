@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Grid layout manager — arranges items in a fixed row/column grid.
 use super::Layout;
 use crate::core::{ObjectId, Rect};

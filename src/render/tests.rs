@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::render::{
     last_auto_render_backend, AutoRenderBackend, PaintBackend, RenderCommand, RenderScene,

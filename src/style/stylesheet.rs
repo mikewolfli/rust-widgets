@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Global stylesheet manager for CSS-based widget theming (BLUE13 R1.6).
 //!
 //! StyleSheetManager holds a global parsed stylesheet and applies matching

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Paint backend trait and software implementation.
 use super::batch::BatchState;
 use crate::core::{Color, Font, Size};

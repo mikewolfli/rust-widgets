@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! RefreshControl widget — pull-to-refresh control for scrollable views.
 //!
 //! Shows a pull-down indicator (spinner arrow) at the top of the widget when

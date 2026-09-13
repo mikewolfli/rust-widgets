@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! SkeletonLoader widget — animated placeholder content while data loads.
 //!
 //! The SkeletonLoader renders a gray rounded-rect placeholder with a shimmer

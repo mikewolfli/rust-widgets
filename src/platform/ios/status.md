@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com) -->
+<!-- SPDX-License-Identifier: MIT -->
+
 # iOS Backend Status
 
 > Last verified: 2026-09-11 on a real iOS 26.2 Simulator (Xcode 26.2, arm64

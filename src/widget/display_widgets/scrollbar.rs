@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Scroll bar widget.
 use crate::core::{Color, Orientation, Point, Rect};
 use crate::event::{Event, EventHandler};

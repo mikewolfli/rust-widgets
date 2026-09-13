@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Quality manager for dynamic quality adjustment.
 use super::config::QualityConfig;
 use super::level::QualityLevel;

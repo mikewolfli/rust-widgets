@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Shared backend state model used by platform adapters.
 use super::{DropEvent, WidgetTriggerEvent, WidgetTriggerKind};
 use crate::compat::HashMap;
@@ -35,6 +38,32 @@ pub struct WidgetRecord<K> {
     pub width: u32,
     /// Geometry height.
     pub height: u32,
+    /// Primary numeric value for value-carrying controls (slider, progress bar,
+    /// spin box, scroll bar, dial). `None` means "this widget has no numeric
+    /// value", which is distinct from `Some(0.0)` — a backend must not invent a
+    /// value for a control that has none (principle #37).
+    pub value: Option<f64>,
+    /// `(min, max)` range of [`WidgetRecord::value`], when the control has one.
+    pub range: Option<(f64, f64)>,
+    /// Current selection index for selection-model controls (combo box, list
+    /// box, tab widget). `None` means "nothing selected" or "no selection
+    /// model".
+    pub selected_index: Option<usize>,
+    /// Checked state for checkable controls (check box, radio button, toggle
+    /// button). `None` means the control is not checkable on this backend.
+    pub checked: Option<bool>,
+    /// Increment step for value controls with a settable stride (slider, spin
+    /// box, scroll bar). `None` means the control has no settable step here.
+    pub step: Option<f64>,
+    /// Indeterminate (busy) state for progress-style controls. `None` means the
+    /// control has no indeterminate mode here.
+    pub indeterminate: Option<bool>,
+    /// Read-only state for text-entry controls. `None` means the control is not
+    /// a text entry here.
+    pub read_only: Option<bool>,
+    /// Maximum accepted character count for text-entry controls. `None` means the
+    /// control has no settable limit here.
+    pub max_length: Option<u32>,
 }
 /// Thread-safe state model split from native handle adapters.
 #[cfg_attr(
@@ -153,6 +182,14 @@ where
                 y,
                 width,
                 height,
+                value: None,
+                range: None,
+                selected_index: None,
+                checked: None,
+                step: None,
+                indeterminate: None,
+                read_only: None,
+                max_length: None,
             },
         );
     }
@@ -293,6 +330,171 @@ where
             .get(&widget_id)
             .map(|widget| widget.accessibility_name.clone())
             .unwrap_or_default()
+    }
+
+    // ─── Uniform property storage ────────────────────────────────────────────
+    //
+    // These accessors back `Platform::{set_widget_value, set_widget_range,
+    // set_widget_selected_index, set_widget_checked, ...}`. A backend whose
+    // native control is the source of truth (macOS/Windows/GTK) writes through
+    // to the control and *also* mirrors here, so off-main calls and teardown
+    // still observe a consistent value. A state-only backend reads straight from
+    // this record.
+    //
+    // A record only ever holds a property for a control that actually has one —
+    // `None` means "this backend's control has no such property", which is why
+    // the setters below are never called by a backend for an unsupported
+    // control.
+
+    /// Store a widget's numeric value, returning `false` for an unknown id.
+    pub fn set_value(&self, widget_id: ObjectId, value: f64) -> bool {
+        if let Some(widget) =
+            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
+        {
+            widget.value = Some(value);
+            return true;
+        }
+        false
+    }
+    /// Return a widget's numeric value, or `None` when it has none.
+    pub fn value(&self, widget_id: ObjectId) -> Option<f64> {
+        self.widgets
+            .lock()
+            .expect("backend state widget lock poisoned")
+            .get(&widget_id)
+            .and_then(|widget| widget.value)
+    }
+    /// Store a widget's `(min, max)` range, returning `false` for an unknown id.
+    pub fn set_range(&self, widget_id: ObjectId, min: f64, max: f64) -> bool {
+        if let Some(widget) =
+            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
+        {
+            widget.range = Some((min, max));
+            // Keep the stored value inside the new range, mirroring what every
+            // native control does when its range shrinks under the current value.
+            if let Some(value) = widget.value {
+                widget.value = Some(value.clamp(min.min(max), max.max(min)));
+            }
+            return true;
+        }
+        false
+    }
+    /// Return a widget's `(min, max)` range, or `None` when it has none.
+    pub fn range(&self, widget_id: ObjectId) -> Option<(f64, f64)> {
+        self.widgets
+            .lock()
+            .expect("backend state widget lock poisoned")
+            .get(&widget_id)
+            .and_then(|widget| widget.range)
+    }
+    /// Store a widget's selection index, returning `false` for an unknown id.
+    pub fn set_selected_index(&self, widget_id: ObjectId, index: Option<usize>) -> bool {
+        if let Some(widget) =
+            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
+        {
+            widget.selected_index = index;
+            return true;
+        }
+        false
+    }
+    /// Return a widget's selection index, or `None` when nothing is selected.
+    pub fn selected_index(&self, widget_id: ObjectId) -> Option<usize> {
+        self.widgets
+            .lock()
+            .expect("backend state widget lock poisoned")
+            .get(&widget_id)
+            .and_then(|widget| widget.selected_index)
+    }
+    /// Store a widget's checked state, returning `false` for an unknown id.
+    pub fn set_checked(&self, widget_id: ObjectId, checked: bool) -> bool {
+        if let Some(widget) =
+            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
+        {
+            widget.checked = Some(checked);
+            return true;
+        }
+        false
+    }
+    /// Return a widget's checked state, or `None` when it is not checkable.
+    pub fn checked(&self, widget_id: ObjectId) -> Option<bool> {
+        self.widgets
+            .lock()
+            .expect("backend state widget lock poisoned")
+            .get(&widget_id)
+            .and_then(|widget| widget.checked)
+    }
+
+    /// Store a widget's increment step, returning `false` for an unknown id.
+    pub fn set_step(&self, widget_id: ObjectId, step: f64) -> bool {
+        if let Some(widget) =
+            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
+        {
+            widget.step = Some(step);
+            return true;
+        }
+        false
+    }
+    /// Return a widget's increment step, or `None` when it has none.
+    pub fn step(&self, widget_id: ObjectId) -> Option<f64> {
+        self.widgets
+            .lock()
+            .expect("backend state widget lock poisoned")
+            .get(&widget_id)
+            .and_then(|widget| widget.step)
+    }
+    /// Store a widget's indeterminate state, returning `false` for an unknown id.
+    pub fn set_indeterminate(&self, widget_id: ObjectId, indeterminate: bool) -> bool {
+        if let Some(widget) =
+            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
+        {
+            widget.indeterminate = Some(indeterminate);
+            return true;
+        }
+        false
+    }
+    /// Return a widget's indeterminate state, or `None` when it has none.
+    pub fn indeterminate(&self, widget_id: ObjectId) -> Option<bool> {
+        self.widgets
+            .lock()
+            .expect("backend state widget lock poisoned")
+            .get(&widget_id)
+            .and_then(|widget| widget.indeterminate)
+    }
+    /// Store a widget's read-only state, returning `false` for an unknown id.
+    pub fn set_read_only(&self, widget_id: ObjectId, read_only: bool) -> bool {
+        if let Some(widget) =
+            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
+        {
+            widget.read_only = Some(read_only);
+            return true;
+        }
+        false
+    }
+    /// Return a widget's read-only state, or `None` when it has none.
+    pub fn read_only(&self, widget_id: ObjectId) -> Option<bool> {
+        self.widgets
+            .lock()
+            .expect("backend state widget lock poisoned")
+            .get(&widget_id)
+            .and_then(|widget| widget.read_only)
+    }
+    /// Store a widget's maximum text length, returning `false` for an unknown id.
+    pub fn set_max_length(&self, widget_id: ObjectId, max_length: u32) -> bool {
+        if let Some(widget) =
+            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
+        {
+            widget.max_length = Some(max_length);
+            return true;
+        }
+        false
+    }
+    /// Return a widget's maximum text length, or `None` when it has none.
+    pub fn max_length(&self, widget_id: ObjectId) -> Option<u32> {
+        self.widgets
+            .lock()
+            .expect("backend state widget lock poisoned")
+            .get(&widget_id)
+            .and_then(|widget| widget.max_length)
     }
 
     // ─── Backend event methods ─────────────────────────────────────────────────

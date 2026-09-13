@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Hardware-adaptive performance monitoring and dynamic quality adjustment.
 //!
 //! This module provides performance monitoring that adapts to different hardware types:

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! `WebEngine` rendering wrapper that delegates to the main web engine module.
 //!
 //! This module provides a thin rendering-oriented wrapper around the full

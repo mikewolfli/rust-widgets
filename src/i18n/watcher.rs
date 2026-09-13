@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! i18n watcher - file system monitoring for hot reload
 use crate::i18n::global::get_manager;
 use crate::i18n::types::ReloadEvent;

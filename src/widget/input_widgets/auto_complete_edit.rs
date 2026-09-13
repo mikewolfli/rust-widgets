@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! AutoCompleteEdit widget — a text input with an auto-completion dropdown.
 //!
 //! The AutoCompleteEdit widget provides a text entry field that filters and

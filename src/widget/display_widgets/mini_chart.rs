@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! MiniChart widget — simplified line/bar chart for mini builds (BLUE13 R2.10).
 
 use crate::core::{Color, Point, Rect, Size};

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 /// Dynamic property value used by reflective object metadata APIs.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PropertyValue {

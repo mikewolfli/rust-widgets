@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! rust_widgets - cross-platform native GUI architecture in pure Rust.
 
 // BLUE11 R9.6: Unsafe code audit — unsafe is required for platform FFI
@@ -722,6 +725,105 @@ pub fn set_widget_visible(widget_id: crate::core::ObjectId, visible: bool) {
 #[cfg(not(feature = "mini"))]
 pub fn is_widget_visible(widget_id: crate::core::ObjectId) -> bool {
     platform::get_platform().is_widget_visible(widget_id)
+}
+
+/// Set a widget's primary numeric value (slider, progress bar, spin box, ...).
+///
+/// Returns `false` when this backend's control has no numeric value, so callers
+/// never mistake "unsupported" for "set to 0".
+#[cfg(not(feature = "mini"))]
+pub fn set_widget_value(widget_id: crate::core::ObjectId, value: f64) -> bool {
+    platform::get_platform().set_widget_value(widget_id, value)
+}
+
+/// Read a widget's primary numeric value.
+#[cfg(not(feature = "mini"))]
+pub fn widget_value(widget_id: crate::core::ObjectId) -> Option<f64> {
+    platform::get_platform().widget_value(widget_id)
+}
+
+/// Set a widget's `(min, max)` range.
+#[cfg(not(feature = "mini"))]
+pub fn set_widget_range(widget_id: crate::core::ObjectId, min: f64, max: f64) -> bool {
+    platform::get_platform().set_widget_range(widget_id, min, max)
+}
+
+/// Read a widget's `(min, max)` range.
+#[cfg(not(feature = "mini"))]
+pub fn widget_range(widget_id: crate::core::ObjectId) -> Option<(f64, f64)> {
+    platform::get_platform().widget_range(widget_id)
+}
+
+/// Set a widget's selection index (combo box, list box, tab widget).
+#[cfg(not(feature = "mini"))]
+pub fn set_widget_selected_index(widget_id: crate::core::ObjectId, index: Option<usize>) -> bool {
+    platform::get_platform().set_widget_selected_index(widget_id, index)
+}
+
+/// Read a widget's selection index.
+#[cfg(not(feature = "mini"))]
+pub fn widget_selected_index(widget_id: crate::core::ObjectId) -> Option<usize> {
+    platform::get_platform().widget_selected_index(widget_id)
+}
+
+/// Set a widget's checked state (check box, radio button, toggle button).
+#[cfg(not(feature = "mini"))]
+pub fn set_widget_checked(widget_id: crate::core::ObjectId, checked: bool) -> bool {
+    platform::get_platform().set_widget_checked(widget_id, checked)
+}
+
+/// Read a widget's checked state, or `None` when it is not checkable.
+#[cfg(not(feature = "mini"))]
+pub fn is_widget_checked(widget_id: crate::core::ObjectId) -> Option<bool> {
+    platform::get_platform().is_widget_checked(widget_id)
+}
+
+/// Set a widget's increment step (slider, spin box, scroll bar).
+#[cfg(not(feature = "mini"))]
+pub fn set_widget_step(widget_id: crate::core::ObjectId, step: f64) -> bool {
+    platform::get_platform().set_widget_step(widget_id, step)
+}
+
+/// Read a widget's increment step.
+#[cfg(not(feature = "mini"))]
+pub fn widget_step(widget_id: crate::core::ObjectId) -> Option<f64> {
+    platform::get_platform().widget_step(widget_id)
+}
+
+/// Set a progress-style widget's indeterminate (busy) state.
+#[cfg(not(feature = "mini"))]
+pub fn set_widget_indeterminate(widget_id: crate::core::ObjectId, indeterminate: bool) -> bool {
+    platform::get_platform().set_widget_indeterminate(widget_id, indeterminate)
+}
+
+/// Read a progress-style widget's indeterminate state.
+#[cfg(not(feature = "mini"))]
+pub fn is_widget_indeterminate(widget_id: crate::core::ObjectId) -> Option<bool> {
+    platform::get_platform().is_widget_indeterminate(widget_id)
+}
+
+/// Set a text-entry widget's read-only state.
+#[cfg(not(feature = "mini"))]
+pub fn set_widget_read_only(widget_id: crate::core::ObjectId, read_only: bool) -> bool {
+    platform::get_platform().set_widget_read_only(widget_id, read_only)
+}
+
+/// Read a text-entry widget's read-only state.
+#[cfg(not(feature = "mini"))]
+pub fn is_widget_read_only(widget_id: crate::core::ObjectId) -> Option<bool> {
+    platform::get_platform().is_widget_read_only(widget_id)
+}
+
+/// Set a text-entry widget's maximum accepted length.
+#[cfg(not(feature = "mini"))]
+pub fn set_widget_max_length(widget_id: crate::core::ObjectId, max_length: u32) -> bool {
+    platform::get_platform().set_widget_max_length(widget_id, max_length)
+}
+
+/// Read a text-entry widget's maximum accepted length.
+#[cfg(not(feature = "mini"))]
+pub fn widget_max_length(widget_id: crate::core::ObjectId) -> Option<u32> {
+    platform::get_platform().widget_max_length(widget_id)
 }
 // ComboBox operations
 #[cfg(not(feature = "mini"))]

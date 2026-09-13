@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! IME (Input Method Editor) bridge infrastructure.
 //!
 //! Provides the `ImeBridge` trait for platform IME integration,

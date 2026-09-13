@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Special widgets: canvas, chart, grid, freeform shape, etc.
 pub mod breadcrumb;
 pub mod canvas;

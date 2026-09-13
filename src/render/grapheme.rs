@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Unicode grapheme cluster support for complex text rendering.
 //!
 //! Provides utilities for splitting, counting, and truncating text by grapheme

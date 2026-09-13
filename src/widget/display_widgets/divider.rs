@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Divider/Separator widget — a horizontal or vertical line separator.
 //!
 //! The Divider widget draws a thin line (horizontal or vertical) centered within

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Generic asset file watcher with predicate-based filtering.
 //!
 //! Provides a `notify`-based watcher that can be configured to watch

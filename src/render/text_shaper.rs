@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Text shaping trait — measures and shapes text before rendering.
 //!
 //! Provides a trait abstraction over text shaping operations (glyph layout,

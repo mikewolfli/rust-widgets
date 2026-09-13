@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Avatar widget — a circular or square user avatar/image placeholder with initials fallback.
 //!
 //! The Avatar widget displays a colored circle (or rounded square) with centered

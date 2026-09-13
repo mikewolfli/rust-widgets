@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Behavioural test-suite for the [`CodeEditor`] widget.
 //!
 //! The module-level tests cover the widget as a whole: lifecycle, mutation,

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! JSON-node → widget instantiation and typed handle access.
 //!
 //! This module provides [`BoundJsonLayout`], the binding between a JSON

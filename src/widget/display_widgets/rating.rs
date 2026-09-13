@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Rating widget — a star rating control (like 1-5 stars).
 //!
 //! The Rating widget displays a horizontal row of stars that the user can click

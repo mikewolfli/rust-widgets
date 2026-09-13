@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! EditableComboBox widget — a combo box that allows typing custom values.
 //!
 //! The EditableComboBox combines a text field with a dropdown list. Users can

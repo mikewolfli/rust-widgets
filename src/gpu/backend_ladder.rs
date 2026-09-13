@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! GPU backend selection with an explicit degradation ladder.
 //!
 //! `wgpu` can drive several graphics APIs, and a host does not always offer the

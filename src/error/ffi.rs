@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! C FFI safety macro and helpers.
 //!
 //! Provides the `c_try!` family of macros that wrap `extern "C" fn`

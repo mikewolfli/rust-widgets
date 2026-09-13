@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! ModalBottomSheet widget — Material-style modal bottom sheet with drag-to-dismiss.
 //!
 //! Displays a semi-transparent overlay behind a rounded top sheet containing a

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Auto-pairing: bracket/quote completion, skip-over and smart backspace.
 //!
 //! The rules live here as pure functions so they are unit-testable without a

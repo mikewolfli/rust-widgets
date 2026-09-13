@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! macOS objc2 migration preview backend.
 //!
 //! This backend provides a state-driven implementation behind the `objc2-macos`

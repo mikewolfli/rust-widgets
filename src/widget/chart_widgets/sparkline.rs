@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Sparkline widget — a compact inline chart with no axes or labels.
 //!
 //! A sparkline is a small, word-sized line chart without axes, typically used to

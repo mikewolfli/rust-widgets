@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Stub platform implementation for testing and demonstrations.
 use crate::compat::HashMap;
 use crate::compat::Mutex;
@@ -234,7 +237,12 @@ impl Platform for StubPlatform {
         if self.state.kind_of(parent).is_none() {
             return 0;
         }
-        self.state.create_widget(StubHandleKind::CheckBox, text, x, y, width, height)
+        let id = self.state.create_widget(StubHandleKind::CheckBox, text, x, y, width, height);
+        // A freshly created check box is unchecked: seeding the state makes
+        // `is_widget_checked` answer from creation instead of reporting `None`
+        // for a widget that demonstrably has a check state.
+        self.state.set_checked(id, false);
+        id
     }
 
     fn create_line_edit(
@@ -249,7 +257,12 @@ impl Platform for StubPlatform {
         if self.state.kind_of(parent).is_none() {
             return 0;
         }
-        self.state.create_widget(StubHandleKind::LineEdit, text, x, y, width, height)
+        let id = self.state.create_widget(StubHandleKind::LineEdit, text, x, y, width, height);
+        // A text entry is editable by default; seeding read-only makes the state
+        // answer `Some(false)` instead of `None` for a control that has one.
+        self.state.set_read_only(id, false);
+        self.state.set_max_length(id, u32::MAX);
+        id
     }
 
     fn create_label(
@@ -279,14 +292,22 @@ impl Platform for StubPlatform {
         if self.state.kind_of(parent).is_none() {
             return 0;
         }
-        self.state.create_widget(StubHandleKind::RadioButton, text, x, y, width, height)
+        let id = self.state.create_widget(StubHandleKind::RadioButton, text, x, y, width, height);
+        self.state.set_checked(id, false);
+        id
     }
 
     fn create_slider(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         if self.state.kind_of(parent).is_none() {
             return 0;
         }
-        self.state.create_widget(StubHandleKind::Slider, "Slider", x, y, width, height)
+        let id = self.state.create_widget(StubHandleKind::Slider, "Slider", x, y, width, height);
+        // Sliders expose the conventional 0..=100 starting range and value, so a
+        // caller can read back a concrete number immediately after creation.
+        self.state.set_range(id, 0.0, 100.0);
+        self.state.set_value(id, 0.0);
+        self.state.set_step(id, 1.0);
+        id
     }
 
     fn create_progress_bar(
@@ -300,7 +321,18 @@ impl Platform for StubPlatform {
         if self.state.kind_of(parent).is_none() {
             return 0;
         }
-        self.state.create_widget(StubHandleKind::ProgressBar, "ProgressBar", x, y, width, height)
+        let id = self.state.create_widget(
+            StubHandleKind::ProgressBar,
+            "ProgressBar",
+            x,
+            y,
+            width,
+            height,
+        );
+        self.state.set_value(id, 0.0);
+        self.state.set_range(id, 0.0, 100.0);
+        self.state.set_indeterminate(id, false);
+        id
     }
 
     fn create_combo_box(
@@ -630,7 +662,13 @@ impl Platform for StubPlatform {
         if self.state.kind_of(parent).is_none() {
             return 0;
         }
-        self.state.create_widget(StubHandleKind::SpinBox, "SpinBox", x, y, width, height)
+        let id = self.state.create_widget(StubHandleKind::SpinBox, "SpinBox", x, y, width, height);
+        // A spin box has a value, a range and a step; seed the conventional
+        // defaults so a read right after creation answers concretely.
+        self.state.set_range(id, 0.0, 100.0);
+        self.state.set_value(id, 0.0);
+        self.state.set_step(id, 1.0);
+        id
     }
 
     fn create_list_view(
@@ -757,14 +795,18 @@ impl Platform for StubPlatform {
         if self.state.kind_of(parent).is_none() {
             return 0;
         }
-        self.state.create_widget(
+        let id = self.state.create_widget(
             StubHandleKind::DoubleSpinBox,
             "DoubleSpinBox",
             x,
             y,
             width,
             height,
-        )
+        );
+        self.state.set_range(id, 0.0, 100.0);
+        self.state.set_value(id, 0.0);
+        self.state.set_step(id, 1.0);
+        id
     }
     fn create_font_combo_box(
         &self,
@@ -1024,6 +1066,125 @@ impl Platform for StubPlatform {
 
     fn is_widget_visible(&self, widget_id: ObjectId) -> bool {
         self.state.visible(widget_id)
+    }
+
+    fn set_widget_value(&self, widget_id: ObjectId, value: f64) -> bool {
+        // A record holds a numeric value only if its creator seeded one, and each
+        // stub `create_*` seeds exactly the properties its control has. That is
+        // the natural per-control answer — a slider accepts a value, a button
+        // does not — without any global classification table.
+        if !self.state.contains_widget(widget_id) {
+            return false;
+        }
+        self.state.set_value(widget_id, value)
+    }
+
+    fn widget_value(&self, widget_id: ObjectId) -> Option<f64> {
+        self.state.value(widget_id)
+    }
+
+    fn set_widget_range(&self, widget_id: ObjectId, min: f64, max: f64) -> bool {
+        if !self.state.contains_widget(widget_id) {
+            return false;
+        }
+        self.state.set_range(widget_id, min, max)
+    }
+
+    fn widget_range(&self, widget_id: ObjectId) -> Option<(f64, f64)> {
+        self.state.range(widget_id)
+    }
+
+    fn set_widget_selected_index(&self, widget_id: ObjectId, index: Option<usize>) -> bool {
+        match self.state.kind_of(widget_id) {
+            Some(StubHandleKind::ComboBox) => match index {
+                // Delegate to the specialised path so bounds checking and the
+                // item table stay authoritative.
+                Some(i) => self.combo_box_set_current_index(widget_id, i),
+                None => {
+                    self.combo_box_selection
+                        .lock()
+                        .expect("platform lock poisoned")
+                        .insert(widget_id, None);
+                    true
+                }
+            },
+            Some(StubHandleKind::ListBox) => match index {
+                Some(i) => self.list_box_set_current_index(widget_id, i),
+                None => {
+                    self.list_box_selection
+                        .lock()
+                        .expect("platform lock poisoned")
+                        .insert(widget_id, None);
+                    true
+                }
+            },
+            Some(_) => self.state.set_selected_index(widget_id, index),
+            None => false,
+        }
+    }
+
+    fn widget_selected_index(&self, widget_id: ObjectId) -> Option<usize> {
+        match self.state.kind_of(widget_id) {
+            Some(StubHandleKind::ComboBox) => self.combo_box_current_index(widget_id),
+            Some(StubHandleKind::ListBox) => self.list_box_current_index(widget_id),
+            Some(_) => self.state.selected_index(widget_id),
+            None => None,
+        }
+    }
+
+    fn set_widget_checked(&self, widget_id: ObjectId, checked: bool) -> bool {
+        if !self.state.contains_widget(widget_id) {
+            return false;
+        }
+        self.state.set_checked(widget_id, checked)
+    }
+
+    fn is_widget_checked(&self, widget_id: ObjectId) -> Option<bool> {
+        self.state.checked(widget_id)
+    }
+
+    fn set_widget_step(&self, widget_id: ObjectId, step: f64) -> bool {
+        if !self.state.contains_widget(widget_id) {
+            return false;
+        }
+        self.state.set_step(widget_id, step)
+    }
+
+    fn widget_step(&self, widget_id: ObjectId) -> Option<f64> {
+        self.state.step(widget_id)
+    }
+
+    fn set_widget_indeterminate(&self, widget_id: ObjectId, indeterminate: bool) -> bool {
+        if !self.state.contains_widget(widget_id) {
+            return false;
+        }
+        self.state.set_indeterminate(widget_id, indeterminate)
+    }
+
+    fn is_widget_indeterminate(&self, widget_id: ObjectId) -> Option<bool> {
+        self.state.indeterminate(widget_id)
+    }
+
+    fn set_widget_read_only(&self, widget_id: ObjectId, read_only: bool) -> bool {
+        if !self.state.contains_widget(widget_id) {
+            return false;
+        }
+        self.state.set_read_only(widget_id, read_only)
+    }
+
+    fn is_widget_read_only(&self, widget_id: ObjectId) -> Option<bool> {
+        self.state.read_only(widget_id)
+    }
+
+    fn set_widget_max_length(&self, widget_id: ObjectId, max_length: u32) -> bool {
+        if !self.state.contains_widget(widget_id) {
+            return false;
+        }
+        self.state.set_max_length(widget_id, max_length)
+    }
+
+    fn widget_max_length(&self, widget_id: ObjectId) -> Option<u32> {
+        self.state.max_length(widget_id)
     }
 
     fn set_widget_ime_enabled(&self, widget_id: ObjectId, enabled: bool) -> bool {

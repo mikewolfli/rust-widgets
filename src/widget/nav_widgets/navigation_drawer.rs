@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! NavigationDrawer widget — an Android-style slide-out side navigation drawer.
 //!
 //! The NavigationDrawer presents a semi-transparent overlay behind a side panel

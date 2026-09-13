@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Application lifecycle wrapper and type-safe widget handles.
 //!
 //! This is the **primary entry-point** for end-user applications.

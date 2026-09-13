@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Win32 native dialog presentation (MessageBox / File / Color / Font).
 //!
 //! `create_message_box` / `create_file_dialog` / `create_color_dialog` /

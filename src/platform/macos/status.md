@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com) -->
+<!-- SPDX-License-Identifier: MIT -->
+
 # macOS Backends Status (cocoa-legacy + objc2)
 
 > Last verified: 2026-09-11 on a real Mac (macOS 15.7.3, arm64, rustc 1.98.0).

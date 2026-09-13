@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! SegmentedButton widget — a Material 3-style segmented button group.
 //!
 //! The SegmentedButton widget displays a horizontal row of segments where the user

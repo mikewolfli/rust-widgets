@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Canvas widget for custom drawing operations.
 //!
 //! The `Canvas` widget provides a drawing surface where users can push

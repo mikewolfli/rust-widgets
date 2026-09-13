@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! LineChart widget — a 2D line chart for visualizing data series.
 //!
 //! The LineChart widget draws axes, optional grid lines, an optional filled area

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Cupertino (iOS-style) widget collection.
 //!
 //! This module provides iOS-style wrappers around existing widgets. These

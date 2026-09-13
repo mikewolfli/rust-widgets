@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Android JNI bridge — native method implementations for creating
 //! real Android native views (Button, TextView, EditText, etc.)
 //! corresponding to rust_widgets logical widgets.

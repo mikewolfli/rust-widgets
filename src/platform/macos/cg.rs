@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Minimal CoreGraphics FFI used to blit a software frame into an AppKit view.
 //!
 //! # Why hand-declared instead of a crate

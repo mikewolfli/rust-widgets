@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! FontPreview widget — a font preview panel for font selection dialogs.
 //!
 //! Displays a preview of a font family at configurable sizes, with sample

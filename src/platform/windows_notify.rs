@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Pure Win32 notification-code semantics.
 //!
 //! The mappings in this module translate raw Win32 control notification codes

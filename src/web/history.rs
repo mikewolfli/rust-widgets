@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 use alloc::collections::VecDeque;
 use std::time::{SystemTime, UNIX_EPOCH};
 const MAX_HISTORY_ENTRIES: usize = 100;

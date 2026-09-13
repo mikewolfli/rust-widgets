@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! SearchBar widget — iOS-style search bar with search icon, clear button,
 //! and optional cancel button when active.
 //!

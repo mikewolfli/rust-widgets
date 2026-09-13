@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! IME preedit text overlay widget — shows composition text with an underline.
 //!
 //! This widget displays the current IME composition string at a given position,

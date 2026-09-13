@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! AppBar (Top Bar) widget — a mobile-style top navigation bar with title,
 //! optional back button, and optional action text.
 //!

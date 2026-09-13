@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Video metadata — codec, resolution, frame rate, bitrate, duration.
 
 use crate::video::format::ContainerFormat;

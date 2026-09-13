@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! AudioVisualizer widget — real-time audio waveform/spectrum visualization.
 //!
 //! Displays vertical bars representing audio frequency bands or waveform samples.

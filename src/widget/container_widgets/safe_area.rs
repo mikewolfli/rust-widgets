@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! SafeArea widget — insets content to avoid notches, status bars, home indicators (BLUE11 R10.14).
 use crate::core::{Color, Rect, Size};
 use crate::event::{Event, EventHandler};

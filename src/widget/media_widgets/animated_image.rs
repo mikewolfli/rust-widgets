@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! AnimatedImage widget — plays caller-provided animation frame sequences.
 //!
 //! The widget manages a sequence of [`AnimatedFrame`]s (raw RGBA + delay) with

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! BottomSheet widget — a modal panel that slides up from the bottom edge of the
 //! screen, similar to Android/Material Design bottom sheets.
 //!

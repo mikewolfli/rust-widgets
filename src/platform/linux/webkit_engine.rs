@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Native WebKitGTK web engine for the Linux backend.
 //!
 //! This is the only place in the crate that names `webkit2gtk`. Widgets in

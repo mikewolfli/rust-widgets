@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Device class detection and adaptive layout support (BLUE8 P4-6).
 //!
 //! This module provides runtime detection of device form factor,

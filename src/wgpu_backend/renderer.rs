@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! WGPU renderer implementation.
 use super::commands::WgpuDrawCommand;
 use super::raster::{align_to, rasterize_draw_commands_rgba8};

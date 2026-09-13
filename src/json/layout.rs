@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Layout manager parsing for JSON declarative layouts.
 //!
 //! Converts JSON `"layout"` objects into concrete [`Layout`](crate::layout::Layout) trait objects.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Pixel-level operations: draw_bitmap_glyph, glyph_bitmap, fill_pixels,
 //! blend_pixel, set_pixel, pixel_bytes_len, and anti-aliased coverage/geometry helpers.
 use crate::core::{Color, Point, Rect, Size};

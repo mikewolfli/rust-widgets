@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Type-safe widget handles backed by `ObjectId`.
 //!
 //! Each handle type wraps a raw `ObjectId` and exposes only the operations
@@ -307,6 +310,95 @@ pub trait WidgetHandle: Sized {
     /// Check whether the widget is currently visible.
     fn is_visible(&self) -> bool {
         crate::is_widget_visible(self.raw_id())
+    }
+
+    /// Set this widget's primary numeric value (slider, progress bar, spin box,
+    /// scroll bar, ...).
+    ///
+    /// Returns `true` when the backend wrote it to a real native control or an
+    /// authoritative state model; `false` when this backend's control has no
+    /// numeric value. Callers branch on the result at runtime if they care — they
+    /// never branch on the OS. See [`crate::Platform::set_widget_value`].
+    fn set_value(&self, value: f64) -> bool {
+        crate::platform::get_platform().set_widget_value(self.raw_id(), value)
+    }
+
+    /// Read this widget's primary numeric value.
+    fn value(&self) -> Option<f64> {
+        crate::platform::get_platform().widget_value(self.raw_id())
+    }
+
+    /// Set this widget's `(min, max)` range, when it has one.
+    fn set_range(&self, min: f64, max: f64) -> bool {
+        crate::platform::get_platform().set_widget_range(self.raw_id(), min, max)
+    }
+
+    /// Read this widget's `(min, max)` range, when it has one.
+    fn range(&self) -> Option<(f64, f64)> {
+        crate::platform::get_platform().widget_range(self.raw_id())
+    }
+
+    /// Set this widget's selection index (combo box, list box, tab widget).
+    ///
+    /// `index == None` clears the selection where the control supports it.
+    fn set_selected_index(&self, index: Option<usize>) -> bool {
+        crate::platform::get_platform().set_widget_selected_index(self.raw_id(), index)
+    }
+
+    /// Read this widget's selection index.
+    fn selected_index(&self) -> Option<usize> {
+        crate::platform::get_platform().widget_selected_index(self.raw_id())
+    }
+
+    /// Set a checkable control's checked state (check box, radio button, toggle
+    /// button).
+    fn set_checked(&self, checked: bool) -> bool {
+        crate::platform::get_platform().set_widget_checked(self.raw_id(), checked)
+    }
+
+    /// Read this widget's checked state, or `None` when it is not checkable.
+    fn checked(&self) -> Option<bool> {
+        crate::platform::get_platform().is_widget_checked(self.raw_id())
+    }
+
+    /// Set this widget's increment step (slider, spin box, scroll bar).
+    fn set_step(&self, step: f64) -> bool {
+        crate::platform::get_platform().set_widget_step(self.raw_id(), step)
+    }
+
+    /// Read this widget's increment step.
+    fn step(&self) -> Option<f64> {
+        crate::platform::get_platform().widget_step(self.raw_id())
+    }
+
+    /// Set a progress-style control's indeterminate (busy) state.
+    fn set_indeterminate(&self, indeterminate: bool) -> bool {
+        crate::platform::get_platform().set_widget_indeterminate(self.raw_id(), indeterminate)
+    }
+
+    /// Read a progress-style control's indeterminate state.
+    fn is_indeterminate(&self) -> Option<bool> {
+        crate::platform::get_platform().is_widget_indeterminate(self.raw_id())
+    }
+
+    /// Set a text-entry control's read-only state.
+    fn set_read_only(&self, read_only: bool) -> bool {
+        crate::platform::get_platform().set_widget_read_only(self.raw_id(), read_only)
+    }
+
+    /// Read a text-entry control's read-only state.
+    fn is_read_only(&self) -> Option<bool> {
+        crate::platform::get_platform().is_widget_read_only(self.raw_id())
+    }
+
+    /// Set a text-entry control's maximum accepted length.
+    fn set_max_length(&self, max_length: u32) -> bool {
+        crate::platform::get_platform().set_widget_max_length(self.raw_id(), max_length)
+    }
+
+    /// Read a text-entry control's maximum accepted length.
+    fn max_length(&self) -> Option<u32> {
+        crate::platform::get_platform().widget_max_length(self.raw_id())
     }
 
     /// Register a callback for the "clicked" trigger.
@@ -1023,15 +1115,25 @@ thread_local! {
 /// # Slider-specific operations
 impl SliderHandle {
     /// Set the current slider value (clamped to min/max range).
+    ///
+    /// The value is written both to the in-process mirror and to the native
+    /// control through [`crate::Platform::set_widget_value`], so the change is
+    /// visible on screen and not just to `value()`. On a backend without a
+    /// numeric value for sliders the mirror is still updated, because it is the
+    /// authoritative copy for the self-drawn path.
     pub fn set_value(&self, value: i32) {
         SLIDER_STATES.with(|map| {
             let mut map = map.borrow_mut();
             let state = map.entry(self.raw_id()).or_default();
             state.value = value.clamp(state.min, state.max);
         });
+        crate::platform::get_platform().set_widget_value(self.raw_id(), f64::from(self.value()));
     }
 
     /// Return the current slider value.
+    ///
+    /// The in-process mirror is authoritative: it is what the self-drawn path
+    /// renders and what a native write was clamped to, so both agree.
     pub fn value(&self) -> i32 {
         SLIDER_STATES.with(|map| map.borrow().get(&self.raw_id()).map(|s| s.value).unwrap_or(50))
     }
@@ -1045,16 +1147,34 @@ impl SliderHandle {
             state.max = max;
             state.value = state.value.clamp(state.min, state.max);
         });
+        crate::platform::get_platform().set_widget_range(
+            self.raw_id(),
+            f64::from(min),
+            f64::from(max),
+        );
     }
 
     /// Set the slider step increment.
+    ///
+    /// Mirrored into the in-process state *and* pushed to the native control
+    /// through [`crate::Platform::set_widget_step`].
     pub fn set_step(&self, step: i32) {
         SLIDER_STATES.with(|map| {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).step = step;
         });
+        crate::platform::get_platform().set_widget_step(self.raw_id(), f64::from(step));
     }
 
     /// Set the slider orientation.
+    ///
+    /// This affects the **self-drawn** rendering only. The native backends do not
+    /// expose a uniform post-creation orientation change — GTK has
+    /// `set_orientation`, but AppKit encodes it in the class (`NSSlider` vs a
+    /// vertical variant) and Win32 in the creation style (`TBS_VERT`) — so there
+    /// is no cross-OS setter to call. Changing orientation on a native slider is
+    /// therefore not reflected on screen; recreate the control instead. This is a
+    /// deliberate per-OS limitation, not a silently dropped write: the mirror is
+    /// authoritative for the self-drawn path, and native callers are told here.
     pub fn set_orientation(&self, orientation: Orientation) {
         SLIDER_STATES.with(|map| {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).orientation =
@@ -1088,12 +1208,16 @@ thread_local! {
 /// # Progress-bar specific operations
 impl ProgressBarHandle {
     /// Set the current progress value (clamped to min/max).
+    ///
+    /// Mirrored into the in-process state *and* pushed to the native control
+    /// through [`crate::Platform::set_widget_value`], so the bar actually moves.
     pub fn set_value(&self, value: u32) {
         PROGRESS_BAR_STATES.with(|map| {
             let mut map = map.borrow_mut();
             let state = map.entry(self.raw_id()).or_default();
             state.value = value.clamp(state.min, state.max);
         });
+        crate::platform::get_platform().set_widget_value(self.raw_id(), f64::from(self.value()));
     }
 
     /// Return the current progress value.
@@ -1103,31 +1227,54 @@ impl ProgressBarHandle {
     }
 
     /// Set the minimum value.
+    ///
+    /// Mirrored into the in-process state *and* pushed to the native control
+    /// through [`crate::Platform::set_widget_range`].
     pub fn set_min(&self, min: u32) {
-        PROGRESS_BAR_STATES.with(|map| {
+        let range = PROGRESS_BAR_STATES.with(|map| {
             let mut map = map.borrow_mut();
             let state = map.entry(self.raw_id()).or_default();
             state.min = min;
             state.value = state.value.clamp(state.min, state.max);
+            (state.min, state.max)
         });
+        crate::platform::get_platform().set_widget_range(
+            self.raw_id(),
+            f64::from(range.0),
+            f64::from(range.1),
+        );
     }
 
     /// Set the maximum value.
+    ///
+    /// Mirrored into the in-process state *and* pushed to the native control
+    /// through [`crate::Platform::set_widget_range`].
     pub fn set_max(&self, max: u32) {
-        PROGRESS_BAR_STATES.with(|map| {
+        let range = PROGRESS_BAR_STATES.with(|map| {
             let mut map = map.borrow_mut();
             let state = map.entry(self.raw_id()).or_default();
             state.max = max;
             state.value = state.value.clamp(state.min, state.max);
+            (state.min, state.max)
         });
+        crate::platform::get_platform().set_widget_range(
+            self.raw_id(),
+            f64::from(range.0),
+            f64::from(range.1),
+        );
     }
 
     /// Set whether the progress bar is in indeterminate mode.
+    ///
+    /// Mirrored into the in-process state *and* pushed to the native control
+    /// through [`crate::Platform::set_widget_indeterminate`], so a native bar
+    /// animates instead of showing a fixed fraction.
     pub fn set_indeterminate(&self, indeterminate: bool) {
         PROGRESS_BAR_STATES.with(|map| {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).indeterminate =
                 indeterminate;
         });
+        crate::platform::get_platform().set_widget_indeterminate(self.raw_id(), indeterminate);
     }
 }
 
@@ -1161,6 +1308,9 @@ impl CheckBoxHandle {
     }
 
     /// Set the check-box to checked or unchecked.
+    ///
+    /// Mirrored into the in-process state *and* pushed to the native control
+    /// through [`crate::Platform::set_widget_checked`], so the box really moves.
     pub fn set_checked(&self, checked: bool) {
         CHECKBOX_STATES.with(|map| {
             let mut map = map.borrow_mut();
@@ -1171,9 +1321,16 @@ impl CheckBoxHandle {
                     if checked { CheckState::Checked } else { CheckState::Unchecked };
             }
         });
+        crate::platform::get_platform().set_widget_checked(self.raw_id(), checked);
     }
 
     /// Enable/disable tri-state mode.
+    ///
+    /// **Not uniformly native.** Win32 has `BS_3STATE`/`BS_AUTO3STATE` and GTK's
+    /// `ToggleButton` exposes `set_inconsistent`, but AppKit's `NSButton` has no
+    /// third state for a check box. The crate has no `set_widget_tristate`
+    /// capability for that reason, so this setter drives the self-drawn path only.
+    /// Enabling it does **not** turn a native check box into a tri-state control.
     pub fn set_tristate(&self, tristate: bool) {
         CHECKBOX_STATES.with(|map| {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).tristate =
@@ -1212,6 +1369,11 @@ impl RadioButtonHandle {
     }
 
     /// Select this radio button and deselect all others in the same group.
+    ///
+    /// Both the selection *and* the de-selection of siblings are pushed to the
+    /// native controls through [`crate::Platform::set_widget_checked`], so the
+    /// group is actually mutually exclusive on screen rather than only in the
+    /// in-process mirror.
     pub fn select(&self) {
         let group = RADIO_BUTTON_STATES.with(|map| {
             let mut map = map.borrow_mut();
@@ -1219,17 +1381,27 @@ impl RadioButtonHandle {
             state.selected = true;
             state.group.clone()
         });
+        crate::platform::get_platform().set_widget_checked(self.raw_id(), true);
 
         // Deselect all other radio buttons in the same group.
         if !group.is_empty() {
-            RADIO_BUTTON_STATES.with(|map| {
+            let siblings: Vec<ObjectId> = RADIO_BUTTON_STATES.with(|map| {
                 let mut map = map.borrow_mut();
+                let mut siblings = Vec::new();
                 for (id, state) in map.iter_mut() {
                     if *id != self.raw_id() && state.group == group {
                         state.selected = false;
+                        siblings.push(*id);
                     }
                 }
+                siblings
             });
+            // Clear the native state outside the borrow above so a backend
+            // callback cannot re-enter the map while it is borrowed.
+            let platform = crate::platform::get_platform();
+            for id in siblings {
+                platform.set_widget_checked(id, false);
+            }
         }
     }
 
@@ -1287,18 +1459,32 @@ impl LineEditHandle {
     }
 
     /// Set whether the line-edit is read-only.
+    ///
+    /// Mirrored into the in-process state *and* pushed to the native control
+    /// through [`crate::Platform::set_widget_read_only`], so the native field
+    /// actually stops accepting input. On a backend whose text control is not an
+    /// entry, the platform call reports `false` and only the mirror changes —
+    /// that is a legitimate per-OS difference, not a dropped write.
     pub fn set_read_only(&self, read_only: bool) {
         LINE_EDIT_STATES.with(|map| {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).read_only =
                 read_only;
         });
+        crate::platform::get_platform().set_widget_read_only(self.raw_id(), read_only);
     }
 
     /// Set the maximum number of characters allowed.
+    ///
+    /// Mirrored into the in-process state *and* pushed to the native control
+    /// through [`crate::Platform::set_widget_max_length`]. Not every OS text
+    /// control has a settable limit (AppKit's `NSTextField` does not), so the
+    /// platform call may report `false`; the mirror still updates for the
+    /// self-drawn path and for callers that enforce the limit themselves.
     pub fn set_max_length(&self, len: u32) {
         LINE_EDIT_STATES.with(|map| {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).max_length = len;
         });
+        crate::platform::get_platform().set_widget_max_length(self.raw_id(), len);
     }
 
     /// Clear the line-edit text.
@@ -1537,13 +1723,18 @@ thread_local! {
 
 /// # Spin-box specific operations
 impl SpinBoxHandle {
-    /// Set the current spin-box value (clamped to range).
+    /// Set the spin-box value (clamped to range).
+    ///
+    /// Mirrored into the in-process state *and* pushed to the native control
+    /// through [`crate::Platform::set_widget_value`], so the number the user sees
+    /// matches `value()`.
     pub fn set_value(&self, value: i32) {
         SPINBOX_STATES.with(|map| {
             let mut map = map.borrow_mut();
             let state = map.entry(self.raw_id()).or_default();
             state.value = value.clamp(state.min, state.max);
         });
+        crate::platform::get_platform().set_widget_value(self.raw_id(), f64::from(self.value()));
     }
 
     /// Return the current spin-box value.
@@ -1560,9 +1751,22 @@ impl SpinBoxHandle {
             state.max = max;
             state.value = state.value.clamp(state.min, state.max);
         });
+        crate::platform::get_platform().set_widget_range(
+            self.raw_id(),
+            f64::from(min),
+            f64::from(max),
+        );
     }
 
     /// Set the prefix text displayed before the value.
+    ///
+    /// **Self-drawn only.** There is no cross-OS native control with an affix
+    /// concept — AppKit `NSStepper`/`NSTextField`, Win32 `UPDOWN_CLASS` and GTK
+    /// `SpinButton` all render a bare number, and formatting is left to the
+    /// application. This setter therefore changes what the self-drawn path
+    /// renders, and has no effect on a native control. Callers that need an
+    /// affix on a native control must format the value themselves where the value
+    /// is consumed; this is a genuine platform gap rather than a dropped write.
     pub fn set_prefix(&self, prefix: &str) {
         SPINBOX_STATES.with(|map| {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).prefix =
@@ -1571,6 +1775,9 @@ impl SpinBoxHandle {
     }
 
     /// Set the suffix text displayed after the value.
+    ///
+    /// **Self-drawn only** — see [`SpinBoxHandle::set_prefix`] for why no native
+    /// backend can honour this.
     pub fn set_suffix(&self, suffix: &str) {
         SPINBOX_STATES.with(|map| {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).suffix =
@@ -1579,10 +1786,14 @@ impl SpinBoxHandle {
     }
 
     /// Set the spin-box step increment.
+    ///
+    /// Mirrored into the in-process state *and* pushed to the native control
+    /// through [`crate::Platform::set_widget_step`].
     pub fn set_step(&self, step: i32) {
         SPINBOX_STATES.with(|map| {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).step = step;
         });
+        crate::platform::get_platform().set_widget_step(self.raw_id(), f64::from(step));
     }
 }
 

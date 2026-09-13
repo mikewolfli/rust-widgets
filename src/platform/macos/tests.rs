@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! macOS platform tests.
 
 #![allow(deprecated)] // Cocoa 0.24 fallback; remove when objc2 backend fully replaces cocoa
@@ -254,4 +257,148 @@ fn invoke_ns_menu_item_action(ptr: usize) {
         }
         let _: () = msg_send![target, performSelector: action withObject: item];
     }
+}
+
+// ---- Uniform widget properties ----
+//
+// These verify that the macOS backend answers the unified property API on its
+// own terms: where an AppKit control has the property, the write reaches it (or
+// the mirror, off-main); where it does not, the backend reports `false`/`None`.
+// No assertion here demands that another OS behave the same way.
+//
+// Unit tests run off the AppKit main thread, so `create_*` yields state-only
+// handles (`ptr == 0`). The assertions target the mirror, which is exactly what
+// the trait contract promises off-main and is guaranteed to be populated. The
+// native half (`setDoubleValue:` etc.) is covered at runtime by
+// `examples/control_property_uniform.rs`, which runs on the main thread.
+
+#[test]
+fn macos_slider_value_and_range_round_trip() {
+    let platform = MacOSPlatform::new();
+    let window = platform.create_window("W", 0, 0, 320, 240);
+    let slider = platform.create_slider(window, 0, 0, 200, 20);
+    assert_ne!(slider, 0, "slider must be created");
+
+    assert!(
+        Platform::set_widget_range(&platform, slider, 0.0, 200.0),
+        "a slider accepts a range on every macOS code path"
+    );
+    assert!(
+        Platform::set_widget_value(&platform, slider, 42.0),
+        "a slider accepts a value on every macOS code path"
+    );
+    assert_eq!(Platform::widget_value(&platform, slider), Some(42.0));
+    assert_eq!(Platform::widget_range(&platform, slider), Some((0.0, 200.0)));
+
+    // The range write must clamp the stored value, mirroring the native control.
+    assert!(Platform::set_widget_range(&platform, slider, 0.0, 10.0));
+    assert_eq!(Platform::widget_value(&platform, slider), Some(10.0));
+}
+
+#[test]
+fn macos_slider_step_round_trips() {
+    let platform = MacOSPlatform::new();
+    let window = platform.create_window("W", 0, 0, 320, 240);
+    let slider = platform.create_slider(window, 0, 0, 200, 20);
+    assert_ne!(slider, 0);
+
+    assert!(Platform::set_widget_step(&platform, slider, 5.0));
+    assert_eq!(Platform::widget_step(&platform, slider), Some(5.0));
+}
+
+#[test]
+fn macos_button_has_no_numeric_value() {
+    let platform = MacOSPlatform::new();
+    let window = platform.create_window("W", 0, 0, 320, 240);
+    let button = platform.create_button(window, "ok", 0, 0, 80, 24);
+    assert_ne!(button, 0);
+
+    assert!(!Platform::set_widget_value(&platform, button, 1.0), "an NSButton has no numeric value");
+    assert_eq!(Platform::widget_value(&platform, button), None);
+}
+
+#[test]
+fn macos_checkbox_checked_round_trips() {
+    let platform = MacOSPlatform::new();
+    let window = platform.create_window("W", 0, 0, 320, 240);
+    let checkbox = platform.create_checkbox(window, "on", 0, 0, 120, 24);
+    assert_ne!(checkbox, 0);
+
+    assert!(Platform::set_widget_checked(&platform, checkbox, true));
+    assert_eq!(Platform::is_widget_checked(&platform, checkbox), Some(true));
+    assert!(Platform::set_widget_checked(&platform, checkbox, false));
+    assert_eq!(Platform::is_widget_checked(&platform, checkbox), Some(false));
+}
+
+#[test]
+fn macos_label_is_not_checkable() {
+    let platform = MacOSPlatform::new();
+    let window = platform.create_window("W", 0, 0, 320, 240);
+    let label = platform.create_label(window, "text", 0, 0, 120, 24);
+    assert_ne!(label, 0);
+
+    assert!(!Platform::set_widget_checked(&platform, label, true));
+    assert_eq!(Platform::is_widget_checked(&platform, label), None);
+}
+
+#[test]
+fn macos_progress_bar_indeterminate_round_trips() {
+    let platform = MacOSPlatform::new();
+    let window = platform.create_window("W", 0, 0, 320, 240);
+    let progress = platform.create_progress_bar(window, 0, 0, 200, 20);
+    assert_ne!(progress, 0);
+
+    assert!(Platform::set_widget_indeterminate(&platform, progress, true));
+    assert_eq!(Platform::is_widget_indeterminate(&platform, progress), Some(true));
+    assert!(Platform::set_widget_indeterminate(&platform, progress, false));
+    assert_eq!(Platform::is_widget_indeterminate(&platform, progress), Some(false));
+}
+
+/// A slider has no indeterminate mode, so the call must be refused rather than
+/// silently accepted.
+#[test]
+fn macos_slider_has_no_indeterminate_mode() {
+    let platform = MacOSPlatform::new();
+    let window = platform.create_window("W", 0, 0, 320, 240);
+    let slider = platform.create_slider(window, 0, 0, 200, 20);
+    assert_ne!(slider, 0);
+
+    assert!(!Platform::set_widget_indeterminate(&platform, slider, true));
+    assert_eq!(Platform::is_widget_indeterminate(&platform, slider), None);
+}
+
+/// The macOS backend reports the read-only state the native text view actually
+/// has. `create_line_edit` builds it with `setEditable: NO`, so a freshly created
+/// line edit is read-only here — this test pins that real behaviour instead of
+/// assuming the cross-platform default.
+#[test]
+fn macos_line_edit_starts_read_only_and_round_trips() {
+    let platform = MacOSPlatform::new();
+    let window = platform.create_window("W", 0, 0, 320, 240);
+    let entry = platform.create_line_edit(window, "text", 0, 0, 200, 24);
+    assert_ne!(entry, 0);
+
+    assert_eq!(
+        Platform::is_widget_read_only(&platform, entry),
+        Some(true),
+        "macOS builds a line edit with setEditable: NO"
+    );
+    assert!(Platform::set_widget_read_only(&platform, entry, false));
+    assert_eq!(Platform::is_widget_read_only(&platform, entry), Some(false));
+}
+
+/// AppKit has no direct `NSTextField` length limit, so the backend must not
+/// pretend the write took effect.
+#[test]
+fn macos_max_length_is_not_supported() {
+    let platform = MacOSPlatform::new();
+    let window = platform.create_window("W", 0, 0, 320, 240);
+    let entry = platform.create_line_edit(window, "text", 0, 0, 200, 24);
+    assert_ne!(entry, 0);
+
+    assert!(
+        !Platform::set_widget_max_length(&platform, entry, 8),
+        "AppKit has no direct setMaxLength equivalent"
+    );
+    assert_eq!(Platform::widget_max_length(&platform, entry), None);
 }

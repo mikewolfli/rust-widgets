@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! macOS objc2 migration preview backend (sub-module split).
 pub mod clipboard_dnd;
 pub mod dialog_creation;

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! i18n manager - core internationalization management
 use crate::compat::HashMap;
 use crate::i18n::types::{ReloadEvent, TranslationFile};

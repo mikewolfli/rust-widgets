@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Uniform grid layout manager — arranges items in a grid with equal cell sizes.
 use super::grid::GridLayout;
 use super::Layout;

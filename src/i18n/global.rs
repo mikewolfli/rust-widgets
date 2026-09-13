@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! i18n global - global functions and static instances
 use crate::compat::{Mutex, MutexGuard};
 use crate::i18n::manager::I18nManager;

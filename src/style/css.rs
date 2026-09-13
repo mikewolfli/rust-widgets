@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! CSS stylesheet parser — parses CSS text into rules with property declarations
 //! that can be matched against widgets and applied to `WidgetStyle`.
 //!

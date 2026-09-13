@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! SVG paint backend — converts `RenderCommand`s into SVG elements.
 
 use super::convert::{color_to_rgba, escape_xml, point_attrs, rect_attrs};

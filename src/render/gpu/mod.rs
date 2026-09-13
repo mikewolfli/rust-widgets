@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! GPU-accelerated rendering backend (WGPU).
 //!
 //! `wgpu_backend` at the crate root is the canonical implementation.

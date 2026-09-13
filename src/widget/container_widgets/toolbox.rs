@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Tool box widget.
 use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Orientation, Point, Rect};
 use crate::event::{Event, EventHandler};

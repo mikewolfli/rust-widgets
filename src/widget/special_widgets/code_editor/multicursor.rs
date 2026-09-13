@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Multiple carets: an ordered, deduplicated caret set plus the edit-projection
 //! helper that applies one logical edit at every caret in a single pass.
 //!

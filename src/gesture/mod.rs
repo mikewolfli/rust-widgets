@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Gesture recognizer system (BLUE8 P4-2).
 //!
 //! This module provides gesture recognition primitives that transform

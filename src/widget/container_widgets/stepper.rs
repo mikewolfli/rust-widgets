@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Stepper widget — a numeric increment/decrement control with +/- buttons.
 //!
 //! The Stepper widget displays a numeric value with minus (-) and plus (+)

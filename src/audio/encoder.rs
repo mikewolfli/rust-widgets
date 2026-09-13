@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Audio encoder — WAV and raw PCM are encoded natively. Compressed formats
 //! (MP3, FLAC, OGG, AAC, Opus) are encoded through FFmpeg and therefore
 //! require the `video-codecs` feature; without it, `encode` returns an error

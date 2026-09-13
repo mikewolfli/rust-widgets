@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Grid widget — a visual container that arranges children in a
 //! fixed row/column matrix with optional spacing, grid-line rendering,
 //! and per-cell hover/click detection.

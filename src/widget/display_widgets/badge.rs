@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Badge widget — a notification count/indicator dot.
 //!
 //! The Badge widget displays a small notification count or status indicator,

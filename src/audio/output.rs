@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Real audio output using cpal (cross-platform audio library).
 //! Gated behind `#[cfg(feature = "audio-output")]`.
 

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Linux IME bridge — in-process composition state with optional IBus probe.
 //!
 //! The bridge tracks marked text, cursor position, focus and composition

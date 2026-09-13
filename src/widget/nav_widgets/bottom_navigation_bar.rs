@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! BottomNavigationBar widget — a mobile-style bottom tab bar with icons and labels.
 //!
 //! This widget provides a Material Design-style bottom navigation bar commonly

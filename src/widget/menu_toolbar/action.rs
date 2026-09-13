@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Action widget — represents a command or toggle that can be placed in menus and toolbars.
 //!
 //! This widget **internally wraps** [`crate::action::Action`] to eliminate duplicate

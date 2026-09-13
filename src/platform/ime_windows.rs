@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Windows IME bridge — TSF (Text Services Framework) integration.
 //!
 //! Provides a state-tracking IME bridge that manages text composition via

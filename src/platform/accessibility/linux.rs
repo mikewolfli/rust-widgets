@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Linux AT-SPI2 accessibility bridge.
 //!
 //! Connects to the AT-SPI2 registry via D-Bus (using `zbus`) to expose widget

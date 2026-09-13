@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Windows UIAutomation bridge via NotifyWinEvent.
 //!
 //! Uses the classic win32 `NotifyWinEvent` API to raise accessibility

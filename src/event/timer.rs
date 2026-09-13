@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Runtime timer manager that emits `Event::Timer` into the event queue.
 use super::event_queue::EventSender;
 #[cfg(not(feature = "mini"))]

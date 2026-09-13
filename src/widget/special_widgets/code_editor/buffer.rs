@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Line-indexed document model with tabs, folds and the splice primitive.
 //!
 //! The document always owns **at least one line**, even when empty. That

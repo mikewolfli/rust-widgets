@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Control backend abstraction for native and custom-painted control paths.
 use crate::compat::HashMap;
 use crate::core::ObjectId;

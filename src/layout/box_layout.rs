@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Box layout manager — arranges items in a single row or column.
 use super::{Layout, LayoutConstraints, LayoutContext, Orientation, SizePolicy};
 use crate::core::{ObjectId, Rect};

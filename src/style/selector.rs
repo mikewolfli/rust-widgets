@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! CSS-style selector engine for widget styling.
 //!
 //! Allows matching widgets by kind, class name, ID, and state,

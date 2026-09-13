@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 macro_rules! impl_helpers {
     () => {
         fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {

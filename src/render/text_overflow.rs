@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Text overflow handling — ellipsis truncation, multi-line clamping.
 //!
 //! Provides strategies for handling text that exceeds its allotted bounds:

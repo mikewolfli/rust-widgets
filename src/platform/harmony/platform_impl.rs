@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 use super::super::{DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind};
 use super::types::*;
 use crate::core::{MutexExt, ObjectId, PlatformFamily};

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Menu system configuration with hardware-adaptive features.
 //!
 //! This module provides automatic feature detection based on hardware capabilities,

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Switch/Toggle widget — a modern on/off binary state control.
 //!
 //! The Switch widget presents a sliding toggle that represents a boolean state,

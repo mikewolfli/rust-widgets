@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! SVG rendering backend — converts `RenderCommand`s into SVG elements.
 //!
 //! This backend implements `PaintBackend` by generating SVG markup

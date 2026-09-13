@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Popover widget — a floating bubble card with an anchor arrow.
 //!
 //! The Popover widget displays a floating card near an anchor rectangle,

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Index-based widget registry (ObjectId lookup).
 //!
 //! Provides a `WidgetRegistry` that maps `ObjectId` → metadata for

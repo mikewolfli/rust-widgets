@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! FloatingLabel widget — a text input with a floating label (Material Design style).
 //!
 //! The FloatingLabel widget combines a text input field with a label that

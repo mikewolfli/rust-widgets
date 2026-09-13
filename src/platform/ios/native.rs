@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Native UIKit FFI wrappers for the iOS backend (BLUE11 R2.4 100%).
 //!
 //! This module provides real UIKit UIView/UIButton/UILabel etc. creation

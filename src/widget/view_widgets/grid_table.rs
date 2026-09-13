@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! GridTable widget — feature-rich virtualized table with grid lines, headers,
 //! sorting, selection, and column resize.
 //!

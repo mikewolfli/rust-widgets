@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Layout Inspector — deferred diagnostic engine for layout correctness.
 //!
 //! Detects orphan widgets, empty layouts, zero-size widgets, and overlapping

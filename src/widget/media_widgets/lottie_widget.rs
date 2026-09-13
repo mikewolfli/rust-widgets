@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! LottieWidget — Lottie JSON animation player widget.
 //!
 //! The LottieWidget parses a Lottie JSON animation, manages play/pause/stop

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Keyboard, IME, pointer and wheel plumbing for the [`CodeEditor`].
 //!
 //! This module is the *translation layer* between platform events and the

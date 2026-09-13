@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Rendering backends: software surface, paint, batch, and scene.
 pub(crate) mod batch;
 pub(crate) mod paint;

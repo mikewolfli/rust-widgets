@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 use std::sync::atomic::{AtomicU32, Ordering};
 static FIXED_DPI: AtomicU32 = AtomicU32::new(0);
 static BASE_DPI: u32 = 96;

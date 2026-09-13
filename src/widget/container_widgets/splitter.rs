@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Splitter widget.
 use crate::core::{Orientation, Rect};
 use crate::layout::{splitter::SplitterLayout, Layout};

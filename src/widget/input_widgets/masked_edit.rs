@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! MaskedEdit widget — a text input with mask-based formatting.
 //!
 //! The MaskedEdit widget provides formatted text input using a mask pattern.

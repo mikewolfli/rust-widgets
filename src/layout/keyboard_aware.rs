@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Keyboard-aware layout manager — shifts content upward when the mobile keyboard appears,
 //! preventing the focused input from being obscured.
 use super::{Layout, LayoutContext};

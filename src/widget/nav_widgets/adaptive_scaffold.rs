@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! AdaptiveScaffold — a cross-platform adaptive scaffold widget.
 //!
 //! The AdaptiveScaffold combines an AppBar (top bar), a main content area,

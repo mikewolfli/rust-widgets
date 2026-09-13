@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Simulated web-engine view widget (self-drawn chrome).
 //!
 //! `WebEngineView` draws a browser-style chrome (URL bar, content hint) and

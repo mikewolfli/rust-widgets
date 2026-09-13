@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! BezierCurveEditor widget — interactive cubic bezier curve editor for creating custom easing curves.
 //!
 //! This widget provides a visual editor for cubic bezier curves with two control points,

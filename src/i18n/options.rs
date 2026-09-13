@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! i18n options - configuration and initialization types
 /// Initialization options for i18n system
 #[derive(Debug, Clone)]

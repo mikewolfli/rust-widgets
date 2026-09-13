@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Asset module - generic file watching utilities.
 //!
 //! Provides a predicate-based file watcher that can monitor any directory

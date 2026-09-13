@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Built-in tokenizer and the syntax-highlighting plugin seam.
 //!
 //! Real grammar-aware highlighting (tree-sitter, LSP semantic tokens) belongs

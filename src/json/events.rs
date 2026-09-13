@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Event handler mapping for JSON-declared `on_click` / `on_change` handlers.
 //!
 //! When a JSON node declares `"on_click": "handler_name"`, the string

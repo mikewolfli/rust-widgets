@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Line widget — horizontal or vertical divider line (BLUE13 R2.13).
 //!
 //! A simple standalone line widget that draws a horizontal or vertical divider

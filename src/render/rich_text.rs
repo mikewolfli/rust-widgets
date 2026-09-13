@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Rich text rendering — supports multiple fonts, colors, and styles in one text block.
 //!
 //! A `RichText` is a sequence of `TextSpan` values, each with its own `TextStyle`.

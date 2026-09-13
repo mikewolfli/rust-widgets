@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Global shortcut system for menu items and actions.
 //!
 //! This module provides keyboard shortcut registration, conflict detection,

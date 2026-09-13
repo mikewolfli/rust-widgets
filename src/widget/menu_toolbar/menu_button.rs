@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! MenuButton widget — a button that shows a dropdown menu when clicked.
 //!
 //! The MenuButton displays as a button with text and an optional icon. When

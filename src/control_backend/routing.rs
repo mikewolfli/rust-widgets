@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 use crate::control_backend::types::ControlRoutePreference;
 use crate::widget::WidgetKind;
 /// Returns the policy preference for one widget kind.

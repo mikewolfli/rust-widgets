@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 use super::types::{LinuxHandleKind, LinuxPlatform};
 use crate::compat::OnceLock;
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]
@@ -582,6 +585,54 @@ impl Platform for LinuxPlatform {
     }
     fn is_widget_visible(&self, widget_id: u64) -> bool {
         self.is_widget_visible_impl(widget_id)
+    }
+    fn set_widget_value(&self, widget_id: u64, value: f64) -> bool {
+        self.set_widget_value_impl(widget_id, value)
+    }
+    fn widget_value(&self, widget_id: u64) -> Option<f64> {
+        self.widget_value_impl(widget_id)
+    }
+    fn set_widget_range(&self, widget_id: u64, min: f64, max: f64) -> bool {
+        self.set_widget_range_impl(widget_id, min, max)
+    }
+    fn widget_range(&self, widget_id: u64) -> Option<(f64, f64)> {
+        self.widget_range_impl(widget_id)
+    }
+    fn set_widget_selected_index(&self, widget_id: u64, index: Option<usize>) -> bool {
+        self.set_widget_selected_index_impl(widget_id, index)
+    }
+    fn widget_selected_index(&self, widget_id: u64) -> Option<usize> {
+        self.widget_selected_index_impl(widget_id)
+    }
+    fn set_widget_checked(&self, widget_id: u64, checked: bool) -> bool {
+        self.set_widget_checked_impl(widget_id, checked)
+    }
+    fn is_widget_checked(&self, widget_id: u64) -> Option<bool> {
+        self.is_widget_checked_impl(widget_id)
+    }
+    fn set_widget_step(&self, widget_id: u64, step: f64) -> bool {
+        self.set_widget_step_impl(widget_id, step)
+    }
+    fn widget_step(&self, widget_id: u64) -> Option<f64> {
+        self.widget_step_impl(widget_id)
+    }
+    fn set_widget_indeterminate(&self, widget_id: u64, indeterminate: bool) -> bool {
+        self.set_widget_indeterminate_impl(widget_id, indeterminate)
+    }
+    fn is_widget_indeterminate(&self, widget_id: u64) -> Option<bool> {
+        self.is_widget_indeterminate_impl(widget_id)
+    }
+    fn set_widget_read_only(&self, widget_id: u64, read_only: bool) -> bool {
+        self.set_widget_read_only_impl(widget_id, read_only)
+    }
+    fn is_widget_read_only(&self, widget_id: u64) -> Option<bool> {
+        self.is_widget_read_only_impl(widget_id)
+    }
+    fn set_widget_max_length(&self, widget_id: u64, max_length: u32) -> bool {
+        self.set_widget_max_length_impl(widget_id, max_length)
+    }
+    fn widget_max_length(&self, widget_id: u64) -> Option<u32> {
+        self.widget_max_length_impl(widget_id)
     }
     fn set_widget_ime_enabled(&self, widget_id: u64, enabled: bool) -> bool {
         self.set_widget_ime_enabled_impl(widget_id, enabled)

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 use super::types::{parse_shortcut, submenu_id, MacOSObjc2Platform, MacObjc2HandleKind};
 use crate::core::ObjectId;
 use crate::core::PlatformFamily;

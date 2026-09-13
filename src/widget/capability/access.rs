@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Generic read/write property dispatch for all widget kinds.
 //!
 //! [`read_widget_property_value`] and [`write_widget_property_value`] are the

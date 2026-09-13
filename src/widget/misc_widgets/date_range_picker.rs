@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! DateRangePicker widget — a calendar-based date range selection widget.
 //!
 //! The DateRangePicker displays a calendar month grid where users click to

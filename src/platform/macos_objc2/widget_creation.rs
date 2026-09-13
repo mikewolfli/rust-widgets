@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Widget creation helpers for the macOS objc2 backend.
 //!
 //! Provides high-level orchestration functions that coordinate between

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Value types shared by the code editor submodules.
 //!
 //! Everything here is plain data: no editor logic, no rendering, no I/O. This

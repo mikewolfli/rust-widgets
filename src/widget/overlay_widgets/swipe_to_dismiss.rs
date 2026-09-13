@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! SwipeToDismiss — swipe-to-dismiss/delete gesture widget.
 //!
 //! Wraps a child widget that can be swiped left/right to reveal an action

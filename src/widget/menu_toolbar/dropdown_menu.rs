@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! DropdownMenu widget — a cascading/linked dropdown selector.
 //!
 //! The DropdownMenu displays a text field with a dropdown arrow. When clicked,

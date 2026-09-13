@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! CupertinoNavigationBar — iOS-style large title navigation bar.
 //!
 //! An iOS-style navigation bar with optional large title (similar to the

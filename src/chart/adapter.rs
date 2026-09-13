@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Adapter that presents a widget-facing [`RenderContext`] as a chart-facing
 //! [`ChartContext`].
 //!

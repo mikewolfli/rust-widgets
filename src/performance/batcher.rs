@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Update batching for coallescing frame updates.
 use super::region::DirtyRegionTracker;
 use crate::compat::Instant;

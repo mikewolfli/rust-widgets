@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! macOS NSAccessibility protocol bridge.
 //!
 //! Exposes widget information to VoiceOver and other assistive technologies

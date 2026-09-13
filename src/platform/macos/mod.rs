@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! macOS platform backend implementation using Cocoa (legacy).
 //!
 //! This module is compiled only when the `cocoa-legacy` feature is enabled.

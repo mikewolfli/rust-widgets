@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! TabView widget — iOS-style segmented tab page view.
 //!
 //! Displays a horizontal segmented tab bar at the top and a content area

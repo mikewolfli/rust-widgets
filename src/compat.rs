@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! BLUE13 Phase 3: Alloc bridge — unified imports for std and no_std.
 //!
 //! All crate files should import common types from here instead of `std`

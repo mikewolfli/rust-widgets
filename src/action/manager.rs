@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 use super::{normalize_shortcut, Action, ActionBinding, ActionHostKind};
 use crate::compat::HashMap;
 use crate::core::ObjectId;

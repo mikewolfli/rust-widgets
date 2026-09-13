@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Software rendering primitives: rect, rounded rect, circle, line, arc, path,
 //! polygon, triangle, text, and image drawing methods.
 //!

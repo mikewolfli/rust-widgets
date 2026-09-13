@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Hardware-adaptive GPU manager with automatic device selection and fallback.
 //!
 //! This module provides a unified interface for GPU management that:

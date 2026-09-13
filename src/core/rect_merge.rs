@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Rect merging algorithms — canonical implementations for combining overlapping
 //! rectangles into minimal covering sets.
 //!

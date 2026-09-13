@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! WizardDialog widget — a step-by-step wizard control with back/next/finish navigation.
 //!
 //! Displays a step indicator at the top (numbered circles), a content area with the

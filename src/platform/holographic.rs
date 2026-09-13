@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Laser holographic keyboard interaction (BLUE8 P4-5a, experimental).
 //!
 //! This module provides a state machine that simulates a laser-projected

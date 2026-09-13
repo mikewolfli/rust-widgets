@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! TileView widget — swipeable tiled page view (BLUE13 R2.8).
 //!
 //! A `TileView` displays one page (tile) at a time with horizontal swipe

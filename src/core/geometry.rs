@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 /// Two-dimensional point in logical pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Point {

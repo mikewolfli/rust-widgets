@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! NavigationStack widget — a push/pop page navigation container.
 //!
 //! The NavigationStack widget manages a stack of pages (widgets) and displays the

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! EmptyState widget — a placeholder shown when a view has no content.
 //!
 //! The EmptyState widget displays a large icon (emoji/symbol), title, descriptive

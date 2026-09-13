@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Mock/test implementation of the `ControlBackend` trait (BLUE11 R9.1).
 
 use super::trait_def::ControlBackend;

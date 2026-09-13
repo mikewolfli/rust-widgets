@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Center layout manager — centers a single child within the available area.
 //!
 //! The child is positioned at the visual center of the parent rect. Optional

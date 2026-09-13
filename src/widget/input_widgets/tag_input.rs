@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! TagInput widget — a text input that creates tags/chips on Enter or comma, with removable tags.
 //!
 //! The TagInput presents a text field where the user types tag text, pressing Enter or comma

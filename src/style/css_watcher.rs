@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! CSS file watcher for hot-reloading stylesheets (BLUE13 R1.7).
 //!
 //! A simple polling-based watcher that monitors a CSS file for changes

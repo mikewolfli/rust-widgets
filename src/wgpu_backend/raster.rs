@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! CPU rasterization helpers for WGPU backend.
 use super::commands::WgpuDrawCommand;
 use super::types::{PixelRect, Rgba8};

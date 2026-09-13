@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! `impl Platform for WindowsPlatform` — the main trait implementation.
 
 use crate::core::{ObjectId, PlatformFamily};
@@ -156,6 +159,354 @@ impl Platform for WindowsPlatform {
         }
         self.state.visible(widget_id)
     }
+
+    fn set_widget_value(&self, widget_id: ObjectId, value: f64) -> bool {
+        // The kind gates the Win32 message: sending PBM_SETPOS to a BUTTON would
+        // be meaningless. Gate on the *recorded* kind so the decision is testable
+        // on non-Windows hosts too.
+        let Some(kind) = self.state.kind_of(widget_id) else {
+            return false;
+        };
+        if !WindowsPlatform::kind_accepts_numeric_value(kind) {
+            return false;
+        }
+        self.state.set_value(widget_id, value);
+        #[cfg(target_os = "windows")]
+        {
+            use winapi::um::commctrl::{PBM_SETPOS, TBM_SETPOS, UDM_SETPOS32};
+            use winapi::um::winuser::SendMessageW;
+            if let Some(hwnd) = self.get_native_handle(widget_id) {
+                match kind {
+                    // Trackbar and up-down are common controls; the message differs
+                    // per class, so the recorded kind picks it. `wparam` is `usize`
+                    // and `lparam` is `isize` in the Win32 ABI.
+                    super::types::WindowsHandleKind::Slider => unsafe {
+                        SendMessageW(hwnd, TBM_SETPOS, 1, value.round() as isize);
+                    },
+                    super::types::WindowsHandleKind::SpinBox
+                    | super::types::WindowsHandleKind::DoubleSpinBox => unsafe {
+                        SendMessageW(hwnd, UDM_SETPOS32, 0, value.round() as isize);
+                    },
+                    _ => unsafe {
+                        SendMessageW(hwnd, PBM_SETPOS, value.round() as usize, 0);
+                    },
+                }
+            }
+        }
+        true
+    }
+
+    fn widget_value(&self, widget_id: ObjectId) -> Option<f64> {
+        let kind = self.state.kind_of(widget_id)?;
+        if !WindowsPlatform::kind_accepts_numeric_value(kind) {
+            return None;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use winapi::um::commctrl::{PBM_GETPOS, TBM_GETPOS, UDM_GETPOS32};
+            use winapi::um::winuser::SendMessageW;
+            if let Some(hwnd) = self.get_native_handle(widget_id) {
+                let raw = match kind {
+                    super::types::WindowsHandleKind::Slider => unsafe {
+                        SendMessageW(hwnd, TBM_GETPOS, 0, 0)
+                    },
+                    super::types::WindowsHandleKind::SpinBox
+                    | super::types::WindowsHandleKind::DoubleSpinBox => unsafe {
+                        SendMessageW(hwnd, UDM_GETPOS32, 0, 0)
+                    },
+                    _ => unsafe { SendMessageW(hwnd, PBM_GETPOS, 0, 0) },
+                };
+                return Some(raw as f64);
+            }
+        }
+        self.state.value(widget_id)
+    }
+
+    fn set_widget_range(&self, widget_id: ObjectId, min: f64, max: f64) -> bool {
+        let Some(kind) = self.state.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(
+            kind,
+            super::types::WindowsHandleKind::Slider
+                | super::types::WindowsHandleKind::SpinBox
+                | super::types::WindowsHandleKind::DoubleSpinBox
+        ) {
+            return false;
+        }
+        self.state.set_range(widget_id, min, max);
+        #[cfg(target_os = "windows")]
+        {
+            use winapi::um::commctrl::{PBM_SETRANGE32, TBM_SETRANGE, UDM_SETRANGE32};
+            use winapi::um::winuser::SendMessageW;
+            if let Some(hwnd) = self.get_native_handle(widget_id) {
+                let min_i = min.round() as isize;
+                let max_i = max.round() as isize;
+                match kind {
+                    super::types::WindowsHandleKind::Slider => unsafe {
+                        // TBM_SETRANGE takes `(min << 16) | max` in lParam, so each
+                        // bound is a 16-bit signed value — enough for every slider
+                        // range used in this crate, and it is what the native
+                        // trackbar stores.
+                        let lo = (min_i as i16 as u16) as isize;
+                        let hi = (max_i as i16 as u16) as isize;
+                        let packed = (lo << 16) | (hi & 0xFFFF);
+                        SendMessageW(hwnd, TBM_SETRANGE, 1, packed);
+                    },
+                    super::types::WindowsHandleKind::SpinBox => unsafe {
+                        SendMessageW(hwnd, UDM_SETRANGE32, min_i as usize, max_i);
+                    },
+                    _ => unsafe {
+                        SendMessageW(hwnd, PBM_SETRANGE32, min_i as usize, max_i);
+                    },
+                }
+            }
+        }
+        true
+    }
+
+    fn widget_range(&self, widget_id: ObjectId) -> Option<(f64, f64)> {
+        let kind = self.state.kind_of(widget_id)?;
+        if !matches!(
+            kind,
+            super::types::WindowsHandleKind::Slider
+                | super::types::WindowsHandleKind::SpinBox
+                | super::types::WindowsHandleKind::DoubleSpinBox
+        ) {
+            return None;
+        }
+        self.state.range(widget_id)
+    }
+
+    fn set_widget_selected_index(&self, widget_id: ObjectId, index: Option<usize>) -> bool {
+        let Some(kind) = self.state.kind_of(widget_id) else {
+            return false;
+        };
+        let Some(selected) = index else {
+            // Win32 combo/list boxes always have a valid selection (index 0 after
+            // items exist); a true "no selection" state is not representable, so
+            // report the limitation instead of faking it (principle #37).
+            return false;
+        };
+        match kind {
+            super::types::WindowsHandleKind::ComboBox
+            | super::types::WindowsHandleKind::FontComboBox => {
+                self.combo_box_set_current_index(widget_id, selected)
+            }
+            super::types::WindowsHandleKind::ListBox => {
+                self.list_box_set_current_index(widget_id, selected)
+            }
+            _ => false,
+        }
+    }
+
+    fn widget_selected_index(&self, widget_id: ObjectId) -> Option<usize> {
+        match self.state.kind_of(widget_id)? {
+            super::types::WindowsHandleKind::ComboBox
+            | super::types::WindowsHandleKind::FontComboBox => {
+                self.combo_box_current_index(widget_id)
+            }
+            super::types::WindowsHandleKind::ListBox => self.list_box_current_index(widget_id),
+            _ => None,
+        }
+    }
+
+    fn set_widget_checked(&self, widget_id: ObjectId, checked: bool) -> bool {
+        let Some(kind) = self.state.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(
+            kind,
+            super::types::WindowsHandleKind::CheckBox
+                | super::types::WindowsHandleKind::RadioButton
+                | super::types::WindowsHandleKind::ToggleButton
+        ) {
+            return false;
+        }
+        self.state.set_checked(widget_id, checked);
+        #[cfg(target_os = "windows")]
+        {
+            use winapi::um::winuser::{SendMessageW, BM_SETCHECK, BST_CHECKED, BST_UNCHECKED};
+            if let Some(hwnd) = self.get_native_handle(widget_id) {
+                let state = if checked { BST_CHECKED } else { BST_UNCHECKED } as usize;
+                unsafe {
+                    SendMessageW(hwnd, BM_SETCHECK, state, 0);
+                }
+            }
+        }
+        true
+    }
+
+    fn is_widget_checked(&self, widget_id: ObjectId) -> Option<bool> {
+        let kind = self.state.kind_of(widget_id)?;
+        if !matches!(
+            kind,
+            super::types::WindowsHandleKind::CheckBox
+                | super::types::WindowsHandleKind::RadioButton
+                | super::types::WindowsHandleKind::ToggleButton
+        ) {
+            return None;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use winapi::um::winuser::{SendMessageW, BM_GETCHECK, BST_CHECKED};
+            if let Some(hwnd) = self.get_native_handle(widget_id) {
+                let state = unsafe { SendMessageW(hwnd, BM_GETCHECK, 0, 0) };
+                return Some(state == BST_CHECKED as isize);
+            }
+        }
+        self.state.checked(widget_id)
+    }
+
+    fn set_widget_step(&self, widget_id: ObjectId, step: f64) -> bool {
+        let Some(kind) = self.state.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(
+            kind,
+            super::types::WindowsHandleKind::Slider
+                | super::types::WindowsHandleKind::SpinBox
+                | super::types::WindowsHandleKind::DoubleSpinBox
+        ) {
+            return false;
+        }
+        self.state.set_step(widget_id, step);
+        #[cfg(target_os = "windows")]
+        {
+            use winapi::um::commctrl::{TBM_SETLINESIZE, UDM_SETACCEL};
+            use winapi::um::winuser::SendMessageW;
+            if let Some(hwnd) = self.get_native_handle(widget_id) {
+                match kind {
+                    super::types::WindowsHandleKind::Slider => unsafe {
+                        SendMessageW(hwnd, TBM_SETLINESIZE, 0, step.round() as isize);
+                    },
+                    // The up-down's stride is expressed through an acceleration
+                    // table; a single-entry table gives a constant step.
+                    _ => unsafe {
+                        use winapi::um::commctrl::UDACCEL;
+                        let mut accel: [UDACCEL; 1] = std::mem::zeroed();
+                        accel[0].nInc = step.round().clamp(1.0, 65535.0) as u32;
+                        accel[0].nSec = 0;
+                        SendMessageW(hwnd, UDM_SETACCEL, 1, accel.as_mut_ptr() as isize);
+                    },
+                }
+            }
+        }
+        true
+    }
+
+    fn widget_step(&self, widget_id: ObjectId) -> Option<f64> {
+        let kind = self.state.kind_of(widget_id)?;
+        if !matches!(
+            kind,
+            super::types::WindowsHandleKind::Slider
+                | super::types::WindowsHandleKind::SpinBox
+                | super::types::WindowsHandleKind::DoubleSpinBox
+        ) {
+            return None;
+        }
+        self.state.step(widget_id)
+    }
+
+    fn set_widget_indeterminate(&self, widget_id: ObjectId, indeterminate: bool) -> bool {
+        let Some(kind) = self.state.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(
+            kind,
+            super::types::WindowsHandleKind::ProgressBar
+                | super::types::WindowsHandleKind::ActivityIndicator
+                | super::types::WindowsHandleKind::ProgressDialog
+        ) {
+            return false;
+        }
+        self.state.set_indeterminate(widget_id, indeterminate);
+        #[cfg(target_os = "windows")]
+        {
+            use winapi::um::commctrl::PBM_SETMARQUEE;
+            use winapi::um::winuser::SendMessageW;
+            if let Some(hwnd) = self.get_native_handle(widget_id) {
+                // `PBM_SETMARQUEE` starts/stops the marquee animation; the control
+                // must have been created with `PBS_MARQUEE` for it to take effect.
+                let start = if indeterminate { 1usize } else { 0usize };
+                unsafe {
+                    SendMessageW(hwnd, PBM_SETMARQUEE, start, 30);
+                }
+            }
+        }
+        true
+    }
+
+    fn is_widget_indeterminate(&self, widget_id: ObjectId) -> Option<bool> {
+        let kind = self.state.kind_of(widget_id)?;
+        if !matches!(
+            kind,
+            super::types::WindowsHandleKind::ProgressBar
+                | super::types::WindowsHandleKind::ActivityIndicator
+                | super::types::WindowsHandleKind::ProgressDialog
+        ) {
+            return None;
+        }
+        self.state.indeterminate(widget_id)
+    }
+
+    fn set_widget_read_only(&self, widget_id: ObjectId, read_only: bool) -> bool {
+        let Some(kind) = self.state.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(kind, super::types::WindowsHandleKind::LineEdit) {
+            return false;
+        }
+        self.state.set_read_only(widget_id, read_only);
+        #[cfg(target_os = "windows")]
+        {
+            use winapi::um::winuser::{SendMessageW, EM_SETREADONLY};
+            if let Some(hwnd) = self.get_native_handle(widget_id) {
+                let flag = if read_only { 1usize } else { 0usize };
+                unsafe {
+                    SendMessageW(hwnd, EM_SETREADONLY as u32, flag, 0);
+                }
+            }
+        }
+        true
+    }
+
+    fn is_widget_read_only(&self, widget_id: ObjectId) -> Option<bool> {
+        let kind = self.state.kind_of(widget_id)?;
+        if !matches!(kind, super::types::WindowsHandleKind::LineEdit) {
+            return None;
+        }
+        self.state.read_only(widget_id)
+    }
+
+    fn set_widget_max_length(&self, widget_id: ObjectId, max_length: u32) -> bool {
+        let Some(kind) = self.state.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(kind, super::types::WindowsHandleKind::LineEdit) {
+            return false;
+        }
+        self.state.set_max_length(widget_id, max_length);
+        #[cfg(target_os = "windows")]
+        {
+            use winapi::um::winuser::{SendMessageW, EM_SETLIMITTEXT};
+            if let Some(hwnd) = self.get_native_handle(widget_id) {
+                unsafe {
+                    SendMessageW(hwnd, EM_SETLIMITTEXT as u32, max_length as usize, 0);
+                }
+            }
+        }
+        true
+    }
+
+    fn widget_max_length(&self, widget_id: ObjectId) -> Option<u32> {
+        let kind = self.state.kind_of(widget_id)?;
+        if !matches!(kind, super::types::WindowsHandleKind::LineEdit) {
+            return None;
+        }
+        self.state.max_length(widget_id)
+    }
+
     fn backend_name(&self) -> &'static str {
         "WindowsPlatform"
     }
@@ -2499,6 +2850,27 @@ impl Platform for WindowsPlatform {
 
 #[cfg(target_os = "windows")]
 impl WindowsPlatform {
+    /// Whether this Win32 handle kind carries a primary numeric value.
+    ///
+    /// This is the backend's own answer about the controls it creates — each
+    /// value-carrying kind maps to a different common control (trackbar, progress
+    /// bar, up-down) and therefore a different message. It gates
+    /// `PBM_SETPOS` / `TBM_SETPOS` / `UDM_SETPOS32` before they are sent and keeps
+    /// `widget_value` from inventing a value for a control that has none.
+    fn kind_accepts_numeric_value(kind: super::types::WindowsHandleKind) -> bool {
+        use super::types::WindowsHandleKind as K;
+        matches!(
+            kind,
+            K::Slider
+                | K::ProgressBar
+                | K::SpinBox
+                | K::DoubleSpinBox
+                | K::ScrollBar
+                | K::ActivityIndicator
+                | K::ProgressDialog
+        )
+    }
+
     /// Offers a message to the accelerator table of the currently active window.
     ///
     /// Returns `true` when an accelerator matched, in which case the message has

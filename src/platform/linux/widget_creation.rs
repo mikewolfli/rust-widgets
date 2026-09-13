@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 use super::types::{LinuxHandleKind, LinuxPlatform, ListData};
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]
 use crate::core::MutexExt;

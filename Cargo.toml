@@ -504,3 +504,10 @@ path = "tools/widget_gallery.rs"
 [[example]]
 name = "menu_shortcut_runtime"
 required-features = ["desktop"]
+
+# `control_property_uniform` drives `rust_widgets::app` and the platform
+# singleton, both of which require a device profile with a real backend. Declare
+# the requirement so a stripped profile skips it instead of failing to build it.
+[[example]]
+name = "control_property_uniform"
+required-features = ["desktop"]

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Unified incremental data source protocol for modern data views.
 //!
 //! BLUE9 R3 groundwork: provides a common pull-based window API that can back

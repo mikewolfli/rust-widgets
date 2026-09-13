@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Unified control backend contract — split into trait definition and mock implementations.
 //!
 //! This module is split from the original monolithic `trait_def.rs` (1730 lines, BLUE11 R9.1):

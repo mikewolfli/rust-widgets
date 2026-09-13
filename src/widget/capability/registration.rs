@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Core widget registration — registers all 64 widget kinds in the factory.
 //!
 //! This module defines `register_core_widgets` which is called from

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Undo/Redo framework — generic undo stack supporting commands, grouping,
 //! and cross-widget undo/redo operations.
 

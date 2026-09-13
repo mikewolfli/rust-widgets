@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Harmony desktop backend shell.
 use super::super::WidgetTriggerEvent;
 use crate::compat::HashMap;

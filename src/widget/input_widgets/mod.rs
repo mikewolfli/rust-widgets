@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Input widgets: text editors, combo boxes, spin boxes, etc.
 #[cfg(not(any(feature = "mini", feature = "embedded")))]
 pub mod auto_complete_edit;

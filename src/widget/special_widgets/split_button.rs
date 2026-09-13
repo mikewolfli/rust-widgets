@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! SplitButton widget with primary action and drop-down action list.
 
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};

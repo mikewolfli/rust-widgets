@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Meter widget — gauge with arc and needle indicator (BLUE13 R2.14).
 //!
 //! A simplified gauge/indicator widget that draws a 270° arc (starting from

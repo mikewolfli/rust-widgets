@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! RangeSlider widget — a dual-handle slider for selecting a numeric range.
 //!
 //! The RangeSlider widget provides two draggable handles on a horizontal or

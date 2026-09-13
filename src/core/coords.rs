@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 use super::{Point, Rect};
 /// Converts a Y coordinate from Cartesian (bottom-left origin) to screen (top-left origin).
 #[inline]

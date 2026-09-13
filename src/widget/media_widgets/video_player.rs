@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! VideoPlayer — simulated video player widget (self-drawn UI, no media engine).
 //!
 //! This is a simulation/preview component: it draws a player UI (video area

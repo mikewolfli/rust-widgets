@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! QRCode widget — displays a simple QR code pattern generated from a data string.
 //!
 //! This widget renders a deterministic black/white matrix by hashing the input

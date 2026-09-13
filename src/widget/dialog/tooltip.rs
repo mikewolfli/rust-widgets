@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Tooltip widget — a popup label that appears on hover for context info.
 //!
 //! The Tooltip widget displays a short text label near a target widget when the

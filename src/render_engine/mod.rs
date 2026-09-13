@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Render engine module providing native and embedded rendering backends.
 //!
 //! This module contains the engine trait contract (`EngineTrait`) and concrete

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! PropertyGrid widget — a two-column property editor table (inspector-style).
 //!
 //! Displays key-value pairs in a two-column layout similar to VS/Unity Inspector:

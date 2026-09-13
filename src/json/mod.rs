@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Declarative JSON window engine — **PC/Desktop path**.
 //!
 //! This module provides runtime construction of widget trees from JSON

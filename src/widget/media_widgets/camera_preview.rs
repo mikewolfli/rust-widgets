@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! CameraPreview widget — self-drawn simulated camera viewfinder preview.
 //!
 //! This is a simulated preview component: it never opens or reads from a real

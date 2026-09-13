@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! ColorHistory widget — a compact color history picker for design tools.
 //!
 //! Displays a grid of recently used color swatches. Supports adding colors,

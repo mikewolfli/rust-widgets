@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Dial (knob) widget.
 use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};

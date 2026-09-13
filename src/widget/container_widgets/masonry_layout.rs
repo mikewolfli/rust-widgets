@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! MasonryLayout widget — a Pinterest-style waterfall grid layout.
 //!
 //! Items are arranged in a vertical waterfall across a configurable number of

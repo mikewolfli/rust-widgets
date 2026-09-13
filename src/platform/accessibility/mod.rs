@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Platform accessibility bridges (macOS NSAccessibility, Windows UIAutomation, Linux AT-SPI).
 //!
 //! This module provides the foundation for OS-level accessibility integration.

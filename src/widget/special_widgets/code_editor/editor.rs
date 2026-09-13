@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! The [`CodeEditor`] widget: state machine, editing commands and input plumbing.
 
 use super::buffer::{join_lines, split_lines, EditorModel};

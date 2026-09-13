@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! FindReplaceDialog widget — a find/replace dialog (like VS Code/IDE find).
 //!
 //! Provides a two-row dialog with find and replace input fields, toggle

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Web capabilities module — provides web view, web engine, navigation, history,
 //! JavaScript bridge, privacy controls, and plugin management.
 mod history;

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Java JNI bridge for desktop/mobile — delegates to the C ABI layer.
 //!
 //! Each `#[no_mangle] pub extern "system"` function follows the JNI

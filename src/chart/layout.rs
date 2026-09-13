@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Chart layout manager that positions a chart widget to fill available space.
 //!
 //! `ChartLayout` is a simple single-child layout that places a chart widget

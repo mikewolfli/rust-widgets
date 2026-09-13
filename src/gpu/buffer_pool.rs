@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
 //! Hardware-adaptive buffer pool management for GPU/CPU rendering.
 //!
 //! This module provides a ring buffer-based staging buffer pool that automatically
