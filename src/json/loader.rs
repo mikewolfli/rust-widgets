@@ -526,15 +526,9 @@ impl JsonLoader {
                 if let Some(mode) = obj.get("selection_mode").and_then(|v| v.as_str()) {
                     match mode {
                         "none" => lb.set_selection_mode(crate::widget::SelectionMode::None),
-                        "single" => {
-                            lb.set_selection_mode(crate::widget::SelectionMode::Single)
-                        }
-                        "multi" => {
-                            lb.set_selection_mode(crate::widget::SelectionMode::Multi)
-                        }
-                        "extended" => {
-                            lb.set_selection_mode(crate::widget::SelectionMode::Extended)
-                        }
+                        "single" => lb.set_selection_mode(crate::widget::SelectionMode::Single),
+                        "multi" => lb.set_selection_mode(crate::widget::SelectionMode::Multi),
+                        "extended" => lb.set_selection_mode(crate::widget::SelectionMode::Extended),
                         // Unknown value; use widget default
                         _ => {}
                     }

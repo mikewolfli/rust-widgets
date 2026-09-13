@@ -80,6 +80,15 @@ fn floor_char_boundary(s: &str, index: usize) -> usize {
 }
 
 /// A single shortcut entry in the editor.
+///
+/// # Not the same as [`crate::shortcut::ShortcutEntry`]
+///
+/// Both are called `ShortcutEntry` but model different things (principle #49):
+///
+/// * this one — a **row in the editor UI**, carrying editable fields (default
+///   keys, category, whether the user may rebind it);
+/// * the registered binding — which action a shortcut fires, and whether it is
+///   currently active.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShortcutEntry {
     /// Unique identifier for this shortcut.

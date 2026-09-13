@@ -584,7 +584,16 @@ impl std::ops::BitOrAssign for Modifiers {
         self.0 |= rhs.0;
     }
 }
-/// Entry in the shortcut registry.
+/// A shortcut binding registered in the global shortcut system.
+///
+/// # Not the same as [`crate::widget::input_widgets::shortcut_editor::ShortcutEntry`]
+///
+/// Both are called `ShortcutEntry` but model different things (principle #49):
+///
+/// * this one — a **registered binding**: which action a shortcut fires, and
+///   whether it is currently active;
+/// * the editor's entry — a **row in the editor UI**, carrying editable fields
+///   (default keys, category, whether the user may rebind it).
 #[derive(Debug, Clone)]
 pub struct ShortcutEntry {
     /// Unique identifier for the action.

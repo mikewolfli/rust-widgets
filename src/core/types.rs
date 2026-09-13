@@ -160,7 +160,16 @@ impl Display for Version {
         write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
     }
 }
-/// Platform capabilities descriptor.
+/// Hardware facts about the host, probed once at startup.
+///
+/// # Not the same as [`crate::platform::PlatformCapabilities`]
+///
+/// Both are called `PlatformCapabilities` but describe different things
+/// (principle #49):
+///
+/// * this one — **what the machine has** (GPU, touch, screen size, DPI);
+/// * [`crate::platform::PlatformCapabilities`] — **what the active backend can
+///   do** (IME, accessibility bridge, native menus, typed trigger events).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlatformCapabilities {
     pub has_gpu: bool,
