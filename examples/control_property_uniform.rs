@@ -29,7 +29,7 @@
 //! per-OS capability difference — the *call* is still identical everywhere.
 
 use rust_widgets::app::{App, CheckBoxHandle, WidgetHandle};
-use rust_widgets::core::ObjectId;
+use rust_widgets::core::{ObjectId, Orientation};
 use rust_widgets::platform::{get_platform, EchoMode};
 use rust_widgets::WindowStateFlag;
 
@@ -111,6 +111,23 @@ fn main() {
 
     let no_echo = platform.set_widget_echo_mode(entry, EchoMode::NoEcho);
     println!("lineedit NoEcho     -> {no_echo} (no toolkit has this; must be false)");
+
+    // ── The four gaps closed in this round ───────────────────────────────
+    let slider2 = platform.create_slider(parent, 20, 300, 200, 24);
+    let vert = platform.set_slider_orientation(slider2, Orientation::Vertical);
+    println!("slider  vertical    -> {vert}/{:?}", platform.slider_orientation(slider2));
+
+    let check = platform.create_checkbox(parent, "tri", 20, 330, 160, 24);
+    let tri = platform.set_widget_tristate(check, true);
+    println!("checkbox tristate   -> {tri}/{:?}", platform.is_widget_tristate(check));
+
+    let radio = platform.create_radio_button(parent, "opt", 20, 360, 120, 24);
+    let grp = platform.set_widget_group(radio, "opts");
+    println!("radio   group opts  -> {grp}/{:?}", platform.widget_group(radio));
+
+    let area = platform.create_scroll_area(parent, 20, 390, 200, 100);
+    let scrolled = platform.set_widget_scroll_position(area, 10, 20);
+    println!("scroll  set (10,20) -> {scrolled}/{:?}", platform.widget_scroll_position(area));
 
     // ── Window state: the same call shape as every other property ────────
     for flag in [

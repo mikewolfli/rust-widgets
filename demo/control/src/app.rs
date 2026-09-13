@@ -135,11 +135,13 @@ fn build_all_controls(win: &WindowHandle, log: &Arc<EventLog>) {
     // ── Row 3: Range Controls ────────────────────────────────────────
     log.append("═══ Row: Range Controls ═══");
 
-    let sl = win.new_slider(20, 220, 300, 40);
+    // Orientation is a creation-time property on every native toolkit (Win32 has
+    // no runtime message for it), so it is passed at construction instead of being
+    // set afterwards.
+    let sl = win.new_slider_with_orientation(Orientation::Horizontal, 20, 220, 300, 40);
     sl.set_range(0, 100);
     sl.set_value(50);
     sl.set_step(5);
-    sl.set_orientation(Orientation::Horizontal);
     let l = Arc::clone(log);
     let sl2 = sl.clone();
     sl2.on_value_changed(move |_val: String| {
@@ -251,7 +253,7 @@ fn build_self_drawn_controls(win: &WindowHandle, log: &Arc<EventLog>) {
 pub fn run() {
     println!();
     println!("╔══════════════════════════════════════════════════════════╗");
-    println!("║     rust_widgets  —  Controls Demo v1.1.2             ║");
+    println!("║     rust_widgets  —  Controls Demo v1.1.3             ║");
     println!("║     App 框架 · 原生窗口 · 实时事件日志                  ║");
     println!("╚══════════════════════════════════════════════════════════╝");
     println!();

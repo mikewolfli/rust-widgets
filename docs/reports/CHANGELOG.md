@@ -2,6 +2,133 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.1.3 (2026-09-13) — Unified Native-Control Property API Release
+
+A feature release that closes the gap between "native controls exist" and "native controls are
+usable without writing per-OS code". Before it, the only OS-independent way to reach a control's
+state was `set_widget_text` — lossy for anything whose payload is not its display text, and
+unavailable for selection indices, ranges, busy states or window attributes. Each round of work
+was verified by compilation on every target, by tests whose teeth were proven with negative
+controls, and by a runtime probe on the real Cocoa backend.
+
+### Added — one property API, every OS
+
+`Platform` gained 36 semantic property methods, matched by 45 crate-root functions, 41
+`WidgetHandle` trait methods, and implementations in every backend (macOS/AppKit, Windows/Win32,
+Linux/GTK, and the state-only stub/mobile/wasm paths). Nothing at the call site branches on the OS.
+
+| Group | Capability |
+|---|---|
+| Value controls | `set_widget_value` / `widget_value`, `set_widget_range` / `widget_range`, `set_widget_step` / `widget_step` |
+| Selection | `set_widget_selected_index` / `widget_selected_index`, `set_widget_group` / `widget_group` |
+| Checkable | `set_widget_checked` / `is_widget_checked`, `set_widget_tristate` / `is_widget_tristate` |
+| Progress | `set_widget_indeterminate` / `is_widget_indeterminate` |
+| Text entry | `set_widget_read_only` / `is_widget_read_only`, `set_widget_max_length` / `widget_max_length`, `set_widget_placeholder` / `widget_placeholder`, `set_widget_echo_mode` / `widget_echo_mode`, `set_widget_selection` / `widget_selection` |
+| Window | `set_window_state` / `is_window_in_state`, `set_window_min_size` / `window_min_size`, `set_window_icon` / `window_icon` |
+| Slider | `set_slider_orientation` / `slider_orientation` (creation-time; see below) |
+| Scroll | `set_widget_scroll_position` / `widget_scroll_position` |
+
+New public types: `WindowStateFlag` (an enum instead of five booleans, so a backend dispatches
+with `match` rather than a chain of `if`/`else`), `WindowStateRecord`, and `EchoMode` moved from
+`app` to `platform` so backends can name it without inverting the layering (`app` re-exports it,
+so existing import paths keep working).
+
+### Design decision — unify the call shape, not the capabilities
+
+A control may carry a value on one OS and not on another; that is a genuine platform difference,
+not a defect. The defaults return `false` / `None` — never a made-up value — so a backend that has
+no such property reports it as *absent*, and the caller branches on the result at runtime if it
+cares. Every refusal carries a doc comment explaining which toolkit limit causes it:
+
+| Refused | Why |
+|---|---|
+| macOS placeholder / echo-mode | The macOS line edit is an `NSTextView`; `placeholderString` and `NSSecureTextField` belong to the `NSTextField` family, and changing class would rebuild the view (out of scope for an attribute write) |
+| `NoEcho` on all three desktops | AppKit, Win32 and GTK each expose a mask character but no "echo nothing" mode |
+| `set_widget_max_length` on macOS | `NSTextField` has no direct limit (it is enforced via a delegate) |
+| Slider orientation on Win32 | `TBS_VERT` is a creation style; the full `TBM_*` message set has no orientation message |
+
+### Changed
+
+- **`SliderHandle::set_orientation` removed; orientation is now creation-time.** It was a setter
+  that could not be honoured on two of three toolkits, which is exactly the kind of lie this release
+  removes. Use `WindowHandle::new_slider_with_orientation(...)` (applies the orientation in one call
+  on every OS) and read it back with `SliderHandle::orientation()`. The only in-tree caller
+  (`demo/control`) was updated.
+- `EchoMode` is now defined in `platform` and re-exported from `app`; `use rust_widgets::app::EchoMode`
+  continues to compile.
+
+### Fixed — macOS
+
+- **20 `create_*` constructors registered no handle.** `list_view`, `group_box`, `frame`,
+  `tab_widget`, `splitter`, `toggle_button`, `calendar`, `scroll_bar`, `double_spin_box`,
+  `font_combo_box`, `context_menu`, `popup_window`, `dialog`, `input_dialog`, `progress_dialog`,
+  `directory_dialog`, `date_picker`, `time_picker`, `date_time_picker` and `activity_indicator`
+  called `state.create_widget` but never registered a handle, so every handle-gated property
+  refused with "unknown id" — while the constructor still returned a non-zero id, and purely
+  state-backed reads (text, visibility) kept working. All 20 now use `register_state_only_handle`.
+- **Full-screen could not be turned off.** The guard compared the request against `styleMask`,
+  which is still the pre-transition value while `toggleFullScreen:` animates, so `on == false`
+  never sent the toggle.
+- **`minimized` and `fullscreen` always read back stale.** Both transitions complete on the run
+  loop, so an immediate read returned the old value. Reads now prefer the recorded request until
+  the native state agrees, then trust the native query — so a user-initiated change is still seen.
+- **`create_spin_box` registered no handle** (same class as the 20 above), so its value API
+  refused.
+- **`create_line_edit` builds an `NSTextView` with `setEditable: NO`**, i.e. macOS line edits start
+  read-only. The state model now records that so `is_widget_read_only` reports the control's real
+  state instead of the cross-platform default.
+
+### Fixed — Windows
+
+- `SendMessageW` argument widths corrected throughout the new code (`wparam: usize`, `lparam: isize`).
+- `TBS_VERT` sourced from `commctrl` (not `winuser`); `SetScrollPos`/`GetScrollPos` take `c_int`.
+- Scroll areas are created as `Static` windows carrying `WS_HSCROLL | WS_VSCROLL`, so `WM_GETMINMAXINFO`
+  is routed through the real window procedure to enforce a window minimum size (Win32 has no setter).
+
+### Fixed — Linux (GTK)
+
+- `hadjustment()`/`vadjustment()` return an `Adjustment`, not an `Option` (GTK synthesises one);
+  the first version unwrapped an `Option` that never existed.
+- GTK 0.18 exposes `fullscreen()`/`unfullscreen()` but **no** `is_fullscreen()`, and no
+  `is_iconified()`; those reads are served from the state model rather than inventing a
+  `GdkWindow` query.
+
+### Fixed — process
+
+- **A regression test that could not fail was caught and fixed.** The first macOS guard for the 20
+  missing handles asserted `set_widget_text` → `get_widget_text` round-trip plus `is_widget_visible`.
+  A negative control (temporarily reverting one constructor) showed it still passed, because those
+  two properties read the state model directly and never consult the handle table. The test now
+  asserts handle registration itself, and the negative control fails loudly with the constructor's
+  name.
+
+### Tooling
+
+- `tools/add_spdx_headers.py` — idempotent SPDX header writer (`--check` supported).
+- `tools/gtk_property_check.py` — type-checks the Linux backend's GTK calls on a non-Linux host by
+  lifting the property accessors into a scratch crate against the real `gtk` 0.18. It found two
+  genuine defects this release (the `hadjustment` misuse and a duplicated function signature).
+- `examples/control_property_uniform.rs`, `examples/macos_window_state_async_probe.rs`,
+  `examples/macos_created_controls_are_usable.rs` — runtime probes for the new API, the AppKit
+  transition timing, and handle registration respectively.
+
+### Compatibility
+
+- **No ABI change**: `rw_bindings_api_version` remains `8`; no exported `rw_*` symbol changed.
+- One API shape change (slider orientation), with the replacement documented above and the sole
+  in-tree caller migrated.
+
+### Known issue (observed once, not reproduced)
+
+During the version bump, one combined invocation reported
+`test result: FAILED. 4004 passed; 1 failed` for the lib test binary. It has not reproduced in
+more than ten subsequent runs, including the exact concurrency condition (a `cargo clippy`
+contending for the build lock) and a forced full rebuild via `touch src/lib.rs`. No test asserts
+the crate version, so the bump cannot be the cause. The failure is recorded rather than dismissed:
+the suite contains tests backed by process-global state (the i18n manager, the platform singleton,
+the JS-engine setter), so an order- or timing-dependent flake remains plausible. It is **not**
+claimed fixed, and no test was changed to hide it.
+
 ## 1.1.2 (2026-09-12) — Platform Correctness & Unsafe-Surface Audit Release
 
 An audit-driven release. Work began as "complete the Apple-related items in `blue14.md`" and

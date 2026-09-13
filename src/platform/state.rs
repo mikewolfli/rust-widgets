@@ -6,6 +6,7 @@ use super::{DropEvent, EchoMode, WidgetTriggerEvent, WidgetTriggerKind, WindowSt
 use crate::compat::HashMap;
 use crate::compat::Mutex;
 use crate::core::ObjectId;
+use crate::core::Orientation;
 use alloc::collections::VecDeque;
 use core::hash::Hash;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -75,6 +76,20 @@ pub struct WidgetRecord<K> {
     pub placeholder: Option<String>,
     /// Echo mode for a text entry, when the backend can apply one.
     pub echo_mode: Option<EchoMode>,
+    /// Tri-state mode for a checkable control. `None` means the control is not
+    /// checkable, or this backend has no tri-state support.
+    pub tristate: Option<bool>,
+    /// Mutually-exclusive group name for a radio button.
+    pub group: Option<String>,
+    /// Scroll offset of a scrollable container, as `(x, y)` virtual pixels.
+    pub scroll: Option<(i32, i32)>,
+    /// Slider orientation chosen at creation time, stored as "horizontal".
+    ///
+    /// Kept as a `bool` rather than `core::Orientation` so this serde-derived
+    /// record does not force a serde derive onto a core geometry type (the
+    /// `BackendState` snapshot is serialized, and widening `core`'s feature
+    /// surface for one field is not worth it).
+    pub horizontal: Option<bool>,
 }
 
 /// The togglable states of a window, as stored by a backend.
@@ -282,6 +297,10 @@ where
                 selection: None,
                 placeholder: None,
                 echo_mode: None,
+                tristate: None,
+                group: None,
+                scroll: None,
+                horizontal: None,
             },
         );
     }
@@ -726,6 +745,87 @@ where
             .expect("backend state widget lock poisoned")
             .get(&widget_id)
             .and_then(|widget| widget.echo_mode)
+    }
+    /// Store a checkable control's tri-state mode, `false` for unknown ids.
+    pub fn set_tristate(&self, widget_id: ObjectId, enabled: bool) -> bool {
+        if let Some(widget) =
+            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
+        {
+            widget.tristate = Some(enabled);
+            return true;
+        }
+        false
+    }
+    /// Read a checkable control's tri-state mode.
+    pub fn tristate(&self, widget_id: ObjectId) -> Option<bool> {
+        self.widgets
+            .lock()
+            .expect("backend state widget lock poisoned")
+            .get(&widget_id)
+            .and_then(|widget| widget.tristate)
+    }
+    /// Store a radio button's group name, `false` for unknown ids.
+    pub fn set_group(&self, widget_id: ObjectId, group: &str) -> bool {
+        if let Some(widget) =
+            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
+        {
+            widget.group = Some(group.to_string());
+            return true;
+        }
+        false
+    }
+    /// Read a radio button's group name.
+    pub fn group(&self, widget_id: ObjectId) -> Option<String> {
+        self.widgets
+            .lock()
+            .expect("backend state widget lock poisoned")
+            .get(&widget_id)
+            .and_then(|widget| widget.group.clone())
+    }
+    /// Store a scroll container's offset, `false` for unknown ids.
+    pub fn set_scroll(&self, widget_id: ObjectId, x: i32, y: i32) -> bool {
+        if let Some(widget) =
+            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
+        {
+            widget.scroll = Some((x, y));
+            return true;
+        }
+        false
+    }
+    /// Read a scroll container's offset.
+    pub fn scroll(&self, widget_id: ObjectId) -> Option<(i32, i32)> {
+        self.widgets
+            .lock()
+            .expect("backend state widget lock poisoned")
+            .get(&widget_id)
+            .and_then(|widget| widget.scroll)
+    }
+    /// Store a slider's creation-time orientation, `false` for unknown ids.
+    pub fn set_orientation(&self, widget_id: ObjectId, orientation: Orientation) -> bool {
+        if let Some(widget) =
+            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
+        {
+            widget.horizontal = Some(orientation == Orientation::Horizontal);
+            return true;
+        }
+        false
+    }
+    /// Read a slider's creation-time orientation.
+    pub fn orientation(&self, widget_id: ObjectId) -> Option<Orientation> {
+        self.widgets
+            .lock()
+            .expect("backend state widget lock poisoned")
+            .get(&widget_id)
+            .and_then(|widget| widget.horizontal)
+            .map(
+                |horizontal| {
+                    if horizontal {
+                        Orientation::Horizontal
+                    } else {
+                        Orientation::Vertical
+                    }
+                },
+            )
     }
 
     // ─── Backend event methods ─────────────────────────────────────────────────

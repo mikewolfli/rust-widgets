@@ -232,7 +232,7 @@ impl CoreConfig {
             profile: RuntimeProfile::Full,
             platform: PlatformFamily::Desktop,
             capabilities: PlatformCapabilities::desktop(),
-            version: Version::new(1, 1, 2),
+            version: Version::new(1, 1, 3),
         }
     }
     /// Creates default embedded configuration.
@@ -241,7 +241,7 @@ impl CoreConfig {
             profile: RuntimeProfile::Embedded,
             platform: PlatformFamily::Embedded,
             capabilities: PlatformCapabilities::embedded(),
-            version: Version::new(1, 1, 2),
+            version: Version::new(1, 1, 3),
         }
     }
     /// Creates default mobile configuration.
@@ -250,7 +250,7 @@ impl CoreConfig {
             profile: RuntimeProfile::Full,
             platform: PlatformFamily::Mobile,
             capabilities: PlatformCapabilities::mobile(),
-            version: Version::new(1, 1, 2),
+            version: Version::new(1, 1, 3),
         }
     }
 }
@@ -373,7 +373,7 @@ mod tests {
         let desktop = CoreConfig::desktop();
         assert_eq!(desktop.profile, RuntimeProfile::Full);
         assert_eq!(desktop.platform, PlatformFamily::Desktop);
-        assert_eq!(desktop.version, Version::new(1, 1, 2));
+        assert_eq!(desktop.version, Version::new(1, 1, 3));
 
         let embedded = CoreConfig::embedded();
         assert_eq!(embedded.profile, RuntimeProfile::Embedded);

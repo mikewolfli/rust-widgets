@@ -1,6 +1,6 @@
 [package]
 name = "rust_widgets"
-version = "1.1.2"
+version = "1.1.3"
 edition = "2021"
 description = "Pure Rust cross-platform native GUI library with hardware-adaptive rendering, 60+ widgets, touch/gesture support, i18n, and SVG-pipeline-accurate output"
 license = "MIT"
@@ -516,4 +516,10 @@ required-features = ["desktop"]
 # backend and the `app` module, so it is gated the same way.
 [[example]]
 name = "macos_window_state_async_probe"
+required-features = ["desktop"]
+
+# Verifies every macOS `create_*` registers a handle; needs the `app` module and
+# a real backend, so it is gated like the other desktop probes.
+[[example]]
+name = "macos_created_controls_are_usable"
 required-features = ["desktop"]

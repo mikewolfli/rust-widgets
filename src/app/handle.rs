@@ -460,6 +460,46 @@ pub trait WidgetHandle: Sized {
         crate::platform::get_platform().widget_echo_mode(self.raw_id())
     }
 
+    /// Apply a slider's creation-time orientation.
+    fn set_slider_orientation(&self, orientation: Orientation) -> bool {
+        crate::platform::get_platform().set_slider_orientation(self.raw_id(), orientation)
+    }
+
+    /// Read a slider's orientation.
+    fn slider_orientation(&self) -> Option<Orientation> {
+        crate::platform::get_platform().slider_orientation(self.raw_id())
+    }
+
+    /// Set a checkable control's tri-state mode.
+    fn set_tristate(&self, enabled: bool) -> bool {
+        crate::platform::get_platform().set_widget_tristate(self.raw_id(), enabled)
+    }
+
+    /// Read a checkable control's tri-state mode.
+    fn is_tristate(&self) -> Option<bool> {
+        crate::platform::get_platform().is_widget_tristate(self.raw_id())
+    }
+
+    /// Put a radio button into a named mutually-exclusive group.
+    fn set_group(&self, group: &str) -> bool {
+        crate::platform::get_platform().set_widget_group(self.raw_id(), group)
+    }
+
+    /// Read a radio button's group name.
+    fn group(&self) -> Option<String> {
+        crate::platform::get_platform().widget_group(self.raw_id())
+    }
+
+    /// Set a scrollable container's scroll offset.
+    fn set_scroll_position(&self, x: i32, y: i32) -> bool {
+        crate::platform::get_platform().set_widget_scroll_position(self.raw_id(), x, y)
+    }
+
+    /// Read a scrollable container's scroll offset.
+    fn scroll_position(&self) -> Option<(i32, i32)> {
+        crate::platform::get_platform().widget_scroll_position(self.raw_id())
+    }
+
     /// Register a callback for the "clicked" trigger.
     ///
     /// The closure is invoked whenever the widget receives a
@@ -654,6 +694,31 @@ impl WindowHandle {
 
     pub fn new_slider(&self, x: i32, y: i32, w: u32, h: u32) -> SliderHandle {
         SliderHandle::from_raw(crate::create_slider(self.id, x, y, w, h))
+    }
+
+    /// Create a slider whose orientation is chosen at creation time.
+    ///
+    /// Orientation is a **creation-time** property on every desktop toolkit, not a
+    /// settable attribute: Win32 fixes it with the `TBS_VERT` window style (there
+    /// is no `TBM_*` message to change it afterwards), AppKit picks the track
+    /// direction when the `NSSlider` is configured, and only GTK exposes a live
+    /// `set_orientation`. Routing it through creation is therefore the only shape
+    /// that can be honoured consistently on all three, instead of a `set_` method
+    /// that silently does nothing on two of them.
+    pub fn new_slider_with_orientation(
+        &self,
+        orientation: Orientation,
+        x: i32,
+        y: i32,
+        w: u32,
+        h: u32,
+    ) -> SliderHandle {
+        let handle = SliderHandle::from_raw(crate::create_slider(self.id, x, y, w, h));
+        crate::platform::get_platform().set_slider_orientation(handle.raw_id(), orientation);
+        SLIDER_STATES.with(|map| {
+            map.borrow_mut().entry(handle.raw_id()).or_default().orientation = orientation;
+        });
+        handle
     }
 
     pub fn new_progress_bar(&self, x: i32, y: i32, w: u32, h: u32) -> ProgressBarHandle {
@@ -1224,21 +1289,19 @@ impl SliderHandle {
         crate::platform::get_platform().set_widget_step(self.raw_id(), f64::from(step));
     }
 
-    /// Set the slider orientation.
+    /// Return the slider orientation this handle was created with.
     ///
-    /// This affects the **self-drawn** rendering only. The native backends do not
-    /// expose a uniform post-creation orientation change — GTK has
-    /// `set_orientation`, but AppKit encodes it in the class (`NSSlider` vs a
-    /// vertical variant) and Win32 in the creation style (`TBS_VERT`) — so there
-    /// is no cross-OS setter to call. Changing orientation on a native slider is
-    /// therefore not reflected on screen; recreate the control instead. This is a
-    /// deliberate per-OS limitation, not a silently dropped write: the mirror is
-    /// authoritative for the self-drawn path, and native callers are told here.
-    pub fn set_orientation(&self, orientation: Orientation) {
+    /// Orientation cannot be changed after creation on Win32 or AppKit, so it is
+    /// set through [`WindowHandle::new_slider_with_orientation`] rather than a
+    /// setter. This reports the value that was applied at creation (or
+    /// `Horizontal`, the toolkit default, when created with `new_slider`).
+    pub fn orientation(&self) -> Orientation {
         SLIDER_STATES.with(|map| {
-            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).orientation =
-                orientation;
-        });
+            map.borrow()
+                .get(&self.raw_id())
+                .map(|s| s.orientation)
+                .unwrap_or(Orientation::Horizontal)
+        })
     }
 }
 
@@ -1385,16 +1448,16 @@ impl CheckBoxHandle {
 
     /// Enable/disable tri-state mode.
     ///
-    /// **Not uniformly native.** Win32 has `BS_3STATE`/`BS_AUTO3STATE` and GTK's
-    /// `ToggleButton` exposes `set_inconsistent`, but AppKit's `NSButton` has no
-    /// third state for a check box. The crate has no `set_widget_tristate`
-    /// capability for that reason, so this setter drives the self-drawn path only.
-    /// Enabling it does **not** turn a native check box into a tri-state control.
+    /// Mirrored into the in-process state *and* pushed to the native control
+    /// through [`crate::Platform::set_widget_tristate`] (`setAllowsMixedState:` on
+    /// macOS, `BS_3STATE`/`BS_AUTO3STATE` on Windows, `set_inconsistent` on GTK),
+    /// so all three desktops actually gain a third state.
     pub fn set_tristate(&self, tristate: bool) {
         CHECKBOX_STATES.with(|map| {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).tristate =
                 tristate;
         });
+        crate::platform::get_platform().set_widget_tristate(self.raw_id(), tristate);
     }
 
     /// Return the current check state of a tri-state check-box.
@@ -1465,12 +1528,17 @@ impl RadioButtonHandle {
     }
 
     /// Set the group name for this radio button.
-    /// Radio buttons in the same group are mutually exclusive.
+    ///
+    /// Radio buttons sharing a group are mutually exclusive. Pushed to the native
+    /// control through [`crate::Platform::set_widget_group`] — GTK links the
+    /// buttons, Win32 sets `WS_GROUP`, and AppKit relies on adjacency — while the
+    /// actual clearing of siblings is done by [`RadioButtonHandle::select`].
     pub fn set_group(&self, group: &str) {
         RADIO_BUTTON_STATES.with(|map| {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).group =
                 group.to_owned();
         });
+        crate::platform::get_platform().set_widget_group(self.raw_id(), group);
     }
 }
 
@@ -1669,6 +1737,10 @@ thread_local! {
 /// # Scroll-area specific operations
 impl ScrollAreaHandle {
     /// Set the scroll offset.
+    ///
+    /// Mirrored into the in-process state *and* pushed to the native container
+    /// through [`crate::Platform::set_widget_scroll_position`] (`SetScrollPos` on
+    /// Windows, the GTK adjustments, the AppKit clip view).
     pub fn set_scroll_position(&self, x: i32, y: i32) {
         SCROLL_AREA_STATES.with(|map| {
             let mut map = map.borrow_mut();
@@ -1676,6 +1748,7 @@ impl ScrollAreaHandle {
             state.scroll_x = x;
             state.scroll_y = y;
         });
+        crate::platform::get_platform().set_widget_scroll_position(self.raw_id(), x, y);
     }
 
     /// Return the current scroll offset.

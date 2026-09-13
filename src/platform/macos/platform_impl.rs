@@ -5,6 +5,7 @@
 
 #![allow(deprecated)] // Cocoa 0.24 fallback; remove when objc2 backend fully replaces cocoa
 
+use crate::core::Orientation;
 use crate::core::{ObjectId, PlatformFamily};
 use crate::platform::accessibility::AccessibilityBridge;
 use crate::platform::clipboard::RichClipboardBackend;
@@ -2255,6 +2256,151 @@ impl Platform for MacOSPlatform {
     fn widget_echo_mode(&self, _widget_id: u64) -> Option<EchoMode> {
         None
     }
+
+    fn set_slider_orientation(&self, widget_id: u64, orientation: Orientation) -> bool {
+        let Some(handle) = self.get_handle(widget_id) else {
+            return false;
+        };
+        if !matches!(handle.kind, HandleKind::Slider) {
+            return false;
+        }
+        self.state.set_orientation(widget_id, orientation);
+        if handle.ptr == 0 || !super::types::is_main_thread() {
+            return true;
+        }
+        // SAFETY: handle.ptr is a live NSSlider; `setVertical:` selects the track
+        // direction and the call is on the AppKit main thread. This runs once, at
+        // creation, because AppKit does not reflow the track reliably later.
+        unsafe {
+            let native = Self::as_id(handle);
+            let flag: BOOL = if orientation == Orientation::Vertical { YES } else { NO };
+            let _: () = msg_send![native, setVertical: flag];
+        }
+        true
+    }
+
+    fn slider_orientation(&self, widget_id: u64) -> Option<Orientation> {
+        let handle = self.get_handle(widget_id)?;
+        if !matches!(handle.kind, HandleKind::Slider) {
+            return None;
+        }
+        if handle.ptr != 0 && super::types::is_main_thread() {
+            // SAFETY: live NSSlider; `isVertical` is a valid getter on the main
+            // thread.
+            unsafe {
+                let native = Self::as_id(handle);
+                let vertical: BOOL = msg_send![native, isVertical];
+                return Some(if vertical != NO {
+                    Orientation::Vertical
+                } else {
+                    Orientation::Horizontal
+                });
+            }
+        }
+        self.state.orientation(widget_id)
+    }
+
+    fn set_widget_tristate(&self, widget_id: u64, enabled: bool) -> bool {
+        let Some(handle) = self.get_handle(widget_id) else {
+            return false;
+        };
+        if !matches!(
+            handle.kind,
+            HandleKind::CheckBox | HandleKind::RadioButton | HandleKind::ToggleButton
+        ) {
+            return false;
+        }
+        self.state.set_tristate(widget_id, enabled);
+        if handle.ptr == 0 || !super::types::is_main_thread() {
+            return true;
+        }
+        // SAFETY: handle.ptr is a live NSButton; `setAllowsMixedState:` is the
+        // documented switch that lets an NSButton hold NSControlStateValueMixed
+        // (-1) in addition to off/on, and the call is on the AppKit main thread.
+        unsafe {
+            let native = Self::as_id(handle);
+            let flag: BOOL = if enabled { YES } else { NO };
+            let _: () = msg_send![native, setAllowsMixedState: flag];
+        }
+        true
+    }
+
+    fn is_widget_tristate(&self, widget_id: u64) -> Option<bool> {
+        let handle = self.get_handle(widget_id)?;
+        if !matches!(
+            handle.kind,
+            HandleKind::CheckBox | HandleKind::RadioButton | HandleKind::ToggleButton
+        ) {
+            return None;
+        }
+        if handle.ptr != 0 && super::types::is_main_thread() {
+            // SAFETY: live NSButton; `allowsMixedState` is a valid getter on the
+            // main thread.
+            unsafe {
+                let native = Self::as_id(handle);
+                let flag: BOOL = msg_send![native, allowsMixedState];
+                return Some(flag != NO);
+            }
+        }
+        self.state.tristate(widget_id)
+    }
+
+    fn set_widget_group(&self, widget_id: u64, group: &str) -> bool {
+        let Some(handle) = self.get_handle(widget_id) else {
+            return false;
+        };
+        if !matches!(handle.kind, HandleKind::RadioButton) {
+            return false;
+        }
+        self.state.set_group(widget_id, group);
+        if handle.ptr == 0 || !super::types::is_main_thread() {
+            return true;
+        }
+        // AppKit makes radio buttons mutually exclusive by *placement*: buttons of
+        // the same class that are siblings and adjacent in one superview form an
+        // auto-exclusive run. There is no per-button group id to set, so the group
+        // name is tracked by the state model and mutual exclusion is enforced by
+        // `RadioButtonHandle::select` calling `set_widget_checked` on the siblings.
+        // Report success: the group is honoured, just not by a native group object.
+        true
+    }
+
+    fn widget_group(&self, widget_id: u64) -> Option<String> {
+        let handle = self.get_handle(widget_id)?;
+        if !matches!(handle.kind, HandleKind::RadioButton) {
+            return None;
+        }
+        self.state.group(widget_id)
+    }
+
+    fn set_widget_scroll_position(&self, widget_id: u64, x: i32, y: i32) -> bool {
+        let Some(handle) = self.get_handle(widget_id) else {
+            return false;
+        };
+        if !matches!(handle.kind, HandleKind::ScrollArea) {
+            return false;
+        }
+        self.state.set_scroll(widget_id, x, y);
+        if handle.ptr == 0 || !super::types::is_main_thread() {
+            return true;
+        }
+        // This crate's macOS scroll area is a state-only handle (no NSScrollView
+        // was built for it), so there is no clip view to message. The offset is
+        // recorded and applied by the self-drawn path.
+        log::debug!(
+            "[rust_widgets] set_widget_scroll_position: macOS scroll area has no native \
+             NSScrollView yet; offset kept in state"
+        );
+        true
+    }
+
+    fn widget_scroll_position(&self, widget_id: u64) -> Option<(i32, i32)> {
+        let handle = self.get_handle(widget_id)?;
+        if !matches!(handle.kind, HandleKind::ScrollArea) {
+            return None;
+        }
+        self.state.scroll(widget_id)
+    }
     fn set_widget_ime_enabled(&self, widget_id: u64, enabled: bool) -> bool {
         self.state.set_ime_enabled(widget_id, enabled)
     }
@@ -2541,7 +2687,7 @@ impl Platform for MacOSPlatform {
         if self.state.kind_of(parent).is_none() {
             return 0;
         }
-        self.state.create_widget(HandleKind::ListView, "list_view", x, y, width, height)
+        self.register_state_only_handle(HandleKind::ListView, "list_view", x, y, width, height)
     }
     fn create_scroll_area(
         &self,
@@ -2554,7 +2700,11 @@ impl Platform for MacOSPlatform {
         if self.state.kind_of(parent).is_none() {
             return 0;
         }
-        self.state.create_widget(HandleKind::ScrollArea, "scroll_area", x, y, width, height)
+        // macOS has no NSScrollView-backed scroll area in this crate yet, so the
+        // control is state-only. Register it as such so the uniform property API
+        // finds a handle; without this the widget exists in state but every
+        // property call reports "unknown id".
+        self.register_state_only_handle(HandleKind::ScrollArea, "scroll_area", x, y, width, height)
     }
     fn create_group_box(
         &self,
@@ -2568,13 +2718,13 @@ impl Platform for MacOSPlatform {
         if self.state.kind_of(parent).is_none() {
             return 0;
         }
-        self.state.create_widget(HandleKind::GroupBox, title, x, y, width, height)
+        self.register_state_only_handle(HandleKind::GroupBox, title, x, y, width, height)
     }
     fn create_frame(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         if self.state.kind_of(parent).is_none() {
             return 0;
         }
-        self.state.create_widget(HandleKind::Frame, "Frame", x, y, width, height)
+        self.register_state_only_handle(HandleKind::Frame, "Frame", x, y, width, height)
     }
     fn create_tab_widget(
         &self,
@@ -2587,7 +2737,7 @@ impl Platform for MacOSPlatform {
         if self.state.kind_of(parent).is_none() {
             return 0;
         }
-        self.state.create_widget(HandleKind::TabWidget, "TabWidget", x, y, width, height)
+        self.register_state_only_handle(HandleKind::TabWidget, "TabWidget", x, y, width, height)
     }
     fn create_splitter(
         &self,
@@ -2600,7 +2750,7 @@ impl Platform for MacOSPlatform {
         if self.state.kind_of(parent).is_none() {
             return 0;
         }
-        self.state.create_widget(HandleKind::Splitter, "Splitter", x, y, width, height)
+        self.register_state_only_handle(HandleKind::Splitter, "Splitter", x, y, width, height)
     }
     fn create_toggle_button(
         &self,
@@ -2614,7 +2764,7 @@ impl Platform for MacOSPlatform {
         if self.state.kind_of(parent).is_none() {
             return 0;
         }
-        self.state.create_widget(HandleKind::ToggleButton, text, x, y, width, height)
+        self.register_state_only_handle(HandleKind::ToggleButton, text, x, y, width, height)
     }
     fn create_calendar(
         &self,
@@ -2627,7 +2777,7 @@ impl Platform for MacOSPlatform {
         if self.state.kind_of(parent).is_none() {
             return 0;
         }
-        self.state.create_widget(HandleKind::Calendar, "Calendar", x, y, width, height)
+        self.register_state_only_handle(HandleKind::Calendar, "Calendar", x, y, width, height)
     }
     fn create_scroll_bar(
         &self,
@@ -2640,7 +2790,7 @@ impl Platform for MacOSPlatform {
         if self.state.kind_of(parent).is_none() {
             return 0;
         }
-        self.state.create_widget(HandleKind::ScrollBar, "ScrollBar", x, y, width, height)
+        self.register_state_only_handle(HandleKind::ScrollBar, "ScrollBar", x, y, width, height)
     }
     fn create_double_spin_box(
         &self,
@@ -2653,7 +2803,14 @@ impl Platform for MacOSPlatform {
         if self.state.kind_of(parent).is_none() {
             return 0;
         }
-        self.state.create_widget(HandleKind::DoubleSpinBox, "DoubleSpinBox", x, y, width, height)
+        self.register_state_only_handle(
+            HandleKind::DoubleSpinBox,
+            "DoubleSpinBox",
+            x,
+            y,
+            width,
+            height,
+        )
     }
     fn create_font_combo_box(
         &self,
@@ -2666,7 +2823,14 @@ impl Platform for MacOSPlatform {
         if self.state.kind_of(parent).is_none() {
             return 0;
         }
-        self.state.create_widget(HandleKind::FontComboBox, "FontComboBox", x, y, width, height)
+        self.register_state_only_handle(
+            HandleKind::FontComboBox,
+            "FontComboBox",
+            x,
+            y,
+            width,
+            height,
+        )
     }
     fn create_context_menu(
         &self,
@@ -2679,7 +2843,7 @@ impl Platform for MacOSPlatform {
         if self.state.kind_of(parent).is_none() {
             return 0;
         }
-        self.state.create_widget(HandleKind::ContextMenu, "ContextMenu", x, y, width, height)
+        self.register_state_only_handle(HandleKind::ContextMenu, "ContextMenu", x, y, width, height)
     }
     fn create_popup_window(
         &self,
@@ -2693,7 +2857,7 @@ impl Platform for MacOSPlatform {
         if self.state.kind_of(parent).is_none() {
             return 0;
         }
-        self.state.create_widget(HandleKind::PopupWindow, title, x, y, width, height)
+        self.register_state_only_handle(HandleKind::PopupWindow, title, x, y, width, height)
     }
     fn create_dialog(
         &self,
@@ -2707,7 +2871,7 @@ impl Platform for MacOSPlatform {
         if self.state.kind_of(parent).is_none() {
             return 0;
         }
-        self.state.create_widget(HandleKind::Dialog, title, x, y, width, height)
+        self.register_state_only_handle(HandleKind::Dialog, title, x, y, width, height)
     }
     fn create_input_dialog(
         &self,
@@ -2720,7 +2884,7 @@ impl Platform for MacOSPlatform {
         if self.state.kind_of(parent).is_none() {
             return 0;
         }
-        self.state.create_widget(HandleKind::InputDialog, "Input", x, y, width, height)
+        self.register_state_only_handle(HandleKind::InputDialog, "Input", x, y, width, height)
     }
     fn create_progress_dialog(
         &self,
@@ -2733,7 +2897,7 @@ impl Platform for MacOSPlatform {
         if self.state.kind_of(parent).is_none() {
             return 0;
         }
-        self.state.create_widget(HandleKind::ProgressDialog, "Progress", x, y, width, height)
+        self.register_state_only_handle(HandleKind::ProgressDialog, "Progress", x, y, width, height)
     }
     fn create_directory_dialog(
         &self,
@@ -2747,7 +2911,7 @@ impl Platform for MacOSPlatform {
         if self.state.kind_of(parent).is_none() {
             return 0;
         }
-        self.state.create_widget(HandleKind::DirectoryDialog, title, x, y, width, height)
+        self.register_state_only_handle(HandleKind::DirectoryDialog, title, x, y, width, height)
     }
     fn create_date_picker(
         &self,
@@ -2760,7 +2924,7 @@ impl Platform for MacOSPlatform {
         if self.state.kind_of(parent).is_none() {
             return 0;
         }
-        self.state.create_widget(HandleKind::DatePicker, "DatePicker", x, y, width, height)
+        self.register_state_only_handle(HandleKind::DatePicker, "DatePicker", x, y, width, height)
     }
     fn create_time_picker(
         &self,
@@ -2773,7 +2937,7 @@ impl Platform for MacOSPlatform {
         if self.state.kind_of(parent).is_none() {
             return 0;
         }
-        self.state.create_widget(HandleKind::TimePicker, "TimePicker", x, y, width, height)
+        self.register_state_only_handle(HandleKind::TimePicker, "TimePicker", x, y, width, height)
     }
     fn create_date_time_picker(
         &self,
@@ -2786,7 +2950,14 @@ impl Platform for MacOSPlatform {
         if self.state.kind_of(parent).is_none() {
             return 0;
         }
-        self.state.create_widget(HandleKind::DateTimePicker, "DateTimePicker", x, y, width, height)
+        self.register_state_only_handle(
+            HandleKind::DateTimePicker,
+            "DateTimePicker",
+            x,
+            y,
+            width,
+            height,
+        )
     }
     fn create_activity_indicator(
         &self,
@@ -2799,7 +2970,7 @@ impl Platform for MacOSPlatform {
         if self.state.kind_of(parent).is_none() {
             return 0;
         }
-        self.state.create_widget(
+        self.register_state_only_handle(
             HandleKind::ActivityIndicator,
             "ActivityIndicator",
             x,

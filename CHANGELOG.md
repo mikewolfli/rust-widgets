@@ -4,6 +4,47 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 
+## 1.1.3 (2026-09-13) — Unified Native-Control Property API Release
+
+See [docs/reports/CHANGELOG.md](docs/reports/CHANGELOG.md) and
+[docs/log/log-20260913-1.md](docs/log/log-20260913-1.md) for full details.
+
+### Highlights
+- **Native controls now expose one property API that works unchanged on every OS.**
+  Slider value/range/step, progress value and busy state, spin-box value/range/step,
+  combo/list selection index, check/tri-state state, text-entry read-only/max-length/
+  placeholder/echo-mode/selection, window state (maximise, minimise, full-screen,
+  resizable, decorated), window minimum size and window icon are all reachable through
+  `Platform` without a single `cfg(target_os)` or per-OS `if`/`else` at the call site.
+- **What is unified is the call *shape*, not the capabilities.** Each backend maps a call
+  onto whatever its own toolkit actually offers and reports honestly (`false` / `None`)
+  when it cannot; genuine per-OS differences (AppKit has no placeholder on `NSTextView`,
+  no `NoEcho` mode anywhere, no runtime slider orientation on Win32) are documented rather
+  than papered over. What is forbidden is a write that reports success without taking effect.
+- **Fixed a whole-family defect on macOS**: 20 `create_*` constructors
+  (`list_view`, `group_box`, `frame`, `tab_widget`, `splitter`, `toggle_button`, `calendar`,
+  `scroll_bar`, `double_spin_box`, `font_combo_box`, `context_menu`, `popup_window`,
+  `dialog`, `input_dialog`, `progress_dialog`, `directory_dialog`, `date_picker`,
+  `time_picker`, `date_time_picker`, `activity_indicator`) recorded widget state but never
+  registered a handle, so **every handle-gated property refused with "unknown id"** while
+  the constructor still returned a non-zero id. Purely state-backed reads (text,
+  visibility) kept working, which is why it went unnoticed.
+- **Fixed macOS window-state transitions**: `toggleFullScreen:` was gated on a style-mask
+  read that is still stale during the transition, so turning full screen *off* never sent
+  the toggle; `miniaturize:`/full-screen are now read back from the request while the
+  run-loop transition is pending.
+- **Corrected the API shape for slider orientation**: it is a creation-time property on
+  Win32 (`TBS_VERT`, no `TBM_*` runtime message) and AppKit, so the misleading
+  `SliderHandle::set_orientation` setter was replaced by
+  `WindowHandle::new_slider_with_orientation` plus a read-only `orientation()`.
+- **SPDX headers** (`MIT`, copyright Mike Li / Mikewolfli / Wei Li) added to all 601
+  source files under `src/` via the idempotent `tools/add_spdx_headers.py`.
+- **No ABI change**: `rw_bindings_api_version` remains `8`; no exported `rw_*` symbol
+  was added, removed or changed.
+- **4005 tests passing**, 0 failing; 0 clippy warnings; 0 errors/warnings across all 8
+  checked configurations (desktop, mini, embedded, tablet, Windows, Windows+mini, wasm32,
+  and a GTK type-check of 37 property functions on a non-Linux host).
+
 ## 1.1.2 (2026-09-12) — Platform Correctness & Unsafe-Surface Audit Release
 
 See [docs/reports/CHANGELOG.md](docs/reports/CHANGELOG.md) for full details.

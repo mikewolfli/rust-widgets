@@ -3,6 +3,7 @@
 
 //! `impl Platform for WindowsPlatform` — the main trait implementation.
 
+use crate::core::Orientation;
 use crate::core::{ObjectId, PlatformFamily};
 use crate::platform::accessibility::AccessibilityBridge;
 use crate::platform::clipboard::RichClipboardBackend;
@@ -810,6 +811,212 @@ impl Platform for WindowsPlatform {
             return None;
         }
         self.state.echo_mode(widget_id)
+    }
+
+    fn set_slider_orientation(&self, widget_id: ObjectId, orientation: Orientation) -> bool {
+        let Some(kind) = self.state.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(kind, super::types::WindowsHandleKind::Slider) {
+            return false;
+        }
+        self.state.set_orientation(widget_id, orientation);
+        #[cfg(target_os = "windows")]
+        {
+            use winapi::um::commctrl::TBS_VERT;
+            use winapi::um::winuser::{
+                GetWindowLongW, SetWindowLongW, SetWindowPos, GWL_STYLE, SWP_FRAMECHANGED,
+                SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+            };
+            if let Some(hwnd) = self.get_native_handle(widget_id) {
+                unsafe {
+                    let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+                    let new_style = if orientation == Orientation::Vertical {
+                        style | TBS_VERT
+                    } else {
+                        style & !TBS_VERT
+                    };
+                    SetWindowLongW(hwnd, GWL_STYLE, new_style as i32);
+                    // SWP_FRAMECHANGED asks the control to re-read its style. This
+                    // is the only lever Win32 offers — there is no TBM_* message
+                    // for orientation — which is why the API is creation-time.
+                    SetWindowPos(
+                        hwnd,
+                        std::ptr::null_mut(),
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
+                    );
+                }
+            }
+        }
+        true
+    }
+
+    fn slider_orientation(&self, widget_id: ObjectId) -> Option<Orientation> {
+        let kind = self.state.kind_of(widget_id)?;
+        if !matches!(kind, super::types::WindowsHandleKind::Slider) {
+            return None;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use winapi::um::commctrl::TBS_VERT;
+            use winapi::um::winuser::{GetWindowLongW, GWL_STYLE};
+            if let Some(hwnd) = self.get_native_handle(widget_id) {
+                let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32;
+                return Some(if style & TBS_VERT != 0 {
+                    Orientation::Vertical
+                } else {
+                    Orientation::Horizontal
+                });
+            }
+        }
+        self.state.orientation(widget_id)
+    }
+
+    fn set_widget_tristate(&self, widget_id: ObjectId, enabled: bool) -> bool {
+        let Some(kind) = self.state.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(
+            kind,
+            super::types::WindowsHandleKind::CheckBox
+                | super::types::WindowsHandleKind::RadioButton
+        ) {
+            return false;
+        }
+        self.state.set_tristate(widget_id, enabled);
+        #[cfg(target_os = "windows")]
+        {
+            use winapi::um::winuser::{
+                GetWindowLongW, SetWindowLongW, BS_3STATE, BS_AUTO3STATE, BS_AUTOCHECKBOX,
+                BS_CHECKBOX, GWL_STYLE,
+            };
+            if let Some(hwnd) = self.get_native_handle(widget_id) {
+                unsafe {
+                    let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+                    // Swap the button type between the 2-state and 3-state
+                    // variants, preserving the "auto" behaviour and every other
+                    // style bit.
+                    let new_style = if enabled {
+                        if style & BS_AUTOCHECKBOX != 0 {
+                            (style & !BS_AUTOCHECKBOX) | BS_AUTO3STATE
+                        } else if style & BS_CHECKBOX != 0 {
+                            (style & !BS_CHECKBOX) | BS_3STATE
+                        } else {
+                            style | BS_AUTO3STATE
+                        }
+                    } else if style & BS_AUTO3STATE != 0 {
+                        (style & !BS_AUTO3STATE) | BS_AUTOCHECKBOX
+                    } else if style & BS_3STATE != 0 {
+                        (style & !BS_3STATE) | BS_CHECKBOX
+                    } else {
+                        style
+                    };
+                    SetWindowLongW(hwnd, GWL_STYLE, new_style as i32);
+                }
+            }
+        }
+        true
+    }
+
+    fn is_widget_tristate(&self, widget_id: ObjectId) -> Option<bool> {
+        let kind = self.state.kind_of(widget_id)?;
+        if !matches!(
+            kind,
+            super::types::WindowsHandleKind::CheckBox
+                | super::types::WindowsHandleKind::RadioButton
+        ) {
+            return None;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use winapi::um::winuser::{GetWindowLongW, BS_3STATE, BS_AUTO3STATE, GWL_STYLE};
+            if let Some(hwnd) = self.get_native_handle(widget_id) {
+                let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32;
+                return Some(style & (BS_3STATE | BS_AUTO3STATE) != 0);
+            }
+        }
+        self.state.tristate(widget_id)
+    }
+
+    fn set_widget_group(&self, widget_id: ObjectId, group: &str) -> bool {
+        let Some(kind) = self.state.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(kind, super::types::WindowsHandleKind::RadioButton) {
+            return false;
+        }
+        self.state.set_group(widget_id, group);
+        #[cfg(target_os = "windows")]
+        {
+            use winapi::um::winuser::{GetWindowLongW, SetWindowLongW, GWL_STYLE, WS_GROUP};
+            if let Some(hwnd) = self.get_native_handle(widget_id) {
+                // `WS_GROUP` marks where a mutually-exclusive run *begins*: buttons
+                // up to the next WS_GROUP toggle together. Setting it on the first
+                // button of a group is what Win32 uses to express this, so every
+                // button in a named group gets the flag and the run is closed by
+                // the following control.
+                unsafe {
+                    let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+                    SetWindowLongW(hwnd, GWL_STYLE, (style | WS_GROUP) as i32);
+                }
+            }
+        }
+        true
+    }
+
+    fn widget_group(&self, widget_id: ObjectId) -> Option<String> {
+        let kind = self.state.kind_of(widget_id)?;
+        if !matches!(kind, super::types::WindowsHandleKind::RadioButton) {
+            return None;
+        }
+        // Win32 has no group *name* to read back — only the WS_GROUP style bit — so
+        // the recorded name is the answer.
+        self.state.group(widget_id)
+    }
+
+    fn set_widget_scroll_position(&self, widget_id: ObjectId, x: i32, y: i32) -> bool {
+        let Some(kind) = self.state.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(kind, super::types::WindowsHandleKind::ScrollArea) {
+            return false;
+        }
+        self.state.set_scroll(widget_id, x, y);
+        #[cfg(target_os = "windows")]
+        {
+            use winapi::um::winuser::{SetScrollPos, SB_HORZ, SB_VERT};
+            if let Some(hwnd) = self.get_native_handle(widget_id) {
+                // The container is created with WS_HSCROLL | WS_VSCROLL, so the
+                // standard scroll-bar messages apply. `SetScrollPos` takes `c_int`
+                // parameters, hence the explicit casts.
+                unsafe {
+                    SetScrollPos(hwnd, SB_HORZ as i32, x as i32, 1);
+                    SetScrollPos(hwnd, SB_VERT as i32, y as i32, 1);
+                }
+            }
+        }
+        true
+    }
+
+    fn widget_scroll_position(&self, widget_id: ObjectId) -> Option<(i32, i32)> {
+        let kind = self.state.kind_of(widget_id)?;
+        if !matches!(kind, super::types::WindowsHandleKind::ScrollArea) {
+            return None;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use winapi::um::winuser::{GetScrollPos, SB_HORZ, SB_VERT};
+            if let Some(hwnd) = self.get_native_handle(widget_id) {
+                let x = unsafe { GetScrollPos(hwnd, SB_HORZ as i32) };
+                let y = unsafe { GetScrollPos(hwnd, SB_VERT as i32) };
+                return Some((x, y));
+            }
+        }
+        self.state.scroll(widget_id)
     }
 
     fn backend_name(&self) -> &'static str {

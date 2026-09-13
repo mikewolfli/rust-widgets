@@ -4,7 +4,7 @@
 //! Stub platform implementation for testing and demonstrations.
 use crate::compat::HashMap;
 use crate::compat::Mutex;
-use crate::core::{ObjectId, PlatformFamily};
+use crate::core::{ObjectId, Orientation, PlatformFamily};
 use crate::platform::state::{BackendState, WindowStateRecord};
 use crate::platform::types::*;
 #[cfg(all(feature = "serde", not(any(feature = "mini", feature = "embedded"))))]
@@ -1242,6 +1242,50 @@ impl Platform for StubPlatform {
 
     fn widget_echo_mode(&self, widget_id: ObjectId) -> Option<EchoMode> {
         self.state.echo_mode(widget_id)
+    }
+
+    fn set_slider_orientation(&self, widget_id: ObjectId, orientation: Orientation) -> bool {
+        if !self.state.contains_widget(widget_id) {
+            return false;
+        }
+        self.state.set_orientation(widget_id, orientation)
+    }
+
+    fn slider_orientation(&self, widget_id: ObjectId) -> Option<Orientation> {
+        self.state.orientation(widget_id)
+    }
+
+    fn set_widget_tristate(&self, widget_id: ObjectId, enabled: bool) -> bool {
+        if !self.state.contains_widget(widget_id) {
+            return false;
+        }
+        self.state.set_tristate(widget_id, enabled)
+    }
+
+    fn is_widget_tristate(&self, widget_id: ObjectId) -> Option<bool> {
+        self.state.tristate(widget_id)
+    }
+
+    fn set_widget_group(&self, widget_id: ObjectId, group: &str) -> bool {
+        if !self.state.contains_widget(widget_id) {
+            return false;
+        }
+        self.state.set_group(widget_id, group)
+    }
+
+    fn widget_group(&self, widget_id: ObjectId) -> Option<String> {
+        self.state.group(widget_id)
+    }
+
+    fn set_widget_scroll_position(&self, widget_id: ObjectId, x: i32, y: i32) -> bool {
+        if !self.state.contains_widget(widget_id) {
+            return false;
+        }
+        self.state.set_scroll(widget_id, x, y)
+    }
+
+    fn widget_scroll_position(&self, widget_id: ObjectId) -> Option<(i32, i32)> {
+        self.state.scroll(widget_id)
     }
 
     fn set_widget_ime_enabled(&self, widget_id: ObjectId, enabled: bool) -> bool {

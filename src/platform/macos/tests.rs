@@ -402,3 +402,49 @@ fn macos_max_length_is_not_supported() {
     );
     assert_eq!(Platform::widget_max_length(&platform, entry), None);
 }
+
+/// Every macOS `create_*` must return a widget whose handle is registered.
+///
+/// Regression guard: 20 constructors used to record state without registering a
+/// handle. They still returned a non-zero id, so nothing noticed, and purely
+/// state-backed properties (text, visibility) kept working — only the
+/// handle-gated ones refused. This asserts handle registration directly, which is
+/// the condition those 20 violated.
+#[test]
+fn macos_every_created_control_registers_a_handle() {
+    let platform = MacOSPlatform::new();
+    let window = platform.create_window("W", 0, 0, 900, 700);
+    assert_ne!(window, 0);
+
+    let ids: Vec<(&str, ObjectId)> = vec![
+        ("list_view", platform.create_list_view(window, 0, 0, 100, 60)),
+        ("group_box", platform.create_group_box(window, "g", 0, 0, 100, 60)),
+        ("frame", platform.create_frame(window, 0, 0, 100, 60)),
+        ("tab_widget", platform.create_tab_widget(window, 0, 0, 100, 60)),
+        ("splitter", platform.create_splitter(window, 0, 0, 100, 60)),
+        ("toggle_button", platform.create_toggle_button(window, "t", 0, 0, 100, 30)),
+        ("calendar", platform.create_calendar(window, 0, 0, 100, 60)),
+        ("scroll_bar", platform.create_scroll_bar(window, 0, 0, 100, 30)),
+        ("double_spin_box", platform.create_double_spin_box(window, 0, 0, 100, 30)),
+        ("font_combo_box", platform.create_font_combo_box(window, 0, 0, 100, 30)),
+        ("context_menu", platform.create_context_menu(window, 0, 0, 100, 30)),
+        ("popup_window", platform.create_popup_window(window, "p", 0, 0, 100, 30)),
+        ("dialog", platform.create_dialog(window, "d", 0, 0, 100, 60)),
+        ("input_dialog", platform.create_input_dialog(window, 0, 0, 100, 60)),
+        ("progress_dialog", platform.create_progress_dialog(window, 0, 0, 100, 60)),
+        ("directory_dialog", platform.create_directory_dialog(window, "d", 0, 0, 100, 60)),
+        ("date_picker", platform.create_date_picker(window, 0, 0, 100, 30)),
+        ("time_picker", platform.create_time_picker(window, 0, 0, 100, 30)),
+        ("date_time_picker", platform.create_date_time_picker(window, 0, 0, 100, 30)),
+        ("activity_indicator", platform.create_activity_indicator(window, 0, 0, 100, 30)),
+    ];
+
+    for (label, id) in ids {
+        assert_ne!(id, 0, "macos: create_{label} must succeed");
+        assert!(
+            platform.get_handle(id).is_some(),
+            "macos: create_{label} returned id {id} but registered no handle, so every \
+             handle-gated property refuses with 'unknown id'"
+        );
+    }
+}

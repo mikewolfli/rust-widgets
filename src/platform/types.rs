@@ -3,7 +3,7 @@
 
 //! Platform abstraction types and capability contracts.
 
-use crate::core::{ObjectId, PlatformFamily};
+use crate::core::{ObjectId, Orientation, PlatformFamily};
 #[cfg(all(feature = "serde", not(any(feature = "mini", feature = "embedded"))))]
 use serde::{Deserialize, Serialize};
 
@@ -1222,6 +1222,73 @@ pub trait Platform: Send + Sync {
 
     /// Read a text entry's echo mode.
     fn widget_echo_mode(&self, _widget_id: ObjectId) -> Option<EchoMode> {
+        None
+    }
+
+    /// Apply a slider's orientation.
+    ///
+    /// This is called **once, right after creation**, not as a general setter:
+    /// Win32 fixes orientation with the `TBS_VERT` window style and has no
+    /// `TBM_*` message to change it later, and AppKit configures the track
+    /// direction when the slider is built. Only GTK can flip it live, so exposing
+    /// this as a creation-time step is what makes one call site work on all three.
+    ///
+    /// Returns `false` when the id is not a slider on this backend or the change
+    /// could not be applied.
+    fn set_slider_orientation(&self, _widget_id: ObjectId, _orientation: Orientation) -> bool {
+        false
+    }
+
+    /// Read a slider's orientation, when the backend tracks one.
+    fn slider_orientation(&self, _widget_id: ObjectId) -> Option<Orientation> {
+        None
+    }
+
+    /// Set a checkable control's tri-state mode.
+    ///
+    /// When enabled, the control accepts an indeterminate/partial state in
+    /// addition to on/off. Win32 uses `BS_3STATE`/`BS_AUTO3STATE`, GTK
+    /// `set_inconsistent`, and AppKit `setAllowsMixedState:` together with
+    /// `NSControlStateValueMixed` — so all three desktops support it.
+    ///
+    /// Returns `false` when the id is not a checkable control on this backend.
+    fn set_widget_tristate(&self, _widget_id: ObjectId, _enabled: bool) -> bool {
+        false
+    }
+
+    /// Read a checkable control's tri-state mode.
+    fn is_widget_tristate(&self, _widget_id: ObjectId) -> Option<bool> {
+        None
+    }
+
+    /// Put a radio button into a named mutually-exclusive group.
+    ///
+    /// Selecting one member clears the others. GTK models this natively with
+    /// `RadioButton::join_group`, Win32 with the `WS_GROUP` style that makes
+    /// consecutive siblings mutually exclusive, and AppKit by making adjacent
+    /// same-class buttons in one superview auto-exclusive. Returns `false` when
+    /// the id is not a radio button on this backend.
+    fn set_widget_group(&self, _widget_id: ObjectId, _group: &str) -> bool {
+        false
+    }
+
+    /// Read a radio button's group name.
+    fn widget_group(&self, _widget_id: ObjectId) -> Option<String> {
+        None
+    }
+
+    /// Set a scrollable container's scroll offset in virtual pixels.
+    ///
+    /// Win32 uses `SetScrollPos` on the scroll styles of the container window,
+    /// GTK drives the `hadjustment`/`vadjustment` pair, and AppKit scrolls the
+    /// `NSClipView`. Returns `false` when the id is not a scroll area on this
+    /// backend.
+    fn set_widget_scroll_position(&self, _widget_id: ObjectId, _x: i32, _y: i32) -> bool {
+        false
+    }
+
+    /// Read a scrollable container's scroll offset.
+    fn widget_scroll_position(&self, _widget_id: ObjectId) -> Option<(i32, i32)> {
         None
     }
 

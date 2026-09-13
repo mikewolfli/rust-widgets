@@ -681,6 +681,34 @@ impl Platform for LinuxPlatform {
     fn widget_echo_mode(&self, widget_id: u64) -> Option<crate::platform::EchoMode> {
         self.widget_echo_mode_impl(widget_id)
     }
+    fn set_slider_orientation(
+        &self,
+        widget_id: u64,
+        orientation: crate::core::Orientation,
+    ) -> bool {
+        self.set_slider_orientation_impl(widget_id, orientation)
+    }
+    fn slider_orientation(&self, widget_id: u64) -> Option<crate::core::Orientation> {
+        self.slider_orientation_impl(widget_id)
+    }
+    fn set_widget_tristate(&self, widget_id: u64, enabled: bool) -> bool {
+        self.set_widget_tristate_impl(widget_id, enabled)
+    }
+    fn is_widget_tristate(&self, widget_id: u64) -> Option<bool> {
+        self.is_widget_tristate_impl(widget_id)
+    }
+    fn set_widget_group(&self, widget_id: u64, group: &str) -> bool {
+        self.set_widget_group_impl(widget_id, group)
+    }
+    fn widget_group(&self, widget_id: u64) -> Option<String> {
+        self.widget_group_impl(widget_id)
+    }
+    fn set_widget_scroll_position(&self, widget_id: u64, x: i32, y: i32) -> bool {
+        self.set_widget_scroll_position_impl(widget_id, x, y)
+    }
+    fn widget_scroll_position(&self, widget_id: u64) -> Option<(i32, i32)> {
+        self.widget_scroll_position_impl(widget_id)
+    }
     fn set_widget_ime_enabled(&self, widget_id: u64, enabled: bool) -> bool {
         self.set_widget_ime_enabled_impl(widget_id, enabled)
     }

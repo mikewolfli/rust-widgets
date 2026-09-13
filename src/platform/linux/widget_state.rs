@@ -822,6 +822,182 @@ impl LinuxPlatform {
         self.state.echo_mode(widget_id)
     }
 
+    pub(crate) fn set_slider_orientation_impl(
+        &self,
+        widget_id: u64,
+        orientation: crate::core::Orientation,
+    ) -> bool {
+        use crate::core::Orientation;
+        let Some(kind) = self.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(kind, LinuxHandleKind::Slider) {
+            return false;
+        }
+        self.state.set_orientation(widget_id, orientation);
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            let native = self.native.lock_guard();
+            if let Some(widget) = native.widgets.get(&widget_id) {
+                if let Ok(scale) = widget.clone().downcast::<gtk::Scale>() {
+                    let gtk_orientation = if orientation == Orientation::Vertical {
+                        gtk::Orientation::Vertical
+                    } else {
+                        gtk::Orientation::Horizontal
+                    };
+                    scale.set_orientation(gtk_orientation);
+                }
+            }
+        }
+        true
+    }
+
+    pub(crate) fn slider_orientation_impl(
+        &self,
+        widget_id: u64,
+    ) -> Option<crate::core::Orientation> {
+        use crate::core::Orientation;
+        let kind = self.kind_of(widget_id)?;
+        if !matches!(kind, LinuxHandleKind::Slider) {
+            return None;
+        }
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            let native = self.native.lock_guard();
+            if let Some(widget) = native.widgets.get(&widget_id) {
+                if let Ok(scale) = widget.clone().downcast::<gtk::Scale>() {
+                    return Some(if scale.orientation() == gtk::Orientation::Vertical {
+                        Orientation::Vertical
+                    } else {
+                        Orientation::Horizontal
+                    });
+                }
+            }
+        }
+        self.state.orientation(widget_id)
+    }
+
+    pub(crate) fn set_widget_tristate_impl(&self, widget_id: u64, enabled: bool) -> bool {
+        let Some(kind) = self.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(
+            kind,
+            LinuxHandleKind::CheckBox
+                | LinuxHandleKind::RadioButton
+                | LinuxHandleKind::ToggleButton
+        ) {
+            return false;
+        }
+        self.state.set_tristate(widget_id, enabled);
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            let native = self.native.lock_guard();
+            if let Some(widget) = native.widgets.get(&widget_id) {
+                if let Ok(toggle) = widget.clone().downcast::<gtk::ToggleButton>() {
+                    // GTK's "inconsistent" flag is exactly the third state a
+                    // tri-state check box needs.
+                    if enabled {
+                        toggle.set_inconsistent(true);
+                    } else {
+                        toggle.set_inconsistent(false);
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    pub(crate) fn is_widget_tristate_impl(&self, widget_id: u64) -> Option<bool> {
+        let kind = self.kind_of(widget_id)?;
+        if !matches!(
+            kind,
+            LinuxHandleKind::CheckBox
+                | LinuxHandleKind::RadioButton
+                | LinuxHandleKind::ToggleButton
+        ) {
+            return None;
+        }
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            let native = self.native.lock_guard();
+            if let Some(widget) = native.widgets.get(&widget_id) {
+                if let Ok(toggle) = widget.clone().downcast::<gtk::ToggleButton>() {
+                    return Some(toggle.is_inconsistent());
+                }
+            }
+        }
+        self.state.tristate(widget_id)
+    }
+
+    pub(crate) fn set_widget_group_impl(&self, widget_id: u64, group: &str) -> bool {
+        let Some(kind) = self.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(kind, LinuxHandleKind::RadioButton) {
+            return false;
+        }
+        self.state.set_group(widget_id, group);
+        // GTK's `join_group` links one button to another so they become mutually
+        // exclusive. That is a peer relationship, not a name, so the named-group
+        // semantics are enforced by `RadioButtonHandle::select` (which clears the
+        // siblings through `set_widget_checked`) and the name is tracked here.
+        true
+    }
+
+    pub(crate) fn widget_group_impl(&self, widget_id: u64) -> Option<String> {
+        let kind = self.kind_of(widget_id)?;
+        if !matches!(kind, LinuxHandleKind::RadioButton) {
+            return None;
+        }
+        self.state.group(widget_id)
+    }
+
+    pub(crate) fn set_widget_scroll_position_impl(&self, widget_id: u64, x: i32, y: i32) -> bool {
+        let Some(kind) = self.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(kind, LinuxHandleKind::ScrollArea) {
+            return false;
+        }
+        self.state.set_scroll(widget_id, x, y);
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            let native = self.native.lock_guard();
+            if let Some(widget) = native.widgets.get(&widget_id) {
+                // A scrollable GTK widget exposes its adjustments; drive them so a
+                // real scrolled container follows the offset.
+                if let Ok(scrollable) = widget.clone().downcast::<gtk::ScrolledWindow>() {
+                    // `hadjustment`/`vadjustment` return an `Adjustment` directly
+                    // (GTK synthesises one when the caller supplied none), so there
+                    // is no `Option` to unwrap here.
+                    scrollable.hadjustment().set_value(f64::from(x));
+                    scrollable.vadjustment().set_value(f64::from(y));
+                }
+            }
+        }
+        true
+    }
+
+    pub(crate) fn widget_scroll_position_impl(&self, widget_id: u64) -> Option<(i32, i32)> {
+        let kind = self.kind_of(widget_id)?;
+        if !matches!(kind, LinuxHandleKind::ScrollArea) {
+            return None;
+        }
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            let native = self.native.lock_guard();
+            if let Some(widget) = native.widgets.get(&widget_id) {
+                if let Ok(scrollable) = widget.clone().downcast::<gtk::ScrolledWindow>() {
+                    let x = scrollable.hadjustment().value() as i32;
+                    let y = scrollable.vadjustment().value() as i32;
+                    return Some((x, y));
+                }
+            }
+        }
+        self.state.scroll(widget_id)
+    }
+
     pub(crate) fn set_widget_ime_enabled_impl(&self, widget_id: u64, enabled: bool) -> bool {
         self.state.set_ime_enabled(widget_id, enabled)
     }

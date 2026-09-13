@@ -621,3 +621,89 @@ fn contract_no_echo_mode_is_refused_or_honoured_truthfully() {
     // is asserted — the point is that a lie (accepted but applied as Password) is
     // impossible.
 }
+
+/// The four capabilities added to close the last same-family gaps: slider
+/// orientation (creation-time), tri-state, radio grouping, scroll offset.
+#[test]
+fn contract_orientation_tristate_group_scroll_shape() {
+    use crate::core::Orientation;
+
+    let platform = get_platform();
+    platform.init();
+    let bogus = 66_666_666u64;
+    assert!(!Platform::set_slider_orientation(platform, bogus, Orientation::Vertical));
+    assert_eq!(Platform::slider_orientation(platform, bogus), None);
+    assert!(!Platform::set_widget_tristate(platform, bogus, true));
+    assert_eq!(Platform::is_widget_tristate(platform, bogus), None);
+    assert!(!Platform::set_widget_group(platform, bogus, "g"));
+    assert_eq!(Platform::widget_group(platform, bogus), None);
+    assert!(!Platform::set_widget_scroll_position(platform, bogus, 1, 2));
+    assert_eq!(Platform::widget_scroll_position(platform, bogus), None);
+
+    let window = Platform::create_window(platform, "w", 0, 0, 400, 300);
+
+    // Slider orientation round-trips.
+    let slider = Platform::create_slider(platform, window, 0, 0, 200, 20);
+    assert_ne!(slider, 0);
+    if Platform::set_slider_orientation(platform, slider, Orientation::Vertical) {
+        assert_eq!(
+            Platform::slider_orientation(platform, slider),
+            Some(Orientation::Vertical),
+            "{}: vertical orientation must read back",
+            platform.backend_name()
+        );
+    }
+
+    // Tri-state round-trips on a check box.
+    let check = Platform::create_checkbox(platform, window, "t", 0, 0, 120, 24);
+    assert_ne!(check, 0);
+    if Platform::set_widget_tristate(platform, check, true) {
+        assert_eq!(
+            Platform::is_widget_tristate(platform, check),
+            Some(true),
+            "{}: tri-state must read back",
+            platform.backend_name()
+        );
+    }
+
+    // Group name round-trips on a radio button.
+    let radio = Platform::create_radio_button(platform, window, "r", 0, 0, 120, 24);
+    assert_ne!(radio, 0);
+    if Platform::set_widget_group(platform, radio, "opts") {
+        assert_eq!(
+            Platform::widget_group(platform, radio).as_deref(),
+            Some("opts"),
+            "{}: group name must read back",
+            platform.backend_name()
+        );
+    }
+
+    // Scroll offset round-trips on a scroll area.
+    let area = Platform::create_scroll_area(platform, window, 0, 0, 200, 200);
+    assert_ne!(area, 0);
+    if Platform::set_widget_scroll_position(platform, area, 10, 20) {
+        assert_eq!(
+            Platform::widget_scroll_position(platform, area),
+            Some((10, 20)),
+            "{}: scroll offset must read back",
+            platform.backend_name()
+        );
+    }
+}
+
+/// A tri-state request on a control that is not checkable must be refused.
+#[test]
+fn contract_tristate_refused_on_non_checkable() {
+    let platform = get_platform();
+    platform.init();
+    let window = Platform::create_window(platform, "w", 0, 0, 400, 300);
+    let label = Platform::create_label(platform, window, "text", 0, 0, 120, 24);
+    assert_ne!(label, 0);
+
+    assert!(
+        !Platform::set_widget_tristate(platform, label, true),
+        "{}: a label is not checkable",
+        platform.backend_name()
+    );
+    assert_eq!(Platform::is_widget_tristate(platform, label), None);
+}

@@ -52,6 +52,14 @@ TARGET_FNS = [
     "widget_placeholder_impl",
     "set_widget_echo_mode_impl",
     "widget_echo_mode_impl",
+    "set_slider_orientation_impl",
+    "slider_orientation_impl",
+    "set_widget_tristate_impl",
+    "is_widget_tristate_impl",
+    "set_widget_group_impl",
+    "widget_group_impl",
+    "set_widget_scroll_position_impl",
+    "widget_scroll_position_impl",
 ]
 
 CARGO_TOML = """[package]
@@ -90,6 +98,7 @@ pub enum LinuxHandleKind {
     ListBox,
     SpinBox,
     ScrollBar,
+    ScrollArea,
     DoubleSpinBox,
     CheckBox,
     RadioButton,
@@ -137,6 +146,21 @@ impl BackendState {
     pub fn placeholder(&self, _id: u64) -> Option<String> { None }
     pub fn set_echo_mode(&self, _id: u64, _m: crate::shim::EchoMode) -> bool { true }
     pub fn echo_mode(&self, _id: u64) -> Option<crate::shim::EchoMode> { None }
+    pub fn set_orientation(&self, _id: u64, _o: crate::shim::Orientation) -> bool { true }
+    pub fn orientation(&self, _id: u64) -> Option<crate::shim::Orientation> { None }
+    pub fn set_tristate(&self, _id: u64, _v: bool) -> bool { true }
+    pub fn tristate(&self, _id: u64) -> Option<bool> { None }
+    pub fn set_group(&self, _id: u64, _g: &str) -> bool { true }
+    pub fn group(&self, _id: u64) -> Option<String> { None }
+    pub fn set_scroll(&self, _id: u64, _x: i32, _y: i32) -> bool { true }
+    pub fn scroll(&self, _id: u64) -> Option<(i32, i32)> { None }
+}
+
+/// Stand-in for the core orientation enum.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Orientation {
+    Horizontal,
+    Vertical,
 }
 
 /// Stand-in for the platform echo-mode enum.
@@ -199,13 +223,18 @@ def extract_target_fns(src: str) -> str:
         '#[cfg(all(target_os = "linux", feature = "gtk-native"))]',
         "",
     )
-    # The shim *is* the crate root here, so internal platform paths resolve to it.
+    # The shim *is* the crate root here, so internal paths resolve to it.
     src = src.replace("crate::platform::", "crate::shim::")
+    src = src.replace("crate::core::", "crate::shim::")
 
     out = []
     for name in TARGET_FNS:
+        # Match a (possibly multi-line) signature: `fn name` up to the `{` that
+        # opens the body, then everything up to the next same-indent item.
         pattern = re.compile(
-            r"(?m)^    (?:pub\(crate\) )?fn " + re.escape(name) + r"\b.*?(?=^    (?:pub\(crate\) )?fn |^})",
+            r"(?m)^    (?:pub\(crate\) |pub )?fn "
+            + re.escape(name)
+            + r"\b[^{]*\{.*?(?=^    (?:pub\(crate\) |pub )?fn |^\})",
             re.DOTALL,
         )
         match = pattern.search(src)

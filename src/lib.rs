@@ -907,6 +907,57 @@ pub fn set_widget_echo_mode(widget_id: crate::core::ObjectId, mode: platform::Ec
 pub fn widget_echo_mode(widget_id: crate::core::ObjectId) -> Option<platform::EchoMode> {
     platform::get_platform().widget_echo_mode(widget_id)
 }
+
+/// Apply a slider's creation-time orientation.
+#[cfg(not(feature = "mini"))]
+pub fn set_slider_orientation(
+    widget_id: crate::core::ObjectId,
+    orientation: crate::core::Orientation,
+) -> bool {
+    platform::get_platform().set_slider_orientation(widget_id, orientation)
+}
+
+/// Read a slider's orientation.
+#[cfg(not(feature = "mini"))]
+pub fn slider_orientation(widget_id: crate::core::ObjectId) -> Option<crate::core::Orientation> {
+    platform::get_platform().slider_orientation(widget_id)
+}
+
+/// Set a checkable control's tri-state mode.
+#[cfg(not(feature = "mini"))]
+pub fn set_widget_tristate(widget_id: crate::core::ObjectId, enabled: bool) -> bool {
+    platform::get_platform().set_widget_tristate(widget_id, enabled)
+}
+
+/// Read a checkable control's tri-state mode.
+#[cfg(not(feature = "mini"))]
+pub fn is_widget_tristate(widget_id: crate::core::ObjectId) -> Option<bool> {
+    platform::get_platform().is_widget_tristate(widget_id)
+}
+
+/// Put a radio button into a named mutually-exclusive group.
+#[cfg(not(feature = "mini"))]
+pub fn set_widget_group(widget_id: crate::core::ObjectId, group: &str) -> bool {
+    platform::get_platform().set_widget_group(widget_id, group)
+}
+
+/// Read a radio button's group name.
+#[cfg(not(feature = "mini"))]
+pub fn widget_group(widget_id: crate::core::ObjectId) -> Option<String> {
+    platform::get_platform().widget_group(widget_id)
+}
+
+/// Set a scrollable container's scroll offset.
+#[cfg(not(feature = "mini"))]
+pub fn set_widget_scroll_position(widget_id: crate::core::ObjectId, x: i32, y: i32) -> bool {
+    platform::get_platform().set_widget_scroll_position(widget_id, x, y)
+}
+
+/// Read a scrollable container's scroll offset.
+#[cfg(not(feature = "mini"))]
+pub fn widget_scroll_position(widget_id: crate::core::ObjectId) -> Option<(i32, i32)> {
+    platform::get_platform().widget_scroll_position(widget_id)
+}
 // ComboBox operations
 #[cfg(not(feature = "mini"))]
 pub fn combo_box_add_item(combo_box: crate::core::ObjectId, text: &str) -> bool {
