@@ -871,6 +871,42 @@ pub fn set_window_icon(widget_id: crate::core::ObjectId, path: &str) -> bool {
 pub fn window_icon(widget_id: crate::core::ObjectId) -> Option<String> {
     platform::get_platform().window_icon(widget_id)
 }
+
+/// Set a text entry's selection range as `(start, end)` character offsets.
+#[cfg(not(feature = "mini"))]
+pub fn set_widget_selection(widget_id: crate::core::ObjectId, start: u32, end: u32) -> bool {
+    platform::get_platform().set_widget_selection(widget_id, start, end)
+}
+
+/// Read a text entry's selection range, or `None` when nothing is selected.
+#[cfg(not(feature = "mini"))]
+pub fn widget_selection(widget_id: crate::core::ObjectId) -> Option<(u32, u32)> {
+    platform::get_platform().widget_selection(widget_id)
+}
+
+/// Set a text entry's placeholder (cue) text.
+#[cfg(not(feature = "mini"))]
+pub fn set_widget_placeholder(widget_id: crate::core::ObjectId, text: &str) -> bool {
+    platform::get_platform().set_widget_placeholder(widget_id, text)
+}
+
+/// Read a text entry's placeholder text.
+#[cfg(not(feature = "mini"))]
+pub fn widget_placeholder(widget_id: crate::core::ObjectId) -> Option<String> {
+    platform::get_platform().widget_placeholder(widget_id)
+}
+
+/// Set a text entry's echo mode.
+#[cfg(not(feature = "mini"))]
+pub fn set_widget_echo_mode(widget_id: crate::core::ObjectId, mode: platform::EchoMode) -> bool {
+    platform::get_platform().set_widget_echo_mode(widget_id, mode)
+}
+
+/// Read a text entry's echo mode.
+#[cfg(not(feature = "mini"))]
+pub fn widget_echo_mode(widget_id: crate::core::ObjectId) -> Option<platform::EchoMode> {
+    platform::get_platform().widget_echo_mode(widget_id)
+}
 // ComboBox operations
 #[cfg(not(feature = "mini"))]
 pub fn combo_box_add_item(combo_box: crate::core::ObjectId, text: &str) -> bool {

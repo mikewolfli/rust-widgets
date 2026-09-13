@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Shared backend state model used by platform adapters.
-use super::{DropEvent, WidgetTriggerEvent, WidgetTriggerKind, WindowStateFlag};
+use super::{DropEvent, EchoMode, WidgetTriggerEvent, WidgetTriggerKind, WindowStateFlag};
 use crate::compat::HashMap;
 use crate::compat::Mutex;
 use crate::core::ObjectId;
@@ -68,6 +68,13 @@ pub struct WidgetRecord<K> {
     /// resizable, decorated). `None` means the widget is not a window on this
     /// backend, which is what keeps `is_window_in_state` honest for controls.
     pub window_state: Option<WindowStateRecord>,
+    /// Text-entry selection range as `(start, end)` character offsets. `None`
+    /// means nothing is selected (or the control has no selectable text).
+    pub selection: Option<(u32, u32)>,
+    /// Placeholder (cue) text for a text entry. `None` until one is set.
+    pub placeholder: Option<String>,
+    /// Echo mode for a text entry, when the backend can apply one.
+    pub echo_mode: Option<EchoMode>,
 }
 
 /// The togglable states of a window, as stored by a backend.
@@ -272,6 +279,9 @@ where
                 read_only: None,
                 max_length: None,
                 window_state: None,
+                selection: None,
+                placeholder: None,
+                echo_mode: None,
             },
         );
     }
@@ -661,6 +671,61 @@ where
             .get(&widget_id)
             .and_then(|widget| widget.window_state.as_ref())
             .and_then(|state| state.icon.clone())
+    }
+
+    /// Store a text entry's selection range, returning `false` for unknown ids.
+    pub fn set_selection(&self, widget_id: ObjectId, start: u32, end: u32) -> bool {
+        if let Some(widget) =
+            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
+        {
+            widget.selection = Some((start, end));
+            return true;
+        }
+        false
+    }
+    /// Read a text entry's selection range, or `None` when nothing is selected.
+    pub fn selection(&self, widget_id: ObjectId) -> Option<(u32, u32)> {
+        self.widgets
+            .lock()
+            .expect("backend state widget lock poisoned")
+            .get(&widget_id)
+            .and_then(|widget| widget.selection)
+    }
+    /// Store a text entry's placeholder text, returning `false` for unknown ids.
+    pub fn set_placeholder(&self, widget_id: ObjectId, text: &str) -> bool {
+        if let Some(widget) =
+            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
+        {
+            widget.placeholder = Some(text.to_string());
+            return true;
+        }
+        false
+    }
+    /// Read a text entry's placeholder text.
+    pub fn placeholder(&self, widget_id: ObjectId) -> Option<String> {
+        self.widgets
+            .lock()
+            .expect("backend state widget lock poisoned")
+            .get(&widget_id)
+            .and_then(|widget| widget.placeholder.clone())
+    }
+    /// Store a text entry's echo mode, returning `false` for unknown ids.
+    pub fn set_echo_mode(&self, widget_id: ObjectId, mode: EchoMode) -> bool {
+        if let Some(widget) =
+            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
+        {
+            widget.echo_mode = Some(mode);
+            return true;
+        }
+        false
+    }
+    /// Read a text entry's echo mode.
+    pub fn echo_mode(&self, widget_id: ObjectId) -> Option<EchoMode> {
+        self.widgets
+            .lock()
+            .expect("backend state widget lock poisoned")
+            .get(&widget_id)
+            .and_then(|widget| widget.echo_mode)
     }
 
     // ─── Backend event methods ─────────────────────────────────────────────────

@@ -11,7 +11,7 @@ use crate::platform::clipboard::RichClipboardBackend;
 use crate::platform::ime::ImeBridge;
 use crate::platform::macos::types::*;
 use crate::platform::{
-    DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind, WindowStateFlag,
+    DropEvent, EchoMode, Platform, WidgetTriggerEvent, WidgetTriggerKind, WindowStateFlag,
 };
 use cocoa::appkit::{
     NSApp, NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicyRegular,
@@ -2182,6 +2182,78 @@ impl Platform for MacOSPlatform {
         // AppKit cannot hand an icon back as a path, so the state model's record
         // of what the caller supplied is the only honest answer here.
         self.state.window_icon(widget_id)
+    }
+
+    fn set_widget_selection(&self, widget_id: u64, start: u32, end: u32) -> bool {
+        let Some(handle) = self.get_handle(widget_id) else {
+            return false;
+        };
+        if !matches!(handle.kind, HandleKind::LineEdit) {
+            return false;
+        }
+        self.state.set_selection(widget_id, start, end);
+        if handle.ptr == 0 || !super::types::is_main_thread() {
+            return true;
+        }
+        // SAFETY: handle.ptr is a live NSTextView backed by an NSTextStorage;
+        // `setSelectedRange:` takes an `NSRange` by value and clamps it to the
+        // string length itself. The call is on the AppKit main thread.
+        unsafe {
+            let native = Self::as_id(handle);
+            let range = cocoa::foundation::NSRange {
+                location: u64::from(start),
+                length: u64::from(end.saturating_sub(start)),
+            };
+            let _: () = msg_send![native, setSelectedRange: range];
+        }
+        true
+    }
+
+    fn widget_selection(&self, widget_id: u64) -> Option<(u32, u32)> {
+        let handle = self.get_handle(widget_id)?;
+        if !matches!(handle.kind, HandleKind::LineEdit) {
+            return None;
+        }
+        if handle.ptr != 0 && super::types::is_main_thread() {
+            // SAFETY: live NSTextView; `selectedRange` returns an NSRange by value
+            // and the call is on the AppKit main thread.
+            unsafe {
+                let native = Self::as_id(handle);
+                let range: cocoa::foundation::NSRange = msg_send![native, selectedRange];
+                let start = range.location as u32;
+                let end = start + range.length as u32;
+                // An empty range means "caret, nothing selected" — report that as
+                // absence so a caller can tell it from a real selection.
+                if range.length == 0 {
+                    return None;
+                }
+                return Some((start, end));
+            }
+        }
+        self.state.selection(widget_id)
+    }
+
+    /// `NSTextView` has no placeholder concept, so this backend refuses rather
+    /// than recording a value it cannot display (principle #37).
+    fn set_widget_placeholder(&self, _widget_id: u64, _text: &str) -> bool {
+        false
+    }
+
+    /// See [`Platform::set_widget_placeholder`] — no placeholder to read either.
+    fn widget_placeholder(&self, _widget_id: u64) -> Option<String> {
+        None
+    }
+
+    /// AppKit expresses echo mode through the text class (`NSSecureTextField`),
+    /// and this crate's line edit is an `NSTextView`; changing class would mean
+    /// rebuilding the view, which an attribute write must not do (principle #37).
+    fn set_widget_echo_mode(&self, _widget_id: u64, _mode: EchoMode) -> bool {
+        false
+    }
+
+    /// See [`Platform::set_widget_echo_mode`] — nothing native to read.
+    fn widget_echo_mode(&self, _widget_id: u64) -> Option<EchoMode> {
+        None
     }
     fn set_widget_ime_enabled(&self, widget_id: u64, enabled: bool) -> bool {
         self.state.set_ime_enabled(widget_id, enabled)

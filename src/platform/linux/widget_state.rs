@@ -685,6 +685,143 @@ impl LinuxPlatform {
         self.state.window_icon(widget_id)
     }
 
+    pub(crate) fn set_widget_selection_impl(&self, widget_id: u64, start: u32, end: u32) -> bool {
+        let Some(kind) = self.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(kind, LinuxHandleKind::LineEdit) {
+            return false;
+        }
+        self.state.set_selection(widget_id, start, end);
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            let native = self.native.lock_guard();
+            if let Some(widget) = native.widgets.get(&widget_id) {
+                if let Ok(entry) = widget.clone().downcast::<gtk::Entry>() {
+                    // GTK uses -1 to mean "to the end"; clamp so an out-of-range
+                    // `end` selects to the end rather than wrapping.
+                    let start_i = start as i32;
+                    let end_i = if end as i32 >= 0 { end as i32 } else { -1 };
+                    entry.select_region(start_i, end_i);
+                }
+            }
+        }
+        true
+    }
+
+    pub(crate) fn widget_selection_impl(&self, widget_id: u64) -> Option<(u32, u32)> {
+        let kind = self.kind_of(widget_id)?;
+        if !matches!(kind, LinuxHandleKind::LineEdit) {
+            return None;
+        }
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            let native = self.native.lock_guard();
+            if let Some(widget) = native.widgets.get(&widget_id) {
+                if let Ok(entry) = widget.clone().downcast::<gtk::Entry>() {
+                    // `selection_bounds` returns `None` when nothing is selected,
+                    // which is exactly the distinction the contract asks for.
+                    return entry.selection_bounds().map(|(s, e)| (s as u32, e as u32));
+                }
+            }
+        }
+        self.state.selection(widget_id)
+    }
+
+    pub(crate) fn set_widget_placeholder_impl(&self, widget_id: u64, text: &str) -> bool {
+        let Some(kind) = self.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(kind, LinuxHandleKind::LineEdit) {
+            return false;
+        }
+        self.state.set_placeholder(widget_id, text);
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            let native = self.native.lock_guard();
+            if let Some(widget) = native.widgets.get(&widget_id) {
+                if let Ok(entry) = widget.clone().downcast::<gtk::Entry>() {
+                    // An empty placeholder is GTK's `None`, not `Some("")`.
+                    if text.is_empty() {
+                        entry.set_placeholder_text(None);
+                    } else {
+                        entry.set_placeholder_text(Some(text));
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    pub(crate) fn widget_placeholder_impl(&self, widget_id: u64) -> Option<String> {
+        let kind = self.kind_of(widget_id)?;
+        if !matches!(kind, LinuxHandleKind::LineEdit) {
+            return None;
+        }
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            let native = self.native.lock_guard();
+            if let Some(widget) = native.widgets.get(&widget_id) {
+                if let Ok(entry) = widget.clone().downcast::<gtk::Entry>() {
+                    // `placeholder_text` is not exposed by gtk 0.18's safe API, so
+                    // the state model answers; it is what was applied above.
+                    return self.state.placeholder(widget_id);
+                }
+            }
+        }
+        self.state.placeholder(widget_id)
+    }
+
+    pub(crate) fn set_widget_echo_mode_impl(
+        &self,
+        widget_id: u64,
+        mode: crate::platform::EchoMode,
+    ) -> bool {
+        use crate::platform::EchoMode;
+        let Some(kind) = self.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(kind, LinuxHandleKind::LineEdit) {
+            return false;
+        }
+        self.state.set_echo_mode(widget_id, mode);
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            let native = self.native.lock_guard();
+            if let Some(widget) = native.widgets.get(&widget_id) {
+                if let Ok(entry) = widget.clone().downcast::<gtk::Entry>() {
+                    match mode {
+                        // GTK's `set_visibility(false)` is the masking mode; the
+                        // mask glyph is theme-defined rather than caller-set.
+                        EchoMode::Normal => entry.set_visibility(true),
+                        EchoMode::Password => entry.set_visibility(false),
+                        // GTK has no "echo nothing" mode distinct from masking, so
+                        // report refusal rather than silently masking.
+                        EchoMode::NoEcho => {
+                            log::warn!(
+                                "[rust_widgets][linux] set_widget_echo_mode: NoEcho has no GTK \
+                                 equivalent; refusing"
+                            );
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    pub(crate) fn widget_echo_mode_impl(
+        &self,
+        widget_id: u64,
+    ) -> Option<crate::platform::EchoMode> {
+        let kind = self.kind_of(widget_id)?;
+        if !matches!(kind, LinuxHandleKind::LineEdit) {
+            return None;
+        }
+        self.state.echo_mode(widget_id)
+    }
+
     pub(crate) fn set_widget_ime_enabled_impl(&self, widget_id: u64, enabled: bool) -> bool {
         self.state.set_ime_enabled(widget_id, enabled)
     }

@@ -266,6 +266,9 @@ impl Platform for StubPlatform {
         // answer `Some(false)` instead of `None` for a control that has one.
         self.state.set_read_only(id, false);
         self.state.set_max_length(id, u32::MAX);
+        // A fresh entry shows characters as-is and has no placeholder.
+        self.state.set_echo_mode(id, EchoMode::Normal);
+        self.state.set_placeholder(id, "");
         id
     }
 
@@ -1215,6 +1218,30 @@ impl Platform for StubPlatform {
 
     fn window_icon(&self, widget_id: ObjectId) -> Option<String> {
         self.state.window_icon(widget_id)
+    }
+
+    fn set_widget_selection(&self, widget_id: ObjectId, start: u32, end: u32) -> bool {
+        self.state.set_selection(widget_id, start, end)
+    }
+
+    fn widget_selection(&self, widget_id: ObjectId) -> Option<(u32, u32)> {
+        self.state.selection(widget_id)
+    }
+
+    fn set_widget_placeholder(&self, widget_id: ObjectId, text: &str) -> bool {
+        self.state.set_placeholder(widget_id, text)
+    }
+
+    fn widget_placeholder(&self, widget_id: ObjectId) -> Option<String> {
+        self.state.placeholder(widget_id)
+    }
+
+    fn set_widget_echo_mode(&self, widget_id: ObjectId, mode: EchoMode) -> bool {
+        self.state.set_echo_mode(widget_id, mode)
+    }
+
+    fn widget_echo_mode(&self, widget_id: ObjectId) -> Option<EchoMode> {
+        self.state.echo_mode(widget_id)
     }
 
     fn set_widget_ime_enabled(&self, widget_id: ObjectId, enabled: bool) -> bool {

@@ -663,6 +663,24 @@ impl Platform for LinuxPlatform {
     fn window_icon(&self, widget_id: u64) -> Option<String> {
         self.window_icon_impl(widget_id)
     }
+    fn set_widget_selection(&self, widget_id: u64, start: u32, end: u32) -> bool {
+        self.set_widget_selection_impl(widget_id, start, end)
+    }
+    fn widget_selection(&self, widget_id: u64) -> Option<(u32, u32)> {
+        self.widget_selection_impl(widget_id)
+    }
+    fn set_widget_placeholder(&self, widget_id: u64, text: &str) -> bool {
+        self.set_widget_placeholder_impl(widget_id, text)
+    }
+    fn widget_placeholder(&self, widget_id: u64) -> Option<String> {
+        self.widget_placeholder_impl(widget_id)
+    }
+    fn set_widget_echo_mode(&self, widget_id: u64, mode: crate::platform::EchoMode) -> bool {
+        self.set_widget_echo_mode_impl(widget_id, mode)
+    }
+    fn widget_echo_mode(&self, widget_id: u64) -> Option<crate::platform::EchoMode> {
+        self.widget_echo_mode_impl(widget_id)
+    }
     fn set_widget_ime_enabled(&self, widget_id: u64, enabled: bool) -> bool {
         self.set_widget_ime_enabled_impl(widget_id, enabled)
     }

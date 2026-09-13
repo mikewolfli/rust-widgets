@@ -30,7 +30,7 @@
 
 use rust_widgets::app::{App, CheckBoxHandle, WidgetHandle};
 use rust_widgets::core::ObjectId;
-use rust_widgets::platform::get_platform;
+use rust_widgets::platform::{get_platform, EchoMode};
 use rust_widgets::WindowStateFlag;
 
 fn main() {
@@ -92,6 +92,25 @@ fn main() {
     let ro = platform.set_widget_read_only(entry, true);
     println!("lineedit read only  -> {ro}");
     println!("lineedit is ro      -> {:?}", platform.is_widget_read_only(entry));
+
+    // ── Selection / placeholder / echo mode (per-OS capability, same call) ──
+    let sel = platform.set_widget_selection(entry, 0, 4);
+    println!("lineedit select 0..4-> {sel}/{:?}", platform.widget_selection(entry));
+
+    let ph = platform.set_widget_placeholder(entry, "Type here");
+    println!(
+        "lineedit placeholder-> {ph}/{:?} (macOS NSTextView has none)",
+        platform.widget_placeholder(entry)
+    );
+
+    let echo = platform.set_widget_echo_mode(entry, EchoMode::Password);
+    println!(
+        "lineedit password   -> {echo}/{:?} (macOS picks the class)",
+        platform.widget_echo_mode(entry)
+    );
+
+    let no_echo = platform.set_widget_echo_mode(entry, EchoMode::NoEcho);
+    println!("lineedit NoEcho     -> {no_echo} (no toolkit has this; must be false)");
 
     // ── Window state: the same call shape as every other property ────────
     for flag in [

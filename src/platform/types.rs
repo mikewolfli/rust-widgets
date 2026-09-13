@@ -120,6 +120,26 @@ pub struct DropEvent {
     pub payload: Vec<u8>,
 }
 
+/// Controls how text is displayed in a text-entry control.
+///
+/// Defined here rather than in `app` because a backend must name it when it
+/// implements [`Platform::set_widget_echo_mode`], and `platform` must not depend
+/// on `app` (that would invert the layering, principle #3). `app` re-exports it
+/// so callers keep their existing import path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(
+    all(feature = "serde", not(any(feature = "mini", feature = "embedded"))),
+    derive(Serialize, Deserialize)
+)]
+pub enum EchoMode {
+    /// Display characters as-is.
+    Normal,
+    /// Mask every character (e.g. for passwords).
+    Password,
+    /// Do not echo characters at all.
+    NoEcho,
+}
+
 /// A togglable window state that a native backend can apply and read back.
 ///
 /// These are modelled as an enum rather than a handful of `set_window_*`
@@ -1153,6 +1173,55 @@ pub trait Platform: Send + Sync {
     /// desktop toolkit hands an icon back as a path, so this is the state model's
     /// answer and is documented as such.
     fn window_icon(&self, _widget_id: ObjectId) -> Option<String> {
+        None
+    }
+
+    /// Set a text entry's selection range as `(start, end)` character offsets.
+    ///
+    /// AppKit uses `setSelectedRange:` on the `NSTextView`, Win32 `EM_SETSEL`, GTK
+    /// `select_region`. Returns `false` when the id is not a text entry, the range
+    /// is inverted/out of bounds for this backend, or the window/control has no
+    /// native selectable text.
+    fn set_widget_selection(&self, _widget_id: ObjectId, _start: u32, _end: u32) -> bool {
+        false
+    }
+
+    /// Read a text entry's selection range.
+    ///
+    /// `None` when the id is not a text entry or nothing is selected, so a caller
+    /// can tell "no selection" from "selected the empty range at 0".
+    fn widget_selection(&self, _widget_id: ObjectId) -> Option<(u32, u32)> {
+        None
+    }
+
+    /// Set a text entry's placeholder (cue) text.
+    ///
+    /// Win32 uses `EM_SETCUEBANNER` and GTK `set_placeholder_text`. AppKit's
+    /// `NSTextView` — which is what this crate's macOS line edit is built on — has
+    /// **no** placeholder concept, so the macOS backend honestly returns `false`
+    /// rather than pretending (principle #37).
+    fn set_widget_placeholder(&self, _widget_id: ObjectId, _text: &str) -> bool {
+        false
+    }
+
+    /// Read a text entry's placeholder text.
+    fn widget_placeholder(&self, _widget_id: ObjectId) -> Option<String> {
+        None
+    }
+
+    /// Set a text entry's echo mode.
+    ///
+    /// Win32 uses `EM_SETPASSWORDCHAR` and GTK `set_visibility`. AppKit expresses
+    /// this by class choice (`NSSecureTextField` vs `NSTextField`), and this
+    /// crate's macOS line edit is an `NSTextView`, so the macOS backend reports
+    /// `false` — switching class would make windows re-parent an existing view,
+    /// which is out of scope for an attribute write (principle #37).
+    fn set_widget_echo_mode(&self, _widget_id: ObjectId, _mode: EchoMode) -> bool {
+        false
+    }
+
+    /// Read a text entry's echo mode.
+    fn widget_echo_mode(&self, _widget_id: ObjectId) -> Option<EchoMode> {
         None
     }
 

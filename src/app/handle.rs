@@ -29,15 +29,10 @@ pub enum CheckState {
 }
 
 /// Controls how text is displayed in a line-edit widget.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum EchoMode {
-    /// Display characters as-is.
-    Normal,
-    /// Mask every character (e.g. for passwords).
-    Password,
-    /// Do not echo characters at all.
-    NoEcho,
-}
+///
+/// Re-exported from [`crate::platform::EchoMode`] so this path keeps working for
+/// existing callers while the enum itself lives at the layer that has to name it.
+pub use crate::platform::EchoMode;
 
 /// Determines how many rows can be selected in a list / table view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -433,6 +428,36 @@ pub trait WidgetHandle: Sized {
     /// Read a window's icon path, if one was set.
     fn window_icon(&self) -> Option<String> {
         crate::platform::get_platform().window_icon(self.raw_id())
+    }
+
+    /// Set a text entry's selection range as `(start, end)` character offsets.
+    fn set_widget_selection(&self, start: u32, end: u32) -> bool {
+        crate::platform::get_platform().set_widget_selection(self.raw_id(), start, end)
+    }
+
+    /// Read a text entry's selection range, or `None` when nothing is selected.
+    fn widget_selection(&self) -> Option<(u32, u32)> {
+        crate::platform::get_platform().widget_selection(self.raw_id())
+    }
+
+    /// Set a text entry's placeholder (cue) text.
+    fn set_widget_placeholder(&self, text: &str) -> bool {
+        crate::platform::get_platform().set_widget_placeholder(self.raw_id(), text)
+    }
+
+    /// Read a text entry's placeholder text.
+    fn widget_placeholder(&self) -> Option<String> {
+        crate::platform::get_platform().widget_placeholder(self.raw_id())
+    }
+
+    /// Set a text entry's echo mode.
+    fn set_widget_echo_mode(&self, mode: EchoMode) -> bool {
+        crate::platform::get_platform().set_widget_echo_mode(self.raw_id(), mode)
+    }
+
+    /// Read a text entry's echo mode.
+    fn widget_echo_mode(&self) -> Option<EchoMode> {
+        crate::platform::get_platform().widget_echo_mode(self.raw_id())
     }
 
     /// Register a callback for the "clicked" trigger.
@@ -1485,11 +1510,18 @@ thread_local! {
 /// # Line-edit specific operations
 impl LineEditHandle {
     /// Set the placeholder text shown when the field is empty.
+    ///
+    /// Mirrored into the in-process state *and* pushed to the native control
+    /// through [`crate::Platform::set_widget_placeholder`] (`EM_SETCUEBANNER` on
+    /// Windows, `set_placeholder_text` on GTK). AppKit's `NSTextView` has no
+    /// placeholder concept, so on macOS the platform call reports `false` and only
+    /// the mirror changes — a genuine per-OS difference, not a dropped write.
     pub fn set_placeholder(&self, text: &str) {
         LINE_EDIT_STATES.with(|map| {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).placeholder =
                 text.to_owned();
         });
+        crate::platform::get_platform().set_widget_placeholder(self.raw_id(), text);
     }
 
     /// Set whether the line-edit is read-only.
@@ -1527,10 +1559,17 @@ impl LineEditHandle {
     }
 
     /// Set the echo mode (Normal / Password / NoEcho).
+    ///
+    /// Mirrored into the in-process state *and* pushed to the native control
+    /// through [`crate::Platform::set_widget_echo_mode`] (`EM_SETPASSWORDCHAR` on
+    /// Windows, `set_visibility` on GTK). AppKit picks the text class instead, so
+    /// macOS reports `false` here; and `NoEcho` has no equivalent on any toolkit,
+    /// so it is refused rather than silently treated as `Password`.
     pub fn set_echo_mode(&self, mode: EchoMode) {
         LINE_EDIT_STATES.with(|map| {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).echo_mode = mode;
         });
+        crate::platform::get_platform().set_widget_echo_mode(self.raw_id(), mode);
     }
 
     /// Return the placeholder text set via [`Self::set_placeholder`].
@@ -1579,6 +1618,9 @@ impl LineEditHandle {
     }
 
     /// Select all text in the line-edit.
+    ///
+    /// Pushed to the native control through [`crate::Platform::set_widget_selection`]
+    /// as the full range, so the OS selection matches what the mirror reports.
     pub fn select_all(&self) {
         LINE_EDIT_STATES.with(|map| {
             let mut map = map.borrow_mut();
@@ -1587,9 +1629,15 @@ impl LineEditHandle {
             state.selection_start = 0;
             state.selection_end = u32::MAX;
         });
+        // u32::MAX is the crate's "to the end" sentinel; Win32 and GTK both clamp
+        // it, and macOS clamps the NSRange itself.
+        crate::platform::get_platform().set_widget_selection(self.raw_id(), 0, u32::MAX);
     }
 
     /// Set the selection range (start..end).
+    ///
+    /// Mirrored into the in-process state *and* pushed to the native control
+    /// through [`crate::Platform::set_widget_selection`].
     pub fn set_selection(&self, start: u32, end: u32) {
         LINE_EDIT_STATES.with(|map| {
             let mut map = map.borrow_mut();
@@ -1598,6 +1646,7 @@ impl LineEditHandle {
             state.selection_start = start;
             state.selection_end = end;
         });
+        crate::platform::get_platform().set_widget_selection(self.raw_id(), start, end);
     }
 }
 

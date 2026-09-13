@@ -8,7 +8,7 @@ use crate::platform::accessibility::AccessibilityBridge;
 use crate::platform::clipboard::RichClipboardBackend;
 use crate::platform::ime::ImeBridge;
 use crate::platform::{
-    EmbeddedCapabilityContract, NativeCapabilityContract, Platform, PlatformCapabilities,
+    EchoMode, EmbeddedCapabilityContract, NativeCapabilityContract, Platform, PlatformCapabilities,
     WidgetTriggerEvent, WidgetTriggerKind, WindowStateFlag,
 };
 
@@ -692,6 +692,124 @@ impl Platform for WindowsPlatform {
         }
         // Win32 stores an HICON, not a path, so the recorded request is the answer.
         self.state.window_icon(widget_id)
+    }
+
+    fn set_widget_selection(&self, widget_id: ObjectId, start: u32, end: u32) -> bool {
+        let Some(kind) = self.state.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(kind, super::types::WindowsHandleKind::LineEdit) {
+            return false;
+        }
+        self.state.set_selection(widget_id, start, end);
+        #[cfg(target_os = "windows")]
+        {
+            use winapi::um::winuser::{SendMessageW, EM_SETSEL};
+            if let Some(hwnd) = self.get_native_handle(widget_id) {
+                // EM_SETSEL takes (start, end) in lParam as (start << 16) | end for
+                // classic edit controls; the newer form uses lParam = -1 to
+                // select all. Explicit bounds are passed here.
+                let packed = ((start as isize) << 16) | (end as isize);
+                unsafe {
+                    SendMessageW(hwnd, EM_SETSEL as u32, 0, packed);
+                }
+            }
+        }
+        true
+    }
+
+    fn widget_selection(&self, widget_id: ObjectId) -> Option<(u32, u32)> {
+        let kind = self.state.kind_of(widget_id)?;
+        if !matches!(kind, super::types::WindowsHandleKind::LineEdit) {
+            return None;
+        }
+        // `EM_GETSEL` returns the selection packed into the *return value* rather
+        // than through out-parameters, which the `SendMessageW` signature cannot
+        // express; the recorded range is therefore the authoritative answer here.
+        self.state.selection(widget_id)
+    }
+
+    fn set_widget_placeholder(&self, widget_id: ObjectId, text: &str) -> bool {
+        let Some(kind) = self.state.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(kind, super::types::WindowsHandleKind::LineEdit) {
+            return false;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use winapi::um::commctrl::EM_SETCUEBANNER;
+            use winapi::um::winuser::SendMessageW;
+            if let Some(hwnd) = self.get_native_handle(widget_id) {
+                let wide = Self::to_wide(text);
+                // `EM_SETCUEBANNER`: wparam = TRUE to show the cue even when the
+                // control is focused; lparam = pointer to the cue string.
+                unsafe {
+                    SendMessageW(hwnd, EM_SETCUEBANNER as u32, 1, wide.as_ptr() as isize);
+                }
+            }
+        }
+        self.state.set_placeholder(widget_id, text);
+        true
+    }
+
+    fn widget_placeholder(&self, widget_id: ObjectId) -> Option<String> {
+        let kind = self.state.kind_of(widget_id)?;
+        if !matches!(kind, super::types::WindowsHandleKind::LineEdit) {
+            return None;
+        }
+        // Win32 exposes no `EM_GETCUEBANNER`, so the recorded text is the answer.
+        self.state.placeholder(widget_id)
+    }
+
+    fn set_widget_echo_mode(&self, widget_id: ObjectId, mode: EchoMode) -> bool {
+        let Some(kind) = self.state.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(kind, super::types::WindowsHandleKind::LineEdit) {
+            return false;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use winapi::um::winuser::{SendMessageW, EM_SETPASSWORDCHAR};
+            if let Some(hwnd) = self.get_native_handle(widget_id) {
+                // A non-zero password char masks input; 0 restores plain text.
+                // `NoEcho` has no Win32 equivalent and is reported as a refusal
+                // below rather than silently behaving like `Normal`.
+                let ch = match mode {
+                    EchoMode::Normal => 0u32,
+                    // U+2022 BULLET, the conventional password mask on Windows.
+                    EchoMode::Password => 0x2022u32,
+                    EchoMode::NoEcho => {
+                        log::warn!(
+                            "[rust_widgets][windows] set_widget_echo_mode: NoEcho has no Win32 \
+                             equivalent; refusing"
+                        );
+                        return false;
+                    }
+                };
+                unsafe {
+                    SendMessageW(hwnd, EM_SETPASSWORDCHAR as u32, ch as usize, 0);
+                }
+                // Force a repaint, or the mask change is not drawn until the next
+                // natural invalidation.
+                unsafe {
+                    use winapi::shared::minwindef::FALSE;
+                    use winapi::um::winuser::InvalidateRect;
+                    InvalidateRect(hwnd, std::ptr::null(), FALSE);
+                }
+            }
+        }
+        self.state.set_echo_mode(widget_id, mode);
+        true
+    }
+
+    fn widget_echo_mode(&self, widget_id: ObjectId) -> Option<EchoMode> {
+        let kind = self.state.kind_of(widget_id)?;
+        if !matches!(kind, super::types::WindowsHandleKind::LineEdit) {
+            return None;
+        }
+        self.state.echo_mode(widget_id)
     }
 
     fn backend_name(&self) -> &'static str {

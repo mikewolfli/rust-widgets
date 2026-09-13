@@ -547,3 +547,77 @@ fn contract_non_window_refuses_min_size_and_icon() {
     assert!(!Platform::set_window_icon(platform, button, "/tmp/x.png"));
     assert_eq!(Platform::window_icon(platform, button), None);
 }
+
+/// Text-entry selection / placeholder / echo mode: same shape rules, and every
+/// write that reports success must read back.
+#[test]
+fn contract_text_entry_properties_shape() {
+    use crate::platform::EchoMode;
+
+    let platform = get_platform();
+    platform.init();
+    let bogus = 55_555_555u64;
+    assert!(!Platform::set_widget_selection(platform, bogus, 0, 3));
+    assert_eq!(Platform::widget_selection(platform, bogus), None);
+    assert!(!Platform::set_widget_placeholder(platform, bogus, "hint"));
+    assert_eq!(Platform::widget_placeholder(platform, bogus), None);
+    assert!(!Platform::set_widget_echo_mode(platform, bogus, EchoMode::Password));
+    assert_eq!(Platform::widget_echo_mode(platform, bogus), None);
+
+    let window = Platform::create_window(platform, "w", 0, 0, 400, 300);
+    let entry = Platform::create_line_edit(platform, window, "text", 0, 0, 200, 24);
+    assert_ne!(entry, 0);
+
+    if Platform::set_widget_selection(platform, entry, 0, 3) {
+        let read = Platform::widget_selection(platform, entry);
+        assert!(
+            read.is_some(),
+            "{}: a successful selection write must be readable",
+            platform.backend_name()
+        );
+    }
+
+    if Platform::set_widget_placeholder(platform, entry, "Type here") {
+        assert_eq!(
+            Platform::widget_placeholder(platform, entry).as_deref(),
+            Some("Type here"),
+            "{}: a successful placeholder write must read back",
+            platform.backend_name()
+        );
+    }
+
+    if Platform::set_widget_echo_mode(platform, entry, EchoMode::Password) {
+        assert_eq!(
+            Platform::widget_echo_mode(platform, entry),
+            Some(EchoMode::Password),
+            "{}: a successful echo-mode write must read back",
+            platform.backend_name()
+        );
+    }
+}
+
+/// `NoEcho` has no equivalent on any desktop toolkit, so it must be refused
+/// rather than silently degraded to `Password`.
+#[test]
+fn contract_no_echo_mode_is_refused_or_honoured_truthfully() {
+    use crate::platform::EchoMode;
+
+    let platform = get_platform();
+    platform.init();
+    let window = Platform::create_window(platform, "w", 0, 0, 400, 300);
+    let entry = Platform::create_line_edit(platform, window, "text", 0, 0, 200, 24);
+    assert_ne!(entry, 0);
+
+    let accepted = Platform::set_widget_echo_mode(platform, entry, EchoMode::NoEcho);
+    if accepted {
+        assert_eq!(
+            Platform::widget_echo_mode(platform, entry),
+            Some(EchoMode::NoEcho),
+            "{}: if NoEcho is accepted it must actually be in effect",
+            platform.backend_name()
+        );
+    }
+    // Refusal is the expected outcome on Windows/GTK/macOS alike, so nothing more
+    // is asserted — the point is that a lie (accepted but applied as Password) is
+    // impossible.
+}

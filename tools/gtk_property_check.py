@@ -46,6 +46,12 @@ TARGET_FNS = [
     "window_min_size_impl",
     "set_window_icon_impl",
     "window_icon_impl",
+    "set_widget_selection_impl",
+    "widget_selection_impl",
+    "set_widget_placeholder_impl",
+    "widget_placeholder_impl",
+    "set_widget_echo_mode_impl",
+    "widget_echo_mode_impl",
 ]
 
 CARGO_TOML = """[package]
@@ -125,6 +131,20 @@ impl BackendState {
     pub fn window_min_size(&self, _id: u64) -> Option<(u32, u32)> { None }
     pub fn set_window_icon(&self, _id: u64, _p: &str) -> bool { true }
     pub fn window_icon(&self, _id: u64) -> Option<String> { None }
+    pub fn set_selection(&self, _id: u64, _s: u32, _e: u32) -> bool { true }
+    pub fn selection(&self, _id: u64) -> Option<(u32, u32)> { None }
+    pub fn set_placeholder(&self, _id: u64, _t: &str) -> bool { true }
+    pub fn placeholder(&self, _id: u64) -> Option<String> { None }
+    pub fn set_echo_mode(&self, _id: u64, _m: crate::shim::EchoMode) -> bool { true }
+    pub fn echo_mode(&self, _id: u64) -> Option<crate::shim::EchoMode> { None }
+}
+
+/// Stand-in for the platform echo-mode enum.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum EchoMode {
+    Normal,
+    Password,
+    NoEcho,
 }
 
 /// Stand-in for the platform window-state enum.
