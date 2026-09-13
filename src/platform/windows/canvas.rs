@@ -8,14 +8,14 @@
 //! distinct class is used rather than extending `RustWidgetsWindowClass`, so the
 //! canvas message path stays independent of menu/control command routing.
 //!
-//! See `docs/plans/self_drawn_mounting.md`.
+//! See `docs/plans/custom-paint_mounting.md`.
 //!
 //! # Feature gate
 //!
 //! This module renders through `crate::widget::runtime`, which `mini`/`embedded`
 //! do not compile (see `src/widget/mod.rs`). The gate is applied here as well as
 //! on the `target_os` so those profiles build without a widget registry, and
-//! `supports_self_drawn()` reports `false` instead of promising a surface that
+//! `supports_custom_widgets()` reports `false` instead of promising a surface that
 //! cannot be painted.
 
 #![cfg(all(target_os = "windows", not(any(feature = "mini", feature = "embedded"))))]
@@ -283,7 +283,7 @@ pub(crate) fn mount_canvas(parent: HWND, id: ObjectId, rect: Rect) -> Option<HWN
     ensure_canvas_class_registered();
     if !crate::widget::runtime::is_mounted(id) {
         log::error!(
-            "[windows] mount_self_drawn: id={id} is not in widget::runtime; \
+            "[windows] mount_custom_widget: id={id} is not in widget::runtime; \
              call runtime::register before mounting"
         );
         return None;
@@ -309,7 +309,7 @@ pub(crate) fn mount_canvas(parent: HWND, id: ObjectId, rect: Rect) -> Option<HWN
         );
         if hwnd.is_null() {
             log::error!(
-                "[windows] mount_self_drawn: CreateWindowExW failed (GetLastError={})",
+                "[windows] mount_custom_widget: CreateWindowExW failed (GetLastError={})",
                 winapi::um::errhandlingapi::GetLastError()
             );
             return None;
@@ -335,7 +335,7 @@ pub(crate) fn resize_canvas(hwnd: HWND, rect: Rect) -> bool {
             SWP_NOZORDER | SWP_NOACTIVATE,
         );
         if moved == 0 {
-            log::error!("[windows] resize_self_drawn: SetWindowPos failed");
+            log::error!("[windows] resize_custom_widget: SetWindowPos failed");
             return false;
         }
         invalidate_canvas(hwnd);
@@ -350,7 +350,7 @@ pub(crate) fn unmount_canvas(hwnd: HWND) -> bool {
     unsafe {
         use winapi::um::winuser::DestroyWindow;
         if DestroyWindow(hwnd) == 0 {
-            log::error!("[windows] unmount_self_drawn: DestroyWindow failed");
+            log::error!("[windows] unmount_custom_widget: DestroyWindow failed");
             return false;
         }
     }

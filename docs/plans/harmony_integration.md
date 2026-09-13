@@ -67,22 +67,22 @@ kind   = rw_poll_widget_trigger_event(&widgetId)   // 1=clicked, 2=value-changed
 
 ArkTS 拿到 `menuId` / `widgetId` / `kind` 后，自己决定调用哪些业务逻辑。
 
-## 3. 对自绘控件（CodeEditor）意味着什么
+## 3. 对自绘型控件（CodeEditor）意味着什么
 
-这是本轮新增 `mount_self_drawn` 之后，鸿蒙需要额外做的部分：
+这是本轮新增 `mount_custom_widget` 之后，鸿蒙需要额外做的部分：
 
-`CodeEditor` 这类自绘控件**没有 ArkUI 组件对应**，ArkTS 侧无法"转发点击给它",
+`CodeEditor` 这类自绘型控件**没有 ArkUI 组件对应**，ArkTS 侧无法"转发点击给它",
 因为点击本来就该由 Rust 自己处理。正确做法是：
 
 1. ArkTS 建一个 `Canvas` 组件作为宿主；
-2. 调用 `rw_mount_self_drawn(canvas_widget_id, x, y, w, h)`（**待实现**）；
+2. 调用 `rw_mount_custom_widget(canvas_widget_id, x, y, w, h)`（**待实现**）；
 3. ArkTS 侧拿到 `Canvas` 的 `onDraw` 回调 → 调 `rw_render_frame(pixel_buffer)` 把
    Rust 渲染的 RGBA 写进去；
 4. ArkTS 的触摸/按键回调 → `rw_dispatch_self_drawn_event(id, event_code, x, y)`。
 
-也就是说，**鸿蒙需要实现 `Platform::mount_self_drawn` 等四个方法**，把"画一帧"和
+也就是说，**鸿蒙需要实现 `Platform::mount_custom_widget` 等四个方法**，把"画一帧"和
 "转发输入"映射到 ArkUI `Canvas` 上。这与其他三平台是同一套 trait，只是底层调用不同。
-装好 SDK 后按 `docs/plans/self_drawn_mounting.md` 的接口逐个实现即可。
+装好 SDK 后按 `docs/plans/custom_widget_mounting.md` 的接口逐个实现即可。
 
 ## 4. 现在能做什么 / 不能做什么
 
@@ -92,8 +92,8 @@ ArkTS 拿到 `menuId` / `widgetId` / `kind` 后，自己决定调用哪些业务
 | 菜单树、剪贴板、拖放、IME 元数据 | ✅ 已实现 |
 | ArkUI 原生控件创建 | ⬜ 需 SDK |
 | N-API 桥接（`rw_harmony_*`） | ⬜ 需 SDK（C 头文件已备好） |
-| `mount_self_drawn`（自绘控件） | ⬜ 需 SDK |
-| 在无 SDK 环境下开发 demo | ✅ 走 state-only 后端，`supports_self_drawn()` 返回 `false`，demo 如实报错 |
+| `mount_custom_widget`（自绘型控件） | ⬜ 需 SDK |
+| 在无 SDK 环境下开发 demo | ✅ 走 state-only 后端，`supports_custom_widgets()` 返回 `false`，demo 如实报错 |
 
 ## 5. 相关文件
 
@@ -101,4 +101,4 @@ ArkTS 拿到 `menuId` / `widgetId` / `kind` 后，自己决定调用哪些业务
 - C 示例：`examples/harmony_napi_bridge_sample.c`
 - 后端状态：`src/platform/harmony/status.md`
 - C ABI 总览：`docs/HARMONY_NATIVE_BRIDGE.md`
-- 自绘挂载设计：`docs/plans/self_drawn_mounting.md`
+- 自绘挂载设计：`docs/plans/custom_widget_mounting.md`

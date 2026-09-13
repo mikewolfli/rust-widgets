@@ -165,7 +165,7 @@ graph TD
 | **control_backend** | `src/control_backend/` | `ControlBackend` trait（180+ 方法）、分派器、路由器 |
 | **platform** | `src/platform/` | 各作業系統後端、剪貼簿、IME、無障礙存取、行動 API |
 | **i18n** | `src/i18n/` | 翻譯基礎架構、`tr!()` 巨集 |
-| **chart** | `src/chart/` | 圖表 widgets：折線圖、長條圖、圓餅圖、Sparkline |
+| **chart** | `src/widget/chart_widgets/` | 圖表 widgets：折線圖、長條圖、圓餅圖、Sparkline，以及它們共用的繪圖引擎（佈局/座標軸/刻度、`ChartContext`、SVG、轉接器） |
 | **pdf** | `src/pdf/` | PDF 文件生成 |
 | **print** | `src/print/` | 系統列印服務整合 |
 | **memory** | `src/memory/` | 區域配置、`no_std` 記憶體模型 |

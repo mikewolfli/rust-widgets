@@ -5,21 +5,21 @@
 //! This belongs to the **demo**, not the library. Every variant maps onto a
 //! `CodeEditor` method, so the command list is demo business vocabulary — what
 //! *this* application chose to expose. The library only supplies the generic
-//! bridge ([`SelfDrawnHandle::update`] plus `runtime::with_widget_mut`); a
+//! bridge ([`CustomWidgetHandle::update`] plus `runtime::with_widget_mut`); a
 //! different host would pick a different command set without touching the crate.
 //!
 //! # How a command reaches the widget
 //!
-//! A self-drawn widget has no OS control, so a menu item cannot deliver an event
-//! to it. The path is:
+//! A custom-painted widget has no OS control of its own, so a menu item cannot
+//! deliver an event to it directly. The path is:
 //!
 //! ```text
-//! NSMenuItem → menu event queue → poll_menu_triggered()
-//!            → SelfDrawnHandle::update(|widget| downcast + apply)
-//!            → runtime::request_repaint → canvas redraw
+//! menu item → menu event queue → poll_menu_triggered()
+//!           → CustomWidgetHandle::update(|widget| downcast + apply)
+//!           → runtime::request_repaint → repaint
 //! ```
 
-use rust_widgets::app::SelfDrawnHandle;
+use rust_widgets::app::CustomWidgetHandle;
 use rust_widgets::shortcut::{Key, Modifiers, Shortcut};
 use rust_widgets::widget::special_widgets::code_editor::CodeEditor;
 
@@ -247,7 +247,7 @@ impl Command {
     ///
     /// Returns `false` when the widget is no longer mounted, is not a
     /// `CodeEditor`, or the command was a no-op.
-    pub fn dispatch(self, editor: &SelfDrawnHandle) -> bool {
+    pub fn dispatch(self, editor: &CustomWidgetHandle) -> bool {
         editor
             .update(|widget| {
                 let Some(editor) = (widget as &mut dyn std::any::Any).downcast_mut::<CodeEditor>()
@@ -270,7 +270,7 @@ fn edit(editor: &mut CodeEditor, operation: impl FnOnce(&mut CodeEditor)) -> boo
 /// Renders the demo's status line for a mounted editor.
 ///
 /// Returns `None` when the widget is not a `CodeEditor` (or was unmounted).
-pub fn status_line(editor: &SelfDrawnHandle) -> Option<String> {
+pub fn status_line(editor: &CustomWidgetHandle) -> Option<String> {
     editor.read(|widget| {
         let editor = (widget as &dyn std::any::Any).downcast_ref::<CodeEditor>()?;
         let (line, column) = editor.cursor();
@@ -287,7 +287,7 @@ pub fn status_line(editor: &SelfDrawnHandle) -> Option<String> {
 }
 
 /// Returns `true` when the mounted widget is a `CodeEditor`.
-pub fn is_editor(editor: &SelfDrawnHandle) -> bool {
+pub fn is_editor(editor: &CustomWidgetHandle) -> bool {
     editor.read(|widget| (widget as &dyn std::any::Any).is::<CodeEditor>()).unwrap_or(false)
 }
 

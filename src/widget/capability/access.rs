@@ -403,16 +403,17 @@ pub fn selection_mode_to_str(mode: SelectionMode) -> &'static str {
         SelectionMode::Single => "single",
         SelectionMode::Multi => "multi",
         SelectionMode::Extended => "extended",
+        SelectionMode::None => "none",
     }
 }
 
+/// Alias of [`selection_mode_to_str`] kept for the list-box call sites.
+///
+/// The list box and the list view now share one `SelectionMode`, so this was a
+/// second implementation of the same mapping; it delegates rather than repeating
+/// the match (principle #54).
 pub fn list_box_selection_mode_to_str(mode: ListBoxSelectionMode) -> &'static str {
-    match mode {
-        ListBoxSelectionMode::NoSelection => "none",
-        ListBoxSelectionMode::SingleSelection => "single",
-        ListBoxSelectionMode::MultiSelection => "multi",
-        ListBoxSelectionMode::ExtendedSelection => "extended",
-    }
+    crate::widget::capability::access::selection_mode_to_str(mode)
 }
 
 #[cfg(full_widgets)]

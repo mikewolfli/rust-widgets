@@ -25,18 +25,22 @@ NATIVE_RS = os.path.join(REPO_ROOT, "src", "control_backend", "native.rs")
 # Capability symbols
 #
 # These three states must not be conflated: a widget that is fully implemented by
-# the custom/self-drawn backend is NOT the same as one that degrades to a
-# different primitive on the native path.
+# the custom-paint backend is NOT the same as one that degrades to a different
+# primitive on the primitive-mapping path.
 #
 #   NATIVE       — the backend creates a real platform primitive for this widget
 #                  (e.g. Win32 `Button`, GTK `SpinButton`, Android `SeekBar`).
-#   CUSTOM       — no platform primitive exists, but the custom/self-drawn backend
-#                  has a dedicated `create_*` implementation. The widget is fully
+#   CUSTOM       — no platform primitive exists, but the custom-paint backend has a
+#                  dedicated `create_*` implementation. The widget is fully
 #                  functional; it is simply drawn by this library rather than by
-#                  the OS. This is the project's "原生优先，自绘兜底" policy.
-#   STATE_BACKED — the native path answers with a *different* primitive (a silent
+#                  the platform.
+#   STATE_BACKED — the primitive path answers with a *different* primitive (a silent
 #                  downgrade, e.g. `create_chart` -> `create_panel`), so the widget
 #                  loses its identity. This is the genuinely limited case.
+#
+# NOTE: NATIVE vs CUSTOM is an *internal platform strategy*. Callers never branch
+# on it — they call one API and the platform layer picks the mechanism. These
+# symbols exist to audit backend coverage, not to appear in user-facing code.
 #
 # The legend in the generated document is derived from these names.
 # ---------------------------------------------------------------------------
@@ -48,13 +52,13 @@ NOT_APPLICABLE = "➖"
 
 # Human-readable meaning of each symbol, used to render the legend.
 SYMBOL_MEANING = {
-    NATIVE: "Native implementation — the backend creates a real platform primitive for this widget. "
-    "该平台创建真实原生原语。",
-    CUSTOM: "Self-drawn implementation (fully functional) — no platform primitive exists, so this "
-    "library's custom backend draws it; the widget behaves normally. "
-    "自绘实现（功能完整）：平台无此原语，由本库自绘后端实现，行为正常。",
-    STATE_BACKED: "Limited — the native path degrades to a *different* primitive and the widget "
-    "loses its identity. 受限：原生路径降级为其它原语，丢失自身身份。",
+    NATIVE: "Primitive-mapped implementation — the backend creates a real platform "
+    "primitive for this widget. 映射到平台原语：后端创建真实平台原语。",
+    CUSTOM: "Custom-painted implementation (fully functional) — no platform primitive exists, "
+    "so this library's custom backend draws it; the widget behaves normally. "
+    "自绘型实现（功能完整）：平台无此原语，由本库自绘后端绘制，行为正常。",
+    STATE_BACKED: "Limited — the primitive path degrades to a *different* primitive and the widget "
+    "loses its identity. 受限：原语路径降级为其它原语，丢失自身身份。",
     PLACEHOLDER: "Placeholder — declared but not implemented yet. 已声明但尚未实现。",
     NOT_APPLICABLE: "Not applicable on this platform. 该平台不适用。",
 }
@@ -273,25 +277,28 @@ SORTED_KEYS = sorted(WIDGETS.keys(), key=lambda k: WIDGETS[k][0])
 SYMBOL_SEMANTICS = """
 | Symbol | Meaning（符号语义） |
 | --- | --- |
-| ✅ | Native implementation — the backend creates a real platform primitive for this widget (e.g. Win32 `Button`, GTK `SpinButton`, Android `SeekBar`). 原生实现：后端创建真实平台原语。 |
-| 🟦 | Self-drawn implementation (**fully functional**) — the platform ships no primitive for this widget, so this library's custom backend draws it. The widget behaves normally; it is simply not hosted by the OS. 自绘实现（功能完整）：平台无此原语，由本库自绘后端实现，行为正常，只是不由操作系统承载。 |
-| 🔶 | Limited — the native path degrades to a *different* primitive, so the widget loses its identity (e.g. `create_chart` returns a panel). 受限：原生路径降级为其它原语，丢失自身身份。 |
+| ✅ | Primitive-mapped implementation — the backend creates a real platform primitive for this widget (e.g. Win32 `Button`, GTK `SpinButton`, Android `SeekBar`). 映射到平台原语：后端创建真实平台原语。 |
+| 🟦 | Custom-painted implementation (**fully functional**) — the platform ships no primitive for this widget, so this library's custom backend draws it. The widget behaves normally. 自绘型实现（功能完整）：平台无此原语，由本库自绘后端绘制，行为正常。 |
+| 🔶 | Limited — the primitive path degrades to a *different* primitive, so the widget loses its identity (e.g. `create_chart` returns a panel). 受限：原语路径降级为其它原语，丢失自身身份。 |
 | ⬜ | Placeholder — declared but not implemented yet. 已声明但尚未实现。 |
 | ➖ | Not applicable on this platform. 该平台不适用。 |
 
 > **How to read this（如何阅读）**
 >
+> **✅ 与 🟦 的区分是 `src/platform/` 的内部实现策略。调用方从不区分二者**：
+> 它调用同一个 API，由平台层选择机制。这两个符号用于审计后端覆盖度，
+> 不应出现在面向使用者的代码分支中。
+>
 > - ✅ means a real platform primitive exists for the widget on that platform.
-> - 🟦 means the widget is **implemented and usable**, just self-drawn. It is *not*
->   a defect: the project policy is native-first with a self-drawn fallback
->   （原生优先，自绘兜底）. Every 🟦 widget has a dedicated `create_*`
->   implementation in `src/control_backend/custom/`, not a delegation.
-> - 🔶 is reserved for genuine downgrades where the *native* path silently
+> - 🟦 means the widget is **implemented and usable**, just custom-painted. It is
+>   *not* a defect. Every 🟦 widget has a dedicated `create_*` implementation in
+>   `src/control_backend/custom/`, not a delegation.
+> - 🔶 is reserved for genuine downgrades where the *primitive* path silently
 >   substitutes a different primitive. See "Degradation notes" for the exact map.
 >
 > 注意：🟦 表示控件**已实现且可用**，只是由本库自绘，并非缺陷；每个 🟦 控件在
 > `src/control_backend/custom/` 都有专用 `create_*` 实现（非委托）。🔶 仅用于
-> *原生路径*静默替换为其它原语的真实降级情形。
+> *原语路径*静默替换为其它原语的真实降级情形。
 """
 
 def _snake_to_widget_row(fn_name: str) -> str:
@@ -503,7 +510,8 @@ def generate_matrix() -> str:
     lines.append("")
     lines.append("> **Auto-generated** by `tools/generate_platform_capability_matrix.py`")
     lines.append(
-        "> **Legend:** ✅ Native · 🟦 Self-drawn (functional) · 🔶 Limited · ⬜ Placeholder · ➖ N/A"
+        "> **Legend:** ✅ Primitive-mapped · 🟦 Custom-painted (functional) · 🔶 Limited · "
+        "⬜ Placeholder · ➖ N/A"
     )
     lines.append(
         "> A few ✅ cells are compile-verified only; see "

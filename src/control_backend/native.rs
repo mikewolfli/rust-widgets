@@ -28,6 +28,59 @@ impl ControlBackend for NativeControlBackend {
     fn destroy_widget(&self, widget_id: ObjectId) -> bool {
         get_platform().destroy_widget(widget_id)
     }
+
+    /// Create a widget from its canonical factory name.
+    ///
+    /// This is the name-based counterpart to the typed `create_*` methods: it
+    /// lets a caller that holds a name (from the capability registry, a config
+    /// file, a binding layer) reach the same creation path without a giant match
+    /// of its own. The platform decides whether the named widget becomes a real
+    /// control or is painted by the platform's custom surface.
+    ///
+    /// Returns `0` for a name this backend does not recognise.
+    fn create_widget(
+        &self,
+        kind: &str,
+        parent: ObjectId,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        match kind {
+            "window" => get_platform().create_window(text, x, y, width, height),
+            "button" => get_platform().create_button(parent, text, x, y, width, height),
+            "check_box" | "checkbox" => {
+                get_platform().create_checkbox(parent, text, x, y, width, height)
+            }
+            "radio_button" => get_platform().create_radio_button(parent, text, x, y, width, height),
+            "label" => get_platform().create_label(parent, text, x, y, width, height),
+            "line_edit" => get_platform().create_line_edit(parent, text, x, y, width, height),
+            "combo_box" => get_platform().create_combo_box(parent, x, y, width, height),
+            "list_box" => get_platform().create_list_box(parent, x, y, width, height),
+            "slider" => get_platform().create_slider(parent, x, y, width, height),
+            "progress_bar" => get_platform().create_progress_bar(parent, x, y, width, height),
+            "panel" | "group_box" => get_platform().create_panel(parent, x, y, width, height),
+            "spin_box" => get_platform().create_spin_box(parent, x, y, width, height),
+            "message_box" => {
+                get_platform().create_message_box(parent, text, text, x, y, width, height)
+            }
+            "file_dialog" => get_platform().create_file_dialog(parent, x, y, width, height),
+            "color_dialog" => get_platform().create_color_dialog(parent, x, y, width, height),
+            "font_dialog" => get_platform().create_font_dialog(parent, x, y, width, height),
+            "list_view" => get_platform().create_list_view(parent, x, y, width, height),
+            "scroll_area" => get_platform().create_scroll_area(parent, x, y, width, height),
+            "menu_bar" => get_platform().create_menu_bar(parent, x, y, width, height),
+            "tool_bar" => get_platform().create_tool_bar(parent, x, y, width, height),
+            "status_bar" => get_platform().create_status_bar(parent, text, x, y, width, height),
+            other => {
+                log::warn!("native-control-backend: no widget registered under name '{other}'");
+                0
+            }
+        }
+    }
+
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         get_platform().create_window(title, x, y, width, height)
     }

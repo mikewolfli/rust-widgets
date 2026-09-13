@@ -1,13 +1,14 @@
-//! Code Editor Demo — `CodeEditor` 挂载进原生窗口，并带完整菜单栏 + 工具栏。
+//! Code Editor Demo — `CodeEditor` 挂载进窗口，并带完整菜单栏 + 工具栏。
 //!
 //! # 这个 demo 演示什么
 //!
-//! 1. **自绘控件挂载**——`CodeEditor` 没有对应 OS 控件，通过
-//!    `WindowHandle::mount_self_drawn` 交给原生画布（macOS `NSView.drawRect:` /
-//!    Windows `WM_PAINT` / Linux `GtkDrawingArea::draw`）渲染。
-//! 2. **原生菜单栏驱动自绘控件**——菜单项是真实 `NSMenuItem`；激活后从菜单事件队列
-//!    取出，转成 [`Command`]，通过 [`SelfDrawnHandle::update`] 打到编辑器上。
-//!    这是"原生 UI 操作自绘控件"的完整闭环。
+//! 1. **自绘型控件挂载**——`CodeEditor` 自己负责绘制内容，所以没有对应的
+//!    `new_*` 工厂方法，用 `WindowHandle::mount_custom_widget` 交给窗口托管。
+//!    窗口**用什么**承载它由 `src/platform/` 决定，本 demo 不需要知道，
+//!    也不写任何 OS 分支。
+//! 2. **菜单栏驱动控件**——菜单项激活后从菜单事件队列取出，转成 [`Command`]，
+//!    通过 [`CustomWidgetHandle::update`] 打到编辑器上。菜单与编辑器之间只通过
+//!    这条平台无关的通道通信。
 //! 3. **工具栏 + 状态栏**——工具栏提供高频操作按钮，状态栏实时显示光标位置。
 //!
 //! # 运行
@@ -17,9 +18,9 @@
 //! cargo run
 //! ```
 //!
-//! 后端不支持自绘控件时，demo **如实报错并停止**，不会留下空窗口。
+//! 当前平台若无法承载自绘型控件，demo **如实报错并停止**，不会留下空窗口。
 
-use rust_widgets::app::{App, AppConfig, SelfDrawnHandle, WidgetHandle};
+use rust_widgets::app::{App, AppConfig, CustomWidgetHandle, WidgetHandle};
 use rust_widgets::core::Rect;
 use rust_widgets::widget::special_widgets::code_editor::{
     CodeEditor, CodeEditorConfig, DiagnosticMarker, LanguageId, MarkerSeverity,
@@ -177,7 +178,7 @@ const MENU_STRUCTURE: &[(&str, &[Command])] = &[
 /// 建立菜单栏，返回 `菜单项 id -> 命令` 的映射。
 ///
 /// 宿主必须在事件循环里轮询 `poll_menu_triggered()`，把返回的 id 喂给
-/// [`dispatch_menu_event`]，菜单才真正有作用——原生 UI 不会自己调用 Rust 回调。
+/// [`dispatch_menu_event`]，菜单才真正有作用——菜单不会自己调用 Rust 回调。
 fn build_menu_bar(
     win: &rust_widgets::app::WindowHandle,
     log: &Arc<EventLog>,
@@ -220,7 +221,7 @@ fn build_menu_bar(
 fn dispatch_menu_event(
     item_id: u64,
     bindings: &[(u64, MenuBinding)],
-    editor: &SelfDrawnHandle,
+    editor: &CustomWidgetHandle,
     log: &Arc<EventLog>,
 ) -> bool {
     let Some((_, binding)) = bindings.iter().find(|(id, _)| *id == item_id) else {
@@ -259,11 +260,11 @@ const TOOLBAR_LAYOUT: &[(Option<Command>, i32)] = &[
 
 /// 建立工具栏。按钮的 `on_click` 直接打到编辑器。
 ///
-/// 工具栏按钮是**原生控件**（macOS 上是 `NSButton`），所以点击走的是标准回调路径，
+/// 工具栏按钮走的是标准回调路径，
 /// 不需要轮询——这与菜单不同。
 fn build_tool_bar(
     win: &rust_widgets::app::WindowHandle,
-    editor: &SelfDrawnHandle,
+    editor: &CustomWidgetHandle,
     log: &Arc<EventLog>,
 ) {
     let bar = win.new_tool_bar(0, MENU_H as i32, WINDOW_W, TOOLBAR_H as u32);
@@ -327,18 +328,18 @@ pub fn run() {
     let backend = rust_widgets::backend_name();
     println!("[run] backend={backend} gui_mode={:?}", rust_widgets::runtime_gui_mode());
 
-    // ── 前置检查：后端必须真的能显示自绘控件 ────────────────────────────
+    // ── 前置检查：当前后端必须真的能承载自绘型控件 ────────────────────
     //
     // 这一步不能省：把"工厂能造出对象"当成"窗口里能看到"会导致窗口空白却毫无提示。
-    if !rust_widgets::supports_self_drawn() {
+    if !rust_widgets::supports_custom_widgets() {
         eprintln!(
-            "错误：后端 '{backend}' 不支持自绘控件，无法显示 CodeEditor。\n\
+            "错误：后端 '{backend}' 暂不能承载自绘型控件，无法显示 CodeEditor。\n\
              Linux 桌面请启用 gtk-native（见 demo/code_editor/Cargo.toml），\n\
              或在支持的桌面平台上运行。"
         );
         std::process::exit(1);
     }
-    log.append(format!("[check] backend '{backend}' 支持自绘控件"));
+    log.append(format!("[check] backend '{backend}' 支持自绘型控件"));
 
     let mut app = App::with_config(
         AppConfig::default().with_app_name("Code Editor Demo").with_organization("rust_widgets"),
@@ -352,7 +353,7 @@ pub fn run() {
     // ── 挂载编辑器 ──────────────────────────────────────────────────────
     let rect = editor_rect();
     let editor_box: Box<dyn Widget> = Box::new(build_editor());
-    let editor = match win.mount_self_drawn(editor_box, rect) {
+    let editor = match win.mount_custom_widget(editor_box, rect) {
         Ok(handle) => {
             log.append(format!(
                 "[Mount] CodeEditor id={} rect=({},{}, {}, {})",
@@ -399,16 +400,15 @@ pub fn run() {
 ///
 /// # 为什么不能直接用 `app.run()`
 ///
-/// `App::run()` 是阻塞的平台事件循环（macOS 上是 `-[NSApplication run]`，且必须在主
-/// 线程）。一旦进去就再也回不到 Rust 侧，`poll_menu_triggered()` 永远没机会被调用，
-/// 菜单就变成纯装饰。
+/// `App::run()` 是阻塞的平台事件循环，且必须在主线程上跑。一旦进去就再也回不到
+/// Rust 侧，`poll_menu_triggered()` 永远没机会被调用，菜单就变成纯装饰。
 ///
 /// 正确做法与 C ABI 示例（`examples/c_abi_poll_demo.c`）一致：**在后台线程跑平台循环，
-/// 主线程轮询队列**。菜单激活先进入平台队列，由宿主取出后分派给自绘控件。
+/// 主线程轮询队列**。菜单激活先进入平台队列，由宿主取出后分派给编辑器。
 fn run_loop(
     app: &App,
     bindings: &[(u64, MenuBinding)],
-    editor: &SelfDrawnHandle,
+    editor: &CustomWidgetHandle,
     log: &Arc<EventLog>,
 ) {
     // 平台事件循环跑在后台，主线程保持可轮询。
@@ -420,7 +420,7 @@ fn run_loop(
     loop {
         let mut did_work = false;
 
-        // 菜单激活：原生菜单不会直接回调 Rust，必须从队列取出。
+        // 菜单激活：菜单不会直接回调 Rust，必须从队列取出。
         while let Some(item_id) = rust_widgets::poll_menu_triggered() {
             if dispatch_menu_event(item_id, bindings, editor, log) {
                 did_work = true;
@@ -457,9 +457,9 @@ fn run_loop(
 
 /// 把光标位置刷新到状态栏。
 ///
-/// 状态栏是原生控件，直接改文本即可；`None` 表示控件已卸载（窗口正在关闭），
+/// 状态栏直接改文本即可；`None` 表示控件已卸载（窗口正在关闭），
 /// 此时不再访问平台，避免关窗期间的无效调用。
-fn refresh_status(log: &Arc<EventLog>, editor: &SelfDrawnHandle) {
+fn refresh_status(log: &Arc<EventLog>, editor: &CustomWidgetHandle) {
     let Some(line) = commands::status_line(editor) else {
         return;
     };
@@ -470,7 +470,7 @@ fn banner() {
     println!();
     println!("╔══════════════════════════════════════════════════════════╗");
     println!("║     rust_widgets  —  Code Editor Demo                  ║");
-    println!("║     自绘编辑器 · 原生菜单栏 + 工具栏 · 可交互            ║");
+    println!("║     代码编辑器 · 菜单栏 + 工具栏 · 可交互                  ║");
     println!("╚══════════════════════════════════════════════════════════╝");
     println!();
 }
@@ -478,7 +478,7 @@ fn banner() {
 fn print_usage() {
     println!();
     println!("窗口已打开：");
-    println!("  · 菜单栏 Edit / View  → 全部编辑命令（原生菜单，带快捷键提示）");
+    println!("  · 菜单栏 Edit / View  → 全部编辑命令（带快捷键提示）");
     println!("  · 工具栏按钮          → 高频操作");
     println!("  · 鼠标点击 / 拖动     → 放置光标、选择文本");
     println!("  · 直接键入            → 插入文本（自动配对括号）");

@@ -334,16 +334,16 @@ pub trait Platform: Send + Sync {
         false
     }
 
-    /// Mounts a **self-drawn** widget into a native window.
+    /// Mounts a **custom-painted** widget into a native window.
     ///
     /// # Why this is one method and not one per widget kind
     ///
     /// The native `create_*` methods each map onto a real OS control. Widgets
     /// that paint themselves through [`crate::widget::Draw`] have no OS control
     /// to map to, so there is nothing for a per-kind constructor to do. What the
-    /// backend owes such a widget is exactly one thing: a native surface that
-    /// calls back into the process-wide widget registry whenever the OS wants a
-    /// repaint. `mount_self_drawn` is that surface.
+    /// backend owes such a widget is exactly one thing: a surface that calls back
+    /// into the process-wide widget registry whenever the host wants a repaint.
+    /// `mount_custom_widget` is that surface.
     ///
     /// The caller registers the widget first
     /// ([`crate::widget::runtime::register`]) and passes the resulting id here
@@ -351,54 +351,60 @@ pub trait Platform: Send + Sync {
     /// must not take ownership of the widget: it lives in the registry for as
     /// long as the mount exists.
     ///
+    /// # Callers never name the mechanism
+    ///
+    /// The surface is whatever this backend uses — a child window, a drawing
+    /// area, a view — and that is an implementation detail of `src/platform/`.
+    /// Upper layers ask only "can you display this widget?"
+    /// ([`Platform::supports_custom_widgets`]) and otherwise stay free of
+    /// per-OS knowledge.
+    ///
     /// # Return value
     ///
-    /// `true` when a native surface was created and will be repainted from the
-    /// registry. `false` when this backend cannot display self-drawn content —
+    /// `true` when a surface was created and will be repainted from the
+    /// registry. `false` when this backend cannot display custom-painted content —
     /// the default below. Callers must treat `false` as "cannot display here"
     /// and say so, rather than showing an empty window.
-    ///
-    /// # Backends
-    ///
-    /// * macOS (`cocoa`) — an `NSView` subclass whose `drawRect:` blits a frame.
-    /// * Windows (`winapi`) — a child `HWND` painted from `WM_PAINT`.
-    /// * Linux (`gtk-native`) — a `gtk::DrawingArea` painted from `connect_draw`.
-    /// * HarmonyOS — awaits the OpenHarmony SDK; returns `false` until then.
-    fn mount_self_drawn(&self, _parent: ObjectId, _id: ObjectId, _rect: crate::core::Rect) -> bool {
+    fn mount_custom_widget(
+        &self,
+        _parent: ObjectId,
+        _id: ObjectId,
+        _rect: crate::core::Rect,
+    ) -> bool {
         false
     }
 
-    /// Updates the rectangle of a previously mounted self-drawn widget.
+    /// Updates the rectangle of a previously mounted custom-painted widget.
     ///
     /// Returns `false` when `id` is not mounted on this backend.
-    fn resize_self_drawn(&self, _id: ObjectId, _rect: crate::core::Rect) -> bool {
+    fn resize_custom_widget(&self, _id: ObjectId, _rect: crate::core::Rect) -> bool {
         false
     }
 
-    /// Unmounts a self-drawn widget and releases its native surface.
+    /// Unmounts a custom-painted widget and releases its surface.
     ///
     /// The widget stays in the process-wide registry; the caller decides when to
     /// drop it via [`crate::widget::runtime::unregister`].
     ///
     /// Returns `false` when `id` is not mounted on this backend.
-    fn unmount_self_drawn(&self, _id: ObjectId) -> bool {
+    fn unmount_custom_widget(&self, _id: ObjectId) -> bool {
         false
     }
 
-    /// Marks a mounted self-drawn widget as needing a repaint.
+    /// Marks a mounted custom-painted widget as needing a repaint.
     ///
     /// Returns `false` when `id` is not mounted on this backend. Backends that
     /// do not implement it keep the default so unmounted ids stay a no-op.
-    fn repaint_self_drawn(&self, _id: ObjectId) -> bool {
+    fn repaint_custom_widget(&self, _id: ObjectId) -> bool {
         false
     }
 
-    /// Returns `true` when this backend can display self-drawn widgets.
+    /// Returns `true` when this backend can display custom-painted widgets.
     ///
-    /// Backends report `true` only once [`Platform::mount_self_drawn`] is
+    /// Backends report `true` only once [`Platform::mount_custom_widget`] is
     /// actually implemented, so hosts can ask before building a UI that they
     /// would not be able to display.
-    fn supports_self_drawn(&self) -> bool {
+    fn supports_custom_widgets(&self) -> bool {
         false
     }
 

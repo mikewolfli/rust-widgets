@@ -1133,11 +1133,11 @@ impl Platform for WindowsPlatform {
     ///
     /// Gated on the same profile conditions as `canvas.rs`: without a widget
     /// registry there is no frame to render, so the trait defaults apply and
-    /// `supports_self_drawn()` reports `false`.
+    /// `supports_custom_widgets()` reports `false`.
     #[cfg(not(any(feature = "mini", feature = "embedded")))]
-    fn mount_self_drawn(&self, parent: ObjectId, id: ObjectId, rect: crate::core::Rect) -> bool {
+    fn mount_custom_widget(&self, parent: ObjectId, id: ObjectId, rect: crate::core::Rect) -> bool {
         let Some(parent_hwnd) = self.get_native_handle(parent) else {
-            log::error!("[windows] mount_self_drawn: unknown parent window {parent}");
+            log::error!("[windows] mount_custom_widget: unknown parent window {parent}");
             return false;
         };
         let Some(hwnd) = super::canvas::mount_canvas(parent_hwnd, id, rect) else {
@@ -1149,9 +1149,9 @@ impl Platform for WindowsPlatform {
     }
 
     #[cfg(not(any(feature = "mini", feature = "embedded")))]
-    fn resize_self_drawn(&self, id: ObjectId, rect: crate::core::Rect) -> bool {
+    fn resize_custom_widget(&self, id: ObjectId, rect: crate::core::Rect) -> bool {
         let Some(hwnd) = super::canvas::hwnd_for_widget(id) else {
-            log::error!("[windows] resize_self_drawn: id={id} is not mounted");
+            log::error!("[windows] resize_custom_widget: id={id} is not mounted");
             return false;
         };
         if !super::canvas::resize_canvas(hwnd, rect) {
@@ -1162,9 +1162,9 @@ impl Platform for WindowsPlatform {
     }
 
     #[cfg(not(any(feature = "mini", feature = "embedded")))]
-    fn unmount_self_drawn(&self, id: ObjectId) -> bool {
+    fn unmount_custom_widget(&self, id: ObjectId) -> bool {
         let Some(hwnd) = super::canvas::hwnd_for_widget(id) else {
-            log::error!("[windows] unmount_self_drawn: id={id} is not mounted");
+            log::error!("[windows] unmount_custom_widget: id={id} is not mounted");
             return false;
         };
         super::canvas::unmount_canvas(hwnd)
@@ -1172,13 +1172,13 @@ impl Platform for WindowsPlatform {
 
     /// `true` only when the self-drawn surface exists for this profile.
     #[cfg(not(any(feature = "mini", feature = "embedded")))]
-    fn supports_self_drawn(&self) -> bool {
+    fn supports_custom_widgets(&self) -> bool {
         true
     }
 
     /// Invalidate the canvas window so the OS sends a fresh `WM_PAINT`.
     #[cfg(not(any(feature = "mini", feature = "embedded")))]
-    fn repaint_self_drawn(&self, id: ObjectId) -> bool {
+    fn repaint_custom_widget(&self, id: ObjectId) -> bool {
         match super::canvas::hwnd_for_widget(id) {
             Some(hwnd) => {
                 super::canvas::invalidate_canvas(hwnd);

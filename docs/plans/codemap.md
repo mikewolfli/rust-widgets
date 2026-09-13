@@ -85,7 +85,7 @@
 | `display_widgets/` | 20 | Arc, Badge, ColorHistory, ColorWell, Divider, EmptyState, FloatingLabel, FontPreview, Icon, ImageView, LCDNumber, Line, Meter, MiniCanvas, MiniChart, ProgressBar, ProgressCircle, Rating, Roller, ScrollBar, SkeletonLoader, Slider, Spinner, Switch |
 | `nav_widgets/` | 7 | AdaptiveScaffold, AppBar, BottomNavigationBar, NavigationDrawer, NavigationStack, TabView |
 | `dialog/` | 12 | BottomSheet, ColorDialog, FileDialog, FindReplaceDialog, FontDialog, InputDialog, MessageBox, ModalBottomSheet, Popover, PopupWindow, ProgressDialog, Tooltip, WizardDialog |
-| `chart_widgets/` | 4 | BarChart, LineChart, PieChart, Sparkline |
+| `chart_widgets/` | 4 | BarChart, LineChart, PieChart, Sparkline + shared drawing engine (`charts/`, `layout.rs`, `svg.rs`, `types.rs`, `adapter.rs`) |
 | `media_widgets/` | 8 | AnimatedImage, AudioVisualizer, CameraPreview, HeroAnimation, LottieWidget, RiveWidget, VideoPlayer |
 | `menu_toolbar/` | 8 | Action, DropdownMenu, Menu, MenuBar, MenuButton, StatusBar, ToolBar, ToolButton |
 | `overlay_widgets/` | 3 | FAB, RefreshControl, SwipeToDismiss |
@@ -209,7 +209,6 @@
 | `asset/` | Asset management |
 | `audio/` | Decoder, encoder, output, resample, normalize |
 | `bindings/` | FFI binding implementation (C ABI), Java JNI |
-| `chart/` | Chart drawing contracts + definitions |
 | `clipboard/` | (re-export from platform/clipboard) |
 | `compat.rs` | MiniVec, MiniString, Mutex, OnceLock, Arena — no_std bridge |
 | `control_backend/` | Native vs Custom paint routing |

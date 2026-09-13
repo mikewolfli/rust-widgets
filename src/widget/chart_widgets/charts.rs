@@ -3,7 +3,7 @@
 
 //! Chart implementations: Line, Bar, Pie, Scatter, Area.
 
-use crate::chart::types::*;
+use crate::widget::chart_widgets::types::*;
 // svg used for chart rendering
 use crate::core::{Color, Point, Rect};
 

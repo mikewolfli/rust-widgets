@@ -29,7 +29,23 @@ pub struct ChartSeries {
     pub visible: bool,
 }
 
-/// Chart type
+/// The chart styles the drawing **engine** can render.
+///
+/// # Scope, and why this is not the same enum as the other `ChartType`s
+///
+/// This is the **engine layer**'s set — the superset, because the engine also
+/// backs the SVG exporter and has an `Area` renderer that no widget exposes yet.
+/// Two same-named enums exist in the control layer and are deliberately kept
+/// separate (principle #49):
+///
+/// * [`crate::widget::special_widgets::chart::ChartType`] — `ChartWidget`'s four
+///   runtime-switchable styles;
+/// * [`crate::widget::display_widgets::mini_chart::ChartType`] — `MiniChart`'s two
+///   styles.
+///
+/// The engine's concrete renderers are reached through
+/// [`crate::widget::chart_widgets::charts`], so the bare `ChartType` in this
+/// module never competes with the widgets' same-named types.
 pub enum ChartType {
     /// Polyline chart.
     Line,
@@ -47,11 +63,13 @@ impl ChartType {
     /// Create a boxed chart instance from this variant.
     pub fn create_chart(&self) -> Box<dyn Chart> {
         match self {
-            ChartType::Line => Box::new(crate::chart::charts::LineChart::new()),
-            ChartType::Bar => Box::new(crate::chart::charts::BarChart::new()),
-            ChartType::Pie => Box::new(crate::chart::charts::PieChart::new()),
-            ChartType::Scatter => Box::new(crate::chart::charts::ScatterChart::new()),
-            ChartType::Area => Box::new(crate::chart::charts::AreaChart::new()),
+            ChartType::Line => Box::new(crate::widget::chart_widgets::charts::LineChart::new()),
+            ChartType::Bar => Box::new(crate::widget::chart_widgets::charts::BarChart::new()),
+            ChartType::Pie => Box::new(crate::widget::chart_widgets::charts::PieChart::new()),
+            ChartType::Scatter => {
+                Box::new(crate::widget::chart_widgets::charts::ScatterChart::new())
+            }
+            ChartType::Area => Box::new(crate::widget::chart_widgets::charts::AreaChart::new()),
         }
     }
 }

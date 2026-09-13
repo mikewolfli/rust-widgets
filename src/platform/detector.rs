@@ -31,17 +31,12 @@ use crate::core::DeviceClass;
 use crate::core::Size;
 
 /// Screen orientation enum.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ScreenOrientation {
-    /// Device in portrait orientation.
-    Portrait,
-    /// Device in landscape orientation.
-    Landscape,
-    /// Device in reverse portrait orientation (180° rotated).
-    ReversePortrait,
-    /// Device in reverse landscape orientation (180° rotated).
-    ReverseLandscape,
-}
+///
+/// Re-exported from [`crate::event::types::ScreenOrientation`] — the event layer
+/// owns the canonical definition (it is what an `Event::OrientationChanged`
+/// carries), and this detector names the same four states. One definition means a
+/// detected orientation can be put straight into an event with no conversion.
+pub use crate::event::types::ScreenOrientation;
 
 /// Runtime device environment descriptor.
 #[derive(Debug, Clone)]

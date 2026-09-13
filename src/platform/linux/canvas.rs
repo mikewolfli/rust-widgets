@@ -9,7 +9,7 @@
 //! pulls one RGBA frame out of [`crate::widget::runtime`] and blits it with
 //! cairo.
 //!
-//! See `docs/plans/self_drawn_mounting.md`.
+//! See `docs/plans/custom-paint_mounting.md`.
 //!
 //! This module compiles only with `gtk-native`; without it the platform keeps
 //! the trait's `false` defaults and callers get an explicit "cannot display
@@ -40,7 +40,7 @@ pub(crate) fn mount_canvas(
 ) -> bool {
     if !crate::widget::runtime::is_mounted(id) {
         log::error!(
-            "[linux] mount_self_drawn: id={id} is not in widget::runtime; \
+            "[linux] mount_custom_widget: id={id} is not in widget::runtime; \
              call runtime::register before mounting"
         );
         return false;
@@ -152,7 +152,7 @@ pub(crate) fn mount_canvas(
         container.put(&area, rect.x, rect.y);
         true
     } else {
-        log::error!("[linux] mount_self_drawn: window {parent} has no content container");
+        log::error!("[linux] mount_custom_widget: window {parent} has no content container");
         false
     };
     if placed {
@@ -185,7 +185,7 @@ pub(crate) fn repaint_canvas(platform: &LinuxPlatform, id: ObjectId) -> bool {
 pub(crate) fn resize_canvas(platform: &LinuxPlatform, id: ObjectId, rect: Rect) -> bool {
     let mut native = platform.native.lock_guard();
     let Some(area) = native.canvases.get(&id) else {
-        log::error!("[linux] resize_self_drawn: id={id} is not mounted");
+        log::error!("[linux] resize_custom_widget: id={id} is not mounted");
         return false;
     };
     // `gtk::Fixed` positions children through `move_`; a size change needs the
@@ -202,7 +202,7 @@ pub(crate) fn resize_canvas(platform: &LinuxPlatform, id: ObjectId, rect: Rect) 
 pub(crate) fn unmount_canvas(platform: &LinuxPlatform, id: ObjectId) -> bool {
     let mut native = platform.native.lock_guard();
     let Some(area) = native.canvases.remove(&id) else {
-        log::error!("[linux] unmount_self_drawn: id={id} is not mounted");
+        log::error!("[linux] unmount_custom_widget: id={id} is not mounted");
         return false;
     };
     native.widgets.remove(&id);

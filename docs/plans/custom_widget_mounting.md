@@ -1,11 +1,11 @@
-# Mounting self-drawn widgets into native windows
+# Mounting custom-painted widgets into native windows
 
 Status: implemented (macOS native / Windows native / GTK-native; fallback elsewhere)
 
 ## Problem
 
 `render_to_svg()` was the only way a `Box<dyn Widget>` could reach pixels. The
-native platform layer had **no concept of a self-drawn widget**: its 41
+native platform layer had **no concept of a custom-painted widget**: its 41
 `create_*` methods all map onto real OS controls (`NSButton`, `HWND` + `BUTTON`,
 `gtk::Button`, …). Consequently every widget that paints itself through
 `Draw::draw()` — `CodeEditor`, `ColorPicker`, `GanttWidget`, `TerminalView`,
@@ -15,11 +15,11 @@ was then dropped on the floor: built, never shown.
 
 ## Decision
 
-Introduce **one** platform capability, `mount_self_drawn`, rather than 60+
+Introduce **one** platform capability, `mount_custom_widget`, rather than 60+
 per-widget native constructors:
 
 ```rust
-fn mount_self_drawn(&self, parent: ObjectId, id: ObjectId, rect: Rect) -> bool;
+fn mount_custom_widget(&self, parent: ObjectId, id: ObjectId, rect: Rect) -> bool;
 ```
 
 The host keeps ownership of the widget in a process-wide registry keyed by
@@ -27,10 +27,10 @@ The host keeps ownership of the widget in a process-wide registry keyed by
 asks it to repaint, pulls an RGBA frame out of the registry and blits it.
 
 ```
-WindowHandle::mount_self_drawn(widget)
+WindowHandle::mount_custom_widget(widget)
         │  registers Box<dyn Widget> under a fresh ObjectId
         ▼
-Platform::mount_self_drawn(parent, id, rect)   ── default: returns false
+Platform::mount_custom_widget(parent, id, rect)   ── default: returns false
         │
         ├─ macOS  : NSView subclass, drawRect: → CGContext
         ├─ Windows: child HWND, WM_PAINT → HDC
@@ -44,7 +44,7 @@ The caller does not detect the OS. Detection would be wrong twice over:
 1. A desktop build on Linux *without* `gtk-native` has no native window at all;
    the correct outcome is an explicit "cannot display this here", not a
    `#[cfg]` guess that reports support that is not present.
-2. `mount_self_drawn` returns `bool`. The default trait body returns `false`
+2. `mount_custom_widget` returns `bool`. The default trait body returns `false`
    and logs why, so backends that have not been taught yet degrade loudly
    instead of silently producing a blank window — which is exactly the bug this
    work exists to eliminate.
@@ -84,7 +84,7 @@ mechanism. The caller-facing contract is uniform.
 |---|---|---|
 | Windows appears, then process aborts | `setValue:forKey:` on a non-KVC view | `association_key` / `widget_id_of` use `objc_setAssociatedObject` |
 | `drawRect:` rect has a negative y | `isFlipped` returned `YES` | `is_flipped` returns `NO`; rect asserted via logs |
-| Mounted widget paints nothing | `Widget::as_draw_mut` defaulted to `None` while the widget did implement `Draw` | `self_drawn_widgets_report_the_draw_bridge` |
+| Mounted widget paints nothing | `Widget::as_draw_mut` defaulted to `None` while the widget did implement `Draw` | `custom_widgets_report_the_draw_bridge` |
 | Blitted image enlarged and cropped | draw rect taken from logical size under a 2× backing scale | `blit_preserves_channel_order_and_orientation` |
 | Red and blue swapped | bitmap `ByteOrder32Big` with `PremultipliedLast` lays out ABGR | same test, run per byte-order |
 
@@ -126,7 +126,7 @@ registry is a thread-local.
 ## Verification
 
 * `cargo check` / `clippy --all-targets` clean on host.
-* `demo/code_editor` and `demo/control`: `mount_self_drawn` must return true on
+* `demo/code_editor` and `demo/control`: `mount_custom_widget` must return true on
   a desktop backend and the window must show rendered content.
 * Backends without an implementation must keep returning `false`, and the
   demos must say so rather than claim success.

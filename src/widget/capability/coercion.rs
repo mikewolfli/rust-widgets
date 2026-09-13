@@ -280,11 +280,14 @@ pub fn expect_list_box_selection_mode(
         _ => return Err(CapabilityAccessError::TypeMismatch),
     };
 
+    // Both spellings are accepted: the canonical variant names and the historical
+    // list-box names (`noselection`, `singleselection`, …) that config files and
+    // bindings may still use.
     match token.as_str() {
-        "none" | "noselection" => Ok(ListBoxSelectionMode::NoSelection),
-        "single" | "singleselection" => Ok(ListBoxSelectionMode::SingleSelection),
-        "multi" | "multiselection" => Ok(ListBoxSelectionMode::MultiSelection),
-        "extended" | "extendedselection" => Ok(ListBoxSelectionMode::ExtendedSelection),
+        "none" | "noselection" => Ok(ListBoxSelectionMode::None),
+        "single" | "singleselection" => Ok(ListBoxSelectionMode::Single),
+        "multi" | "multiselection" => Ok(ListBoxSelectionMode::Multi),
+        "extended" | "extendedselection" => Ok(ListBoxSelectionMode::Extended),
         _ => Err(CapabilityAccessError::TypeMismatch),
     }
 }

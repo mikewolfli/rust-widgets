@@ -95,6 +95,10 @@ impl SelectionModel {
         self.mode
     }
     /// Selects a row.
+    ///
+    /// In [`SelectionMode::None`] the view accepts no selection, so this is a
+    /// no-op — the mode is a property of the view, not a transient state, and
+    /// silently selecting anyway would contradict what the caller asked for.
     pub fn select_row(&mut self, row: usize) {
         match self.mode {
             SelectionMode::Single => {
@@ -113,12 +117,17 @@ impl SelectionModel {
                 self.selected_rows.push(row);
                 self.current_row = Some(row);
             }
+            SelectionMode::None => {}
         }
     }
     /// Clears selection.
     pub fn clear(&mut self) {
         self.selected_rows.clear();
         self.current_row = None;
+    }
+    /// Returns whether the view accepts selection at all.
+    pub fn is_selectable(&self) -> bool {
+        self.mode != SelectionMode::None
     }
     /// Returns current row.
     pub fn current_row(&self) -> Option<usize> {
@@ -138,23 +147,44 @@ impl SelectionModel {
         }
     }
 }
-/// Selection mode for list/tree/table views.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SelectionMode {
-    /// Single selection.
-    Single,
-    /// Multiple selection.
-    Multi,
-    /// Extended selection (Ctrl+Click, Shift+Click).
-    Extended,
-}
-/// View mode for list views.
+/// Selection mode for list, tree, table and list-box views.
+///
+/// Re-exported from [`crate::widget::input_widgets::listbox::SelectionMode`] — the
+/// input layer owns the canonical definition because `ListBox` needs it in every
+/// profile, while this module is `full_widgets`-gated. One definition for every
+/// selection surface (principle #54).
+///
+/// `None` means the view accepts no selection at all, which is distinct from an
+/// empty selection in `Single`/`Multi` mode: it is a property of the view, not a
+/// state of the data.
+pub use crate::widget::input_widgets::listbox::SelectionMode;
+/// How a list view presents its items.
+///
+/// # Not the same as [`crate::widget::container_widgets::mdiarea::ViewMode`]
+///
+/// Both types are called `ViewMode`, but they describe different axes and are
+/// **not** interchangeable:
+///
+/// * this one — how one `ListView` presents its *own items* (list, icons,
+///   details, thumbnails);
+/// * [`mdiarea::ViewMode`][mdi] — how an `MdiArea` lays its *child windows* out
+///   (free-floating sub-windows vs. tabs).
+///
+/// They are deliberately left as two enums: merging them would create one type
+/// whose variants are meaningless in the other's context, so a `match` could not
+/// be exhaustive in either widget. See principle #49.
+///
+/// [mdi]: crate::widget::container_widgets::mdiarea::ViewMode
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ViewMode {
+    /// Flat list of items.
     #[default]
     List,
+    /// Large icons in a grid.
     Icon,
+    /// Rows with extra columns of detail.
     Details,
+    /// Thumbnail grid.
     Thumbnails,
 }
 

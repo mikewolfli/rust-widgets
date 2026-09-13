@@ -18,15 +18,17 @@ use crate::platform::{WidgetTriggerKind, WindowStateFlag};
 // ═══════════════════════════════════════════════════════════════
 
 /// The visual state of a tri-state check-box.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CheckState {
-    /// Box is not checked.
-    Unchecked,
-    /// Box is checked.
-    Checked,
-    /// Box is in an indeterminate / partially-checked state.
-    PartiallyChecked,
-}
+///
+/// Re-exported from [`crate::widget::base_widgets::CheckState`] — the widget layer
+/// owns the canonical definition, and the handle layer names the same three
+/// states. Keeping one enum means a value read from a handle and one read from a
+/// widget are the same type; there is nothing to convert and nothing to drift.
+///
+/// Note the declaration order differs from the widget module (which lists
+/// `PartiallyChecked` between the two definite states); as a fieldless enum whose
+/// identity is `PartialEq`/`Hash` rather than discriminant order, that is not
+/// observable, and `matches!`/`==` comparisons behave identically.
+pub use crate::widget::base_widgets::CheckState;
 
 /// Controls how text is displayed in a line-edit widget.
 ///
@@ -35,17 +37,12 @@ pub enum CheckState {
 pub use crate::platform::EchoMode;
 
 /// Determines how many rows can be selected in a list / table view.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum SelectionMode {
-    /// At most one row can be selected.
-    Single,
-    /// Multiple rows can be selected (toggle behaviour).
-    Multi,
-    /// Multiple rows can be selected with modifier keys (Ctrl/Shift).
-    Extended,
-    /// No row can be selected.
-    None,
-}
+///
+/// Re-exported from [`crate::widget::input_widgets::listbox::SelectionMode`] — the
+/// widget layer owns the canonical definition and every selection surface names
+/// the same four modes. One definition means a mode read from a handle and one
+/// read from a `ListView` are the same type (principle #54).
+pub use crate::widget::input_widgets::listbox::SelectionMode;
 
 /// Data model interface for list / table views.
 ///
@@ -71,62 +68,30 @@ pub type ClickCallback = Rc<RefCell<dyn FnMut()>>;
 /// Boxed callback invoked when a widget value changes.
 pub type ValueChangedCallback = Rc<RefCell<dyn FnMut(String)>>;
 
-// ═══════════════════════════════════════════════════════════════
-// Self-drawn widget mounting
-// ═══════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════
+// Custom-painted widget mounting
+// ═══════════════════════════════════════════════════
 
-/// Why a self-drawn widget could not be mounted into a window.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SelfDrawnMountError {
-    /// The calling thread has no widget registry — mounting must happen on the
-    /// thread that drives the UI.
-    NoRegistryOnThread,
-    /// This backend has no self-drawn surface (`Platform::supports_self_drawn`
-    /// returned `false`). Carries the backend name for the message.
-    UnsupportedByBackend(&'static str),
-    /// The backend claims support but refused this particular mount (unknown
-    /// parent, wrong parent kind, allocation failure). Carries the backend name.
-    RejectedByBackend(&'static str),
-    /// `mount_widget_by_name` was given a name the widget factory does not know.
-    UnknownWidgetName,
-}
+/// Why a custom-painted widget could not be mounted into a window.
+///
+/// Re-exported from [`crate::widget::runtime::CustomWidgetMountError`] — the layer
+/// that owns widget registration also owns the reasons registration or mounting
+/// can fail, so there is one definition shared by the handle API and the
+/// crate-level creation API (principle #54).
+pub use crate::widget::runtime::CustomWidgetMountError;
 
-impl core::fmt::Display for SelfDrawnMountError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::NoRegistryOnThread => write!(
-                f,
-                "self-drawn widgets must be mounted on the UI thread (no registry on this thread)"
-            ),
-            Self::UnsupportedByBackend(backend) => write!(
-                f,
-                "backend '{backend}' cannot display self-drawn widgets; \
-                 it has no native canvas surface"
-            ),
-            Self::RejectedByBackend(backend) => {
-                write!(f, "backend '{backend}' refused the mount (see logs for the reason)")
-            }
-            Self::UnknownWidgetName => {
-                write!(f, "the widget factory has no widget registered under that name")
-            }
-        }
-    }
-}
-
-impl std::error::Error for SelfDrawnMountError {}
-
-/// Handle to a self-drawn widget mounted in a window.
+/// Handle to a custom-painted widget mounted in a window.
 ///
 /// Keeps the widget's registry id so the caller can move or unmount it. Dropping
 /// the handle is **not** enough to remove the widget: the window still owns it,
-/// because the native surface outlives any single Rust value. Call
-/// [`SelfDrawnHandle::unmount`] for that; `Drop` only detaches this handle.
+/// because the surface outlives any single Rust value. Call
+/// [`CustomWidgetHandle::unmount`] for that; `Drop` only detaches this handle.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SelfDrawnHandle {
+pub struct CustomWidgetHandle {
     id: ObjectId,
 }
 
-impl SelfDrawnHandle {
+impl CustomWidgetHandle {
     /// Wraps a registry id.
     pub fn from_raw(id: ObjectId) -> Self {
         Self { id }
@@ -146,14 +111,14 @@ impl SelfDrawnHandle {
     ///
     /// Returns `false` when the widget is no longer mounted.
     pub fn set_geometry(&self, rect: Rect) -> bool {
-        crate::resize_self_drawn(self.id, rect)
+        crate::resize_custom_widget(self.id, rect)
     }
 
     /// Removes the widget from its window and drops it.
     ///
     /// Returns `false` when it was already unmounted.
     pub fn unmount(&self) -> bool {
-        let removed = crate::unmount_self_drawn(self.id);
+        let removed = crate::unmount_custom_widget(self.id);
         crate::widget::runtime::unregister(self.id);
         removed
     }
@@ -162,11 +127,11 @@ impl SelfDrawnHandle {
     ///
     /// # Why this exists
     ///
-    /// A self-drawn widget owns its own interaction model, so a native menu item
-    /// or tool-bar button cannot drive it through the platform event queue —
-    /// there is no OS control to send a command to. This is the generic bridge:
-    /// the caller decides what to do with the widget, and this method guarantees
-    /// the change becomes visible.
+    /// A custom-painted widget owns its own interaction model, so a menu item or
+    /// tool-bar button cannot drive it through the platform event queue — there is
+    /// no OS control to send a command to. This is the generic bridge: the caller
+    /// decides what to do with the widget, and this method guarantees the change
+    /// becomes visible.
     ///
     /// `f` returns whether it changed anything; returning `false` skips the
     /// repaint. Returns `None` when the widget is no longer mounted.
@@ -181,7 +146,7 @@ impl SelfDrawnHandle {
     /// let win = app.new_window("Editor", 0, 0, 800, 600);
     /// let editor = win
     ///     .mount_widget_by_name("code_editor", Rect::new(0, 0, 800, 600), "")
-    ///     .expect("backend supports self-drawn widgets");
+    ///     .expect("backend supports custom-painted widgets");
     ///
     /// // Downcast to the concrete widget and drive it directly.
     /// editor.update(|widget| {
@@ -208,7 +173,7 @@ impl SelfDrawnHandle {
     }
 }
 
-impl WidgetHandle for SelfDrawnHandle {
+impl WidgetHandle for CustomWidgetHandle {
     fn raw_id(&self) -> ObjectId {
         self.id
     }
@@ -217,7 +182,7 @@ impl WidgetHandle for SelfDrawnHandle {
         Self { id }
     }
 
-    /// Self-drawn widgets route input into themselves.
+    /// Custom-painted widgets route input into themselves.
     ///
     /// A `CodeEditor` handles its own clicks, keys and IME commits through
     /// `EventHandler`; there is no separate platform control to attach a
@@ -226,17 +191,17 @@ impl WidgetHandle for SelfDrawnHandle {
     /// editor: `text_changed`, `cursor_moved`, `selection_changed`).
     fn on_click<F: FnMut() + 'static>(&self, _f: F) {
         log::debug!(
-            "SelfDrawnHandle::on_click ignored for id={}: self-drawn widgets emit their own \
-             signals rather than a platform click callback",
+            "CustomWidgetHandle::on_click ignored for id={}: custom-painted widgets emit their \
+             own signals rather than a platform click callback",
             self.id
         );
     }
 
-    /// See [`SelfDrawnHandle::on_click`]; the same reasoning applies.
+    /// See [`CustomWidgetHandle::on_click`]; the same reasoning applies.
     fn on_value_changed<F: FnMut(String) + 'static>(&self, _f: F) {
         log::debug!(
-            "SelfDrawnHandle::on_value_changed ignored for id={}: self-drawn widgets emit \
-             their own signals",
+            "CustomWidgetHandle::on_value_changed ignored for id={}: custom-painted widgets \
+             emit their own signals",
             self.id
         );
     }
@@ -725,15 +690,23 @@ impl WindowHandle {
         ProgressBarHandle::from_raw(crate::create_progress_bar(self.id, x, y, w, h))
     }
 
-    /// Mount a **self-drawn** widget into this window.
+    /// Mount a **custom-painted** widget into this window.
     ///
     /// # What this is for
     ///
     /// Widgets that paint themselves through `Draw` (`CodeEditor`, `ColorPicker`,
     /// `GanttWidget`, `TerminalView`, …) have no OS control to map onto, so the
     /// `new_*` factory methods above cannot host them. This method hands the
-    /// widget to a native canvas surface that repaints it whenever the window
-    /// is invalidated, and forwards pointer/keyboard input back into the widget.
+    /// widget to a surface the backend provides that repaints it whenever the
+    /// window is invalidated, and forwards pointer/keyboard input back into the
+    /// widget.
+    ///
+    /// # Cross-platform by construction
+    ///
+    /// Which surface that is (a child window, a drawing area, a view) is decided
+    /// inside `src/platform/` and is deliberately **not** part of this contract.
+    /// The same call works on every backend; when one cannot host such a widget it
+    /// says so through `Err`, rather than the caller pre-checking an OS.
     ///
     /// # Ownership
     ///
@@ -743,8 +716,8 @@ impl WindowHandle {
     /// # Returns
     ///
     /// `Ok(handle)` when the backend mounted the widget, `Err(reason)` when it
-    /// could not — a backend without self-drawn support (see
-    /// `Platform::supports_self_drawn`), an off-UI-thread call, or an unknown
+    /// could not — a backend that cannot host custom-painted widgets (see
+    /// `Platform::supports_custom_widgets`), an off-UI-thread call, or an unknown
     /// parent. Callers must surface the error rather than showing a blank window.
     ///
     /// ```no_run
@@ -757,38 +730,26 @@ impl WindowHandle {
     /// let win = app.new_window("Editor", 0, 0, 900, 600);
     /// let editor = CodeEditor::with_config(Rect::new(0, 0, 900, 600), CodeEditorConfig::new())
     ///     .expect("valid config");
-    /// win.mount_self_drawn(Box::new(editor), Rect::new(0, 0, 900, 600))
-    ///     .expect("backend must support self-drawn widgets");
+    /// win.mount_custom_widget(Box::new(editor), Rect::new(0, 0, 900, 600))
+    ///     .expect("backend must support custom-painted widgets");
     /// win.show();
     /// app.run();
     /// ```
-    pub fn mount_self_drawn(
+    pub fn mount_custom_widget(
         &self,
         widget: Box<dyn crate::widget::Widget>,
         rect: Rect,
-    ) -> Result<SelfDrawnHandle, SelfDrawnMountError> {
-        // The widget must be registered before the backend can be asked to show
-        // it, because the backend looks it up by id on every repaint.
-        let id = crate::widget::runtime::register(widget)
-            .ok_or(SelfDrawnMountError::NoRegistryOnThread)?;
-        crate::widget::runtime::set_geometry(id, rect);
-
-        let mounted = crate::mount_self_drawn(self.id, id, rect);
-        if !mounted {
-            // Do not leave a widget stranded in the registry when the backend
-            // refused to show it. Dropping it here keeps the two in step.
-            crate::widget::runtime::unregister(id);
-            if !crate::supports_self_drawn() {
-                return Err(SelfDrawnMountError::UnsupportedByBackend(crate::backend_name()));
-            }
-            return Err(SelfDrawnMountError::RejectedByBackend(crate::backend_name()));
-        }
-        Ok(SelfDrawnHandle { id })
+    ) -> Result<CustomWidgetHandle, CustomWidgetMountError> {
+        // One implementation of register → mount → roll back, shared with
+        // `create_widget_of_kind`, so the two creation paths cannot disagree about
+        // ownership or error reporting.
+        let id = crate::mount_widget_object(self.id, widget, rect)?;
+        Ok(CustomWidgetHandle { id })
     }
 
-    /// Mount a self-drawn widget, creating it from the widget factory by name.
+    /// Mount a custom-painted widget, creating it from the widget factory by name.
     ///
-    /// Convenience wrapper over [`WindowHandle::mount_self_drawn`] for callers
+    /// Convenience wrapper over [`WindowHandle::mount_custom_widget`] for callers
     /// that already address widgets by their capability name (`"code_editor"`,
     /// `"color_picker"`, …).
     pub fn mount_widget_by_name(
@@ -796,11 +757,11 @@ impl WindowHandle {
         name: &str,
         rect: Rect,
         text: &str,
-    ) -> Result<SelfDrawnHandle, SelfDrawnMountError> {
+    ) -> Result<CustomWidgetHandle, CustomWidgetMountError> {
         let factory = crate::widget::WidgetFactory::new_with_defaults();
         let widget =
-            factory.create(name, rect, text).ok_or(SelfDrawnMountError::UnknownWidgetName)?;
-        self.mount_self_drawn(widget, rect)
+            factory.create(name, rect, text).ok_or(CustomWidgetMountError::UnknownWidgetName)?;
+        self.mount_custom_widget(widget, rect)
     }
 
     pub fn new_panel(&self, x: i32, y: i32, w: u32, h: u32) -> PanelHandle {
@@ -1406,14 +1367,13 @@ impl ProgressBarHandle {
 
 #[derive(Debug, Clone)]
 struct CheckBoxState {
-    checked: bool,
     tristate: bool,
     check_state: CheckState,
 }
 
 impl Default for CheckBoxState {
     fn default() -> Self {
-        Self { checked: false, tristate: false, check_state: CheckState::Unchecked }
+        Self { tristate: false, check_state: CheckState::Unchecked }
     }
 }
 
@@ -1423,27 +1383,53 @@ thread_local! {
 
 /// # Check-box specific operations
 impl CheckBoxHandle {
-    /// Return whether the check-box is checked (non-tristate mode).
+    /// Return whether the check-box is checked.
+    ///
+    /// A tri-state box reports `true` only for [`CheckState::Checked`]; the mixed
+    /// state is not "checked". Use [`CheckBoxHandle::check_state`] when the three
+    /// states must be distinguished.
     pub fn is_checked(&self) -> bool {
-        CHECKBOX_STATES
-            .with(|map| map.borrow().get(&self.raw_id()).map(|s| s.checked).unwrap_or(false))
+        self.check_state() == CheckState::Checked
     }
 
     /// Set the check-box to checked or unchecked.
     ///
     /// Mirrored into the in-process state *and* pushed to the native control
     /// through [`crate::Platform::set_widget_checked`], so the box really moves.
+    ///
+    /// This always lands on a definite state, tri-state mode or not, so
+    /// [`CheckBoxHandle::check_state`] and the native control cannot disagree.
+    /// Use [`CheckBoxHandle::set_check_state`] to reach the mixed state.
     pub fn set_checked(&self, checked: bool) {
-        CHECKBOX_STATES.with(|map| {
+        self.set_check_state(if checked { CheckState::Checked } else { CheckState::Unchecked });
+    }
+
+    /// Set the check-box to an explicit tri-state value.
+    ///
+    /// [`CheckState::PartiallyChecked`] requires tri-state mode to be on
+    /// (see [`CheckBoxHandle::set_tristate`]); without it the control has only
+    /// two positions, so this returns `false` and changes nothing rather than
+    /// silently degrading the mixed state to one of the two real ones.
+    ///
+    /// The native control only has off/on, so `PartiallyChecked` is pushed as
+    /// "on" — which is how Win32 `BS_AUTO3STATE` and AppKit
+    /// `NSControlStateValueMixed` present as to the checked flag — while this
+    /// handle keeps the precise state.
+    pub fn set_check_state(&self, state: CheckState) -> bool {
+        let applied = CHECKBOX_STATES.with(|map| {
             let mut map = map.borrow_mut();
-            let state = map.entry(self.raw_id()).or_default();
-            state.checked = checked;
-            if !state.tristate {
-                state.check_state =
-                    if checked { CheckState::Checked } else { CheckState::Unchecked };
+            let entry = map.entry(self.raw_id()).or_default();
+            if state == CheckState::PartiallyChecked && !entry.tristate {
+                return false;
             }
+            entry.check_state = state;
+            true
         });
-        crate::platform::get_platform().set_widget_checked(self.raw_id(), checked);
+        if applied {
+            crate::platform::get_platform()
+                .set_widget_checked(self.raw_id(), state != CheckState::Unchecked);
+        }
+        applied
     }
 
     /// Enable/disable tri-state mode.
@@ -1452,15 +1438,29 @@ impl CheckBoxHandle {
     /// through [`crate::Platform::set_widget_tristate`] (`setAllowsMixedState:` on
     /// macOS, `BS_3STATE`/`BS_AUTO3STATE` on Windows, `set_inconsistent` on GTK),
     /// so all three desktops actually gain a third state.
+    ///
+    /// Turning the mode *off* while the box sits in the mixed state would leave a
+    /// state the control can no longer display, so it is collapsed to
+    /// [`CheckState::Unchecked`] — a real, visible position instead of a stale one.
     pub fn set_tristate(&self, tristate: bool) {
-        CHECKBOX_STATES.with(|map| {
-            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).tristate =
-                tristate;
+        let collapsed = CHECKBOX_STATES.with(|map| {
+            let mut map = map.borrow_mut();
+            let entry = map.entry(self.raw_id()).or_default();
+            entry.tristate = tristate;
+            if !tristate && entry.check_state == CheckState::PartiallyChecked {
+                entry.check_state = CheckState::Unchecked;
+                true
+            } else {
+                false
+            }
         });
+        if collapsed {
+            crate::platform::get_platform().set_widget_checked(self.raw_id(), false);
+        }
         crate::platform::get_platform().set_widget_tristate(self.raw_id(), tristate);
     }
 
-    /// Return the current check state of a tri-state check-box.
+    /// Return the current check state, including the tri-state mixed value.
     pub fn check_state(&self) -> CheckState {
         CHECKBOX_STATES.with(|map| {
             map.borrow().get(&self.raw_id()).map(|s| s.check_state).unwrap_or(CheckState::Unchecked)

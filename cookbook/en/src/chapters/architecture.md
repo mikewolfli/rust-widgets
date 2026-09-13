@@ -168,7 +168,7 @@ graph TD
 | **control_backend** | `src/control_backend/` | `ControlBackend` trait (180+ methods), dispatcher, router |
 | **platform** | `src/platform/` | Per-OS backends, clipboard, IME, accessibility, mobile APIs |
 | **i18n** | `src/i18n/` | Translation infrastructure, `tr!()` macro |
-| **chart** | `src/chart/` | Chart widgets: Line, Bar, Pie, Sparkline |
+| **chart** | `src/widget/chart_widgets/` | Chart widgets (Line, Bar, Pie, Sparkline) **and** the drawing engine they share (layout/axes/ticks, `ChartContext`, SVG, adapter) |
 | **pdf** | `src/pdf/` | PDF document generation |
 | **print** | `src/print/` | System print service integration |
 | **memory** | `src/memory/` | Arena allocation, `no_std` memory model |

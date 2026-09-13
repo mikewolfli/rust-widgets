@@ -16,7 +16,7 @@ use crate::layout::Layout;
 /// # Example
 ///
 /// ```rust
-/// use rust_widgets::chart::layout::ChartLayout;
+/// use rust_widgets::widget::chart_widgets::layout::ChartLayout;
 /// use rust_widgets::layout::Layout;
 ///
 /// let mut layout = ChartLayout::new(42);

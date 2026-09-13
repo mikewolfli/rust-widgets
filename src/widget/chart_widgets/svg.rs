@@ -3,8 +3,8 @@
 
 //! SVG chart context and in-memory chart context implementations.
 
-use crate::chart::types::*;
 use crate::core::{Color, Point, Rect};
+use crate::widget::chart_widgets::types::*;
 use std::fs;
 
 #[derive(Default)]

@@ -12,7 +12,7 @@
 //! Unlike [`BarChart`](super::bar_chart) and [`LineChart`](super::line_chart),
 //! a sparkline is *defined* by having no chart chrome: no plot margins, no axes,
 //! no grid, no tick labels, no legend. Those are exactly the pieces
-//! [`crate::chart`] provides, so routing through it would add an adapter hop and
+//! [`crate::widget::chart_widgets`] provides, so routing through it would add an adapter hop and
 //! reserve margins the sparkline must not have — cost with no shared logic to
 //! show for it.
 //!

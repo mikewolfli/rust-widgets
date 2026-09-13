@@ -12,21 +12,21 @@
 //! # Rendering path
 //!
 //! With the `chart` feature enabled, the plot area, axes, grid lines and X/Y
-//! tick labels come from the shared chart engine in [`crate::chart`], so this
+//! tick labels come from the shared chart engine in [`crate::widget::chart_widgets`], so this
 //! widget cannot drift from the SVG chart renderer. Without the feature
 //! (tablet/mobile) a compact local preamble is used instead.
 
-#[cfg(feature = "chart")]
-use crate::chart::adapter::ChartContextAdapter;
-#[cfg(feature = "chart")]
-use crate::chart::charts::{
-    compute_cartesian_layout, draw_cartesian_axes, draw_x_ticks, draw_y_ticks, CartesianLayout,
-};
 #[cfg(not(feature = "chart"))]
 use crate::core::Font;
 use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+#[cfg(feature = "chart")]
+use crate::widget::chart_widgets::adapter::ChartContextAdapter;
+#[cfg(feature = "chart")]
+use crate::widget::chart_widgets::charts::{
+    compute_cartesian_layout, draw_cartesian_axes, draw_x_ticks, draw_y_ticks, CartesianLayout,
+};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 /// Converts the shared engine's float plot area into the integer [`Rect`] this

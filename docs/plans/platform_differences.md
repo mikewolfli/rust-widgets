@@ -21,7 +21,7 @@ graph TD
 适合"所有平台都有这个概念，但支持程度不同"的能力。
 
 ```rust
-if rust_widgets::supports_self_drawn() { ... }
+if rust_widgets::supports_custom_widgets() { ... }
 rust_widgets::capabilities().native_menu
 ```
 
@@ -30,7 +30,7 @@ rust_widgets::capabilities().native_menu
 * **禁止**用它来假装支持：`supports_*` 返回 `true` 而实际无效，是本项目明确禁止的
   "假修复"（principle #12）。
 
-**已采用此模式的**：`supports_self_drawn()`、`PlatformCapabilities::native_menu` /
+**已采用此模式的**：`supports_custom_widgets()`、`PlatformCapabilities::native_menu` /
 `dpi_scaling` / `ime` / `accessibility`。
 
 ## 第二层：统一 API —— 语义相同，实现不同
@@ -40,7 +40,7 @@ rust_widgets::capabilities().native_menu
 ```rust
 win.new_button("OK", 10, 10, 80, 30);      // macOS NSButton / Windows BUTTON / GTK Button
 win.new_menu_bar(0, 0, 800, 26);
-win.mount_self_drawn(widget, rect);        // 各后端各自实现
+win.mount_custom_widget(widget, rect);        // 各后端各自实现
 ```
 
 * 调用方**完全不关心**平台。
@@ -151,9 +151,9 @@ win.new_menu_item_with_shortcut(&menu, "Undo", Some(undo));
 1. 签名改为 `new_menu(&MenuBarHandle, ...)`，让错误的调用**编译不过**（编译期约束优于运行时检查，principle #29）；
 2. 后端遇到 `Window` parent 时打 `log::error!` 并返回 `0`，不再静默。
 
-### 案例 2：鸿蒙无自绘支持 → 如实拒绝（已测）
+### 案例 2：鸿蒙暂不能承载自绘型控件 → 如实拒绝（已测）
 
-`HarmonyPlatform` 没有实现 `mount_self_drawn`，因此继承 trait 默认的
+`HarmonyPlatform` 没有实现 `mount_custom_widget`，因此继承 trait 默认的
 `false`。测试 `self_drawn_support_is_refused_until_the_arkui_bridge_exists`
 锁住这个契约，确保装 SDK 之前不会有人误以为能用。
 
@@ -163,14 +163,14 @@ win.new_menu_item_with_shortcut(&menu, "Undo", Some(undo));
 
 ```rust
 // 1. 先查能力，不支持就明确退出（不显示空窗口）
-if !rust_widgets::supports_self_drawn() {
-    eprintln!("后端 '{}' 不支持自绘控件 ...", rust_widgets::backend_name());
+if !rust_widgets::supports_custom_widgets() {
+    eprintln!("后端 '{}' 暂不能承载自绘型控件 ...", rust_widgets::backend_name());
     std::process::exit(1);
 }
 
 // 2. 之后全部用统一 API，不出现任何 cfg
 win.new_menu_bar(...);
-win.mount_self_drawn(...);
+win.mount_custom_widget(...);
 ```
 
 demo 里**不应出现 `cfg(target_os)`**。目前 `demo/code_editor` 与 `demo/control`
@@ -201,7 +201,7 @@ cargo build --features mini
 
 | 被移除的模块 | 谁依赖它 |
 |---|---|
-| `widget::runtime`（`#[cfg(not(feature = "mini"))]`） | 三端的自绘画布 `platform/<os>/canvas.rs` |
+| `widget::runtime`（`#[cfg(not(feature = "mini"))]`） | 各后端的自绘承载面 `platform/<os>/canvas.rs` |
 
 结果不是「两者取其轻」，而是**编译失败**：`canvas.rs` 引用了一个不存在的模块。
 
@@ -221,20 +221,20 @@ cargo build --features mini
 
 ### 现在的处理方式
 
-自绘相关的模块与 trait 方法全部按**同一条件**门控：
+自绘承载相关的模块与 trait 方法全部按**同一条件**门控：
 
 ```rust
 #[cfg(not(any(feature = "mini", feature = "embedded")))]
-fn supports_self_drawn(&self) -> bool { true }
+fn supports_custom_widgets(&self) -> bool { true }
 ```
 
 于是混合开启时：
 
 * **不再编译失败** —— `mini` 与 `desktop` 同时开启也能 build 通过；
-* `supports_self_drawn()` 在 `mini`/`embedded` 下**如实返回 `false`**，宿主据此拒绝
+* `supports_custom_widgets()` 在 `mini`/`embedded` 下**如实返回 `false`**，宿主据此拒绝
   挂载，而不是挂上去得到一个空白窗口。
 
-> **这是一个刻意的不对称**：`mini` 下不是「自绘功能降级」，而是「这个能力不存在」。
+> **这是一个刻意的不对称**：`mini` 下不是「自绘承载能力降级」，而是「这个能力不存在」。
 > 返回 `true` 会是本项目禁止的假修复（principle #12）。
 
 ### 验证
@@ -264,11 +264,11 @@ fn supports_self_drawn(&self) -> bool { true }
 | 原生菜单栏 | ✅ | ✅ | ✅ | ⬜ 状态树 |
 | 工具栏 | ✅ | ✅ | ✅ | ⬜ |
 | 状态栏 | ✅ | ✅ | ✅ | ⬜ |
-| 自绘控件挂载 | ✅ | ✅ | ✅ | ⬜ 待 SDK |
+| 自绘型控件挂载 | ✅ | ✅ | ✅ | ⬜ 待 SDK |
 | 菜单快捷键（显示） | ✅ `⌘Z` | ✅ `Ctrl+Z` | ✅ `Ctrl+Z` | ⬜ |
 | 菜单快捷键（真的能用） | ✅ keyEquivalent | ✅ HACCEL 表 | ✅ AccelGroup | ⬜ |
 | `native_menu` 声明 | ✅ | ✅ | 默认 true | `false` |
-| `supports_self_drawn` | `true` | `true` | `true` | `false` |
+| `supports_custom_widgets` | `true` | `true` | `true` | `false` |
 
 ### 设备配置 × 能力（⚠️ 配置互斥）
 
@@ -278,20 +278,20 @@ fn supports_self_drawn(&self) -> bool { true }
 | 能力 | desktop | mini | embedded |
 |---|---|---|---|
 | `widget::runtime`（控件注册表） | ✅ | ⬜ 编译移除 | ⬜ 编译移除 |
-| 自绘控件挂载（`mount_self_drawn`） | ✅ | ⬜ 编译移除 | ⬜ 编译移除 |
-| `supports_self_drawn()` | `true` | **`false`** | **`false`** |
+| 自绘型控件挂载（`mount_custom_widget`） | ✅ | ⬜ 编译移除 | ⬜ 编译移除 |
+| `supports_custom_widgets()` | `true` | **`false`** | **`false`** |
 | 菜单 / 工具栏 / 状态栏 | ✅ | ✅ | ✅ |
 | 菜单快捷键（显示） | ✅ | ✅ | ✅ |
 | 菜单快捷键（真的能用） | ✅ 原生加速键 | ✅ 原生加速键 | ✅ 原生加速键 |
 | 构建组合 | — | 不可与 `desktop` 同开 | 不可与 `desktop` 同开 |
 
-> 菜单与快捷键**不**受 `mini` 影响：它们的代码没有 `mini` 门控（只有自绘相关的
-> 5 个 trait 方法有）。所以 `mini` 是一个「无自绘、但菜单完整」的配置。
+> 菜单与快捷键**不**受 `mini` 影响：它们的代码没有 `mini` 门控（只有自绘承载相关的
+> 5 个 trait 方法有）。所以 `mini` 是一个「无自绘承载、但菜单完整」的配置。
 > `src/platform/<os>/platform_impl.rs` 里的 `mini` 门控数量可自行核对：
 > `grep -c 'feature = "mini"' src/platform/*/platform_impl.rs`。
 
-> 表中 `⬜` 在 `mini`/`embedded` 下**不是降级而是不存在**：自绘模块被整体编译移除，
-> 所以 `supports_self_drawn()` 必须返回 `false`。宿主据此拒绝挂载（见 `demo/code_editor`
+> 表中 `⬜` 在 `mini`/`embedded` 下**不是降级而是不存在**：自绘承载模块被整体编译移除，
+> 所以 `supports_custom_widgets()` 必须返回 `false`。宿主据此拒绝挂载（见 `demo/code_editor`
 > 的启动检查）。
 
 ### `tablet` / `mobile` 的两个坑（实测）
@@ -304,17 +304,17 @@ fn supports_self_drawn(&self) -> bool { true }
 ```bash
 $ cargo run --example probe --no-default-features --features tablet
 backend = macos-fallback-stub    # 不报错，静默拿到 stub
-supports_self_drawn = false
+supports_custom_widgets = false
 
 $ cargo run --example probe --no-default-features --features tablet,macos
 backend = macos-objc2-preview
-supports_self_drawn = false      # 后端真实了，但自绘仍不支持
+supports_custom_widgets = false      # 后端真实了，但自绘承载仍不支持
 ```
 
-**2. macOS 上它们选中 objc2 预览后端，而该后端未实现自绘。** 目前 macOS 能承载
-自绘控件的只有 `desktop` 配置（`cocoa` 后端）：
+**2. macOS 上它们选中 objc2 预览后端，而该后端未实现自绘承载。** 目前 macOS 能承载
+自绘型控件的只有 `desktop` 配置（`cocoa` 后端）：
 
-| 配置（macOS） | `backend_name()` | `supports_self_drawn()` |
+| 配置（macOS） | `backend_name()` | `supports_custom_widgets()` |
 |---|---|---|
 | `desktop`（默认） | `cocoa` | `true` |
 | `tablet,macos` | `macos-objc2-preview` | `false` |
@@ -323,8 +323,8 @@ supports_self_drawn = false      # 后端真实了，但自绘仍不支持
 | `embedded,macos` | `embedded-runtime-stub` | `false` |
 
 **3. 因此不要把 `tablet`/`mobile` 当作「桌面能力减去一些东西」**。它们是一个独立的
-目标平台：能跑原生控件与完整菜单，但自绘界面要等 objc2 后端补齐。
+目标平台：能跑完整控件与菜单，但自绘型控件的承载要等 objc2 后端补齐。
 
 > 这三个值均可用下述命令复现（`examples/` 下建一个打印 `backend_name()` 与
-> `supports_self_drawn()` 的探针即可）。宿主的正确做法始终是**查询能力**，而不是按
+> `supports_custom_widgets()` 的探针即可）。宿主的正确做法始终是**查询能力**，而不是按
 > 配置名推断。

@@ -382,19 +382,19 @@ fn capabilities_are_explicit_and_honest() {
 
 /// The self-drawn contract must stay honest before the OpenHarmony SDK lands.
 ///
-/// `mount_self_drawn` has no ArkUI Canvas mapping yet, so the backend must keep
-/// reporting `false`. A host that checks `supports_self_drawn()` then refuses to
+/// `mount_custom_widget` has no ArkUI Canvas mapping yet, so the backend must keep
+/// reporting `false`. A host that checks `supports_custom_widgets()` then refuses to
 /// build a UI it cannot display, instead of opening an empty window.
 #[test]
-fn self_drawn_support_is_refused_until_the_arkui_bridge_exists() {
+fn custom_widget_support_is_refused_until_the_arkui_bridge_exists() {
     let backend = HarmonyPlatform::new();
     assert!(
-        !backend.supports_self_drawn(),
-        "HarmonyOS cannot display self-drawn widgets until mount_self_drawn is \
+        !backend.supports_custom_widgets(),
+        "HarmonyOS cannot display self-drawn widgets until mount_custom_widget is \
          implemented against an ArkUI Canvas"
     );
     // The trait defaults must also refuse, rather than silently succeeding.
-    assert!(!backend.mount_self_drawn(1, 2, crate::core::Rect::new(0, 0, 10, 10)));
-    assert!(!backend.repaint_self_drawn(2));
-    assert!(!backend.unmount_self_drawn(2));
+    assert!(!backend.mount_custom_widget(1, 2, crate::core::Rect::new(0, 0, 10, 10)));
+    assert!(!backend.repaint_custom_widget(2));
+    assert!(!backend.unmount_custom_widget(2));
 }

@@ -165,7 +165,7 @@ graph TD
 | **control_backend** | `src/control_backend/` | `ControlBackend` trait（180+ 方法）、调度器、路由器 |
 | **platform** | `src/platform/` | 各操作系统后端、剪贴板、输入法、辅助功能、移动端 API |
 | **i18n** | `src/i18n/` | 翻译基础设施、`tr!()` 宏 |
-| **chart** | `src/chart/` | 图表控件：Line, Bar, Pie, Sparkline |
+| **chart** | `src/widget/chart_widgets/` | 图表控件：Line, Bar, Pie, Sparkline，以及它们共享的绘图引擎（布局/坐标轴/刻度、`ChartContext`、SVG、适配器） |
 | **pdf** | `src/pdf/` | PDF 文档生成 |
 | **print** | `src/print/` | 系统打印服务集成 |
 | **memory** | `src/memory/` | 竞技场分配器、`no_std` 内存模型 |

@@ -210,7 +210,7 @@ impl PieChart {
         // smooth and a sliver stays cheap.
         let steps = (sweep.abs() * outer_radius / 6.0).ceil() as u32;
         #[cfg(feature = "chart")]
-        let ring = crate::chart::charts::sector_polygon(
+        let ring = crate::widget::chart_widgets::charts::sector_polygon(
             center,
             outer_radius,
             inner_radius,

@@ -145,7 +145,7 @@ This document outlines optimization and improvement tasks for the rust-widgets p
 
 ### 3.1 Chart Module Enhancements 🟡
 **Status**: ✅ Completed
-**Module**: `src/chart/mod.rs`
+**Module**: `src/widget/chart_widgets/` (engine: `charts.rs`, `layout.rs`, `svg.rs`, `types.rs`, `adapter.rs`)
 
 **Tasks**:
 - [x] Add new chart types

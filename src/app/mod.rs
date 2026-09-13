@@ -13,11 +13,11 @@ pub mod lifecycle;
 
 pub use app_core::{App, AppConfig};
 pub use handle::{
-    dispatch_trigger, ButtonHandle, CheckBoxHandle, CheckState, ComboBoxHandle, DialogHandle,
-    EchoMode, FrameHandle, GridWidgetHandle, LabelHandle, LineEditHandle, ListBoxHandle, ListModel,
-    ListViewHandle, MenuBarHandle, MenuHandle, MenuItemHandle, MessageBoxHandle, PanelHandle,
-    ProgressBarHandle, RadioButtonHandle, ScrollAreaHandle, ScrollBarHandle, SelectionMode,
-    SelfDrawnHandle, SelfDrawnMountError, SliderHandle, SpinBoxHandle, StatusBarHandle,
+    dispatch_trigger, ButtonHandle, CheckBoxHandle, CheckState, ComboBoxHandle, CustomWidgetHandle,
+    CustomWidgetMountError, DialogHandle, EchoMode, FrameHandle, GridWidgetHandle, LabelHandle,
+    LineEditHandle, ListBoxHandle, ListModel, ListViewHandle, MenuBarHandle, MenuHandle,
+    MenuItemHandle, MessageBoxHandle, PanelHandle, ProgressBarHandle, RadioButtonHandle,
+    ScrollAreaHandle, ScrollBarHandle, SelectionMode, SliderHandle, SpinBoxHandle, StatusBarHandle,
     TabWidgetHandle, TextEditHandle, ToolBarHandle, WebViewHandle, WidgetHandle, WindowHandle,
 };
 pub use lifecycle::*;

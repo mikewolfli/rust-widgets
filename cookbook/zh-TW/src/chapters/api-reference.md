@@ -626,7 +626,7 @@ pub trait Draw {
 | 目錄 | 控制項 |
 |---|---|
 | `nav_widgets/` | `AdaptiveScaffold`, `AppBar`, `BottomNavigationBar`, `NavigationDrawer`, `NavigationStack`, `TabView` |
-| `chart_widgets/` | `BarChart`, `LineChart`, `PieChart`, `Sparkline` |
+| `chart_widgets/` | `BarChart`, `LineChart`, `PieChart`, `Sparkline` + 共用的圖表繪圖引擎（`charts`, `layout`, `svg`, `types`, `adapter`） |
 | `media_widgets/` | `AnimatedImage`, `AudioVisualizer`, `CameraPreview`, `HeroAnimation`, `LottieWidget`, `RiveWidget`, `VideoPlayer` |
 | `overlay_widgets/` | `FAB`, `PullToRefresh`, `RefreshControl`, `SwipeToDismiss` |
 | `cupertino/` | `CupertinoAlertDialog`, `CupertinoDatePicker`, `CupertinoNavigationBar`, `CupertinoSegmentedControl`, `CupertinoSlider`, `CupertinoSwitch`, `MaterialNavigationRail`, `MaterialSnackbar` |

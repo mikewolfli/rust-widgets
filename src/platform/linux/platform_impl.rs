@@ -146,9 +146,9 @@ impl Platform for LinuxPlatform {
     ///
     /// Gated on the same profile conditions as `canvas.rs`: `mini`/`embedded`
     /// have no widget registry, so the trait defaults apply and
-    /// `supports_self_drawn()` honestly reports `false`.
+    /// `supports_custom_widgets()` honestly reports `false`.
     #[cfg(not(any(feature = "mini", feature = "embedded")))]
-    fn mount_self_drawn(
+    fn mount_custom_widget(
         &self,
         parent: crate::core::ObjectId,
         id: crate::core::ObjectId,
@@ -158,24 +158,24 @@ impl Platform for LinuxPlatform {
     }
 
     #[cfg(not(any(feature = "mini", feature = "embedded")))]
-    fn resize_self_drawn(&self, id: crate::core::ObjectId, rect: crate::core::Rect) -> bool {
+    fn resize_custom_widget(&self, id: crate::core::ObjectId, rect: crate::core::Rect) -> bool {
         super::canvas::resize_canvas(self, id, rect)
     }
 
     #[cfg(not(any(feature = "mini", feature = "embedded")))]
-    fn unmount_self_drawn(&self, id: crate::core::ObjectId) -> bool {
+    fn unmount_custom_widget(&self, id: crate::core::ObjectId) -> bool {
         super::canvas::unmount_canvas(self, id)
     }
 
     /// `true` only when the self-drawn surface exists for this profile.
     #[cfg(not(any(feature = "mini", feature = "embedded")))]
-    fn supports_self_drawn(&self) -> bool {
+    fn supports_custom_widgets(&self) -> bool {
         true
     }
 
     /// Queue a redraw on the canvas's `DrawingArea`.
     #[cfg(not(any(feature = "mini", feature = "embedded")))]
-    fn repaint_self_drawn(&self, id: crate::core::ObjectId) -> bool {
+    fn repaint_custom_widget(&self, id: crate::core::ObjectId) -> bool {
         super::canvas::repaint_canvas(self, id)
     }
     fn init(&self) {

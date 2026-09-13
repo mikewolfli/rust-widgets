@@ -1,13 +1,18 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! Chart tests.
+//! Chart engine tests.
+//!
+//! These exercise the **engine layer** in [`super`] (and its SVG snapshots).
+//! The control-layer widgets [`super::bar_chart`] etc. share the bare name in
+//! [`super`], so the engine's concrete renderers are qualified through
+//! [`super::charts`] here.
 
-use crate::chart::*;
-use crate::chart::{
-    BarChart, ChartSeries, DataPoint, LineChart, MemoryChartContext, SvgChartContext,
-};
 use crate::core::{Color, Rect};
+use crate::widget::chart_widgets::charts::{BarChart, LineChart};
+use crate::widget::chart_widgets::svg::{MemoryChartContext, SvgChartContext};
+use crate::widget::chart_widgets::types::{ChartSeries, DataPoint};
+use crate::widget::chart_widgets::Chart;
 fn stable_hash64(input: &str) -> u64 {
     // FNV-1a 64-bit stable hash for deterministic snapshot checks.
     let mut hash: u64 = 0xcbf29ce484222325;

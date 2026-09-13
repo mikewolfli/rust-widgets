@@ -38,7 +38,23 @@ pub struct MdiSubWindow {
     resizable: bool,
     z_order: i32,
 }
-/// MDI view mode.
+/// How an MDI area arranges its sub-windows.
+///
+/// # Not the same as [`crate::widget::view_widgets::list_view::ViewMode`]
+///
+/// Both types are called `ViewMode`, but they describe different axes and are
+/// **not** interchangeable:
+///
+/// * this one — how an `MdiArea` lays its child windows out (free-floating
+///   sub-windows vs. tabs inside the area);
+/// * [`list_view::ViewMode`][lv] — how one `ListView` presents its *own items*
+///   (list, icons, details, thumbnails).
+///
+/// They are deliberately left as two enums: merging them would create one type
+/// whose variants are meaningless in the other's context, so a `match` could not
+/// be exhaustive in either widget. See principle #49.
+///
+/// [lv]: crate::widget::view_widgets::list_view::ViewMode
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ViewMode {
     /// Sub-window mode

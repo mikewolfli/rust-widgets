@@ -8,7 +8,22 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
-/// Chart rendering style.
+/// The two styles a [`MiniChart`] can draw: a connected line or vertical bars.
+///
+/// # Scope, and why this is not the same enum as the other `ChartType`s
+///
+/// A `MiniChart` is defined by having no axes, grid or legend, so it only ever
+/// needs these two styles. Three same-named enums exist across the chart layers,
+/// each scoped to its own widget — kept separate deliberately, so a `match` in
+/// one widget is exhaustive:
+///
+/// * **this one** — [`MiniChart`]: `Line`, `Bar`;
+/// * [`crate::widget::special_widgets::chart::ChartType`] — `ChartWidget`:
+///   `Bar`, `Line`, `Pie`, `Scatter`;
+/// * [`crate::widget::chart_widgets::types::ChartType`] — the drawing engine:
+///   `Line`, `Bar`, `Pie`, `Scatter`, `Area`.
+///
+/// See principle #49.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChartType {
     /// Connected line chart.

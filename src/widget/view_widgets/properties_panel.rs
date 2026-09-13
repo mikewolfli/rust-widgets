@@ -15,7 +15,17 @@ use crate::signal::Signal1;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use std::collections::HashMap;
 
-/// Property value type for the property panel.
+/// How a property is represented and edited inside a [`PropertiesPanel`].
+///
+/// # Not the same as [`crate::object::properties::PropertyValue`]
+///
+/// Both are called `PropertyValue` but model different things, so they are kept
+/// separate (principle #49):
+///
+/// * this one — the editor vocabulary of a panel entry, including presentation
+///   variants (`Color`, `Choice { options }`) that only make sense in a UI;
+/// * [`crate::object::properties::PropertyValue`] — the four scalar kinds an
+///   object property can hold, with no presentation semantics.
 #[derive(Debug, Clone)]
 pub enum PropertyValue {
     /// Free-form text value.

@@ -39,20 +39,20 @@ impl Platform for MacOSPlatform {
     ///
     /// Gated on the same profile conditions as `canvas.rs`: `widget::runtime` is
     /// absent from `mini`/`embedded`, so the fallback defaults below apply there
-    /// and `supports_self_drawn()` honestly reports `false`.
+    /// and `supports_custom_widgets()` honestly reports `false`.
     #[cfg(not(any(feature = "mini", feature = "embedded")))]
-    fn mount_self_drawn(&self, parent: ObjectId, id: ObjectId, rect: crate::core::Rect) -> bool {
-        self.mount_self_drawn_impl(parent, id, rect)
+    fn mount_custom_widget(&self, parent: ObjectId, id: ObjectId, rect: crate::core::Rect) -> bool {
+        self.mount_custom_widget_impl(parent, id, rect)
     }
 
     #[cfg(not(any(feature = "mini", feature = "embedded")))]
-    fn resize_self_drawn(&self, id: ObjectId, rect: crate::core::Rect) -> bool {
-        self.resize_self_drawn_impl(id, rect)
+    fn resize_custom_widget(&self, id: ObjectId, rect: crate::core::Rect) -> bool {
+        self.resize_custom_widget_impl(id, rect)
     }
 
     #[cfg(not(any(feature = "mini", feature = "embedded")))]
-    fn unmount_self_drawn(&self, id: ObjectId) -> bool {
-        self.unmount_self_drawn_impl(id)
+    fn unmount_custom_widget(&self, id: ObjectId) -> bool {
+        self.unmount_custom_widget_impl(id)
     }
 
     /// `true` only when the self-drawn surface actually exists for this profile.
@@ -60,14 +60,14 @@ impl Platform for MacOSPlatform {
     /// Reporting `true` in a build where `canvas.rs` is compiled out would be a
     /// lie: a host would mount a widget and get an empty window with no error.
     #[cfg(not(any(feature = "mini", feature = "embedded")))]
-    fn supports_self_drawn(&self) -> bool {
+    fn supports_custom_widgets(&self) -> bool {
         true
     }
 
     /// Mark the canvas view as needing display, which schedules `drawRect:`.
     #[cfg(not(any(feature = "mini", feature = "embedded")))]
-    fn repaint_self_drawn(&self, id: ObjectId) -> bool {
-        self.repaint_self_drawn_impl(id)
+    fn repaint_custom_widget(&self, id: ObjectId) -> bool {
+        self.repaint_custom_widget_impl(id)
     }
     fn family(&self) -> PlatformFamily {
         PlatformFamily::Desktop

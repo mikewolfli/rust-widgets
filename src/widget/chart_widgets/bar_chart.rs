@@ -10,7 +10,7 @@
 //! # Rendering path
 //!
 //! With the `chart` feature enabled, the plot area, axes, grid and tick labels
-//! are produced by the shared chart engine in [`crate::chart`], so this widget
+//! are produced by the shared chart engine in [`crate::widget::chart_widgets`], so this widget
 //! and the SVG chart renderer share one implementation (see `plot_rect` below).
 //!
 //! Without that feature — `tablet` and `mobile` do not enable it — the widget
@@ -18,15 +18,17 @@
 //! deliberately small so the two never diverge in the parts that matter: both
 //! use the same bar geometry, labels and colors.
 
-#[cfg(feature = "chart")]
-use crate::chart::adapter::ChartContextAdapter;
-#[cfg(feature = "chart")]
-use crate::chart::charts::{compute_cartesian_layout, draw_y_ticks, CartesianLayout};
-#[cfg(feature = "chart")]
-use crate::chart::types::ChartContext;
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+#[cfg(feature = "chart")]
+use crate::widget::chart_widgets::adapter::ChartContextAdapter;
+#[cfg(feature = "chart")]
+use crate::widget::chart_widgets::charts::{
+    compute_cartesian_layout, draw_y_ticks, CartesianLayout,
+};
+#[cfg(feature = "chart")]
+use crate::widget::chart_widgets::types::ChartContext;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 /// Converts the shared engine's float plot area into the integer [`Rect`] this

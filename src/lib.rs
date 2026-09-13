@@ -121,6 +121,11 @@ pub mod wgpu_backend;
 pub mod widget;
 // Re-export all widget types for convenience
 pub use widget::*;
+// NOTE: there is no top-level `chart` module. The chart *engine* (layout, axes,
+// ticks, SVG context, adapter) and the chart *widgets* live together under
+// `crate::widget::chart_widgets`, because they are two layers of one feature.
+// The engine is reachable as `rust_widgets::widget::chart_widgets::charts`
+// (and `::types`/`::layout`/`::svg`/`::adapter`).
 #[cfg(not(feature = "i18n"))]
 #[macro_export]
 macro_rules! tr {
@@ -143,9 +148,6 @@ macro_rules! tr {
     not(any(feature = "mini", feature = "embedded"))
 ))]
 pub mod app;
-#[cfg(feature = "chart")]
-/// Charting primitives.
-pub mod chart;
 /// Index-based widget registry for runtime lookup.
 pub mod index;
 #[cfg(feature = "pdf")]
@@ -329,12 +331,111 @@ fn init_i18n_runtime() {
 fn init_i18n_runtime() {
     log::debug!("i18n init skipped — unknown device profile, no i18n module loaded");
 }
-#[cfg(not(feature = "mini"))]
 // Convenient wrapper functions for platform operations
 // Users can call these directly without manually getting a platform instance
-/// Create a top-level window with specified title and geometry.
+
+/// Resolve the backend that should create a widget of this kind.
 ///
-/// This is a convenience wrapper around `platform::get_platform().create_window()`.
+/// # Why this exists
+///
+/// A widget kind may map onto a real platform primitive (a `Button` on Win32/
+/// AppKit/GTK) or have no primitive at all (`Chart`, `CodeEditor`, …), in which
+/// case the platform layer supplies the surface. **Which of the two happens is a
+/// backend decision and must not leak to callers**: this function is the single
+/// place the creation path asks for it, so the choice cannot drift between call
+/// sites (see `control_backend::dispatcher`).
+///
+/// On a profile without an OS runtime (`mini`, `embedded`) the custom state
+/// backend answers instead, so the same call works everywhere.
+#[cfg(not(feature = "mini"))]
+fn backend_for_kind(kind: widget::WidgetKind) -> &'static dyn control_backend::ControlBackend {
+    control_backend::get_control_backend_for_widget(kind)
+}
+
+// ── Kinds that reduced profiles compile out ──
+//
+// `embedded` drops these `WidgetKind` variants, but the `create_*` functions that
+// route on them must stay callable in **every** profile (the public API surface
+// must not vary — principle #53). These aliases name the variant when it exists
+// and substitute the closest always-present kind when it does not, so the call
+// site stays a single unconditional expression.
+//
+// `Panel` is the stand-in: it exists in every profile, it is a container surface,
+// and the backends that run reduced profiles implement it.
+
+/// `WidgetKind::MenuBar` where available, else the always-present fallback.
+#[cfg(not(feature = "mini"))]
+#[cfg(all(not(feature = "embedded"), feature = "desktop"))]
+const KIND_MENU_BAR: widget::WidgetKind = widget::WidgetKind::MenuBar;
+#[cfg(not(feature = "mini"))]
+#[cfg(not(all(not(feature = "embedded"), feature = "desktop")))]
+const KIND_MENU_BAR: widget::WidgetKind = widget::WidgetKind::Panel;
+
+/// `WidgetKind::Menu` where available, else the always-present fallback.
+#[cfg(not(feature = "mini"))]
+#[cfg(all(not(feature = "embedded"), feature = "desktop"))]
+const KIND_MENU: widget::WidgetKind = widget::WidgetKind::Menu;
+#[cfg(not(feature = "mini"))]
+#[cfg(not(all(not(feature = "embedded"), feature = "desktop")))]
+const KIND_MENU: widget::WidgetKind = widget::WidgetKind::Panel;
+
+/// `WidgetKind::ToolBar` where available, else the always-present fallback.
+#[cfg(not(feature = "mini"))]
+#[cfg(all(not(feature = "embedded"), feature = "desktop"))]
+const KIND_TOOL_BAR: widget::WidgetKind = widget::WidgetKind::ToolBar;
+#[cfg(not(feature = "mini"))]
+#[cfg(not(all(not(feature = "embedded"), feature = "desktop")))]
+const KIND_TOOL_BAR: widget::WidgetKind = widget::WidgetKind::Panel;
+
+/// `WidgetKind::StatusBar` where available, else the always-present fallback.
+#[cfg(not(feature = "mini"))]
+#[cfg(all(not(feature = "embedded"), feature = "desktop"))]
+const KIND_STATUS_BAR: widget::WidgetKind = widget::WidgetKind::StatusBar;
+#[cfg(not(feature = "mini"))]
+#[cfg(not(all(not(feature = "embedded"), feature = "desktop")))]
+const KIND_STATUS_BAR: widget::WidgetKind = widget::WidgetKind::Panel;
+
+/// `WidgetKind::ListView` where available, else the always-present fallback.
+#[cfg(not(feature = "mini"))]
+#[cfg(all(not(feature = "embedded"), feature = "desktop"))]
+const KIND_LIST_VIEW: widget::WidgetKind = widget::WidgetKind::ListView;
+#[cfg(not(feature = "mini"))]
+#[cfg(not(all(not(feature = "embedded"), feature = "desktop")))]
+const KIND_LIST_VIEW: widget::WidgetKind = widget::WidgetKind::Panel;
+
+/// `WidgetKind::MessageBox` where available, else the always-present fallback.
+#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
+const KIND_MESSAGE_BOX: widget::WidgetKind = widget::WidgetKind::MessageBox;
+#[cfg(not(feature = "mini"))]
+#[cfg(not(full_widgets))]
+const KIND_MESSAGE_BOX: widget::WidgetKind = widget::WidgetKind::Panel;
+
+/// `WidgetKind::FileDialog` where available, else the always-present fallback.
+#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
+const KIND_FILE_DIALOG: widget::WidgetKind = widget::WidgetKind::FileDialog;
+#[cfg(not(feature = "mini"))]
+#[cfg(not(full_widgets))]
+const KIND_FILE_DIALOG: widget::WidgetKind = widget::WidgetKind::Panel;
+
+/// `WidgetKind::ColorDialog` where available, else the always-present fallback.
+#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
+const KIND_COLOR_DIALOG: widget::WidgetKind = widget::WidgetKind::ColorDialog;
+#[cfg(not(feature = "mini"))]
+#[cfg(not(full_widgets))]
+const KIND_COLOR_DIALOG: widget::WidgetKind = widget::WidgetKind::Panel;
+
+/// `WidgetKind::FontDialog` where available, else the always-present fallback.
+#[cfg(not(feature = "mini"))]
+#[cfg(full_widgets)]
+const KIND_FONT_DIALOG: widget::WidgetKind = widget::WidgetKind::FontDialog;
+#[cfg(not(feature = "mini"))]
+#[cfg(not(full_widgets))]
+const KIND_FONT_DIALOG: widget::WidgetKind = widget::WidgetKind::Panel;
+
+/// Create a top-level window with specified title and geometry.
 ///
 /// # Example
 /// ```
@@ -348,12 +449,13 @@ pub fn create_window(
     width: u32,
     height: u32,
 ) -> crate::core::ObjectId {
-    platform::get_platform().create_window(title, x, y, width, height)
+    backend_for_kind(widget::WidgetKind::Window).create_window(title, x, y, width, height)
 }
 #[cfg(not(feature = "mini"))]
 /// Create a button control as a child of specified parent.
 ///
-/// This is a convenience wrapper around `platform::get_platform().create_button()`.
+/// The backend decides whether this becomes a platform button or is painted by
+/// the platform's custom surface; callers get a handle either way.
 pub fn create_button(
     parent: crate::core::ObjectId,
     text: &str,
@@ -362,12 +464,11 @@ pub fn create_button(
     width: u32,
     height: u32,
 ) -> crate::core::ObjectId {
-    platform::get_platform().create_button(parent, text, x, y, width, height)
+    backend_for_kind(widget::WidgetKind::Button).create_button(parent, text, x, y, width, height)
 }
 #[cfg(not(feature = "mini"))]
-/// Create a checkbox control as a child of specified parent.
-///
-/// This is a convenience wrapper around `platform::get_platform().create_checkbox()`.
+/// Creates a check-box. The backend decides whether it is a platform control
+/// or is painted by the platform's custom surface.
 pub fn create_checkbox(
     parent: crate::core::ObjectId,
     text: &str,
@@ -376,12 +477,11 @@ pub fn create_checkbox(
     width: u32,
     height: u32,
 ) -> crate::core::ObjectId {
-    platform::get_platform().create_checkbox(parent, text, x, y, width, height)
+    backend_for_kind(widget::WidgetKind::CheckBox)
+        .create_checkbox(parent, text, x, y, width, height)
 }
 #[cfg(not(feature = "mini"))]
-/// Create a line edit control as a child of specified parent.
-///
-/// This is a convenience wrapper around `platform::get_platform().create_line_edit()`.
+/// Creates a single-line text editor. The backend chooses how it is hosted.
 pub fn create_line_edit(
     parent: crate::core::ObjectId,
     text: &str,
@@ -390,12 +490,11 @@ pub fn create_line_edit(
     width: u32,
     height: u32,
 ) -> crate::core::ObjectId {
-    platform::get_platform().create_line_edit(parent, text, x, y, width, height)
+    backend_for_kind(widget::WidgetKind::LineEdit)
+        .create_line_edit(parent, text, x, y, width, height)
 }
 #[cfg(not(feature = "mini"))]
-/// Create a label control as a child of specified parent.
-///
-/// This is a convenience wrapper around `platform::get_platform().create_label()`.
+/// Creates a read-only text label. The backend chooses how it is hosted.
 pub fn create_label(
     parent: crate::core::ObjectId,
     text: &str,
@@ -404,12 +503,10 @@ pub fn create_label(
     width: u32,
     height: u32,
 ) -> crate::core::ObjectId {
-    platform::get_platform().create_label(parent, text, x, y, width, height)
+    backend_for_kind(widget::WidgetKind::Label).create_label(parent, text, x, y, width, height)
 }
 #[cfg(not(feature = "mini"))]
-/// Create a radio button control as a child of specified parent.
-///
-/// This is a convenience wrapper around `platform::get_platform().create_radio_button()`.
+/// Creates a radio button. The backend chooses how it is hosted.
 pub fn create_radio_button(
     parent: crate::core::ObjectId,
     text: &str,
@@ -418,12 +515,11 @@ pub fn create_radio_button(
     width: u32,
     height: u32,
 ) -> crate::core::ObjectId {
-    platform::get_platform().create_radio_button(parent, text, x, y, width, height)
+    backend_for_kind(widget::WidgetKind::RadioButton)
+        .create_radio_button(parent, text, x, y, width, height)
 }
 #[cfg(not(feature = "mini"))]
-/// Create a slider control as a child of specified parent.
-///
-/// This is a convenience wrapper around `platform::get_platform().create_slider()`.
+/// Creates a slider. The backend chooses how it is hosted.
 pub fn create_slider(
     parent: crate::core::ObjectId,
     x: i32,
@@ -431,12 +527,10 @@ pub fn create_slider(
     width: u32,
     height: u32,
 ) -> crate::core::ObjectId {
-    platform::get_platform().create_slider(parent, x, y, width, height)
+    backend_for_kind(widget::WidgetKind::Slider).create_slider(parent, x, y, width, height)
 }
 #[cfg(not(feature = "mini"))]
-/// Create a progress bar control as a child of specified parent.
-///
-/// This is a convenience wrapper around `platform::get_platform().create_progress_bar()`.
+/// Creates a progress bar. The backend chooses how it is hosted.
 pub fn create_progress_bar(
     parent: crate::core::ObjectId,
     x: i32,
@@ -444,12 +538,11 @@ pub fn create_progress_bar(
     width: u32,
     height: u32,
 ) -> crate::core::ObjectId {
-    platform::get_platform().create_progress_bar(parent, x, y, width, height)
+    backend_for_kind(widget::WidgetKind::ProgressBar)
+        .create_progress_bar(parent, x, y, width, height)
 }
 #[cfg(not(feature = "mini"))]
-/// Create a combo box control as a child of specified parent.
-///
-/// This is a convenience wrapper around `platform::get_platform().create_combo_box()`.
+/// Creates a combo box. The backend chooses how it is hosted.
 pub fn create_combo_box(
     parent: crate::core::ObjectId,
     x: i32,
@@ -457,12 +550,10 @@ pub fn create_combo_box(
     width: u32,
     height: u32,
 ) -> crate::core::ObjectId {
-    platform::get_platform().create_combo_box(parent, x, y, width, height)
+    backend_for_kind(widget::WidgetKind::ComboBox).create_combo_box(parent, x, y, width, height)
 }
 #[cfg(not(feature = "mini"))]
-/// Create a list box control as a child of specified parent.
-///
-/// This is a convenience wrapper around `platform::get_platform().create_list_box()`.
+/// Creates a list box. The backend chooses how it is hosted.
 pub fn create_list_box(
     parent: crate::core::ObjectId,
     x: i32,
@@ -470,12 +561,10 @@ pub fn create_list_box(
     width: u32,
     height: u32,
 ) -> crate::core::ObjectId {
-    platform::get_platform().create_list_box(parent, x, y, width, height)
+    backend_for_kind(widget::WidgetKind::ListBox).create_list_box(parent, x, y, width, height)
 }
 #[cfg(not(feature = "mini"))]
-/// Create a panel control as a child of specified parent.
-///
-/// This is a convenience wrapper around `platform::get_platform().create_panel()`.
+/// Creates a panel (a container surface). The backend chooses how it is hosted.
 pub fn create_panel(
     parent: crate::core::ObjectId,
     x: i32,
@@ -483,12 +572,14 @@ pub fn create_panel(
     width: u32,
     height: u32,
 ) -> crate::core::ObjectId {
-    platform::get_platform().create_panel(parent, x, y, width, height)
+    // `WidgetKind::Panel` is the closest always-available kind; on profiles where
+    // a dedicated panel kind exists the routing table answers for it.
+    backend_for_kind(widget::WidgetKind::Panel).create_panel(parent, x, y, width, height)
 }
 #[cfg(not(feature = "mini"))]
 /// Create a message box dialog as a child of specified parent.
 ///
-/// This is a convenience wrapper around `platform::get_platform().create_message_box()`.
+/// Creates a message box. The backend chooses how it is hosted.
 pub fn create_message_box(
     parent: crate::core::ObjectId,
     title: &str,
@@ -498,12 +589,12 @@ pub fn create_message_box(
     width: u32,
     height: u32,
 ) -> crate::core::ObjectId {
-    platform::get_platform().create_message_box(parent, title, text, x, y, width, height)
+    backend_for_kind(KIND_MESSAGE_BOX).create_message_box(parent, title, text, x, y, width, height)
 }
 #[cfg(not(feature = "mini"))]
 /// Create a file dialog as a child of specified parent.
 ///
-/// This is a convenience wrapper around `platform::get_platform().create_file_dialog()`.
+/// Creates a file dialog. The backend chooses how it is hosted.
 pub fn create_file_dialog(
     parent: crate::core::ObjectId,
     x: i32,
@@ -511,12 +602,10 @@ pub fn create_file_dialog(
     width: u32,
     height: u32,
 ) -> crate::core::ObjectId {
-    platform::get_platform().create_file_dialog(parent, x, y, width, height)
+    backend_for_kind(KIND_FILE_DIALOG).create_file_dialog(parent, "", x, y, width, height)
 }
 #[cfg(not(feature = "mini"))]
 /// Create a color dialog as a child of specified parent.
-///
-/// This is a convenience wrapper around `platform::get_platform().create_color_dialog()`.
 pub fn create_color_dialog(
     parent: crate::core::ObjectId,
     x: i32,
@@ -524,12 +613,10 @@ pub fn create_color_dialog(
     width: u32,
     height: u32,
 ) -> crate::core::ObjectId {
-    platform::get_platform().create_color_dialog(parent, x, y, width, height)
+    backend_for_kind(KIND_COLOR_DIALOG).create_color_dialog(parent, "", x, y, width, height)
 }
 #[cfg(not(feature = "mini"))]
 /// Create a font dialog as a child of specified parent.
-///
-/// This is a convenience wrapper around `platform::get_platform().create_font_dialog()`.
 pub fn create_font_dialog(
     parent: crate::core::ObjectId,
     x: i32,
@@ -537,12 +624,10 @@ pub fn create_font_dialog(
     width: u32,
     height: u32,
 ) -> crate::core::ObjectId {
-    platform::get_platform().create_font_dialog(parent, x, y, width, height)
+    backend_for_kind(KIND_FONT_DIALOG).create_font_dialog(parent, "", x, y, width, height)
 }
 #[cfg(not(feature = "mini"))]
-/// Create a spin box control as a child of specified parent.
-///
-/// This is a convenience wrapper around `platform::get_platform().create_spin_box()`.
+/// Creates a spin box. The backend chooses how it is hosted.
 pub fn create_spin_box(
     parent: crate::core::ObjectId,
     x: i32,
@@ -550,12 +635,10 @@ pub fn create_spin_box(
     width: u32,
     height: u32,
 ) -> crate::core::ObjectId {
-    platform::get_platform().create_spin_box(parent, x, y, width, height)
+    backend_for_kind(widget::WidgetKind::SpinBox).create_spin_box(parent, x, y, width, height)
 }
 #[cfg(not(feature = "mini"))]
-/// Create a list view control as a child of specified parent.
-///
-/// This is a convenience wrapper around `platform::get_platform().create_list_view()`.
+/// Creates a list view. The backend chooses how it is hosted.
 pub fn create_list_view(
     parent: crate::core::ObjectId,
     x: i32,
@@ -563,11 +646,9 @@ pub fn create_list_view(
     width: u32,
     height: u32,
 ) -> crate::core::ObjectId {
-    platform::get_platform().create_list_view(parent, x, y, width, height)
+    backend_for_kind(KIND_LIST_VIEW).create_list_view(parent, x, y, width, height)
 }
-/// Create a scroll area control as a child of specified parent.
-///
-/// This is a convenience wrapper around `platform::get_platform().create_scroll_area()`.
+/// Creates a scroll area. The backend chooses how it is hosted.
 #[cfg(not(feature = "mini"))]
 pub fn create_scroll_area(
     parent: crate::core::ObjectId,
@@ -576,56 +657,188 @@ pub fn create_scroll_area(
     width: u32,
     height: u32,
 ) -> crate::core::ObjectId {
-    platform::get_platform().create_scroll_area(parent, x, y, width, height)
+    backend_for_kind(widget::WidgetKind::ScrollArea).create_scroll_area(parent, x, y, width, height)
 }
-/// Mounts a self-drawn widget into a native window.
+/// Mounts a custom-painted widget into a window.
+///
+/// "Custom-painted" means the widget renders itself through
+/// [`widget::Draw`] rather than mapping onto an existing OS control, so no
+/// `create_*` function applies. Which surface hosts it — a child window, a
+/// drawing area, a view — is decided inside `src/platform/` and never named
+/// here; callers only need to know whether the backend can display it, which
+/// [`supports_custom_widgets`] answers.
 ///
 /// `id` must already be registered in [`widget::runtime`]. Prefer the
-/// higher-level [`app::WindowHandle::mount_self_drawn`], which performs the
+/// higher-level [`app::WindowHandle::mount_custom_widget`], which performs the
 /// registration for you and reports failures as a `Result`.
 ///
-/// Returns `false` when the backend has no self-drawn surface, or when it
-/// refuses this particular mount. Backends that cannot display self-drawn
-/// content log why.
+/// Returns `false` when the backend cannot host custom-painted widgets, or when
+/// it refuses this particular mount. Backends that cannot display them log why.
 #[cfg(not(feature = "mini"))]
-pub fn mount_self_drawn(
+pub fn mount_custom_widget(
     parent: crate::core::ObjectId,
     id: crate::core::ObjectId,
     rect: crate::core::Rect,
 ) -> bool {
-    platform::get_platform().mount_self_drawn(parent, id, rect)
+    platform::get_platform().mount_custom_widget(parent, id, rect)
 }
 
-/// Moves and resizes a mounted self-drawn widget.
+/// Moves and resizes a mounted custom-painted widget.
 #[cfg(not(feature = "mini"))]
-pub fn resize_self_drawn(id: crate::core::ObjectId, rect: crate::core::Rect) -> bool {
-    platform::get_platform().resize_self_drawn(id, rect)
+pub fn resize_custom_widget(id: crate::core::ObjectId, rect: crate::core::Rect) -> bool {
+    platform::get_platform().resize_custom_widget(id, rect)
 }
 
-/// Unmounts a self-drawn widget from its window.
+/// Unmounts a custom-painted widget from its window.
 #[cfg(not(feature = "mini"))]
-pub fn unmount_self_drawn(id: crate::core::ObjectId) -> bool {
-    platform::get_platform().unmount_self_drawn(id)
+pub fn unmount_custom_widget(id: crate::core::ObjectId) -> bool {
+    platform::get_platform().unmount_custom_widget(id)
 }
 
-/// Marks a mounted self-drawn widget as needing a repaint.
+/// Marks a mounted custom-painted widget as needing a repaint.
 ///
-/// Returns `false` when the id is not a self-drawn widget mounted on the active
-/// backend.
+/// Returns `false` when the id is not a custom-painted widget mounted on the
+/// active backend.
 #[cfg(not(feature = "mini"))]
-pub fn request_self_drawn_repaint(id: crate::core::ObjectId) -> bool {
-    platform::get_platform().repaint_self_drawn(id)
+pub fn request_custom_repaint(id: crate::core::ObjectId) -> bool {
+    platform::get_platform().repaint_custom_widget(id)
 }
 
-/// Returns `true` when the active backend can display self-drawn widgets.
+/// Returns `true` when the active backend can display custom-painted widgets.
 #[cfg(not(feature = "mini"))]
-pub fn supports_self_drawn() -> bool {
-    platform::get_platform().supports_self_drawn()
+pub fn supports_custom_widgets() -> bool {
+    platform::get_platform().supports_custom_widgets()
+}
+
+/// Mounts a widget object on the platform's surface, or reports why it cannot.
+///
+/// This is the **single implementation** of the register → mount → roll back on
+/// failure sequence, used by both [`create_widget_of_kind`] (for kinds with no
+/// platform control) and [`app::WindowHandle::mount_custom_widget`]. Keeping one
+/// copy is what stops the two paths from disagreeing about ownership: on any
+/// failure the widget is unregistered, so the registry never holds a widget the
+/// backend is not showing.
+///
+/// Returns `Ok(id)` with the widget live in the registry, or `Err(reason)`.
+#[cfg(not(feature = "mini"))]
+fn mount_widget_object(
+    parent: crate::core::ObjectId,
+    widget: Box<dyn widget::Widget>,
+    rect: crate::core::Rect,
+) -> Result<crate::core::ObjectId, widget::runtime::CustomWidgetMountError> {
+    use widget::runtime::CustomWidgetMountError;
+
+    // Register first: the backend looks the widget up by id on every repaint.
+    let id = widget::runtime::register(widget).ok_or(CustomWidgetMountError::NoRegistryOnThread)?;
+    widget::runtime::set_geometry(id, rect);
+
+    if !platform::get_platform().mount_custom_widget(parent, id, rect) {
+        // Do not leave a widget stranded when the backend refused to show it.
+        widget::runtime::unregister(id);
+        if !supports_custom_widgets() {
+            return Err(CustomWidgetMountError::UnsupportedByBackend(backend_name()));
+        }
+        return Err(CustomWidgetMountError::RejectedByBackend(backend_name()));
+    }
+    Ok(id)
+}
+
+/// Creates a widget of any kind — **the single, mechanism-free creation entry**.
+///
+/// # How this differs from the per-kind `create_*` functions
+///
+/// The `create_*` functions are the typo-safe spelling for the common widgets
+/// (`create_button`, `create_slider`, …). This function is the general form: hand
+/// it a [`WidgetKind`] and it resolves what that means on the current backend.
+///
+/// # The two things a backend may do — and why callers never branch on them
+///
+/// * **A platform control exists** for the kind (button, slider, …): the widget is
+///   created as that control and the returned id addresses it directly.
+/// * **No platform control exists** (chart, code editor, gantt, …): the platform
+///   supplies a surface that hosts the [`widget::Widget`] object, and the id
+///   addresses *that*.
+///
+/// Both cases return a usable [`crate::core::ObjectId`], so the caller writes the
+/// same code and never asks which happened. If a backend genuinely cannot host the
+/// kind it returns `0` — a truthful "not available here" — which callers already
+/// have to handle for the per-kind functions too.
+///
+/// # Ownership of `widget`
+///
+/// `widget` is only consumed when the kind has no platform control; when a
+/// platform control exists the object is dropped and the control is used instead.
+/// This lets a caller that built a widget object "just in case" pass it here
+/// unconditionally.
+#[cfg(not(feature = "mini"))]
+pub fn create_widget_of_kind(
+    kind: widget::WidgetKind,
+    parent: crate::core::ObjectId,
+    text: &str,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    widget: Option<Box<dyn widget::Widget>>,
+) -> crate::core::ObjectId {
+    use control_backend::ControlRoutePreference;
+
+    match control_backend::route_preference_for_widget_kind(kind) {
+        // A real platform control exists: create it and ignore any widget object.
+        ControlRoutePreference::NativePreferred => backend_for_kind(kind).create_widget(
+            &kind_name(kind),
+            parent,
+            text,
+            x,
+            y,
+            width,
+            height,
+        ),
+        // No platform control: host the widget object on the platform's surface.
+        ControlRoutePreference::CustomRequired => {
+            let Some(widget) = widget else {
+                // Nothing to host. Report honestly instead of fabricating an id.
+                log::warn!(
+                    "create_widget_of_kind: {kind:?} has no platform control and no widget was \
+                     supplied to host; returning 0"
+                );
+                return 0;
+            };
+            let rect = crate::core::Rect::new(x, y, width, height);
+            match mount_widget_object(parent, widget, rect) {
+                Ok(id) => id,
+                Err(error) => {
+                    log::warn!("create_widget_of_kind: cannot host {kind:?}: {error}");
+                    0
+                }
+            }
+        }
+    }
+}
+
+/// The canonical factory name for a [`WidgetKind`].
+///
+/// Derived from the widget capability registry (the same table the factory
+/// dispatches on) rather than from `Debug` output, so the two can never disagree.
+/// Falls back to the debug name for kinds with no registered capability or when
+/// the capability module is compiled out (embedded/mini).
+#[cfg(not(feature = "mini"))]
+fn kind_name(kind: widget::WidgetKind) -> alloc::string::String {
+    #[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
+    {
+        use alloc::string::ToString;
+        if let Some(capability) =
+            widget::WidgetFactory::new_with_defaults().capability_by_kind(kind)
+        {
+            return capability.canonical_name.to_string();
+        }
+    }
+    alloc::format!("{kind:?}").to_lowercase()
 }
 
 /// Stub for mini mode (no platform runtime, no windows).
 #[cfg(feature = "mini")]
-pub fn mount_self_drawn(
+pub fn mount_custom_widget(
     _parent: crate::core::ObjectId,
     _id: crate::core::ObjectId,
     _rect: crate::core::Rect,
@@ -635,25 +848,25 @@ pub fn mount_self_drawn(
 
 /// Stub for mini mode.
 #[cfg(feature = "mini")]
-pub fn resize_self_drawn(_id: crate::core::ObjectId, _rect: crate::core::Rect) -> bool {
+pub fn resize_custom_widget(_id: crate::core::ObjectId, _rect: crate::core::Rect) -> bool {
     false
 }
 
 /// Stub for mini mode.
 #[cfg(feature = "mini")]
-pub fn unmount_self_drawn(_id: crate::core::ObjectId) -> bool {
+pub fn unmount_custom_widget(_id: crate::core::ObjectId) -> bool {
     false
 }
 
 /// Stub for mini mode.
 #[cfg(feature = "mini")]
-pub fn request_self_drawn_repaint(_id: crate::core::ObjectId) -> bool {
+pub fn request_custom_repaint(_id: crate::core::ObjectId) -> bool {
     false
 }
 
 /// Stub for mini mode.
 #[cfg(feature = "mini")]
-pub fn supports_self_drawn() -> bool {
+pub fn supports_custom_widgets() -> bool {
     false
 }
 
@@ -1052,7 +1265,7 @@ pub fn create_menu_bar(
     width: u32,
     height: u32,
 ) -> crate::core::ObjectId {
-    platform::get_platform().create_menu_bar(parent, x, y, width, height)
+    backend_for_kind(KIND_MENU_BAR).create_menu_bar(parent, x, y, width, height)
 }
 #[cfg(not(feature = "mini"))]
 pub fn create_menu(
@@ -1063,7 +1276,7 @@ pub fn create_menu(
     width: u32,
     height: u32,
 ) -> crate::core::ObjectId {
-    platform::get_platform().create_menu(parent, text, x, y, width, height)
+    backend_for_kind(KIND_MENU).create_menu(parent, text, x, y, width, height)
 }
 #[cfg(not(feature = "mini"))]
 pub fn attach_menu_bar_to_window(
@@ -1144,7 +1357,7 @@ pub fn create_tool_bar(
     width: u32,
     height: u32,
 ) -> crate::core::ObjectId {
-    platform::get_platform().create_tool_bar(parent, x, y, width, height)
+    backend_for_kind(KIND_TOOL_BAR).create_tool_bar(parent, x, y, width, height)
 }
 #[cfg(not(feature = "mini"))]
 pub fn create_status_bar(
@@ -1155,7 +1368,7 @@ pub fn create_status_bar(
     width: u32,
     height: u32,
 ) -> crate::core::ObjectId {
-    platform::get_platform().create_status_bar(parent, text, x, y, width, height)
+    backend_for_kind(KIND_STATUS_BAR).create_status_bar(parent, text, x, y, width, height)
 }
 // Drag and Drop
 #[cfg(not(feature = "mini"))]

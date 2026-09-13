@@ -7,7 +7,19 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
-/// Chart type enumeration.
+/// The chart styles [`ChartWidget`] can switch between at runtime.
+///
+/// # Scope, and why this is not the same enum as the other `ChartType`s
+///
+/// This is the **control layer**'s set: one widget that can render any of these
+/// four styles, so a `match` over it stays exhaustive in this widget. Two
+/// same-named enums exist elsewhere and are deliberately kept separate
+/// (principle #49):
+///
+/// * [`crate::widget::display_widgets::mini_chart::ChartType`] — `MiniChart`'s
+///   two styles (`Line`, `Bar`), since a mini chart has no pie or scatter form;
+/// * [`crate::widget::chart_widgets::types::ChartType`] — the drawing engine's
+///   set, which adds `Area`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ChartType {
     #[default]

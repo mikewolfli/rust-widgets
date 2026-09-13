@@ -4,12 +4,14 @@
 //! Adapter that presents a widget-facing [`RenderContext`] as a chart-facing
 //! [`ChartContext`].
 //!
-//! This is the bridge that keeps one chart engine instead of two. `src/chart/`
-//! owns the layout, axis, tick and legend math (and its SVG snapshot tests);
-//! widgets in `widget/chart_widgets/` draw through whatever `RenderContext` the
-//! pipeline hands them. Without an adapter the two sides cannot meet, which is
-//! why the widgets previously hand-rolled their own plot area and tick loops —
-//! duplicating logic this module already provides and tests.
+//! This is the bridge that keeps one chart engine instead of two. The engine
+//! files in this module ([`super::charts`], [`super::layout`], [`super::svg`])
+//! own the layout, axis, tick and legend math (and its SVG snapshot tests);
+//! the sibling widget files in [`super::bar_chart`] etc. draw through whatever
+//! `RenderContext` the pipeline hands them. Without an adapter the two sides
+//! cannot meet, which is why the widgets previously hand-rolled their own plot
+//! area and tick loops — duplicating logic this module already provides and
+//! tests.
 //!
 //! # Unit handling
 //!
@@ -24,9 +26,9 @@
 //! non-negative, so a chart drawn through a `RenderContext` lands on the same
 //! pixels every time rather than depending on truncation direction.
 
-use crate::chart::types::ChartContext;
 use crate::core::{Color, Font, Point, Rect};
 use crate::render::RenderContext;
+use crate::widget::chart_widgets::types::ChartContext;
 
 /// Presents a [`RenderContext`] to the chart engine as a [`ChartContext`].
 ///
@@ -246,10 +248,10 @@ mod tests {
     /// depend on, so it is asserted as one end-to-end path.
     #[test]
     fn chart_engine_renders_end_to_end_through_the_adapter() {
-        use crate::chart::charts::{
+        use crate::widget::chart_widgets::charts::{
             compute_cartesian_layout, draw_cartesian_axes, draw_legend, draw_x_ticks, draw_y_ticks,
         };
-        use crate::chart::types::ChartSeries;
+        use crate::widget::chart_widgets::types::ChartSeries;
 
         with_context(320, 200, |context| {
             let rect = Rect::new(0, 0, 320, 200);

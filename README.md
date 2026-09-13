@@ -74,26 +74,26 @@ cargo check --features mini
 #### What each profile turns off
 
 The API is the same across profiles; what differs is which capabilities *exist*.
-Only profiles that include a native OS backend **and** keep `widget::runtime` can
-host a self-drawn surface:
+Only profiles that include a platform backend **and** keep `widget::runtime` can
+host custom-painted widgets:
 
 | Capability | Desktop | Embedded | Mini |
 |------------|:-------:|:--------:|:----:|
 | `widget::runtime` (widget registry) | ✅ | — | — |
-| Self-drawn widgets (`mount_self_drawn`) | ✅ | — | — |
-| `supports_self_drawn()` | `true` | `false` | `false` |
+| Custom-painted widgets (`mount_custom_widget`) | ✅ | — | — |
+| `supports_custom_widgets()` | `true` | `false` | `false` |
 | Menus / tool bars / status bars | ✅ | ✅ | ✅ |
 | Menu shortcuts (displayed) | ✅ | ✅ | ✅ |
 | Menu shortcuts (actually fire) | ✅ | ✅ | ✅ |
 
 Where the table shows `—` the capability is **absent, not degraded**: the module
-is compiled out, so `supports_self_drawn()` reports `false` and callers are
+is compiled out, so `supports_custom_widgets()` reports `false` and callers are
 expected to refuse the operation rather than mount into a blank window (see
 `demo/code_editor`'s startup check).
 
 Menus and shortcuts are deliberately *not* affected: their code carries no
-`mini` gate, so a `mini` build is best described as **"no self-drawn surface, but
-fully working menus"**.
+`mini` gate, so a `mini` build is best described as **"no custom-painted widget
+surface, but fully working menus"**.
 
 > The `cargo test --all-features` CI command deliberately turns every feature on,
 > which includes `desktop` **and** `mini` at once. That combination is the
@@ -108,7 +108,7 @@ backend by themselves — their only backend entry is `os-auto`, which is curren
 an empty feature. Build them with a backend named explicitly:
 
 ```bash
-# ⚠️ resolves to a stub backend on every OS: no native widgets, no self-drawn surface
+# ⚠️ resolves to a stub backend on every OS: no real widgets at all
 cargo check --no-default-features --features tablet
 
 # ✅ real backend
@@ -121,9 +121,9 @@ Two consequences worth knowing before you rely on these profiles:
   per-OS equivalent) rather than an error. Check
   `rust_widgets::backend_name()` if you are unsure which one you built.
 * On macOS, `tablet`/`mobile` select the **objc2 preview** backend, which does
-  *not* implement self-drawn widgets. Self-drawn hosting on macOS currently
-  requires the `desktop` profile (the `cocoa` backend). Query
-  `supports_self_drawn()` rather than assuming.
+  *not* implement custom-painted widget hosting yet. On macOS that currently
+  requires the `desktop` profile. Query `supports_custom_widgets()` rather than
+  assuming.
 
 ### OS Backends
 

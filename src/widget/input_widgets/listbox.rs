@@ -21,18 +21,29 @@ pub struct ListBox {
     pub item_activated: Signal1<usize>,
     pub selection_changed: GenericSignal,
 }
-/// Selection mode for list box.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Selection mode for list, tree, table and list-box views.
+///
+/// This is the **canonical definition**, placed at the always-available input
+/// layer because [`ListBox`] needs it in every profile while the view widgets are
+/// `full_widgets`-gated. `view_widgets::list_view::SelectionMode` and
+/// `app::SelectionMode` re-export it, so a mode read from a handle, a `ListView`
+/// or a `ListBox` is the same type and can be passed between them with no
+/// conversion (principle #54).
+///
+/// `None` means the view accepts no selection at all, which is distinct from an
+/// empty selection in `Single`/`Multi` mode: it is a property of the view, not a
+/// state of the data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum SelectionMode {
-    /// No selection allowed
-    NoSelection,
-    /// Single item selection
+    /// At most one row can be selected.
     #[default]
-    SingleSelection,
-    /// Multiple item selection
-    MultiSelection,
-    /// Extended selection with shift/ctrl
-    ExtendedSelection,
+    Single,
+    /// Multiple rows can be selected (toggle behaviour).
+    Multi,
+    /// Multiple rows can be selected with modifier keys (Ctrl/Shift).
+    Extended,
+    /// No row can be selected.
+    None,
 }
 impl ListBox {
     /// Creates an empty list box.
@@ -41,7 +52,7 @@ impl ListBox {
             base: BaseWidget::new(WidgetKind::ListBox, geometry, "ListBox"),
             items: Vec::new(),
             selected_indices: Vec::new(),
-            selection_mode: SelectionMode::SingleSelection,
+            selection_mode: SelectionMode::Single,
             current_row: None,
             item_height: 20.0,
             scroll_offset: 0,
@@ -127,12 +138,12 @@ impl ListBox {
         self.selection_mode = mode;
         // Clear selection if mode doesn't allow current selection
         match mode {
-            SelectionMode::NoSelection => {
+            SelectionMode::None => {
                 self.selected_indices.clear();
                 self.current_row = None;
                 self.selection_changed.emit();
             }
-            SelectionMode::SingleSelection if self.selected_indices.len() > 1 => {
+            SelectionMode::Single if self.selected_indices.len() > 1 => {
                 self.selected_indices.truncate(1);
                 self.selection_changed.emit();
             }
@@ -154,15 +165,15 @@ impl ListBox {
             return;
         }
         match self.selection_mode {
-            SelectionMode::NoSelection => (),
-            SelectionMode::SingleSelection => {
+            SelectionMode::None => (),
+            SelectionMode::Single => {
                 self.selected_indices.clear();
                 self.selected_indices.push(index);
                 self.current_row = Some(index);
                 self.item_selected.emit(index);
                 self.selection_changed.emit();
             }
-            SelectionMode::MultiSelection => {
+            SelectionMode::Multi => {
                 if !self.selected_indices.contains(&index) {
                     self.selected_indices.push(index);
                     self.current_row = Some(index);
@@ -170,7 +181,7 @@ impl ListBox {
                     self.selection_changed.emit();
                 }
             }
-            SelectionMode::ExtendedSelection => {
+            SelectionMode::Extended => {
                 // Similar to multi for now
                 if !self.selected_indices.contains(&index) {
                     self.selected_indices.push(index);
@@ -201,7 +212,7 @@ impl ListBox {
     }
     /// Selects all items.
     pub fn select_all(&mut self) {
-        if self.selection_mode == SelectionMode::NoSelection {
+        if self.selection_mode == SelectionMode::None {
             return;
         }
         self.selected_indices.clear();
@@ -454,7 +465,7 @@ mod tests {
         assert_eq!(lb.count(), 0);
         assert_eq!(lb.current_row(), None);
         assert!(lb.selected_indices().is_empty());
-        assert_eq!(lb.selection_mode(), SelectionMode::SingleSelection);
+        assert_eq!(lb.selection_mode(), SelectionMode::Single);
         assert!((lb.item_height() - 20.0).abs() < f32::EPSILON);
     }
 
@@ -573,7 +584,7 @@ mod tests {
     fn listbox_select_all() {
         let mut lb = ListBox::new(Rect::new(0, 0, 200, 200));
         lb.add_items(vec!["A".to_string(), "B".to_string(), "C".to_string()]);
-        lb.set_selection_mode(SelectionMode::MultiSelection);
+        lb.set_selection_mode(SelectionMode::Multi);
         lb.select_all();
         assert_eq!(lb.selected_indices().len(), 3);
     }
@@ -581,15 +592,15 @@ mod tests {
     #[test]
     fn listbox_selection_mode() {
         let mut lb = ListBox::new(Rect::new(0, 0, 200, 200));
-        assert_eq!(lb.selection_mode(), SelectionMode::SingleSelection);
-        lb.set_selection_mode(SelectionMode::MultiSelection);
-        assert_eq!(lb.selection_mode(), SelectionMode::MultiSelection);
-        lb.set_selection_mode(SelectionMode::NoSelection);
-        assert_eq!(lb.selection_mode(), SelectionMode::NoSelection);
-        lb.set_selection_mode(SelectionMode::ExtendedSelection);
-        assert_eq!(lb.selection_mode(), SelectionMode::ExtendedSelection);
-        lb.set_selection_mode(SelectionMode::SingleSelection);
-        assert_eq!(lb.selection_mode(), SelectionMode::SingleSelection);
+        assert_eq!(lb.selection_mode(), SelectionMode::Single);
+        lb.set_selection_mode(SelectionMode::Multi);
+        assert_eq!(lb.selection_mode(), SelectionMode::Multi);
+        lb.set_selection_mode(SelectionMode::None);
+        assert_eq!(lb.selection_mode(), SelectionMode::None);
+        lb.set_selection_mode(SelectionMode::Extended);
+        assert_eq!(lb.selection_mode(), SelectionMode::Extended);
+        lb.set_selection_mode(SelectionMode::Single);
+        assert_eq!(lb.selection_mode(), SelectionMode::Single);
     }
 
     #[test]

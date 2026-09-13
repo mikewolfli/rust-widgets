@@ -3,7 +3,7 @@
 1. 结论必须有构建/测试/代码证据，不允许"推测已修复"。
 2. 修一个点必须扫同类模式，避免重复返工。
 3. 优先修功能阻断项，再做体验增强。
-4. 平台策略不变：原生优先，自绘兜底。
+4. 平台策略不变：控件优先映射到平台既有能力，映射不到时由 platform 层提供承载面。**调用方只表达“我要一个这样的控件”，不表达“用原生还是自绘”**——机制选择属于 `src/platform/`，上层 API 不出现 `native`/`self_drawn` 这类实现词汇。
 5. 不允许占位、空函数、逻辑错误，log/debug 占位 — 所有功能必须完整实现。
 6. 注释英文 — 所有新增模块的代码注释必须使用英文。
 7. 回写完成率 — 每轮完成后回写完成率。
@@ -46,7 +46,7 @@
 
 ### 新增规则 — 平台隔离（操作系统无关原则）
 
-35. **🌍 控件创建与操作必须操作系统无关** — 所有控件的创建（`create_*`）、属性读写、事件分发，其**调用方**代码（widget / app / demo / layout / render / style / theme / core 等上层模块）不得出现任何 `cfg(target_os)`、`cfg(target_family)`、`cfg(unix)`、`cfg(windows)` 分支，也不得直接 import 平台原生库（`winapi` / `gtk::` / `objc` / `cocoa` / `webkit2gtk` 等）。平台差异只能通过**运行时** API 询问（如 `backend_name()`、`supports_self_drawn()`、`runtime_gui_mode()`、`Platform::*` trait 方法）。
+35. **🌍 控件创建与操作必须操作系统无关** — 所有控件的创建（`create_*`）、属性读写、事件分发，其**调用方**代码（widget / app / demo / layout / render / style / theme / core 等上层模块）不得出现任何 `cfg(target_os)`、`cfg(target_family)`、`cfg(unix)`、`cfg(windows)` 分支，也不得直接 import 平台原生库（`winapi` / `gtk::` / `objc` / `cocoa` / `webkit2gtk` 等）。平台差异只能通过**运行时** API 询问（如 `backend_name()`、`supports_custom_widgets()`、`runtime_gui_mode()`、`Platform::*` trait 方法）。
 
 36. **🌍 操作系统相关的实现必须封装在 platform backend 底层** — 一切 OS 相关逻辑（原生控件创建、系统信息探测、剪贴板、IME、打印、文件系统路径约定、外部命令调用）都必须落在 `src/platform/` 各后端内，并通过 `Platform` trait（`src/platform/types.rs`）暴露统一的**语义化**方法。禁止在 `src/platform/` 之外出现：`#[cfg(target_os = ...)]`、读 `/proc` / `/sys`、`std::process::Command::new("ps" | "lpr" | "powershell")`、路径分隔符假设等。
 
@@ -79,3 +79,9 @@
 50. **🧩 跨 trait 适配器必须显式处理单位与退化输入** — 桥接两个不同抽象（如 `f32` 几何 ↔ `i32` 像素）时必须：① 统一用 `round()` 而非 `as i32` 截断；② 亚像素尺寸钳到最小可见值（否则静默消失）；③ 退化输入（空集合/零尺寸）静默忽略而非 panic；④ 缺失原图元（弧/椭圆）时用折线/多边形逼近并让精度自适应尺寸。
 
 51. **🧩 共享抽象必须能带来真实消除才接入，否则保留并写明原因** — 当某控件与共享引擎看似同类时，**必须先 grep 取证“到底重复了什么”**。若无重复（如 sparkline 无轴/网格/刻度/边距），**不接入**，并在模块文档写明为何，避免后人“好心”迁移而引入无收益的间接层（原则 #28）。判定依据是实测的重复代码，不是名字相似。
+
+52. **🚫 公开 API 不得出现渲染机制词汇** — 公开 API（`lib.rs` 导出、`app::*` handle、`Platform` trait 的语义化方法、demo）禁止出现 `self_drawn` / `native` / `canvas` / `NSView` / `HWND` / `GTK` 等**实现机制**词汇。控件落地方式（映射到平台已有控件？还是由 platform 提供绘制面？）是 `src/platform/` 的内部决定，调用方不需知道也无从知道。命名必须描述**意图**而非机制（如 `mount_custom_widget` 而非 `mount_self_drawn`）。判定：把该名字给一个从未接触本项目的开发者看，他应能说出“我要做什么”，而不是“底层怎么做”。
+
+53. **🚫 能力缺失只能通过运行时 trait 方法表达，不得上升为 API 形态** — 当某平台暂不能承载某能力时，正确表达是让**单一函数**在入口询问 `Platform` 能力（如 `supports_custom_widgets()`）并返回错误/`false`；**禁止**为“支持该能力的平台”与“不支持的平台”写出两套函数签名或两套模块结构。这与 #41 同理：能力差异是运行时事实，不是编译期 API 分叉。
+
+54. **🚫 同语义枚举全仓只能有一份定义** — 当两个层（如 handle 层与 widget 层）需要同一个枚举时，**上层必须 `pub use` 下层定义**，禁止各写一份“结构相同”的副本。理由：副本会漂移（新增变体只改一处），且迫使调用方做无意义的类型转换。判定：若两枚举的变体集合相同且语义一致，即为重复（原则 #23）。

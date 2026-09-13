@@ -28,19 +28,21 @@ pub struct LineEdit {
     pub editing_finished: GenericSignal,
     pub return_pressed: GenericSignal,
 }
-/// Text echo mode for password fields.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum EchoMode {
-    /// Display characters as entered (default)
-    #[default]
-    Normal,
-    /// Display asterisks for password fields
-    Password,
-    /// Display nothing (for sensitive data)
-    NoEcho,
-    /// Display asterisks only when editing
-    PasswordEchoOnEdit,
-}
+/// Text echo mode for a line edit.
+///
+/// Re-exported from [`crate::platform::EchoMode`] — the widget layer and the
+/// platform layer name the **same three modes**, so a mode read back from a
+/// native control (`widget_echo_mode()`) can be handed straight to this widget
+/// with no conversion, and neither copy can drift from the other
+/// (principle #54).
+///
+/// The former local variant `PasswordEchoOnEdit` was removed with this change: it
+/// had no consumer outside this file and its "implementation" was a placeholder
+/// that behaved exactly like `Password` (principle #5). Adding a real one back
+/// means adding it to the canonical enum and to every backend that must honour
+/// it.
+pub use crate::platform::EchoMode;
+
 impl LineEdit {
     /// Creates an empty line edit with geometry.
     pub fn new(geometry: Rect) -> Self {
@@ -292,15 +294,15 @@ impl LineEdit {
         }
     }
     /// Returns display text based on echo mode.
+    ///
+    /// `EchoMode` has exactly three modes, so this match is exhaustive without a
+    /// catch-all: adding a mode to the canonical enum forces every renderer to
+    /// decide what it looks like, instead of silently inheriting one.
     fn display_text(&self) -> String {
         match self.echo_mode {
             EchoMode::Normal => self.text.clone(),
             EchoMode::Password => "*".repeat(self.text.len()),
             EchoMode::NoEcho => String::new(),
-            EchoMode::PasswordEchoOnEdit => {
-                // In real implementation, would track edit state
-                "*".repeat(self.text.len())
-            }
         }
     }
 }
@@ -637,10 +639,19 @@ mod tests {
         assert_eq!(le.echo_mode(), EchoMode::Password);
         le.set_echo_mode(EchoMode::NoEcho);
         assert_eq!(le.echo_mode(), EchoMode::NoEcho);
-        le.set_echo_mode(EchoMode::PasswordEchoOnEdit);
-        assert_eq!(le.echo_mode(), EchoMode::PasswordEchoOnEdit);
         le.set_echo_mode(EchoMode::Normal);
         assert_eq!(le.echo_mode(), EchoMode::Normal);
+    }
+
+    /// The widget layer and the platform layer must name the **same** echo-mode
+    /// enum, so a mode read back from a native control can be handed straight to
+    /// this widget. Distinct types would make the assignment below ill-typed.
+    #[test]
+    fn lineedit_shares_the_canonical_echo_mode_type() {
+        let canonical: crate::platform::EchoMode = crate::platform::EchoMode::Password;
+        let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
+        le.set_echo_mode(canonical);
+        assert_eq!(le.echo_mode(), canonical);
     }
 
     #[test]

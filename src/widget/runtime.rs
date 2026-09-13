@@ -1,20 +1,22 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! Registry for **self-drawn** widgets mounted into native windows.
+//! Registry for **custom-painted** widgets mounted into windows.
 //!
 //! # Why this exists
 //!
 //! [`crate::widget::WidgetFactory`] can build a `Box<dyn Widget>` for any kind —
 //! `CodeEditor`, `ColorPicker`, `GanttWidget`, … — but until this module existed
-//! there was no path from such a box to pixels inside a real window. The native
-//! platform layer only knew how to create OS controls (`NSButton`, `BUTTON`,
-//! `gtk::Button`); a self-drawn widget had to be handed to `render_to_svg()` or
-//! it went nowhere. Mounting one into a window produced an empty surface.
+//! there was no path from such a box to pixels inside a real window. The platform
+//! layer only knew how to create OS controls (`NSButton`, `BUTTON`,
+//! `gtk::Button`); a custom-painted widget had to be handed to `render_to_svg()`
+//! or it went nowhere. Mounting one into a window produced an empty surface.
 //!
 //! This registry closes that loop. The host keeps ownership of the widget here,
-//! keyed by [`ObjectId`]; a backend allocates a native canvas and, when the OS
-//! asks it to repaint, calls [`with_widget_mut`] and paints a frame.
+//! keyed by [`ObjectId`]; a backend supplies whatever surface it uses for such
+//! widgets and, when a repaint is wanted, calls [`with_widget_mut`] and paints a
+//! frame. **Which surface that is is a backend detail** — see
+//! [`crate::Platform::mount_custom_widget`].
 //!
 //! # Threading
 //!
@@ -28,6 +30,50 @@
 use crate::core::{ObjectId, Rect, Size};
 use crate::event::Event;
 use crate::render::{PaintBackend, RenderContext, SoftwarePaintBackend};
+
+/// Why a custom-painted widget could not be mounted into a window.
+///
+/// Lives here, beside the registry, because that is the layer that knows about
+/// widget registration and ownership. `app` re-exports it, so callers that drive
+/// mounting through a `WindowHandle` keep the same path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CustomWidgetMountError {
+    /// The calling thread has no widget registry — mounting must happen on the
+    /// thread that drives the UI.
+    NoRegistryOnThread,
+    /// This backend cannot host custom-painted widgets
+    /// (`Platform::supports_custom_widgets` returned `false`). Carries the
+    /// backend name for the message.
+    UnsupportedByBackend(&'static str),
+    /// The backend claims support but refused this particular mount (unknown
+    /// parent, wrong parent kind, allocation failure). Carries the backend name.
+    RejectedByBackend(&'static str),
+    /// A lookup by widget name did not match anything in the widget factory.
+    UnknownWidgetName,
+}
+
+impl core::fmt::Display for CustomWidgetMountError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NoRegistryOnThread => write!(
+                f,
+                "custom-painted widgets must be mounted on the UI thread (no registry on this \
+                 thread)"
+            ),
+            Self::UnsupportedByBackend(backend) => {
+                write!(f, "backend '{backend}' cannot display custom-painted widgets")
+            }
+            Self::RejectedByBackend(backend) => {
+                write!(f, "backend '{backend}' refused the mount (see logs for the reason)")
+            }
+            Self::UnknownWidgetName => {
+                write!(f, "the widget factory has no widget registered under that name")
+            }
+        }
+    }
+}
+
+impl std::error::Error for CustomWidgetMountError {}
 use crate::widget::Widget;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -135,7 +181,7 @@ pub fn dispatch_event(id: ObjectId, event: &Event) -> bool {
 /// on macOS, `InvalidateRect` on Windows, `queue_draw` on GTK); a backend that
 /// never mounted the widget simply does nothing.
 pub fn request_repaint(id: ObjectId) {
-    crate::request_self_drawn_repaint(id);
+    crate::request_custom_repaint(id);
 }
 
 /// Renders one frame of a mounted widget at `size` and returns the RGBA bytes.
@@ -281,7 +327,7 @@ mod tests {
     /// mounted `Chip` silently produced no frame. This guards the contract for
     /// the widgets the demos and the factory expose.
     #[test]
-    fn self_drawn_widgets_report_the_draw_bridge() {
+    fn custom_widgets_report_the_draw_bridge() {
         use crate::widget::special_widgets::chip::Chip;
         use crate::widget::special_widgets::color_picker::ColorPicker;
         use crate::widget::special_widgets::gantt_widget::GanttWidget;

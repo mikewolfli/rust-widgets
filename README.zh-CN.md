@@ -71,24 +71,24 @@ cargo check --features mini
 
 #### 各配置关闭了什么
 
-各配置的 API 完全一致，差别只在**能力是否存在**。只有同时具备原生后端且保留
-`widget::runtime` 的配置，才能承载自绘控件：
+各配置的 API 完全一致，差别只在**能力是否存在**。只有同时具备平台后端且保留
+`widget::runtime` 的配置，才能承载自绘型控件：
 
 | 能力 | 桌面 | 嵌入式 | Mini |
 |------|:----:|:------:|:----:|
 | `widget::runtime`（控件注册表） | ✅ | — | — |
-| 自绘控件（`mount_self_drawn`） | ✅ | — | — |
-| `supports_self_drawn()` | `true` | `false` | `false` |
+| 自绘型控件（`mount_custom_widget`） | ✅ | — | — |
+| `supports_custom_widgets()` | `true` | `false` | `false` |
 | 菜单 / 工具栏 / 状态栏 | ✅ | ✅ | ✅ |
 | 菜单快捷键（显示） | ✅ | ✅ | ✅ |
 | 菜单快捷键（真的能用） | ✅ | ✅ | ✅ |
 
 表中 `—` 表示能力**不存在，而非降级**：模块已被编译移除，因此
-`supports_self_drawn()` 返回 `false`，调用方应据此拒绝操作，而不是挂载后得到一个
+`supports_custom_widgets()` 返回 `false`，调用方应据此拒绝操作，而不是挂载后得到一个
 空白窗口（参见 `demo/code_editor` 的启动检查）。
 
 菜单与快捷键**刻意不受影响**：它们的代码没有 `mini` 门控。所以 `mini` 准确说是
-「**无自绘界面，但菜单完整可用**」。
+「**无自绘型控件承载能力，但菜单完整可用**」。
 
 > CI 的 `cargo test --all-features` 会打开所有特性，即 `desktop` 与 `mini` **同时生效**。
 > 这个组合就是本约束的回归探针；完整论证与验证矩阵见
@@ -100,7 +100,7 @@ cargo check --features mini
 的后端入口是 `os-auto`，而该 feature 目前是空的。使用时必须显式指定后端：
 
 ```bash
-# ⚠️ 在所有 OS 上都会落到 stub 后端：没有原生控件，也没有自绘界面
+# ⚠️ 在所有 OS 上都会落到 stub 后端：没有任何真实控件
 cargo check --no-default-features --features tablet
 
 # ✅ 真实后端
@@ -111,9 +111,9 @@ cargo check --no-default-features --features "tablet,macos"
 
 * 不指定后端时**不会报错**，而是静默使用 `macos-fallback-stub`（其他 OS 同理）。
   不确定时可调用 `rust_widgets::backend_name()` 确认。
-* 在 macOS 上，`tablet`/`mobile` 选中的是 **objc2 预览后端**，它**尚未实现自绘控件**。
-  目前 macOS 上要承载自绘控件需使用 `desktop` 配置（`cocoa` 后端）。请查询
-  `supports_self_drawn()` 而不要臆测。
+* 在 macOS 上，`tablet`/`mobile` 选中的是 **objc2 预览后端**，它**尚未实现自绘型控件的
+  承载**。目前 macOS 上承载自绘型控件需使用 `desktop` 配置（`cocoa` 后端）。请查询
+  `supports_custom_widgets()` 而不要臆测。
 
 ### 操作系统支持
 
