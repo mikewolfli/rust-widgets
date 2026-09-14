@@ -10,8 +10,13 @@
 use crate::core::{Color, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::widget::capability::coercion::expect_string;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::display_widgets::draw_line;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Orientation of the divider line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +80,48 @@ impl Widget for Line {
             LineOrientation::Horizontal => Size::new(120, self.thickness.max(2)),
             LineOrientation::Vertical => Size::new(self.thickness.max(2), 120),
         }
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `Line`'s property contract.
+///
+/// The write path accepts exactly the two tokens the read path publishes
+/// (`"horizontal"` / `"vertical"`) and rejects anything else with
+/// [`CapabilityAccessError::TypeMismatch`], matching the previous dispatch.
+impl WidgetProperties for Line {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "orientation" => {
+                let orientation = match self.orientation() {
+                    LineOrientation::Horizontal => "horizontal",
+                    LineOrientation::Vertical => "vertical",
+                };
+                Ok(CapabilityValue::String(orientation.to_string()))
+            }
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "orientation" => {
+                let token = expect_string(value)?;
+                let orientation = match token.as_str() {
+                    "horizontal" => LineOrientation::Horizontal,
+                    "vertical" => LineOrientation::Vertical,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_orientation(orientation);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["orientation", BASE_PROPERTY_NAMES]
     }
 }
 

@@ -35,7 +35,7 @@ use crate::widget::{
     Button, CheckBox, ComboBox, GroupBox, Label, LineEdit, ListBox, ProgressBar, RadioButton,
     ScrollArea, ScrollBar, Slider, SpinBox, Switch, Widget,
 };
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 use crate::widget::{
     ColorDialog, FileDialog, FontDialog, GridWidget, ListView, MessageBox, TabWidget, TextEdit,
 };
@@ -471,7 +471,7 @@ impl JsonLoader {
                 }
                 Ok(Box::new(le))
             }
-            #[cfg(not(feature = "mini"))]
+            #[cfg(not(alloc_frugal))]
             "textedit" => {
                 let mut te = TextEdit::new(geometry);
                 if let Some(value) = obj.get("value").and_then(|v| v.as_str()) {
@@ -679,7 +679,7 @@ impl JsonLoader {
                 }
                 Ok(Box::new(gb))
             }
-            #[cfg(not(feature = "mini"))]
+            #[cfg(not(alloc_frugal))]
             "tabwidget" => {
                 let mut tw = TabWidget::new(geometry);
                 if let Some(index) = obj.get("current_index").and_then(|v| v.as_u64()) {
@@ -724,7 +724,7 @@ impl JsonLoader {
                 }
                 Ok(Box::new(tw))
             }
-            #[cfg(not(feature = "mini"))]
+            #[cfg(not(alloc_frugal))]
             "grid" => {
                 let mut grid = GridWidget::new(geometry);
                 if let Some(rows) = obj.get("rows").and_then(|v| v.as_u64()) {
@@ -768,7 +768,7 @@ impl JsonLoader {
                 }
                 Ok(Box::new(sb))
             }
-            #[cfg(not(feature = "mini"))]
+            #[cfg(not(alloc_frugal))]
             "listview" => Ok(Box::new(ListView::new(geometry))),
             "scrollarea" => {
                 let mut sa = ScrollArea::new(geometry);
@@ -852,7 +852,7 @@ impl JsonLoader {
                 }
                 Ok(Box::new(frame))
             }
-            #[cfg(not(feature = "mini"))]
+            #[cfg(not(alloc_frugal))]
             "messagebox" => {
                 let mut mb = MessageBox::new(geometry);
                 if let Some(title) = obj.get("title").and_then(|v| v.as_str()) {
@@ -884,7 +884,7 @@ impl JsonLoader {
                 }
                 Ok(Box::new(mb))
             }
-            #[cfg(not(feature = "mini"))]
+            #[cfg(not(alloc_frugal))]
             "filedialog" => {
                 let mut fd = FileDialog::new(geometry);
                 if let Some(mode) = obj.get("mode").and_then(|v| v.as_str()) {
@@ -913,7 +913,7 @@ impl JsonLoader {
                 }
                 Ok(Box::new(fd))
             }
-            #[cfg(not(feature = "mini"))]
+            #[cfg(not(alloc_frugal))]
             "colordialog" => {
                 let mut cd = ColorDialog::new(geometry);
                 if let Some(alpha) = obj.get("alpha").and_then(|v| v.as_bool()) {
@@ -926,7 +926,7 @@ impl JsonLoader {
                 }
                 Ok(Box::new(cd))
             }
-            #[cfg(not(feature = "mini"))]
+            #[cfg(not(alloc_frugal))]
             "fontdialog" => {
                 let mut fd = FontDialog::new(geometry);
                 if let Some(_font_str) = obj.get("value").and_then(|v| v.as_str()) {
@@ -1158,102 +1158,102 @@ fn infer_kind(widget_type: &str) -> WidgetKind {
         "textarea" => WidgetKind::TextArea,
         "tileview" => WidgetKind::TileView,
         "window" => WidgetKind::Window,
-        // cfg(not(feature = "mini")) variants
-        #[cfg(not(feature = "mini"))]
+        // cfg(not(alloc_frugal)) variants
+        #[cfg(not(alloc_frugal))]
         "autocompleteedit" => WidgetKind::AutoCompleteEdit,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "barchart" => WidgetKind::BarChart,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "calendar" => WidgetKind::Calendar,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "canvas" => WidgetKind::Canvas,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "chart" => WidgetKind::Chart,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "colordialog" => WidgetKind::ColorDialog,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "contextmenu" => WidgetKind::ContextMenu,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "dialog" => WidgetKind::Dialog,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "dockpanel" => WidgetKind::DockPanel,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "dropdownmenu" => WidgetKind::DropdownMenu,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "filedialog" => WidgetKind::FileDialog,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "floatinglabel" => WidgetKind::FloatingLabel,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "fontdialog" => WidgetKind::FontDialog,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "grid" => WidgetKind::Grid,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "icon" => WidgetKind::Icon,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "inputdialog" => WidgetKind::InputDialog,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "linechart" => WidgetKind::LineChart,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "listview" => WidgetKind::ListView,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "maskededit" => WidgetKind::MaskedEdit,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "mdiarea" => WidgetKind::MdiArea,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "menu" => WidgetKind::Menu,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "menubar" => WidgetKind::MenuBar,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "menubutton" => WidgetKind::MenuButton,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "menuitem" => WidgetKind::MenuItem,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "messagebox" => WidgetKind::MessageBox,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "multiselectcombobox" => WidgetKind::MultiSelectComboBox,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "piechart" => WidgetKind::PieChart,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "popover" => WidgetKind::Popover,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "popupwindow" => WidgetKind::PopupWindow,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "progresscircle" => WidgetKind::ProgressCircle,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "rangeslider" => WidgetKind::RangeSlider,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "rating" => WidgetKind::Rating,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "refreshcontrol" => WidgetKind::RefreshControl,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "richedit" => WidgetKind::RichEdit,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "searchbar" => WidgetKind::SearchBar,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "segmentedbutton" => WidgetKind::SegmentedButton,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "sparkline" => WidgetKind::Sparkline,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "splitter" => WidgetKind::Splitter,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "statusbar" => WidgetKind::StatusBar,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "stepper" => WidgetKind::Stepper,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "tabbar" => WidgetKind::TabBar,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "table" => WidgetKind::Table,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "tabwidget" => WidgetKind::TabWidget,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "textedit" => WidgetKind::TextEdit,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "togglebutton" => WidgetKind::ToggleButton,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "toolbar" => WidgetKind::ToolBar,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "tooltip" => WidgetKind::Tooltip,
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         "treeview" => WidgetKind::TreeView,
         _ => WidgetKind::Button,
     }
@@ -1527,7 +1527,7 @@ mod tests {
         assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
     }
 
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     #[test]
     fn load_tabwidget_with_properties() {
         let json = r#"{"window": {"id": "w", "title": "Tabs", "width": 500, "height": 400, "layout": {"type": "vbox", "children": [{"tabwidget": {"id": "tw", "current_index": 0, "tab_position": "north", "closable": true, "movable": false}}]}}}"#;
@@ -1535,7 +1535,7 @@ mod tests {
         assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
     }
 
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     #[test]
     fn load_textedit_with_readonly() {
         let json = r#"{"window": {"id": "w", "title": "Text", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"textedit": {"id": "te", "value": "Multi\nline", "read_only": true, "word_wrap": true}}]}}}"#;
@@ -1557,7 +1557,7 @@ mod tests {
         assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
     }
 
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     #[test]
     fn load_filedialog_with_mode() {
         let json = r#"{"window": {"id": "w", "title": "Dialog", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"filedialog": {"id": "fd", "mode": "save_file", "directory": "/tmp"}}]}}}"#;
@@ -1565,7 +1565,7 @@ mod tests {
         assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
     }
 
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     #[test]
     fn load_colordialog_with_color() {
         let json = r##"{"window": {"id": "w", "title": "Color", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"colordialog": {"id": "cd", "value": "#ff0000", "alpha": true}}]}}}"##;
@@ -1573,7 +1573,7 @@ mod tests {
         assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
     }
 
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     #[test]
     fn load_messagebox_with_icon() {
         let json = r#"{"window": {"id": "w", "title": "Msg", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"messagebox": {"id": "mb", "title": "Warning", "text": "Are you sure?", "icon": "warning"}}]}}}"#;
@@ -1581,7 +1581,7 @@ mod tests {
         assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
     }
 
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     #[test]
     fn load_listview_widget() {
         let json = r#"{"window": {"id": "w", "title": "ListView", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"listview": {"id": "lv"}}]}}}"#;

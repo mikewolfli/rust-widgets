@@ -203,18 +203,18 @@ impl Platform for WaylandPlatform {
         // on each iteration to dispatch pending native Wayland events.
         // Meanwhile, this thread blocks waiting for the quit signal.
         let mut event_loop = EventLoop::new();
-        #[cfg(all(feature = "wayland-native", not(feature = "mini"), target_os = "linux"))]
+        #[cfg(all(feature = "wayland-native", not(alloc_frugal), target_os = "linux"))]
         if let Some(pump) = create_event_loop_pump() {
             event_loop.set_native_pump(pump);
         }
         event_loop.start();
 
-        #[cfg(all(feature = "wayland-native", not(feature = "mini"), target_os = "linux"))]
+        #[cfg(all(feature = "wayland-native", not(alloc_frugal), target_os = "linux"))]
         {
             self.run_native_event_loop();
         }
 
-        #[cfg(not(all(feature = "wayland-native", not(feature = "mini"), target_os = "linux")))]
+        #[cfg(not(all(feature = "wayland-native", not(alloc_frugal), target_os = "linux")))]
         while self.runtime.running.load(std::sync::atomic::Ordering::SeqCst) {
             std::thread::sleep(std::time::Duration::from_millis(16));
         }
@@ -1297,7 +1297,7 @@ impl WaylandPlatform {
     ///
     /// Falls back to the timed polling loop when no Wayland session exists
     /// (headless CI), which keeps `run()`/`quit()` semantics identical.
-    #[cfg(all(feature = "wayland-native", not(feature = "mini"), target_os = "linux"))]
+    #[cfg(all(feature = "wayland-native", not(alloc_frugal), target_os = "linux"))]
     fn run_native_event_loop(&self) {
         use std::os::fd::AsRawFd;
 
@@ -1359,7 +1359,7 @@ impl WaylandPlatform {
     /// Intended to be called from an `EventLoop` native pump callback
     /// on each iteration so that Wayland protocol events are dispatched
     /// without a separate blocking `run()` loop.
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     pub(crate) fn dispatch_native_events(&self) {
         let mut guard = self.native_session.lock().unwrap();
         if let Some(ref mut session) = *guard {
@@ -1491,7 +1491,7 @@ pub(crate) struct WaylandSession {
 /// dispatches pending Wayland events through `dispatch_pending()`.
 ///
 /// Returns `None` if the active platform is not Wayland.
-#[cfg(all(feature = "wayland-native", not(feature = "mini"), target_os = "linux"))]
+#[cfg(all(feature = "wayland-native", not(alloc_frugal), target_os = "linux"))]
 pub fn create_event_loop_pump() -> Option<Box<dyn Fn() + Send + Sync>> {
     let platform = crate::platform::runtime::get_platform();
     let wayland = platform.as_any().downcast_ref::<WaylandPlatform>()?;

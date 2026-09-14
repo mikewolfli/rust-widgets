@@ -25,8 +25,12 @@ use crate::core::{Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
-
+use crate::widget::capability::coercion::expect_u32;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Grid widget for layout management.
 ///
@@ -226,6 +230,60 @@ impl Widget for GridWidget {
         let w = self.columns * 20 + self.spacing.saturating_mul(self.columns.saturating_sub(1));
         let h = self.rows * 20 + self.spacing.saturating_mul(self.rows.saturating_sub(1));
         Size::new(w.max(40), h.max(40))
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `GridWidget`'s property contract, published under the `Grid` kind.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch, including
+/// the `Null` handling of `line_color` and the `TypeMismatch` an unparsable hex
+/// colour produced.
+impl WidgetProperties for GridWidget {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "rows" => Ok(CapabilityValue::UInt(self.rows() as u64)),
+            "columns" => Ok(CapabilityValue::UInt(self.columns() as u64)),
+            "spacing" => Ok(CapabilityValue::UInt(self.spacing() as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "rows" => {
+                self.set_rows(expect_u32(value)?);
+                Ok(())
+            }
+            "columns" => {
+                self.set_columns(expect_u32(value)?);
+                Ok(())
+            }
+            "spacing" => {
+                self.set_spacing(expect_u32(value)?);
+                Ok(())
+            }
+            "line_color" => {
+                match value {
+                    CapabilityValue::Null => self.set_line_color(None),
+                    CapabilityValue::String(raw) => {
+                        let Some(color) = crate::core::Color::parse_hex(&raw) else {
+                            return Err(CapabilityAccessError::TypeMismatch);
+                        };
+                        self.set_line_color(Some(color));
+                    }
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                }
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["rows", "columns", "spacing", BASE_PROPERTY_NAMES]
     }
 }
 

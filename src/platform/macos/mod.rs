@@ -22,14 +22,14 @@ mod platform_impl;
 /// CoreGraphics FFI used to blit self-drawn frames.
 ///
 /// Gated with `canvas.rs`, its only consumer.
-#[cfg(all(feature = "cocoa-legacy", not(any(feature = "mini", feature = "embedded"))))]
+#[cfg(all(feature = "cocoa-legacy", widgets_unstripped))]
 pub(crate) mod cg;
 
 /// Native surface for self-drawn widgets.
 ///
 /// Compiled out for `mini`/`embedded`: those profiles have no `widget::runtime`
 /// (see `src/widget/mod.rs`), and this module is built on it.
-#[cfg(all(feature = "cocoa-legacy", not(any(feature = "mini", feature = "embedded"))))]
+#[cfg(all(feature = "cocoa-legacy", widgets_unstripped))]
 pub(crate) mod canvas;
 
 /// Cocoa 0.24 types and helpers (legacy, behind `cocoa-legacy` feature).

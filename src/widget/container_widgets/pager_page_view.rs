@@ -11,7 +11,12 @@ use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::expect_usize;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Dyn-safe wrapper trait that combines Widget access with a draw method.
 /// This is necessary because `Draw` is not dyn-compatible.
@@ -135,6 +140,33 @@ impl Widget for PagerPageView {
 
     fn kind(&self) -> WidgetKind {
         WidgetKind::PagerPageView
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `PagerPageView`'s property contract.
+impl WidgetProperties for PagerPageView {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "current_page" => Ok(CapabilityValue::UInt(self.current_page() as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "current_page" => {
+                self.set_current_page(expect_usize(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        // Mirrors `PAGER_PAGE_VIEW_PROPERTIES`.
+        property_names_of!["current_page", BASE_PROPERTY_NAMES]
     }
 }
 

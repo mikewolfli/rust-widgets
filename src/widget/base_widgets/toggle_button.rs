@@ -5,7 +5,12 @@
 use crate::core::{HorizontalAlignment, Rect, Size};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::widget::capability::coercion::{expect_bool, expect_string};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 /// Toggle button state enumeration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToggleButtonState {
@@ -118,7 +123,51 @@ impl Widget for ToggleButton {
         let text_w = self.text().len() as u32 * 8 + 20;
         Size::new(text_w.max(75), 28)
     }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
 }
+
+/// `ToggleButton`'s property contract.
+///
+/// `state` is the derived interaction state ("normal"/"checked"/"disabled") and
+/// is read-only, which is why it has a read arm but no write arm here — exactly
+/// as the previous centralised dispatch behaved.
+impl WidgetProperties for ToggleButton {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "text" => Ok(CapabilityValue::String(self.text().to_string())),
+            "checked" => Ok(CapabilityValue::Bool(self.is_checked())),
+            "state" => {
+                let state = match self.state() {
+                    ToggleButtonState::Normal => "normal",
+                    ToggleButtonState::Checked => "checked",
+                    ToggleButtonState::Disabled => "disabled",
+                };
+                Ok(CapabilityValue::String(state.to_string()))
+            }
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "text" => {
+                self.set_text(expect_string(value)?);
+                Ok(())
+            }
+            "checked" => {
+                self.set_checked(expect_bool(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["text", "checked", "state", BASE_PROPERTY_NAMES]
+    }
+}
+
 impl Draw for ToggleButton {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.base.geometry();

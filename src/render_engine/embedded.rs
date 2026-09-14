@@ -3,10 +3,10 @@
 
 //! Embedded runtime state, task queue, and shared engine internals.
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 use crate::compat::Condvar;
 use crate::compat::HashMap;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 use crate::compat::Instant;
 use crate::compat::Mutex;
 use crate::compat::MutexGuard;
@@ -14,7 +14,7 @@ use crate::compat::OnceLock;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 use core::time::Duration;
 
 const DEFAULT_EMBEDDED_TARGET_FPS: u32 = 60;
@@ -25,7 +25,7 @@ fn clamp_embedded_target_fps(fps: u32) -> u32 {
     fps.clamp(MIN_EMBEDDED_TARGET_FPS, MAX_EMBEDDED_TARGET_FPS)
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 fn frame_interval_for_fps(fps: u32) -> Duration {
     Duration::from_nanos(1_000_000_000 / fps as u64)
 }
@@ -80,7 +80,7 @@ pub(crate) struct EmbeddedEngineShared {
     next_task_id: AtomicU64,
     frame_count: AtomicU64,
     state: Mutex<EmbeddedRuntimeState>,
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     wake_signal: Condvar,
 }
 
@@ -91,7 +91,7 @@ impl EmbeddedEngineShared {
             next_task_id: AtomicU64::new(1),
             frame_count: AtomicU64::new(0),
             state: Mutex::new(EmbeddedRuntimeState::new()),
-            #[cfg(not(feature = "mini"))]
+            #[cfg(not(alloc_frugal))]
             wake_signal: Condvar::new(),
         }
     }
@@ -103,7 +103,7 @@ impl EmbeddedEngineShared {
     fn set_target_fps(&self, fps: u32) -> u32 {
         let mut state = self.lock_state();
         state.target_fps = clamp_embedded_target_fps(fps);
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         self.wake_signal.notify_all();
         state.target_fps
     }
@@ -120,7 +120,7 @@ impl EmbeddedEngineShared {
         state.initialized = true;
     }
 
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     pub(crate) fn run_loop(&self) {
         {
             let mut state = self.lock_state();
@@ -161,7 +161,7 @@ impl EmbeddedEngineShared {
         }
     }
 
-    #[cfg(feature = "mini")]
+    #[cfg(alloc_frugal)]
     pub(crate) fn run_loop(&self) {
         // mini: no-thread embedded loop — process tasks inline, no sleep/wait
         {
@@ -205,7 +205,7 @@ impl EmbeddedEngineShared {
         state.buttons.clear();
         state.pending_tasks.clear();
         drop(state);
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         self.wake_signal.notify_all();
     }
 
@@ -264,7 +264,7 @@ impl EmbeddedEngineShared {
         let mut state = self.lock_state();
         state.pending_tasks.push_back(EmbeddedTask::new(task_id, label, Box::new(action)));
         drop(state);
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         self.wake_signal.notify_all();
         task_id
     }
@@ -338,13 +338,13 @@ pub struct EmbeddedEngineStats {
     pub target_fps: u32,
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn embedded_engine_shared() -> Arc<EmbeddedEngineShared> {
     static SHARED: OnceLock<Arc<EmbeddedEngineShared>> = OnceLock::new();
     SHARED.get_or_init(|| Arc::new(EmbeddedEngineShared::new())).clone()
 }
 
-#[cfg(feature = "mini")]
+#[cfg(alloc_frugal)]
 pub(crate) fn embedded_engine_shared() -> Arc<EmbeddedEngineShared> {
     static SHARED: OnceLock<Arc<EmbeddedEngineShared>> = OnceLock::new();
     SHARED.get_or_init(|| Arc::new(EmbeddedEngineShared::new())).clone()

@@ -96,7 +96,7 @@ pub use backend::{
     SoftwareSurface,
 };
 
-#[cfg(all(test, feature = "desktop", not(any(feature = "mini", feature = "embedded"))))]
+#[cfg(all(test, feature = "desktop", widgets_unstripped))]
 pub(crate) use backend::software_render_config_test_lock;
 
 // Pixel ops
@@ -123,9 +123,9 @@ pub use gpu::{GpuCapability, GpuRenderer};
 pub use projection::{PresentationController, ProjectionLayoutHelper, ProjectionRenderConfig};
 
 /// Web rendering types — available on desktop targets (not in mini mode)
-#[cfg(all(feature = "desktop", not(feature = "mini")))]
+#[cfg(all(feature = "desktop", not(alloc_frugal)))]
 pub use web::engine::WebEngine;
-#[cfg(all(feature = "desktop", not(feature = "mini")))]
+#[cfg(all(feature = "desktop", not(alloc_frugal)))]
 pub use web::view::WebView;
 
 /// Shared helper accessible to surface.rs and backend

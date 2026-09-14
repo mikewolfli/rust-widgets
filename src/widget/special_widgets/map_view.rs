@@ -177,6 +177,7 @@ impl Widget for MapView {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(400, 300)
     }
+    impl_draw_bridge!();
 }
 
 impl EventHandler for MapView {

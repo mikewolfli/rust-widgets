@@ -320,7 +320,7 @@ mod tests {
         unregister(id);
     }
 
-    /// Every widget that paints itself must be mountable in a native window.
+    /// Every widget that paints itself must be mountable in a host surface.
     ///
     /// `Widget::as_draw_mut` defaults to `None`, so a widget can implement
     /// `Draw` and still be invisible when mounted — which is exactly how a
@@ -350,15 +350,30 @@ mod tests {
         assert_mountable("TerminalView", &mut TerminalView::new(Rect::new(0, 0, 200, 150)));
     }
 
-    /// A widget with no `Draw` implementation must report `None`.
+    /// A built-in control must report itself as paintable.
+    ///
+    /// This assertion is the inverse of the one that used to live here, which
+    /// required `Button` to return `None` because the control was expected to be
+    /// an OS widget. Every control is now painted by the library (BLUE15 #55), so
+    /// a control that still answers `None` paints a blank surface — the exact
+    /// regression this test exists to catch.
     #[test]
-    fn native_widgets_do_not_claim_the_draw_bridge() {
+    fn built_in_controls_claim_the_draw_bridge() {
         use crate::widget::base_widgets::button::Button;
+        use crate::widget::base_widgets::checkbox::CheckBox;
+        use crate::widget::base_widgets::label::Label;
+
         let mut button = Button::new("ok".to_string(), Rect::new(0, 0, 80, 30));
         assert!(
-            (button.as_draw_mut()).is_none(),
-            "a native-backed widget must not claim to paint itself"
+            button.as_draw_mut().is_some(),
+            "Button implements Draw, so mounting it must paint instead of showing a blank surface"
         );
+
+        let mut checkbox = CheckBox::new(Rect::new(0, 0, 120, 24));
+        assert!(checkbox.as_draw_mut().is_some(), "CheckBox must be paintable");
+
+        let mut label = Label::new("hello".to_string(), Rect::new(0, 0, 80, 20));
+        assert!(label.as_draw_mut().is_some(), "Label must be paintable");
     }
 
     #[test]

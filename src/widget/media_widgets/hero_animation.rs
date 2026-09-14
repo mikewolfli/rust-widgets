@@ -11,8 +11,13 @@
 
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
+use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
+use crate::widget::capability::coercion::expect_f32;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 /// HeroAnimation widget for shared element transitions.
@@ -153,6 +158,55 @@ impl Widget for HeroAnimation {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(200, 200)
+    }
+
+    /// Reports this widget as the object that paints it.
+    ///
+    /// `HeroAnimation` implements `Draw`, so `Some(self)` is total and cannot be
+    /// wrong.
+    fn as_draw_mut(&mut self) -> Option<&mut dyn crate::widget::Draw> {
+        Some(self)
+    }
+
+    /// Returns this widget as its property contract.
+    fn properties_dyn(
+        &self,
+    ) -> Option<&dyn crate::widget::capability::properties_trait::WidgetProperties> {
+        Some(self)
+    }
+
+    /// Mutable counterpart to `properties_dyn`.
+    fn properties_dyn_mut(
+        &mut self,
+    ) -> Option<&mut dyn crate::widget::capability::properties_trait::WidgetProperties> {
+        Some(self)
+    }
+}
+
+/// `HeroAnimation`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_media.in.rs` / `access_write_media.in.rs` dispatch.
+impl WidgetProperties for HeroAnimation {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "animation_progress" => Ok(CapabilityValue::Float(self.progress() as f64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "animation_progress" => {
+                self.set_progress(expect_f32(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["animation_progress", BASE_PROPERTY_NAMES]
     }
 }
 

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use super::{Key, Modifiers, Shortcut, ShortcutEntry};
+use super::{Key, Modifiers, PlatformShortcutStyle, Shortcut, ShortcutEntry};
 use crate::compat::HashMap;
 use crate::event::Event;
 use crate::signal::Signal1;
@@ -111,13 +111,20 @@ impl ShortcutManager {
     /// Resolves the action registered for a key press, applying the matching
     /// rule documented on [`ShortcutManager::handle_key_event`].
     fn lookup(&self, key: Key, modifiers: Modifiers) -> Option<String> {
-        let normalized = Self::normalize_event_modifiers(modifiers);
+        // Ask the backend which convention this host uses, rather than testing
+        // `target_os` here (principles #35/#36/#37). The question is about
+        // *behaviour on the host that is running*, not about which OS this was
+        // compiled for — a macOS-style replay on a Linux CI host must resolve the
+        // way the backend says, and a new platform must not have to edit a list
+        // of OS names in this file.
+        let style = crate::platform::platform_facts().shortcut_style();
+        let normalized = Self::normalize_event_modifiers(modifiers, style);
         if let Some(action_id) = self.shortcuts.get(&Shortcut::new(key, normalized)) {
             return Some(action_id.clone());
         }
         // Windows/Linux: the OS shortcut convention is Control, so a
         // `Shortcut::primary` binding resolves against a Control press there.
-        if cfg!(not(any(target_os = "macos", target_os = "ios")))
+        if style == PlatformShortcutStyle::Desktop
             && normalized.contains(Modifiers::CTRL)
             && !normalized.contains(Modifiers::PRIMARY)
         {
@@ -135,8 +142,11 @@ impl ShortcutManager {
     /// `⌘C` and `⌃C` are different chords, but AppKit sets the Control flag on
     /// some Command events; leaving it in place would make `Shortcut::primary`
     /// bindings unreachable. On other platforms the input is already canonical.
-    fn normalize_event_modifiers(modifiers: Modifiers) -> Modifiers {
-        if cfg!(any(target_os = "macos", target_os = "ios"))
+    ///
+    /// The deciding fact is the backend's shortcut style, passed in by the
+    /// caller — this function does not sniff the OS (principle #37).
+    fn normalize_event_modifiers(modifiers: Modifiers, style: PlatformShortcutStyle) -> Modifiers {
+        if style == PlatformShortcutStyle::Mac
             && modifiers.contains(Modifiers::PRIMARY)
             && modifiers.contains(Modifiers::CTRL)
         {

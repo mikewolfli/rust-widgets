@@ -152,6 +152,7 @@ impl Widget for Badge {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(24, 24)
     }
+    impl_draw_bridge!();
 }
 
 impl Draw for Badge {

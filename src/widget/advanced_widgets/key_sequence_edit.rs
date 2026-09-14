@@ -215,6 +215,7 @@ impl Widget for KeySequenceEdit {
     fn size_hint(&self) -> Size {
         crate::core::Size::new(150, 28)
     }
+    impl_draw_bridge!();
 }
 impl EventHandler for KeySequenceEdit {
     fn handle_event(&mut self, event: &Event) {

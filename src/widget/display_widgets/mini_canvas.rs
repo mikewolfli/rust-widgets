@@ -84,6 +84,7 @@ impl Widget for MiniCanvas {
     fn size_hint(&self) -> Size {
         Size::new(200, 200)
     }
+    impl_draw_bridge!();
 }
 
 impl EventHandler for MiniCanvas {

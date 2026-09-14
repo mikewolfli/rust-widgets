@@ -6,7 +6,14 @@ use crate::core::{Alignment, Color, Font, HorizontalAlignment, Point, Rect, Size
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::{
+    alignment_to_str, expect_alignment, expect_bool, expect_string,
+};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
 /// Group box widget.
@@ -138,7 +145,56 @@ impl Widget for GroupBox {
     fn size_hint(&self) -> Size {
         crate::core::Size::new(200, 150)
     }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
 }
+
+/// `GroupBox`'s property contract.
+///
+/// `Panel` is a type alias for this type (`pub type Panel = GroupBox`), so this
+/// single impl serves both `WidgetKind::GroupBox` and every `WidgetKind::Panel`
+/// value that is actually a group box. The alias is deliberately not given an
+/// impl of its own — it would be a second, duplicate impl of the same type.
+impl WidgetProperties for GroupBox {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "title" => Ok(CapabilityValue::String(self.title().to_string())),
+            "alignment" => {
+                Ok(CapabilityValue::String(alignment_to_str(self.alignment()).to_string()))
+            }
+            "checkable" => Ok(CapabilityValue::Bool(self.is_checkable())),
+            "checked" => Ok(CapabilityValue::Bool(self.is_checked())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "title" => {
+                self.set_title(expect_string(value)?);
+                Ok(())
+            }
+            "alignment" => {
+                self.set_alignment(expect_alignment(value)?);
+                Ok(())
+            }
+            "checkable" => {
+                self.set_checkable(expect_bool(value)?);
+                Ok(())
+            }
+            "checked" => {
+                self.set_checked(expect_bool(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["title", "alignment", "checkable", "checked", BASE_PROPERTY_NAMES]
+    }
+}
+
 impl EventHandler for GroupBox {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);

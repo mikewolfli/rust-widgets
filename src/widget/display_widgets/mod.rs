@@ -3,38 +3,38 @@
 
 //! Display widgets: progress bars, sliders, scroll bars, etc.
 pub mod arc;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub mod badge;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub mod color_history;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub mod color_well;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub mod divider;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub mod empty_state;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub mod floating_label;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub mod font_preview;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub mod icon;
 #[cfg(feature = "image")]
 pub mod image_view;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub mod lcd_number;
 pub mod line;
 pub mod meter;
 pub mod mini_canvas;
 pub mod mini_chart;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub mod progress_circle;
 pub mod progressbar;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub mod rating;
 pub mod roller;
 pub mod scrollbar;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub mod skeleton_loader;
 pub mod slider;
 pub mod spinner;

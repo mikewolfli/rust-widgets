@@ -22,11 +22,7 @@
 //! the `mini`/`embedded` profiles. The same gate is applied here so those
 //! profiles do not carry a `cg` module nothing can reach.
 
-#![cfg(all(
-    target_os = "macos",
-    feature = "cocoa-legacy",
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#![cfg(all(target_os = "macos", feature = "cocoa-legacy", widgets_unstripped))]
 #![allow(non_snake_case)] // names mirror the C ABI
 
 use std::os::raw::{c_int, c_void};

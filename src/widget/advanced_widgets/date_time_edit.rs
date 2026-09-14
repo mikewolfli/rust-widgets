@@ -8,7 +8,11 @@ use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack};
 use crate::widget::advanced_widgets::{date_edit::Date, time_edit::Time};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -276,7 +280,36 @@ impl Widget for DateTimeEdit {
     fn size_hint(&self) -> Size {
         crate::core::Size::new(160, 28)
     }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
 }
+
+/// `DateTimePicker`'s property contract (the control is `DateTimeEdit`;
+/// `DateTimePicker` is a type alias for it, so this single impl covers both
+/// names).
+///
+/// The read path matches the old dispatch exactly: `datetime` is published
+/// through the value's `Display`, and the schema declares all three properties
+/// non-writable, so only the base helpers answer on write.
+impl WidgetProperties for DateTimeEdit {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "datetime" => Ok(CapabilityValue::String(self.datetime().to_string())),
+            "display_format" => Ok(CapabilityValue::String(self.display_format().to_string())),
+            "calendar_popup" => Ok(CapabilityValue::Bool(self.calendar_popup())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        base_property_set(self, name, value)
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["datetime", "display_format", "calendar_popup", BASE_PROPERTY_NAMES]
+    }
+}
+
 impl EventHandler for DateTimeEdit {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);

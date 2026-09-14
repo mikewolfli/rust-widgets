@@ -3,7 +3,7 @@
 
 macro_rules! impl_other_widgets {
     () => {
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_canvas(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -24,7 +24,7 @@ macro_rules! impl_other_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_grid(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -45,7 +45,7 @@ macro_rules! impl_other_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_chart(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -66,7 +66,7 @@ macro_rules! impl_other_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_web_view(
             &self,
             parent: ObjectId,
@@ -94,7 +94,7 @@ macro_rules! impl_other_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_activity_indicator(
             &self,
             parent: ObjectId,
@@ -122,7 +122,7 @@ macro_rules! impl_other_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_lcd_number(
             &self,
             parent: ObjectId,
@@ -151,7 +151,7 @@ macro_rules! impl_other_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_web_engine_view(
             &self,
             parent: ObjectId,
@@ -179,7 +179,7 @@ macro_rules! impl_other_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_web_engine_page(
             &self,
             parent: ObjectId,
@@ -207,7 +207,7 @@ macro_rules! impl_other_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_web_engine_settings(
             &self,
             parent: ObjectId,
@@ -235,7 +235,7 @@ macro_rules! impl_other_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_web_engine_download_item(
             &self,
             parent: ObjectId,
@@ -263,7 +263,7 @@ macro_rules! impl_other_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_web_engine_cookie_store(
             &self,
             parent: ObjectId,
@@ -291,7 +291,7 @@ macro_rules! impl_other_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_web_engine_web_channel(
             &self,
             parent: ObjectId,
@@ -319,7 +319,7 @@ macro_rules! impl_other_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_web_engine_find_text_result(
             &self,
             parent: ObjectId,
@@ -347,7 +347,7 @@ macro_rules! impl_other_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_web_engine_notification(
             &self,
             parent: ObjectId,
@@ -375,7 +375,7 @@ macro_rules! impl_other_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_web_engine_script_dialog(
             &self,
             parent: ObjectId,
@@ -403,7 +403,7 @@ macro_rules! impl_other_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_web_engine_context_menu_request(
             &self,
             parent: ObjectId,

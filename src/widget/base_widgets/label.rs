@@ -6,7 +6,12 @@ use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 
+use crate::widget::capability::coercion::{alignment_to_str, expect_alignment, expect_string};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 /// Label widget for displaying text.
 pub struct Label {
     base: BaseWidget,
@@ -58,7 +63,44 @@ impl Widget for Label {
         let text_w = self.text().len() as u32 * 8 + 4;
         Size::new(text_w.max(16), 20)
     }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
 }
+
+/// `Label`'s property contract.
+///
+/// The read path renders alignment through [`alignment_to_str`] so the published
+/// string matches the one the capability schema advertises.
+impl WidgetProperties for Label {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "text" => Ok(CapabilityValue::String(self.text().to_string())),
+            "alignment" => {
+                Ok(CapabilityValue::String(alignment_to_str(self.alignment()).to_string()))
+            }
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "text" => {
+                self.set_text(expect_string(value)?);
+                Ok(())
+            }
+            "alignment" => {
+                self.set_alignment(expect_alignment(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["text", "alignment", BASE_PROPERTY_NAMES]
+    }
+}
+
 impl EventHandler for Label {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);

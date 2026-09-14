@@ -247,6 +247,7 @@ impl Widget for MenuButton {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(120, 28)
     }
+    impl_draw_bridge!();
 }
 
 impl Draw for MenuButton {

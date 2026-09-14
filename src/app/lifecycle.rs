@@ -5,15 +5,12 @@
 //! state save/restore, and lifecycle event notification.
 
 use crate::compat::Instant;
-#[cfg(all(feature = "serde", not(any(feature = "mini", feature = "embedded"))))]
+#[cfg(all(feature = "serde", widgets_unstripped))]
 use serde::{Deserialize, Serialize};
 
 /// Application lifecycle states
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(
-    all(feature = "serde", not(any(feature = "mini", feature = "embedded"))),
-    derive(Serialize, Deserialize)
-)]
+#[cfg_attr(all(feature = "serde", widgets_unstripped), derive(Serialize, Deserialize))]
 pub enum AppLifecycleState {
     /// Application is starting up
     Starting,
@@ -67,10 +64,7 @@ pub type LifecycleCallback = Box<dyn FnMut(LifecycleEvent) + Send>;
 
 /// Intermediate serializable representation of the lifecycle state.
 #[derive(Debug, Clone)]
-#[cfg_attr(
-    all(feature = "serde", not(any(feature = "mini", feature = "embedded"))),
-    derive(Serialize, Deserialize)
-)]
+#[cfg_attr(all(feature = "serde", widgets_unstripped), derive(Serialize, Deserialize))]
 struct LifecycleSnapshot {
     state: AppLifecycleState,
     total_background_secs: f64,
@@ -209,11 +203,7 @@ impl AppLifecycle {
     /// The serialized data can later be passed to [`deserialize_state`](Self::deserialize_state)
     /// to restore the background-duration accounting. Listeners are **not**
     /// serialized because they are code (not data).
-    #[cfg(all(
-        feature = "serde_json",
-        feature = "serde",
-        not(any(feature = "mini", feature = "embedded"))
-    ))]
+    #[cfg(all(feature = "serde_json", feature = "serde", widgets_unstripped))]
     pub fn serialize_state(&self) -> Result<String, String> {
         let snapshot = LifecycleSnapshot {
             state: self.state,
@@ -228,11 +218,7 @@ impl AppLifecycle {
     /// The returned [`AppLifecycle`] starts in the state recorded in the
     /// snapshot, and its `started_at` clock is reset to the current time
     /// (so [`uptime`](Self::uptime) measures the time since restoration).
-    #[cfg(all(
-        feature = "serde_json",
-        feature = "serde",
-        not(any(feature = "mini", feature = "embedded"))
-    ))]
+    #[cfg(all(feature = "serde_json", feature = "serde", widgets_unstripped))]
     pub fn deserialize_state(data: &str) -> Result<Self, String> {
         let snapshot: LifecycleSnapshot = serde_json::from_str(data)
             .map_err(|e| format!("failed to deserialize lifecycle state: {e}"))?;

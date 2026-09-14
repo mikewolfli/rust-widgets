@@ -8,7 +8,7 @@
 
 pub mod custom;
 pub mod dispatcher;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub mod native;
 pub mod routing;
 pub mod trait_def;
@@ -18,7 +18,7 @@ pub mod types;
 #[cfg(feature = "controls-custom")]
 pub use custom::CustomPaintControlBackend;
 pub use dispatcher::{active_control_policy, get_control_backend, get_control_backend_for_widget};
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub use native::NativeControlBackend;
 pub use routing::route_preference_for_widget_kind;
 pub use trait_def::ControlBackend;
@@ -42,15 +42,21 @@ mod tests {
         assert_ne!(_native_pref, _custom_req);
     }
 
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     #[test]
     fn route_preference_for_widget_kind_re_exported() {
         use crate::widget::WidgetKind;
-        let pref = route_preference_for_widget_kind(WidgetKind::Button);
-        #[cfg(not(feature = "embedded"))]
-        assert_eq!(pref, ControlRoutePreference::NativePreferred);
-        #[cfg(feature = "embedded")]
-        assert_eq!(pref, ControlRoutePreference::CustomRequired);
+        // Every kind resolves to the library-held mechanism, in every profile: the
+        // platform no longer offers controls to map onto, so there is nothing left
+        // for this policy to choose between (BLUE15 rule #55). The sample uses kinds
+        // that exist in every profile, so this does not need a `cfg` of its own.
+        for kind in [WidgetKind::Button, WidgetKind::Label] {
+            assert_eq!(
+                route_preference_for_widget_kind(kind),
+                ControlRoutePreference::CustomRequired,
+                "WidgetKind::{kind:?} must be painted by the library",
+            );
+        }
     }
 
     #[test]
@@ -60,7 +66,7 @@ mod tests {
         let _ = _take_trait_object;
     }
 
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     #[test]
     fn native_control_backend_re_exported() {
         let backend = NativeControlBackend::new();

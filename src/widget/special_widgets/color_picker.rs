@@ -5,8 +5,13 @@
 
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
+use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::{expect_bool, expect_string};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 /// Interactive color picker with HSV controls and preset swatches.
@@ -202,13 +207,67 @@ impl Widget for ColorPicker {
         &mut self.base
     }
 
-    /// Paints itself, so it can be mounted into a native window.
+    /// Paints itself, so it can be mounted into a host surface.
     fn as_draw_mut(&mut self) -> Option<&mut dyn crate::widget::Draw> {
+        Some(self)
+    }
+
+    /// Returns this widget as its property contract.
+    fn properties_dyn(
+        &self,
+    ) -> Option<&dyn crate::widget::capability::properties_trait::WidgetProperties> {
+        Some(self)
+    }
+
+    /// Mutable counterpart to `properties_dyn`.
+    fn properties_dyn_mut(
+        &mut self,
+    ) -> Option<&mut dyn crate::widget::capability::properties_trait::WidgetProperties> {
         Some(self)
     }
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(300, 200)
+    }
+}
+
+/// `ColorPicker`'s property contract.
+///
+/// These are the properties the `WidgetKind::ColorDialog` arms used to serve: the
+/// old dispatch keyed on `ColorDialog` but downcast to `ColorPicker`, so the
+/// contract belongs here, next to the fields it reads. Read/write semantics are
+/// carried over unchanged from `access_read_dialog.in.rs` /
+/// `access_write_dialog.in.rs`.
+impl WidgetProperties for ColorPicker {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "hex_rgba" => Ok(CapabilityValue::String(self.hex_rgba())),
+            "show_alpha" => Ok(CapabilityValue::Bool(self.show_alpha())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "hex_rgba" => {
+                // `set_hex` reports a parse failure by returning `false`; the old
+                // dispatch mapped that to `TypeMismatch`, so the meaning is kept.
+                if self.set_hex(&expect_string(value)?) {
+                    Ok(())
+                } else {
+                    Err(CapabilityAccessError::TypeMismatch)
+                }
+            }
+            "show_alpha" => {
+                self.set_show_alpha(expect_bool(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["hex_rgba", "show_alpha", BASE_PROPERTY_NAMES]
     }
 }
 

@@ -11,7 +11,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::expect_usize;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Metadata for a single image in the gallery.
 #[derive(Debug, Clone)]
@@ -200,6 +205,36 @@ impl Widget for ImageGallery {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(400, 300)
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `ImageGallery`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_view.in.rs` / `access_write_view.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before.
+impl WidgetProperties for ImageGallery {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "current_index" => Ok(CapabilityValue::UInt(self.current_index() as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "current_index" => {
+                self.set_current_index(expect_usize(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["current_index", BASE_PROPERTY_NAMES]
     }
 }
 

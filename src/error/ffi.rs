@@ -65,10 +65,7 @@ pub fn record_last_ffi_error(error: super::RwError) {
 ///
 /// Read by the C ABI error accessors (`rw_error_code` / `rw_error_message`),
 /// which are available wherever the `bindings` module is built.
-#[cfg(all(
-    any(feature = "desktop", feature = "jni", feature = "mobile-api"),
-    not(feature = "mini")
-))]
+#[cfg(all(any(feature = "desktop", feature = "jni", feature = "mobile-api"), not(alloc_frugal)))]
 pub(crate) fn last_ffi_error() -> Option<super::RwError> {
     LAST_FFI_ERROR.lock().ok().and_then(|slot| slot.clone())
 }
@@ -202,7 +199,7 @@ macro_rules! c_try_void {
     }};
 }
 
-#[cfg(all(test, feature = "desktop", not(feature = "mini")))]
+#[cfg(all(test, feature = "desktop", not(alloc_frugal)))]
 mod tests {
     use super::*;
     use crate::error::{ErrorId, RwError};

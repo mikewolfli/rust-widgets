@@ -1,14 +1,14 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 use crate::compat::Condvar;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 use crate::compat::Instant;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 use crate::compat::Mutex;
 use alloc::collections::VecDeque;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 use core::time::Duration;
 /// Default capacity for fixed-size and bounded queues.
 pub const DEFAULT_QUEUE_CAPACITY: usize = 256;
@@ -145,14 +145,14 @@ impl<T> Default for PriorityQueue<T> {
         Self::new()
     }
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[derive(Debug)]
 pub struct BlockingQueue<T> {
     queue: Mutex<VecDeque<T>>,
     condvar: Condvar,
     closed: Mutex<bool>,
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 impl<T> BlockingQueue<T> {
     pub fn new() -> Self {
         Self {
@@ -230,13 +230,13 @@ impl<T> BlockingQueue<T> {
         self.queue.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 impl<T> Default for BlockingQueue<T> {
     fn default() -> Self {
         Self::new()
     }
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[derive(Debug)]
 pub struct BoundedQueue<T> {
     queue: Mutex<VecDeque<T>>,
@@ -245,7 +245,7 @@ pub struct BoundedQueue<T> {
     capacity: usize,
     closed: Mutex<bool>,
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 impl<T> BoundedQueue<T> {
     pub fn new(capacity: usize) -> Self {
         Self {

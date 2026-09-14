@@ -6,7 +6,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::widget::capability::coercion::{expect_bool, expect_string};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 /// Radio button widget.
 pub struct RadioButton {
     base: BaseWidget,
@@ -89,7 +94,54 @@ impl Widget for RadioButton {
         let text_w = self.text().len() as u32 * 8 + 24;
         Size::new(text_w.max(75), 24)
     }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
 }
+
+/// `RadioButton`'s property contract.
+///
+/// `group_id` is optional, so it is published as `Null` when unset and accepts
+/// `Null` on write — matching the old dispatch, which cleared the group on
+/// `Null` and parsed a string otherwise.
+impl WidgetProperties for RadioButton {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "text" => Ok(CapabilityValue::String(self.text().to_string())),
+            "checked" => Ok(CapabilityValue::Bool(self.is_checked())),
+            "group_id" => match self.group_id() {
+                Some(id) => Ok(CapabilityValue::String(id.to_string())),
+                None => Ok(CapabilityValue::Null),
+            },
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "text" => {
+                self.set_text(expect_string(value)?);
+                Ok(())
+            }
+            "checked" => {
+                self.set_checked(expect_bool(value)?);
+                Ok(())
+            }
+            "group_id" => {
+                match value {
+                    CapabilityValue::Null => self.set_group_id(None),
+                    other => self.set_group_id(Some(expect_string(other)?)),
+                }
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["text", "checked", "group_id", BASE_PROPERTY_NAMES]
+    }
+}
+
 impl EventHandler for RadioButton {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);

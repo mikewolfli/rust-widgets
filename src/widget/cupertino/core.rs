@@ -14,8 +14,13 @@ use crate::core::{Color, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::widget::capability::coercion::{expect_f32, expect_usize};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::display_widgets::switch::Switch;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 // ── CupertinoSwitch ──────────────────────────────────────────────────────────
 
@@ -67,6 +72,7 @@ impl Widget for CupertinoSwitch {
     fn kind(&self) -> WidgetKind {
         WidgetKind::CupertinoSwitch
     }
+    impl_draw_bridge!();
 }
 
 impl Draw for CupertinoSwitch {
@@ -171,6 +177,7 @@ impl Widget for MaterialSnackbar {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(300, 48)
     }
+    impl_draw_bridge!();
 }
 
 impl Draw for MaterialSnackbar {
@@ -360,6 +367,7 @@ impl Widget for CupertinoAlertDialog {
     fn kind(&self) -> WidgetKind {
         WidgetKind::CupertinoAlertDialog
     }
+    impl_draw_bridge!();
 }
 
 impl Draw for CupertinoAlertDialog {
@@ -610,6 +618,46 @@ impl Widget for CupertinoSlider {
     fn kind(&self) -> WidgetKind {
         WidgetKind::CupertinoSlider
     }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `CupertinoSlider`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch, including
+/// the `f32` → `f64` widening on read.
+impl WidgetProperties for CupertinoSlider {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "value" => Ok(CapabilityValue::Float(self.value().into())),
+            "min" => Ok(CapabilityValue::Float(self.min().into())),
+            "max" => Ok(CapabilityValue::Float(self.max().into())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "value" => {
+                self.set_value(expect_f32(value)?);
+                Ok(())
+            }
+            "min" => {
+                self.set_min(expect_f32(value)?);
+                Ok(())
+            }
+            "max" => {
+                self.set_max(expect_f32(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["value", "min", "max", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for CupertinoSlider {
@@ -773,6 +821,37 @@ impl Widget for MaterialNavigationRail {
 
     fn kind(&self) -> WidgetKind {
         WidgetKind::MaterialNavigationRail
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `MaterialNavigationRail`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch: `selected_index`
+/// is the published name for the field the `selected()` / `set_selected()`
+/// accessors back.
+impl WidgetProperties for MaterialNavigationRail {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "selected_index" => Ok(CapabilityValue::UInt(self.selected() as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "selected_index" => {
+                self.set_selected(expect_usize(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["selected_index", BASE_PROPERTY_NAMES]
     }
 }
 

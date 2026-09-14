@@ -3,11 +3,11 @@
 
 use crate::compat::HashMap;
 use crate::core::{Color, Font};
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 use serde::{Deserialize, Serialize};
 
 /// High-level theme definition used by runtime style resolution.
-#[cfg_attr(not(feature = "mini"), derive(Serialize, Deserialize))]
+#[cfg_attr(not(alloc_frugal), derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub struct Theme {
     /// Theme unique name.
@@ -25,7 +25,7 @@ pub struct Theme {
 }
 
 /// Semantic color palette tokens.
-#[cfg_attr(not(feature = "mini"), derive(Serialize, Deserialize))]
+#[cfg_attr(not(alloc_frugal), derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub struct Colors {
     /// Default background color.
@@ -47,12 +47,12 @@ pub struct Colors {
     /// Disabled-state color.
     pub disabled: Color,
     /// Informational state color.
-    #[cfg_attr(not(feature = "mini"), serde(default = "default_info_color"))]
+    #[cfg_attr(not(alloc_frugal), serde(default = "default_info_color"))]
     pub info: Color,
 }
 
 /// Default info color used for backward-compatible deserialization.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 const fn default_info_color() -> Color {
     Color::INFO
 }
@@ -103,7 +103,7 @@ impl Color {
 }
 
 /// Font token set used by theme consumers.
-#[cfg_attr(not(feature = "mini"), derive(Serialize, Deserialize))]
+#[cfg_attr(not(alloc_frugal), derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub struct Fonts {
     /// Regular text font token.
@@ -115,48 +115,48 @@ pub struct Fonts {
     /// Monospace font token.
     pub monospace: Font,
     /// Caption / footnote font token (small, secondary text).
-    #[cfg_attr(not(feature = "mini"), serde(default = "default_caption_font"))]
+    #[cfg_attr(not(alloc_frugal), serde(default = "default_caption_font"))]
     pub caption: Font,
     /// Body text font token (default paragraph text).
-    #[cfg_attr(not(feature = "mini"), serde(default = "default_body_font"))]
+    #[cfg_attr(not(alloc_frugal), serde(default = "default_body_font"))]
     pub body: Font,
     /// Title font token (section or widget titles).
-    #[cfg_attr(not(feature = "mini"), serde(default = "default_title_font"))]
+    #[cfg_attr(not(alloc_frugal), serde(default = "default_title_font"))]
     pub title: Font,
     /// Headline font token (prominent section headings).
-    #[cfg_attr(not(feature = "mini"), serde(default = "default_headline_font"))]
+    #[cfg_attr(not(alloc_frugal), serde(default = "default_headline_font"))]
     pub headline: Font,
     /// Display font token (large, decorative text).
-    #[cfg_attr(not(feature = "mini"), serde(default = "default_display_font"))]
+    #[cfg_attr(not(alloc_frugal), serde(default = "default_display_font"))]
     pub display: Font,
 }
 
 /// Default caption font: Arial 11px, regular.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 fn default_caption_font() -> Font {
     Font::simple("Arial", 11.0)
 }
 
 /// Default body font: Arial 14px, regular.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 fn default_body_font() -> Font {
     Font::simple("Arial", 14.0)
 }
 
 /// Default title font: Arial 16px, bold.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 fn default_title_font() -> Font {
     Font::bold("Arial", 16.0)
 }
 
 /// Default headline font: Arial 20px, bold.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 fn default_headline_font() -> Font {
     Font::bold("Arial", 20.0)
 }
 
 /// Default display font: Arial 28px, bold.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 fn default_display_font() -> Font {
     Font::bold("Arial", 28.0)
 }
@@ -168,7 +168,7 @@ fn default_display_font() -> Font {
 /// - `extra_small: u32` — 2px for tight spacing
 /// - `huge: u32` — 48px for generous layout gaps
 /// - `massive: u32` — 64px for section separators
-#[cfg_attr(not(feature = "mini"), derive(Serialize, Deserialize))]
+#[cfg_attr(not(alloc_frugal), derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub struct Spacing {
     /// Small spacing unit.
@@ -182,7 +182,7 @@ pub struct Spacing {
 }
 
 /// Border and elevation behavior tokens.
-#[cfg_attr(not(feature = "mini"), derive(Serialize, Deserialize))]
+#[cfg_attr(not(alloc_frugal), derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub struct Borders {
     /// Default border width.
@@ -194,7 +194,7 @@ pub struct Borders {
 }
 
 /// Style override map used for class-level theme customization.
-#[cfg_attr(not(feature = "mini"), derive(Serialize, Deserialize))]
+#[cfg_attr(not(alloc_frugal), derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub struct ThemeOverrides {
     /// Overrides keyed by style/class name.
@@ -202,7 +202,7 @@ pub struct ThemeOverrides {
 }
 
 /// Optional style tokens used to override resolved widget styles.
-#[cfg_attr(not(feature = "mini"), derive(Serialize, Deserialize))]
+#[cfg_attr(not(alloc_frugal), derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub struct ThemeStyleToken {
     /// Optional background override.

@@ -11,7 +11,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::expect_u32;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// A tile view that displays one page at a time with horizontal swipe navigation.
 pub struct TileView {
@@ -97,6 +102,38 @@ impl Widget for TileView {
 
     fn size_hint(&self) -> Size {
         Size::new(200, 200)
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `TileView`'s property contract.
+impl WidgetProperties for TileView {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "current_page" => Ok(CapabilityValue::UInt(self.current_page() as u64)),
+            "page_count" => Ok(CapabilityValue::UInt(self.page_count() as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "current_page" => {
+                self.set_current_page(expect_u32(value)?);
+                Ok(())
+            }
+            "page_count" => {
+                self.set_page_count(expect_u32(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        // Mirrors `TILE_VIEW_PROPERTIES`.
+        property_names_of!["current_page", "page_count", BASE_PROPERTY_NAMES]
     }
 }
 

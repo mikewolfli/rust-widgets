@@ -171,6 +171,7 @@ impl Widget for RefreshControl {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(400, 400)
     }
+    impl_draw_bridge!();
 }
 
 impl Draw for RefreshControl {

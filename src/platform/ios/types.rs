@@ -7,17 +7,14 @@
 //! serving as a foundation for progressive UIKit/SwiftUI integration.
 
 use crate::platform::state::BackendState;
-#[cfg(all(feature = "serde", not(any(feature = "mini", feature = "embedded"))))]
+#[cfg(all(feature = "serde", widgets_unstripped))]
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 
 /// iOS-specific widget handle type discriminator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(
-    all(feature = "serde", not(any(feature = "mini", feature = "embedded"))),
-    derive(Serialize, Deserialize)
-)]
+#[cfg_attr(all(feature = "serde", widgets_unstripped), derive(Serialize, Deserialize))]
 pub(crate) enum IosHandleKind {
     /// Top-level window.
     Window,
@@ -174,11 +171,7 @@ impl IosMobilePlatform {
     /// Mirrors the `BackendState` serde gate exactly: the state type only derives
     /// `Serialize` under `serde` and outside the alloc-free `mini`/`embedded`
     /// profiles, so the method must not exist where the bound cannot hold.
-    #[cfg(all(
-        feature = "serde_json",
-        feature = "serde",
-        not(any(feature = "mini", feature = "embedded"))
-    ))]
+    #[cfg(all(feature = "serde_json", feature = "serde", widgets_unstripped))]
     pub fn serialize_state(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(&self.state)
     }

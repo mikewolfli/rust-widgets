@@ -154,6 +154,7 @@ impl Widget for ColorHistory {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(200, 40)
     }
+    impl_draw_bridge!();
 }
 
 impl Draw for ColorHistory {

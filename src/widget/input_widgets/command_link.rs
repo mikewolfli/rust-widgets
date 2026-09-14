@@ -5,7 +5,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::widget::capability::coercion::{expect_bool, expect_string};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 /// Command link widget for command link buttons.
 pub struct CommandLink {
     base: BaseWidget,
@@ -70,7 +75,49 @@ impl Widget for CommandLink {
     fn is_enabled(&self) -> bool {
         self.base.is_enabled()
     }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
 }
+
+/// `CommandLink`'s property contract.
+///
+/// `enabled` is listed here because `COMMAND_LINK_PROPERTIES` publishes it as a
+/// property of this control; it is answered by the control's own accessor and
+/// writer, which is the same pair the old arm called.
+impl WidgetProperties for CommandLink {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "text" => Ok(CapabilityValue::String(self.text().to_string())),
+            "description" => Ok(CapabilityValue::String(self.description().to_string())),
+            "enabled" => Ok(CapabilityValue::Bool(self.is_enabled())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "text" => {
+                self.set_text(expect_string(value)?);
+                Ok(())
+            }
+            "description" => {
+                self.set_description(expect_string(value)?);
+                Ok(())
+            }
+            "enabled" => {
+                self.set_enabled(expect_bool(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        // Mirrors `COMMAND_LINK_PROPERTIES`.
+        property_names_of!["text", "description", "enabled", BASE_PROPERTY_NAMES]
+    }
+}
+
 impl EventHandler for CommandLink {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);

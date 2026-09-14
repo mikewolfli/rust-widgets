@@ -7,7 +7,12 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 
+use crate::widget::capability::coercion::{expect_bool, expect_string, expect_usize};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 /// Combo box widget.
 pub struct ComboBox {
     base: BaseWidget,
@@ -187,7 +192,66 @@ impl Widget for ComboBox {
         let max_w = self.items().iter().map(|s| s.len() as u32).max().unwrap_or(8) * 8 + 30; // + dropdown arrow
         Size::new(max_w.max(80), 24)
     }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
 }
+
+/// `ComboBox`'s property contract.
+impl WidgetProperties for ComboBox {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "item_count" => Ok(CapabilityValue::UInt(self.count() as u64)),
+            "current_index" => match self.current_index() {
+                Some(idx) => Ok(CapabilityValue::UInt(idx as u64)),
+                None => Ok(CapabilityValue::Null),
+            },
+            "current_text" => Ok(CapabilityValue::String(self.current_text().to_string())),
+            "editable" => Ok(CapabilityValue::Bool(self.is_editable())),
+            "max_visible_items" => Ok(CapabilityValue::UInt(self.max_visible_items() as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "current_index" => {
+                match value {
+                    CapabilityValue::Null => self.set_current_index(None),
+                    other => self.set_current_index(Some(expect_usize(other)?)),
+                }
+                Ok(())
+            }
+            "current_text" => {
+                self.set_current_text(expect_string(value)?);
+                Ok(())
+            }
+            "editable" => {
+                self.set_editable(expect_bool(value)?);
+                Ok(())
+            }
+            "max_visible_items" => {
+                self.set_max_visible_items(expect_usize(value)?);
+                Ok(())
+            }
+            // Derived from the item list.
+            "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        // Mirrors `COMBO_BOX_PROPERTIES`.
+        property_names_of![
+            "item_count",
+            "current_index",
+            "current_text",
+            "editable",
+            "max_visible_items",
+            BASE_PROPERTY_NAMES
+        ]
+    }
+}
+
 impl EventHandler for ComboBox {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);

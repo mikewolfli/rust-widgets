@@ -6,7 +6,11 @@ use crate::core::{Color, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
 /// Frame widget.
@@ -383,7 +387,31 @@ impl Widget for Frame {
     fn size_hint(&self) -> Size {
         Size::new(200, 200)
     }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
 }
+
+/// `Frame`'s property contract.
+///
+/// `Frame` owns no widget properties of its own: the old dispatch grouped
+/// `WidgetKind::Panel | WidgetKind::Frame` into the breadcrumb arm, which only
+/// ever matched `Breadcrumb` instances and answered `UnsupportedOnWidget` for a
+/// `Frame`. The empty declaration below states that honestly — the shared four
+/// still work through the base helpers.
+impl WidgetProperties for Frame {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        base_property_get(self, name)
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        base_property_set(self, name, value)
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![BASE_PROPERTY_NAMES]
+    }
+}
+
 impl EventHandler for Frame {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);

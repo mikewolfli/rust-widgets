@@ -5,26 +5,18 @@
 use crate::compat::OnceLock;
 #[cfg(feature = "controls-custom")]
 use crate::control_backend::custom::CustomPaintControlBackend;
-#[cfg(all(feature = "controls-native", not(any(feature = "mini", feature = "embedded"))))]
+#[cfg(all(feature = "controls-native", widgets_unstripped))]
 use crate::control_backend::native::NativeControlBackend;
-#[cfg(all(
-    feature = "controls-native",
-    not(any(feature = "mini", feature = "embedded")),
-    feature = "controls-custom"
-))]
+#[cfg(all(feature = "controls-native", widgets_unstripped, feature = "controls-custom"))]
 use crate::control_backend::routing::route_preference_for_widget_kind;
 use crate::control_backend::trait_def::ControlBackend;
-#[cfg(all(
-    feature = "controls-native",
-    feature = "controls-custom",
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(all(feature = "controls-native", feature = "controls-custom", widgets_unstripped))]
 use crate::control_backend::types::ControlRoutePreference;
 #[cfg(all(not(feature = "controls-native"), not(feature = "controls-custom")))]
 use crate::core::ObjectId;
 use crate::widget::WidgetKind;
 
-#[cfg(all(feature = "controls-native", not(any(feature = "mini", feature = "embedded"))))]
+#[cfg(all(feature = "controls-native", widgets_unstripped))]
 fn native_control_backend() -> &'static NativeControlBackend {
     static BACKEND: NativeControlBackend = NativeControlBackend::new();
     &BACKEND
@@ -224,29 +216,17 @@ fn no_control_backend() -> &'static NoControlBackend {
     &BACKEND
 }
 /// Return active control backend selected by compile-time features.
-#[cfg(all(
-    feature = "controls-native",
-    not(any(feature = "mini", feature = "embedded")),
-    feature = "controls-custom"
-))]
+#[cfg(all(feature = "controls-native", widgets_unstripped, feature = "controls-custom"))]
 pub fn get_control_backend() -> &'static dyn ControlBackend {
     native_control_backend()
 }
 /// Return active control backend selected by compile-time features.
-#[cfg(all(
-    not(feature = "controls-native"),
-    feature = "controls-custom",
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(all(not(feature = "controls-native"), feature = "controls-custom", widgets_unstripped))]
 pub fn get_control_backend() -> &'static dyn ControlBackend {
     custom_control_backend()
 }
 /// Return active control backend selected by compile-time features.
-#[cfg(all(
-    feature = "controls-native",
-    not(any(feature = "mini", feature = "embedded")),
-    not(feature = "controls-custom")
-))]
+#[cfg(all(feature = "controls-native", widgets_unstripped, not(feature = "controls-custom")))]
 pub fn get_control_backend() -> &'static dyn ControlBackend {
     native_control_backend()
 }
@@ -256,7 +236,7 @@ pub fn get_control_backend() -> &'static dyn ControlBackend {
     no_control_backend()
 }
 /// Mini mode uses custom backend.
-#[cfg(all(any(feature = "mini", feature = "embedded"), feature = "controls-custom"))]
+#[cfg(all(stripped_widgets, feature = "controls-custom"))]
 pub fn get_control_backend() -> &'static dyn ControlBackend {
     custom_control_backend()
 }
@@ -274,11 +254,7 @@ pub fn get_control_backend() -> &'static dyn ControlBackend {
 /// operate on a handle that was created by exactly one backend. Those callers
 /// use [`get_control_backend`] (native-first id-space) — see its doc comment
 /// for why the two entries do not conflict.
-#[cfg(all(
-    feature = "controls-native",
-    not(any(feature = "mini", feature = "embedded")),
-    feature = "controls-custom"
-))]
+#[cfg(all(feature = "controls-native", widgets_unstripped, feature = "controls-custom"))]
 pub fn get_control_backend_for_widget(kind: WidgetKind) -> &'static dyn ControlBackend {
     resolve_control_backend_for_kind(kind).0
 }
@@ -288,11 +264,7 @@ pub fn get_control_backend_for_widget(kind: WidgetKind) -> &'static dyn ControlB
 /// Every per-kind resolver (public [`get_control_backend_for_widget`] and any
 /// future create-time caller) must route through this function so that the
 /// native/custom choice for a widget kind can never drift between call sites.
-#[cfg(all(
-    feature = "controls-native",
-    not(any(feature = "mini", feature = "embedded")),
-    feature = "controls-custom"
-))]
+#[cfg(all(feature = "controls-native", widgets_unstripped, feature = "controls-custom"))]
 pub(crate) fn resolve_control_backend_for_kind(
     kind: WidgetKind,
 ) -> (&'static dyn ControlBackend, ControlRoutePreference) {
@@ -304,20 +276,12 @@ pub(crate) fn resolve_control_backend_for_kind(
     (backend, preference)
 }
 /// Returns control backend resolved by compile-time policy for one widget kind.
-#[cfg(all(
-    not(feature = "controls-native"),
-    feature = "controls-custom",
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(all(not(feature = "controls-native"), feature = "controls-custom", widgets_unstripped))]
 pub fn get_control_backend_for_widget(_kind: WidgetKind) -> &'static dyn ControlBackend {
     custom_control_backend()
 }
 /// Returns control backend resolved by compile-time policy for one widget kind.
-#[cfg(all(
-    feature = "controls-native",
-    not(any(feature = "mini", feature = "embedded")),
-    not(feature = "controls-custom")
-))]
+#[cfg(all(feature = "controls-native", widgets_unstripped, not(feature = "controls-custom")))]
 pub fn get_control_backend_for_widget(_kind: WidgetKind) -> &'static dyn ControlBackend {
     native_control_backend()
 }
@@ -327,34 +291,22 @@ pub fn get_control_backend_for_widget(_kind: WidgetKind) -> &'static dyn Control
     no_control_backend()
 }
 /// Returns control backend resolved by compile-time policy for one widget kind (mini mode).
-#[cfg(all(any(feature = "mini", feature = "embedded"), feature = "controls-custom"))]
+#[cfg(all(stripped_widgets, feature = "controls-custom"))]
 pub fn get_control_backend_for_widget(_kind: WidgetKind) -> &'static dyn ControlBackend {
     custom_control_backend()
 }
 /// Return compile-time control policy label used by diagnostics and docs.
-#[cfg(all(
-    feature = "controls-native",
-    not(any(feature = "mini", feature = "embedded")),
-    feature = "controls-custom"
-))]
+#[cfg(all(feature = "controls-native", widgets_unstripped, feature = "controls-custom"))]
 pub fn active_control_policy() -> &'static str {
     "hybrid-native-first"
 }
 /// Return compile-time control policy label used by diagnostics and docs.
-#[cfg(all(
-    not(feature = "controls-native"),
-    feature = "controls-custom",
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(all(not(feature = "controls-native"), feature = "controls-custom", widgets_unstripped))]
 pub fn active_control_policy() -> &'static str {
     "custom-full"
 }
 /// Return compile-time control policy label used by diagnostics and docs.
-#[cfg(all(
-    feature = "controls-native",
-    not(any(feature = "mini", feature = "embedded")),
-    not(feature = "controls-custom")
-))]
+#[cfg(all(feature = "controls-native", widgets_unstripped, not(feature = "controls-custom")))]
 pub fn active_control_policy() -> &'static str {
     "native-strict"
 }
@@ -364,7 +316,7 @@ pub fn active_control_policy() -> &'static str {
     "none"
 }
 /// Return compile-time control policy label used by diagnostics and docs (mini mode).
-#[cfg(all(any(feature = "mini", feature = "embedded"), feature = "controls-custom"))]
+#[cfg(all(stripped_widgets, feature = "controls-custom"))]
 pub fn active_control_policy() -> &'static str {
     "mini-custom"
 }
@@ -372,7 +324,7 @@ pub fn active_control_policy() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     use crate::widget::WidgetKind;
 
     #[test]
@@ -384,7 +336,7 @@ mod tests {
         let _ = format!("{:?}", kind);
     }
 
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     #[test]
     fn get_control_backend_for_widget_returns_non_null() {
         let backend = get_control_backend_for_widget(WidgetKind::Button);
@@ -395,7 +347,7 @@ mod tests {
         assert!(!name2.is_empty(), "backend_name must not be empty for Canvas");
     }
 
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     #[test]
     fn get_control_backend_for_widget_various_kinds() {
         let kinds = [
@@ -431,11 +383,7 @@ mod tests {
         }
     }
 
-    #[cfg(all(
-        feature = "controls-native",
-        feature = "controls-custom",
-        not(any(feature = "mini", feature = "embedded"))
-    ))]
+    #[cfg(all(feature = "controls-native", feature = "controls-custom", widgets_unstripped))]
     #[test]
     fn resolve_control_backend_parity_with_per_widget_entry() {
         // get_control_backend_for_widget must be the canonical chain — both
@@ -492,11 +440,7 @@ mod tests {
         }
     }
 
-    #[cfg(all(
-        feature = "controls-native",
-        feature = "controls-custom",
-        not(any(feature = "mini", feature = "embedded"))
-    ))]
+    #[cfg(all(feature = "controls-native", feature = "controls-custom", widgets_unstripped))]
     #[test]
     fn custom_paint_kinds_never_resolve_native_backend() {
         // Regression guard for the historical silent-0 class: self-drawn
@@ -531,11 +475,7 @@ mod tests {
     /// path silently degrades to a different control must resolve to the custom
     /// backend at create time, otherwise creating e.g. a `DatePicker` would
     /// return a `Panel` with no date functionality.
-    #[cfg(all(
-        feature = "controls-native",
-        feature = "controls-custom",
-        not(any(feature = "mini", feature = "embedded"))
-    ))]
+    #[cfg(all(feature = "controls-native", feature = "controls-custom", widgets_unstripped))]
     #[test]
     fn native_degraded_kinds_resolve_to_custom_backend() {
         let degraded = [

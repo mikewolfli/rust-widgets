@@ -7,14 +7,14 @@
 pub mod data_grid;
 pub mod data_source;
 /// GridTable — feature-rich virtualized table with grid lines, headers, sorting, and selection.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub mod grid_table;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub mod image_gallery;
 pub mod list_view;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub mod properties_panel;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub mod property_grid;
 pub mod table_widget;
 pub mod tree_table;
@@ -26,14 +26,14 @@ pub use data_grid::{ColumnFilter, DataGrid, SortSpec};
 pub use data_source::{
     IncrementalTableDataSource, ListModelDataSource, TableModelDataSource, TreeModelDataSource,
 };
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub use grid_table::{GridTableSelectionMode, GridTableSortSpec, GridTableWidget};
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub use image_gallery::{GalleryImage, ImageGallery};
 pub use list_view::ListView;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub use properties_panel::{PropertiesPanel, PropertyEntry, PropertyValue};
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub use property_grid::{PropertyGrid, PropertyItem};
 pub use table_widget::TableWidget;
 pub use tree_table::{TreeTable, TreeTableModel};

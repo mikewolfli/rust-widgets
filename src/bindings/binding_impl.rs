@@ -1178,7 +1178,7 @@ mod tests {
     /// available whenever `bindings` is built. The shared test lock, however,
     /// is only compiled on the `desktop` profile, so this case is gated to
     /// match it rather than leaving an unconditional reference.
-    #[cfg(all(feature = "desktop", not(any(feature = "mini", feature = "embedded"))))]
+    #[cfg(all(feature = "desktop", widgets_unstripped))]
     #[test]
     fn render_aa_sample_abi_roundtrip_clamps_values() {
         let _guard = crate::render::software_render_config_test_lock()

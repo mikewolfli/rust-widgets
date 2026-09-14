@@ -33,7 +33,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const LCD_NUMBER_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "value",
@@ -79,7 +79,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const CODE_EDITOR_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "text",
@@ -113,7 +113,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const GANTT_WIDGET_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "task_count",
@@ -141,7 +141,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const TERMINAL_VIEW_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "output_line_count",
@@ -157,7 +157,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const SNACKBAR_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "message",
@@ -179,7 +179,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const MAP_VIEW_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "center_x",
@@ -213,7 +213,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const MEDIA_PLAYER_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "source",
@@ -259,7 +259,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const BREADCRUMB_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "segment_count",
@@ -275,7 +275,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const SPLIT_BUTTON_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "text",
@@ -303,7 +303,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const SEGMENTED_CONTROL_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "item_count",
@@ -325,7 +325,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const CHIP_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "item_count",
@@ -353,7 +353,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const GRID_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "rows",
@@ -393,7 +393,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const FREEFORM_SHAPE_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "path_kind",
@@ -421,7 +421,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const WEB_VIEW_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "url",
@@ -524,7 +524,7 @@ macro_rules! impl_properties_other {
 
         pub(crate) const MINI_CANVAS_PROPERTIES: &[PropertySchema] = &[];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const CANVAS_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "center_x",
@@ -546,7 +546,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const CHART_PROPERTIES: &[PropertySchema] = &[PropertySchema {
             name: "selected_marker_id",
             value_kind: PropertyValueKind::String,
@@ -554,7 +554,7 @@ macro_rules! impl_properties_other {
             writable: false,
         }];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const BADGE_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "text",
@@ -570,7 +570,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const SKELETON_LOADER_PROPERTIES: &[PropertySchema] = &[PropertySchema {
             name: "active",
             value_kind: PropertyValueKind::Bool,
@@ -578,7 +578,7 @@ macro_rules! impl_properties_other {
             writable: true,
         }];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const FAB_PROPERTIES: &[PropertySchema] = &[PropertySchema {
             name: "icon",
             value_kind: PropertyValueKind::String,
@@ -586,7 +586,7 @@ macro_rules! impl_properties_other {
             writable: true,
         }];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const BOTTOM_NAVIGATION_BAR_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "item_count",
@@ -602,7 +602,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const NAVIGATION_DRAWER_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "open",
@@ -618,7 +618,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const APP_BAR_PROPERTIES: &[PropertySchema] = &[PropertySchema {
             name: "title",
             value_kind: PropertyValueKind::String,
@@ -626,7 +626,7 @@ macro_rules! impl_properties_other {
             writable: true,
         }];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const MOBILE_DATE_PICKER_PROPERTIES: &[PropertySchema] = &[PropertySchema {
             name: "selected_date",
             value_kind: PropertyValueKind::String,
@@ -634,7 +634,7 @@ macro_rules! impl_properties_other {
             writable: true,
         }];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const DIVIDER_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "orientation",
@@ -650,7 +650,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const RATING_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "value",
@@ -666,7 +666,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const AVATAR_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "initials",
@@ -682,7 +682,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const EMPTY_STATE_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "message",
@@ -698,7 +698,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const COLOR_HISTORY_PROPERTIES: &[PropertySchema] = &[PropertySchema {
             name: "color_count",
             value_kind: PropertyValueKind::UInt,
@@ -706,7 +706,7 @@ macro_rules! impl_properties_other {
             writable: false,
         }];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const COLOR_WELL_PROPERTIES: &[PropertySchema] = &[PropertySchema {
             name: "color",
             value_kind: PropertyValueKind::String,
@@ -714,7 +714,7 @@ macro_rules! impl_properties_other {
             writable: true,
         }];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const QR_CODE_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "data",
@@ -730,7 +730,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const MATERIAL_SNACKBAR_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "message",
@@ -746,7 +746,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const ADAPTIVE_SCAFFOLD_PROPERTIES: &[PropertySchema] = &[PropertySchema {
             name: "title",
             value_kind: PropertyValueKind::String,
@@ -754,7 +754,7 @@ macro_rules! impl_properties_other {
             writable: true,
         }];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const SEGMENTED_BUTTON_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "selected_index",
@@ -770,7 +770,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const NAVIGATION_STACK_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "page_count",
@@ -786,7 +786,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const PROGRESS_CIRCLE_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "value",
@@ -808,7 +808,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const ICON_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "icon_name",
@@ -824,7 +824,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const FONT_PREVIEW_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "font_family",
@@ -846,7 +846,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const CUPERTINO_NAVIGATION_BAR_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "title",
@@ -862,7 +862,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const REFRESH_CONTROL_PROPERTIES: &[PropertySchema] = &[PropertySchema {
             name: "refreshing",
             value_kind: PropertyValueKind::Bool,
@@ -870,7 +870,7 @@ macro_rules! impl_properties_other {
             writable: true,
         }];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const DATE_RANGE_PICKER_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "start_date",
@@ -886,7 +886,7 @@ macro_rules! impl_properties_other {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const MATERIAL_NAVIGATION_RAIL_PROPERTIES: &[PropertySchema] =
             &[PropertySchema {
                 name: "selected_index",
@@ -895,7 +895,7 @@ macro_rules! impl_properties_other {
                 writable: true,
             }];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const TAB_VIEW_PROPERTIES: &[PropertySchema] = &[PropertySchema {
             name: "selected_index",
             value_kind: PropertyValueKind::UInt,
@@ -903,7 +903,7 @@ macro_rules! impl_properties_other {
             writable: true,
         }];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const SWIPE_TO_DISMISS_PROPERTIES: &[PropertySchema] = &[PropertySchema {
             name: "is_dismissed",
             value_kind: PropertyValueKind::Bool,
@@ -911,7 +911,7 @@ macro_rules! impl_properties_other {
             writable: false,
         }];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const LINE_CHART_PROPERTIES: &[PropertySchema] = &[PropertySchema {
             name: "stroke_width",
             value_kind: PropertyValueKind::Float,
@@ -919,7 +919,7 @@ macro_rules! impl_properties_other {
             writable: true,
         }];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const SPARKLINE_PROPERTIES: &[PropertySchema] = &[PropertySchema {
             name: "stroke_width",
             value_kind: PropertyValueKind::Float,
@@ -927,7 +927,7 @@ macro_rules! impl_properties_other {
             writable: true,
         }];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const BAR_CHART_PROPERTIES: &[PropertySchema] = &[PropertySchema {
             name: "bar_spacing",
             value_kind: PropertyValueKind::Float,
@@ -935,7 +935,7 @@ macro_rules! impl_properties_other {
             writable: true,
         }];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const PIE_CHART_PROPERTIES: &[PropertySchema] = &[PropertySchema {
             name: "donut",
             value_kind: PropertyValueKind::Bool,
@@ -943,7 +943,7 @@ macro_rules! impl_properties_other {
             writable: true,
         }];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const BEZIER_CURVE_EDITOR_PROPERTIES: &[PropertySchema] = &[PropertySchema {
             name: "snap_to_grid",
             value_kind: PropertyValueKind::Bool,
@@ -951,7 +951,7 @@ macro_rules! impl_properties_other {
             writable: true,
         }];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const BARCODE_SCANNER_PROPERTIES: &[PropertySchema] = &[PropertySchema {
             name: "is_scanning",
             value_kind: PropertyValueKind::Bool,

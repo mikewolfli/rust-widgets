@@ -4,13 +4,26 @@
 //! Widget models and controls.
 // Base widget types
 pub mod base;
-#[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
+/// Widget capability metadata, the runtime factory, and the property contract.
+///
+/// The module is compiled in **every** profile, not only device ones: the
+/// property contract ([`capability::WidgetProperties`]) is what
+/// `Widget::properties_dyn` returns, and `Widget` exists everywhere. Only the
+/// profile-specific *parts* — the property schema tables, the legacy centralised
+/// access layer, the factory and its registration — are gated, below.
 pub mod capability;
 pub mod draw;
+/// The bridge that connects a self-painting widget to `dyn Widget`.
+///
+/// Declared with `#[macro_use]` so `impl_draw_bridge!` is in scope in every
+/// widget module without each one adding an import — the macro is meant to be
+/// called from the widget's own `impl Widget` block, wherever that block lives.
+#[macro_use]
+pub mod draw_bridge;
 #[cfg(feature = "image")]
 pub mod image;
 pub mod kind;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub mod runtime;
 pub mod widget_trait;
 // Widget subfolders
@@ -50,10 +63,13 @@ pub use window::Window;
 
 // Re-export base types
 pub use base::BaseWidget;
-#[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
+// The value/error types and the property contract exist in every profile; the
+// factory and its metadata do not, because they enumerate concrete controls.
+#[cfg(widgets_unstripped)]
+pub use capability::WidgetFactory;
 pub use capability::{
-    CapabilityAccessError, CapabilityValue, PropertySchema, PropertyValueKind, WidgetCapability,
-    WidgetFactory,
+    base_property_get, base_property_set, CapabilityAccessError, CapabilityValue, PropertySchema,
+    PropertyValueKind, WidgetCapability, WidgetProperties, BASE_PROPERTY_NAMES,
 };
 pub use draw::Draw;
 #[cfg(feature = "image")]
@@ -64,7 +80,7 @@ pub use kind::WidgetKind;
 pub use registry::SimpleRegistry;
 pub use widget_trait::Widget;
 // Re-export widget types from subfolders
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use base_widgets::toggle_button::{ToggleButton, ToggleButtonState};
 pub use base_widgets::{
     button::{Button, ButtonState},
@@ -72,7 +88,7 @@ pub use base_widgets::{
     label::Label,
     radiobutton::RadioButton,
 };
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use input_widgets::{
     auto_complete_edit::AutoCompleteEdit,
     command_link::CommandLink,
@@ -100,43 +116,43 @@ pub use input_widgets::{
     textarea::TextArea,
 };
 // Re-export container widgets
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use container_widgets::collapsible_pane::CollapsiblePane;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use container_widgets::dockwidget::DockWidget;
 pub use container_widgets::groupbox::GroupBox;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use container_widgets::mdiarea::MdiArea;
 pub use container_widgets::scrollarea::ScrollArea;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use container_widgets::splitter::Splitter;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use container_widgets::stackedwidget::StackedWidget;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use container_widgets::tabwidget::TabWidget;
 pub use container_widgets::tile_view::TileView;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use container_widgets::toolbox::ToolBox;
 pub type Panel = GroupBox;
 pub use base_widgets::frame::Frame;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub type DockPanel = DockWidget;
 // Re-export container widgets from new additions
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use container_widgets::carousel::Carousel;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use container_widgets::masonry_layout::{MasonryItem, MasonryLayout};
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use container_widgets::pager_page_view::PagerPageView;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use container_widgets::safe_area::{SafeArea, SafeAreaInsets};
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use container_widgets::stepper::Stepper;
 // Re-export display widgets
 pub use display_widgets::arc::Arc;
 #[cfg(feature = "image")]
 pub use display_widgets::image_view::ImageView;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use display_widgets::lcd_number::LCDNumber;
 pub use display_widgets::line::{Line, LineOrientation};
 pub use display_widgets::meter::Meter;
@@ -148,27 +164,27 @@ pub use display_widgets::scrollbar::ScrollBar;
 pub use display_widgets::slider::Slider;
 pub use display_widgets::spinner::Spinner;
 // Re-export display widgets from new additions
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use display_widgets::badge::Badge;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use display_widgets::color_history::ColorHistory;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use display_widgets::color_well::ColorWell;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use display_widgets::divider::Divider;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use display_widgets::empty_state::EmptyState;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use display_widgets::floating_label::FloatingLabel;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use display_widgets::font_preview::FontPreview;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use display_widgets::icon::{Icon, IconName};
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use display_widgets::progress_circle::ProgressCircle;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use display_widgets::rating::Rating;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use display_widgets::skeleton_loader::SkeletonLoader;
 pub use display_widgets::switch::Switch;
 // Re-export nav widgets

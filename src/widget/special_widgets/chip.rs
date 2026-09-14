@@ -7,7 +7,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::expect_bool;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// One chip item.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -198,6 +203,41 @@ impl Widget for Chip {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(80, 24)
+    }
+
+    impl_widget_property_hooks!();
+}
+
+/// `Chip`'s property contract, published under the `CheckListBox` kind.
+///
+/// `WidgetKind::CheckListBox` is the kind the capability layer pairs with this
+/// control (`chip_capability`), which is why the old `CheckListBox` arms
+/// downcast to `Chip`. `focused_index` is declared by `CHIP_PROPERTIES` but the
+/// centralised reader never served it, so it is not published here either —
+/// adding it would invent behaviour rather than preserve it.
+impl WidgetProperties for Chip {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "item_count" => Ok(CapabilityValue::UInt(self.items().len() as u64)),
+            "multi_select" => Ok(CapabilityValue::Bool(self.multi_select())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "multi_select" => {
+                self.set_multi_select(expect_bool(value)?);
+                Ok(())
+            }
+            // Derived from the item list.
+            "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["item_count", "multi_select", BASE_PROPERTY_NAMES]
     }
 }
 

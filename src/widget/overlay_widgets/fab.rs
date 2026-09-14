@@ -101,6 +101,7 @@ impl Widget for FAB {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(56, 56)
     }
+    impl_draw_bridge!();
 }
 
 impl Draw for FAB {

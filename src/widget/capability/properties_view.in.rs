@@ -6,7 +6,7 @@
 
 macro_rules! impl_properties_view {
     () => {
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const LIST_VIEW_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "has_model",
@@ -40,7 +40,7 @@ macro_rules! impl_properties_view {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const TREE_VIEW_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "has_model",
@@ -68,7 +68,7 @@ macro_rules! impl_properties_view {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const TABLE_WIDGET_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "has_model",
@@ -102,7 +102,7 @@ macro_rules! impl_properties_view {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const DATA_GRID_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "has_data_source",
@@ -178,7 +178,7 @@ macro_rules! impl_properties_view {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const TREE_TABLE_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "has_model",
@@ -218,7 +218,7 @@ macro_rules! impl_properties_view {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const VIRTUAL_TABLE_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "has_data_source",
@@ -282,7 +282,7 @@ macro_rules! impl_properties_view {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const VIRTUAL_LIST_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "has_data_source",
@@ -329,7 +329,7 @@ macro_rules! impl_properties_view {
             writable: true,
         }];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const PROPERTIES_PANEL_PROPERTIES: &[PropertySchema] = &[PropertySchema {
             name: "property_count",
             value_kind: PropertyValueKind::UInt,
@@ -337,7 +337,7 @@ macro_rules! impl_properties_view {
             writable: false,
         }];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const IMAGE_GALLERY_PROPERTIES: &[PropertySchema] = &[PropertySchema {
             name: "current_index",
             value_kind: PropertyValueKind::UInt,
@@ -345,7 +345,7 @@ macro_rules! impl_properties_view {
             writable: true,
         }];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const PROPERTY_GRID_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "property_count",

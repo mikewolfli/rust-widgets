@@ -103,6 +103,7 @@ impl Widget for CupertinoNavigationBar {
     fn kind(&self) -> WidgetKind {
         WidgetKind::CupertinoNavigationBar
     }
+    impl_draw_bridge!();
 }
 
 impl Draw for CupertinoNavigationBar {

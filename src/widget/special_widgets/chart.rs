@@ -6,7 +6,11 @@ use crate::core::{HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 /// The chart styles [`ChartWidget`] can switch between at runtime.
 ///
 /// # Scope, and why this is not the same enum as the other `ChartType`s
@@ -115,6 +119,31 @@ impl Widget for ChartWidget {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(400, 300)
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `ChartWidget`'s property contract, published under the `Chart` kind.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch.
+///
+/// `WidgetKind::Chart` is the kind the capability layer pairs with `GanttWidget`,
+/// so `task_count` / `selected_id` / `viewport_*` / `zoom_level` belong to that
+/// control. `chart_capability` publishes no properties for this control, so this
+/// contract inherits the shared four and owns nothing beyond them.
+impl WidgetProperties for ChartWidget {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        base_property_get(self, name)
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        base_property_set(self, name, value)
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![BASE_PROPERTY_NAMES]
     }
 }
 

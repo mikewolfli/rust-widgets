@@ -7,9 +7,14 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 
+use crate::widget::capability::coercion::{expect_orientation, expect_usize, orientation_to_str};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 #[cfg(feature = "image")]
 use crate::widget::Image;
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
 /// Tool box widget.
@@ -256,7 +261,45 @@ impl Widget for ToolBox {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(200, 250)
     }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
 }
+
+/// `ToolBox`'s property contract.
+impl WidgetProperties for ToolBox {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "item_count" => Ok(CapabilityValue::UInt(self.count() as u64)),
+            "current_index" => Ok(CapabilityValue::UInt(self.current_index() as u64)),
+            "orientation" => {
+                Ok(CapabilityValue::String(orientation_to_str(self.orientation()).to_string()))
+            }
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "current_index" => {
+                self.set_current_index(expect_usize(value)?);
+                Ok(())
+            }
+            "orientation" => {
+                self.set_orientation(expect_orientation(value)?);
+                Ok(())
+            }
+            // Derived from the item list.
+            "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        // Mirrors `TOOL_BOX_PROPERTIES`.
+        property_names_of!["item_count", "current_index", "orientation", BASE_PROPERTY_NAMES]
+    }
+}
+
 impl ToolBox {
     /// Sets the shared widget registry for child forwarding.
     pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {

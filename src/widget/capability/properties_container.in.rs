@@ -33,7 +33,7 @@ macro_rules! impl_properties_container {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const SPLITTER_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "orientation",
@@ -49,7 +49,7 @@ macro_rules! impl_properties_container {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const TOOL_BOX_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "item_count",
@@ -104,7 +104,7 @@ macro_rules! impl_properties_container {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const TAB_WIDGET_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "tab_count",
@@ -138,7 +138,7 @@ macro_rules! impl_properties_container {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const STACKED_WIDGET_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "widget_count",
@@ -154,7 +154,7 @@ macro_rules! impl_properties_container {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const COLLAPSIBLE_PANE_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "title",
@@ -170,7 +170,7 @@ macro_rules! impl_properties_container {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const DOCK_WIDGET_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "title",
@@ -192,7 +192,7 @@ macro_rules! impl_properties_container {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const MDI_AREA_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "subwindow_count",
@@ -229,7 +229,7 @@ macro_rules! impl_properties_container {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const STEPPER_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "value",
@@ -257,7 +257,7 @@ macro_rules! impl_properties_container {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const MASONRY_LAYOUT_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "column_count",
@@ -273,7 +273,7 @@ macro_rules! impl_properties_container {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const SAFE_AREA_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "top_inset",
@@ -301,7 +301,7 @@ macro_rules! impl_properties_container {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const CAROUSEL_PROPERTIES: &[PropertySchema] = &[PropertySchema {
             name: "page_count",
             value_kind: PropertyValueKind::UInt,
@@ -309,7 +309,7 @@ macro_rules! impl_properties_container {
             writable: false,
         }];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const PAGER_PAGE_VIEW_PROPERTIES: &[PropertySchema] = &[PropertySchema {
             name: "current_page",
             value_kind: PropertyValueKind::UInt,

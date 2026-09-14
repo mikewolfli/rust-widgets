@@ -430,3 +430,39 @@ pub fn normalize_key(input: &str) -> String {
         .flat_map(|ch| ch.to_lowercase())
         .collect()
 }
+
+// ── Value → stable string ───────────────────────────────────────────────────
+//
+// These conversions have no profile dependency: they map a *core* or *base*
+// control enum to the lower-case token the property layer publishes. They live
+// here, beside their `expect_*` inverses, so a control's `WidgetProperties::get`
+// can format a value in every profile — `access` (which used to host them) is
+// gated to device profiles, but `coercion` is not.
+
+/// Formats an [`Alignment`] as its published token.
+pub const fn alignment_to_str(alignment: Alignment) -> &'static str {
+    match alignment {
+        Alignment::Left => "left",
+        Alignment::Center => "center",
+        Alignment::Right => "right",
+        Alignment::Top => "top",
+        Alignment::Bottom => "bottom",
+    }
+}
+
+/// Formats a [`CheckState`] as its published token.
+pub const fn check_state_to_str(state: CheckState) -> &'static str {
+    match state {
+        CheckState::Unchecked => "unchecked",
+        CheckState::PartiallyChecked => "partially_checked",
+        CheckState::Checked => "checked",
+    }
+}
+
+/// Formats an [`Orientation`] as its published token.
+pub const fn orientation_to_str(orientation: Orientation) -> &'static str {
+    match orientation {
+        Orientation::Horizontal => "horizontal",
+        Orientation::Vertical => "vertical",
+    }
+}

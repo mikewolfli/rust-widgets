@@ -7,7 +7,12 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 
+use crate::widget::capability::coercion::{expect_bool, expect_i64, expect_string};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 /// Spin box widget for integer input.
 pub struct SpinBox {
     base: BaseWidget,
@@ -178,7 +183,86 @@ impl Widget for SpinBox {
         let val_w = format!("{}", self.value()).len() as u32 * 10 + 25;
         Size::new(val_w.max(60), 24)
     }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
 }
+
+/// `SpinBox`'s property contract.
+impl WidgetProperties for SpinBox {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "minimum" => Ok(CapabilityValue::Int(self.minimum() as i64)),
+            "maximum" => Ok(CapabilityValue::Int(self.maximum() as i64)),
+            "value" => Ok(CapabilityValue::Int(self.value() as i64)),
+            "single_step" => Ok(CapabilityValue::Int(self.single_step() as i64)),
+            "prefix" => Ok(CapabilityValue::String(self.prefix().to_string())),
+            "suffix" => Ok(CapabilityValue::String(self.suffix().to_string())),
+            "special_value_text" => match self.special_value_text() {
+                Some(text) => Ok(CapabilityValue::String(text.to_string())),
+                None => Ok(CapabilityValue::Null),
+            },
+            "wrapping" => Ok(CapabilityValue::Bool(self.wrapping())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "minimum" => {
+                self.set_minimum(expect_i64(value)? as i32);
+                Ok(())
+            }
+            "maximum" => {
+                self.set_maximum(expect_i64(value)? as i32);
+                Ok(())
+            }
+            "value" => {
+                self.set_value(expect_i64(value)? as i32);
+                Ok(())
+            }
+            "single_step" => {
+                self.set_single_step(expect_i64(value)? as i32);
+                Ok(())
+            }
+            "prefix" => {
+                self.set_prefix(expect_string(value)?);
+                Ok(())
+            }
+            "suffix" => {
+                self.set_suffix(expect_string(value)?);
+                Ok(())
+            }
+            "special_value_text" => {
+                match value {
+                    CapabilityValue::Null => self.set_special_value_text(None),
+                    other => self.set_special_value_text(Some(expect_string(other)?)),
+                }
+                Ok(())
+            }
+            "wrapping" => {
+                self.set_wrapping(expect_bool(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        // Mirrors `SPIN_BOX_PROPERTIES`.
+        property_names_of![
+            "minimum",
+            "maximum",
+            "value",
+            "single_step",
+            "prefix",
+            "suffix",
+            "special_value_text",
+            "wrapping",
+            BASE_PROPERTY_NAMES
+        ]
+    }
+}
+
 impl SpinBox {
     /// Handle click/tap on increment/decrement buttons.
     fn handle_button_click(&mut self, pos: &Point, rect: Rect, button_width: u32) {

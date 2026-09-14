@@ -3,7 +3,7 @@
 
 macro_rules! impl_menu_widgets {
     () => {
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_menu_bar(
             &self,
             parent: ObjectId,
@@ -55,9 +55,9 @@ macro_rules! impl_menu_widgets {
                     y,
                     width,
                     height,
-                    #[cfg(not(feature = "mini"))]
+                    #[cfg(not(alloc_frugal))]
                     widget_kind: WidgetKind::Menu,
-                    #[cfg(feature = "mini")]
+                    #[cfg(alloc_frugal)]
                     widget_kind: WidgetKind::Panel,
                 },
             );
@@ -87,15 +87,15 @@ macro_rules! impl_menu_widgets {
                     y: 0,
                     width: 0,
                     height: 0,
-                    #[cfg(not(feature = "mini"))]
+                    #[cfg(not(alloc_frugal))]
                     widget_kind: WidgetKind::MenuItem,
-                    #[cfg(feature = "mini")]
+                    #[cfg(alloc_frugal)]
                     widget_kind: WidgetKind::Panel,
                 },
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_tool_bar(
             &self,
             parent: ObjectId,
@@ -123,7 +123,7 @@ macro_rules! impl_menu_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_status_bar(
             &self,
             parent: ObjectId,
@@ -153,7 +153,7 @@ macro_rules! impl_menu_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_action(
             &self,
             parent: ObjectId,
@@ -183,7 +183,7 @@ macro_rules! impl_menu_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_tool_button(
             &self,
             parent: ObjectId,
@@ -213,7 +213,7 @@ macro_rules! impl_menu_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_tool_box(
             &self,
             parent: ObjectId,
@@ -241,7 +241,7 @@ macro_rules! impl_menu_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_context_menu(
             &self,
             parent: ObjectId,

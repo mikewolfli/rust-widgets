@@ -126,6 +126,7 @@ impl Widget for MobileDatePicker {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(300, 200)
     }
+    impl_draw_bridge!();
 }
 
 impl Draw for MobileDatePicker {

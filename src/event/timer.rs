@@ -3,7 +3,7 @@
 
 //! Runtime timer manager that emits `Event::Timer` into the event queue.
 use super::event_queue::EventSender;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 use super::types::Event;
 use crate::compat::HashMap;
 use crate::compat::Instant;
@@ -11,7 +11,7 @@ use crate::compat::Mutex;
 use crate::core::ObjectId;
 use alloc::sync::Arc;
 use core::time::Duration;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 use std::thread;
 struct TimerEntry {
     interval: Duration,
@@ -25,7 +25,7 @@ struct TimerState {
     running: bool,
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 fn recover_lock<T>(
     e: std::sync::PoisonError<crate::compat::MutexGuard<'_, T>>,
 ) -> crate::compat::MutexGuard<'_, T> {
@@ -35,21 +35,21 @@ fn recover_lock<T>(
 /// Emits timer events into the event queue for one-shot and repeating timers.
 pub struct TimerManager {
     state: Arc<Mutex<TimerState>>,
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     thread_handle: Option<thread::JoinHandle<()>>,
     /// Mini stub handle.
-    #[cfg(feature = "mini")]
-    #[cfg_attr(feature = "mini", allow(dead_code))]
+    #[cfg(alloc_frugal)]
+    #[cfg_attr(alloc_frugal, allow(dead_code))]
     // kept to mirror the non-mini API
     thread_handle: Option<()>,
     /// Sender used by the mini `pump` to post due timer events.
-    #[cfg(feature = "mini")]
+    #[cfg(alloc_frugal)]
     sender: EventSender,
 }
 
 impl TimerManager {
     /// Create a timer manager bound to an event sender.
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     pub fn new(sender: EventSender) -> Self {
         let state = Arc::new(Mutex::new(TimerState { timers: HashMap::new(), running: true }));
 
@@ -103,7 +103,7 @@ impl TimerManager {
     }
 
     /// Create a timer manager (mini stub — single-threaded, no background thread).
-    #[cfg(feature = "mini")]
+    #[cfg(alloc_frugal)]
     pub fn new(sender: EventSender) -> Self {
         let state = Arc::new(Mutex::new(TimerState { timers: HashMap::new(), running: true }));
         Self { state, sender, thread_handle: None }
@@ -111,11 +111,11 @@ impl TimerManager {
 
     /// Acquire the lock on timer state, recovering from poisoning.
     fn lock_timers(&self) -> crate::compat::MutexGuard<'_, TimerState> {
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         {
             self.state.lock().unwrap_or_else(recover_lock)
         }
-        #[cfg(feature = "mini")]
+        #[cfg(alloc_frugal)]
         {
             self.state.lock().unwrap_or_else(|p| p.into_inner())
         }
@@ -160,7 +160,7 @@ impl TimerManager {
     ///
     /// Mini mode has no background worker thread, so callers (e.g. an event
     /// loop iteration) invoke this periodically to fire due timers.
-    #[cfg(feature = "mini")]
+    #[cfg(alloc_frugal)]
     pub fn pump(&self) {
         let now = crate::compat::Instant::now();
         let mut due_events = Vec::new();
@@ -199,7 +199,7 @@ impl TimerManager {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 impl Drop for TimerManager {
     fn drop(&mut self) {
         {
@@ -244,13 +244,13 @@ impl IdleTask {
     }
 }
 
-#[cfg(all(test, not(feature = "mini"), not(target_arch = "wasm32")))]
+#[cfg(all(test, not(alloc_frugal), not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use crate::event::EventQueue;
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     use std::thread;
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     use std::time::Instant;
 
     #[test]
@@ -314,7 +314,7 @@ mod tests {
     }
 }
 
-#[cfg(all(test, feature = "mini"))]
+#[cfg(all(test, alloc_frugal))]
 mod mini_tests {
     use super::*;
     use crate::event::EventQueue;

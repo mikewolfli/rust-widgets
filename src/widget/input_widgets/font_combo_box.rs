@@ -5,7 +5,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 
 use crate::signal::{GenericSignal, Signal1};
+use crate::widget::capability::coercion::{expect_bool, expect_i64};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 /// Font combo box widget for font selection.
 pub struct FontComboBox {
     base: BaseWidget,
@@ -144,7 +149,60 @@ impl Widget for FontComboBox {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(200, 28)
     }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
 }
+
+/// `FontComboBox`'s property contract.
+///
+/// This control uses `i32` indices (the `-1` sentinel means "no font"), which is
+/// why its index properties are `Int` rather than `UInt` — the split
+/// `FONT_COMBO_BOX_PROPERTIES` records and the old dispatch preserved.
+impl WidgetProperties for FontComboBox {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "current_font_family" => Ok(CapabilityValue::String(self.current_text())),
+            "item_count" => Ok(CapabilityValue::Int(self.count() as i64)),
+            "current_index" => Ok(CapabilityValue::Int(self.current_index() as i64)),
+            "editable" => Ok(CapabilityValue::Bool(self.is_editable())),
+            "max_visible_items" => Ok(CapabilityValue::Int(self.max_visible_items() as i64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "current_index" => {
+                self.set_current_index(expect_i64(value)? as i32);
+                Ok(())
+            }
+            "editable" => {
+                self.set_editable(expect_bool(value)?);
+                Ok(())
+            }
+            "max_visible_items" => {
+                self.set_max_visible_items(expect_i64(value)? as i32);
+                Ok(())
+            }
+            // Derived from the font list.
+            "current_font_family" | "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        // Mirrors `FONT_COMBO_BOX_PROPERTIES`.
+        property_names_of![
+            "current_font_family",
+            "item_count",
+            "current_index",
+            "editable",
+            "max_visible_items",
+            BASE_PROPERTY_NAMES
+        ]
+    }
+}
+
 use crate::render::RenderContext;
 use crate::widget::Draw;
 

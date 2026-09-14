@@ -7,8 +7,13 @@ use crate::event::{Event, EventHandler};
 use crate::render::{RenderContext, TextMetrics};
 use crate::signal::Signal1;
 
+use crate::widget::capability::coercion::{expect_bool, expect_usize};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::container_widgets::tabwidget::{TabPosition, TabShape};
 use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 const TAB_HEIGHT: i32 = 24;
 const TAB_MIN_WIDTH: u32 = 40;
@@ -506,6 +511,68 @@ impl Widget for TabBar {
 
     fn size_hint(&self) -> Size {
         crate::core::Size::new(400, 30)
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `TabBar`'s property contract.
+///
+/// `tab_count` is derived from the tab vector and `current_index` is optional,
+/// so the read path publishes `Null` for "no tab selected" while the write path
+/// narrows through `expect_usize` before storing a `usize`.
+impl WidgetProperties for TabBar {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "tab_count" => Ok(CapabilityValue::UInt(self.tab_count() as u64)),
+            "current_index" => match self.current_index() {
+                Some(idx) => Ok(CapabilityValue::UInt(idx as u64)),
+                None => Ok(CapabilityValue::Null),
+            },
+            "closable" => Ok(CapabilityValue::Bool(self.closable())),
+            "movable" => Ok(CapabilityValue::Bool(self.movable())),
+            "tab_min_width" => Ok(CapabilityValue::UInt(self.tab_min_width() as u64)),
+            "tab_max_width" => Ok(CapabilityValue::UInt(self.tab_max_width() as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "current_index" => {
+                self.set_current_index(expect_usize(value)?);
+                Ok(())
+            }
+            "closable" => {
+                self.set_closable(expect_bool(value)?);
+                Ok(())
+            }
+            "movable" => {
+                self.set_movable(expect_bool(value)?);
+                Ok(())
+            }
+            "tab_min_width" => {
+                self.set_tab_min_width(expect_usize(value)? as u32);
+                Ok(())
+            }
+            "tab_max_width" => {
+                self.set_tab_max_width(expect_usize(value)? as u32);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![
+            "tab_count",
+            "current_index",
+            "closable",
+            "movable",
+            "tab_min_width",
+            "tab_max_width",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 

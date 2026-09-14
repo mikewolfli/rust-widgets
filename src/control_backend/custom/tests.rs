@@ -5,7 +5,7 @@ use super::*;
 use crate::control_backend::trait_def::ControlBackend;
 use crate::control_backend::types::ControlBackendKind;
 use crate::platform::WidgetTriggerKind;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 use crate::widget::WidgetKind;
 
 #[test]
@@ -242,7 +242,7 @@ fn create_panel_allocates_valid_id() {
     assert_ne!(id, 0);
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn create_menu_bar_and_menu() {
     let backend = CustomPaintControlBackend::new();
@@ -255,7 +255,7 @@ fn create_menu_bar_and_menu() {
     assert_ne!(item, 0);
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn create_tool_bar_and_status_bar() {
     let backend = CustomPaintControlBackend::new();
@@ -267,7 +267,7 @@ fn create_tool_bar_and_status_bar() {
     assert_eq!(backend.get_widget_text(status_bar), "Ready");
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn create_dialog_allocates_valid_id() {
     let backend = CustomPaintControlBackend::new();
@@ -277,7 +277,7 @@ fn create_dialog_allocates_valid_id() {
     assert_eq!(backend.get_widget_text(id), "Settings");
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn create_message_box_allocates_valid_id() {
     let backend = CustomPaintControlBackend::new();
@@ -287,7 +287,7 @@ fn create_message_box_allocates_valid_id() {
     assert_eq!(backend.get_widget_text(id), "Hello!");
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn create_file_dialog_allocates_valid_id() {
     let backend = CustomPaintControlBackend::new();
@@ -296,7 +296,7 @@ fn create_file_dialog_allocates_valid_id() {
     assert_ne!(id, 0);
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn create_color_dialog_allocates_valid_id() {
     let backend = CustomPaintControlBackend::new();
@@ -348,7 +348,7 @@ fn set_widget_geometry_updates_properties() {
     backend.set_widget_geometry(id, 50, 60, 200, 40);
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn create_canvas_allocates_valid_id() {
     let backend = CustomPaintControlBackend::new();
@@ -357,7 +357,7 @@ fn create_canvas_allocates_valid_id() {
     assert_ne!(id, 0);
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn create_table_allocates_valid_id() {
     let backend = CustomPaintControlBackend::new();
@@ -366,7 +366,7 @@ fn create_table_allocates_valid_id() {
     assert_ne!(id, 0);
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn create_grid_allocates_valid_id() {
     let backend = CustomPaintControlBackend::new();
@@ -375,7 +375,7 @@ fn create_grid_allocates_valid_id() {
     assert_ne!(id, 0);
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn create_chart_allocates_valid_id() {
     let backend = CustomPaintControlBackend::new();
@@ -393,7 +393,7 @@ fn create_toggle_button_sets_text() {
     assert_eq!(backend.get_widget_text(id), "Toggle");
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn create_check_list_box_allocates_valid_id() {
     let backend = CustomPaintControlBackend::new();
@@ -402,7 +402,7 @@ fn create_check_list_box_allocates_valid_id() {
     assert_ne!(id, 0);
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn create_double_spin_box_allocates_valid_id() {
     let backend = CustomPaintControlBackend::new();
@@ -411,7 +411,7 @@ fn create_double_spin_box_allocates_valid_id() {
     assert_ne!(id, 0);
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn create_dial_allocates_valid_id() {
     let backend = CustomPaintControlBackend::new();
@@ -420,7 +420,7 @@ fn create_dial_allocates_valid_id() {
     assert_ne!(id, 0);
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn create_wizard_allocates_valid_id() {
     let backend = CustomPaintControlBackend::new();
@@ -429,7 +429,7 @@ fn create_wizard_allocates_valid_id() {
     assert_ne!(id, 0);
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn create_date_picker_allocates_valid_id() {
     let backend = CustomPaintControlBackend::new();
@@ -438,7 +438,7 @@ fn create_date_picker_allocates_valid_id() {
     assert_ne!(id, 0);
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn create_time_picker_allocates_valid_id() {
     let backend = CustomPaintControlBackend::new();
@@ -447,7 +447,7 @@ fn create_time_picker_allocates_valid_id() {
     assert_ne!(id, 0);
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn create_date_time_picker_allocates_valid_id() {
     let backend = CustomPaintControlBackend::new();
@@ -456,7 +456,7 @@ fn create_date_time_picker_allocates_valid_id() {
     assert_ne!(id, 0);
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn create_directory_dialog_allocates_valid_id() {
     let backend = CustomPaintControlBackend::new();
@@ -465,7 +465,7 @@ fn create_directory_dialog_allocates_valid_id() {
     assert_ne!(id, 0);
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn create_data_view_allocates_valid_id() {
     let backend = CustomPaintControlBackend::new();
@@ -474,7 +474,7 @@ fn create_data_view_allocates_valid_id() {
     assert_ne!(id, 0);
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn create_property_grid_allocates_valid_id() {
     let backend = CustomPaintControlBackend::new();
@@ -483,7 +483,7 @@ fn create_property_grid_allocates_valid_id() {
     assert_ne!(id, 0);
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn create_toolbox_allocates_valid_id() {
     let backend = CustomPaintControlBackend::new();
@@ -492,7 +492,7 @@ fn create_toolbox_allocates_valid_id() {
     assert_ne!(id, 0);
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn create_collapsible_pane_sets_text() {
     let backend = CustomPaintControlBackend::new();
@@ -502,7 +502,7 @@ fn create_collapsible_pane_sets_text() {
     assert_eq!(backend.get_widget_text(id), "Details");
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn create_dock_widget_sets_text() {
     let backend = CustomPaintControlBackend::new();
@@ -512,7 +512,7 @@ fn create_dock_widget_sets_text() {
     assert_eq!(backend.get_widget_text(id), "Dock Panel");
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn create_web_view_allocates_valid_id() {
     let backend = CustomPaintControlBackend::new();
@@ -521,7 +521,7 @@ fn create_web_view_allocates_valid_id() {
     assert_ne!(id, 0);
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn create_activity_indicator_allocates_valid_id() {
     let backend = CustomPaintControlBackend::new();
@@ -530,7 +530,7 @@ fn create_activity_indicator_allocates_valid_id() {
     assert_ne!(id, 0);
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn create_calendar_allocates_valid_id() {
     let backend = CustomPaintControlBackend::new();
@@ -539,7 +539,7 @@ fn create_calendar_allocates_valid_id() {
     assert_ne!(id, 0);
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn create_column_view_allocates_valid_id() {
     let backend = CustomPaintControlBackend::new();
@@ -548,7 +548,7 @@ fn create_column_view_allocates_valid_id() {
     assert_ne!(id, 0);
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn create_undo_view_allocates_valid_id() {
     let backend = CustomPaintControlBackend::new();
@@ -557,7 +557,7 @@ fn create_undo_view_allocates_valid_id() {
     assert_ne!(id, 0);
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn create_command_link_sets_text() {
     let backend = CustomPaintControlBackend::new();
@@ -567,7 +567,7 @@ fn create_command_link_sets_text() {
     assert_eq!(backend.get_widget_text(id), "Open Folder");
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn create_lcd_number_allocates_valid_id() {
     let backend = CustomPaintControlBackend::new();
@@ -576,7 +576,7 @@ fn create_lcd_number_allocates_valid_id() {
     assert_ne!(id, 0);
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn create_font_combo_box_allocates_valid_id() {
     let backend = CustomPaintControlBackend::new();
@@ -585,7 +585,7 @@ fn create_font_combo_box_allocates_valid_id() {
     assert_ne!(id, 0);
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn create_action_sets_text() {
     let backend = CustomPaintControlBackend::new();
@@ -595,7 +595,7 @@ fn create_action_sets_text() {
     assert_eq!(backend.get_widget_text(id), "Save");
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn create_tool_button_sets_text() {
     let backend = CustomPaintControlBackend::new();
@@ -605,7 +605,7 @@ fn create_tool_button_sets_text() {
     assert_eq!(backend.get_widget_text(id), "Save");
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn create_tool_box_allocates_valid_id() {
     let backend = CustomPaintControlBackend::new();
@@ -614,7 +614,7 @@ fn create_tool_box_allocates_valid_id() {
     assert_ne!(id, 0);
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn create_context_menu_sets_text() {
     let backend = CustomPaintControlBackend::new();
@@ -630,7 +630,7 @@ fn send_sync() {
     assert_send_sync::<CustomPaintControlBackend>();
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn modern_widgets_allocate_valid_ids() {
     let backend = CustomPaintControlBackend::new();
@@ -670,7 +670,7 @@ fn modern_widgets_allocate_valid_ids() {
     assert_ne!(alias, 0);
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn modern_widgets_store_correct_widget_kind() {
     let backend = CustomPaintControlBackend::new();
@@ -709,7 +709,7 @@ fn modern_widgets_store_correct_widget_kind() {
     assert_eq!(stored_kind(ribbon_bar), Some(WidgetKind::RibbonBar));
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn modern_widgets_register_standard_state() {
     let backend = CustomPaintControlBackend::new();

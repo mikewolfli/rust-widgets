@@ -112,6 +112,7 @@ impl Widget for MasonryLayout {
     fn size_hint(&self) -> Size {
         crate::core::Size::new(300, 300)
     }
+    impl_draw_bridge!();
 }
 
 impl Draw for MasonryLayout {

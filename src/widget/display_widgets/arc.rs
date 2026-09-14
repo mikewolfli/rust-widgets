@@ -5,7 +5,12 @@
 use crate::core::{deg_to_rad, Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderCommand, RenderContext};
+use crate::widget::capability::coercion::{expect_bool, expect_u32};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Arc widget for displaying circular progress or angular values.
 pub struct Arc {
@@ -159,6 +164,51 @@ impl Widget for Arc {
     fn size_hint(&self) -> Size {
         let diameter = self.thickness * 4;
         Size::new(diameter.max(60), diameter.max(60))
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `Arc`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch.
+///
+/// `thickness`, `sweep_angle` and `indeterminate` are writable but not
+/// readable: the old reader never served them, so they are deliberately absent
+/// from `get` and from the published names rather than invented here.
+impl WidgetProperties for Arc {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "value" => Ok(CapabilityValue::UInt(self.value() as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "value" => {
+                self.set_value(expect_u32(value)?);
+                Ok(())
+            }
+            "thickness" => {
+                self.set_thickness(expect_u32(value)?);
+                Ok(())
+            }
+            "sweep_angle" => {
+                self.set_sweep_angle(expect_u32(value)? as u16);
+                Ok(())
+            }
+            "indeterminate" => {
+                self.set_indeterminate(expect_bool(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["value", BASE_PROPERTY_NAMES]
     }
 }
 

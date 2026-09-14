@@ -10,7 +10,12 @@
 use crate::core::{deg_to_rad, Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderCommand, RenderContext};
+use crate::widget::capability::coercion::expect_u32;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Meter (gauge) widget — displays a value on an arc with a needle indicator.
 pub struct Meter {
@@ -97,6 +102,35 @@ impl Widget for Meter {
 
     fn size_hint(&self) -> Size {
         Size::new(200, 200)
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `Meter`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch.
+impl WidgetProperties for Meter {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "value" => Ok(CapabilityValue::UInt(self.value() as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "value" => {
+                self.set_value(expect_u32(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["value", BASE_PROPERTY_NAMES]
     }
 }
 

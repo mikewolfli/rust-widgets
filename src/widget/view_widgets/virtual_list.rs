@@ -9,7 +9,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::Event;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, Signal1};
+use crate::widget::capability::coercion::{expect_u32, expect_usize};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 use super::data_source::IncrementalTableDataSource;
 
@@ -290,6 +295,62 @@ impl Widget for VirtualList {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(200, 200)
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `VirtualList`'s property contract.
+///
+/// `DataView` is a type alias for `VirtualList` (`src/widget/mod.rs`), so this one
+/// impl answers for both kinds. Read/write semantics are carried over unchanged
+/// from the centralised `access_read_view.in.rs` / `access_write_view.in.rs`
+/// dispatch, so callers see the same coercions and the same errors as before.
+impl WidgetProperties for VirtualList {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "has_data_source" => Ok(CapabilityValue::Bool(self.has_data_source())),
+            "row_count" => Ok(CapabilityValue::UInt(self.row_count() as u64)),
+            "scroll_row" => Ok(CapabilityValue::UInt(self.scroll_row() as u64)),
+            "row_height" => Ok(CapabilityValue::UInt(self.row_height() as u64)),
+            "overscan" => Ok(CapabilityValue::UInt(self.overscan() as u64)),
+            "selected_row" => match self.selected_row() {
+                Some(row) => Ok(CapabilityValue::UInt(row as u64)),
+                None => Ok(CapabilityValue::Null),
+            },
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "scroll_row" => {
+                self.set_scroll_row(expect_usize(value)?);
+                Ok(())
+            }
+            "row_height" => {
+                let row_height = expect_u32(value)?;
+                self.set_row_height(row_height);
+                Ok(())
+            }
+            "overscan" => {
+                self.set_overscan(expect_usize(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![
+            "has_data_source",
+            "row_count",
+            "scroll_row",
+            "row_height",
+            "overscan",
+            "selected_row",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 

@@ -12,7 +12,12 @@ use crate::core::Rect;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionHandle, GenericSignal, Signal1};
+use crate::widget::capability::coercion::{expect_bool, expect_string};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 /// Represents a user action (command, toggle, etc.) used in menus and toolbars.
 ///
 /// The inner [`CmdAction`] owns the canonical command state (`id`, `checkable`,
@@ -201,7 +206,80 @@ impl Widget for Action {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(100, 28)
     }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
 }
+
+/// `Action`'s property contract.
+///
+/// `command_id` is optional, so it is published as `Null` when unset and accepts
+/// `Null` on write to clear it — the same optional-value convention the old
+/// dispatch used. `separator` is derived from the action's short text and has no
+/// setter, so it is read-only.
+impl WidgetProperties for Action {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "text" => Ok(CapabilityValue::String(self.text().to_string())),
+            "icon_text" => Ok(CapabilityValue::String(self.icon_text().to_string())),
+            "shortcut" => Ok(CapabilityValue::String(self.shortcut().to_string())),
+            "checkable" => Ok(CapabilityValue::Bool(self.is_checkable())),
+            "checked" => Ok(CapabilityValue::Bool(self.is_checked())),
+            "separator" => Ok(CapabilityValue::Bool(self.is_separator())),
+            "command_id" => match self.command_id() {
+                Some(id) => Ok(CapabilityValue::String(id.to_string())),
+                None => Ok(CapabilityValue::Null),
+            },
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "text" => {
+                self.set_text(expect_string(value)?);
+                Ok(())
+            }
+            "icon_text" => {
+                self.set_icon_text(expect_string(value)?);
+                Ok(())
+            }
+            "shortcut" => {
+                self.set_shortcut(expect_string(value)?);
+                Ok(())
+            }
+            "checkable" => {
+                self.set_checkable(expect_bool(value)?);
+                Ok(())
+            }
+            "checked" => {
+                self.set_checked(expect_bool(value)?);
+                Ok(())
+            }
+            "command_id" => {
+                match value {
+                    CapabilityValue::Null => self.clear_command_id(),
+                    other => self.set_command_id(expect_string(other)?),
+                }
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![
+            "text",
+            "icon_text",
+            "shortcut",
+            "checkable",
+            "checked",
+            "separator",
+            "command_id",
+            BASE_PROPERTY_NAMES
+        ]
+    }
+}
+
 impl EventHandler for Action {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);

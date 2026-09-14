@@ -2,5 +2,5 @@
 // SPDX-License-Identifier: MIT
 
 //! Utility modules.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub mod asset_watcher;

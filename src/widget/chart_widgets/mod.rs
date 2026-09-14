@@ -42,33 +42,33 @@
 //! `--features`) still compiles, matching the previous `#[cfg(feature = "chart")]`
 //! behaviour of the removed top-level `chart` module.
 
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub mod adapter;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub mod bar_chart;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub mod charts;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub mod layout;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub mod line_chart;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub mod pie_chart;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub mod sparkline;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub mod svg;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub mod types;
 
 // ── Control layer re-exports (the bare names mean the widgets) ──
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub use bar_chart::{BarChart, BarEntry};
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub use line_chart::LineChart;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub use pie_chart::{PieChart, PieSlice};
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub use sparkline::Sparkline;
 
 // ── Engine layer re-exports (qualified, never shadowing the controls) ──
@@ -76,12 +76,12 @@ pub use sparkline::Sparkline;
 // The engine's `LineChart`/`BarChart`/`PieChart` are intentionally **not**
 // re-exported here; use the `charts::` path so the control-layer names above
 // stay unambiguous (principle #49).
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use adapter::ChartContextAdapter;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use svg::{MemoryChartContext, SvgChartContext};
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use types::{Chart, ChartContext, ChartSeries, ChartType, DataPoint};
 
-#[cfg(all(test, not(any(feature = "mini", feature = "embedded"))))]
+#[cfg(all(test, widgets_unstripped))]
 mod tests;

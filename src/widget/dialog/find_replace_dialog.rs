@@ -270,6 +270,7 @@ impl Widget for FindReplaceDialog {
     fn size_hint(&self) -> Size {
         crate::core::Size::new(350, 200)
     }
+    impl_draw_bridge!();
 }
 
 impl Draw for FindReplaceDialog {

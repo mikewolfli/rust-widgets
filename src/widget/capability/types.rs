@@ -1,10 +1,15 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
+// Imports for the factory, which only exists where the full control set does.
+#[cfg(widgets_unstripped)]
 use std::collections::HashMap;
 
+#[cfg(widgets_unstripped)]
 use crate::core::Rect;
-use crate::widget::{Widget, WidgetKind};
+#[cfg(widgets_unstripped)]
+use crate::widget::Widget;
+use crate::widget::WidgetKind;
 
 /// Runtime property value returned by capability-based reflection APIs.
 #[derive(Debug, Clone, PartialEq)]
@@ -75,9 +80,17 @@ pub struct WidgetCapabilityManifest {
     pub commands: Vec<&'static str>,
 }
 
+/// Constructor signature the factory registers for each control.
+#[cfg(widgets_unstripped)]
 pub(crate) type WidgetCtor = fn(Rect, &str) -> Box<dyn Widget>;
 
 /// Factory + metadata registry for dynamic widget instantiation.
+///
+/// Gated with the full control set: the factory registers a constructor per
+/// concrete control type, so it only exists where those types do. The
+/// [property contract](crate::widget::capability::properties_trait::WidgetProperties)
+/// is independent of it and available in every profile.
+#[cfg(widgets_unstripped)]
 pub struct WidgetFactory {
     pub(crate) capabilities: Vec<WidgetCapability>,
     pub(crate) key_to_index: HashMap<String, usize>,

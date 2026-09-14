@@ -15,7 +15,11 @@
 use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::signal::Signal1;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 /// Web engine view widget for web content rendering.
 pub struct WebEngineView {
     base: BaseWidget,
@@ -408,6 +412,39 @@ impl Widget for WebEngineView {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(400, 300)
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `WebEngineView`'s property contract.
+///
+/// `WebEngineView` is a concrete type, not an alias: `WebView` is the alias
+/// (`web_widgets/web_view.rs` re-exports `WebEngineView as WebView`), so this one
+/// impl answers for the `WebEngineView` and `WebView` kinds alike.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch: `url`, `loading`
+/// and `title` are readable, and none of them is writable through this contract.
+/// (The old `WidgetKind::WebEngineView` write arm downcast to `MediaPlayer`, which
+/// is why it answered `source` / `playing` / `position_ms`; those names belong to
+/// `MediaPlayer` and are answered there.)
+impl WidgetProperties for WebEngineView {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "url" => Ok(CapabilityValue::String(self.url().to_string())),
+            "loading" => Ok(CapabilityValue::Bool(self.is_loading())),
+            "title" => Ok(CapabilityValue::String(self.title().to_string())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        base_property_set(self, name, value)
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["url", "loading", "title", BASE_PROPERTY_NAMES]
     }
 }
 

@@ -27,7 +27,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::{expect_bool, expect_usize};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 // ── Layout constants ──────────────────────────────────────────────────────────
 
@@ -865,6 +870,47 @@ impl Widget for RibbonBar {
 
     fn size_hint(&self) -> Size {
         crate::core::Size::new(800, 120)
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `RibbonBar`'s property contract.
+///
+/// `tab_count` is derived from the tab vector and therefore read-only;
+/// `current_tab` is index-valued and written through `expect_usize`, which
+/// rejects a negative or out-of-range `Int` rather than wrapping it.
+impl WidgetProperties for RibbonBar {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "tab_count" => Ok(CapabilityValue::UInt(self.tab_count() as u64)),
+            "current_tab" => Ok(CapabilityValue::UInt(self.current_tab() as u64)),
+            "expanded" => Ok(CapabilityValue::Bool(self.is_expanded())),
+            "minimized" => Ok(CapabilityValue::Bool(self.is_minimized())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "current_tab" => {
+                self.set_current_tab(expect_usize(value)?);
+                Ok(())
+            }
+            "expanded" => {
+                self.set_expanded(expect_bool(value)?);
+                Ok(())
+            }
+            "minimized" => {
+                self.set_minimized(expect_bool(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["tab_count", "current_tab", "expanded", "minimized", BASE_PROPERTY_NAMES]
     }
 }
 

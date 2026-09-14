@@ -6,7 +6,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::expect_string;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 /// Status bar widget — shows status messages and permanent widgets.
 pub struct StatusBar {
     base: BaseWidget,
@@ -63,7 +68,36 @@ impl Widget for StatusBar {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(400, 24)
     }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
 }
+
+impl WidgetProperties for StatusBar {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "message" => Ok(CapabilityValue::String(self.message().to_string())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "message" => {
+                // Timeout 0 means "until replaced", which is what a property
+                // write means: the caller wants this text to stay put, not to
+                // expire on a timer it never asked for.
+                self.show_message(expect_string(value)?, 0);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["message", BASE_PROPERTY_NAMES]
+    }
+}
+
 impl EventHandler for StatusBar {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);

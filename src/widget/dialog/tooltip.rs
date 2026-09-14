@@ -172,6 +172,7 @@ impl Widget for Tooltip {
     fn size_hint(&self) -> Size {
         crate::core::Size::new(100, 30)
     }
+    impl_draw_bridge!();
 }
 
 impl EventHandler for Tooltip {

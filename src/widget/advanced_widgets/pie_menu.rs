@@ -12,7 +12,11 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// A single item in a `PieMenu`.
 #[derive(Debug, Clone)]
@@ -425,6 +429,40 @@ impl Widget for PieMenu {
         self.base.hide();
         self.hovered_index = None;
         self.about_to_hide.emit();
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `PieMenu`'s property contract.
+///
+/// All four properties are read-only projections of the menu's geometry and
+/// selection state — none of them has a setter that would not fight the layout
+/// that produced the radii — so there is no write arm for them and the schema
+/// marks each one non-writable.
+impl WidgetProperties for PieMenu {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "item_count" => Ok(CapabilityValue::UInt(self.item_count() as u64)),
+            "radius" => Ok(CapabilityValue::Float(self.radius() as f64)),
+            "inner_radius" => Ok(CapabilityValue::Float(self.inner_radius() as f64)),
+            "current_index" => Ok(CapabilityValue::UInt(self.current_index() as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        base_property_set(self, name, value)
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![
+            "item_count",
+            "radius",
+            "inner_radius",
+            "current_index",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 

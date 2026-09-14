@@ -12,7 +12,11 @@ use crate::core::{Color, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderCommand, RenderContext};
 use crate::signal::GenericSignal;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Canvas widget for custom drawing operations.
 pub struct Canvas {
@@ -181,6 +185,33 @@ impl Widget for Canvas {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(300, 200)
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `Canvas`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch, including
+/// the `f32` → `f64` widening on read and the "write one half, keep the other"
+/// behaviour of the `center_x` / `center_y` setters.
+///
+/// `WidgetKind::Canvas` is the kind the capability layer pairs with `MapView`, so
+/// the `center_*` / `zoom` / `marker_count` names belong to that control, not to
+/// this one. `canvas_capability` publishes an empty schema for `Canvas` itself,
+/// so this contract inherits the shared four and owns nothing beyond them.
+impl WidgetProperties for Canvas {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        base_property_get(self, name)
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        base_property_set(self, name, value)
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![BASE_PROPERTY_NAMES]
     }
 }
 

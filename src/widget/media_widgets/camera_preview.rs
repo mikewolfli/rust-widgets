@@ -11,7 +11,12 @@
 
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
+use crate::property_names_of;
 use crate::render::RenderContext;
+use crate::widget::capability::coercion::expect_bool;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 /// Camera preview widget — draws a simulated camera viewfinder area with controls.
@@ -164,6 +169,60 @@ impl Widget for CameraPreview {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(320, 240)
+    }
+
+    /// Reports this widget as the object that paints it.
+    ///
+    /// `CameraPreview` implements `Draw`, so `Some(self)` is total and cannot be
+    /// wrong.
+    fn as_draw_mut(&mut self) -> Option<&mut dyn crate::widget::Draw> {
+        Some(self)
+    }
+
+    /// Returns this widget as its property contract.
+    fn properties_dyn(
+        &self,
+    ) -> Option<&dyn crate::widget::capability::properties_trait::WidgetProperties> {
+        Some(self)
+    }
+
+    /// Mutable counterpart to `properties_dyn`.
+    fn properties_dyn_mut(
+        &mut self,
+    ) -> Option<&mut dyn crate::widget::capability::properties_trait::WidgetProperties> {
+        Some(self)
+    }
+}
+
+/// `CameraPreview`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_media.in.rs` / `access_write_media.in.rs` dispatch: `is_active`
+/// maps onto `start_preview` / `stop_preview`.
+impl WidgetProperties for CameraPreview {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "is_active" => Ok(CapabilityValue::Bool(self.is_active())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "is_active" => {
+                if expect_bool(value)? {
+                    self.start_preview();
+                } else {
+                    self.stop_preview();
+                }
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["is_active", BASE_PROPERTY_NAMES]
     }
 }
 

@@ -7,7 +7,12 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 
+use crate::widget::capability::coercion::{expect_bool, expect_i64, expect_string};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -115,6 +120,19 @@ pub enum ScrollBarPolicy {
     /// Scroll bar is shown when needed
     #[default]
     AsNeeded,
+}
+
+/// Formats a [`ScrollBarPolicy`] as its published token.
+///
+/// Local rather than imported from `capability::access`: that module is gated to
+/// the device profiles, while `ScrollArea` is available in every profile.
+/// `expect_*` has no inverse here, because the old writer never accepted one.
+fn scroll_bar_policy_to_str(policy: ScrollBarPolicy) -> &'static str {
+    match policy {
+        ScrollBarPolicy::AlwaysOn => "always_on",
+        ScrollBarPolicy::AlwaysOff => "always_off",
+        ScrollBarPolicy::AsNeeded => "as_needed",
+    }
 }
 impl ScrollArea {
     /// Creates a scroll area.
@@ -355,7 +373,81 @@ impl Widget for ScrollArea {
         self.viewport.height = geometry.height;
         self.update_scroll_bars();
     }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
 }
+
+/// `ScrollArea`'s property contract.
+///
+/// `scroll_position_x` / `scroll_position_y` are published as a pair because the
+/// scroll position is one ordered tuple; splitting it lets a caller move one axis
+/// without having to read and re-supply the other.
+impl WidgetProperties for ScrollArea {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "widget_resizable" => Ok(CapabilityValue::Bool(self.widget_resizable())),
+            "horizontal_scroll_bar_policy" => Ok(CapabilityValue::String(
+                scroll_bar_policy_to_str(self.horizontal_scroll_bar_policy()).to_string(),
+            )),
+            "vertical_scroll_bar_policy" => Ok(CapabilityValue::String(
+                scroll_bar_policy_to_str(self.vertical_scroll_bar_policy()).to_string(),
+            )),
+            "scroll_position_x" => Ok(CapabilityValue::Int(self.scroll_position().0 as i64)),
+            "scroll_position_y" => Ok(CapabilityValue::Int(self.scroll_position().1 as i64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "widget_resizable" => {
+                self.set_widget_resizable(expect_bool(value)?);
+                Ok(())
+            }
+            "horizontal_scroll_bar_policy" | "vertical_scroll_bar_policy" => {
+                let token = expect_string(value)?;
+                let policy = match token.as_str() {
+                    "always_on" => ScrollBarPolicy::AlwaysOn,
+                    "always_off" => ScrollBarPolicy::AlwaysOff,
+                    "as_needed" => ScrollBarPolicy::AsNeeded,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                if name == "horizontal_scroll_bar_policy" {
+                    self.set_horizontal_scroll_bar_policy(policy);
+                } else {
+                    self.set_vertical_scroll_bar_policy(policy);
+                }
+                Ok(())
+            }
+            "scroll_position_x" => {
+                let x = expect_i64(value)? as i32;
+                let (_, y) = self.scroll_position();
+                self.set_scroll_position(x, y);
+                Ok(())
+            }
+            "scroll_position_y" => {
+                let y = expect_i64(value)? as i32;
+                let (x, _) = self.scroll_position();
+                self.set_scroll_position(x, y);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        // Mirrors `SCROLL_AREA_PROPERTIES`.
+        property_names_of![
+            "widget_resizable",
+            "horizontal_scroll_bar_policy",
+            "vertical_scroll_bar_policy",
+            "scroll_position_x",
+            "scroll_position_y",
+            BASE_PROPERTY_NAMES
+        ]
+    }
+}
+
 impl EventHandler for ScrollArea {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);

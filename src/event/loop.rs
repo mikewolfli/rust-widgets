@@ -7,22 +7,22 @@ use super::timer::TimerManager;
 use super::types::{Event, EventPriority};
 use crate::compat::Mutex;
 use crate::core::ObjectId;
-#[cfg(all(feature = "touch", not(feature = "mini")))]
+#[cfg(all(feature = "touch", not(alloc_frugal)))]
 use crate::gesture::GestureEngine;
 use alloc::sync::Arc;
 use core::sync::atomic::AtomicU64;
 use core::sync::atomic::Ordering;
 use core::time::Duration;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 use std::thread;
-#[cfg(all(feature = "touch", not(feature = "mini")))]
+#[cfg(all(feature = "touch", not(alloc_frugal)))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Type alias for event dispatch function.
 pub type EventDispatchFn = Arc<dyn Fn(ObjectId, &Event) + Send + Sync>;
 
 /// Helper to recover from a poisoned mutex by extracting the inner value.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 fn recover_lock<T>(
     e: std::sync::PoisonError<crate::compat::MutexGuard<'_, T>>,
 ) -> crate::compat::MutexGuard<'_, T> {
@@ -30,7 +30,7 @@ fn recover_lock<T>(
 }
 
 /// Returns the current timestamp in milliseconds since UNIX epoch.
-#[cfg(all(feature = "touch", not(feature = "mini")))]
+#[cfg(all(feature = "touch", not(alloc_frugal)))]
 fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
 }
@@ -49,11 +49,11 @@ pub struct AnimationFrameRequest {
 /// Main event loop for processing events.
 pub struct EventLoop {
     /// Event queue for processing.
-    #[cfg_attr(feature = "mini", allow(dead_code))]
+    #[cfg_attr(alloc_frugal, allow(dead_code))]
     // Only read by the non-mini `start()`; kept to mirror the desktop API.
     // Under mini the queue uses a single-threaded channel, so the Arc is not
     // Send/Sync — that is intentional for the mini (single-threaded) profile.
-    #[cfg_attr(feature = "mini", allow(clippy::arc_with_non_send_sync))]
+    #[cfg_attr(alloc_frugal, allow(clippy::arc_with_non_send_sync))]
     queue: Arc<Mutex<EventQueue>>,
     /// Independent sender for posting events without locking the queue.
     /// Avoids deadlock with the event loop thread which holds the queue mutex
@@ -62,11 +62,11 @@ pub struct EventLoop {
     /// Shared flag indicating if the loop is running.
     running: Arc<Mutex<bool>>,
     /// Processing thread handle.
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     thread_handle: Option<thread::JoinHandle<()>>,
     /// Processing thread handle (mini stub).
-    #[cfg(feature = "mini")]
-    #[cfg_attr(feature = "mini", allow(dead_code))]
+    #[cfg(alloc_frugal)]
+    #[cfg_attr(alloc_frugal, allow(dead_code))]
     // kept to mirror the non-mini API
     thread_handle: Option<()>,
     /// Optional dispatch callback invoked for each event.
@@ -83,7 +83,7 @@ pub struct EventLoop {
 
 impl EventLoop {
     /// Creates a new event loop.
-    #[cfg_attr(feature = "mini", allow(clippy::arc_with_non_send_sync))]
+    #[cfg_attr(alloc_frugal, allow(clippy::arc_with_non_send_sync))]
     pub fn new() -> Self {
         let queue = EventQueue::new();
         let sender = queue.sender();
@@ -101,7 +101,7 @@ impl EventLoop {
     }
 
     /// Starts the event loop in a separate thread.
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     pub fn start(&mut self) {
         if *self.running.lock().unwrap_or_else(recover_lock) {
             return;
@@ -203,10 +203,10 @@ impl EventLoop {
                 // Phase 1b: Process buffered idle events with a 5ms time budget.
                 // This prevents idle processing from starving frame-critical work.
                 if !idle_events.is_empty() {
-                    #[cfg(not(feature = "mini"))]
+                    #[cfg(not(alloc_frugal))]
                     let idle_budget_start = std::time::Instant::now();
                     for (target, event) in idle_events {
-                        #[cfg(not(feature = "mini"))]
+                        #[cfg(not(alloc_frugal))]
                         if idle_budget_start.elapsed().as_millis() >= 5 {
                             break; // budget exhausted, remaining idle events are dropped
                         }
@@ -248,7 +248,7 @@ impl EventLoop {
     }
 
     /// Starts the event loop (no-op under mini/embedded).
-    #[cfg(feature = "mini")]
+    #[cfg(alloc_frugal)]
     pub fn start(&mut self) {
         *self.running.lock().unwrap_or_else(|p| p.into_inner()) = true;
     }
@@ -257,7 +257,7 @@ impl EventLoop {
     ///
     /// Mini builds do not spawn a background thread, so hosts must call this
     /// from their own frame/input loop to make `post_event` and timers live.
-    #[cfg(feature = "mini")]
+    #[cfg(alloc_frugal)]
     pub fn pump_once(&mut self) -> bool {
         if !self.is_running() {
             return false;
@@ -274,7 +274,7 @@ impl EventLoop {
     }
 
     /// Stops the event loop.
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     pub fn stop(&mut self) {
         *self.running.lock().unwrap_or_else(recover_lock) = false;
         self.timer_manager.clear();
@@ -290,7 +290,7 @@ impl EventLoop {
     }
 
     /// Stops the event loop (mini stub).
-    #[cfg(feature = "mini")]
+    #[cfg(alloc_frugal)]
     pub fn stop(&mut self) {
         *self.running.lock().unwrap_or_else(|p| p.into_inner()) = false;
         self.timer_manager.clear();
@@ -344,11 +344,11 @@ impl EventLoop {
 
     /// Checks if the event loop is running.
     pub fn is_running(&self) -> bool {
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         {
             *self.running.lock().unwrap_or_else(recover_lock)
         }
-        #[cfg(feature = "mini")]
+        #[cfg(alloc_frugal)]
         {
             *self.running.lock().unwrap_or_else(|p| p.into_inner())
         }
@@ -388,9 +388,9 @@ mod tests {
     use crate::event::types::Event;
     use crate::event::EventPriority;
     use crate::event::EventQueue;
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     use alloc::sync::Arc;
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     use core::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
@@ -445,7 +445,7 @@ mod tests {
         assert_eq!(events[2], EventPriority::Idle);
     }
 
-    #[cfg(all(not(feature = "mini"), not(target_arch = "wasm32")))]
+    #[cfg(all(not(alloc_frugal), not(target_arch = "wasm32")))]
     #[test]
     fn test_native_pump_called_on_empty_queue() {
         let mut el = EventLoop::new();
@@ -457,7 +457,7 @@ mod tests {
         }));
 
         el.start();
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         std::thread::sleep(std::time::Duration::from_millis(50));
         el.stop();
 
@@ -467,7 +467,7 @@ mod tests {
         );
     }
 
-    #[cfg(all(not(feature = "mini"), not(target_arch = "wasm32")))]
+    #[cfg(all(not(alloc_frugal), not(target_arch = "wasm32")))]
     #[test]
     fn test_event_loop_timer_integration() {
         let mut el = EventLoop::new();
@@ -482,7 +482,7 @@ mod tests {
 
         el.start_timer(1u64, 1, Duration::from_millis(20), false).unwrap();
         el.start();
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         std::thread::sleep(Duration::from_millis(150));
         el.stop();
 
@@ -492,7 +492,7 @@ mod tests {
         );
     }
 
-    #[cfg(all(not(feature = "mini"), not(target_arch = "wasm32")))]
+    #[cfg(all(not(alloc_frugal), not(target_arch = "wasm32")))]
     #[test]
     fn test_event_loop_animation_frame_dispatch() {
         let mut el = EventLoop::new();
@@ -509,7 +509,7 @@ mod tests {
 
         el.request_animation_frame(1u64).unwrap();
         el.start();
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         std::thread::sleep(Duration::from_millis(100));
         el.stop();
 
@@ -553,7 +553,7 @@ mod tests {
             EventPriority::Normal,
         );
         assert!(result.is_ok());
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         std::thread::sleep(Duration::from_millis(30));
         el.stop();
     }

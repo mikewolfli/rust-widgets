@@ -21,6 +21,10 @@ use crate::core::Font;
 use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::widget::capability::coercion::expect_f32;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 #[cfg(feature = "chart")]
 use crate::widget::chart_widgets::adapter::ChartContextAdapter;
 #[cfg(feature = "chart")]
@@ -28,6 +32,7 @@ use crate::widget::chart_widgets::charts::{
     compute_cartesian_layout, draw_cartesian_axes, draw_x_ticks, draw_y_ticks, CartesianLayout,
 };
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Converts the shared engine's float plot area into the integer [`Rect`] this
 /// widget maps data into.
@@ -302,6 +307,36 @@ impl Widget for LineChart {
 
     fn size_hint(&self) -> Size {
         crate::core::Size::new(400, 300)
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `LineChart`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch, including
+/// the `f32` → `f64` widening on read.
+impl WidgetProperties for LineChart {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "stroke_width" => Ok(CapabilityValue::Float(self.stroke_width() as f64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "stroke_width" => {
+                self.set_stroke_width(expect_f32(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["stroke_width", BASE_PROPERTY_NAMES]
     }
 }
 

@@ -4,9 +4,13 @@
 //! Multi-line text edit widget.
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
+use crate::impl_widget_property_hooks;
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::undo::{TextSnapshotCommand, UndoStack};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -213,6 +217,32 @@ impl Widget for TextEdit {
     }
     fn size_hint(&self) -> Size {
         Size::new(200, 24)
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `TextEdit`'s property contract.
+///
+/// `WidgetKind::TextEdit` is the kind the capability layer pairs with the
+/// [`TerminalView`](crate::widget::TerminalView) control
+/// (`capability::properties::terminal_view_capability`), so the old centralised
+/// `TextEdit` arms were answered by `TerminalView`, not by this widget — despite
+/// `TEXT_EDIT_PROPERTIES` existing, its names are all marked non-readable and
+/// non-writable, so the multi-line editor below never served a property. The
+/// contract for the kind lives beside `TerminalView`; this widget publishes none
+/// of its own rather than claiming another control's.
+impl WidgetProperties for TextEdit {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        base_property_get(self, name)
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        base_property_set(self, name, value)
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        crate::widget::capability::properties_trait::BASE_PROPERTY_NAMES
     }
 }
 impl EventHandler for TextEdit {

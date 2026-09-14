@@ -13,7 +13,12 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack};
+use crate::widget::capability::coercion::expect_string;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -338,6 +343,37 @@ impl Widget for ShortcutEditor {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(300, 200)
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `ShortcutEditor`'s property contract.
+///
+/// The writer takes `&str` (`set_filter`) rather than an owned `String`, so the
+/// coerced value is borrowed before the call — the same shape the old arm used.
+impl WidgetProperties for ShortcutEditor {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "filter_text" => Ok(CapabilityValue::String(self.filter_text().to_string())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "filter_text" => {
+                let text = expect_string(value)?;
+                self.set_filter(&text);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        // Mirrors `SHORTCUT_EDITOR_PROPERTIES`.
+        property_names_of!["filter_text", BASE_PROPERTY_NAMES]
     }
 }
 

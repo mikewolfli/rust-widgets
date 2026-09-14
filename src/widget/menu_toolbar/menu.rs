@@ -6,7 +6,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::widget::capability::coercion::expect_string;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 /// A single item in a menu.
 #[derive(Debug, Clone)]
 pub struct MenuEntry {
@@ -233,7 +238,43 @@ impl Widget for Menu {
         self.base.hide();
         self.about_to_hide.emit();
     }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
 }
+
+/// `Menu`'s property contract.
+///
+/// Only `title` is writable; `item_count` and `hovered_index` describe the menu's
+/// current contents and pointer state, so they are read-only. `hovered_index` is
+/// optional and published as `Null` when nothing is hovered.
+impl WidgetProperties for Menu {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "title" => Ok(CapabilityValue::String(self.title().to_string())),
+            "item_count" => Ok(CapabilityValue::UInt(self.items().len() as u64)),
+            "hovered_index" => match self.hovered_index() {
+                Some(idx) => Ok(CapabilityValue::UInt(idx as u64)),
+                None => Ok(CapabilityValue::Null),
+            },
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "title" => {
+                self.set_title(expect_string(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["title", "item_count", "hovered_index", BASE_PROPERTY_NAMES]
+    }
+}
+
 impl EventHandler for Menu {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);

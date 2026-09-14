@@ -6,9 +6,14 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::widget::capability::coercion::{expect_bool, expect_string};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 #[cfg(feature = "image")]
 use crate::widget::Image;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 /// Button interaction state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ButtonState {
@@ -159,7 +164,54 @@ impl Widget for Button {
         let text_w = self.text().len() as u32 * 8 + 20;
         Size::new(text_w.max(75), 28)
     }
+
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
 }
+
+/// `Button`'s property contract.
+///
+/// This is the reference implementation for the property layer: a control names
+/// its own properties here, reads and writes them against its own fields, and
+/// forwards every name it does not recognise to the shared base helpers. Adding a
+/// property to a control means editing this block and nothing else — the read
+/// path, write path and published names all come from it.
+impl WidgetProperties for Button {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "text" => Ok(CapabilityValue::String(self.text().to_string())),
+            "pressed" => Ok(CapabilityValue::Bool(self.is_pressed())),
+            "default" => Ok(CapabilityValue::Bool(self.is_default())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "text" => {
+                self.set_text(expect_string(value)?);
+                Ok(())
+            }
+            "pressed" => {
+                self.set_pressed(expect_bool(value)?);
+                Ok(())
+            }
+            "default" => {
+                self.set_default(expect_bool(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        // Mirrors `BUTTON_PROPERTIES` for the properties this control owns; the
+        // shared four are appended from `BASE_PROPERTY_NAMES` so they are not
+        // retyped per control.
+        property_names_of!["text", "pressed", "default", BASE_PROPERTY_NAMES]
+    }
+}
+
 impl EventHandler for Button {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
@@ -267,7 +319,7 @@ mod tests {
     use super::*;
     use crate::core::{Color, Point, Rect, Size};
     use crate::event::Event;
-    #[cfg(all(feature = "image", not(feature = "mini")))]
+    #[cfg(all(feature = "image", not(alloc_frugal)))]
     use crate::widget::Image;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
@@ -277,13 +329,65 @@ mod tests {
         Button::new("Click".into(), Rect::new(10, 20, 120, 36))
     }
 
-    #[cfg(all(feature = "image", not(feature = "mini")))]
+    #[cfg(all(feature = "image", not(alloc_frugal)))]
     fn make_image() -> Image {
         Image::from_rgba(vec![0u8; 8 * 8 * 4], 8, 8)
     }
 
     fn rect() -> Rect {
         Rect::new(10, 20, 120, 36)
+    }
+
+    // ── Property contract (BLUE15 C-1) ─────────────────────────────────
+
+    /// `Button`'s own properties must round-trip through the new contract.
+    ///
+    /// This is the reference test for every other control's migration: it proves
+    /// the read path, the write path and the published name list describe the same
+    /// properties, which the centralised `match kind()` dispatch could not
+    /// guarantee (a name could be writable and unreadable, or listed and absent).
+    #[test]
+    fn widget_properties_round_trip() {
+        let mut button = make_button();
+
+        assert_eq!(button.get("text"), Ok(CapabilityValue::String("Click".into())));
+        button.set("text", CapabilityValue::String("Go".into())).expect("text is writable");
+        assert_eq!(button.get("text"), Ok(CapabilityValue::String("Go".into())));
+
+        assert_eq!(button.get("pressed"), Ok(CapabilityValue::Bool(false)));
+        button.set("pressed", CapabilityValue::Bool(true)).expect("pressed is writable");
+        assert_eq!(button.get("pressed"), Ok(CapabilityValue::Bool(true)));
+
+        button.set("default", CapabilityValue::Bool(true)).expect("default is writable");
+        assert_eq!(button.get("default"), Ok(CapabilityValue::Bool(true)));
+    }
+
+    /// The shared properties must work through `Button` too, not only through the
+    /// base helpers directly — that forwarding is what a migration can silently
+    /// break.
+    #[test]
+    fn shared_properties_are_forwarded_to_the_base_contract() {
+        let mut button = make_button();
+
+        assert_eq!(button.get("enabled"), Ok(CapabilityValue::Bool(true)));
+        button.set("enabled", CapabilityValue::Bool(false)).expect("enabled is writable");
+        assert!(!button.is_enabled(), "the base state must actually change");
+
+        assert_eq!(button.get("geometry"), Ok(CapabilityValue::String("10,20,120,36".into())));
+    }
+
+    /// Every name `Button` publishes must be readable, and its own names must all
+    /// be present — a `property_names` that omits a property makes it invisible to
+    /// schema consumers even though `get` would answer.
+    #[test]
+    fn published_names_match_the_contract() {
+        let button = make_button();
+        let names = button.property_names();
+
+        for required in ["text", "pressed", "default"] {
+            assert!(names.contains(&required), "property_names must publish {required:?}");
+            assert!(button.get(required).is_ok(), "published {required:?} must be readable");
+        }
     }
 
     // ── 1. Button creation ─────────────────────────────────────────────
@@ -488,7 +592,7 @@ mod tests {
         assert!(b.text().is_empty());
     }
 
-    #[cfg(all(feature = "image", not(feature = "mini")))]
+    #[cfg(all(feature = "image", not(alloc_frugal)))]
     #[test]
     fn set_icon_and_default_icon() {
         let mut b = make_button();

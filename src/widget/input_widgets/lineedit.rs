@@ -8,7 +8,12 @@ use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::undo::{TextSnapshotCommand, UndoStack};
 
+use crate::widget::capability::coercion::{expect_bool, expect_string, expect_usize};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
 /// Single-line text edit widget.
@@ -286,7 +291,7 @@ impl LineEdit {
         self.set_text(String::new());
     }
     /// Copy the current selection to the platform clipboard (no-op when empty).
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     fn copy_selection_to_clipboard(&self) {
         let selection = self.selected_text();
         if !selection.is_empty() {
@@ -319,7 +324,71 @@ impl Widget for LineEdit {
         let text_w = self.text().len() as u32 * 8 + 10;
         Size::new(text_w.max(80), 24)
     }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
 }
+
+/// `LineEdit`'s property contract.
+///
+/// `echo_mode` is intentionally absent: the centralised layer never exposed it,
+/// so publishing it here would add a property rather than preserve one.
+impl WidgetProperties for LineEdit {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "text" => Ok(CapabilityValue::String(self.text().to_string())),
+            "placeholder_text" => Ok(CapabilityValue::String(self.placeholder_text().to_string())),
+            "max_length" => match self.max_length() {
+                Some(len) => Ok(CapabilityValue::UInt(len as u64)),
+                None => Ok(CapabilityValue::Null),
+            },
+            "read_only" => Ok(CapabilityValue::Bool(self.is_read_only())),
+            "cursor_position" => Ok(CapabilityValue::UInt(self.cursor_position() as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "text" => {
+                self.set_text(expect_string(value)?);
+                Ok(())
+            }
+            "placeholder_text" => {
+                self.set_placeholder_text(expect_string(value)?);
+                Ok(())
+            }
+            "max_length" => {
+                match value {
+                    CapabilityValue::Null => self.set_max_length(None),
+                    other => self.set_max_length(Some(expect_usize(other)?)),
+                }
+                Ok(())
+            }
+            "read_only" => {
+                self.set_read_only(expect_bool(value)?);
+                Ok(())
+            }
+            "cursor_position" => {
+                self.set_cursor_position(expect_usize(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        // Mirrors `LINE_EDIT_PROPERTIES`.
+        property_names_of![
+            "text",
+            "placeholder_text",
+            "max_length",
+            "read_only",
+            "cursor_position",
+            BASE_PROPERTY_NAMES
+        ]
+    }
+}
+
 impl EventHandler for LineEdit {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
@@ -328,7 +397,7 @@ impl EventHandler for LineEdit {
         }
         if self.read_only {
             // Read-only fields still allow copying the current selection.
-            #[cfg(not(feature = "mini"))]
+            #[cfg(not(alloc_frugal))]
             if let Event::KeyPress { key: 67, modifiers: 2 } = event {
                 self.copy_selection_to_clipboard();
             }
@@ -408,7 +477,7 @@ impl EventHandler for LineEdit {
                     }
                     86 if modifiers & 2 != 0 => {
                         // Ctrl+V: Paste from the platform clipboard.
-                        #[cfg(not(feature = "mini"))]
+                        #[cfg(not(alloc_frugal))]
                         {
                             if !self.read_only {
                                 let pasted = crate::get_clipboard_text();
@@ -417,7 +486,7 @@ impl EventHandler for LineEdit {
                                 }
                             }
                         }
-                        #[cfg(feature = "mini")]
+                        #[cfg(alloc_frugal)]
                         {
                             // Clipboard integration is unavailable in the mini profile.
                             self.base.redraw_requested.emit();
@@ -425,11 +494,11 @@ impl EventHandler for LineEdit {
                     }
                     67 if modifiers & 2 != 0 => {
                         // Ctrl+C: Copy selection to the platform clipboard.
-                        #[cfg(not(feature = "mini"))]
+                        #[cfg(not(alloc_frugal))]
                         {
                             self.copy_selection_to_clipboard();
                         }
-                        #[cfg(feature = "mini")]
+                        #[cfg(alloc_frugal)]
                         {
                             // Clipboard integration is unavailable in the mini profile.
                             self.base.redraw_requested.emit();
@@ -437,7 +506,7 @@ impl EventHandler for LineEdit {
                     }
                     88 if modifiers & 2 != 0 => {
                         // Ctrl+X: Copy selection, then delete it.
-                        #[cfg(not(feature = "mini"))]
+                        #[cfg(not(alloc_frugal))]
                         {
                             let selection = self.selected_text();
                             if !selection.is_empty() {
@@ -445,7 +514,7 @@ impl EventHandler for LineEdit {
                                 self.backspace(); // removes the selection
                             }
                         }
-                        #[cfg(feature = "mini")]
+                        #[cfg(alloc_frugal)]
                         {
                             // Clipboard integration is unavailable in the mini profile.
                             self.base.redraw_requested.emit();
@@ -749,7 +818,7 @@ mod tests {
         let _return_pressed = &le.return_pressed;
     }
 
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     #[test]
     fn lineedit_clipboard_copy_paste_cut() {
         use crate::event::Event::KeyPress;

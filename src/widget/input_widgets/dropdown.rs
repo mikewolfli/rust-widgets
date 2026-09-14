@@ -11,7 +11,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
+use crate::widget::capability::coercion::{expect_bool, expect_usize};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Height of each item row in the expanded dropdown list (pixels).
 const ITEM_HEIGHT: u32 = 20;
@@ -145,6 +150,49 @@ impl Widget for Dropdown {
     fn size_hint(&self) -> crate::core::Size {
         let max_text_w = self.items.iter().map(|s| s.len() as u32).max().unwrap_or(6) * 8 + 30; // + dropdown arrow area
         crate::core::Size::new(max_text_w.max(80), 24)
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `Dropdown`'s property contract.
+///
+/// `text` is the selected item's label and follows the old arm's shape: an empty
+/// string (not `Null`) when nothing is selected, so callers do not need a
+/// two-way `Option` check for a display-only value.
+impl WidgetProperties for Dropdown {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "text" => match self.selected_text() {
+                Some(text) => Ok(CapabilityValue::String(text.to_string())),
+                None => Ok(CapabilityValue::String(String::new())),
+            },
+            "selected_index" => Ok(CapabilityValue::UInt(self.selected_index() as u64)),
+            "item_count" => Ok(CapabilityValue::UInt(self.items().len() as u64)),
+            "expanded" => Ok(CapabilityValue::Bool(self.is_expanded())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "selected_index" => {
+                self.set_selected_index(expect_usize(value)?);
+                Ok(())
+            }
+            "expanded" => {
+                self.set_expanded(expect_bool(value)?);
+                Ok(())
+            }
+            // `text` follows the selection and `item_count` the item list.
+            "text" | "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        // Mirrors `DROPDOWN_PROPERTIES`.
+        property_names_of!["text", "selected_index", "item_count", "expanded", BASE_PROPERTY_NAMES]
     }
 }
 

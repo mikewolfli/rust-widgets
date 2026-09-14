@@ -18,33 +18,67 @@ fn main() {
 
 /// Declares derived cfgs so gating conditions cannot drift apart.
 ///
-/// `full_widgets` is true exactly when the build has the complete widget set:
-/// a real device profile **and** neither of the stripped-down profiles. Every
-/// module in `widget/` that holds profile-specific widgets is gated on it,
-/// and so is every reference to those modules.
+/// Four aliases are emitted. They answer four genuinely different questions, and
+/// the distinctions matter — `--no-default-features --features gpu` selects no
+/// device profile at all, and `--no-default-features --features embedded` has no
+/// OS runtime, so no single `not(...)` expression substitutes for another:
 ///
-/// Before this alias existed, `widget/mod.rs` used
+/// - `alloc_frugal` — `mini` is on. The build has no platform singleton and runs
+///   on a tight allocation budget. Its complement (`not(feature = "mini")`) was
+///   hand-written at ~1000 call sites.
+/// - `widgets_unstripped` — neither `mini` nor `embedded`. The widget set was not
+///   deliberately reduced. This is the exact meaning of the
+///   `not(any(feature = "mini", feature = "embedded"))` conjunction that was
+///   hand-written at 350+ call sites.
+/// - `full_widgets` — a real device profile (`desktop`/`tablet`/`mobile`) **and**
+///   unstripped. Adds the requirement that the transport/API layer for a device
+///   exists, so modules needing `capability`/`app` are only built here.
+/// - `stripped_widgets` — `mini` or `embedded` is on. The complement of the
+///   second for every build that selects a profile.
+///
+/// Before these aliases existed, `widget/mod.rs` used
 /// `not(any(mini, embedded)) + any(desktop, tablet, mobile)` while several
 /// `capability/*.rs` importers used only `not(mini)`. The two conditions are not
 /// equivalent under `embedded`, so those imports resolved to missing modules and
-/// the `embedded` profile failed to compile with 370 errors. Having one name
-/// makes that class of mismatch unrepresentable.
+/// the `embedded` profile failed to compile with 370 errors. Having one name per
+/// question makes that class of mismatch unrepresentable.
+///
+/// The names exist so a module can state its gate by *intent* (BLUE15 rule #57).
+/// Writing the same conjunction at 1000+ call sites is what guarantees drift.
 fn declare_cfg_aliases() {
     // `cargo:rustc-check-cfg` keeps `--check-cfg` quiet on recent toolchains.
     println!("cargo:rustc-check-cfg=cfg(full_widgets)");
+    println!("cargo:rustc-check-cfg=cfg(stripped_widgets)");
+    println!("cargo:rustc-check-cfg=cfg(widgets_unstripped)");
+    println!("cargo:rustc-check-cfg=cfg(alloc_frugal)");
+    println!("cargo:rustc-check-cfg=cfg(embedded_surface)");
 
     let has_profile =
         ["desktop", "tablet", "mobile"].iter().any(|feature| feature_enabled(feature));
-    let is_stripped = ["mini", "embedded"].iter().any(|feature| feature_enabled(feature));
+    let is_mini = feature_enabled("mini");
+    let is_embedded = feature_enabled("embedded");
+    let is_stripped = is_mini || is_embedded;
 
+    if is_mini {
+        println!("cargo:rustc-cfg=alloc_frugal");
+    }
+    if is_embedded {
+        println!("cargo:rustc-cfg=embedded_surface");
+    }
+    if !is_stripped {
+        println!("cargo:rustc-cfg=widgets_unstripped");
+    }
     if has_profile && !is_stripped {
         println!("cargo:rustc-cfg=full_widgets");
+    }
+    if is_stripped {
+        println!("cargo:rustc-cfg=stripped_widgets");
     }
 
     // Re-run when any of the inputs change; Cargo tracks feature changes itself,
     // but the explicit list documents the dependency and keeps `cargo build`
     // correct for out-of-tree invocations that set the env vars directly.
-    for feature in ["desktop", "tablet", "mobile", "mini", "embedded"] {
+    for feature in ["desktop", "tablet", "mobile", "mini", "embedded", "portable"] {
         println!("cargo:rerun-if-env-changed=CARGO_FEATURE_{}", feature.to_uppercase());
     }
 }

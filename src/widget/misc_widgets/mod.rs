@@ -4,33 +4,33 @@
 //! Miscellaneous widget types — specialized controls that don't fit
 //! neatly into a single category.
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub mod avatar;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub mod barcode_scanner;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub mod bezier_curve_editor;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub mod date_range_picker;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub mod mobile_date_picker;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub mod qr_code;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub mod segmented_button;
 
 // Re-exports
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub use avatar::Avatar;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub use barcode_scanner::{BarcodeFormat, BarcodeResult, BarcodeScanner};
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub use bezier_curve_editor::BezierCurveEditor;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub use date_range_picker::DateRangePicker;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub use mobile_date_picker::MobileDatePicker;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub use qr_code::QRCode;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub use segmented_button::{Segment, SegmentedButton};

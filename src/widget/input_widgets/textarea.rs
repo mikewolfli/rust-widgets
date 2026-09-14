@@ -7,7 +7,12 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
 use crate::undo::{TextSnapshotCommand, UndoStack};
+use crate::widget::capability::coercion::{expect_bool, expect_string};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -264,6 +269,43 @@ impl Widget for TextArea {
         let w = (max_line_width * 8 + 10).max(120);
         let h = (line_count as u32 * 16 + 10).max(60);
         Size::new(w, h)
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `TextArea`'s property contract.
+impl WidgetProperties for TextArea {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "text" => Ok(CapabilityValue::String(self.text().to_string())),
+            "placeholder" => Ok(CapabilityValue::String(self.placeholder().to_string())),
+            "read_only" => Ok(CapabilityValue::Bool(self.is_read_only())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "text" => {
+                self.set_text(expect_string(value)?);
+                Ok(())
+            }
+            "placeholder" => {
+                self.set_placeholder(expect_string(value)?);
+                Ok(())
+            }
+            "read_only" => {
+                self.set_read_only(expect_bool(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        // Mirrors `TEXT_AREA_PROPERTIES`.
+        property_names_of!["text", "placeholder", "read_only", BASE_PROPERTY_NAMES]
     }
 }
 

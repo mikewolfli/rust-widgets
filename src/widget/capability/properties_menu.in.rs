@@ -6,7 +6,7 @@
 
 macro_rules! impl_properties_menu {
     () => {
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const ACTION_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "text",
@@ -52,7 +52,7 @@ macro_rules! impl_properties_menu {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const MENU_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "title",
@@ -74,7 +74,7 @@ macro_rules! impl_properties_menu {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const MENU_BAR_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "entry_count",
@@ -96,7 +96,7 @@ macro_rules! impl_properties_menu {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const TOOL_BAR_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "orientation",
@@ -130,7 +130,7 @@ macro_rules! impl_properties_menu {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const DROPDOWN_MENU_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "item_count",
@@ -152,7 +152,7 @@ macro_rules! impl_properties_menu {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const MENU_BUTTON_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "text",
@@ -174,7 +174,7 @@ macro_rules! impl_properties_menu {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const TOOL_BUTTON_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "text",
@@ -190,7 +190,7 @@ macro_rules! impl_properties_menu {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const STATUS_BAR_PROPERTIES: &[PropertySchema] = &[PropertySchema {
             name: "message",
             value_kind: PropertyValueKind::String,

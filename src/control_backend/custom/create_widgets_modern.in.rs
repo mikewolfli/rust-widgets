@@ -15,12 +15,12 @@
 //
 // Methods for `WidgetKind` variants that exist in every profile (Arc, Switch,
 // Frame, ...) are emitted ungated; variants gated by
-// `#[cfg(not(feature = "mini"))]` in `src/widget/kind.rs` carry the same gate
+// `#[cfg(not(alloc_frugal))]` in `src/widget/kind.rs` carry the same gate
 // here so the `mini` profile still compiles.
 
 macro_rules! impl_modern_widgets {
     () => {
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_adaptive_scaffold(
             &self,
             parent: ObjectId,
@@ -49,7 +49,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_animated_image(
             &self,
             parent: ObjectId,
@@ -78,7 +78,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_app_bar(
             &self,
             parent: ObjectId,
@@ -135,7 +135,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_audio_visualizer(
             &self,
             parent: ObjectId,
@@ -164,7 +164,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_auto_complete_edit(
             &self,
             parent: ObjectId,
@@ -193,7 +193,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_avatar(
             &self,
             parent: ObjectId,
@@ -222,7 +222,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_badge(
             &self,
             parent: ObjectId,
@@ -251,7 +251,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_bar_chart(
             &self,
             parent: ObjectId,
@@ -280,7 +280,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_barcode_scanner(
             &self,
             parent: ObjectId,
@@ -309,7 +309,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_bezier_curve_editor(
             &self,
             parent: ObjectId,
@@ -338,7 +338,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_bottom_navigation_bar(
             &self,
             parent: ObjectId,
@@ -367,7 +367,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_bottom_sheet(
             &self,
             parent: ObjectId,
@@ -396,7 +396,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_camera_preview(
             &self,
             parent: ObjectId,
@@ -425,7 +425,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_carousel(
             &self,
             parent: ObjectId,
@@ -454,7 +454,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_chip(
             &self,
             parent: ObjectId,
@@ -483,7 +483,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_color_history(
             &self,
             parent: ObjectId,
@@ -512,7 +512,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_color_well(
             &self,
             parent: ObjectId,
@@ -541,7 +541,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_cupertino_alert_dialog(
             &self,
             parent: ObjectId,
@@ -570,7 +570,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_cupertino_date_picker(
             &self,
             parent: ObjectId,
@@ -599,7 +599,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_cupertino_navigation_bar(
             &self,
             parent: ObjectId,
@@ -628,7 +628,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_cupertino_segmented_control(
             &self,
             parent: ObjectId,
@@ -657,7 +657,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_cupertino_slider(
             &self,
             parent: ObjectId,
@@ -686,7 +686,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_cupertino_switch(
             &self,
             parent: ObjectId,
@@ -715,7 +715,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_date_range_picker(
             &self,
             parent: ObjectId,
@@ -744,7 +744,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_divider(
             &self,
             parent: ObjectId,
@@ -801,7 +801,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_dropdown_menu(
             &self,
             parent: ObjectId,
@@ -830,7 +830,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_editable_combo_box(
             &self,
             parent: ObjectId,
@@ -859,7 +859,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_empty_state(
             &self,
             parent: ObjectId,
@@ -888,7 +888,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_fab(
             &self,
             parent: ObjectId,
@@ -917,7 +917,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_find_replace_dialog(
             &self,
             parent: ObjectId,
@@ -946,7 +946,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_floating_label(
             &self,
             parent: ObjectId,
@@ -975,7 +975,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_font_preview(
             &self,
             parent: ObjectId,
@@ -1032,7 +1032,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_grid_table(
             &self,
             parent: ObjectId,
@@ -1061,7 +1061,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_hero_animation(
             &self,
             parent: ObjectId,
@@ -1090,7 +1090,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_icon(
             &self,
             parent: ObjectId,
@@ -1119,7 +1119,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_image_gallery(
             &self,
             parent: ObjectId,
@@ -1176,7 +1176,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_ime_preedit(
             &self,
             parent: ObjectId,
@@ -1205,7 +1205,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_inplace_editor(
             &self,
             parent: ObjectId,
@@ -1290,7 +1290,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_line_chart(
             &self,
             parent: ObjectId,
@@ -1319,7 +1319,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_lottie_widget(
             &self,
             parent: ObjectId,
@@ -1348,7 +1348,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_masked_edit(
             &self,
             parent: ObjectId,
@@ -1377,7 +1377,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_masonry_layout(
             &self,
             parent: ObjectId,
@@ -1406,7 +1406,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_material_navigation_rail(
             &self,
             parent: ObjectId,
@@ -1435,7 +1435,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_material_snackbar(
             &self,
             parent: ObjectId,
@@ -1464,7 +1464,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_menu_button(
             &self,
             parent: ObjectId,
@@ -1577,7 +1577,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_mobile_date_picker(
             &self,
             parent: ObjectId,
@@ -1606,7 +1606,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_modal_bottom_sheet(
             &self,
             parent: ObjectId,
@@ -1635,7 +1635,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_multi_select_combo_box(
             &self,
             parent: ObjectId,
@@ -1664,7 +1664,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_navigation_drawer(
             &self,
             parent: ObjectId,
@@ -1693,7 +1693,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_navigation_stack(
             &self,
             parent: ObjectId,
@@ -1722,7 +1722,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_pager_page_view(
             &self,
             parent: ObjectId,
@@ -1751,7 +1751,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_pie_chart(
             &self,
             parent: ObjectId,
@@ -1780,7 +1780,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_popover(
             &self,
             parent: ObjectId,
@@ -1809,7 +1809,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_progress_circle(
             &self,
             parent: ObjectId,
@@ -1838,7 +1838,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_properties_panel(
             &self,
             parent: ObjectId,
@@ -1867,7 +1867,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_qr_code(
             &self,
             parent: ObjectId,
@@ -1896,7 +1896,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_range_slider(
             &self,
             parent: ObjectId,
@@ -1925,7 +1925,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_rating(
             &self,
             parent: ObjectId,
@@ -1954,7 +1954,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_refresh_control(
             &self,
             parent: ObjectId,
@@ -1983,7 +1983,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_rive_widget(
             &self,
             parent: ObjectId,
@@ -2040,7 +2040,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_safe_area(
             &self,
             parent: ObjectId,
@@ -2069,7 +2069,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_search_bar(
             &self,
             parent: ObjectId,
@@ -2098,7 +2098,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_search_box(
             &self,
             parent: ObjectId,
@@ -2127,7 +2127,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_segmented_button(
             &self,
             parent: ObjectId,
@@ -2156,7 +2156,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_shortcut_editor(
             &self,
             parent: ObjectId,
@@ -2185,7 +2185,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_skeleton_loader(
             &self,
             parent: ObjectId,
@@ -2214,7 +2214,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_sparkline(
             &self,
             parent: ObjectId,
@@ -2271,7 +2271,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_stepper(
             &self,
             parent: ObjectId,
@@ -2300,7 +2300,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_swipe_to_dismiss(
             &self,
             parent: ObjectId,
@@ -2357,7 +2357,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_tab_view(
             &self,
             parent: ObjectId,
@@ -2386,7 +2386,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_tag_input(
             &self,
             parent: ObjectId,
@@ -2471,7 +2471,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_tooltip(
             &self,
             parent: ObjectId,
@@ -2500,7 +2500,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_video_player(
             &self,
             parent: ObjectId,
@@ -2529,7 +2529,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_wizard_dialog(
             &self,
             parent: ObjectId,
@@ -2558,7 +2558,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_freeform_shape(
             &self,
             parent: ObjectId,
@@ -2587,7 +2587,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_tab_bar(
             &self,
             parent: ObjectId,
@@ -2616,7 +2616,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_pie_menu(
             &self,
             parent: ObjectId,
@@ -2645,7 +2645,7 @@ macro_rules! impl_modern_widgets {
             widget_id
         }
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_ribbon_bar(
             &self,
             parent: ObjectId,

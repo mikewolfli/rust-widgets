@@ -21,6 +21,10 @@
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::widget::capability::coercion::expect_f32;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 #[cfg(feature = "chart")]
 use crate::widget::chart_widgets::adapter::ChartContextAdapter;
 #[cfg(feature = "chart")]
@@ -30,6 +34,7 @@ use crate::widget::chart_widgets::charts::{
 #[cfg(feature = "chart")]
 use crate::widget::chart_widgets::types::ChartContext;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Converts the shared engine's float plot area into the integer [`Rect`] this
 /// widget positions bars in.
@@ -252,6 +257,36 @@ impl Widget for BarChart {
 
     fn size_hint(&self) -> Size {
         crate::core::Size::new(400, 300)
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `BarChart`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch, including
+/// the `f32` → `f64` widening on read.
+impl WidgetProperties for BarChart {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "bar_spacing" => Ok(CapabilityValue::Float(self.bar_spacing() as f64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "bar_spacing" => {
+                self.set_bar_spacing(expect_f32(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["bar_spacing", BASE_PROPERTY_NAMES]
     }
 }
 

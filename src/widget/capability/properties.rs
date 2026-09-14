@@ -147,8 +147,8 @@ pub(crate) fn combo_box_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn dial_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Dial,
@@ -182,8 +182,8 @@ pub(crate) fn group_box_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn splitter_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Splitter,
@@ -195,8 +195,8 @@ pub(crate) fn splitter_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn lcd_number_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::LCDNumber,
@@ -208,8 +208,8 @@ pub(crate) fn lcd_number_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn command_link_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::CommandLink,
@@ -221,8 +221,8 @@ pub(crate) fn command_link_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn font_combo_box_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::FontComboBox,
@@ -247,8 +247,8 @@ pub(crate) fn font_combo_box_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn action_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Action,
@@ -260,8 +260,8 @@ pub(crate) fn action_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn tool_box_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Toolbox,
@@ -273,8 +273,8 @@ pub(crate) fn tool_box_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn tab_bar_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::TabBar,
@@ -286,8 +286,8 @@ pub(crate) fn tab_bar_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn calendar_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Calendar,
@@ -299,8 +299,8 @@ pub(crate) fn calendar_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn date_edit_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::DatePicker,
@@ -312,8 +312,8 @@ pub(crate) fn date_edit_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn time_edit_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::TimePicker,
@@ -336,8 +336,8 @@ pub(crate) fn line_edit_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn list_view_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ListView,
@@ -349,8 +349,8 @@ pub(crate) fn list_view_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn tree_view_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::TreeView,
@@ -362,8 +362,8 @@ pub(crate) fn tree_view_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn table_widget_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Table,
@@ -375,8 +375,8 @@ pub(crate) fn table_widget_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn data_grid_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Table,
@@ -396,8 +396,8 @@ pub(crate) fn data_grid_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn tree_table_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::TreeView,
@@ -409,8 +409,8 @@ pub(crate) fn tree_table_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn virtual_table_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Table,
@@ -432,8 +432,8 @@ pub(crate) fn virtual_table_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn virtual_list_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::DataView,
@@ -445,7 +445,7 @@ pub(crate) fn virtual_list_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn menu_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Menu,
@@ -457,8 +457,8 @@ pub(crate) fn menu_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn menu_bar_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::MenuBar,
@@ -470,8 +470,8 @@ pub(crate) fn menu_bar_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn tool_bar_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ToolBar,
@@ -488,8 +488,8 @@ pub(crate) fn tool_bar_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn ribbon_bar_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::RibbonBar,
@@ -501,8 +501,8 @@ pub(crate) fn ribbon_bar_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn color_picker_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ColorDialog,
@@ -514,8 +514,8 @@ pub(crate) fn color_picker_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn code_editor_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::RichEdit,
@@ -527,8 +527,8 @@ pub(crate) fn code_editor_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn gantt_widget_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Chart,
@@ -540,8 +540,8 @@ pub(crate) fn gantt_widget_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn terminal_view_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::TextEdit,
@@ -553,8 +553,8 @@ pub(crate) fn terminal_view_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn snackbar_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::StatusBar,
@@ -566,8 +566,8 @@ pub(crate) fn snackbar_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn map_view_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Canvas,
@@ -579,8 +579,8 @@ pub(crate) fn map_view_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn media_player_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::WebEngineView,
@@ -592,8 +592,8 @@ pub(crate) fn media_player_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn breadcrumb_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Panel,
@@ -605,8 +605,8 @@ pub(crate) fn breadcrumb_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn split_button_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ToolButton,
@@ -618,9 +618,9 @@ pub(crate) fn split_button_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn segmented_control_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ToggleButton,
@@ -632,8 +632,8 @@ pub(crate) fn segmented_control_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn chip_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::CheckListBox,
@@ -645,8 +645,8 @@ pub(crate) fn chip_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn grid_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Grid,
@@ -665,7 +665,7 @@ pub(crate) fn grid_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn freeform_shape_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::FreeformShape,
@@ -678,8 +678,8 @@ pub(crate) fn freeform_shape_capability() -> WidgetCapability {
 }
 
 // ── Dialog widget capabilities ────────────────────────────────
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn message_box_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::MessageBox,
@@ -691,8 +691,8 @@ pub(crate) fn message_box_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn file_dialog_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::FileDialog,
@@ -704,8 +704,8 @@ pub(crate) fn file_dialog_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn font_dialog_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::FontDialog,
@@ -717,8 +717,8 @@ pub(crate) fn font_dialog_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn input_dialog_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::InputDialog,
@@ -736,8 +736,8 @@ pub(crate) fn input_dialog_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn progress_dialog_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ProgressDialog,
@@ -749,8 +749,8 @@ pub(crate) fn progress_dialog_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn popup_window_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::PopupWindow,
@@ -768,7 +768,7 @@ pub(crate) fn popup_window_capability() -> WidgetCapability {
 /// Not registered in mini mode, but kept compiled so the shared
 /// `SCROLL_AREA_PROPERTIES` table (defined in the ungated
 /// `properties_container.in.rs`) stays reachable.
-#[cfg_attr(feature = "mini", allow(dead_code))]
+#[cfg_attr(alloc_frugal, allow(dead_code))]
 pub(crate) fn scroll_area_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ScrollArea,
@@ -780,8 +780,8 @@ pub(crate) fn scroll_area_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn tab_widget_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::TabWidget,
@@ -800,8 +800,8 @@ pub(crate) fn tab_widget_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn stacked_widget_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::StackedWidget,
@@ -813,8 +813,8 @@ pub(crate) fn stacked_widget_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn collapsible_pane_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::CollapsiblePane,
@@ -826,8 +826,8 @@ pub(crate) fn collapsible_pane_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn dock_widget_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::DockWidget,
@@ -839,8 +839,8 @@ pub(crate) fn dock_widget_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn mdi_area_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::MdiArea,
@@ -853,8 +853,8 @@ pub(crate) fn mdi_area_capability() -> WidgetCapability {
 }
 
 // ── Text/input widget capabilities ───────────────────────────
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn text_edit_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::TextEdit,
@@ -873,8 +873,8 @@ pub(crate) fn text_edit_capability() -> WidgetCapability {
 }
 
 // ── Web widget capabilities ──────────────────────────────────
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn web_view_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::WebEngineView,
@@ -894,8 +894,8 @@ pub(crate) fn web_view_capability() -> WidgetCapability {
 }
 
 // ── Advanced widget capabilities ─────────────────────────────
-#[cfg(not(feature = "mini"))]
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn pie_menu_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::PieMenu,
@@ -911,7 +911,7 @@ pub(crate) fn pie_menu_capability() -> WidgetCapability {
 // These are NOT gated behind `
 
 // ── Always-available widget capability functions ──────────────────
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn toggle_button_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ToggleButton,
@@ -1066,7 +1066,7 @@ pub(crate) fn tile_view_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn date_time_edit_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::DateTimePicker,
@@ -1079,7 +1079,7 @@ pub(crate) fn date_time_edit_capability() -> WidgetCapability {
 }
 
 // ── Group A property arrays (non-mini) ─────────────────────────
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn canvas_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Canvas,
@@ -1091,7 +1091,7 @@ pub(crate) fn canvas_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn chart_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Chart,
@@ -1103,7 +1103,7 @@ pub(crate) fn chart_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn search_box_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::SearchBox,
@@ -1115,7 +1115,7 @@ pub(crate) fn search_box_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn badge_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Badge,
@@ -1127,7 +1127,7 @@ pub(crate) fn badge_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn skeleton_loader_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::SkeletonLoader,
@@ -1139,7 +1139,7 @@ pub(crate) fn skeleton_loader_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn fab_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::FAB,
@@ -1151,7 +1151,7 @@ pub(crate) fn fab_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn bottom_sheet_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::BottomSheet,
@@ -1163,7 +1163,7 @@ pub(crate) fn bottom_sheet_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn bottom_navigation_bar_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::BottomNavigationBar,
@@ -1175,7 +1175,7 @@ pub(crate) fn bottom_navigation_bar_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn navigation_drawer_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::NavigationDrawer,
@@ -1187,7 +1187,7 @@ pub(crate) fn navigation_drawer_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn app_bar_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::AppBar,
@@ -1199,7 +1199,7 @@ pub(crate) fn app_bar_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn mobile_date_picker_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::MobileDatePicker,
@@ -1211,7 +1211,7 @@ pub(crate) fn mobile_date_picker_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn divider_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Divider,
@@ -1223,7 +1223,7 @@ pub(crate) fn divider_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn stepper_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Stepper,
@@ -1235,7 +1235,7 @@ pub(crate) fn stepper_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn rating_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Rating,
@@ -1247,7 +1247,7 @@ pub(crate) fn rating_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn avatar_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Avatar,
@@ -1259,7 +1259,7 @@ pub(crate) fn avatar_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn empty_state_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::EmptyState,
@@ -1271,7 +1271,7 @@ pub(crate) fn empty_state_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn color_history_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ColorHistory,
@@ -1283,7 +1283,7 @@ pub(crate) fn color_history_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn color_well_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ColorWell,
@@ -1295,7 +1295,7 @@ pub(crate) fn color_well_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn tag_input_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::TagInput,
@@ -1307,7 +1307,7 @@ pub(crate) fn tag_input_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn ime_preedit_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ImePreedit,
@@ -1319,7 +1319,7 @@ pub(crate) fn ime_preedit_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn inplace_editor_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::InplaceEditor,
@@ -1331,7 +1331,7 @@ pub(crate) fn inplace_editor_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn qr_code_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::QRCode,
@@ -1343,7 +1343,7 @@ pub(crate) fn qr_code_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn masonry_layout_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::MasonryLayout,
@@ -1355,7 +1355,7 @@ pub(crate) fn masonry_layout_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn material_snackbar_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::MaterialSnackbar,
@@ -1367,7 +1367,7 @@ pub(crate) fn material_snackbar_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn adaptive_scaffold_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::AdaptiveScaffold,
@@ -1379,7 +1379,7 @@ pub(crate) fn adaptive_scaffold_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn wizard_dialog_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::WizardDialog,
@@ -1391,7 +1391,7 @@ pub(crate) fn wizard_dialog_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn safe_area_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::SafeArea,
@@ -1403,7 +1403,7 @@ pub(crate) fn safe_area_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn cupertino_alert_dialog_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::CupertinoAlertDialog,
@@ -1415,7 +1415,7 @@ pub(crate) fn cupertino_alert_dialog_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn cupertino_slider_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::CupertinoSlider,
@@ -1427,7 +1427,7 @@ pub(crate) fn cupertino_slider_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn tooltip_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Tooltip,
@@ -1439,7 +1439,7 @@ pub(crate) fn tooltip_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn segmented_button_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::SegmentedButton,
@@ -1451,7 +1451,7 @@ pub(crate) fn segmented_button_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn navigation_stack_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::NavigationStack,
@@ -1463,7 +1463,7 @@ pub(crate) fn navigation_stack_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn progress_circle_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ProgressCircle,
@@ -1475,7 +1475,7 @@ pub(crate) fn progress_circle_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn icon_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Icon,
@@ -1487,7 +1487,7 @@ pub(crate) fn icon_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn dropdown_menu_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::DropdownMenu,
@@ -1499,7 +1499,7 @@ pub(crate) fn dropdown_menu_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn masked_edit_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::MaskedEdit,
@@ -1511,7 +1511,7 @@ pub(crate) fn masked_edit_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn menu_button_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::MenuButton,
@@ -1523,7 +1523,7 @@ pub(crate) fn menu_button_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn popover_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Popover,
@@ -1535,7 +1535,7 @@ pub(crate) fn popover_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn auto_complete_edit_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::AutoCompleteEdit,
@@ -1547,7 +1547,7 @@ pub(crate) fn auto_complete_edit_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn multi_select_combo_box_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::MultiSelectComboBox,
@@ -1559,7 +1559,7 @@ pub(crate) fn multi_select_combo_box_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn range_slider_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::RangeSlider,
@@ -1571,7 +1571,7 @@ pub(crate) fn range_slider_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn floating_label_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::FloatingLabel,
@@ -1583,7 +1583,7 @@ pub(crate) fn floating_label_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn font_preview_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::FontPreview,
@@ -1595,7 +1595,7 @@ pub(crate) fn font_preview_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn cupertino_navigation_bar_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::CupertinoNavigationBar,
@@ -1607,7 +1607,7 @@ pub(crate) fn cupertino_navigation_bar_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn cupertino_segmented_control_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::CupertinoSegmentedControl,
@@ -1619,7 +1619,7 @@ pub(crate) fn cupertino_segmented_control_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn refresh_control_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::RefreshControl,
@@ -1631,7 +1631,7 @@ pub(crate) fn refresh_control_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn modal_bottom_sheet_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ModalBottomSheet,
@@ -1643,7 +1643,7 @@ pub(crate) fn modal_bottom_sheet_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn find_replace_dialog_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::FindReplaceDialog,
@@ -1655,7 +1655,7 @@ pub(crate) fn find_replace_dialog_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn properties_panel_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::PropertiesPanel,
@@ -1667,7 +1667,7 @@ pub(crate) fn properties_panel_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn cupertino_date_picker_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::CupertinoDatePicker,
@@ -1679,7 +1679,7 @@ pub(crate) fn cupertino_date_picker_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn editable_combo_box_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::EditableComboBox,
@@ -1691,7 +1691,7 @@ pub(crate) fn editable_combo_box_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn date_range_picker_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::DateRangePicker,
@@ -1705,7 +1705,7 @@ pub(crate) fn date_range_picker_capability() -> WidgetCapability {
 
 // ── New widget properties (non-mini) ────────────────────────────
 // ── New widget capability functions (non-mini) ──────────────────
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn rich_edit_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::RichEdit,
@@ -1717,7 +1717,7 @@ pub(crate) fn rich_edit_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn carousel_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Carousel,
@@ -1729,7 +1729,7 @@ pub(crate) fn carousel_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn material_navigation_rail_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::MaterialNavigationRail,
@@ -1741,7 +1741,7 @@ pub(crate) fn material_navigation_rail_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn tab_view_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::TabView,
@@ -1753,7 +1753,7 @@ pub(crate) fn tab_view_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn search_bar_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::SearchBar,
@@ -1765,7 +1765,7 @@ pub(crate) fn search_bar_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn shortcut_editor_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ShortcutEditor,
@@ -1777,7 +1777,7 @@ pub(crate) fn shortcut_editor_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn swipe_to_dismiss_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::SwipeToDismiss,
@@ -1789,7 +1789,7 @@ pub(crate) fn swipe_to_dismiss_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn pager_page_view_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::PagerPageView,
@@ -1801,7 +1801,7 @@ pub(crate) fn pager_page_view_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn line_chart_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::LineChart,
@@ -1813,7 +1813,7 @@ pub(crate) fn line_chart_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn sparkline_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Sparkline,
@@ -1825,7 +1825,7 @@ pub(crate) fn sparkline_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn bar_chart_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::BarChart,
@@ -1837,7 +1837,7 @@ pub(crate) fn bar_chart_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn pie_chart_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::PieChart,
@@ -1849,7 +1849,7 @@ pub(crate) fn pie_chart_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn animated_image_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::AnimatedImage,
@@ -1861,7 +1861,7 @@ pub(crate) fn animated_image_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn hero_animation_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::HeroAnimation,
@@ -1873,7 +1873,7 @@ pub(crate) fn hero_animation_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn bezier_curve_editor_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::BezierCurveEditor,
@@ -1885,7 +1885,7 @@ pub(crate) fn bezier_curve_editor_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn lottie_widget_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::LottieWidget,
@@ -1897,7 +1897,7 @@ pub(crate) fn lottie_widget_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn rive_widget_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::RiveWidget,
@@ -1909,7 +1909,7 @@ pub(crate) fn rive_widget_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn video_player_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::VideoPlayer,
@@ -1921,7 +1921,7 @@ pub(crate) fn video_player_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn image_gallery_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ImageGallery,
@@ -1933,7 +1933,7 @@ pub(crate) fn image_gallery_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn audio_visualizer_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::AudioVisualizer,
@@ -1945,7 +1945,7 @@ pub(crate) fn audio_visualizer_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn camera_preview_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::CameraPreview,
@@ -1957,7 +1957,7 @@ pub(crate) fn camera_preview_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn barcode_scanner_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::BarcodeScanner,
@@ -1969,7 +1969,7 @@ pub(crate) fn barcode_scanner_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn tool_button_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ToolButton,
@@ -1981,7 +1981,7 @@ pub(crate) fn tool_button_capability() -> WidgetCapability {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn status_bar_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::StatusBar,
@@ -1994,7 +1994,7 @@ pub(crate) fn status_bar_capability() -> WidgetCapability {
 }
 
 /// Property grid properties: property_count (read-only), selected_index (r/w).
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub(crate) fn property_grid_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::PropertyGrid,

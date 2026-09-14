@@ -235,6 +235,7 @@ impl Widget for DropdownMenu {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(200, 200)
     }
+    impl_draw_bridge!();
 }
 
 impl Draw for DropdownMenu {

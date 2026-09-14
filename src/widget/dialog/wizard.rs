@@ -180,6 +180,7 @@ impl Widget for WizardDialog {
     fn size_hint(&self) -> Size {
         crate::core::Size::new(500, 400)
     }
+    impl_draw_bridge!();
 }
 
 impl Draw for WizardDialog {

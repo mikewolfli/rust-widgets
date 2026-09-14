@@ -101,6 +101,7 @@ impl Widget for CupertinoSegmentedControl {
     fn kind(&self) -> WidgetKind {
         WidgetKind::CupertinoSegmentedControl
     }
+    impl_draw_bridge!();
 }
 
 impl Draw for CupertinoSegmentedControl {

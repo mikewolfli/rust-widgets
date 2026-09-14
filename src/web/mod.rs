@@ -9,27 +9,27 @@ mod navigation;
 mod plugins;
 mod privacy;
 mod web_core;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 mod web_engine;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 mod web_view;
 pub use history::*;
 pub use js_engine::*;
 pub use navigation::*;
 pub use plugins::*;
 pub use privacy::*;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub use web_engine::*;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub use web_view::*;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     use crate::core::Rect;
 
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     #[test]
     fn test_mod_web_core_types_accessible() {
         let core = web_core::WebViewCore::new(
@@ -115,14 +115,14 @@ mod tests {
         assert!(blocked);
     }
 
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     #[test]
     fn test_mod_web_engine_enhanced_accessible() {
         let engine = WebEngineViewEnhanced::new(Rect::new(0, 0, 800, 600));
         assert_eq!(engine.url(), "");
     }
 
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     #[test]
     fn test_mod_web_view_enhanced_accessible() {
         let view = WebViewEnhanced::new(Rect::new(0, 0, 800, 600));

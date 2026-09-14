@@ -276,6 +276,7 @@ impl Widget for PropertiesPanel {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(300, 400)
     }
+    impl_draw_bridge!();
 }
 
 impl Draw for PropertiesPanel {

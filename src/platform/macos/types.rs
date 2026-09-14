@@ -68,7 +68,7 @@ pub(crate) enum HandleKind {
     ///
     /// Absent from `mini`/`embedded` because that is where `canvas.rs` — its only
     /// producer — is compiled out.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     Canvas,
 }
 #[derive(Clone, Copy)]
@@ -249,7 +249,7 @@ pub(crate) fn shared_button_target() -> id {
 ///
 /// Gated with `canvas.rs`: it is the only caller, and `mini`/`embedded` have no
 /// self-drawn canvas for a key event to arrive through.
-#[cfg(all(target_os = "macos", not(any(feature = "mini", feature = "embedded"))))]
+#[cfg(all(target_os = "macos", widgets_unstripped))]
 pub(crate) unsafe fn translate_key_event(event: id) -> (u32, u32) {
     if event == nil {
         return (0, 0);
@@ -283,7 +283,7 @@ pub(crate) unsafe fn translate_key_event(event: id) -> (u32, u32) {
 /// non-printing keys (arrows, Enter, Escape, Backspace, Delete, Page Up/Down,
 /// Home/End). Printable characters travel as `Event::TextInput` and therefore
 /// never depend on this number.
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub(crate) fn map_key_modifiers(appkit_flags: u64, key_code: u16) -> (u32, u32) {
     // AppKit modifier flags are shared with the accelerator parser, which owns
     // their definitions so the two macOS backends cannot disagree on them.

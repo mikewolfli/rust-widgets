@@ -18,7 +18,7 @@
 //! `supports_custom_widgets()` reports `false` instead of promising a surface that
 //! cannot be painted.
 
-#![cfg(all(target_os = "windows", not(any(feature = "mini", feature = "embedded"))))]
+#![cfg(all(target_os = "windows", widgets_unstripped))]
 
 use crate::core::{ObjectId, Point, Rect};
 use crate::event::Event;

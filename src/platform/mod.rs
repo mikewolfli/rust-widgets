@@ -50,6 +50,12 @@ pub mod wasm;
 
 /// Platform accessibility bridges (macOS, Windows, Linux).
 pub mod accessibility;
+/// Compile-time runtime-profile facts — the single gating entry point.
+///
+/// This is the only module in `src/` permitted to read the `mini` / `embedded`
+/// feature names; everything else asks it a semantic question. See BLUE15
+/// principles #57/#58 and the module docs for the reasoning.
+pub mod profile;
 
 // Internal sub-modules (split from monolithic mod.rs)
 /// Rich clipboard content types and backend trait (BLUE10 R8.6).
@@ -93,12 +99,12 @@ pub mod types;
 pub mod windows_notify;
 
 /// Cross-backend behavioural contract tests.
-#[cfg(all(test, not(feature = "mini")))]
+#[cfg(all(test, not(alloc_frugal)))]
 mod contract_tests;
 /// Widget teardown (`Platform::destroy_widget`) regression tests.
-#[cfg(all(test, not(feature = "mini")))]
+#[cfg(all(test, not(alloc_frugal)))]
 mod teardown_tests;
-#[cfg(all(test, not(feature = "mini")))]
+#[cfg(all(test, not(alloc_frugal)))]
 mod tests;
 /// Virtual keyboard controller for touch text input (BLUE8 P4-7).
 pub mod virtual_keyboard;
@@ -107,9 +113,9 @@ pub mod virtual_keyboard;
 pub use crate::platform::contract::{negotiate_capability_contract, CapabilityContract};
 pub use crate::platform::contract::{EmbeddedCapabilityContract, NativeCapabilityContract};
 pub use crate::platform::runtime::RuntimeGuiMode;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub use crate::platform::runtime::{backend_name, capabilities, get_platform, init, quit, run};
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub use crate::platform::runtime::{dpi_scale_factor, runtime_gui_mode, runtime_gui_mode_for};
 #[cfg(feature = "mobile-api")]
 pub use crate::platform::runtime::{mobile_attach_to_native_view, mobile_backend_name};
@@ -118,7 +124,7 @@ pub use crate::platform::types::*;
 
 pub mod a11y_wiring;
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub use a11y_wiring::wire_focus_manager_to_a11y;
 
 /// Platform facts accessor usable in every profile, including `mini`.
@@ -134,7 +140,7 @@ pub use a11y_wiring::wire_focus_manager_to_a11y;
 /// implementations report "unknown" for every capability. That is the honest
 /// answer for a profile with no OS integration, and it keeps the call sites free
 /// of `cfg` branching (principle #35).
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn platform_facts() -> &'static dyn Platform {
     runtime::get_platform()
 }
@@ -146,7 +152,7 @@ pub fn platform_facts() -> &'static dyn Platform {
 /// defaults for every optional capability. That yields "unknown" for total
 /// memory, `false` for battery and print support, and `None` for the web engine —
 /// the honest answer for a profile whose whole point is to omit OS integration.
-#[cfg(feature = "mini")]
+#[cfg(alloc_frugal)]
 pub fn platform_facts() -> &'static dyn Platform {
     use crate::compat::OnceLock;
 

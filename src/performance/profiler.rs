@@ -320,7 +320,7 @@ impl PerformanceReport {
         )
     }
 }
-#[cfg(all(test, not(feature = "mini")))]
+#[cfg(all(test, not(alloc_frugal)))]
 mod tests {
     use super::*;
     use std::thread::sleep;

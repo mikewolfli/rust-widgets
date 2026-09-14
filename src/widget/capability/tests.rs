@@ -460,7 +460,7 @@ fn write_property_accepts_null_for_optional_focus_fields() {
     );
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn schema_defaults_are_readable_and_writable_when_declared() {
     let factory = WidgetFactory::new_with_defaults();
@@ -506,7 +506,7 @@ fn schema_defaults_are_readable_and_writable_when_declared() {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[test]
 fn default_property_value_returns_schema_defaults() {
     let factory = WidgetFactory::new_with_defaults();

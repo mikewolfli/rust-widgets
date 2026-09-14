@@ -7,7 +7,13 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack};
+use crate::widget::capability::access::date_to_string;
+use crate::widget::capability::coercion::{expect_bool, expect_date, expect_string};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -267,7 +273,66 @@ impl Widget for DateEdit {
     fn size_hint(&self) -> Size {
         crate::core::Size::new(120, 28)
     }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
 }
+
+/// `DatePicker`'s property contract (the control is `DateEdit`; `DatePicker` is
+/// a type alias for it, so this single impl covers both names).
+///
+/// Dates round-trip as strings: `date_to_string` on the way out and
+/// `expect_date` on the way in, which validates the parsed calendar date so an
+/// impossible date is rejected instead of silently stored.
+impl WidgetProperties for DateEdit {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "date" => Ok(CapabilityValue::String(date_to_string(self.date()))),
+            "minimum_date" => Ok(CapabilityValue::String(date_to_string(self.minimum_date()))),
+            "maximum_date" => Ok(CapabilityValue::String(date_to_string(self.maximum_date()))),
+            "display_format" => Ok(CapabilityValue::String(self.display_format().to_string())),
+            "calendar_popup" => Ok(CapabilityValue::Bool(self.calendar_popup())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "date" => {
+                self.set_date(expect_date(value)?);
+                Ok(())
+            }
+            "minimum_date" => {
+                self.set_minimum_date(expect_date(value)?);
+                Ok(())
+            }
+            "maximum_date" => {
+                self.set_maximum_date(expect_date(value)?);
+                Ok(())
+            }
+            "display_format" => {
+                self.set_display_format(expect_string(value)?);
+                Ok(())
+            }
+            "calendar_popup" => {
+                self.set_calendar_popup(expect_bool(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![
+            "date",
+            "minimum_date",
+            "maximum_date",
+            "display_format",
+            "calendar_popup",
+            BASE_PROPERTY_NAMES
+        ]
+    }
+}
+
 impl EventHandler for DateEdit {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);

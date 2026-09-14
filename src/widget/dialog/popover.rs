@@ -142,6 +142,7 @@ impl Widget for Popover {
     fn size_hint(&self) -> Size {
         crate::core::Size::new(200, 150)
     }
+    impl_draw_bridge!();
 }
 
 impl Draw for Popover {

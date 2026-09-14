@@ -152,6 +152,7 @@ impl Widget for SegmentedControl {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(300, 32)
     }
+    impl_draw_bridge!();
 }
 
 impl EventHandler for SegmentedControl {

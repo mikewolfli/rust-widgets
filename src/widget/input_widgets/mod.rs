@@ -2,78 +2,78 @@
 // SPDX-License-Identifier: MIT
 
 //! Input widgets: text editors, combo boxes, spin boxes, etc.
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub mod auto_complete_edit;
 pub mod combobox;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub mod command_link;
 pub mod dropdown;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub mod editable_combo_box;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub mod font_combo_box;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub mod ime_preedit;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub mod inplace_editor;
 pub mod keyboard;
 pub mod lineedit;
 pub mod listbox;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub mod masked_edit;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub mod multi_select_combo_box;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub mod range_slider;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub mod rich_edit;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub mod search_bar;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub mod search_box;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub mod shortcut_editor;
 pub mod spinbox;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub mod tag_input;
 pub mod textarea;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub mod textedit;
 // Re-export widget types
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use auto_complete_edit::AutoCompleteEdit;
 pub use combobox::ComboBox;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use command_link::CommandLink;
 pub use dropdown::Dropdown;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use editable_combo_box::EditableComboBox;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use font_combo_box::FontComboBox;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use ime_preedit::ImePreedit;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use inplace_editor::InplaceEditor;
 pub use keyboard::Keyboard;
 pub use lineedit::{EchoMode, LineEdit};
 pub use listbox::{ListBox, SelectionMode};
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use masked_edit::MaskedEdit;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use multi_select_combo_box::{MultiSelectComboBox, MultiSelectItem};
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use range_slider::{RangeSlider, RangeSliderOrientation};
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use rich_edit::RichEdit;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use search_bar::SearchBar;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use search_box::SearchBox;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use shortcut_editor::{ShortcutEditor, ShortcutEntry};
 pub use spinbox::SpinBox;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use tag_input::TagInput;
 pub use textarea::TextArea;
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub use textedit::TextEdit;

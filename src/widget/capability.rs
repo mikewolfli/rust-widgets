@@ -76,10 +76,16 @@
 //! - **R6 (Quality Gate)**: The manifest export and factory tests are part of the
 //!   CI quality matrix.
 
+// The factory and its supporting imports exist only where the full control set
+// does; see the module's `cfg` section below for why the property *contract* is
+// separate.
+#[cfg(widgets_unstripped)]
 use std::collections::HashMap;
 
+#[cfg(widgets_unstripped)]
 use crate::core::Rect;
 
+#[cfg(widgets_unstripped)]
 use super::{Widget, WidgetKind};
 #[cfg(full_widgets)]
 use crate::widget::view_widgets::data_grid::DataGrid;
@@ -95,29 +101,94 @@ use crate::widget::view_widgets::virtual_table::VirtualTable;
 pub mod types;
 pub use types::*;
 
+/// The per-control property contract (`WidgetProperties`).
+///
+/// Compiled in every profile: `Widget::properties_dyn` returns this trait, and
+/// `Widget` exists even where the factory does not. Replaces the centralised
+/// `match widget.kind()` dispatch — a control implements its own `get` / `set` /
+/// `property_names` in its own file, and forwards the properties every control
+/// shares to `base_property_get` / `base_property_set`.
+pub mod properties_trait;
+pub use properties_trait::{
+    base_property_get, base_property_set, geometry_to_value, widget_property_get,
+    widget_property_names, widget_property_set, WidgetProperties, BASE_PROPERTY_NAMES,
+};
+
+/// The `WidgetFactory` name under which `kind` is registered.
+///
+/// Derived from the capability registry — the same table [`WidgetFactory::create`]
+/// dispatches on — rather than from `Debug` output, so the two cannot disagree.
+///
+/// Returns `None` for a kind with no registered capability. That is the honest
+/// answer: such a kind has no constructor, so a caller must not be handed a
+/// plausible-looking name that the factory would reject anyway.
+#[cfg(widgets_unstripped)]
+pub fn factory_name_for_kind(kind: crate::widget::WidgetKind) -> Option<&'static str> {
+    WidgetFactory::new_with_defaults()
+        .capability_by_kind(kind)
+        .map(|capability| capability.canonical_name)
+}
+
+// ── Profile-specific parts ──────────────────────────────────────────────────
+//
+// Everything below describes the *factory* and the legacy centralised access
+// layer. Both enumerate concrete controls (`Button`, `Calendar`, …), which only
+// exist when the full widget set is compiled, so they stay gated on the device
+// profiles. The property *contract* above is deliberately outside this gate.
+/// Type-coercion helpers used by every control's property writers.
+///
+/// Compiled in every profile: the `expect_*` helpers are primitives (`expect_bool`,
+/// `expect_string`, …) that a control needs wherever it exists. The helpers for
+/// profile-specific types (`Date`, `Time`, `SortSpec`, …) are individually gated
+/// on `full_widgets` inside the file, so nothing profile-specific leaks out here.
 pub mod coercion;
 pub use coercion::*;
 
+#[cfg(widgets_unstripped)]
 pub mod constructors;
+#[cfg(widgets_unstripped)]
 pub use constructors::*;
 
+#[cfg(widgets_unstripped)]
 pub mod properties;
+#[cfg(widgets_unstripped)]
 pub(crate) use properties::*;
 
+#[cfg(widgets_unstripped)]
 pub mod access;
+#[cfg(widgets_unstripped)]
 pub use access::*;
 
+#[cfg(widgets_unstripped)]
 pub mod registration;
 
-#[cfg(all(test, not(feature = "mini")))]
+#[cfg(all(test, widgets_unstripped))]
 pub mod tests;
 
+/// Contract tests for the per-control property layer (BLUE15 Phase C-1).
+///
+/// Exercises every widget category so a category-wide mistake cannot hide behind
+/// one well-behaved control.
+#[cfg(all(test, full_widgets))]
+mod properties_tests;
+
+/// Default construction for [`WidgetFactory`].
+///
+/// Gated with the factory itself: the factory enumerates concrete controls, which
+/// only exist when a device profile is compiled. The property contract above is
+/// independent of this and available in every profile.
+#[cfg(widgets_unstripped)]
 impl Default for WidgetFactory {
     fn default() -> Self {
         Self::new_with_defaults()
     }
 }
 
+/// Runtime widget factory: builds a control by name or kind.
+///
+/// See the module docs; gated with the profile-specific control set, because every
+/// constructor it registers names a concrete control type.
+#[cfg(widgets_unstripped)]
 impl WidgetFactory {
     /// Creates an empty factory.
     pub fn new() -> Self {
@@ -193,6 +264,17 @@ impl WidgetFactory {
     /// Returns all registered capabilities.
     pub fn capabilities(&self) -> &[WidgetCapability] {
         &self.capabilities
+    }
+
+    /// Returns the canonical name of every registered widget.
+    ///
+    /// Derived from [`Self::capabilities`] rather than kept as a second list, so
+    /// a widget cannot be constructible yet absent from this enumeration — which
+    /// is what lets coverage tests walk **every** widget instead of a hand-typed
+    /// sample. (The sample is exactly how the painting bridge drifted to 6 of
+    /// 168: see `crate::widget::draw_bridge`.)
+    pub fn widget_names(&self) -> Vec<&'static str> {
+        self.capabilities.iter().map(|capability| capability.canonical_name).collect()
     }
 
     /// Reads a known property from a widget instance by property name.
@@ -274,7 +356,7 @@ impl WidgetFactory {
 
     /// Check whether a widget instance matches a given capability's concrete type.
     fn widget_matches_capability(&self, widget: &dyn Widget, canonical_name: &str) -> bool {
-        #[cfg(feature = "mini")]
+        #[cfg(alloc_frugal)]
         {
             let _ = widget;
             let _ = canonical_name;

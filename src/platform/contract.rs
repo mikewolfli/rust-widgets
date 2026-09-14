@@ -8,7 +8,7 @@
 //! Falls back to sensible defaults when a backend does not publish a contract.
 
 use crate::core::RuntimeProfile;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 use crate::platform::runtime::get_platform;
 pub use crate::platform::types::*;
 
@@ -22,7 +22,7 @@ fn fallback_native_capability_contract() -> NativeCapabilityContract {
     }
 }
 /// Fallback contract for embedded profiles without a published backend contract.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 fn fallback_embedded_capability_contract() -> EmbeddedCapabilityContract {
     EmbeddedCapabilityContract {
         fixed_dpi: true,
@@ -31,7 +31,7 @@ fn fallback_embedded_capability_contract() -> EmbeddedCapabilityContract {
     }
 }
 /// Negotiate capabilities using profile-specific contracts with deterministic fallbacks.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn negotiate_capability_contract(profile: RuntimeProfile) -> CapabilityContract {
     match profile {
         RuntimeProfile::Full => get_platform()
@@ -45,7 +45,7 @@ pub fn negotiate_capability_contract(profile: RuntimeProfile) -> CapabilityContr
     }
 }
 /// Capability negotiation not available in mini mode.
-#[cfg(feature = "mini")]
+#[cfg(alloc_frugal)]
 pub fn negotiate_capability_contract(_profile: RuntimeProfile) -> CapabilityContract {
     CapabilityContract::Native(fallback_native_capability_contract())
 }

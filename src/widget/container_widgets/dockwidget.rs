@@ -7,7 +7,12 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 
+use crate::widget::capability::coercion::{expect_bool, expect_string};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
 /// Dock widget.
@@ -329,7 +334,50 @@ impl Widget for DockWidget {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(250, 200)
     }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
 }
+
+/// `DockWidget`'s property contract.
+///
+/// `floating` and `docked` are two views of one state; the old writer had an arm
+/// for neither, and `set_docked` is not the inverse of `set_floating` (it does not
+/// emit `top_level_changed`), so both are published read-only rather than
+/// guessed at.
+impl WidgetProperties for DockWidget {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "title" => Ok(CapabilityValue::String(self.title().to_string())),
+            "floating" => Ok(CapabilityValue::Bool(self.is_floating())),
+            "docked" => Ok(CapabilityValue::Bool(self.is_docked())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "title" => {
+                self.set_title(expect_string(value)?);
+                Ok(())
+            }
+            // `floating` is settable through the same accessor pair the old arm
+            // used when it served this name.
+            "floating" => {
+                self.set_floating(expect_bool(value)?);
+                Ok(())
+            }
+            // `docked` had no arm in the centralised writer.
+            "docked" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        // Mirrors `DOCK_WIDGET_PROPERTIES`.
+        property_names_of!["title", "floating", "docked", BASE_PROPERTY_NAMES]
+    }
+}
+
 impl EventHandler for DockWidget {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);

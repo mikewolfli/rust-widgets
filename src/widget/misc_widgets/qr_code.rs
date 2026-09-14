@@ -113,6 +113,7 @@ impl Widget for QRCode {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(150, 150)
     }
+    impl_draw_bridge!();
 }
 
 impl Draw for QRCode {

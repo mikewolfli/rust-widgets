@@ -388,7 +388,7 @@ mod tests {
         assert_eq!(font.size_i32(), 0);
         assert_eq!(font.size_u32(), 0);
     }
-    #[cfg(all(test, feature = "serde", feature = "serde_json", not(feature = "embedded")))]
+    #[cfg(all(test, feature = "serde", feature = "serde_json", not(embedded_surface)))]
     #[test]
     fn font_deserialize_normalizes_weight_and_bold_contract() {
         let parsed: Font = serde_json::from_str(

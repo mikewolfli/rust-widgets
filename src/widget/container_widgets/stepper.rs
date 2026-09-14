@@ -96,6 +96,7 @@ impl Widget for Stepper {
     fn size_hint(&self) -> Size {
         crate::core::Size::new(120, 30)
     }
+    impl_draw_bridge!();
 }
 
 impl Draw for Stepper {

@@ -3,7 +3,7 @@
 
 //! A11y wiring: connects `FocusManager` to the platform's `AccessibilityBridge`.
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 use crate::event::focus::FocusManager;
 
 /// Wire a `FocusManager` to the platform's `AccessibilityBridge` if available.
@@ -11,7 +11,7 @@ use crate::event::focus::FocusManager;
 /// When the platform has an accessibility bridge, this connects focus
 /// changes to `notify_focus_changed` so screen readers can track focus.
 /// This is a no-op when no bridge is available.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn wire_focus_manager_to_a11y(fm: &mut FocusManager) {
     let platform = crate::platform::runtime::get_platform();
     if let Some(bridge) = platform.accessibility_bridge() {
@@ -28,7 +28,7 @@ pub fn wire_focus_manager_to_a11y(fm: &mut FocusManager) {
     }
 }
 
-#[cfg(all(test, not(feature = "mini")))]
+#[cfg(all(test, not(alloc_frugal)))]
 mod tests {
     use crate::event::focus::FocusManager;
 

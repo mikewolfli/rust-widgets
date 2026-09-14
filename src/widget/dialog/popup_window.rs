@@ -3,8 +3,12 @@
 
 //! Popup window widget.
 use crate::core::{ObjectId, Rect, Size};
+use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Popup window widget.
 pub struct PopupWindow {
@@ -64,6 +68,50 @@ impl Widget for PopupWindow {
 
     fn size_hint(&self) -> Size {
         crate::core::Size::new(300, 200)
+    }
+
+    /// Reports this widget as the object that paints it.
+    ///
+    /// `PopupWindow` implements `Draw`, so `Some(self)` is total and cannot be
+    /// wrong.
+    fn as_draw_mut(&mut self) -> Option<&mut dyn crate::widget::Draw> {
+        Some(self)
+    }
+
+    /// Returns this widget as its property contract.
+    fn properties_dyn(
+        &self,
+    ) -> Option<&dyn crate::widget::capability::properties_trait::WidgetProperties> {
+        Some(self)
+    }
+
+    /// Mutable counterpart to `properties_dyn`.
+    fn properties_dyn_mut(
+        &mut self,
+    ) -> Option<&mut dyn crate::widget::capability::properties_trait::WidgetProperties> {
+        Some(self)
+    }
+}
+
+/// `PopupWindow`'s property contract.
+///
+/// Read semantics are carried over unchanged from the centralised
+/// `access_read_dialog.in.rs` dispatch. `has_content` is read-only: a popup's
+/// content is supplied by its owner, not through the property layer.
+impl WidgetProperties for PopupWindow {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "has_content" => Ok(CapabilityValue::Bool(self.content_widget().is_some())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        base_property_set(self, name, value)
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["has_content", BASE_PROPERTY_NAMES]
     }
 }
 impl Draw for PopupWindow {

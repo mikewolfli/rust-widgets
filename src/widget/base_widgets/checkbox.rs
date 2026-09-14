@@ -6,7 +6,14 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::{
+    check_state_to_str, expect_bool, expect_check_state, expect_string,
+};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 /// Checkbox state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckState {
@@ -126,7 +133,53 @@ impl Widget for CheckBox {
         let text_w = self.text().len() as u32 * 8 + 24; // 16px checkbox + 4px padding + text
         Size::new(text_w.max(60), 24)
     }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
 }
+
+/// `CheckBox`'s property contract.
+///
+/// `state` is the enum form and `checked` the boolean projection of the same
+/// field; both are writable and both are published so the schema and the trait
+/// agree on the control's surface.
+impl WidgetProperties for CheckBox {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "text" => Ok(CapabilityValue::String(self.text().to_string())),
+            "state" => Ok(CapabilityValue::String(check_state_to_str(self.state()).to_string())),
+            "checked" => Ok(CapabilityValue::Bool(self.is_checked())),
+            "tristate_enabled" => Ok(CapabilityValue::Bool(self.is_tristate_enabled())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "text" => {
+                self.set_text(expect_string(value)?);
+                Ok(())
+            }
+            "state" => {
+                self.set_state(expect_check_state(value)?);
+                Ok(())
+            }
+            "checked" => {
+                self.set_checked(expect_bool(value)?);
+                Ok(())
+            }
+            "tristate_enabled" => {
+                self.set_tristate_enabled(expect_bool(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["text", "state", "checked", "tristate_enabled", BASE_PROPERTY_NAMES]
+    }
+}
+
 impl EventHandler for CheckBox {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);

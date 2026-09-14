@@ -8,7 +8,12 @@ use crate::object::ObjectId;
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 
+use crate::widget::capability::coercion::{expect_orientation, orientation_to_str};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -140,7 +145,40 @@ impl Widget for Splitter {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(300, 200)
     }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
 }
+
+/// `Splitter`'s property contract.
+impl WidgetProperties for Splitter {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "orientation" => {
+                Ok(CapabilityValue::String(orientation_to_str(self.orientation()).to_string()))
+            }
+            "pane_count" => Ok(CapabilityValue::UInt(self.pane_count() as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "orientation" => {
+                self.set_orientation(expect_orientation(value)?);
+                Ok(())
+            }
+            // Derived from the registered panes.
+            "pane_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        // Mirrors `SPLITTER_PROPERTIES`.
+        property_names_of!["orientation", "pane_count", BASE_PROPERTY_NAMES]
+    }
+}
+
 impl Draw for Splitter {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.base.geometry();

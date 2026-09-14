@@ -10,7 +10,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
+use crate::widget::capability::coercion::{expect_u32, expect_usize};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Roller widget for selecting from a list via scroll-wheel interaction.
 pub struct Roller {
@@ -141,6 +146,41 @@ impl Widget for Roller {
         let max_len = self.options.iter().map(|s| s.len()).max().unwrap_or(10);
         let width = (max_len as f32 * char_width).ceil().max(80.0) as u32;
         Size::new(width, self.content_height())
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `Roller`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch.
+impl WidgetProperties for Roller {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "selected_index" => Ok(CapabilityValue::UInt(self.selected_index() as u64)),
+            "visible_count" => Ok(CapabilityValue::UInt(self.visible_count() as u64)),
+            "item_count" => Ok(CapabilityValue::UInt(self.options().len() as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "selected_index" => {
+                self.set_selected_index(expect_usize(value)?);
+                Ok(())
+            }
+            "visible_count" => {
+                self.set_visible_count(expect_u32(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["selected_index", "visible_count", "item_count", BASE_PROPERTY_NAMES]
     }
 }
 

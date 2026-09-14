@@ -6,5 +6,5 @@
 //! This module exists for backward compatibility. The canonical implementation
 //! is `RefreshControl` in the [`refresh_control`](super::refresh_control) module.
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub use super::refresh_control::RefreshControl as PullToRefresh;

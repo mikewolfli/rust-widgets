@@ -93,6 +93,7 @@ impl Widget for Rating {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(120, 24)
     }
+    impl_draw_bridge!();
 }
 
 impl Draw for Rating {

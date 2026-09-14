@@ -39,27 +39,27 @@ pub use alloc::vec::Vec;
 // Under desktop/full, they remain dynamic (alloc::vec::Vec, alloc::string::String).
 
 /// Fixed-capacity vector for mini builds. Falls back to `Vec<T>` on desktop.
-#[cfg(feature = "mini")]
+#[cfg(alloc_frugal)]
 pub type MiniVec<T> = heapless::Vec<T, 64>;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub type MiniVec<T> = alloc::vec::Vec<T>;
 
 /// Fixed-capacity string for mini builds. Falls back to `String` on desktop.
-#[cfg(feature = "mini")]
+#[cfg(alloc_frugal)]
 pub type MiniString = heapless::String<256>;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub type MiniString = alloc::string::String;
 
 /// Convert a `&str` to `MiniString`. Under mini, copies into fixed buffer.
 /// Under desktop, creates an owned `String`.
 pub fn into_mini(s: &str) -> MiniString {
-    #[cfg(feature = "mini")]
+    #[cfg(alloc_frugal)]
     {
         let mut ms = MiniString::new();
         let _ = ms.push_str(s);
         ms
     }
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     {
         MiniString::from(s)
     }
@@ -68,20 +68,20 @@ pub fn into_mini(s: &str) -> MiniString {
 /// Convert a `String` to `MiniString` (consumes the String).
 /// Under mini, copies into fixed buffer. Under desktop, zero-cost.
 pub fn mini_string_from(s: String) -> MiniString {
-    #[cfg(feature = "mini")]
+    #[cfg(alloc_frugal)]
     {
         into_mini(&s)
     }
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     {
         s
     }
 }
 
 // ── std→alloc bridge (conditional: BTreeMap stands in for HashMap under mini) ──
-#[cfg(feature = "mini")]
+#[cfg(alloc_frugal)]
 pub use alloc::collections::BTreeMap as HashMap;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub use std::collections::HashMap;
 
 // ── Mutex (thread-safe in both profiles) ──
@@ -98,7 +98,7 @@ pub use std::sync::MutexGuard;
 
 /// Bump arena allocator. On mini, backed by a single-threaded `bumpalo::Bump`.
 /// On desktop, this is a no-op wrapper (allocation goes through the global allocator).
-#[cfg(feature = "mini")]
+#[cfg(alloc_frugal)]
 pub struct MiniArena {
     // Use UnsafeCell instead of RefCell because bumpalo::Bump::alloc() returns
     // references tied to &self, which is incompatible with temporary RefMut guards.
@@ -106,7 +106,7 @@ pub struct MiniArena {
     bump: core::cell::UnsafeCell<bumpalo::Bump>,
 }
 
-#[cfg(feature = "mini")]
+#[cfg(alloc_frugal)]
 impl MiniArena {
     /// Create a new arena with default capacity (~16KB).
     pub fn new() -> Self {
@@ -148,18 +148,18 @@ impl MiniArena {
     }
 }
 
-#[cfg(feature = "mini")]
+#[cfg(alloc_frugal)]
 impl Default for MiniArena {
     fn default() -> Self {
         Self::new()
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[derive(Default)]
 pub struct MiniArena;
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 impl MiniArena {
     pub const fn new() -> Self {
         Self
@@ -179,13 +179,13 @@ impl MiniArena {
 /// Get the global frame arena. Under mini, allocations live until `reset_frame_arena()`.
 /// Under desktop, this is a no-op (uses `Box::new` directly).
 pub fn frame_arena() -> &'static MiniArena {
-    #[cfg(feature = "mini")]
+    #[cfg(alloc_frugal)]
     {
         // Use compat OnceLock which is unconditionally Sync under mini.
         static ARENA: OnceLock<MiniArena> = OnceLock::new();
         ARENA.get_or_init(MiniArena::new)
     }
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     {
         static ARENA: MiniArena = MiniArena::new();
         &ARENA
@@ -203,13 +203,13 @@ pub fn reset_frame_arena() {
 /// Thread-safe once-cell for static initialization.
 /// Under mini (no_std), backed by a spin-based atomic flag + UnsafeCell.
 /// Under desktop, re-exports `std::sync::OnceLock`.
-#[cfg(feature = "mini")]
+#[cfg(alloc_frugal)]
 pub struct OnceLock<T> {
     initialized: core::sync::atomic::AtomicBool,
     data: core::cell::UnsafeCell<core::mem::MaybeUninit<T>>,
 }
 
-#[cfg(feature = "mini")]
+#[cfg(alloc_frugal)]
 impl<T> OnceLock<T> {
     pub const fn new() -> Self {
         Self {
@@ -272,20 +272,20 @@ impl<T> OnceLock<T> {
     }
 }
 
-#[cfg(feature = "mini")]
+#[cfg(alloc_frugal)]
 impl<T> Default for OnceLock<T> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-#[cfg(feature = "mini")]
+#[cfg(alloc_frugal)]
 // SAFETY: Under mini (no_std, single-threaded), no concurrent access is possible.
 unsafe impl<T> Sync for OnceLock<T> {}
-#[cfg(feature = "mini")]
+#[cfg(alloc_frugal)]
 unsafe impl<T> Send for OnceLock<T> {}
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub use std::sync::OnceLock;
 
 // ── Instant (real clock in both profiles) ──
@@ -298,7 +298,7 @@ pub use std::time::Instant;
 
 /// Single-threaded channel for mini (no_std) builds.
 /// Wraps a `VecDeque` behind `RefCell` + `Arc`.
-#[cfg(feature = "mini")]
+#[cfg(alloc_frugal)]
 pub mod mpsc {
     use alloc::collections::VecDeque;
     use alloc::sync::Arc;
@@ -346,7 +346,7 @@ pub mod mpsc {
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub use std::sync::mpsc;
 
 // ── Condvar compat (no_std stub for mini builds) ──
@@ -354,10 +354,10 @@ pub use std::sync::mpsc;
 /// A condition variable for thread synchronization.
 /// Under mini, all operations are no-ops (single-threaded).
 /// Under desktop, re-exports `std::sync::Condvar`.
-#[cfg(feature = "mini")]
+#[cfg(alloc_frugal)]
 pub struct Condvar;
 
-#[cfg(feature = "mini")]
+#[cfg(alloc_frugal)]
 impl Condvar {
     pub fn new() -> Self {
         Self
@@ -366,12 +366,12 @@ impl Condvar {
     pub fn notify_one(&self) {}
 }
 
-#[cfg(feature = "mini")]
+#[cfg(alloc_frugal)]
 impl Default for Condvar {
     fn default() -> Self {
         Self::new()
     }
 }
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub use std::sync::Condvar;

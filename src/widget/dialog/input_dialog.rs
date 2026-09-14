@@ -4,9 +4,13 @@
 //! Input dialog widget.
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
+use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::tr;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Input dialog input mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,6 +188,51 @@ impl Widget for InputDialog {
 
     fn size_hint(&self) -> Size {
         crate::core::Size::new(350, 150)
+    }
+
+    /// Reports this widget as the object that paints it.
+    ///
+    /// `InputDialog` implements `Draw`, so `Some(self)` is total and cannot be
+    /// wrong.
+    fn as_draw_mut(&mut self) -> Option<&mut dyn crate::widget::Draw> {
+        Some(self)
+    }
+
+    /// Returns this widget as its property contract.
+    fn properties_dyn(
+        &self,
+    ) -> Option<&dyn crate::widget::capability::properties_trait::WidgetProperties> {
+        Some(self)
+    }
+
+    /// Mutable counterpart to `properties_dyn`.
+    fn properties_dyn_mut(
+        &mut self,
+    ) -> Option<&mut dyn crate::widget::capability::properties_trait::WidgetProperties> {
+        Some(self)
+    }
+}
+
+/// `InputDialog`'s property contract.
+///
+/// Read semantics are carried over unchanged from the centralised
+/// `access_read_dialog.in.rs` dispatch. Both properties are read-only: the old
+/// write layer had no arm for this kind.
+impl WidgetProperties for InputDialog {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "title" => Ok(CapabilityValue::String(self.title().to_string())),
+            "label_text" => Ok(CapabilityValue::String(self.label_text().to_string())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        base_property_set(self, name, value)
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["title", "label_text", BASE_PROPERTY_NAMES]
     }
 }
 impl EventHandler for InputDialog {

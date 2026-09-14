@@ -10,7 +10,12 @@
 use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::widget::capability::coercion::{expect_bool, expect_f32, expect_u32};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Spinner widget for indicating loading/processing state.
 ///
@@ -135,6 +140,48 @@ impl Widget for Spinner {
 
     fn size_hint(&self) -> Size {
         Size::new(48, 48)
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `Spinner`'s property contract.
+impl WidgetProperties for Spinner {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "active" => Ok(CapabilityValue::Bool(self.is_active())),
+            "thickness" => Ok(CapabilityValue::UInt(self.thickness() as u64)),
+            "speed" => Ok(CapabilityValue::Float(self.speed() as f64)),
+            "size_ratio" => Ok(CapabilityValue::Float(self.size_ratio() as f64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "active" => {
+                self.set_active(expect_bool(value)?);
+                Ok(())
+            }
+            "thickness" => {
+                self.set_thickness(expect_u32(value)?);
+                Ok(())
+            }
+            "speed" => {
+                self.set_speed(expect_f32(value)?);
+                Ok(())
+            }
+            "size_ratio" => {
+                self.set_size_ratio(expect_f32(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        // Mirrors `SPINNER_PROPERTIES`.
+        property_names_of!["active", "thickness", "speed", "size_ratio", BASE_PROPERTY_NAMES]
     }
 }
 

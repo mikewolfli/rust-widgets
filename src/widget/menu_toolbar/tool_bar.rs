@@ -6,7 +6,13 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::access::tool_bar_orientation_to_str;
+use crate::widget::capability::coercion::{expect_bool, expect_f32, expect_toolbar_orientation};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 /// Orientation of a toolbar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolBarOrientation {
@@ -253,7 +259,55 @@ impl Widget for ToolBar {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(400, 32)
     }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
 }
+
+/// `ToolBar`'s property contract.
+///
+/// `orientation` is published as its token spelling and parsed back through
+/// `expect_toolbar_orientation`; `icon_size` crosses the boundary as `Float`,
+/// narrowed to `f32` by `expect_f32`.
+impl WidgetProperties for ToolBar {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "orientation" => Ok(CapabilityValue::String(
+                tool_bar_orientation_to_str(self.orientation()).to_string(),
+            )),
+            "icon_size" => Ok(CapabilityValue::Float(self.icon_size() as f64)),
+            "floatable" => Ok(CapabilityValue::Bool(self.is_floatable())),
+            "movable" => Ok(CapabilityValue::Bool(self.is_movable())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "movable" => {
+                self.set_movable(expect_bool(value)?);
+                Ok(())
+            }
+            "floatable" => {
+                self.set_floatable(expect_bool(value)?);
+                Ok(())
+            }
+            "icon_size" => {
+                self.set_icon_size(expect_f32(value)?);
+                Ok(())
+            }
+            "orientation" => {
+                self.set_orientation(expect_toolbar_orientation(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["orientation", "icon_size", "movable", "floatable", BASE_PROPERTY_NAMES]
+    }
+}
+
 impl EventHandler for ToolBar {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);

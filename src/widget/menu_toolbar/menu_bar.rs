@@ -6,7 +6,11 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 /// A top-level menu entry in the menu bar.
 #[derive(Debug, Clone)]
 pub struct MenuBarEntry {
@@ -132,7 +136,40 @@ impl Widget for MenuBar {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(400, 28)
     }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
 }
+
+/// `MenuBar`'s property contract.
+///
+/// Every published property is a read-only projection of the bar's current
+/// contents and pointer state; the schema advertises none of them as writable,
+/// so the write path forwards straight to the base helpers.
+impl WidgetProperties for MenuBar {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "entry_count" => Ok(CapabilityValue::UInt(self.entries().len() as u64)),
+            "active_index" => match self.active_index() {
+                Some(idx) => Ok(CapabilityValue::UInt(idx as u64)),
+                None => Ok(CapabilityValue::Null),
+            },
+            "hovered_index" => match self.hovered_index() {
+                Some(idx) => Ok(CapabilityValue::UInt(idx as u64)),
+                None => Ok(CapabilityValue::Null),
+            },
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        base_property_set(self, name, value)
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["entry_count", "active_index", "hovered_index", BASE_PROPERTY_NAMES]
+    }
+}
+
 impl EventHandler for MenuBar {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);

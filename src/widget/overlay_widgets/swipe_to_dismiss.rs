@@ -11,7 +11,11 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Combined trait for widgets that can both be managed and drawn.
 pub trait WidgetDraw: Widget + Draw {}
@@ -132,6 +136,34 @@ impl Widget for SwipeToDismiss {
 
     fn kind(&self) -> WidgetKind {
         WidgetKind::SwipeToDismiss
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `SwipeToDismiss`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch: reading
+/// `is_dismissed` works, and writing it answers `UnsupportedOnWidget` because
+/// dismissal is a one-shot gesture result rather than settable state.
+impl WidgetProperties for SwipeToDismiss {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "is_dismissed" => Ok(CapabilityValue::Bool(self.is_dismissed())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "is_dismissed" => Err(CapabilityAccessError::UnsupportedOnWidget),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["is_dismissed", BASE_PROPERTY_NAMES]
     }
 }
 

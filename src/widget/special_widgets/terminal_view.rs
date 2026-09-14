@@ -7,7 +7,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::expect_string;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Terminal-like text view with input line and command history.
 pub struct TerminalView {
@@ -109,9 +114,42 @@ impl Widget for TerminalView {
     fn as_draw_mut(&mut self) -> Option<&mut dyn crate::widget::Draw> {
         Some(self)
     }
-
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(600, 300)
+    }
+
+    impl_widget_property_hooks!();
+}
+
+/// `TerminalView`'s property contract, published under the `TextEdit` kind.
+///
+/// The capability layer makes `WidgetKind::TextEdit` the kind of this control
+/// (`terminal_view_capability`), and this impl reproduces exactly what the old
+/// `read_input_props` / `write_input_props` arms answered for that kind.
+impl WidgetProperties for TerminalView {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "output_line_count" => Ok(CapabilityValue::UInt(self.lines().len() as u64)),
+            "input_line" => Ok(CapabilityValue::String(self.input_line().to_string())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "input_line" => {
+                self.set_input_line(expect_string(value)?);
+                Ok(())
+            }
+            // Derived from the output buffer. The old writer had no arm for it.
+            "output_line_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        // Mirrors `TERMINAL_VIEW_PROPERTIES`.
+        property_names_of!["output_line_count", "input_line", BASE_PROPERTY_NAMES]
     }
 }
 

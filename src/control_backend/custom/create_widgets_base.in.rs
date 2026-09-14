@@ -228,9 +228,9 @@ macro_rules! impl_base_widgets {
                     y,
                     width,
                     height,
-                    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+                    #[cfg(widgets_unstripped)]
                     widget_kind: WidgetKind::ToggleButton,
-                    #[cfg(any(feature = "mini", feature = "embedded"))]
+                    #[cfg(stripped_widgets)]
                     widget_kind: WidgetKind::Button,
                 },
             );

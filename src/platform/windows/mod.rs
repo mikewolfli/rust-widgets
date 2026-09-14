@@ -13,7 +13,7 @@ pub mod types;
 ///
 /// Compiled out for `mini`/`embedded`: those profiles have no `widget::runtime`,
 /// which this module is built on.
-#[cfg(all(target_os = "windows", not(any(feature = "mini", feature = "embedded"))))]
+#[cfg(all(target_os = "windows", widgets_unstripped))]
 pub(crate) mod canvas;
 
 /// Win32 menu accelerator (`HACCEL`) tables.

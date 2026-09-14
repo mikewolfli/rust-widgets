@@ -33,10 +33,7 @@ pub mod audio;
 /// Available on the `desktop` profile and on any profile that exposes an
 /// FFI consumer (`jni` for Java, `mobile-api` for the mobile runtime). The
 /// `mini` profile excludes it because it is `alloc`-free / no-std oriented.
-#[cfg(all(
-    any(feature = "desktop", feature = "jni", feature = "mobile-api"),
-    not(feature = "mini")
-))]
+#[cfg(all(any(feature = "desktop", feature = "jni", feature = "mobile-api"), not(alloc_frugal)))]
 pub mod bindings;
 /// Clipboard helpers.
 pub mod clipboard;
@@ -47,7 +44,7 @@ pub mod core;
 /// Reactive data binding system — Model → View automatic synchronization.
 pub mod data_binding;
 /// Embedded system optimizations and support.
-#[cfg(feature = "embedded")]
+#[cfg(embedded_surface)]
 pub mod embedded;
 /// Unified error system (ErrorId, RwError, c_try!).
 pub mod error;
@@ -69,10 +66,7 @@ pub mod i18n;
 #[cfg(feature = "image")]
 pub mod image;
 /// Declarative JSON window engine (QML-like).
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(all(any(feature = "desktop", feature = "tablet", feature = "mobile"), widgets_unstripped))]
 pub mod json;
 /// Layout managers.
 pub mod layout;
@@ -112,7 +106,7 @@ pub mod util;
 #[cfg(feature = "video")]
 pub mod video;
 /// Web view and engine components.
-#[cfg(not(any(feature = "mini", feature = "embedded")))]
+#[cfg(widgets_unstripped)]
 pub mod web;
 /// Optional WGPU GPU acceleration backend (gated behind `gpu-wgpu` feature).
 #[cfg(feature = "gpu-wgpu")]
@@ -143,10 +137,7 @@ macro_rules! tr {
     }};
 }
 /// Application lifecycle wrapper and type-safe widget handles (not available in mini mode).
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(all(any(feature = "desktop", feature = "tablet", feature = "mobile"), widgets_unstripped))]
 pub mod app;
 /// Index-based widget registry for runtime lookup.
 pub mod index;
@@ -157,179 +148,36 @@ pub mod pdf;
 /// Print and preview support.
 pub mod print;
 /// Initialize global platform and i18n subsystems.
-#[cfg(not(feature = "mini"))]
+///
+/// One function for every profile (BLUE15 rule #58): the branch that used to be
+/// a `cfg`-gated pair now asks [`platform::profile`], so adding a profile does
+/// not mean adding a copy of this function.
 pub fn init() {
     trace_runtime_route("init");
-    init_runtime_backend();
-    init_i18n_runtime();
-}
-/// Stub init for mini mode (no platform runtime).
-#[cfg(feature = "mini")]
-pub fn init() {
-    log::info!("rust_widgets: mini mode init (no platform runtime)");
+    platform::profile::runtime_init();
+    platform::profile::init_optional_subsystems();
 }
 /// Run platform main event loop.
-#[cfg(not(feature = "mini"))]
 pub fn run() {
     trace_runtime_route("run");
-    run_runtime_backend();
-}
-/// Stub run for mini mode (no platform runtime).
-#[cfg(feature = "mini")]
-pub fn run() {
-    log::info!("rust_widgets: mini mode run (no platform event loop)");
+    platform::profile::runtime_run();
 }
 /// Request platform event loop shutdown.
-#[cfg(not(feature = "mini"))]
 pub fn quit() {
     trace_runtime_route("quit");
-    quit_runtime_backend();
+    platform::profile::runtime_quit();
 }
-/// Stub quit for mini mode (no platform runtime).
-#[cfg(feature = "mini")]
-pub fn quit() {
-    log::info!("rust_widgets: mini mode quit (no platform to shut down)");
-}
-#[cfg(not(feature = "mini"))]
+/// Logs the resolved profile/backend/route when `RUST_WIDGETS_TRACE_RUNTIME=1`.
 fn trace_runtime_route(stage: &str) {
     if std::env::var("RUST_WIDGETS_TRACE_RUNTIME").ok().as_deref() == Some("1") {
         log::info!(
             "[rust_widgets.runtime] stage={} profile={} backend={} route={}",
             stage,
-            runtime_profile_name(),
-            platform::get_platform().backend_name(),
-            runtime_route_name()
+            platform::profile::profile_name(),
+            platform::platform_facts().backend_name(),
+            platform::profile::route_name()
         );
     }
-}
-// ── Runtime profile names ──
-
-/// Desktop: full native platform runtime.
-#[cfg(all(not(feature = "mini"), feature = "desktop"))]
-fn runtime_profile_name() -> &'static str {
-    "desktop"
-}
-
-/// Tablet: touch-first, native platform.
-#[cfg(all(
-    not(feature = "mini"),
-    feature = "tablet",
-    not(any(feature = "desktop", feature = "mobile", feature = "embedded"))
-))]
-fn runtime_profile_name() -> &'static str {
-    "tablet"
-}
-
-/// Mobile: touch-first, mobile API.
-#[cfg(all(
-    not(feature = "mini"),
-    feature = "mobile",
-    not(any(feature = "desktop", feature = "tablet", feature = "embedded"))
-))]
-fn runtime_profile_name() -> &'static str {
-    "mobile"
-}
-
-/// Embedded-mini: LVGL-style ultra-lightweight bare-metal runtime.
-#[cfg(all(
-    not(feature = "mini"),
-    feature = "profile-embedded-mini",
-    not(any(feature = "desktop", feature = "tablet", feature = "mobile"))
-))]
-fn runtime_profile_name() -> &'static str {
-    "embedded-mini"
-}
-
-/// Embedded: stripped-down render-engine-only runtime.
-#[cfg(all(
-    not(feature = "mini"),
-    feature = "embedded",
-    not(any(
-        feature = "desktop",
-        feature = "tablet",
-        feature = "mobile",
-        feature = "profile-embedded-mini"
-    ))
-))]
-fn runtime_profile_name() -> &'static str {
-    "embedded"
-}
-
-/// Fallback (no device feature selected).
-#[cfg(all(
-    not(feature = "mini"),
-    not(any(
-        feature = "desktop",
-        feature = "tablet",
-        feature = "mobile",
-        feature = "embedded",
-        feature = "profile-embedded-mini"
-    ))
-))]
-fn runtime_profile_name() -> &'static str {
-    "unknown"
-}
-#[cfg(not(any(feature = "mini", feature = "embedded", feature = "profile-embedded-mini")))]
-fn runtime_route_name() -> &'static str {
-    "native-platform"
-}
-#[cfg(all(not(feature = "mini"), any(feature = "embedded", feature = "profile-embedded-mini")))]
-fn runtime_route_name() -> &'static str {
-    "embedded-render-engine"
-}
-#[cfg(all(
-    not(any(feature = "embedded", feature = "profile-embedded-mini")),
-    not(feature = "mini")
-))]
-fn init_runtime_backend() {
-    platform::init();
-}
-#[cfg(all(not(feature = "mini"), any(feature = "embedded", feature = "profile-embedded-mini")))]
-fn init_runtime_backend() {
-    render_engine::default_render_engine().init();
-}
-#[cfg(all(not(feature = "embedded"), not(feature = "mini")))]
-fn run_runtime_backend() {
-    platform::run();
-}
-#[cfg(all(feature = "embedded", not(feature = "mini")))]
-fn run_runtime_backend() {
-    render_engine::default_render_engine().run();
-}
-#[cfg(all(not(feature = "embedded"), not(feature = "mini")))]
-fn quit_runtime_backend() {
-    platform::quit();
-}
-#[cfg(all(feature = "embedded", not(feature = "mini")))]
-fn quit_runtime_backend() {
-    render_engine::default_render_engine().quit();
-}
-/// Initialize i18n system when i18n feature is enabled.
-#[cfg(all(feature = "i18n", not(feature = "mini")))]
-fn init_i18n_runtime() {
-    i18n::init();
-}
-
-/// Tablet/mobile without i18n: log debug message.
-#[cfg(all(
-    not(feature = "i18n"),
-    any(feature = "tablet", feature = "mobile"),
-    not(feature = "mini")
-))]
-fn init_i18n_runtime() {
-    log::debug!("i18n init skipped — i18n module not loaded on this device profile");
-}
-
-/// Embedded: stripped-down, no i18n.
-#[cfg(all(feature = "embedded", not(feature = "i18n"), not(feature = "mini")))]
-fn init_i18n_runtime() {
-    log::debug!("i18n init skipped in embedded mode — no i18n module loaded");
-}
-
-/// Fallback: no i18n feature selected.
-#[cfg(all(not(feature = "mini"), not(any(feature = "i18n", feature = "embedded"))))]
-fn init_i18n_runtime() {
-    log::debug!("i18n init skipped — unknown device profile, no i18n module loaded");
 }
 // Convenient wrapper functions for platform operations
 // Users can call these directly without manually getting a platform instance
@@ -347,7 +195,7 @@ fn init_i18n_runtime() {
 ///
 /// On a profile without an OS runtime (`mini`, `embedded`) the custom state
 /// backend answers instead, so the same call works everywhere.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 fn backend_for_kind(kind: widget::WidgetKind) -> &'static dyn control_backend::ControlBackend {
     control_backend::get_control_backend_for_widget(kind)
 }
@@ -364,74 +212,74 @@ fn backend_for_kind(kind: widget::WidgetKind) -> &'static dyn control_backend::C
 // and the backends that run reduced profiles implement it.
 
 /// `WidgetKind::MenuBar` where available, else the always-present fallback.
-#[cfg(not(feature = "mini"))]
-#[cfg(all(not(feature = "embedded"), feature = "desktop"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(all(not(embedded_surface), feature = "desktop"))]
 const KIND_MENU_BAR: widget::WidgetKind = widget::WidgetKind::MenuBar;
-#[cfg(not(feature = "mini"))]
-#[cfg(not(all(not(feature = "embedded"), feature = "desktop")))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(all(not(embedded_surface), feature = "desktop")))]
 const KIND_MENU_BAR: widget::WidgetKind = widget::WidgetKind::Panel;
 
 /// `WidgetKind::Menu` where available, else the always-present fallback.
-#[cfg(not(feature = "mini"))]
-#[cfg(all(not(feature = "embedded"), feature = "desktop"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(all(not(embedded_surface), feature = "desktop"))]
 const KIND_MENU: widget::WidgetKind = widget::WidgetKind::Menu;
-#[cfg(not(feature = "mini"))]
-#[cfg(not(all(not(feature = "embedded"), feature = "desktop")))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(all(not(embedded_surface), feature = "desktop")))]
 const KIND_MENU: widget::WidgetKind = widget::WidgetKind::Panel;
 
 /// `WidgetKind::ToolBar` where available, else the always-present fallback.
-#[cfg(not(feature = "mini"))]
-#[cfg(all(not(feature = "embedded"), feature = "desktop"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(all(not(embedded_surface), feature = "desktop"))]
 const KIND_TOOL_BAR: widget::WidgetKind = widget::WidgetKind::ToolBar;
-#[cfg(not(feature = "mini"))]
-#[cfg(not(all(not(feature = "embedded"), feature = "desktop")))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(all(not(embedded_surface), feature = "desktop")))]
 const KIND_TOOL_BAR: widget::WidgetKind = widget::WidgetKind::Panel;
 
 /// `WidgetKind::StatusBar` where available, else the always-present fallback.
-#[cfg(not(feature = "mini"))]
-#[cfg(all(not(feature = "embedded"), feature = "desktop"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(all(not(embedded_surface), feature = "desktop"))]
 const KIND_STATUS_BAR: widget::WidgetKind = widget::WidgetKind::StatusBar;
-#[cfg(not(feature = "mini"))]
-#[cfg(not(all(not(feature = "embedded"), feature = "desktop")))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(all(not(embedded_surface), feature = "desktop")))]
 const KIND_STATUS_BAR: widget::WidgetKind = widget::WidgetKind::Panel;
 
 /// `WidgetKind::ListView` where available, else the always-present fallback.
-#[cfg(not(feature = "mini"))]
-#[cfg(all(not(feature = "embedded"), feature = "desktop"))]
+#[cfg(not(alloc_frugal))]
+#[cfg(all(not(embedded_surface), feature = "desktop"))]
 const KIND_LIST_VIEW: widget::WidgetKind = widget::WidgetKind::ListView;
-#[cfg(not(feature = "mini"))]
-#[cfg(not(all(not(feature = "embedded"), feature = "desktop")))]
+#[cfg(not(alloc_frugal))]
+#[cfg(not(all(not(embedded_surface), feature = "desktop")))]
 const KIND_LIST_VIEW: widget::WidgetKind = widget::WidgetKind::Panel;
 
 /// `WidgetKind::MessageBox` where available, else the always-present fallback.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[cfg(full_widgets)]
 const KIND_MESSAGE_BOX: widget::WidgetKind = widget::WidgetKind::MessageBox;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[cfg(not(full_widgets))]
 const KIND_MESSAGE_BOX: widget::WidgetKind = widget::WidgetKind::Panel;
 
 /// `WidgetKind::FileDialog` where available, else the always-present fallback.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[cfg(full_widgets)]
 const KIND_FILE_DIALOG: widget::WidgetKind = widget::WidgetKind::FileDialog;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[cfg(not(full_widgets))]
 const KIND_FILE_DIALOG: widget::WidgetKind = widget::WidgetKind::Panel;
 
 /// `WidgetKind::ColorDialog` where available, else the always-present fallback.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[cfg(full_widgets)]
 const KIND_COLOR_DIALOG: widget::WidgetKind = widget::WidgetKind::ColorDialog;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[cfg(not(full_widgets))]
 const KIND_COLOR_DIALOG: widget::WidgetKind = widget::WidgetKind::Panel;
 
 /// `WidgetKind::FontDialog` where available, else the always-present fallback.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[cfg(full_widgets)]
 const KIND_FONT_DIALOG: widget::WidgetKind = widget::WidgetKind::FontDialog;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 #[cfg(not(full_widgets))]
 const KIND_FONT_DIALOG: widget::WidgetKind = widget::WidgetKind::Panel;
 
@@ -441,7 +289,7 @@ const KIND_FONT_DIALOG: widget::WidgetKind = widget::WidgetKind::Panel;
 /// ```
 /// let window_id = rust_widgets::create_window("My App", 100, 100, 800, 600);
 /// ```
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn create_window(
     title: &str,
     x: i32,
@@ -451,7 +299,7 @@ pub fn create_window(
 ) -> crate::core::ObjectId {
     backend_for_kind(widget::WidgetKind::Window).create_window(title, x, y, width, height)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 /// Create a button control as a child of specified parent.
 ///
 /// The backend decides whether this becomes a platform button or is painted by
@@ -466,7 +314,7 @@ pub fn create_button(
 ) -> crate::core::ObjectId {
     backend_for_kind(widget::WidgetKind::Button).create_button(parent, text, x, y, width, height)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 /// Creates a check-box. The backend decides whether it is a platform control
 /// or is painted by the platform's custom surface.
 pub fn create_checkbox(
@@ -480,7 +328,7 @@ pub fn create_checkbox(
     backend_for_kind(widget::WidgetKind::CheckBox)
         .create_checkbox(parent, text, x, y, width, height)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 /// Creates a single-line text editor. The backend chooses how it is hosted.
 pub fn create_line_edit(
     parent: crate::core::ObjectId,
@@ -493,7 +341,7 @@ pub fn create_line_edit(
     backend_for_kind(widget::WidgetKind::LineEdit)
         .create_line_edit(parent, text, x, y, width, height)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 /// Creates a read-only text label. The backend chooses how it is hosted.
 pub fn create_label(
     parent: crate::core::ObjectId,
@@ -505,7 +353,7 @@ pub fn create_label(
 ) -> crate::core::ObjectId {
     backend_for_kind(widget::WidgetKind::Label).create_label(parent, text, x, y, width, height)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 /// Creates a radio button. The backend chooses how it is hosted.
 pub fn create_radio_button(
     parent: crate::core::ObjectId,
@@ -518,7 +366,7 @@ pub fn create_radio_button(
     backend_for_kind(widget::WidgetKind::RadioButton)
         .create_radio_button(parent, text, x, y, width, height)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 /// Creates a slider. The backend chooses how it is hosted.
 pub fn create_slider(
     parent: crate::core::ObjectId,
@@ -529,7 +377,7 @@ pub fn create_slider(
 ) -> crate::core::ObjectId {
     backend_for_kind(widget::WidgetKind::Slider).create_slider(parent, x, y, width, height)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 /// Creates a progress bar. The backend chooses how it is hosted.
 pub fn create_progress_bar(
     parent: crate::core::ObjectId,
@@ -541,7 +389,7 @@ pub fn create_progress_bar(
     backend_for_kind(widget::WidgetKind::ProgressBar)
         .create_progress_bar(parent, x, y, width, height)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 /// Creates a combo box. The backend chooses how it is hosted.
 pub fn create_combo_box(
     parent: crate::core::ObjectId,
@@ -552,7 +400,7 @@ pub fn create_combo_box(
 ) -> crate::core::ObjectId {
     backend_for_kind(widget::WidgetKind::ComboBox).create_combo_box(parent, x, y, width, height)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 /// Creates a list box. The backend chooses how it is hosted.
 pub fn create_list_box(
     parent: crate::core::ObjectId,
@@ -563,7 +411,7 @@ pub fn create_list_box(
 ) -> crate::core::ObjectId {
     backend_for_kind(widget::WidgetKind::ListBox).create_list_box(parent, x, y, width, height)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 /// Creates a panel (a container surface). The backend chooses how it is hosted.
 pub fn create_panel(
     parent: crate::core::ObjectId,
@@ -576,7 +424,7 @@ pub fn create_panel(
     // a dedicated panel kind exists the routing table answers for it.
     backend_for_kind(widget::WidgetKind::Panel).create_panel(parent, x, y, width, height)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 /// Create a message box dialog as a child of specified parent.
 ///
 /// Creates a message box. The backend chooses how it is hosted.
@@ -591,7 +439,7 @@ pub fn create_message_box(
 ) -> crate::core::ObjectId {
     backend_for_kind(KIND_MESSAGE_BOX).create_message_box(parent, title, text, x, y, width, height)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 /// Create a file dialog as a child of specified parent.
 ///
 /// Creates a file dialog. The backend chooses how it is hosted.
@@ -604,7 +452,7 @@ pub fn create_file_dialog(
 ) -> crate::core::ObjectId {
     backend_for_kind(KIND_FILE_DIALOG).create_file_dialog(parent, "", x, y, width, height)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 /// Create a color dialog as a child of specified parent.
 pub fn create_color_dialog(
     parent: crate::core::ObjectId,
@@ -615,7 +463,7 @@ pub fn create_color_dialog(
 ) -> crate::core::ObjectId {
     backend_for_kind(KIND_COLOR_DIALOG).create_color_dialog(parent, "", x, y, width, height)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 /// Create a font dialog as a child of specified parent.
 pub fn create_font_dialog(
     parent: crate::core::ObjectId,
@@ -626,7 +474,7 @@ pub fn create_font_dialog(
 ) -> crate::core::ObjectId {
     backend_for_kind(KIND_FONT_DIALOG).create_font_dialog(parent, "", x, y, width, height)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 /// Creates a spin box. The backend chooses how it is hosted.
 pub fn create_spin_box(
     parent: crate::core::ObjectId,
@@ -637,7 +485,7 @@ pub fn create_spin_box(
 ) -> crate::core::ObjectId {
     backend_for_kind(widget::WidgetKind::SpinBox).create_spin_box(parent, x, y, width, height)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 /// Creates a list view. The backend chooses how it is hosted.
 pub fn create_list_view(
     parent: crate::core::ObjectId,
@@ -649,7 +497,7 @@ pub fn create_list_view(
     backend_for_kind(KIND_LIST_VIEW).create_list_view(parent, x, y, width, height)
 }
 /// Creates a scroll area. The backend chooses how it is hosted.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn create_scroll_area(
     parent: crate::core::ObjectId,
     x: i32,
@@ -674,7 +522,7 @@ pub fn create_scroll_area(
 ///
 /// Returns `false` when the backend cannot host custom-painted widgets, or when
 /// it refuses this particular mount. Backends that cannot display them log why.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn mount_custom_widget(
     parent: crate::core::ObjectId,
     id: crate::core::ObjectId,
@@ -684,13 +532,13 @@ pub fn mount_custom_widget(
 }
 
 /// Moves and resizes a mounted custom-painted widget.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn resize_custom_widget(id: crate::core::ObjectId, rect: crate::core::Rect) -> bool {
     platform::get_platform().resize_custom_widget(id, rect)
 }
 
 /// Unmounts a custom-painted widget from its window.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn unmount_custom_widget(id: crate::core::ObjectId) -> bool {
     platform::get_platform().unmount_custom_widget(id)
 }
@@ -699,13 +547,13 @@ pub fn unmount_custom_widget(id: crate::core::ObjectId) -> bool {
 ///
 /// Returns `false` when the id is not a custom-painted widget mounted on the
 /// active backend.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn request_custom_repaint(id: crate::core::ObjectId) -> bool {
     platform::get_platform().repaint_custom_widget(id)
 }
 
 /// Returns `true` when the active backend can display custom-painted widgets.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn supports_custom_widgets() -> bool {
     platform::get_platform().supports_custom_widgets()
 }
@@ -720,7 +568,7 @@ pub fn supports_custom_widgets() -> bool {
 /// backend is not showing.
 ///
 /// Returns `Ok(id)` with the widget live in the registry, or `Err(reason)`.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 fn mount_widget_object(
     parent: crate::core::ObjectId,
     widget: Box<dyn widget::Widget>,
@@ -749,28 +597,27 @@ fn mount_widget_object(
 ///
 /// The `create_*` functions are the typo-safe spelling for the common widgets
 /// (`create_button`, `create_slider`, …). This function is the general form: hand
-/// it a [`WidgetKind`] and it resolves what that means on the current backend.
+/// Creates a widget of `kind`, painted by the library.
 ///
-/// # The two things a backend may do — and why callers never branch on them
+/// # What this does now
 ///
-/// * **A platform control exists** for the kind (button, slider, …): the widget is
-///   created as that control and the returned id addresses it directly.
-/// * **No platform control exists** (chart, code editor, gantt, …): the platform
-///   supplies a surface that hosts the [`widget::Widget`] object, and the id
-///   addresses *that*.
+/// Every kind is painted by the library (BLUE15 rule #55), so there is a single
+/// path: build (or accept) the `Box<dyn Widget>` and hand it to the host surface
+/// through `widget::runtime`. The `Platform` layer supplies a surface to paint on,
+/// not a control to map onto, so no branch here asks which mechanism to use.
 ///
-/// Both cases return a usable [`crate::core::ObjectId`], so the caller writes the
-/// same code and never asks which happened. If a backend genuinely cannot host the
-/// kind it returns `0` — a truthful "not available here" — which callers already
-/// have to handle for the per-kind functions too.
+/// # The `widget` argument
 ///
-/// # Ownership of `widget`
+/// A caller may supply a pre-built object so that a widget with constructor
+/// arguments the factory cannot express (`CodeEditor` with initial text, a chart
+/// with series) reaches this path without a bespoke branch. When it is `None` the
+/// widget factory is asked; that factory is the single place that knows every
+/// kind's constructor (rule #65).
 ///
-/// `widget` is only consumed when the kind has no platform control; when a
-/// platform control exists the object is dropped and the control is used instead.
-/// This lets a caller that built a widget object "just in case" pass it here
-/// unconditionally.
-#[cfg(not(feature = "mini"))]
+/// Returns `0` — a truthful "not created" — when the kind has no constructor and
+/// the caller supplied no object. Callers already handle `0` for the per-kind
+/// functions, so this needs no separate error channel.
+#[cfg(not(alloc_frugal))]
 pub fn create_widget_of_kind(
     kind: widget::WidgetKind,
     parent: crate::core::ObjectId,
@@ -781,37 +628,35 @@ pub fn create_widget_of_kind(
     height: u32,
     widget: Option<Box<dyn widget::Widget>>,
 ) -> crate::core::ObjectId {
-    use control_backend::ControlRoutePreference;
+    let rect = crate::core::Rect::new(x, y, width, height);
 
-    match control_backend::route_preference_for_widget_kind(kind) {
-        // A real platform control exists: create it and ignore any widget object.
-        ControlRoutePreference::NativePreferred => backend_for_kind(kind).create_widget(
-            &kind_name(kind),
-            parent,
-            text,
-            x,
-            y,
-            width,
-            height,
-        ),
-        // No platform control: host the widget object on the platform's surface.
-        ControlRoutePreference::CustomRequired => {
-            let Some(widget) = widget else {
-                // Nothing to host. Report honestly instead of fabricating an id.
-                log::warn!(
-                    "create_widget_of_kind: {kind:?} has no platform control and no widget was \
-                     supplied to host; returning 0"
-                );
-                return 0;
-            };
-            let rect = crate::core::Rect::new(x, y, width, height);
-            match mount_widget_object(parent, widget, rect) {
-                Ok(id) => id,
-                Err(error) => {
-                    log::warn!("create_widget_of_kind: cannot host {kind:?}: {error}");
-                    0
-                }
-            }
+    // Prefer the caller's object; otherwise build from the factory, which is the
+    // only component that knows every kind's constructor.
+    let widget = widget.or_else(|| {
+        #[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
+        {
+            widget::WidgetFactory::new_with_defaults().create(&kind_name(kind), rect, text)
+        }
+        #[cfg(not(any(feature = "desktop", feature = "tablet", feature = "mobile")))]
+        {
+            let _ = (text, rect);
+            None
+        }
+    });
+
+    let Some(widget) = widget else {
+        log::warn!(
+            "create_widget_of_kind: no constructor for {kind:?} and no widget object was \
+             supplied; returning 0"
+        );
+        return 0;
+    };
+
+    match mount_widget_object(parent, widget, rect) {
+        Ok(id) => id,
+        Err(error) => {
+            log::warn!("create_widget_of_kind: cannot host {kind:?}: {error}");
+            0
         }
     }
 }
@@ -822,7 +667,7 @@ pub fn create_widget_of_kind(
 /// dispatches on) rather than from `Debug` output, so the two can never disagree.
 /// Falls back to the debug name for kinds with no registered capability or when
 /// the capability module is compiled out (embedded/mini).
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 fn kind_name(kind: widget::WidgetKind) -> alloc::string::String {
     #[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
     {
@@ -837,7 +682,7 @@ fn kind_name(kind: widget::WidgetKind) -> alloc::string::String {
 }
 
 /// Stub for mini mode (no platform runtime, no windows).
-#[cfg(feature = "mini")]
+#[cfg(alloc_frugal)]
 pub fn mount_custom_widget(
     _parent: crate::core::ObjectId,
     _id: crate::core::ObjectId,
@@ -847,25 +692,25 @@ pub fn mount_custom_widget(
 }
 
 /// Stub for mini mode.
-#[cfg(feature = "mini")]
+#[cfg(alloc_frugal)]
 pub fn resize_custom_widget(_id: crate::core::ObjectId, _rect: crate::core::Rect) -> bool {
     false
 }
 
 /// Stub for mini mode.
-#[cfg(feature = "mini")]
+#[cfg(alloc_frugal)]
 pub fn unmount_custom_widget(_id: crate::core::ObjectId) -> bool {
     false
 }
 
 /// Stub for mini mode.
-#[cfg(feature = "mini")]
+#[cfg(alloc_frugal)]
 pub fn request_custom_repaint(_id: crate::core::ObjectId) -> bool {
     false
 }
 
 /// Stub for mini mode.
-#[cfg(feature = "mini")]
+#[cfg(alloc_frugal)]
 pub fn supports_custom_widgets() -> bool {
     false
 }
@@ -873,21 +718,21 @@ pub fn supports_custom_widgets() -> bool {
 /// Show a widget by its object id.
 ///
 /// This is a convenience wrapper around `platform::get_platform().show_widget()`.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn show_widget(widget_id: crate::core::ObjectId) {
     platform::get_platform().show_widget(widget_id);
 }
 /// Hide a widget by its object id.
 ///
 /// This is a convenience wrapper around `platform::get_platform().hide_widget()`.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn hide_widget(widget_id: crate::core::ObjectId) {
     platform::get_platform().hide_widget(widget_id);
 }
 /// Set geometry of a widget.
 ///
 /// This is a convenience wrapper around `platform::get_platform().set_widget_geometry()`.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn set_widget_geometry(
     widget_id: crate::core::ObjectId,
     x: i32,
@@ -900,42 +745,42 @@ pub fn set_widget_geometry(
 /// Set text of a widget.
 ///
 /// This is a convenience wrapper around `platform::get_platform().set_widget_text()`.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn set_widget_text(widget_id: crate::core::ObjectId, text: &str) {
     platform::get_platform().set_widget_text(widget_id, text);
 }
 /// Get text of a widget.
 ///
 /// This is a convenience wrapper around `platform::get_platform().get_widget_text()`.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn get_widget_text(widget_id: crate::core::ObjectId) -> String {
     platform::get_platform().get_widget_text(widget_id)
 }
 /// Set enabled state of a widget.
 ///
 /// This is a convenience wrapper around `platform::get_platform().set_widget_enabled()`.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn set_widget_enabled(widget_id: crate::core::ObjectId, enabled: bool) {
     platform::get_platform().set_widget_enabled(widget_id, enabled);
 }
 /// Check if a widget is enabled.
 ///
 /// This is a convenience wrapper around `platform::get_platform().is_widget_enabled()`.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn is_widget_enabled(widget_id: crate::core::ObjectId) -> bool {
     platform::get_platform().is_widget_enabled(widget_id)
 }
 /// Set visibility of a widget.
 ///
 /// This is a convenience wrapper around `platform::get_platform().set_widget_visible()`.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn set_widget_visible(widget_id: crate::core::ObjectId, visible: bool) {
     platform::get_platform().set_widget_visible(widget_id, visible);
 }
 /// Check if a widget is visible.
 ///
 /// This is a convenience wrapper around `platform::get_platform().is_widget_visible()`.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn is_widget_visible(widget_id: crate::core::ObjectId) -> bool {
     platform::get_platform().is_widget_visible(widget_id)
 }
@@ -944,97 +789,97 @@ pub fn is_widget_visible(widget_id: crate::core::ObjectId) -> bool {
 ///
 /// Returns `false` when this backend's control has no numeric value, so callers
 /// never mistake "unsupported" for "set to 0".
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn set_widget_value(widget_id: crate::core::ObjectId, value: f64) -> bool {
     platform::get_platform().set_widget_value(widget_id, value)
 }
 
 /// Read a widget's primary numeric value.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn widget_value(widget_id: crate::core::ObjectId) -> Option<f64> {
     platform::get_platform().widget_value(widget_id)
 }
 
 /// Set a widget's `(min, max)` range.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn set_widget_range(widget_id: crate::core::ObjectId, min: f64, max: f64) -> bool {
     platform::get_platform().set_widget_range(widget_id, min, max)
 }
 
 /// Read a widget's `(min, max)` range.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn widget_range(widget_id: crate::core::ObjectId) -> Option<(f64, f64)> {
     platform::get_platform().widget_range(widget_id)
 }
 
 /// Set a widget's selection index (combo box, list box, tab widget).
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn set_widget_selected_index(widget_id: crate::core::ObjectId, index: Option<usize>) -> bool {
     platform::get_platform().set_widget_selected_index(widget_id, index)
 }
 
 /// Read a widget's selection index.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn widget_selected_index(widget_id: crate::core::ObjectId) -> Option<usize> {
     platform::get_platform().widget_selected_index(widget_id)
 }
 
 /// Set a widget's checked state (check box, radio button, toggle button).
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn set_widget_checked(widget_id: crate::core::ObjectId, checked: bool) -> bool {
     platform::get_platform().set_widget_checked(widget_id, checked)
 }
 
 /// Read a widget's checked state, or `None` when it is not checkable.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn is_widget_checked(widget_id: crate::core::ObjectId) -> Option<bool> {
     platform::get_platform().is_widget_checked(widget_id)
 }
 
 /// Set a widget's increment step (slider, spin box, scroll bar).
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn set_widget_step(widget_id: crate::core::ObjectId, step: f64) -> bool {
     platform::get_platform().set_widget_step(widget_id, step)
 }
 
 /// Read a widget's increment step.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn widget_step(widget_id: crate::core::ObjectId) -> Option<f64> {
     platform::get_platform().widget_step(widget_id)
 }
 
 /// Set a progress-style widget's indeterminate (busy) state.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn set_widget_indeterminate(widget_id: crate::core::ObjectId, indeterminate: bool) -> bool {
     platform::get_platform().set_widget_indeterminate(widget_id, indeterminate)
 }
 
 /// Read a progress-style widget's indeterminate state.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn is_widget_indeterminate(widget_id: crate::core::ObjectId) -> Option<bool> {
     platform::get_platform().is_widget_indeterminate(widget_id)
 }
 
 /// Set a text-entry widget's read-only state.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn set_widget_read_only(widget_id: crate::core::ObjectId, read_only: bool) -> bool {
     platform::get_platform().set_widget_read_only(widget_id, read_only)
 }
 
 /// Read a text-entry widget's read-only state.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn is_widget_read_only(widget_id: crate::core::ObjectId) -> Option<bool> {
     platform::get_platform().is_widget_read_only(widget_id)
 }
 
 /// Set a text-entry widget's maximum accepted length.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn set_widget_max_length(widget_id: crate::core::ObjectId, max_length: u32) -> bool {
     platform::get_platform().set_widget_max_length(widget_id, max_length)
 }
 
 /// Read a text-entry widget's maximum accepted length.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn widget_max_length(widget_id: crate::core::ObjectId) -> Option<u32> {
     platform::get_platform().widget_max_length(widget_id)
 }
@@ -1043,7 +888,7 @@ pub fn widget_max_length(widget_id: crate::core::ObjectId) -> Option<u32> {
 ///
 /// Returns `false` when the id is not a window or the backend cannot honour the
 /// state on its toolkit.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn set_window_state(
     widget_id: crate::core::ObjectId,
     flag: platform::WindowStateFlag,
@@ -1053,7 +898,7 @@ pub fn set_window_state(
 }
 
 /// Read a window state, or `None` when the id is not a window.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn is_window_in_state(
     widget_id: crate::core::ObjectId,
     flag: platform::WindowStateFlag,
@@ -1062,67 +907,67 @@ pub fn is_window_in_state(
 }
 
 /// Set a window's minimum content size.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn set_window_min_size(widget_id: crate::core::ObjectId, width: u32, height: u32) -> bool {
     platform::get_platform().set_window_min_size(widget_id, width, height)
 }
 
 /// Read a window's minimum content size.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn window_min_size(widget_id: crate::core::ObjectId) -> Option<(u32, u32)> {
     platform::get_platform().window_min_size(widget_id)
 }
 
 /// Set a window's icon from a file path.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn set_window_icon(widget_id: crate::core::ObjectId, path: &str) -> bool {
     platform::get_platform().set_window_icon(widget_id, path)
 }
 
 /// Read a window's icon path, if one was set.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn window_icon(widget_id: crate::core::ObjectId) -> Option<String> {
     platform::get_platform().window_icon(widget_id)
 }
 
 /// Set a text entry's selection range as `(start, end)` character offsets.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn set_widget_selection(widget_id: crate::core::ObjectId, start: u32, end: u32) -> bool {
     platform::get_platform().set_widget_selection(widget_id, start, end)
 }
 
 /// Read a text entry's selection range, or `None` when nothing is selected.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn widget_selection(widget_id: crate::core::ObjectId) -> Option<(u32, u32)> {
     platform::get_platform().widget_selection(widget_id)
 }
 
 /// Set a text entry's placeholder (cue) text.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn set_widget_placeholder(widget_id: crate::core::ObjectId, text: &str) -> bool {
     platform::get_platform().set_widget_placeholder(widget_id, text)
 }
 
 /// Read a text entry's placeholder text.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn widget_placeholder(widget_id: crate::core::ObjectId) -> Option<String> {
     platform::get_platform().widget_placeholder(widget_id)
 }
 
 /// Set a text entry's echo mode.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn set_widget_echo_mode(widget_id: crate::core::ObjectId, mode: platform::EchoMode) -> bool {
     platform::get_platform().set_widget_echo_mode(widget_id, mode)
 }
 
 /// Read a text entry's echo mode.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn widget_echo_mode(widget_id: crate::core::ObjectId) -> Option<platform::EchoMode> {
     platform::get_platform().widget_echo_mode(widget_id)
 }
 
 /// Apply a slider's creation-time orientation.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn set_slider_orientation(
     widget_id: crate::core::ObjectId,
     orientation: crate::core::Orientation,
@@ -1131,110 +976,110 @@ pub fn set_slider_orientation(
 }
 
 /// Read a slider's orientation.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn slider_orientation(widget_id: crate::core::ObjectId) -> Option<crate::core::Orientation> {
     platform::get_platform().slider_orientation(widget_id)
 }
 
 /// Set a checkable control's tri-state mode.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn set_widget_tristate(widget_id: crate::core::ObjectId, enabled: bool) -> bool {
     platform::get_platform().set_widget_tristate(widget_id, enabled)
 }
 
 /// Read a checkable control's tri-state mode.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn is_widget_tristate(widget_id: crate::core::ObjectId) -> Option<bool> {
     platform::get_platform().is_widget_tristate(widget_id)
 }
 
 /// Put a radio button into a named mutually-exclusive group.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn set_widget_group(widget_id: crate::core::ObjectId, group: &str) -> bool {
     platform::get_platform().set_widget_group(widget_id, group)
 }
 
 /// Read a radio button's group name.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn widget_group(widget_id: crate::core::ObjectId) -> Option<String> {
     platform::get_platform().widget_group(widget_id)
 }
 
 /// Set a scrollable container's scroll offset.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn set_widget_scroll_position(widget_id: crate::core::ObjectId, x: i32, y: i32) -> bool {
     platform::get_platform().set_widget_scroll_position(widget_id, x, y)
 }
 
 /// Read a scrollable container's scroll offset.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn widget_scroll_position(widget_id: crate::core::ObjectId) -> Option<(i32, i32)> {
     platform::get_platform().widget_scroll_position(widget_id)
 }
 // ComboBox operations
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn combo_box_add_item(combo_box: crate::core::ObjectId, text: &str) -> bool {
     platform::get_platform().combo_box_add_item(combo_box, text)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn combo_box_clear_items(combo_box: crate::core::ObjectId) -> bool {
     platform::get_platform().combo_box_clear_items(combo_box)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn combo_box_set_current_index(combo_box: crate::core::ObjectId, index: usize) -> bool {
     platform::get_platform().combo_box_set_current_index(combo_box, index)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn combo_box_current_index(combo_box: crate::core::ObjectId) -> Option<usize> {
     platform::get_platform().combo_box_current_index(combo_box)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn combo_box_item_count(combo_box: crate::core::ObjectId) -> usize {
     platform::get_platform().combo_box_item_count(combo_box)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn combo_box_item_text(combo_box: crate::core::ObjectId, index: usize) -> Option<String> {
     platform::get_platform().combo_box_item_text(combo_box, index)
 }
 // ListBox operations
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn list_box_add_item(list_box: crate::core::ObjectId, text: &str) -> bool {
     platform::get_platform().list_box_add_item(list_box, text)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn list_box_remove_item(list_box: crate::core::ObjectId, index: usize) -> bool {
     platform::get_platform().list_box_remove_item(list_box, index)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn list_box_clear_items(list_box: crate::core::ObjectId) -> bool {
     platform::get_platform().list_box_clear_items(list_box)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn list_box_set_current_index(list_box: crate::core::ObjectId, index: usize) -> bool {
     platform::get_platform().list_box_set_current_index(list_box, index)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn list_box_current_index(list_box: crate::core::ObjectId) -> Option<usize> {
     platform::get_platform().list_box_current_index(list_box)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn list_box_item_count(list_box: crate::core::ObjectId) -> usize {
     platform::get_platform().list_box_item_count(list_box)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn list_box_item_text(list_box: crate::core::ObjectId, index: usize) -> Option<String> {
     platform::get_platform().list_box_item_text(list_box, index)
 }
 // Event polling
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn poll_widget_triggered() -> Option<crate::core::ObjectId> {
     platform::get_platform().poll_widget_triggered()
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn poll_widget_trigger_event() -> Option<WidgetTriggerEvent> {
     platform::get_platform().poll_widget_trigger_event()
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn inject_widget_trigger_event(
     widget_id: crate::core::ObjectId,
     kind: WidgetTriggerKind,
@@ -1242,22 +1087,22 @@ pub fn inject_widget_trigger_event(
     platform::get_platform().inject_widget_trigger_event(widget_id, kind)
 }
 // Clipboard
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn set_clipboard_text(text: &str) -> bool {
     platform::get_platform().set_clipboard_text(text)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn get_clipboard_text() -> String {
     platform::get_platform().get_clipboard_text()
 }
 /// Returns the platform's rich clipboard backend, if available.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn platform_clipboard() -> Option<&'static dyn crate::platform::clipboard::RichClipboardBackend>
 {
     platform::get_platform().clipboard_backend()
 }
 // Menu operations
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn create_menu_bar(
     parent: crate::core::ObjectId,
     x: i32,
@@ -1267,7 +1112,7 @@ pub fn create_menu_bar(
 ) -> crate::core::ObjectId {
     backend_for_kind(KIND_MENU_BAR).create_menu_bar(parent, x, y, width, height)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn create_menu(
     parent: crate::core::ObjectId,
     text: &str,
@@ -1278,14 +1123,14 @@ pub fn create_menu(
 ) -> crate::core::ObjectId {
     backend_for_kind(KIND_MENU).create_menu(parent, text, x, y, width, height)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn attach_menu_bar_to_window(
     window: crate::core::ObjectId,
     menu_bar: crate::core::ObjectId,
 ) -> bool {
     platform::get_platform().attach_menu_bar_to_window(window, menu_bar)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn menu_add_item(
     parent_menu: crate::core::ObjectId,
     text: &str,
@@ -1313,11 +1158,11 @@ pub fn menu_add_item(
 /// #[cfg(not(target_os = "macos"))]
 /// assert_eq!(shown, "Ctrl+Z");
 /// ```
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn format_shortcut(shortcut: &crate::shortcut::Shortcut) -> String {
     platform::get_platform().format_shortcut(shortcut)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn poll_menu_triggered() -> Option<crate::core::ObjectId> {
     platform::get_platform().poll_menu_triggered()
 }
@@ -1326,7 +1171,7 @@ pub fn poll_menu_triggered() -> Option<crate::core::ObjectId> {
 /// Lets a host verify that a shortcut was genuinely registered with the platform
 /// (and not merely drawn into a label). Returns `None` for a non-menu-item id or
 /// an item created without a shortcut.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn menu_item_shortcut(menu_item: crate::core::ObjectId) -> Option<String> {
     platform::get_platform().menu_item_shortcut(menu_item)
 }
@@ -1340,16 +1185,16 @@ pub fn menu_item_shortcut(menu_item: crate::core::ObjectId) -> Option<String> {
 /// Returns `None` when the widget is unknown, or when the backend created it in
 /// state-only mode (for example off the UI thread) and therefore has no native
 /// object to return.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn native_handle(widget: crate::core::ObjectId) -> Option<usize> {
     platform::get_platform().get_native_handle(widget)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn inject_menu_trigger(menu_item_id: crate::core::ObjectId) -> bool {
     platform::get_platform().inject_menu_trigger(menu_item_id)
 }
 // ToolBar and StatusBar
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn create_tool_bar(
     parent: crate::core::ObjectId,
     x: i32,
@@ -1359,7 +1204,7 @@ pub fn create_tool_bar(
 ) -> crate::core::ObjectId {
     backend_for_kind(KIND_TOOL_BAR).create_tool_bar(parent, x, y, width, height)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn create_status_bar(
     parent: crate::core::ObjectId,
     text: &str,
@@ -1371,42 +1216,42 @@ pub fn create_status_bar(
     backend_for_kind(KIND_STATUS_BAR).create_status_bar(parent, text, x, y, width, height)
 }
 // Drag and Drop
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn begin_drag(source_widget_id: crate::core::ObjectId, mime: &str, payload: &[u8]) -> bool {
     platform::get_platform().begin_drag(source_widget_id, mime, payload)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn poll_drop_event() -> Option<DropEvent> {
     platform::get_platform().poll_drop_event()
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn inject_drop_event(event: DropEvent) -> bool {
     platform::get_platform().inject_drop_event(event)
 }
 // IME and Accessibility
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn set_widget_ime_enabled(widget_id: crate::core::ObjectId, enabled: bool) -> bool {
     platform::get_platform().set_widget_ime_enabled(widget_id, enabled)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn is_widget_ime_enabled(widget_id: crate::core::ObjectId) -> bool {
     platform::get_platform().is_widget_ime_enabled(widget_id)
 }
 /// Returns the platform's IME bridge, if available.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn platform_ime_bridge() -> Option<&'static dyn crate::platform::ime::ImeBridge> {
     platform::get_platform().ime_bridge()
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn set_widget_accessibility_name(widget_id: crate::core::ObjectId, name: &str) -> bool {
     platform::get_platform().set_widget_accessibility_name(widget_id, name)
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn get_widget_accessibility_name(widget_id: crate::core::ObjectId) -> String {
     platform::get_platform().get_widget_accessibility_name(widget_id)
 }
 // Re-exports from platform module for convenience
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub use platform::{
     backend_name, capabilities, dpi_scale_factor, get_platform, init as platform_init,
     quit as platform_quit, run as platform_run, runtime_gui_mode, runtime_gui_mode_for,

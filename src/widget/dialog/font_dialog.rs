@@ -8,6 +8,10 @@ use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::tr;
 
+use crate::property_names_of;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Font selection dialog.
 pub struct FontDialog {
@@ -68,6 +72,50 @@ impl Widget for FontDialog {
 
     fn size_hint(&self) -> Size {
         crate::core::Size::new(400, 300)
+    }
+
+    /// Reports this widget as the object that paints it.
+    ///
+    /// `FontDialog` implements `Draw`, so `Some(self)` is total and cannot be
+    /// wrong.
+    fn as_draw_mut(&mut self) -> Option<&mut dyn crate::widget::Draw> {
+        Some(self)
+    }
+
+    /// Returns this widget as its property contract.
+    fn properties_dyn(
+        &self,
+    ) -> Option<&dyn crate::widget::capability::properties_trait::WidgetProperties> {
+        Some(self)
+    }
+
+    /// Mutable counterpart to `properties_dyn`.
+    fn properties_dyn_mut(
+        &mut self,
+    ) -> Option<&mut dyn crate::widget::capability::properties_trait::WidgetProperties> {
+        Some(self)
+    }
+}
+
+/// `FontDialog`'s property contract.
+///
+/// Read semantics are carried over unchanged from the centralised
+/// `access_read_dialog.in.rs` dispatch. `modal` is read-only: the old write layer
+/// had no arm for this kind.
+impl WidgetProperties for FontDialog {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "modal" => Ok(CapabilityValue::Bool(self.is_modal())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        base_property_set(self, name, value)
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["modal", BASE_PROPERTY_NAMES]
     }
 }
 impl EventHandler for FontDialog {

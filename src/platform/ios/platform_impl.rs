@@ -1179,11 +1179,7 @@ mod tests {
         assert!(platform.list_box_clear_items(list_box_id));
     }
 
-    #[cfg(all(
-        feature = "serde_json",
-        feature = "serde",
-        not(any(feature = "mini", feature = "embedded"))
-    ))]
+    #[cfg(all(feature = "serde_json", feature = "serde", widgets_unstripped))]
     #[test]
     fn ios_platform_state_serialization() {
         let platform = IosMobilePlatform::new();

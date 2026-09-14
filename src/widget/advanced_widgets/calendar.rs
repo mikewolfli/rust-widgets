@@ -6,7 +6,15 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::access::weekday_to_str;
+use crate::widget::capability::coercion::{
+    expect_bool, expect_naive_date, expect_string, expect_weekday, naive_date_to_string,
+};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 use chrono::Datelike;
 
 /// Advance a date by `delta` months, clamping to the last valid day.
@@ -302,7 +310,100 @@ impl Widget for Calendar {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(260, 240)
     }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
 }
+
+/// `Calendar`'s property contract.
+///
+/// Dates cross this boundary as `%Y-%m-%d` strings and the first day of the week
+/// as a three-letter token, both matching the capability schema's declared kinds.
+impl WidgetProperties for Calendar {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "selected_date" => {
+                Ok(CapabilityValue::String(naive_date_to_string(self.selected_date())))
+            }
+            "minimum_date" => {
+                Ok(CapabilityValue::String(naive_date_to_string(self.minimum_date())))
+            }
+            "maximum_date" => {
+                Ok(CapabilityValue::String(naive_date_to_string(self.maximum_date())))
+            }
+            "first_day_of_week" => {
+                Ok(CapabilityValue::String(weekday_to_str(self.first_day_of_week()).to_string()))
+            }
+            "grid_visible" => Ok(CapabilityValue::Bool(self.is_grid_visible())),
+            "navigation_bar_visible" => Ok(CapabilityValue::Bool(self.is_navigation_bar_visible())),
+            "horizontal_header_visible" => {
+                Ok(CapabilityValue::Bool(self.is_horizontal_header_visible()))
+            }
+            "vertical_header_visible" => {
+                Ok(CapabilityValue::Bool(self.is_vertical_header_visible()))
+            }
+            "date_format" => Ok(CapabilityValue::String(self.date_format().to_string())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "selected_date" => {
+                self.set_selected_date(expect_naive_date(value)?);
+                Ok(())
+            }
+            "minimum_date" => {
+                self.set_minimum_date(expect_naive_date(value)?);
+                Ok(())
+            }
+            "maximum_date" => {
+                self.set_maximum_date(expect_naive_date(value)?);
+                Ok(())
+            }
+            "first_day_of_week" => {
+                self.set_first_day_of_week(expect_weekday(value)?);
+                Ok(())
+            }
+            "grid_visible" => {
+                self.set_grid_visible(expect_bool(value)?);
+                Ok(())
+            }
+            "navigation_bar_visible" => {
+                self.set_navigation_bar_visible(expect_bool(value)?);
+                Ok(())
+            }
+            "horizontal_header_visible" => {
+                self.set_horizontal_header_visible(expect_bool(value)?);
+                Ok(())
+            }
+            "vertical_header_visible" => {
+                self.set_vertical_header_visible(expect_bool(value)?);
+                Ok(())
+            }
+            "date_format" => {
+                self.set_date_format(expect_string(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![
+            "selected_date",
+            "minimum_date",
+            "maximum_date",
+            "first_day_of_week",
+            "grid_visible",
+            "navigation_bar_visible",
+            "horizontal_header_visible",
+            "vertical_header_visible",
+            "date_format",
+            BASE_PROPERTY_NAMES
+        ]
+    }
+}
+
 impl EventHandler for Calendar {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);

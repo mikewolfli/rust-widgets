@@ -11,7 +11,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::widget::capability::coercion::{expect_bool, expect_string};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Layout variants for the on-screen keyboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -286,6 +291,54 @@ impl Widget for Keyboard {
 
     fn size_hint(&self) -> Size {
         Size::new(320, 160)
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `Keyboard`'s property contract.
+///
+/// `layout` maps to and from the two lower-case tokens the old arms used
+/// (`qwerty`, `numeric`); anything else is a type mismatch, not a silent
+/// fallback to QWERTY.
+impl WidgetProperties for Keyboard {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "layout" => {
+                let token = match self.layout() {
+                    KeyboardLayout::Qwerty => "qwerty",
+                    KeyboardLayout::Numeric => "numeric",
+                };
+                Ok(CapabilityValue::String(token.to_string()))
+            }
+            "lowercase" => Ok(CapabilityValue::Bool(self.lowercase())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "layout" => {
+                let token = expect_string(value)?;
+                let layout = match token.as_str() {
+                    "qwerty" => KeyboardLayout::Qwerty,
+                    "numeric" => KeyboardLayout::Numeric,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_layout(layout);
+                Ok(())
+            }
+            "lowercase" => {
+                self.set_lowercase(expect_bool(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        // Mirrors `KEYBOARD_PROPERTIES`.
+        property_names_of!["layout", "lowercase", BASE_PROPERTY_NAMES]
     }
 }
 

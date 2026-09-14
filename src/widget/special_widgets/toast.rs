@@ -178,6 +178,7 @@ impl Widget for ToastStack {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(300, 48)
     }
+    impl_draw_bridge!();
 }
 
 impl EventHandler for ToastStack {

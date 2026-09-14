@@ -5,7 +5,7 @@
 
 use super::embedded::embedded_engine_shared;
 use super::engine_trait::RenderEngine;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 use super::native::NativeRenderEngine;
 use crate::core::RuntimeProfile;
 
@@ -65,28 +65,28 @@ impl RenderEngine for EmbeddedRenderEngine {
 }
 
 /// Build default engine for compile-time profile.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn default_render_engine() -> Box<dyn RenderEngine> {
-    if cfg!(feature = "embedded") {
+    if cfg!(embedded_surface) {
         Box::new(EmbeddedRenderEngine::new())
     } else {
         Box::new(NativeRenderEngine::new())
     }
 }
 /// Default render engine in mini mode uses the embedded engine.
-#[cfg(feature = "mini")]
+#[cfg(alloc_frugal)]
 pub fn default_render_engine() -> Box<dyn RenderEngine> {
     Box::new(EmbeddedRenderEngine::new())
 }
 
-#[cfg(all(test, not(feature = "mini"), not(target_arch = "wasm32")))]
+#[cfg(all(test, not(alloc_frugal), not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use crate::render_engine::embedded::{set_embedded_target_fps, submit_embedded_task};
     use core::time::Duration;
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     use std::sync::mpsc;
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     use std::thread;
 
     fn test_guard() -> crate::compat::MutexGuard<'static, ()> {

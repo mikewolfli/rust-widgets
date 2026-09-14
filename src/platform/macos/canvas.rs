@@ -23,11 +23,7 @@
 //! missing `widget::runtime`, which is a worse outcome than simply not offering
 //! the capability.
 
-#![cfg(all(
-    target_os = "macos",
-    feature = "cocoa-legacy",
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#![cfg(all(target_os = "macos", feature = "cocoa-legacy", widgets_unstripped))]
 
 use super::cg;
 use super::types::{self as macos_types, CocoaHandle, HandleKind, MacOSPlatform};

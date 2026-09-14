@@ -201,6 +201,39 @@ pub trait Widget: EventHandler + Any {
     fn as_draw_mut(&mut self) -> Option<&mut dyn crate::widget::Draw> {
         None
     }
+
+    /// Returns this widget as its property contract, when it implements one.
+    ///
+    /// # Why this hook exists
+    ///
+    /// [`crate::widget::capability::properties_trait::WidgetProperties`] is
+    /// implemented on the **concrete** control, because that is the only place its
+    /// fields are visible. The reflection entry points, however, hold
+    /// `&dyn Widget`, so they need a way back to the concrete type. `Widget: Any`
+    /// provides the downcast; this method is where the widget answers with itself.
+    ///
+    /// A control that implements `WidgetProperties` overrides this with
+    /// `Some(self)`. Returning `None` (the default) means "this control has not
+    /// declared a contract", which the caller reports as
+    /// `UnsupportedOnWidget` — an honest answer that lets the migration proceed
+    /// control by control without a flag day.
+    ///
+    /// Implementing it is one line, and a control that declares properties but
+    /// forgets the override is caught by
+    /// `capability::properties_trait`'s coverage test rather than silently
+    /// answering nothing.
+    fn properties_dyn(
+        &self,
+    ) -> Option<&dyn crate::widget::capability::properties_trait::WidgetProperties> {
+        None
+    }
+
+    /// Mutable counterpart to [`Widget::properties_dyn`].
+    fn properties_dyn_mut(
+        &mut self,
+    ) -> Option<&mut dyn crate::widget::capability::properties_trait::WidgetProperties> {
+        None
+    }
     fn set_dpi_scale(&mut self, scale: f32) {
         self.base_mut().set_dpi_scale(scale);
     }

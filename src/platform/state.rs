@@ -11,13 +11,10 @@ use alloc::collections::VecDeque;
 use core::hash::Hash;
 use core::sync::atomic::{AtomicU64, Ordering};
 /// Generic widget state record owned by backend state model.
-#[cfg(all(feature = "serde", not(any(feature = "mini", feature = "embedded"))))]
+#[cfg(all(feature = "serde", widgets_unstripped))]
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug)]
-#[cfg_attr(
-    all(feature = "serde", not(any(feature = "mini", feature = "embedded"))),
-    derive(Serialize, Deserialize)
-)]
+#[cfg_attr(all(feature = "serde", widgets_unstripped), derive(Serialize, Deserialize))]
 pub struct WidgetRecord<K> {
     /// Backend-specific widget kind discriminator.
     pub kind: K,
@@ -99,10 +96,7 @@ pub struct WidgetRecord<K> {
 /// carries the two non-boolean window attributes (minimum size, icon path), which
 /// share the "is this a window?" gate that `WidgetRecord::window_state` provides.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(
-    all(feature = "serde", not(any(feature = "mini", feature = "embedded"))),
-    derive(Serialize, Deserialize)
-)]
+#[cfg_attr(all(feature = "serde", widgets_unstripped), derive(Serialize, Deserialize))]
 pub struct WindowStateRecord {
     /// Window is maximised rather than restored.
     pub maximized: bool,
@@ -169,10 +163,7 @@ impl Default for WindowStateRecord {
     }
 }
 /// Thread-safe state model split from native handle adapters.
-#[cfg_attr(
-    all(feature = "serde", not(any(feature = "mini", feature = "embedded"))),
-    derive(Serialize, Deserialize)
-)]
+#[cfg_attr(all(feature = "serde", widgets_unstripped), derive(Serialize, Deserialize))]
 pub struct BackendState<K> {
     next_id: AtomicU64,
     widgets: Mutex<HashMap<ObjectId, WidgetRecord<K>>>,
@@ -938,10 +929,7 @@ mod tests {
     #[test]
     fn is_kind_returns_true_for_matching_kind() {
         #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-        #[cfg_attr(
-            all(feature = "serde", not(any(feature = "mini", feature = "embedded"))),
-            derive(Serialize, Deserialize)
-        )]
+        #[cfg_attr(all(feature = "serde", widgets_unstripped), derive(Serialize, Deserialize))]
         enum TestKind {
             Button,
             Label,
@@ -960,10 +948,7 @@ mod tests {
     #[test]
     fn is_kind_returns_false_for_nonexistent_widget() {
         #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-        #[cfg_attr(
-            all(feature = "serde", not(any(feature = "mini", feature = "embedded"))),
-            derive(Serialize, Deserialize)
-        )]
+        #[cfg_attr(all(feature = "serde", widgets_unstripped), derive(Serialize, Deserialize))]
         enum TestKind {
             Widget,
         }

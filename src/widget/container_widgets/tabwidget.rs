@@ -7,9 +7,14 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 
+use crate::widget::capability::coercion::expect_usize;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 #[cfg(feature = "image")]
 use crate::widget::Image;
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
 /// Tab widget.
@@ -340,7 +345,43 @@ impl Widget for TabWidget {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(300, 200)
     }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
 }
+
+/// `TabWidget`'s property contract.
+///
+/// Only the two indexed properties the old dispatch answered are migrated;
+/// `closable`, `movable` and `tab_position` are declared by
+/// `TAB_WIDGET_PROPERTIES` but have no arm in the centralised reader or writer, so
+/// they stay exactly as they were (not served) rather than quietly gaining
+/// behaviour in this refactor.
+impl WidgetProperties for TabWidget {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "tab_count" => Ok(CapabilityValue::UInt(self.count() as u64)),
+            "current_index" => Ok(CapabilityValue::UInt(self.current_index() as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "current_index" => {
+                self.set_current_index(expect_usize(value)?);
+                Ok(())
+            }
+            // Derived from the tab list; the old writer had no arm for it either.
+            "tab_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["tab_count", "current_index", BASE_PROPERTY_NAMES]
+    }
+}
+
 impl EventHandler for TabWidget {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);

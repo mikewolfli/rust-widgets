@@ -6,7 +6,14 @@ use crate::core::{Color, Orientation, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::widget::capability::coercion::{
+    expect_bool, expect_i64, expect_orientation, orientation_to_str,
+};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 /// Slider widget.
 pub struct Slider {
     base: BaseWidget,
@@ -38,6 +45,41 @@ pub enum TickPosition {
     TicksBelow,
     /// Tick marks on both sides
     TicksBothSides,
+}
+
+/// Formats a [`TickPosition`] as its published token.
+///
+/// Local rather than imported from `capability::access` (or `coercion`) for the
+/// same reason the type itself lives here: `Slider` is available in every profile
+/// while those modules' `TickPosition` helpers are gated to `full_widgets`.
+pub const fn tick_position_to_str(tick_position: TickPosition) -> &'static str {
+    match tick_position {
+        TickPosition::NoTicks => "none",
+        TickPosition::TicksAbove => "above",
+        TickPosition::TicksBelow => "below",
+        TickPosition::TicksBothSides => "both",
+    }
+}
+
+/// Parses the token [`tick_position_to_str`] publishes, plus the spellings config
+/// files have historically used.
+///
+/// The local inverse of [`tick_position_to_str`]; `coercion::expect_tick_position`
+/// would do the same job but is `full_widgets`-gated, and a `Slider` must be able
+/// to answer its own contract in every profile.
+fn expect_tick_position(value: CapabilityValue) -> Result<TickPosition, CapabilityAccessError> {
+    let token = match value {
+        CapabilityValue::String(text) => crate::widget::capability::coercion::normalize_key(&text),
+        _ => return Err(CapabilityAccessError::TypeMismatch),
+    };
+
+    match token.as_str() {
+        "none" | "noticks" => Ok(TickPosition::NoTicks),
+        "above" | "ticksabove" | "left" => Ok(TickPosition::TicksAbove),
+        "below" | "ticksbelow" | "right" => Ok(TickPosition::TicksBelow),
+        "both" | "ticksbothsides" => Ok(TickPosition::TicksBothSides),
+        _ => Err(CapabilityAccessError::TypeMismatch),
+    }
 }
 impl Slider {
     /// Creates a slider with default range 0-100.
@@ -267,11 +309,105 @@ impl Widget for Slider {
 
     fn size_hint(&self) -> Size {
         match self.orientation() {
-            Orientation::Horizontal => Size::new(100, 28),
-            Orientation::Vertical => Size::new(28, 100),
+            Orientation::Horizontal => Size::new(120, 20),
+            Orientation::Vertical => Size::new(20, 120),
         }
     }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
 }
+
+/// `Slider`'s property contract.
+///
+/// The control names its own properties here, reads and writes them against its
+/// own fields, and forwards every name it does not recognise to the shared base
+/// helpers. Semantics mirror the previous centralised dispatch exactly.
+impl WidgetProperties for Slider {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "minimum" => Ok(CapabilityValue::Int(self.minimum() as i64)),
+            "maximum" => Ok(CapabilityValue::Int(self.maximum() as i64)),
+            "value" => Ok(CapabilityValue::Int(self.value() as i64)),
+            "single_step" => Ok(CapabilityValue::Int(self.single_step() as i64)),
+            "page_step" => Ok(CapabilityValue::Int(self.page_step() as i64)),
+            "orientation" => {
+                Ok(CapabilityValue::String(orientation_to_str(self.orientation()).to_string()))
+            }
+            "tick_position" => {
+                Ok(CapabilityValue::String(tick_position_to_str(self.tick_position()).to_string()))
+            }
+            "tick_interval" => Ok(CapabilityValue::Int(self.tick_interval() as i64)),
+            "tracking" => Ok(CapabilityValue::Bool(self.tracking())),
+            "slider_position" => Ok(CapabilityValue::Int(self.slider_position() as i64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "minimum" => {
+                self.set_minimum(expect_i64(value)? as i32);
+                Ok(())
+            }
+            "maximum" => {
+                self.set_maximum(expect_i64(value)? as i32);
+                Ok(())
+            }
+            "value" => {
+                self.set_value(expect_i64(value)? as i32);
+                Ok(())
+            }
+            "single_step" => {
+                self.set_single_step(expect_i64(value)? as i32);
+                Ok(())
+            }
+            "page_step" => {
+                self.set_page_step(expect_i64(value)? as i32);
+                Ok(())
+            }
+            "orientation" => {
+                self.set_orientation(expect_orientation(value)?);
+                Ok(())
+            }
+            "tick_position" => {
+                self.set_tick_position(expect_tick_position(value)?);
+                Ok(())
+            }
+            "tick_interval" => {
+                self.set_tick_interval(expect_i64(value)? as i32);
+                Ok(())
+            }
+            "tracking" => {
+                self.set_tracking(expect_bool(value)?);
+                Ok(())
+            }
+            "slider_position" => {
+                self.set_slider_position(expect_i64(value)? as i32);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        // Mirrors `SLIDER_PROPERTIES`: this control's own names plus the four
+        // shared ones that `base_property_get` answers.
+        property_names_of![
+            "minimum",
+            "maximum",
+            "value",
+            "single_step",
+            "page_step",
+            "orientation",
+            "tick_position",
+            "tick_interval",
+            "tracking",
+            "slider_position",
+            BASE_PROPERTY_NAMES
+        ]
+    }
+}
+
 impl EventHandler for Slider {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);

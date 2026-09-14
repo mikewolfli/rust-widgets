@@ -6,7 +6,12 @@ use crate::core::{Color, Orientation, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::widget::capability::coercion::{expect_i64, expect_orientation, orientation_to_str};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 /// Scroll bar widget.
 pub struct ScrollBar {
     base: BaseWidget,
@@ -243,7 +248,79 @@ impl Widget for ScrollBar {
             crate::layout::Orientation::Vertical => crate::core::Size::new(16, 100),
         }
     }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
 }
+
+/// `ScrollBar`'s property contract.
+///
+/// `slider_size` and `slider_position` are derived from the range and the page
+/// step, so they are read-only, matching the schema and the old dispatch.
+impl WidgetProperties for ScrollBar {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "minimum" => Ok(CapabilityValue::Int(self.minimum() as i64)),
+            "maximum" => Ok(CapabilityValue::Int(self.maximum() as i64)),
+            "value" => Ok(CapabilityValue::Int(self.value() as i64)),
+            "single_step" => Ok(CapabilityValue::Int(self.single_step() as i64)),
+            "page_step" => Ok(CapabilityValue::Int(self.page_step() as i64)),
+            "orientation" => {
+                Ok(CapabilityValue::String(orientation_to_str(self.orientation()).to_string()))
+            }
+            "slider_size" => Ok(CapabilityValue::Float(self.slider_size() as f64)),
+            "slider_position" => Ok(CapabilityValue::Float(self.slider_position() as f64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "minimum" => {
+                self.set_minimum(expect_i64(value)? as i32);
+                Ok(())
+            }
+            "maximum" => {
+                self.set_maximum(expect_i64(value)? as i32);
+                Ok(())
+            }
+            "value" => {
+                self.set_value(expect_i64(value)? as i32);
+                Ok(())
+            }
+            "single_step" => {
+                self.set_single_step(expect_i64(value)? as i32);
+                Ok(())
+            }
+            "page_step" => {
+                self.set_page_step(expect_i64(value)? as i32);
+                Ok(())
+            }
+            "orientation" => {
+                self.set_orientation(expect_orientation(value)?);
+                Ok(())
+            }
+            // Derived from the range: no setter exists, so the contract says so.
+            "slider_size" | "slider_position" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        // Mirrors `SCROLL_BAR_PROPERTIES`.
+        property_names_of![
+            "minimum",
+            "maximum",
+            "value",
+            "single_step",
+            "page_step",
+            "orientation",
+            "slider_size",
+            "slider_position",
+            BASE_PROPERTY_NAMES
+        ]
+    }
+}
+
 impl EventHandler for ScrollBar {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);

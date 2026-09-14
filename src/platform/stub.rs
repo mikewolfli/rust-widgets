@@ -7,15 +7,12 @@ use crate::compat::Mutex;
 use crate::core::{ObjectId, Orientation, PlatformFamily};
 use crate::platform::state::{BackendState, WindowStateRecord};
 use crate::platform::types::*;
-#[cfg(all(feature = "serde", not(any(feature = "mini", feature = "embedded"))))]
+#[cfg(all(feature = "serde", widgets_unstripped))]
 use serde::{Deserialize, Serialize};
 
 /// Handle kind discriminator for stub widget records.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(
-    all(feature = "serde", not(any(feature = "mini", feature = "embedded"))),
-    derive(Serialize, Deserialize)
-)]
+#[cfg_attr(all(feature = "serde", widgets_unstripped), derive(Serialize, Deserialize))]
 pub(crate) enum StubHandleKind {
     Window,
     Button,
@@ -96,6 +93,22 @@ impl StubPlatform {
 
     fn is_embedded_profile(&self) -> bool {
         matches!(self.family, PlatformFamily::Embedded)
+    }
+
+    /// Returns whether `widget_id` names a control that can be tri-state.
+    ///
+    /// Tri-state is a property of check boxes, radio buttons and toggle buttons —
+    /// the same three kinds every real backend accepts (see
+    /// `platform::macos::platform_impl::set_widget_tristate`).
+    fn is_checkable_kind(&self, widget_id: ObjectId) -> bool {
+        matches!(
+            self.state.kind_of(widget_id),
+            Some(
+                StubHandleKind::CheckBox
+                    | StubHandleKind::RadioButton
+                    | StubHandleKind::ToggleButton
+            )
+        )
     }
 
     fn embedded_unsupported_id(&self, _name: &str) -> ObjectId {
@@ -1255,14 +1268,29 @@ impl Platform for StubPlatform {
         self.state.orientation(widget_id)
     }
 
+    /// Enables tri-state mode on a *checkable* control.
+    ///
+    /// Refuses a non-checkable kind, matching every real backend (see
+    /// `platform::macos::platform_impl`): tri-state is a property of check boxes,
+    /// radio buttons and toggle buttons only. The stub used to accept it for any
+    /// widget, which made `contract_tristate_refused_on_non_checkable` fail under
+    /// `embedded` — the capability was reported as present for a kind that has no
+    /// notion of it. That is exactly the dishonest-capability failure principle #37
+    /// forbids.
     fn set_widget_tristate(&self, widget_id: ObjectId, enabled: bool) -> bool {
-        if !self.state.contains_widget(widget_id) {
+        if !self.is_checkable_kind(widget_id) {
             return false;
         }
         self.state.set_tristate(widget_id, enabled)
     }
 
     fn is_widget_tristate(&self, widget_id: ObjectId) -> Option<bool> {
+        // Reads must agree with the write gate above: a label never has tri-state
+        // mode, so asking for it answers `None` rather than a stored `false` that
+        // would imply the question was meaningful.
+        if !self.is_checkable_kind(widget_id) {
+            return None;
+        }
         self.state.tristate(widget_id)
     }
 

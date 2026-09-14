@@ -1,0 +1,345 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
+//! Single source of truth for compile-time runtime-profile facts.
+//!
+//! # Why this module exists
+//!
+//! Before it, the questions "does this build have an OS runtime?", "does it
+//! stream input from an OS backend?", "is the complete widget set compiled in?"
+//! were each re-answered with a hand-written conjunction of `feature` tests, at
+//! every call site. `src/lib.rs` alone carried six copies of
+//! `runtime_profile_name()`, two of `runtime_route_name()`, three of
+//! `init_runtime_backend()`, and four of `init_i18n_runtime()` — all differing
+//! only in their `cfg` attribute. `src/` held roughly 1500 further
+//! `feature = "mini" | "embedded"` tests.
+//!
+//! Copies of a conjunction drift. `full_widgets` and `stripped_widgets` already
+//! exist in `build.rs` for exactly that reason, and the earlier `full_widgets`
+//! bug (370 compile errors under `embedded`, caused by `not(mini)` being read as
+//! "full") is the proof: two spellings of "the complete set", silently
+//! disagreeing.
+//!
+//! # The contract
+//!
+//! This is the **only** module in `src/` allowed to test a profile feature name.
+//! Everything else asks a semantic question here:
+//!
+//! ```ignore
+//! if crate::platform::profile::has_os_runtime() { … }
+//! ```
+//!
+//! `mini` and `embedded` remain the *input* — they are Cargo features and cannot
+//! be redefined. What changes is that the **translation from features to facts**
+//! happens once, here, and the rest of the crate is free of the feature names
+//! (BLUE15 rules #57/#58).
+
+use crate::core::RuntimeProfile;
+use crate::render_engine::RenderEngine;
+
+/// What kind of device this build targets.
+///
+/// This is the `mini`/`embedded` distinction reduced to the only two facts that
+/// actually differ, so the 1500 scattered feature tests cannot come back.
+///
+/// Named `ProfileClass` rather than `DeviceClass` because
+/// [`crate::core::DeviceClass`] already names *form factors* (Desktop/Tablet/
+/// Mobile/Projector) — a different question, and two same-named types would be a
+/// trap (principle #49).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileClass {
+    /// `desktop` / `tablet` / `mobile`: a full device with an OS runtime.
+    Device,
+    /// `embedded`, or a build with no device profile at all: a bare render
+    /// surface with no OS-hosted window.
+    Surface,
+    /// `mini`: no OS runtime *and* an alloc-frugal memory budget.
+    Minimal,
+}
+
+/// How this build is driven at runtime.
+///
+/// The pair distinguishes "the OS owns the loop" from "the library owns the
+/// loop", while `ProfileClass` names which memory/host budget applies. Encoding
+/// both keeps the two independent: a `Surface` device is still OS-hosted when a
+/// caller supplies the loop, and `mini` is never OS-hosted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EngineClass {
+    /// The OS owns the window and pumps the event loop.
+    OsHosted(ProfileClass),
+    /// The library owns the loop over its own surface.
+    SelfHosted(ProfileClass),
+}
+
+/// The device class this build targets.
+///
+/// Note that a build with **no** device feature at all reports
+/// [`ProfileClass::Surface`] rather than `Device`: such a build has no OS runtime
+/// to host a window, and the earlier code recorded that as `"unknown"`.
+pub const fn profile_class() -> ProfileClass {
+    if cfg!(feature = "mini") {
+        ProfileClass::Minimal
+    } else if cfg!(any(feature = "desktop", feature = "tablet", feature = "mobile")) {
+        ProfileClass::Device
+    } else {
+        // `embedded`, `profile-embedded-mini`, or no device feature at all.
+        ProfileClass::Surface
+    }
+}
+
+/// How this build is driven at runtime.
+pub const fn engine_class() -> EngineClass {
+    if cfg!(feature = "mini") {
+        EngineClass::SelfHosted(ProfileClass::Minimal)
+    } else if cfg!(any(feature = "desktop", feature = "tablet", feature = "mobile")) {
+        EngineClass::OsHosted(ProfileClass::Device)
+    } else {
+        // `embedded` renders through the library-owned loop; it has a surface
+        // but no OS-hosted window.
+        EngineClass::SelfHosted(ProfileClass::Surface)
+    }
+}
+
+/// `true` when this build has an OS runtime that can host a window.
+///
+/// Equivalent to `stripped_widgets` being off *and* a device profile being on.
+/// Callers use this to decide whether to talk to a real backend
+/// ([`crate::platform::get_platform`]) or to the surface-only fallback.
+pub const fn has_os_runtime() -> bool {
+    matches!(engine_class(), EngineClass::OsHosted(_))
+}
+
+/// `true` when this build streams input from an OS backend.
+///
+/// Today this is the same predicate as [`has_os_runtime`], but the two are kept
+/// separate because they are separate questions: a build could grow a window
+/// without an input pump (a kiosk renderer), and the input modules should not
+/// have to change when it does.
+pub const fn has_os_input() -> bool {
+    has_os_runtime()
+}
+
+/// `true` when the complete widget set is compiled in.
+///
+/// Reads the `build.rs` alias, so this stays correct for builds that select no
+/// device profile at all (`--no-default-features --features gpu`), where
+/// `not(any(mini, embedded))` would wrongly answer `true`.
+pub const fn full_widget_set() -> bool {
+    cfg!(full_widgets)
+}
+
+/// `true` when a reduced widget set is compiled in (`mini` or `embedded`).
+pub const fn stripped_widget_set() -> bool {
+    cfg!(stripped_widgets)
+}
+
+/// `true` when the widget set was *not* deliberately reduced.
+///
+/// This is the precise meaning of the `not(any(feature = "mini",
+/// feature = "embedded"))` conjunction that was hand-written at 350+ call sites.
+/// It is deliberately **not** the same as [`full_widget_set`]: a build that
+/// selects no device profile (`--no-default-features --features gpu`) has an
+/// unreduced widget set but no device transport, so `widgets_unstripped()` is
+/// true while `full_widget_set()` is false. Collapsing the two would silently
+/// change what such a build compiles (rule #47).
+pub const fn widgets_unstripped() -> bool {
+    cfg!(widgets_unstripped)
+}
+
+/// `true` when this build is the alloc-frugal `mini` profile.
+///
+/// The `mini` profile has no platform singleton and a much smaller memory budget.
+/// This accessor exists so an upper layer that *legitimately* differs there asks a
+/// semantic question instead of testing the feature name.
+pub const fn is_alloc_frugal() -> bool {
+    cfg!(alloc_frugal)
+}
+
+/// `true` when this build targets the `embedded` surface profile.
+///
+/// Distinct from [`stripped_widget_set`], which is also true under `mini`. A
+/// caller that needs "embedded specifically" — for example when naming the
+/// fallback platform — must not get `mini` folded in.
+pub const fn is_embedded_surface() -> bool {
+    cfg!(embedded_surface)
+}
+
+/// Human-readable profile name, reported by `RUST_WIDGETS_TRACE_RUNTIME`.
+///
+/// Kept as a single `match` on the typed facts rather than a fresh `cfg` tower,
+/// so adding a profile means adding one arm instead of one more divergent
+/// `cfg`-gated function.
+pub const fn profile_name() -> &'static str {
+    match engine_class() {
+        EngineClass::OsHosted(ProfileClass::Device) => {
+            if cfg!(feature = "desktop") {
+                "desktop"
+            } else if cfg!(feature = "tablet") {
+                "tablet"
+            } else {
+                "mobile"
+            }
+        }
+        EngineClass::SelfHosted(ProfileClass::Surface) => "embedded",
+        EngineClass::SelfHosted(ProfileClass::Minimal) => "mini",
+        // Not reachable through `engine_class()`: an OS-hosted build is always a
+        // `Device`. Spelled out rather than using `_` so a future variant forces
+        // this function to be revisited.
+        EngineClass::OsHosted(_) | EngineClass::SelfHosted(ProfileClass::Device) => "unknown",
+    }
+}
+
+/// Human-readable name of the route a widget-creation call takes.
+///
+/// Replaces the two `runtime_route_name()` overloads in `src/lib.rs`.
+pub const fn route_name() -> &'static str {
+    if has_os_runtime() {
+        "native-platform"
+    } else {
+        "surface-only"
+    }
+}
+
+/// Runtime profile category, for code that needs the `core` enum rather than
+/// this module's typed facts.
+pub const fn runtime_profile() -> RuntimeProfile {
+    match engine_class() {
+        EngineClass::OsHosted(_) => RuntimeProfile::Full,
+        // `core::RuntimeProfile` has only two variants, so everything that is
+        // not a full OS-hosted device reports the reduced profile.
+        EngineClass::SelfHosted(_) => RuntimeProfile::Embedded,
+    }
+}
+
+/// The render engine this profile drives its loop with.
+///
+/// This is the single selection point for the `embedded`-versus-native runtime
+/// decision that `src/lib.rs` used to make with three separate `cfg`-gated
+/// function pairs.
+pub fn runtime_engine() -> Box<dyn RenderEngine> {
+    crate::render_engine::default_render_engine()
+}
+
+/// Brings up the runtime this profile uses.
+///
+/// The `mini` profile has no platform singleton at all (`get_platform` does not
+/// exist there), so the OS-hosted branch cannot be written as a runtime `if`:
+/// the `cfg` must eliminate the call. Keeping that `cfg` **here** — and nowhere
+/// else in the crate — is the whole point of this module (rules #57/#58).
+pub fn runtime_init() {
+    #[cfg(feature = "mini")]
+    {
+        log::info!("rust_widgets: mini mode init (no platform runtime)");
+    }
+    #[cfg(not(feature = "mini"))]
+    {
+        if has_os_runtime() {
+            crate::platform::init();
+        } else {
+            // A surface-only build owns its loop.
+            runtime_engine().init();
+        }
+    }
+}
+
+/// Runs the runtime's event loop.
+pub fn runtime_run() {
+    #[cfg(feature = "mini")]
+    {
+        log::info!("rust_widgets: mini mode run (no platform event loop)");
+    }
+    #[cfg(not(feature = "mini"))]
+    {
+        if has_os_runtime() {
+            crate::platform::run();
+        } else {
+            runtime_engine().run();
+        }
+    }
+}
+
+/// Requests runtime shutdown.
+pub fn runtime_quit() {
+    #[cfg(feature = "mini")]
+    {
+        log::info!("rust_widgets: mini mode quit (no platform to shut down)");
+    }
+    #[cfg(not(feature = "mini"))]
+    {
+        if has_os_runtime() {
+            crate::platform::quit();
+        } else {
+            runtime_engine().quit();
+        }
+    }
+}
+
+/// Initializes whatever optional subsystems this profile supports.
+///
+/// Replaces the four `init_i18n_runtime()` overloads: rather than a separate
+/// `cfg`-gated function per profile, one function asks the compiled-in feature
+/// flags. A profile without the `i18n` feature simply logs why it skipped.
+pub fn init_optional_subsystems() {
+    // `feature = "i18n"` is a *capability* feature, not a profile gate, so a
+    // compile-time `cfg` on the call is still correct here — and necessary, since
+    // `cfg!` cannot eliminate a path to a module that was not compiled.
+    #[cfg(feature = "i18n")]
+    if has_os_runtime() {
+        crate::i18n::init();
+        return;
+    }
+
+    log::debug!(
+        "i18n init skipped in profile '{}' — {} ",
+        profile_name(),
+        if cfg!(feature = "i18n") {
+            "no OS runtime to attach the translation catalogue to"
+        } else {
+            "the i18n feature is not enabled"
+        }
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The two boolean questions must agree with the typed facts.
+    #[test]
+    fn capability_questions_match_the_engine_class() {
+        assert_eq!(has_os_runtime(), matches!(engine_class(), EngineClass::OsHosted(_)));
+        assert_eq!(has_os_input(), has_os_runtime());
+    }
+
+    /// The widget-set aliases must be complementary whenever a device profile is
+    /// selected, and both false when none is.
+    #[test]
+    fn widget_set_aliases_are_never_both_true() {
+        assert!(!(full_widget_set() && stripped_widget_set()));
+    }
+
+    /// `mini` is the only alloc-frugal class, and it is never OS-hosted.
+    #[test]
+    fn minimal_device_is_surface_only() {
+        if profile_class() == ProfileClass::Minimal {
+            assert!(!has_os_runtime(), "mini must not claim an OS runtime");
+            assert_eq!(profile_name(), "mini");
+        }
+    }
+
+    /// Every profile must name itself; `"unknown"` on a device profile would mean
+    /// `profile_name()` fell through its match.
+    #[test]
+    fn profile_name_is_never_unknown_for_a_device() {
+        if profile_class() == ProfileClass::Device {
+            assert_ne!(profile_name(), "unknown");
+            assert_eq!(runtime_profile(), RuntimeProfile::Full);
+        }
+    }
+
+    /// The route name must reflect the runtime question, not a separate `cfg`.
+    #[test]
+    fn route_name_follows_the_runtime_question() {
+        assert_eq!(route_name(), if has_os_runtime() { "native-platform" } else { "surface-only" });
+    }
+}

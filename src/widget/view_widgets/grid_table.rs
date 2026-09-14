@@ -6,7 +6,7 @@
 //!
 //! Uses the `IncrementalTableDataSource` protocol from `data_source` for data access.
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 use std::sync::Arc;
 
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
@@ -499,6 +499,7 @@ impl Widget for GridTableWidget {
         let h = (rows as u32).saturating_mul(self.row_height).saturating_add(self.header_height);
         Size::new(w, h)
     }
+    impl_draw_bridge!();
 }
 
 // ---------------------------------------------------------------------------

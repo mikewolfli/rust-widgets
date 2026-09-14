@@ -117,12 +117,12 @@ impl BaseWidget {
         &self.children
     }
     pub fn add_child(&mut self, child: ObjectId) {
-        #[cfg(feature = "mini")]
+        #[cfg(alloc_frugal)]
         {
             // heapless::Vec::push returns Result under mini.
             let _ = self.children.push(child);
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         {
             self.children.push(child);
         }

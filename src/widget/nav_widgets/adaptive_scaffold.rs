@@ -201,6 +201,7 @@ impl Widget for AdaptiveScaffold {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(400, 600)
     }
+    impl_draw_bridge!();
 }
 
 impl Draw for AdaptiveScaffold {

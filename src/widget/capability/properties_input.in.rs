@@ -282,7 +282,7 @@ macro_rules! impl_properties_input {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const DIAL_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "minimum",
@@ -334,7 +334,7 @@ macro_rules! impl_properties_input {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const COMMAND_LINK_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "text",
@@ -356,7 +356,7 @@ macro_rules! impl_properties_input {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const FONT_COMBO_BOX_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "current_font_family",
@@ -423,7 +423,7 @@ macro_rules! impl_properties_input {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const TEXT_EDIT_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "text",
@@ -575,7 +575,7 @@ macro_rules! impl_properties_input {
             writable: true,
         }];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const SEARCH_BOX_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "text",
@@ -591,7 +591,7 @@ macro_rules! impl_properties_input {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const TAG_INPUT_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "tags",
@@ -607,7 +607,7 @@ macro_rules! impl_properties_input {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const IME_PREEDIT_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "text",
@@ -623,7 +623,7 @@ macro_rules! impl_properties_input {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const INPLACE_EDITOR_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "text",
@@ -639,7 +639,7 @@ macro_rules! impl_properties_input {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const CUPERTINO_SLIDER_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "value",
@@ -661,7 +661,7 @@ macro_rules! impl_properties_input {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const MASKED_EDIT_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "text",
@@ -677,7 +677,7 @@ macro_rules! impl_properties_input {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const AUTO_COMPLETE_EDIT_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "text",
@@ -693,7 +693,7 @@ macro_rules! impl_properties_input {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const MULTI_SELECT_COMBO_BOX_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "selected_count",
@@ -709,7 +709,7 @@ macro_rules! impl_properties_input {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const RANGE_SLIDER_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "min_value",
@@ -737,7 +737,7 @@ macro_rules! impl_properties_input {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const FLOATING_LABEL_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "text",
@@ -759,7 +759,7 @@ macro_rules! impl_properties_input {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const CUPERTINO_SEGMENTED_CONTROL_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "selected_index",
@@ -775,7 +775,7 @@ macro_rules! impl_properties_input {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const CUPERTINO_DATE_PICKER_PROPERTIES: &[PropertySchema] = &[PropertySchema {
             name: "selected_date",
             value_kind: PropertyValueKind::String,
@@ -783,7 +783,7 @@ macro_rules! impl_properties_input {
             writable: true,
         }];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const EDITABLE_COMBO_BOX_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "text",
@@ -799,7 +799,7 @@ macro_rules! impl_properties_input {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const RICH_EDIT_PROPERTIES: &[PropertySchema] = &[PropertySchema {
             name: "text",
             value_kind: PropertyValueKind::String,
@@ -807,7 +807,7 @@ macro_rules! impl_properties_input {
             writable: true,
         }];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const SEARCH_BAR_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "text",
@@ -823,7 +823,7 @@ macro_rules! impl_properties_input {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const SHORTCUT_EDITOR_PROPERTIES: &[PropertySchema] = &[PropertySchema {
             name: "filter_text",
             value_kind: PropertyValueKind::String,

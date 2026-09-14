@@ -118,6 +118,7 @@ impl Widget for ColorDialog {
     fn size_hint(&self) -> Size {
         crate::core::Size::new(400, 300)
     }
+    impl_draw_bridge!();
 }
 impl EventHandler for ColorDialog {
     fn handle_event(&mut self, event: &Event) {

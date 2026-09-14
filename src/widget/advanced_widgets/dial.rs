@@ -6,7 +6,12 @@ use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::widget::capability::coercion::{expect_bool, expect_f64, expect_i64};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 /// Dial (rotary knob) widget.
 pub struct Dial {
     base: BaseWidget,
@@ -146,7 +151,80 @@ impl Widget for Dial {
     fn size_hint(&self) -> Size {
         Size::new(64, 64)
     }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
 }
+
+/// `Dial`'s property contract.
+impl WidgetProperties for Dial {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "minimum" => Ok(CapabilityValue::Int(self.minimum() as i64)),
+            "maximum" => Ok(CapabilityValue::Int(self.maximum() as i64)),
+            "value" => Ok(CapabilityValue::Int(self.value() as i64)),
+            "single_step" => Ok(CapabilityValue::Int(self.single_step() as i64)),
+            "page_step" => Ok(CapabilityValue::Int(self.page_step() as i64)),
+            "notches_visible" => Ok(CapabilityValue::Bool(self.notches_visible())),
+            "notch_target" => Ok(CapabilityValue::Float(self.notch_target())),
+            "wrapping" => Ok(CapabilityValue::Bool(self.wrapping())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "minimum" => {
+                self.set_minimum(expect_i64(value)? as i32);
+                Ok(())
+            }
+            "maximum" => {
+                self.set_maximum(expect_i64(value)? as i32);
+                Ok(())
+            }
+            "value" => {
+                self.set_value(expect_i64(value)? as i32);
+                Ok(())
+            }
+            "single_step" => {
+                self.set_single_step(expect_i64(value)? as i32);
+                Ok(())
+            }
+            "page_step" => {
+                self.set_page_step(expect_i64(value)? as i32);
+                Ok(())
+            }
+            "notches_visible" => {
+                self.set_notches_visible(expect_bool(value)?);
+                Ok(())
+            }
+            "notch_target" => {
+                self.set_notch_target(expect_f64(value)?);
+                Ok(())
+            }
+            "wrapping" => {
+                self.set_wrapping(expect_bool(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        // Mirrors `DIAL_PROPERTIES`.
+        property_names_of![
+            "minimum",
+            "maximum",
+            "value",
+            "single_step",
+            "page_step",
+            "notches_visible",
+            "notch_target",
+            "wrapping",
+            BASE_PROPERTY_NAMES
+        ]
+    }
+}
+
 impl EventHandler for Dial {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);

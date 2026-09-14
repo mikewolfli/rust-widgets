@@ -6,7 +6,12 @@ use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size}
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
+use crate::widget::capability::coercion::{expect_string, expect_usize};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 /// Main application window.
 pub struct Window {
     base: BaseWidget,
@@ -91,7 +96,59 @@ impl Widget for Window {
     fn size_hint(&self) -> Size {
         crate::core::Size::new(640, 480)
     }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
 }
+
+/// `Window`'s property contract.
+///
+/// The three chrome metrics are `u32` fields published as `UInt`; the write path
+/// narrows through `expect_usize` first, so an out-of-range or negative value is
+/// rejected as [`CapabilityAccessError::TypeMismatch`] rather than truncated.
+impl WidgetProperties for Window {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "title" => Ok(CapabilityValue::String(self.title().to_string())),
+            "title_bar_height" => Ok(CapabilityValue::UInt(self.title_bar_height() as u64)),
+            "close_button_size" => Ok(CapabilityValue::UInt(self.close_button_size() as u64)),
+            "button_spacing" => Ok(CapabilityValue::UInt(self.button_spacing() as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "title" => {
+                self.set_title(expect_string(value)?);
+                Ok(())
+            }
+            "title_bar_height" => {
+                self.set_title_bar_height(expect_usize(value)? as u32);
+                Ok(())
+            }
+            "close_button_size" => {
+                self.set_close_button_size(expect_usize(value)? as u32);
+                Ok(())
+            }
+            "button_spacing" => {
+                self.set_button_spacing(expect_usize(value)? as u32);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![
+            "title",
+            "title_bar_height",
+            "close_button_size",
+            "button_spacing",
+            BASE_PROPERTY_NAMES
+        ]
+    }
+}
+
 impl EventHandler for Window {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);

@@ -6,7 +6,7 @@
 
 macro_rules! impl_properties_advanced {
     () => {
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const TAB_BAR_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "tab_count",
@@ -46,7 +46,7 @@ macro_rules! impl_properties_advanced {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const CALENDAR_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "selected_date",
@@ -104,7 +104,7 @@ macro_rules! impl_properties_advanced {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const DATE_EDIT_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "date",
@@ -138,7 +138,7 @@ macro_rules! impl_properties_advanced {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const TIME_EDIT_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "time",
@@ -166,7 +166,7 @@ macro_rules! impl_properties_advanced {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const RIBBON_BAR_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "tab_count",
@@ -194,7 +194,7 @@ macro_rules! impl_properties_advanced {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const PIE_MENU_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "item_count",
@@ -222,7 +222,7 @@ macro_rules! impl_properties_advanced {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const DATE_TIME_EDIT_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "datetime",

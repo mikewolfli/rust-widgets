@@ -501,7 +501,7 @@ impl fmt::Display for AdapterSelectionError {
         }
     }
 }
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 impl std::error::Error for AdapterSelectionError {}
 /// Detects if running in a browser environment with forced integrated GPU.
 ///

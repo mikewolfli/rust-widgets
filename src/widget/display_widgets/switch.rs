@@ -11,7 +11,12 @@ use crate::core::{Color, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::expect_bool;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Switch/Toggle widget for binary on/off state selection.
 pub struct Switch {
@@ -62,6 +67,33 @@ impl Widget for Switch {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(50, 28)
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `Switch`'s property contract.
+impl WidgetProperties for Switch {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "checked" => Ok(CapabilityValue::Bool(self.is_checked())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "checked" => {
+                self.set_checked(expect_bool(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        // Mirrors `SWITCH_PROPERTIES`.
+        property_names_of!["checked", BASE_PROPERTY_NAMES]
     }
 }
 
@@ -180,7 +212,7 @@ mod tests {
         assert!(!sw.is_checked());
     }
 
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     #[test]
     fn switch_svg_output() {
         let mut sw = Switch::new(Rect::new(0, 0, 60, 30));

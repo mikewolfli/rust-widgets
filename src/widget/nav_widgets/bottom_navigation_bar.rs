@@ -112,6 +112,7 @@ impl Widget for BottomNavigationBar {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(400, 48)
     }
+    impl_draw_bridge!();
 }
 
 impl Draw for BottomNavigationBar {

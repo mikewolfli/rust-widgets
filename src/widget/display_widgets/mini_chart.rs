@@ -6,7 +6,12 @@
 use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::widget::capability::coercion::expect_string;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// The two styles a [`MiniChart`] can draw: a connected line or vertical bars.
 ///
@@ -114,6 +119,49 @@ impl Widget for MiniChart {
 
     fn size_hint(&self) -> Size {
         Size::new(200, 150)
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `MiniChart`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch, including the
+/// `"line"` / `"bar"` token spellings and the `TypeMismatch` an unknown token
+/// produced.
+impl WidgetProperties for MiniChart {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "chart_type" => {
+                let s = match self.chart_type() {
+                    ChartType::Line => "line",
+                    ChartType::Bar => "bar",
+                };
+                Ok(CapabilityValue::String(s.to_string()))
+            }
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "chart_type" => {
+                let s = expect_string(value)?;
+                let ct = match s.as_str() {
+                    "line" => ChartType::Line,
+                    "bar" => ChartType::Bar,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_chart_type(ct);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["chart_type", BASE_PROPERTY_NAMES]
     }
 }
 

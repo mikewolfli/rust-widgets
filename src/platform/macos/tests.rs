@@ -313,7 +313,10 @@ fn macos_button_has_no_numeric_value() {
     let button = platform.create_button(window, "ok", 0, 0, 80, 24);
     assert_ne!(button, 0);
 
-    assert!(!Platform::set_widget_value(&platform, button, 1.0), "an NSButton has no numeric value");
+    assert!(
+        !Platform::set_widget_value(&platform, button, 1.0),
+        "an NSButton has no numeric value"
+    );
     assert_eq!(Platform::widget_value(&platform, button), None);
 }
 
@@ -447,4 +450,26 @@ fn macos_every_created_control_registers_a_handle() {
              handle-gated property refuses with 'unknown id'"
         );
     }
+}
+
+/// macOS must place the config directory under `Library/Application Support`.
+///
+/// This assertion used to live in `menu_config::tests`, which put a `cfg(target_os = "macos")`
+/// inside a UI-config module (principle #68). The expectation is an OS
+/// convention, so it belongs to the backend that owns the OS knowledge.
+///
+/// The regression it guards is real: an earlier revision hand-built
+/// `home.join(".config")`, which on macOS wrote settings to the wrong place.
+#[test]
+fn config_dir_uses_application_support_not_xdg() {
+    let Some(base) = dirs::config_dir() else {
+        return; // No home directory (unusual CI): nothing to assert.
+    };
+    let text = base.to_string_lossy();
+
+    assert!(
+        text.contains("Library/Application Support"),
+        "macOS config dir must use Application Support, got {text}"
+    );
+    assert!(!text.contains("/.config/"), "macOS must not use the Linux XDG path: {text}");
 }

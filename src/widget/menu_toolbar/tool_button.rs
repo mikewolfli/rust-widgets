@@ -6,7 +6,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::widget::capability::coercion::{expect_bool, expect_string};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 use std::path::{Path, PathBuf};
 /// Tool button popup mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,7 +138,44 @@ impl Widget for ToolButton {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(28, 28)
     }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
 }
+
+/// `ToolButton`'s property contract.
+///
+/// Note that `WidgetKind::ToolButton` is shared with `SplitButton`, which owns a
+/// different property set. The capability registry disambiguates them by concrete
+/// type, and this impl is what makes that possible: a split button reaches its
+/// own contract instead of being described as a tool button.
+impl WidgetProperties for ToolButton {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "text" => Ok(CapabilityValue::String(self.text().to_string())),
+            "checked" => Ok(CapabilityValue::Bool(self.is_checked())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "text" => {
+                self.set_text(expect_string(value)?);
+                Ok(())
+            }
+            "checked" => {
+                self.set_checked(expect_bool(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["text", "checked", BASE_PROPERTY_NAMES]
+    }
+}
+
 impl EventHandler for ToolButton {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);

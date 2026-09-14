@@ -17,9 +17,8 @@
 #[cfg(full_widgets)]
 use chrono::Weekday;
 
-use crate::core::{Alignment, Orientation};
-#[cfg(full_widgets)]
-#[cfg(full_widgets)]
+use crate::core::ObjectId;
+
 #[cfg(full_widgets)]
 use crate::widget::advanced_widgets::calendar::Calendar;
 #[cfg(full_widgets)]
@@ -44,7 +43,6 @@ use crate::widget::advanced_widgets::time_edit::TimeEdit;
 use crate::widget::base_widgets::button::Button;
 #[cfg(full_widgets)]
 use crate::widget::base_widgets::checkbox::CheckBox;
-use crate::widget::base_widgets::checkbox::CheckState;
 #[cfg(full_widgets)]
 use crate::widget::base_widgets::label::Label;
 #[cfg(full_widgets)]
@@ -253,6 +251,13 @@ pub fn read_widget_property_value(
     widget: &dyn Widget,
     property_name: &str,
 ) -> Result<CapabilityValue, CapabilityAccessError> {
+    // A control that declares its own contract answers for itself; the category
+    // probes below remain as the compatibility path for controls that have not
+    // migrated yet (BLUE15 Phase C-1), so both spellings keep working while the
+    // old dispatch is retired.
+    if let Ok(value) = crate::widget::capability::widget_property_get(widget, property_name) {
+        return Ok(value);
+    }
     // Try each category; propagate the first non-Unsupported result (even if Err).
     let result = read_base_props(widget, property_name);
     if !matches!(result, Err(CapabilityAccessError::UnsupportedOnWidget)) {
@@ -318,6 +323,18 @@ pub fn write_widget_property_value(
     property_name: &str,
     value: CapabilityValue,
 ) -> Result<(), CapabilityAccessError> {
+    // A control that declares its own contract answers for itself; the category
+    // probes below remain as the compatibility path for controls that have not
+    // migrated yet (BLUE15 Phase C-1).
+    match crate::widget::capability::widget_property_set(widget, property_name, value.clone()) {
+        Ok(()) => return Ok(()),
+        Err(CapabilityAccessError::UnsupportedOnWidget) => {}
+        // `UnknownProperty` / `ReadOnlyProperty` / `TypeMismatch` are definitive
+        // answers from the control's own contract, so they must not be retried
+        // against the legacy probes — that would let a category arm override the
+        // control's own decision.
+        Err(error) => return Err(error),
+    }
     // Try each category; propagate the first non-Unsupported result (even if Err).
     let result = write_base_props(widget, property_name, value.clone());
     if !matches!(result, Err(CapabilityAccessError::UnsupportedOnWidget)) {
@@ -358,7 +375,7 @@ pub fn write_widget_property_value(
     result
 }
 
-#[cfg(any(feature = "mini", feature = "embedded"))]
+#[cfg(stripped_widgets)]
 pub fn read_widget_property_value(
     _widget: &dyn Widget,
     _property_name: &str,
@@ -366,13 +383,51 @@ pub fn read_widget_property_value(
     Err(CapabilityAccessError::UnsupportedOnWidget)
 }
 
-#[cfg(any(feature = "mini", feature = "embedded"))]
+#[cfg(stripped_widgets)]
 pub fn write_widget_property_value(
     _widget: &mut dyn Widget,
     _property_name: &str,
     _value: CapabilityValue,
 ) -> Result<(), CapabilityAccessError> {
     Err(CapabilityAccessError::UnsupportedOnWidget)
+}
+
+/// Reads a property from the widget registered under `widget_id`.
+///
+/// The id-level counterpart to [`read_widget_property_value`]. Backends hold
+/// widget **ids**, not `&dyn Widget`, so they need this shape; resolving the id
+/// through [`crate::widget::runtime`] also means the answer always describes the
+/// live control rather than a copy (BLUE15 §10.3).
+///
+/// Returns [`CapabilityAccessError::UnknownWidget`] when the id addresses nothing.
+pub fn read_widget_property_by_id(
+    widget_id: ObjectId,
+    property_name: &str,
+) -> Result<CapabilityValue, CapabilityAccessError> {
+    crate::widget::runtime::with_widget(widget_id, |widget| {
+        read_widget_property_value(widget, property_name)
+    })
+    .unwrap_or(Err(CapabilityAccessError::UnknownWidget))
+}
+
+/// Writes a property to the widget registered under `widget_id`.
+///
+/// See [`read_widget_property_by_id`]. Asks the platform to repaint on success,
+/// because a property write that changes what the control looks like must not
+/// leave a stale frame on screen.
+pub fn write_widget_property_by_id(
+    widget_id: ObjectId,
+    property_name: &str,
+    value: CapabilityValue,
+) -> Result<(), CapabilityAccessError> {
+    let written = crate::widget::runtime::with_widget_mut(widget_id, |widget| {
+        write_widget_property_value(widget, property_name, value)
+    })
+    .unwrap_or(Err(CapabilityAccessError::UnknownWidget));
+    if written.is_ok() {
+        crate::widget::runtime::request_repaint(widget_id);
+    }
+    written
 }
 
 // ---------------------------------------------------------------------------
@@ -442,39 +497,16 @@ pub fn scroll_bar_policy_to_str(policy: ScrollBarPolicy) -> &'static str {
     }
 }
 
-pub fn alignment_to_str(alignment: Alignment) -> &'static str {
-    match alignment {
-        Alignment::Left => "left",
-        Alignment::Center => "center",
-        Alignment::Right => "right",
-        Alignment::Top => "top",
-        Alignment::Bottom => "bottom",
-    }
-}
+pub use super::coercion::{alignment_to_str, check_state_to_str, orientation_to_str};
 
-pub fn check_state_to_str(state: CheckState) -> &'static str {
-    match state {
-        CheckState::Unchecked => "unchecked",
-        CheckState::PartiallyChecked => "partially_checked",
-        CheckState::Checked => "checked",
-    }
-}
-
-pub fn orientation_to_str(orientation: Orientation) -> &'static str {
-    match orientation {
-        Orientation::Horizontal => "horizontal",
-        Orientation::Vertical => "vertical",
-    }
-}
-
-#[cfg(full_widgets)]
+/// Formats a [`TickPosition`] as its published token.
+///
+/// The authoritative mapping now lives beside the `Slider` widget that owns the
+/// type (`display_widgets::slider::tick_position_to_str`), because `Slider` is
+/// available in every profile while this module is gated to the device profiles.
+/// This delegates rather than repeating the match, so the two cannot drift.
 pub fn tick_position_to_str(tick_position: TickPosition) -> &'static str {
-    match tick_position {
-        TickPosition::NoTicks => "none",
-        TickPosition::TicksAbove => "above",
-        TickPosition::TicksBelow => "below",
-        TickPosition::TicksBothSides => "both",
-    }
+    crate::widget::display_widgets::slider::tick_position_to_str(tick_position)
 }
 
 #[cfg(full_widgets)]
@@ -1457,7 +1489,7 @@ pub fn default_widget_property_value(
     Some(value)
 }
 
-#[cfg(any(feature = "mini", feature = "embedded"))]
+#[cfg(stripped_widgets)]
 pub fn default_widget_property_value(
     _kind: WidgetKind,
     _property_name: &str,

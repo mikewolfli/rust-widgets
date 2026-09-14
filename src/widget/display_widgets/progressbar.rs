@@ -6,7 +6,14 @@ use crate::core::{Color, Font, HorizontalAlignment, Orientation, Point, Rect, Si
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::{
+    expect_bool, expect_i64, expect_orientation, orientation_to_str,
+};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 /// Progress bar widget.
 pub struct ProgressBar {
     base: BaseWidget,
@@ -141,7 +148,79 @@ impl Widget for ProgressBar {
             Orientation::Vertical => Size::new(20, 120),
         }
     }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
 }
+
+/// `ProgressBar`'s property contract.
+///
+/// `progress` is derived from `minimum`/`maximum`/`value`, so it is readable but
+/// deliberately not writable — the same split the schema records, and the same
+/// answer the previous centralised writer gave.
+impl WidgetProperties for ProgressBar {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "minimum" => Ok(CapabilityValue::Int(self.minimum() as i64)),
+            "maximum" => Ok(CapabilityValue::Int(self.maximum() as i64)),
+            "value" => Ok(CapabilityValue::Int(self.value() as i64)),
+            "text_visible" => Ok(CapabilityValue::Bool(self.is_text_visible())),
+            "orientation" => {
+                Ok(CapabilityValue::String(orientation_to_str(self.orientation()).to_string()))
+            }
+            "inverted_appearance" => Ok(CapabilityValue::Bool(self.is_inverted_appearance())),
+            "progress" => Ok(CapabilityValue::Float(self.progress() as f64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "minimum" => {
+                self.set_minimum(expect_i64(value)? as i32);
+                Ok(())
+            }
+            "maximum" => {
+                self.set_maximum(expect_i64(value)? as i32);
+                Ok(())
+            }
+            "value" => {
+                self.set_value(expect_i64(value)? as i32);
+                Ok(())
+            }
+            "text_visible" => {
+                self.set_text_visible(expect_bool(value)?);
+                Ok(())
+            }
+            "orientation" => {
+                self.set_orientation(expect_orientation(value)?);
+                Ok(())
+            }
+            "inverted_appearance" => {
+                self.set_inverted_appearance(expect_bool(value)?);
+                Ok(())
+            }
+            // `progress` has no setter: it is a function of the range. Reporting it
+            // as unsupported keeps the read-only contract explicit.
+            "progress" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        // Mirrors `PROGRESS_BAR_PROPERTIES`.
+        property_names_of![
+            "minimum",
+            "maximum",
+            "value",
+            "text_visible",
+            "orientation",
+            "inverted_appearance",
+            "progress",
+            BASE_PROPERTY_NAMES
+        ]
+    }
+}
+
 impl EventHandler for ProgressBar {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);

@@ -5,7 +5,12 @@
 use crate::core::{Color, Point, Rect};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::widget::capability::coercion::{expect_string, expect_u32};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BubbleTailDirection {
@@ -636,6 +641,81 @@ impl Widget for FreeformShapeWidget {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(100, 100)
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `FreeformShapeWidget`'s property contract, published under the
+/// `FreeformShape` kind.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch, including
+/// the `Null` handling of `stroke_rgba` and the `TypeMismatch` an unparsable hex
+/// colour produced.
+impl WidgetProperties for FreeformShapeWidget {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "path_kind" => {
+                let s = match self.path() {
+                    ShapePath::Heart => "heart",
+                    ShapePath::Star { .. } => "star",
+                    ShapePath::Polygon(_) => "polygon",
+                    ShapePath::RoundedRect { .. } => "rounded_rect",
+                    ShapePath::Bubble { .. } => "bubble",
+                    ShapePath::Custom(_) => "custom",
+                };
+                Ok(CapabilityValue::String(s.to_string()))
+            }
+            "fill_rgba" => Ok(CapabilityValue::String(self.fill_color().to_hex_rgba())),
+            "stroke_rgba" => match self.stroke_color() {
+                Some(color) => Ok(CapabilityValue::String(color.to_hex_rgba())),
+                None => Ok(CapabilityValue::Null),
+            },
+            "stroke_width" => Ok(CapabilityValue::UInt(self.stroke_width() as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "fill_rgba" => {
+                let raw = expect_string(value)?;
+                let Some(color) = crate::core::Color::parse_hex(&raw) else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                self.set_fill_color(color);
+                Ok(())
+            }
+            "stroke_rgba" => {
+                match value {
+                    CapabilityValue::Null => self.set_stroke_color(None),
+                    CapabilityValue::String(raw) => {
+                        let Some(color) = crate::core::Color::parse_hex(&raw) else {
+                            return Err(CapabilityAccessError::TypeMismatch);
+                        };
+                        self.set_stroke_color(Some(color));
+                    }
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                }
+                Ok(())
+            }
+            "stroke_width" => {
+                self.set_stroke_width(expect_u32(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![
+            "path_kind",
+            "fill_rgba",
+            "stroke_rgba",
+            "stroke_width",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 

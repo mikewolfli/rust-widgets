@@ -85,6 +85,7 @@ impl Widget for ImePreedit {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(200, 24)
     }
+    impl_draw_bridge!();
 }
 
 impl Draw for ImePreedit {

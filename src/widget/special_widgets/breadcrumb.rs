@@ -172,6 +172,7 @@ impl Widget for Breadcrumb {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(300, 28)
     }
+    impl_draw_bridge!();
 }
 
 impl EventHandler for Breadcrumb {

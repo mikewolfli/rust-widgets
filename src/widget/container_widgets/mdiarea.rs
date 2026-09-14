@@ -7,9 +7,13 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 #[cfg(feature = "image")]
 use crate::widget::Image;
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
 /// MDI area widget.
@@ -401,7 +405,55 @@ impl Widget for MdiArea {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(400, 300)
     }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
 }
+
+/// `MdiArea`'s property contract.
+///
+/// `view_mode` uses this module's own [`ViewMode`] (sub-windows vs. tabs), not
+/// `list_view::ViewMode`; the published tokens are the two this widget's reader
+/// produced and nothing else.
+impl WidgetProperties for MdiArea {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "subwindow_count" => Ok(CapabilityValue::UInt(self.sub_window_count() as u64)),
+            "active_subwindow" => match self.active_sub_window() {
+                Some(id) => Ok(CapabilityValue::UInt(id)),
+                None => Ok(CapabilityValue::Null),
+            },
+            "view_mode" => {
+                let token = match self.view_mode() {
+                    ViewMode::SubWindowView => "sub_window_view",
+                    ViewMode::TabbedView => "tabbed",
+                };
+                Ok(CapabilityValue::String(token.to_string()))
+            }
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            // All three are read-only in the old dispatch: the reader serves them
+            // and the writer has no arm, so the contract says so explicitly.
+            "subwindow_count" | "active_subwindow" | "view_mode" => {
+                Err(CapabilityAccessError::ReadOnlyProperty)
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    /// Returns the names this control serves through the property contract.
+    ///
+    /// Only what `get` answers: `MDI_AREA_PROPERTIES` marks all three
+    /// non-readable, and the old reader nevertheless served all three, so the
+    /// readable set — not the schema flag — is what callers can actually use.
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["subwindow_count", "active_subwindow", "view_mode", BASE_PROPERTY_NAMES]
+    }
+}
+
 impl EventHandler for MdiArea {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);

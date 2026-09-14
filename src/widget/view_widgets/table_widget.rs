@@ -6,7 +6,13 @@ use crate::core::HorizontalAlignment;
 use crate::core::Rect;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
+use crate::widget::capability::access::selection_mode_to_str;
+use crate::widget::capability::coercion::expect_selection_mode;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 use std::collections::HashMap;
 use std::sync::Arc;
 /// Table model abstraction for table-like views.
@@ -227,6 +233,54 @@ impl Widget for TableWidget {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(400, 300)
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `TableWidget`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_view.in.rs` / `access_write_view.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before.
+///
+/// The old `WidgetKind::Table` arms were shared with `DataGrid` and
+/// `VirtualTable`, which carry most of the names (`scroll_row`, `row_height`,
+/// `sort_specs`, `visible_window`, …). Those stay with the controls that own the
+/// fields; this block publishes only what `TableWidget` itself answers.
+impl WidgetProperties for TableWidget {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "has_model" => Ok(CapabilityValue::Bool(self.has_model())),
+            "has_delegate" => Ok(CapabilityValue::Bool(self.has_delegate())),
+            "row_count" => Ok(CapabilityValue::UInt(self.row_count() as u64)),
+            "column_count" => Ok(CapabilityValue::UInt(self.column_count() as u64)),
+            "selection_mode" => Ok(CapabilityValue::String(
+                selection_mode_to_str(self.selection_mode()).to_string(),
+            )),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "selection_mode" => {
+                self.set_selection_mode(expect_selection_mode(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![
+            "has_model",
+            "has_delegate",
+            "row_count",
+            "column_count",
+            "selection_mode",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 

@@ -6,7 +6,12 @@ use crate::core::HorizontalAlignment;
 use crate::core::Rect;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
+use crate::widget::capability::coercion::expect_usize;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 use std::sync::Arc;
 /// Tree model abstraction for tree-like views.
 pub trait TreeModel: Send + Sync {
@@ -185,6 +190,67 @@ impl Widget for TreeView {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(200, 200)
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `TreeView`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_view.in.rs` / `access_write_view.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before.
+///
+/// The old dispatch also answered the `TreeView`-kind names that really belong to
+/// `TreeTable` (`row_count`, `column_count`, `selected_row`, `row_height`,
+/// `column_width`, `projection_state`): the names were reachable because
+/// `WidgetKind::TreeView` also carries `TreeTable` instances. Those stay with
+/// `TreeTable`'s own contract so the two controls keep owning their own fields.
+impl WidgetProperties for TreeView {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "has_model" => Ok(CapabilityValue::Bool(self.has_model())),
+            "node_count" => Ok(CapabilityValue::UInt(self.node_count() as u64)),
+            "focused_node" => match self.focused_node() {
+                Some(node) => Ok(CapabilityValue::UInt(node as u64)),
+                None => Ok(CapabilityValue::Null),
+            },
+            "selected_node" => match self.selected_node() {
+                Some(node) => Ok(CapabilityValue::UInt(node as u64)),
+                None => Ok(CapabilityValue::Null),
+            },
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "focused_node" => match value {
+                CapabilityValue::Null => {
+                    self.clear_focused_node();
+                    Ok(())
+                }
+                other => {
+                    let node = expect_usize(other)?;
+                    if self.set_focused_node(node) {
+                        Ok(())
+                    } else {
+                        Err(CapabilityAccessError::UnsupportedOnWidget)
+                    }
+                }
+            },
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![
+            "has_model",
+            "node_count",
+            "focused_node",
+            "selected_node",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 

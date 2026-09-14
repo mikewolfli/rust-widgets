@@ -6,7 +6,13 @@ use crate::core::HorizontalAlignment;
 use crate::core::Rect;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
+use crate::widget::capability::access::{selection_mode_to_str, view_mode_to_str};
+use crate::widget::capability::coercion::{expect_selection_mode, expect_usize, expect_view_mode};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 use std::sync::Arc;
 /// List model abstraction for list-like views.
 pub trait ListModel: Send + Sync {
@@ -335,6 +341,72 @@ impl Widget for ListView {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(200, 200)
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `ListView`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_view.in.rs` / `access_write_view.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before.
+impl WidgetProperties for ListView {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "has_model" => Ok(CapabilityValue::Bool(self.has_model())),
+            "row_count" => Ok(CapabilityValue::UInt(self.row_count() as u64)),
+            "focused_row" => match self.focused_row() {
+                Some(row) => Ok(CapabilityValue::UInt(row as u64)),
+                None => Ok(CapabilityValue::Null),
+            },
+            "selection_mode" => Ok(CapabilityValue::String(
+                selection_mode_to_str(self.selection_mode()).to_string(),
+            )),
+            "view_mode" => {
+                Ok(CapabilityValue::String(view_mode_to_str(self.view_mode()).to_string()))
+            }
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "focused_row" => match value {
+                CapabilityValue::Null => {
+                    self.clear_focused_row();
+                    Ok(())
+                }
+                other => {
+                    let row = expect_usize(other)?;
+                    if self.set_focused_row(row) {
+                        Ok(())
+                    } else {
+                        Err(CapabilityAccessError::UnsupportedOnWidget)
+                    }
+                }
+            },
+            "selection_mode" => {
+                self.set_selection_mode(expect_selection_mode(value)?);
+                Ok(())
+            }
+            "view_mode" => {
+                self.set_view_mode(expect_view_mode(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![
+            "has_model",
+            "row_count",
+            "focused_row",
+            "selection_mode",
+            "view_mode",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 

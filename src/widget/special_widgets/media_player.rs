@@ -214,6 +214,7 @@ impl Widget for MediaPlayer {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(320, 240)
     }
+    impl_draw_bridge!();
 }
 
 impl EventHandler for MediaPlayer {

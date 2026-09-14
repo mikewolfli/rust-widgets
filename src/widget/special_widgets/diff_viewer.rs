@@ -124,6 +124,7 @@ impl Widget for DiffViewer {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(500, 300)
     }
+    impl_draw_bridge!();
 }
 
 impl EventHandler for DiffViewer {

@@ -28,7 +28,7 @@ impl ThemeManager {
     }
 
     /// Loads and registers a theme from a JSON file path.
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     pub fn load_theme(&mut self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
         let content = std::fs::read_to_string(path)?;
         let theme: Theme = serde_json::from_str(&content)?;
@@ -37,7 +37,7 @@ impl ThemeManager {
     }
 
     /// Serializes the current active theme to a JSON file at the given path.
-    #[cfg(not(feature = "mini"))]
+    #[cfg(not(alloc_frugal))]
     pub fn save_theme(&self, path: &str) -> Result<(), String> {
         let theme = self.current_theme().ok_or_else(|| "No active theme to save".to_string())?;
         let json = serde_json::to_string_pretty(theme)

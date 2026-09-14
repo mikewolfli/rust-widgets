@@ -199,6 +199,7 @@ impl Widget for TimelineWidget {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(600, 200)
     }
+    impl_draw_bridge!();
 }
 
 impl EventHandler for TimelineWidget {

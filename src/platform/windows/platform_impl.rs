@@ -1122,7 +1122,7 @@ impl Platform for WindowsPlatform {
     /// `SysListView32`, and `ScrollArea` a `WS_HSCROLL | WS_VSCROLL` child window.
     /// Publishing them here lets control routing promote them to
     /// `NativePreferred` without any `cfg(target_os)` in the routing table.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     fn native_widget_kinds(&self) -> &'static [crate::widget::WidgetKind] {
         use crate::widget::WidgetKind;
         &[WidgetKind::SpinBox, WidgetKind::ListView, WidgetKind::ScrollArea]
@@ -1134,7 +1134,7 @@ impl Platform for WindowsPlatform {
     /// Gated on the same profile conditions as `canvas.rs`: without a widget
     /// registry there is no frame to render, so the trait defaults apply and
     /// `supports_custom_widgets()` reports `false`.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     fn mount_custom_widget(&self, parent: ObjectId, id: ObjectId, rect: crate::core::Rect) -> bool {
         let Some(parent_hwnd) = self.get_native_handle(parent) else {
             log::error!("[windows] mount_custom_widget: unknown parent window {parent}");
@@ -1148,7 +1148,7 @@ impl Platform for WindowsPlatform {
         true
     }
 
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     fn resize_custom_widget(&self, id: ObjectId, rect: crate::core::Rect) -> bool {
         let Some(hwnd) = super::canvas::hwnd_for_widget(id) else {
             log::error!("[windows] resize_custom_widget: id={id} is not mounted");
@@ -1161,7 +1161,7 @@ impl Platform for WindowsPlatform {
         true
     }
 
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     fn unmount_custom_widget(&self, id: ObjectId) -> bool {
         let Some(hwnd) = super::canvas::hwnd_for_widget(id) else {
             log::error!("[windows] unmount_custom_widget: id={id} is not mounted");
@@ -1171,13 +1171,13 @@ impl Platform for WindowsPlatform {
     }
 
     /// `true` only when the self-drawn surface exists for this profile.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     fn supports_custom_widgets(&self) -> bool {
         true
     }
 
     /// Invalidate the canvas window so the OS sends a fresh `WM_PAINT`.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     fn repaint_custom_widget(&self, id: ObjectId) -> bool {
         match super::canvas::hwnd_for_widget(id) {
             Some(hwnd) => {

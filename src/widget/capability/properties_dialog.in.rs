@@ -6,7 +6,7 @@
 
 macro_rules! impl_properties_dialog {
     () => {
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const COLOR_PICKER_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "hex_rgba",
@@ -28,7 +28,7 @@ macro_rules! impl_properties_dialog {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const MESSAGE_BOX_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "title",
@@ -50,7 +50,7 @@ macro_rules! impl_properties_dialog {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const FILE_DIALOG_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "title",
@@ -84,7 +84,7 @@ macro_rules! impl_properties_dialog {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const FONT_DIALOG_PROPERTIES: &[PropertySchema] = &[PropertySchema {
             name: "modal",
             value_kind: PropertyValueKind::Bool,
@@ -92,7 +92,7 @@ macro_rules! impl_properties_dialog {
             writable: false,
         }];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const INPUT_DIALOG_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "title",
@@ -132,7 +132,7 @@ macro_rules! impl_properties_dialog {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const PROGRESS_DIALOG_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "title",
@@ -166,7 +166,7 @@ macro_rules! impl_properties_dialog {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const POPUP_WINDOW_PROPERTIES: &[PropertySchema] = &[PropertySchema {
             name: "has_content",
             value_kind: PropertyValueKind::Bool,
@@ -174,7 +174,7 @@ macro_rules! impl_properties_dialog {
             writable: false,
         }];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const BOTTOM_SHEET_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "expanded",
@@ -190,7 +190,7 @@ macro_rules! impl_properties_dialog {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const WIZARD_DIALOG_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "current_step",
@@ -218,7 +218,7 @@ macro_rules! impl_properties_dialog {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const CUPERTINO_ALERT_DIALOG_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "title",
@@ -234,7 +234,7 @@ macro_rules! impl_properties_dialog {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const TOOLTIP_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "text",
@@ -250,7 +250,7 @@ macro_rules! impl_properties_dialog {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const POPOVER_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "visible",
@@ -266,7 +266,7 @@ macro_rules! impl_properties_dialog {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const MODAL_BOTTOM_SHEET_PROPERTIES: &[PropertySchema] = &[PropertySchema {
             name: "visible",
             value_kind: PropertyValueKind::Bool,
@@ -274,7 +274,7 @@ macro_rules! impl_properties_dialog {
             writable: true,
         }];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const FIND_REPLACE_DIALOG_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "find_text",

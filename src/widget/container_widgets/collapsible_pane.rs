@@ -6,7 +6,12 @@ use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size}
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::{expect_bool, expect_string};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -150,6 +155,38 @@ impl Widget for CollapsiblePane {
         if self.content_child == Some(child) {
             self.content_child = None;
         }
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `CollapsiblePane`'s property contract.
+impl WidgetProperties for CollapsiblePane {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "title" => Ok(CapabilityValue::String(self.title().to_string())),
+            "collapsed" => Ok(CapabilityValue::Bool(self.is_collapsed())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "title" => {
+                self.set_title(expect_string(value)?);
+                Ok(())
+            }
+            "collapsed" => {
+                self.set_collapsed(expect_bool(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        // Mirrors `COLLAPSIBLE_PANE_PROPERTIES`.
+        property_names_of!["title", "collapsed", BASE_PROPERTY_NAMES]
     }
 }
 

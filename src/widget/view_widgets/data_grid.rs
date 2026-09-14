@@ -7,8 +7,14 @@ use std::sync::Arc;
 
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::Event;
+use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, Signal1};
+use crate::widget::capability::access::{column_filters_to_string, sort_specs_to_string};
+use crate::widget::capability::coercion::{expect_column_filters, expect_sort_specs, expect_usize};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 use super::data_source::IncrementalTableDataSource;
@@ -404,6 +410,116 @@ impl Widget for DataGrid {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(400, 300)
+    }
+
+    /// Reports this widget as the object that paints it.
+    ///
+    /// `DataGrid` implements `Draw`, so `Some(self)` is total and cannot be wrong.
+    fn as_draw_mut(&mut self) -> Option<&mut dyn crate::widget::Draw> {
+        Some(self)
+    }
+
+    /// Returns this widget as its property contract.
+    fn properties_dyn(
+        &self,
+    ) -> Option<&dyn crate::widget::capability::properties_trait::WidgetProperties> {
+        Some(self)
+    }
+
+    /// Mutable counterpart to `properties_dyn`.
+    fn properties_dyn_mut(
+        &mut self,
+    ) -> Option<&mut dyn crate::widget::capability::properties_trait::WidgetProperties> {
+        Some(self)
+    }
+}
+
+/// `DataGrid`'s property contract.
+///
+/// This control is one of the fourteen the old centralised dispatch could not
+/// reach. It shares `WidgetKind::Table` with `TableWidget`, so the
+/// `WidgetKind::Table` arms downcast to `TableWidget` and a `DataGrid` answered
+/// `UnsupportedOnWidget` for **every** property — despite
+/// `DATA_GRID_PROPERTIES` describing a full contract for it. Declaring the
+/// contract here makes it reachable, which is the whole point of moving the
+/// contract onto the control (BLUE15 rule #67).
+///
+/// The property set follows `DATA_GRID_PROPERTIES`: the two counts and the two
+/// item collections are derived state and therefore read-only, while the viewport
+/// and sizing knobs are writable.
+impl WidgetProperties for DataGrid {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "has_data_source" => Ok(CapabilityValue::Bool(self.has_data_source())),
+            "row_count" => Ok(CapabilityValue::UInt(self.row_count() as u64)),
+            "column_count" => Ok(CapabilityValue::UInt(self.column_count() as u64)),
+            "scroll_row" => Ok(CapabilityValue::UInt(self.scroll_row() as u64)),
+            "scroll_column" => Ok(CapabilityValue::UInt(self.scroll_column() as u64)),
+            "row_height" => Ok(CapabilityValue::UInt(self.row_height() as u64)),
+            "column_width" => Ok(CapabilityValue::UInt(self.column_width() as u64)),
+            "frozen_columns" => Ok(CapabilityValue::UInt(self.frozen_columns() as u64)),
+            "sort_spec_count" => Ok(CapabilityValue::UInt(self.sort_specs().len() as u64)),
+            "filter_count" => Ok(CapabilityValue::UInt(self.filters().len() as u64)),
+            "sort_specs" => Ok(CapabilityValue::String(sort_specs_to_string(self.sort_specs()))),
+            "filters" => Ok(CapabilityValue::String(column_filters_to_string(self.filters()))),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "scroll_row" => {
+                self.set_scroll_row(expect_usize(value)?);
+                Ok(())
+            }
+            "scroll_column" => {
+                self.set_scroll_column(expect_usize(value)?);
+                Ok(())
+            }
+            "row_height" => {
+                self.set_row_height(expect_usize(value)? as u32);
+                Ok(())
+            }
+            "column_width" => {
+                self.set_column_width(expect_usize(value)? as u32);
+                Ok(())
+            }
+            "frozen_columns" => {
+                self.set_frozen_columns(expect_usize(value)?);
+                Ok(())
+            }
+            "sort_specs" => {
+                self.set_sort_specs(expect_sort_specs(value)?);
+                Ok(())
+            }
+            "filters" => {
+                self.set_filters(expect_column_filters(value)?);
+                Ok(())
+            }
+            // Derived and structural state: presented but not settable, matching
+            // `DATA_GRID_PROPERTIES`' `writable: false` entries.
+            "has_data_source" | "row_count" | "column_count" | "sort_spec_count"
+            | "filter_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![
+            "has_data_source",
+            "row_count",
+            "column_count",
+            "scroll_row",
+            "scroll_column",
+            "row_height",
+            "column_width",
+            "frozen_columns",
+            "sort_spec_count",
+            "filter_count",
+            "sort_specs",
+            "filters",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 

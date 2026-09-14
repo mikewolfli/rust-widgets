@@ -18,7 +18,12 @@ use crate::core::{Color, Font, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::signal::Signal1;
 use crate::undo::{CommandDescription, CommandId, TextSnapshotCommand, UndoCommand, UndoStack};
+use crate::widget::capability::coercion::expect_string;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::rc::Rc;
@@ -2979,6 +2984,54 @@ impl Widget for CodeEditor {
             self.cursor.head.line + 1,
             self.cursor.head.column + 1
         )
+    }
+
+    impl_widget_property_hooks!();
+}
+
+/// `CodeEditor`'s property contract, published under the `RichEdit` kind.
+///
+/// The capability layer makes `WidgetKind::RichEdit` the kind of this control
+/// (`code_editor_capability`), and this impl reproduces exactly what the old
+/// `read_input_props` / `write_input_props` arms answered for that kind. The
+/// `RichEdit` widget is a different control that shares the kind; it keeps its
+/// own file-local contract, and the downcast decides which one answers.
+impl WidgetProperties for CodeEditor {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "text" => Ok(CapabilityValue::String(self.text().to_string())),
+            "line_count" => Ok(CapabilityValue::UInt(self.line_count() as u64)),
+            "cursor_line" => Ok(CapabilityValue::UInt(self.cursor().0 as u64)),
+            "cursor_column" => Ok(CapabilityValue::UInt(self.cursor().1 as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "text" => {
+                self.set_text(expect_string(value)?);
+                Ok(())
+            }
+            // Position and size are derived from the buffer and the caret.
+            "line_count" | "cursor_line" | "cursor_column" => {
+                Err(CapabilityAccessError::ReadOnlyProperty)
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        // The four names the `RichEdit` arm answered; `CODE_EDITOR_PROPERTIES`
+        // carries a fifth (`marker_count`) that the old arm never served, so it is
+        // deliberately not published here.
+        property_names_of![
+            "text",
+            "line_count",
+            "cursor_line",
+            "cursor_column",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 

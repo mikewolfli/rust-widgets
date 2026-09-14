@@ -5,7 +5,15 @@ use crate::core::{Color, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::widget::capability::access::{lcd_mode_to_str, segment_style_to_str};
+use crate::widget::capability::coercion::{
+    expect_bool, expect_f64, expect_i64, expect_lcd_mode, expect_segment_style,
+};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 /// LCD number display mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LCDNumberMode {
@@ -133,6 +141,78 @@ impl Widget for LCDNumber {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(80, 30)
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `LCDNumber`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch, including
+/// the `Int`/`Float` value shapes and the `i32` truncation `num_digits`
+/// performed.
+impl WidgetProperties for LCDNumber {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "value" => Ok(CapabilityValue::Float(self.value())),
+            "min_value" => Ok(CapabilityValue::Float(self.min_value())),
+            "max_value" => Ok(CapabilityValue::Float(self.max_value())),
+            "num_digits" => Ok(CapabilityValue::Int(self.num_digits() as i64)),
+            "small_decimal_point" => Ok(CapabilityValue::Bool(self.is_small_decimal_point())),
+            "mode" => Ok(CapabilityValue::String(lcd_mode_to_str(self.mode()).to_string())),
+            "segment_style" => {
+                Ok(CapabilityValue::String(segment_style_to_str(self.segment_style()).to_string()))
+            }
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "value" => {
+                self.set_value(expect_f64(value)?);
+                Ok(())
+            }
+            "min_value" => {
+                self.set_min_value(expect_f64(value)?);
+                Ok(())
+            }
+            "max_value" => {
+                self.set_max_value(expect_f64(value)?);
+                Ok(())
+            }
+            "num_digits" => {
+                self.set_num_digits(expect_i64(value)? as i32);
+                Ok(())
+            }
+            "small_decimal_point" => {
+                self.set_small_decimal_point(expect_bool(value)?);
+                Ok(())
+            }
+            "mode" => {
+                self.set_mode(expect_lcd_mode(value)?);
+                Ok(())
+            }
+            "segment_style" => {
+                self.set_segment_style(expect_segment_style(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![
+            "value",
+            "min_value",
+            "max_value",
+            "num_digits",
+            "small_decimal_point",
+            "mode",
+            "segment_style",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 impl EventHandler for LCDNumber {

@@ -141,6 +141,7 @@ impl Widget for ProgressCircle {
     fn size_hint(&self) -> Size {
         Size::new(self.diameter.max(60), self.diameter.max(60))
     }
+    impl_draw_bridge!();
 }
 
 impl Draw for ProgressCircle {

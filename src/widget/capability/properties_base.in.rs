@@ -102,7 +102,7 @@ macro_rules! impl_properties_base {
             },
         ];
 
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         pub(crate) const TOGGLE_BUTTON_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
                 name: "text",

@@ -178,6 +178,7 @@ impl Widget for CupertinoDatePicker {
     fn size_hint(&self) -> Size {
         crate::core::Size::new(300, 200)
     }
+    impl_draw_bridge!();
 }
 
 impl Draw for CupertinoDatePicker {

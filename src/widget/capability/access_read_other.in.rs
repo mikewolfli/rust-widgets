@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub fn read_other_props(
     widget: &dyn Widget,
     property_name: &str,

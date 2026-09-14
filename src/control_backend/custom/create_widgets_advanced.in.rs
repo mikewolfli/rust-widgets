@@ -3,7 +3,7 @@
 
 macro_rules! impl_advanced_widgets {
     () => {
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_calendar(
             &self,
             parent: ObjectId,
@@ -31,7 +31,7 @@ macro_rules! impl_advanced_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_date_picker(
             &self,
             parent: ObjectId,
@@ -59,7 +59,7 @@ macro_rules! impl_advanced_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_time_picker(
             &self,
             parent: ObjectId,
@@ -87,7 +87,7 @@ macro_rules! impl_advanced_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_date_time_picker(
             &self,
             parent: ObjectId,

@@ -7,7 +7,30 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 
+use crate::widget::capability::coercion::{
+    expect_f32, expect_list_box_selection_mode, expect_usize,
+};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
+
+/// Formats a list-box [`SelectionMode`] as its published token.
+///
+/// Kept as a local free function rather than importing
+/// `capability::access::list_box_selection_mode_to_str`: that helper lives behind
+/// the device-profile gate, and this control must answer its own contract in
+/// every profile, including `embedded` and `mini`.
+fn list_box_selection_mode_to_str(mode: SelectionMode) -> &'static str {
+    match mode {
+        SelectionMode::Single => "single",
+        SelectionMode::Multi => "multi",
+        SelectionMode::Extended => "extended",
+        SelectionMode::None => "none",
+    }
+}
+
 /// List box widget.
 pub struct ListBox {
     base: BaseWidget,
@@ -318,7 +341,68 @@ impl Widget for ListBox {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(120, 100)
     }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
 }
+
+/// `ListBox`'s property contract.
+///
+/// `selection_mode` publishes the shared lower-case tokens (`single`, `multi`, …)
+/// rather than the type's `Debug` spelling, because that is what the previous
+/// reader produced and what `expect_list_box_selection_mode` accepts.
+impl WidgetProperties for ListBox {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "item_count" => Ok(CapabilityValue::UInt(self.count() as u64)),
+            "selection_mode" => Ok(CapabilityValue::String(
+                list_box_selection_mode_to_str(self.selection_mode()).to_string(),
+            )),
+            "current_row" => match self.current_row() {
+                Some(row) => Ok(CapabilityValue::UInt(row as u64)),
+                None => Ok(CapabilityValue::Null),
+            },
+            "item_height" => Ok(CapabilityValue::Float(self.item_height() as f64)),
+            "selected_count" => Ok(CapabilityValue::UInt(self.selected_indices().len() as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "selection_mode" => {
+                self.set_selection_mode(expect_list_box_selection_mode(value)?);
+                Ok(())
+            }
+            "current_row" => {
+                match value {
+                    CapabilityValue::Null => self.set_current_row(None),
+                    other => self.set_current_row(Some(expect_usize(other)?)),
+                }
+                Ok(())
+            }
+            "item_height" => {
+                self.set_item_height(expect_f32(value)?);
+                Ok(())
+            }
+            // `item_count` and `selected_count` are derived from the item list.
+            "item_count" | "selected_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        // Mirrors `LIST_BOX_PROPERTIES`.
+        property_names_of![
+            "item_count",
+            "selection_mode",
+            "current_row",
+            "item_height",
+            "selected_count",
+            BASE_PROPERTY_NAMES
+        ]
+    }
+}
+
 impl EventHandler for ListBox {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);

@@ -3,7 +3,7 @@
 
 macro_rules! impl_dialog_widgets {
     () => {
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_dialog(
             &self,
             parent: ObjectId,
@@ -33,7 +33,7 @@ macro_rules! impl_dialog_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_message_box(
             &self,
             parent: ObjectId,
@@ -64,7 +64,7 @@ macro_rules! impl_dialog_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_file_dialog(
             &self,
             parent: ObjectId,
@@ -94,7 +94,7 @@ macro_rules! impl_dialog_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_color_dialog(
             &self,
             parent: ObjectId,
@@ -124,7 +124,7 @@ macro_rules! impl_dialog_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_font_dialog(
             &self,
             parent: ObjectId,
@@ -154,7 +154,7 @@ macro_rules! impl_dialog_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_popup_window(
             &self,
             parent: ObjectId,
@@ -184,7 +184,7 @@ macro_rules! impl_dialog_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_wizard(
             &self,
             parent: ObjectId,
@@ -214,7 +214,7 @@ macro_rules! impl_dialog_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_directory_dialog(
             &self,
             parent: ObjectId,

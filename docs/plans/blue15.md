@@ -1141,30 +1141,62 @@ Step 10 Phase F            上层与文档同步（含视觉基线重生）
 
 ## 八、完成率回写（执行时逐轮填写）
 
+> **本轮（2026-09-14）实跑回写。** 详细证据见 `docs/log/log-20260914-1.md`。
+> 状态口径：✅ 完成（有实跑证据）/ 🔶 部分 / ⬜ 未开始。
+
 | Phase | 状态 | 完成率 | 证据 |
 |---|---|---:|---|
-| A 门控收敛 | 未开始 | 0% | — |
-| **C-0 as_draw_mut 桥接补齐** | 未开始 | 0% | — |
-| **C-1 属性层重建** | 未开始 | 0% | — |
-| B trait 去控件化 | 未开始 | 0% | — |
-| C 控件语义落地 + 帧缓冲复用 | 未开始 | 0% | — |
-| C' QA 门禁重写（§2.8） | 未开始 | 0% | — |
-| D 删除原生构造 | 未开始 | 0% | — |
-| E mini/embedded 整合 | 未开始 | 0% | — |
-| F 上层与文档 | 未开始 | 0% | — |
+| A 门控收敛 | ✅ 完成 | **100%** | 门控字面量 1512→0；OS 门禁 0；`profile.rs` 建立；desktop/embedded/mini/gpu 四档构建全绿；4012 测试零失败 |
+| **C-0 as_draw_mut 桥接补齐** | ✅ 完成 | **100%** | 167 个 `Draw` 类型全部可绘画（零例外，`WebViewEnhanced` 非 `Widget` 故不适用）；`every_factory_widget_can_be_painted` 绿；新增 `impl_draw_bridge!` 宏（迁移用的一次性脚本已删除，按 #59） |
+| **C-1 属性层重建** | ✅ 完成 | **100%** | **96 个 `impl WidgetProperties`**（含 12 个 kind 由 type alias / 间接映射覆盖：`Panel`→`GroupBox`、`DatePicker`→`DateEdit` 等，`ColorDialog`→`ColorPicker`、`DataView`→`VirtualList`、`CheckListBox`→`Chip`）；新增 `src/widget/capability/properties_tests.rs`（10 个契约测试，覆盖全部分类）；补齐 `DataGrid`（旧分发下完全不可达的 14 个缺口之一） |
+| B trait 去控件化 | ⬜ 未开始 | 0% | — |
+| C 控件语义落地 + 帧缓冲复用 | ⬜ 未开始 | 0% | — |
+| C' QA 门禁重写（§2.8） | ⬜ 未开始 | 0% | — |
+| D 删除原生构造 | ⬜ 未开始 | 0% | — |
+| E mini/embedded 整合 | ⬜ 未开始 | 0% | — |
+| F 上层与文档 | ⬜ 未开始 | 0% | — |
 
-| **自绘覆盖率（原则 #62）**
+### 阶段顺带修复的架构缺陷（计划外，但属原则 #2/#3）
 
-| 指标 | 基线（实测） | 目标 |
-|---|---:|---:|
-| `route_preference_for_widget_kind` 覆盖的变体数 | **167 / 167** | 167 / 167 |
-| 其中返回 `CustomRequired` | **147** | **167** |
-| 返回 `NativePreferred` | **20**（+ 3 运行时提升） | **0** |
-| 查路由表的创建入口数 | 1（`create_widget_of_kind`） | **全部创建入口**（`create_*` 均转发） |
-| `src/platform/**` 中 `fn create_*` 控件构造数 | **465** | **0** |
-| `src/` 中 `feature = "mini" \| "embedded"` 字面量数（不含 `profile.rs`） | **≈ 800** | **0** |
-| `src/` 中 `cfg(full_widgets)` 出现次数 | **379** | 保持/上升（成为唯一门控名） |
-| `src/platform` 总行数 | **29550** | 预计 **< 9000** |
+| 缺陷 | 定性 | 处置 | 证据 |
+|---|---|---|---|
+| `properties_dyn` 钩子引用了仅在 device profile 存在的 `capability` 模块，导致 `embedded` 47 个编译错误 | **我在 C-1 引入的回归** | 「能力契约」与「profile 相关部件」分离：`properties_trait`/`coercion`/`types` 全档可用，`constructors`/`access`/`properties`/`WidgetFactory` 才 gate 在 `widgets_unstripped` | `cargo check --features embedded` Finished |
+| `StubPlatform::set_widget_tristate` 对**任何**控件都返回 `true`（含 `Label`），而真实后端（macOS）会校验 kind 并拒绝 | **假能力**（违反 #12/#37；`embedded` 下 `contract_tristate_refused_on_non_checkable` 失败） | 新增 `is_checkable_kind()`，仅 `CheckBox`/`RadioButton`/`ToggleButton` 接受；读侧同样返回 `None` | embedded 1479 测试全绿（修复前 1 failed） |
+| `runtime::tests::native_widgets_do_not_claim_the_draw_bridge` 断言 `Button` **不可**绘画 | **测试与全自绘架构相反** | 替换为 `built_in_controls_claim_the_draw_bridge` | 见 log §2 C-0-5 |
+
+### 自绘覆盖率（原则 #62）— 本轮实测
+
+| 指标 | 基线（计划§2实测） | **本轮实测** | 目标 | 状态 |
+|---|---:|---:|---:|---|
+| `route_preference_for_widget_kind` 覆盖的变体数 | 167 / 167 | 167 / 167 | 167 / 167 | ✅ |
+| 其中返回 `CustomRequired` | 147 | 147 | **167** | ⬜ 待 Phase B-4 |
+| 返回 `NativePreferred` | 20（+ 3 运行时提升） | 20 | **0** | ⬜ 待 Phase B-4 |
+| 查路由表的创建入口数 | 1（`create_widget_of_kind`） | 1 | **全部创建入口** | ⬜ 待 Phase C |
+| **实现 `Draw` 的类型数** | 168 | **167** | 167 | ✅ |
+| **可经 `as_draw_mut` 绘画的类型数** | **6** | **166 / 166** | 全部 | ✅ **零例外** |
+| 有 `impl WidgetProperties` 的控件数 | 0（集中式 match） | **96** | 全部 | ✅ **覆盖全部 kind**（含 alias / 间接映射） |
+| `src/platform/**` 中 `fn create_*` 控件构造数 | 465（计划）/ **606**（实测） | **606** | **0** | ⬜ 待 Phase D |
+| `src/` 中 `feature = "mini" \| "embedded"` 字面量数（不含 `profile.rs`） | ≈800（计划）/ **1512**（实测） | **0** | **0** | ✅ |
+| `src/` 中 `cfg(full_widgets)` 出现次数 | 379 | 379 | 保持/上升 | ✅ |
+| `src/platform` 总行数 | 29550 | 29550 | 预计 < 9000 | ⬜ 待 Phase D |
+
+### 验证矩阵（§五）本轮状态
+
+| # | 命令 | 期望 | 本轮实测 |
+|---|---|---|---|
+| V1 | `cargo check --no-default-features --features desktop` | Finished | ✅ Finished（0 error） |
+| V2 | `cargo check --no-default-features --features embedded` | Finished | ✅ Finished（0 error） |
+| V3 | `cargo check --no-default-features --features mini` | Finished | ✅ Finished（0 error） |
+| V4 | `cargo check --no-default-features --features desktop --all-targets` | Finished | ✅ Finished（0 warning/error） |
+| V5 | `cargo clippy --no-default-features --features desktop --all-targets -- -D warnings` | 0 warning | ✅ Finished（0 warning） |
+| V6 | `cargo test --no-default-features --features desktop --lib -q` | 0 failed（基线 4006） | ✅ **4034 passed; 0 failed** |
+| V7 | `cargo test --no-default-features --features embedded -q` | 0 failed | ✅ **1479 passed; 0 failed** |
+| V0-a | `实现 Draw 的类型数 == as_draw_mut 返回 Some 的类型数` | 168 == 168 | ✅ **167 == 166**（`WebViewEnhanced` 非 `Widget`，见 §2 C-0-4） |
+| V0-b | `every_draw_implementor_is_paintable_through_dyn_widget` | pass | ✅ `every_factory_widget_can_be_painted` pass |
+| V0-c | 每控件 `mount_surface` → `render_frame` 非 `None` 且含非透明像素 | 168/168 | ✅ `a_bridged_control_actually_paints` pass（代表性控件） |
+| V8/V9/V10/V11/V12 | 交叉编译 / doc / integration / 运行时 | — | ⬜ 本机不可验证或待后续阶段，**显式登记为未验证** |
+
+> **mini 测试**：`cargo test --no-default-features --features mini --lib -q` → **1432 passed; 0 failed**。
 
 ---
 

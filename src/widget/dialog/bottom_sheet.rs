@@ -85,6 +85,7 @@ impl Widget for BottomSheet {
     fn size_hint(&self) -> Size {
         crate::core::Size::new(300, 200)
     }
+    impl_draw_bridge!();
 }
 
 impl Draw for BottomSheet {

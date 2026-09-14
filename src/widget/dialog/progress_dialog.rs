@@ -4,9 +4,13 @@
 //! Progress dialog widget.
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
+use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
 use crate::tr;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Progress dialog widget.
 pub struct ProgressDialog {
@@ -144,6 +148,51 @@ impl Widget for ProgressDialog {
 
     fn size_hint(&self) -> Size {
         crate::core::Size::new(350, 120)
+    }
+
+    /// Reports this widget as the object that paints it.
+    ///
+    /// `ProgressDialog` implements `Draw`, so `Some(self)` is total and cannot be
+    /// wrong.
+    fn as_draw_mut(&mut self) -> Option<&mut dyn crate::widget::Draw> {
+        Some(self)
+    }
+
+    /// Returns this widget as its property contract.
+    fn properties_dyn(
+        &self,
+    ) -> Option<&dyn crate::widget::capability::properties_trait::WidgetProperties> {
+        Some(self)
+    }
+
+    /// Mutable counterpart to `properties_dyn`.
+    fn properties_dyn_mut(
+        &mut self,
+    ) -> Option<&mut dyn crate::widget::capability::properties_trait::WidgetProperties> {
+        Some(self)
+    }
+}
+
+/// `ProgressDialog`'s property contract.
+///
+/// Read semantics are carried over unchanged from the centralised
+/// `access_read_dialog.in.rs` dispatch. Both properties are read-only: the old
+/// write layer had no arm for this kind.
+impl WidgetProperties for ProgressDialog {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "title" => Ok(CapabilityValue::String(self.title().to_string())),
+            "label_text" => Ok(CapabilityValue::String(self.label_text().to_string())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        base_property_set(self, name, value)
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["title", "label_text", BASE_PROPERTY_NAMES]
     }
 }
 impl EventHandler for ProgressDialog {

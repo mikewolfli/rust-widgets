@@ -3,7 +3,7 @@
 
 macro_rules! impl_view_widgets {
     () => {
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_list_view(
             &self,
             parent: ObjectId,
@@ -31,7 +31,7 @@ macro_rules! impl_view_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_tree_view(
             &self,
             parent: ObjectId,
@@ -59,7 +59,7 @@ macro_rules! impl_view_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_table(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
             let widget_id = self.alloc_widget_id();
             let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -80,7 +80,7 @@ macro_rules! impl_view_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_data_view(
             &self,
             parent: ObjectId,
@@ -109,7 +109,7 @@ macro_rules! impl_view_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_property_grid(
             &self,
             parent: ObjectId,
@@ -138,7 +138,7 @@ macro_rules! impl_view_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_column_view(
             &self,
             parent: ObjectId,
@@ -167,7 +167,7 @@ macro_rules! impl_view_widgets {
             );
             widget_id
         }
-        #[cfg(not(feature = "mini"))]
+        #[cfg(not(alloc_frugal))]
         fn create_undo_view(
             &self,
             parent: ObjectId,

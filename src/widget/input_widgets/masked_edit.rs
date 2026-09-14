@@ -320,6 +320,7 @@ impl Widget for MaskedEdit {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(200, 28)
     }
+    impl_draw_bridge!();
 }
 
 impl Draw for MaskedEdit {

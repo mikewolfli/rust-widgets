@@ -15,9 +15,12 @@ fn test_menu_config_default() {
 /// The config directory must follow the host OS convention, which is why it is
 /// derived from `dirs::config_dir()` instead of a hand-built `~/.config` path.
 ///
-/// On macOS that means `~/Library/Application Support`, on Windows `%APPDATA%`,
-/// and only on Linux `~/.config`. Asserting the OS-specific expectation keeps a
-/// future edit from collapsing back to the Linux-only layout.
+/// This asserts only the **platform-agnostic** fact: the directory is ours, and
+/// its parent is whatever `dirs::config_dir()` reports. The OS-specific
+/// expectation (`Library/Application Support` on macOS) belongs to the platform
+/// layer, not here — testing it from `menu_config` would hard-code an OS into a
+/// UI-config module (principle #68). That assertion now lives in
+/// `platform::macos::tests`.
 #[test]
 fn default_config_dir_follows_host_convention() {
     let dir = ConfigPersistence::new().config_dir().to_path_buf();
@@ -29,18 +32,6 @@ fn default_config_dir_follows_host_convention() {
         return; // No home directory (unusual CI): the fallback path applies.
     };
     assert_eq!(dir.parent(), Some(base.as_path()));
-
-    // On macOS `dirs::config_dir()` is Library/Application Support, never a
-    // literal `.config` segment. This is the exact regression the old code had.
-    #[cfg(target_os = "macos")]
-    {
-        let text = dir.to_string_lossy();
-        assert!(
-            text.contains("Library/Application Support"),
-            "macOS config dir must use Application Support, got {text}"
-        );
-        assert!(!text.contains("/.config/"), "macOS must not use the Linux XDG path: {text}");
-    }
 }
 
 /// Hardware detection must route through the platform backend, not sniff the OS

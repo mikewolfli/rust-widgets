@@ -4,9 +4,13 @@
 //! Rich text editor widget.
 use crate::core::HorizontalAlignment;
 use crate::core::Rect;
+use crate::impl_widget_property_hooks;
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::undo::{TextSnapshotCommand, UndoStack};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -219,6 +223,31 @@ impl Widget for RichEdit {
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `RichEdit`'s property contract.
+///
+/// `WidgetKind::RichEdit` is the kind the capability layer pairs with the
+/// [`CodeEditor`](crate::widget::CodeEditor) control
+/// (`capability::properties::code_editor_capability`), so the `RichEdit` arm of
+/// the old centralised dispatch was answered by `CodeEditor`, not by this widget.
+/// The trait impl therefore lives beside `CodeEditor` in its own file; this widget
+/// declares that it has no properties of its own rather than claiming another
+/// control's, which is the honest answer the property layer asks for.
+impl WidgetProperties for RichEdit {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        base_property_get(self, name)
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        base_property_set(self, name, value)
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        crate::widget::capability::properties_trait::BASE_PROPERTY_NAMES
     }
 }
 impl Draw for RichEdit {

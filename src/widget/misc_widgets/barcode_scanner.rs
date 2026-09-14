@@ -13,7 +13,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::expect_bool;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Barcode format types supported by the scanner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,6 +192,40 @@ impl Widget for BarcodeScanner {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(200, 100)
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `BarcodeScanner`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch: the bool
+/// drives `start_scanning()` / `stop_scanning()` rather than a field write.
+impl WidgetProperties for BarcodeScanner {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "is_scanning" => Ok(CapabilityValue::Bool(self.is_scanning())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "is_scanning" => {
+                if expect_bool(value)? {
+                    self.start_scanning();
+                } else {
+                    self.stop_scanning();
+                }
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["is_scanning", BASE_PROPERTY_NAMES]
     }
 }
 

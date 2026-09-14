@@ -3,49 +3,46 @@
 
 //! Widget kind enum — discrete categories supported by the widget model layer.
 
-#[cfg(all(feature = "serde", not(any(feature = "mini", feature = "embedded"))))]
+#[cfg(all(feature = "serde", widgets_unstripped))]
 use serde::{Deserialize, Serialize};
 
 /// Discrete widget categories supported by the widget model layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(
-    all(feature = "serde", not(any(feature = "mini", feature = "embedded"))),
-    derive(Serialize, Deserialize)
-)]
+#[cfg_attr(all(feature = "serde", widgets_unstripped), derive(Serialize, Deserialize))]
 pub enum WidgetKind {
     /// Top-level window.
     Window,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     Dialog,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     MessageBox,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     FileDialog,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     ColorDialog,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     FontDialog,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     InputDialog,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     ProgressDialog,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     PopupWindow,
     Button,
     CheckBox,
     RadioButton,
     Label,
     LineEdit,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     TextEdit,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     RichEdit,
     ComboBox,
     SpinBox,
     ListBox,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     ListView,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     TreeView,
     ProgressBar,
     Slider,
@@ -53,128 +50,128 @@ pub enum WidgetKind {
     ScrollArea,
     Panel,
     Frame,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     DockPanel,
     GroupBox,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     TabWidget,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     Splitter,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     MdiArea,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     MenuBar,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     Menu,
     /// Individual item inside a menu.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     MenuItem,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     ContextMenu,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     ToolBar,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     StatusBar,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     Canvas,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     Table,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     Grid,
     /// Chart surface widget.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     Chart,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     ToggleButton,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     CheckListBox,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     DoubleSpinBox,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     Dial,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     Wizard,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     DatePicker,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     TimePicker,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     DateTimePicker,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     DirectoryDialog,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     DataView,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     PropertyGrid,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     Toolbox,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     StackedWidget,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     CollapsiblePane,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     DockWidget,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     ActivityIndicator,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     Calendar,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     ColumnView,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     UndoView,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     CommandLink,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     LCDNumber,
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     FontComboBox,
     /// Web engine view widget for displaying web content.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     WebEngineView,
     /// Web engine page widget for managing web content.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     WebEnginePage,
     /// Web engine settings widget for configuring web engine behavior.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     WebEngineSettings,
     /// Web engine download item widget for managing downloads.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     WebEngineDownloadItem,
     /// Web engine cookie store widget for managing cookies.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     WebEngineCookieStore,
     /// Web engine web channel widget for JavaScript communication.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     WebEngineWebChannel,
     /// Web engine find text result widget for text search results.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     WebEngineFindTextResult,
     /// Web engine notification widget for web notifications.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     WebEngineNotification,
     /// Web engine script dialog widget for JavaScript dialogs.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     WebEngineScriptDialog,
     /// Web engine context menu request widget for context menu handling.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     WebEngineContextMenuRequest,
     /// Action widget for menu and toolbar actions.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     Action,
     /// Tool button widget.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     ToolButton,
     /// Freeform shape widget — a path-based non-rectangular clickable shape.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     FreeformShape,
     /// Standalone tab bar widget (decoupled from TabWidget).
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     TabBar,
     /// Pie menu / radial menu widget.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     PieMenu,
     /// RibbonBar (Office-style ribbon) widget.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     RibbonBar,
     /// TileView widget — swipeable tiled page view (BLUE13 R2.8).
     TileView,
@@ -203,225 +200,225 @@ pub enum WidgetKind {
     /// Switch/Toggle widget for on/off binary state.
     Switch,
     /// Search box with search icon and clear button.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     SearchBox,
     /// Chip/Tag widget for labels and tokens.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     Chip,
     /// Badge widget for notification counts and status indicators.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     Badge,
     /// Skeleton loader placeholder widget.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     SkeletonLoader,
     /// Floating action button.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     FAB,
     /// Bottom sheet modal panel.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     BottomSheet,
     /// Bottom navigation bar (mobile tab bar).
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     BottomNavigationBar,
     /// Navigation drawer sidebar.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     NavigationDrawer,
     /// Top app bar.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     AppBar,
     /// Mobile-style date picker.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     MobileDatePicker,
     /// Divider/Separator line widget.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     Divider,
     /// Stepper widget for numeric increment/decrement with +/- buttons.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     Stepper,
     /// Star rating control.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     Rating,
     /// Avatar widget — circular/square user image placeholder with initials fallback.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     Avatar,
     /// EmptyState widget — placeholder shown when a view has no content.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     EmptyState,
     /// Carousel/SwipeView widget — horizontal swipeable page carousel with dot indicators.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     Carousel,
     /// ColorHistory widget — a color history picker with a swatch grid.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     ColorHistory,
     /// ColorWell widget — compact color swatch that shows the current color and emits a signal when clicked.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     ColorWell,
     /// TagInput widget — text input that creates tags/chips on Enter or comma, with removable tags.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     TagInput,
     /// IME preedit text overlay widget for composition text input.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     ImePreedit,
     /// InplaceEditor — an in-place text editing control for table/cell editing.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     InplaceEditor,
     /// QRCode widget — displays a deterministic QR code pattern from a data string.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     QRCode,
     /// MasonryLayout widget — a Pinterest-style waterfall grid layout.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     MasonryLayout,
     /// CupertinoSwitch — iOS-style switch (alias for Switch with iOS coloring).
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     CupertinoSwitch,
     /// MaterialSnackbar — Material Design snackbar notification.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     MaterialSnackbar,
     /// AdaptiveScaffold — cross-platform adaptive scaffold with AppBar + content + bottom nav.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     AdaptiveScaffold,
     /// WizardDialog — step-by-step wizard control with back/next/finish navigation.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     WizardDialog,
     /// SafeArea — mobile safe area widget that insets content to avoid notches, status bars, and home indicators.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     SafeArea,
     /// CupertinoAlertDialog — iOS-style alert dialog with title, message, and buttons.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     CupertinoAlertDialog,
     /// CupertinoSlider — iOS-style slider with rounded track and circular knob.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     CupertinoSlider,
     /// MaterialNavigationRail — Material Design side navigation rail for tablets.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     MaterialNavigationRail,
     /// Tooltip — a popup label that appears on hover for context info.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     Tooltip,
     /// SegmentedButton — a horizontal group of selectable segments (Material 3 style).
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     SegmentedButton,
     /// NavigationStack — a push/pop page navigation container.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     NavigationStack,
     /// ProgressCircle — a circular progress indicator.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     ProgressCircle,
     /// Icon — a widget for rendering simple geometric icon representations.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     Icon,
     /// DropdownMenu — a cascading/linked dropdown selector with item list.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     DropdownMenu,
     /// MaskedEdit — a formatted text input with mask-based input constraints.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     MaskedEdit,
     /// MenuButton — a button that opens a dropdown menu when clicked.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     MenuButton,
     /// Popover — a floating bubble card with an anchor arrow.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     Popover,
     /// AutoCompleteEdit — a text input with auto-completion dropdown.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     AutoCompleteEdit,
     /// MultiSelectComboBox — a combo box that allows multiple selections.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     MultiSelectComboBox,
     /// RangeSlider — a dual-handle range slider for min-max selection.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     RangeSlider,
     /// FloatingLabel — a text input with a floating label (Material Design style).
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     FloatingLabel,
     /// FontPreview — a font preview panel for font selection dialogs.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     FontPreview,
     /// CupertinoNavigationBar — iOS-style large title navigation bar.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     CupertinoNavigationBar,
     /// CupertinoSegmentedControl — iOS-style pill-shaped segmented control.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     CupertinoSegmentedControl,
     /// SwipeToDismiss — swipe-to-dismiss/delete gesture container.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     SwipeToDismiss,
     /// PagerPageView — horizontal page view with dot indicators.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     PagerPageView,
     /// TabView — iOS-style segmented tab page view.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     TabView,
     /// SearchBar — iOS-style search bar with cancel button.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     SearchBar,
     /// ShortcutEditor — a keyboard shortcut editor widget.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     ShortcutEditor,
     /// RefreshControl — pull-to-refresh control for scrollable views.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     RefreshControl,
     /// ModalBottomSheet — Material-style modal bottom sheet with drag-to-dismiss.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     ModalBottomSheet,
     /// LineChart — a 2D line chart for visualizing data series.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     LineChart,
     /// Sparkline — a compact inline sparkline chart without axes.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     Sparkline,
     /// BarChart — a vertical bar chart for categorical data visualization.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     BarChart,
     /// FindReplaceDialog — a find/replace dialog with text input, toggles, and action buttons.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     FindReplaceDialog,
     /// PropertiesPanel — a categorized property editor panel with grid layout.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     PropertiesPanel,
     /// PieChart — a circular statistical chart with colored sectors.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     PieChart,
     /// CupertinoDatePicker — iOS UIPickerView-style scrolling wheel date picker.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     CupertinoDatePicker,
     /// EditableComboBox — a combo box that allows typing custom values.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     EditableComboBox,
     /// DateRangePicker — a calendar-based date range selection widget.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     DateRangePicker,
     /// AnimatedImage — plays animated images (GIF/APNG/WebP frame sequences).
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     AnimatedImage,
     /// HeroAnimation — shared element transition with interpolated position/size/opacity.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     HeroAnimation,
     /// BezierCurveEditor — interactive cubic bezier curve editor for custom easing curves.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     BezierCurveEditor,
     /// LottieWidget — Lottie JSON animation player.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     LottieWidget,
     /// RiveWidget — Rive animation runtime widget.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     RiveWidget,
     /// VideoPlayer — video player widget with playback controls.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     VideoPlayer,
     /// ImageGallery — image gallery/browser with thumbnails.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     ImageGallery,
     /// AudioVisualizer — real-time audio waveform/spectrum visualization.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     AudioVisualizer,
     /// CameraPreview — camera viewfinder preview area with controls.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     CameraPreview,
     /// BarcodeScanner — barcode/QR code scanner viewfinder with detection.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     BarcodeScanner,
     /// GridTable — feature-rich virtualized table with grid lines, headers, sorting, and selection.
-    #[cfg(not(any(feature = "mini", feature = "embedded")))]
+    #[cfg(widgets_unstripped)]
     GridTable,
 }

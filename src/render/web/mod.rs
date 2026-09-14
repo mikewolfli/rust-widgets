@@ -10,9 +10,9 @@
 //! These types are wired into `render::pipeline::special` for web widget
 //! rendering. They are intentionally kept as a separate module to isolate
 //! the web rendering dependency from the core render pipeline.
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub mod engine;
-#[cfg(not(feature = "mini"))]
+#[cfg(not(alloc_frugal))]
 pub mod view;
 
 #[cfg(not(feature = "desktop"))]
