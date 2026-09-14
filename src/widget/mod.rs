@@ -20,11 +20,12 @@ pub mod draw;
 /// called from the widget's own `impl Widget` block, wherever that block lives.
 #[macro_use]
 pub mod draw_bridge;
-#[cfg(feature = "image")]
-pub mod image;
 pub mod kind;
+
 #[cfg(not(alloc_frugal))]
 pub mod runtime;
+/// Byte-index helpers shared by the text-editing controls.
+pub mod text_utils;
 pub mod widget_trait;
 // Widget subfolders
 #[cfg(full_widgets)]
@@ -68,14 +69,21 @@ pub use base::BaseWidget;
 #[cfg(widgets_unstripped)]
 pub use capability::WidgetFactory;
 pub use capability::{
-    base_property_get, base_property_set, CapabilityAccessError, CapabilityValue, PropertySchema,
-    PropertyValueKind, WidgetCapability, WidgetProperties, BASE_PROPERTY_NAMES,
+    base_property_get, base_property_set, widget_property_get, widget_property_names,
+    widget_property_set, CapabilityAccessError, CapabilityValue, PropertySchema, PropertyValueKind,
+    WidgetCapability, WidgetProperties, BASE_PROPERTY_NAMES,
 };
+// The id-level accessors only exist where the capability layer does; the alloc-frugal
+// profile compiles them out, so the re-export carries the same gate.
+#[cfg(widgets_unstripped)]
+pub use capability::{read_widget_property_by_id, write_widget_property_by_id};
 pub use draw::Draw;
+// The canonical types live in `crate::image`; re-exported here so a caller that
+// already has `crate::widget` in scope does not need the second path.
 #[cfg(feature = "image")]
-pub use image::Image;
+pub use crate::image::Image;
 #[cfg(feature = "image")]
-pub use image::ImageFormat;
+pub use crate::image::ImageFormat;
 pub use kind::WidgetKind;
 pub use registry::SimpleRegistry;
 pub use widget_trait::Widget;

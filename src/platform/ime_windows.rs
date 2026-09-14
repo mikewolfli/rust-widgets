@@ -140,11 +140,7 @@ pub struct WindowsImeBridge {
     tsf_manager: Mutex<Option<TsfThreadMgr>>,
 }
 
-impl Default for WindowsImeBridge {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(WindowsImeBridge);
 
 impl WindowsImeBridge {
     /// Create a new Windows IME bridge.

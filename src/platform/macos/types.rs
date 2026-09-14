@@ -156,11 +156,7 @@ impl MacOSPlatform {
     }
 }
 
-impl Default for MacOSPlatform {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(MacOSPlatform);
 
 impl MacOSPlatform {
     pub(crate) fn make_rect(x: i32, y: i32, width: u32, height: u32) -> NSRect {

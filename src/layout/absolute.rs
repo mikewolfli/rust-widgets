@@ -169,11 +169,7 @@ impl Constraint {
         Size::new(width, height)
     }
 }
-impl Default for Constraint {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(Constraint);
 /// An absolute-position layout manager.
 ///
 /// Children are placed at explicit (x, y) coordinates with optional
@@ -272,11 +268,7 @@ impl AbsoluteLayout {
         self.children.get(index).and_then(|(_, _, cons)| cons.as_ref())
     }
 }
-impl Default for AbsoluteLayout {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(AbsoluteLayout);
 
 impl AbsoluteLayout {
     fn widget_id_for_index(&self, index: usize) -> Option<ObjectId> {

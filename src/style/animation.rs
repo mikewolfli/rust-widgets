@@ -650,11 +650,7 @@ impl AnimationDriver {
     }
 }
 
-impl Default for AnimationDriver {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(AnimationDriver);
 
 /// Animate a state transition using a StatefulTheme's transition duration.
 /// Returns the AnimationId if a transition was found, or None if no transition is configured.
@@ -684,11 +680,7 @@ impl ParallelAnimation {
     }
 }
 
-impl Default for ParallelAnimation {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(ParallelAnimation);
 
 impl ParallelAnimation {
     /// Add a child animation (managed externally via AnimationDriver).
@@ -724,11 +716,7 @@ impl SequentialAnimation {
     }
 }
 
-impl Default for SequentialAnimation {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(SequentialAnimation);
 
 impl SequentialAnimation {
     /// Add an animation config to the sequence.
@@ -1020,11 +1008,7 @@ impl TransitionManager {
     }
 }
 
-impl Default for TransitionManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(TransitionManager);
 
 /// Physical spring animation (iOS-style spring physics).
 pub struct SpringAnimation {

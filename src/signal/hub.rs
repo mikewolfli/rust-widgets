@@ -215,8 +215,4 @@ impl CustomSignalHub {
     }
 }
 
-impl Default for CustomSignalHub {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(CustomSignalHub);

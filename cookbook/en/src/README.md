@@ -1,15 +1,43 @@
 # Introduction
 
-**rust-widgets** is a pure Rust, cross-platform native GUI library for building
+**rust-widgets** is a pure Rust, cross-platform GUI library for building
 applications that run everywhere — from desktop workstations to embedded
 microcontrollers, and from mobile devices to the web.
 
+## All Controls Are Self-Drawn
+
+**rust-widgets paints 100% of its own controls and creates no native OS controls**
+**on any platform.** There is no `CreateWindowExW`, no `NSButton`, no
+`gtk_button_new` and no `android.widget.Button` in this crate. A backend supplies
+a **surface**, an **event loop**, **input translation** and **platform services**
+(IME, clipboard, accessibility, native menus, file dialogs, DPI) — and nothing
+else.
+
+Two consequences worth internalising before you read further:
+
+1. **A control looks identical on every OS.** Your button has the same pixels on
+   Windows, macOS, Linux, iOS, Android and the web, because the same Rust
+   rasterizer drew all of them.
+2. **Widget availability is a *profile* question, not an OS question.** All 167
+   widget kinds are available on every platform in the `desktop`/`tablet`/`mobile`
+   profiles. Only the resource-constrained `embedded`/`mini` profiles compile a
+   reduced set.
+
+This is why the platform chapter documents [what each OS
+*provides*](chapters/platform-support.md#13-platform-services-do-vary-by-os)
+(DPI, IME, accessibility, native menus) rather than listing which controls work
+where — because that list would be the same everywhere.
+
 ## What Is rust-widgets?
 
-rust-widgets gives you a single Rust codebase that produces native-looking
+rust-widgets gives you a single Rust codebase that produces identical, consistent
 interfaces on every major platform. It includes an extensive widget library,
 hardware-adaptive rendering, and deep platform integration — all through a
 clean, idiomatic Rust API.
+
+> The snippet below is illustrative of the intended API shape. For code that
+> compiles against 2.0.0, start from [`chapters/getting-started.md`](chapters/getting-started.md),
+> which is verified against the current crate.
 
 ```rust
 use rust_widgets::prelude::*;
@@ -31,9 +59,10 @@ fn main() {
 
 ## Key Features
 
-### Rich Widget Library — 140+ Widgets
+### Rich Widget Library — 167 Widget Kinds
 
-Over 140 built-in widgets span every common UI need:
+167 built-in widget kinds span every common UI need, and **all of them are
+self-drawn and therefore available on every platform**:
 
 - **Core controls**: Button, CheckBox, RadioButton, Label, LineEdit, TextEdit,
   ComboBox, SpinBox, Slider, ScrollBar, ProgressBar
@@ -62,18 +91,24 @@ Three rendering backends, automatically selected for your target:
 | **SoftwarePaintBackend** | Embedded, mini | CPU rasterizer to RGBA framebuffer |
 | **SvgPaintBackend** | Testing, docs | SVG pipeline output for pixel-accurate verification |
 
-### Eight Platforms, One API
+### Nine Platforms, One API
 
-| Platform | Backend | Feature Flag |
-|----------|---------|:------------:|
-| Linux (Wayland) | `linux-wayland` | `linux-wayland` |
-| Windows (Win32) | `windows` | `windows` |
-| macOS (Cocoa/objc2) | `macos` | `macos` |
-| iOS (UIKit) | `ios` | `ios` |
-| Android (JNI) | `android` | `android` |
-| Web (WASM) | `wasm` | `wasm` |
-| HarmonyOS | `harmony` | `harmony` |
-| Embedded (no_std) | `embedded` / `mini` | `embedded` / `mini` |
+The table below lists **how each platform provides a surface and event loop** — not
+which controls are available. Because every control is self-drawn, all 167 widget
+kinds work on every platform listed; only the `embedded`/`mini` profiles reduce the
+compiled-in set.
+
+| Platform | Backend supplies | Feature Flag |
+|----------|------------------|:------------:|
+| Windows (Win32) | Win32 window + message loop | `windows` |
+| macOS (Cocoa/objc2) | `NSView` surface | `macos` |
+| Linux (GTK) | GTK3 window + event loop | `linux-gtk` |
+| Linux (Wayland) | `wl_surface` + input | `linux-wayland` |
+| iOS (UIKit) | UIKit surface | `ios` |
+| Android (JNI) | JNI surface | `android` |
+| HarmonyOS | NAPI bridge | `harmony` |
+| Web (WASM) | DOM canvas + browser events | `wasm` |
+| Portable / headless | In-memory framebuffer, no OS | `embedded` / `mini` |
 
 ### Touch & Gesture
 
@@ -166,10 +201,10 @@ handling, WebChannel communication, and context menu customization.
 
 | | |
 |---|---|
-| **Version** | 1.1.2 |
+| **Version** | 2.0.0 |
 | **License** | [MIT](https://github.com/mikewolfli/rust-widgets/blob/main/LICENSE) |
 | **Repository** | [github.com/mikewolfli/rust-widgets](https://github.com/mikewolfli/rust-widgets) |
-| **Tests** | 3400+ |
+| **Tests** | 4000+ |
 | **MSRV** | Rust 1.87 |
 
 Ready to begin? Head to [Getting Started](chapters/getting-started.md).

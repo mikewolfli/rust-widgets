@@ -164,7 +164,7 @@ let sender2 = sender1.clone();
 std::thread::spawn(move || {
     sender1.post(network_widget, Event::Custom {
         name: "data-arrived".into(),
-        payload: Box::new(payload_bytes),
+        payload: payload_bytes,
     }).unwrap();
 });
 

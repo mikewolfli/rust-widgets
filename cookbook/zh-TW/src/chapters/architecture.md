@@ -69,8 +69,14 @@ graph TB
 | **應用程式框架** | 應用程式生命週期、widget handles、事件迴圈編排 | `app::App`、`AppConfig`、`WindowHandle`、`AppLifecycle` |
 | **Widget 模型** | Widget trait 合約、base widget 狀態、訊號插槽、渲染分派、容器組合 | `widget::Widget`、`BaseWidget`、`Draw`、`WidgetKind`、`SimpleRegistry` |
 | **核心系統** | 佈局、渲染、事件、訊號、樣式、資料繫結、動作、復原/重做 | `layout`、`render`、`event`、`signal`、`style`、`data_binding`、`action`、`undo` |
-| **平台抽象層** | 作業系統原生 widget 建立、事件轉譯、剪貼簿、IME、無障礙存取 | `control_backend::ControlBackend`、`platform` |
+| **平台抽象層** | 視窗/繪製面建立、事件轉譯、剪貼簿、IME、無障礙存取、原生選單 | `control_backend::ControlBackend`、`platform` |
 | **作業系統 / GPU** | 原始平台 API、GPU 驅動程式 | 作業系統 SDK + `wgpu` |
+
+> **沒有任何一層會建立原生控件。** 自 2.0.0 起，函式庫會自行繪製每一個
+> widget（BLUE15），因此後端的職責是提供**繪製面**、**事件迴圈**、
+> **輸入轉譯**與**平台服務**。`Platform::create_*` 僅作為選擇性的接縫保留下來，
+> 其預設實作回傳 `0`；沒有任何隨附後端會覆寫它。
+> 請參閱 [platform-support.md](platform-support.md) 與根目錄的 `README.md`。
 
 ---
 

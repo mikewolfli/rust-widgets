@@ -360,11 +360,7 @@ impl FormManager {
         self.forms.values().map(|f| f.field_count()).sum()
     }
 }
-impl Default for FormManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(FormManager);
 #[cfg(test)]
 mod tests {
     use super::*;

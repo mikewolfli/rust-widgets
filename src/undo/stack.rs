@@ -163,11 +163,7 @@ impl UndoStack {
     }
 }
 
-impl Default for UndoStack {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(UndoStack);
 
 #[cfg(test)]
 mod tests {

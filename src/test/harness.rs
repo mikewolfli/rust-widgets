@@ -56,11 +56,7 @@ impl TestHarness {
         handled
     }
 }
-impl Default for TestHarness {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(TestHarness);
 /// Widget tester with assertions
 pub struct WidgetTester<W: Widget> {
     widget: W,

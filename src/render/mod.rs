@@ -34,7 +34,6 @@
 //! | **pipeline** | `pipeline/` | Visual command pipeline for all widget types (controls, containers, dialogs, special, etc.) |
 //! | **web** | `web/` | Web engine and web view rendering |
 //! | **quality** | `quality/` | Adaptive rendering quality management |
-//! | flat | `text_cache.rs` | Text caching utilities |
 
 // ─── Sub-module declarations ─────────────────────────────────────────────────
 
@@ -64,7 +63,6 @@ pub mod quality;
 // Text caching
 #[cfg(test)]
 mod tests;
-pub mod text_cache;
 
 // Text shaping (pre-layout measurement)
 pub mod text_shaper;

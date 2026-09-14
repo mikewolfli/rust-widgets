@@ -188,11 +188,7 @@ impl ConstraintLayout {
     }
 }
 
-impl Default for ConstraintLayout {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(ConstraintLayout);
 
 impl Layout for ConstraintLayout {
     fn as_any(&self) -> &dyn std::any::Any {

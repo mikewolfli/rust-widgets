@@ -84,11 +84,7 @@ impl GestureRecognizer for LongPressGesture {
     }
 }
 
-impl Default for LongPressGesture {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(LongPressGesture);
 
 // ────────────────────────────────────────────
 // PanGesture (G1)
@@ -156,11 +152,7 @@ impl GestureRecognizer for PanGesture {
     }
 }
 
-impl Default for PanGesture {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(PanGesture);
 
 // ────────────────────────────────────────────
 // LongPressDragGesture (G4)
@@ -279,8 +271,4 @@ impl GestureRecognizer for LongPressDragGesture {
     }
 }
 
-impl Default for LongPressDragGesture {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(LongPressDragGesture);

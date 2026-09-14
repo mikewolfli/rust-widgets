@@ -574,7 +574,7 @@ let gradient = GradientBuilder::linear(Point::new(0, 0), Point::new(200, 0))
 // 应用于 RenderCommand
 backend.execute_command(&RenderCommand::DrawGradient {
     rect: Rect::new(0, 0, 200, 100),
-    gradient: &gradient,
+    gradient,
 });
 ```
 
@@ -733,7 +733,7 @@ fn render_animated_background(scene: &mut RenderScene, time: f32) {
 
     layer.push(RenderCommand::DrawGradient {
         rect: Rect::new(0, 0, 800, 600),
-        gradient: &gradient,
+        gradient,
     });
 
     scene.add_layer(layer);

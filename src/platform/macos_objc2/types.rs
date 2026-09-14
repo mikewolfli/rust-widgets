@@ -87,8 +87,4 @@ impl MacOSObjc2Platform {
     }
 }
 
-impl Default for MacOSObjc2Platform {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(MacOSObjc2Platform);

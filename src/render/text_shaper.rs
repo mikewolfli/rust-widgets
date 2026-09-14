@@ -57,11 +57,7 @@ impl SimpleTextShaper {
     }
 }
 
-impl Default for SimpleTextShaper {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(SimpleTextShaper);
 
 impl TextShaper for SimpleTextShaper {
     /// Approximate: each char is ~0.6 * font_size wide; glyphs are sequential.

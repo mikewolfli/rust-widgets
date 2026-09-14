@@ -123,11 +123,7 @@ impl PoolManager {
         self.pools.clear();
     }
 }
-impl Default for PoolManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(PoolManager);
 pub struct BufferPool {
     buffers: Vec<Vec<u8>>,
     buffer_size: usize,

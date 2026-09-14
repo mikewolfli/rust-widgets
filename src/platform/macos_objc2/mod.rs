@@ -7,9 +7,6 @@
 //! itself, so it supplies a window, a native view surface and menu/event plumbing,
 //! and the `Platform` trait defaults cover control construction and control state
 //! (BLUE15 #55/#56).
-pub mod clipboard_dnd;
-pub mod dialog_creation;
-pub mod menu_impl;
 /// Native AppKit FFI wrappers — macOS/`objc2-macos` only (the file itself is
 /// `#![cfg]`-gated, but the declaration must not resolve elsewhere).
 #[cfg(all(target_os = "macos", feature = "macos"))]
@@ -18,6 +15,5 @@ pub mod platform_impl;
 #[cfg(test)]
 pub mod tests;
 pub mod types;
-pub mod widget_state;
 
 pub use types::*;

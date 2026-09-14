@@ -101,7 +101,6 @@ pub mod theme;
 /// Undo/Redo framework for undoable commands and cross-widget undo/redo.
 pub mod undo;
 /// Generic utility modules (asset watcher, helpers, etc.).
-pub mod util;
 /// Video module — container format detection, frame extraction, metadata, and playback.
 #[cfg(feature = "video")]
 pub mod video;
@@ -1353,6 +1352,9 @@ pub use deprecated::{
     mount_custom_widget, request_custom_repaint, resize_custom_widget, supports_custom_widgets,
     unmount_custom_widget,
 };
+
+#[cfg(test)]
+mod docs_paths_tests;
 
 #[cfg(test)]
 mod compat_path_tests {

@@ -561,11 +561,7 @@ impl FlexLayout {
     }
 }
 
-impl Default for FlexLayout {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(FlexLayout);
 
 impl Layout for FlexLayout {
     fn as_any(&self) -> &dyn std::any::Any {

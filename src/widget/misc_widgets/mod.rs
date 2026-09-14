@@ -13,6 +13,8 @@ pub mod bezier_curve_editor;
 #[cfg(not(alloc_frugal))]
 pub mod date_range_picker;
 #[cfg(not(alloc_frugal))]
+pub mod date_utils;
+#[cfg(not(alloc_frugal))]
 pub mod mobile_date_picker;
 #[cfg(not(alloc_frugal))]
 pub mod qr_code;

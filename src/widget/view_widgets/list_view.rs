@@ -80,11 +80,7 @@ pub struct SelectionModel {
     /// Currently focused row.
     current_row: Option<usize>,
 }
-impl Default for SelectionModel {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(SelectionModel);
 
 impl SelectionModel {
     /// Creates a new selection model.

@@ -161,11 +161,7 @@ impl JsContext {
         });
     }
 }
-impl Default for JsContext {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(JsContext);
 pub trait JsEngine: Send + Sync {
     fn evaluate(&mut self, script: &str, context: &mut JsContext) -> JsResult<JsValue>;
     fn call_function(
@@ -435,11 +431,7 @@ impl SimpleJsEngine {
         Ok(self.parse_value(stmt))
     }
 }
-impl Default for SimpleJsEngine {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(SimpleJsEngine);
 impl JsEngine for SimpleJsEngine {
     fn evaluate(&mut self, script: &str, context: &mut JsContext) -> JsResult<JsValue> {
         let script = script.trim();
@@ -679,11 +671,7 @@ impl BoaJsEngine {
 }
 
 #[cfg(feature = "js-engine")]
-impl Default for BoaJsEngine {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(BoaJsEngine);
 
 #[cfg(test)]
 mod tests {

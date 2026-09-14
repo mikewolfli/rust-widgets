@@ -123,11 +123,7 @@ pub struct A11yTree {
     focus_index: usize,
 }
 
-impl Default for A11yTree {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(A11yTree);
 
 impl A11yTree {
     /// Create an empty accessibility tree.
@@ -672,11 +668,7 @@ impl DefaultA11yProvider {
     }
 }
 
-impl Default for DefaultA11yProvider {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(DefaultA11yProvider);
 
 impl A11yProvider for DefaultA11yProvider {
     fn register_widget(&mut self, id: ObjectId, state: A11yState) {

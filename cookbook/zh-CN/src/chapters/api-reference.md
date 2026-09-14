@@ -2,7 +2,7 @@
 
 本章提供整个 `rust_widgets` 公共 API 的逐模块完整参考。当你需要为任务查找正确的类型、函数或 trait 时，可将其作为快速查阅手册。
 
-本文档所描述的库版本为 **1.1.2**。代码示例假定已使用 `use rust_widgets::*;` 或按所示使用显式路径。
+本文档所描述的库版本为 **2.0.0**。代码示例假定已使用 `use rust_widgets::*;` 或按所示使用显式路径。
 
 ---
 
@@ -12,36 +12,37 @@
 2. [应用生命周期 (`app`)](#应用生命周期-app)
 3. [核心原语 (`core`)](#核心原语-core)
 4. [控件系统 (`widget`)](#控件系统-widget)
-5. [布局系统 (`layout`)](#布局系统-layout)
-6. [事件系统 (`event`)](#事件系统-event)
-7. [渲染系统 (`render`)](#渲染系统-render)
-8. [渲染引擎 (`render_engine`)](#渲染引擎-render_engine)
-9. [样式与主题 (`style`, `theme`)](#样式与主题-style-theme)
-10. [平台抽象 (`platform`)](#平台抽象-platform)
-11. [错误系统 (`error`)](#错误系统-error)
-12. [动作框架 (`action`)](#动作框架-action)
-13. [快捷键系统 (`shortcut`)](#快捷键系统-shortcut)
-14. [数据绑定 (`data_binding`)](#数据绑定-data_binding)
-15. [信号/槽 (`signal`)](#信号槽-signal)
-16. [国际化 (`i18n`)](#国际化-i18n)
-17. [手势识别 (`gesture`)](#手势识别-gesture)
-18. [图表与数据可视化 (`chart`)](#图表与数据可视化-chart)
-19. [PDF 生成 (`pdf`)](#pdf-生成-pdf)
-20. [打印 (`print`)](#打印-print)
-21. [内存管理 (`memory`)](#内存管理-memory)
-22. [性能 (`performance`)](#性能-performance)
-23. [自适应质量 (`quality`)](#自适应质量-quality)
-24. [控制后端 (`control_backend`)](#控制后端-control_backend)
-25. [对象系统 (`object`)](#对象系统-object)
-26. [Web 能力 (`web`)](#web-能力-web)
-27. [撤销/重做 (`undo`)](#撤销重做-undo)
-28. [剪贴板 (`clipboard`)](#剪贴板-clipboard)
-29. [GPU 加速 (`gpu`, `wgpu_backend`)](#gpu-加速-gpu-wgpu_backend)
-30. [嵌入式支持 (`embedded`)](#嵌入式支持-embedded)
-31. [语言绑定 (`bindings`)](#语言绑定-bindings)
-32. [特性标志参考](#特性标志参考)
-33. [错误代码参考](#错误代码参考)
-34. [FFI / C ABI 参考](#ffi--c-abi-参考)
+5. [控件属性 (`WidgetProperties`)](#控件属性)
+6. [布局系统 (`layout`)](#布局系统-layout)
+7. [事件系统 (`event`)](#事件系统-event)
+8. [渲染系统 (`render`)](#渲染系统-render)
+9. [渲染引擎 (`render_engine`)](#渲染引擎-render_engine)
+10. [样式与主题 (`style`, `theme`)](#样式与主题-style-theme)
+11. [平台抽象 (`platform`)](#平台抽象-platform)
+12. [错误系统 (`error`)](#错误系统-error)
+13. [动作框架 (`action`)](#动作框架-action)
+14. [快捷键系统 (`shortcut`)](#快捷键系统-shortcut)
+15. [数据绑定 (`data_binding`)](#数据绑定-data_binding)
+16. [信号/槽 (`signal`)](#信号槽-signal)
+17. [国际化 (`i18n`)](#国际化-i18n)
+18. [手势识别 (`gesture`)](#手势识别-gesture)
+19. [图表与数据可视化 (`chart`)](#图表与数据可视化-chart)
+20. [PDF 生成 (`pdf`)](#pdf-生成-pdf)
+21. [打印 (`print`)](#打印-print)
+22. [内存管理 (`memory`)](#内存管理-memory)
+23. [性能 (`performance`)](#性能-performance)
+24. [自适应质量 (`quality`)](#自适应质量-quality)
+25. [控制后端 (`control_backend`)](#控制后端-control_backend)
+26. [对象系统 (`object`)](#对象系统-object)
+27. [Web 能力 (`web`)](#web-能力-web)
+28. [撤销/重做 (`undo`)](#撤销重做-undo)
+29. [剪贴板 (`clipboard`)](#剪贴板-clipboard)
+30. [GPU 加速 (`gpu`, `wgpu_backend`)](#gpu-加速-gpu-wgpu_backend)
+31. [嵌入式支持 (`embedded`)](#嵌入式支持-embedded)
+32. [语言绑定 (`bindings`)](#语言绑定-bindings)
+33. [特性标志参考](#特性标志参考)
+34. [错误代码参考](#错误代码参考)
+35. [FFI / C ABI 参考](#ffi--c-abi-参考)
 
 ---
 
@@ -733,6 +734,148 @@ pub enum CapabilityAccessError { NotFound, WrongType, ReadOnly }
 
 ---
 
+## 控件属性
+
+自 2.0.0 起，每个控件都会公开自己的属性契约。你可以在不知道控件具体类型的情况下读取、写入并**枚举**它的状态 —— 同一段代码对任何控件、在任何平台上都适用。
+
+### Trait
+
+```rust
+pub trait WidgetProperties {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError>;
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError>;
+
+    /// Names this control exposes, including the four it inherits.
+    /// A `&'static [&'static str]`, so enumeration allocates nothing.
+    fn property_names(&self) -> &'static [&'static str];
+}
+```
+
+### 四个共享属性
+
+每个控件都通过 `base_property_get` / `base_property_set` 响应这些属性：
+
+```rust
+pub const BASE_PROPERTY_NAMES: &[&str] = &["enabled", "visible", "tooltip", "geometry"];
+```
+
+`geometry` 在这个契约中刻意是**只读**的：控件的矩形归放置它的布局所有，在这里写入它会在下一轮布局中与布局静默地相互冲突。要移动控件，请使用 `widget::runtime::set_geometry`。
+
+### 值类型
+
+```rust
+pub enum CapabilityValue {
+    Bool(bool),
+    Int(i64),
+    UInt(u64),
+    Float(f64),
+    String(String),
+    Null,
+}
+```
+
+**没有**任何 `From` 转换可以生成 `CapabilityValue` —— 请显式构造变体（`CapabilityValue::Int(7)`）。这是刻意为之：隐式转换会让类型不匹配在调用点变得不可见。
+
+### 按引用读取
+
+```rust
+use rust_widgets::core::Rect;
+use rust_widgets::widget::WidgetFactory;
+use rust_widgets::CapabilityValue;
+
+let factory = WidgetFactory::new_with_defaults();
+let mut slider = factory.create("slider", Rect::new(0, 0, 200, 24), "").unwrap();
+
+factory.write_property(slider.as_mut(), "value", CapabilityValue::Int(42))?;
+let value = factory.read_property(slider.as_ref(), "value")?;
+assert_eq!(value, CapabilityValue::Int(42));
+# Ok::<(), rust_widgets::CapabilityAccessError>(())
+```
+
+### 枚举契约
+
+这是用于构建属性编辑器、序列化器或文档表格的 API：
+
+```rust
+use rust_widgets::widget::{widget_property_get, widget_property_names};
+
+for name in widget_property_names(slider.as_ref()).unwrap_or(&[]) {
+    println!("{name} = {:?}", widget_property_get(slider.as_ref(), name)?);
+}
+# Ok::<(), rust_widgets::CapabilityAccessError>(())
+```
+
+由于这个列表来自控件自身，它不会过期；如果某个控件公开了一个它并不会响应的属性，测试（`no_published_property_answers_unknown_when_written`）会按名称失败。
+
+### 按 id 读取
+
+后端和脚本宿主通常持有的是 id 而不是引用。这些访问器会通过控件运行时来解析 id，因此**控件必须先完成注册**，而且 `runtime::register` 会**分配**它将要响应的 id —— 请使用它的返回值，而不是工厂分发的那个：
+
+```rust
+use rust_widgets::widget::{read_widget_property_by_id, write_widget_property_by_id};
+use rust_widgets::widget::runtime;
+
+let id = runtime::register(widget).expect("must run on the UI thread");
+write_widget_property_by_id(id, "value", CapabilityValue::Int(7))?;
+let value = read_widget_property_by_id(id, "value")?;
+
+runtime::unregister(id);
+# Ok::<(), rust_widgets::CapabilityAccessError>(())
+```
+
+### 错误语义
+
+| 错误 | 含义 |
+|---|---|
+| `UnknownProperty` | 该控件**没有这个名称的属性** —— 这是调用方的 bug。 |
+| `ReadOnlyProperty` | 该属性**存在**但不可写（例如 `geometry`、`row_count`）。请渲染为禁用状态的字段。 |
+| `TypeMismatch` | 值的类型错误，或值超出范围。 |
+| `UnsupportedOnWidget` | 该控件完全没有属性契约。在 2.0.0 中不应出现。 |
+| `UnknownWidget` | 该 id 没有指向任何对象（仅按 id 访问的接口）。 |
+
+### 为自己的控件添加契约
+
+```rust
+impl WidgetProperties for MyControl {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "progress" => Ok(CapabilityValue::Float(self.progress())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "progress" => {
+                self.set_progress(expect_f64(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["progress", BASE_PROPERTY_NAMES]
+    }
+}
+```
+
+并在它的 `impl Widget` 块中，紧挨着 `impl_draw_bridge!();`：
+
+```rust
+impl_widget_property_hooks!();
+```
+
+契约必须满足的规则（每一条都有测试强制保证）：
+
+1. **`property_names()` 中的每个名称都必须能被 `get` 读取。**
+2. `property_names()` 必须以 `BASE_PROPERTY_NAMES` 结尾。
+3. **没有 setter 的名称必须返回 `ReadOnlyProperty`，绝不能返回 `UnknownProperty`。**
+   `UnknownProperty` 意味着“这个名称不存在”。
+4. 通过控件自身的访问器读取真实状态，绝不要返回硬编码的常量。
+
+---
+
 ## 布局系统 (`layout`)
 
 ### 核心 Trait
@@ -851,7 +994,7 @@ pub type TouchId = u64;
 pub type MouseEvent = (Point, u32);
 pub type KeyEvent = (u32, u32);
 
-pub enum EventPriority { Low, Normal, High }
+pub enum EventPriority { High, Normal, Idle }
 pub enum GestureClass { Single, Multi, Holographic }
 pub enum ScreenOrientation { Portrait, Landscape, ReversePortrait, ReverseLandscape }
 
@@ -1131,7 +1274,7 @@ pub struct TextStyle {
 ### 文本溢出
 
 ```rust
-pub enum TextOverflow { Clip, Ellipsis }
+pub enum TextOverflow { Clip, Ellipsis, Fade }
 pub enum TextClamp { None, Lines(u32), Pixels(f32) }
 pub fn apply_text_overflow(text: &str, max_width: f32, font: &Font, overflow: TextOverflow) -> String;
 pub fn apply_text_clamp(text: &str, max_lines: u32, font: &Font, width: f32, clamp: TextClamp) -> String;

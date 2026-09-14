@@ -17,6 +17,7 @@ use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::text_utils::floor_char_boundary;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
@@ -69,19 +70,6 @@ impl UndoCommand for ShortcutEditorCommand {
         *self.target.borrow_mut() = self.before.clone();
         Ok(())
     }
-}
-
-fn floor_char_boundary(s: &str, index: usize) -> usize {
-    let len = s.len();
-    if index >= len {
-        return len;
-    }
-    let bytes = s.as_bytes();
-    let mut i = index;
-    while i > 0 && bytes[i] & 0xC0 == 0x80 {
-        i -= 1;
-    }
-    i
 }
 
 /// A single shortcut entry in the editor.

@@ -231,11 +231,7 @@ impl PdfExporter {
     }
 }
 
-impl Default for PdfExporter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(PdfExporter);
 
 /// Build a minimal PDF byte stream embedding SVG content on each page.
 ///

@@ -515,11 +515,7 @@ impl GpuManagerBuilder {
     }
 }
 
-impl Default for GpuManagerBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(GpuManagerBuilder);
 
 #[cfg(test)]
 mod tests {

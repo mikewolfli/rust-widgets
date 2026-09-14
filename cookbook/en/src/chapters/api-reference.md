@@ -4,7 +4,7 @@ This chapter provides a comprehensive, module-by-module reference for the
 entire `rust_widgets` public API. Use this as a quick lookup when you need to
 find the right type, function, or trait for your task.
 
-The library version documented here is **1.1.2**. Code examples assume
+The library version documented here is **2.0.0**. Code examples assume
 `use rust_widgets::*;` or explicit paths as shown.
 
 ---
@@ -15,36 +15,37 @@ The library version documented here is **1.1.2**. Code examples assume
 2. [Application Lifecycle (`app`)](#application-lifecycle-app)
 3. [Core Primitives (`core`)](#core-primitives-core)
 4. [Widget System (`widget`)](#widget-system-widget)
-5. [Layout System (`layout`)](#layout-system-layout)
-6. [Event System (`event`)](#event-system-event)
-7. [Rendering System (`render`)](#rendering-system-render)
-8. [Render Engine (`render_engine`)](#render-engine-render_engine)
-9. [Style & Theming (`style`, `theme`)](#style--theming-style-theme)
-10. [Platform Abstraction (`platform`)](#platform-abstraction-platform)
-11. [Error System (`error`)](#error-system-error)
-12. [Action Framework (`action`)](#action-framework-action)
-13. [Shortcut System (`shortcut`)](#shortcut-system-shortcut)
-14. [Data Binding (`data_binding`)](#data-binding-data_binding)
-15. [Signal/Slot (`signal`)](#signalslot-signal)
-16. [Internationalization (`i18n`)](#internationalization-i18n)
-17. [Gesture Recognition (`gesture`)](#gesture-recognition-gesture)
-18. [Charts & Data Visualization (`chart`)](#charts--data-visualization-chart)
-19. [PDF Generation (`pdf`)](#pdf-generation-pdf)
-20. [Printing (`print`)](#printing-print)
-21. [Memory Management (`memory`)](#memory-management-memory)
-22. [Performance (`performance`)](#performance-performance)
-23. [Adaptive Quality (`quality`)](#adaptive-quality-quality)
-24. [Control Backend (`control_backend`)](#control-backend-control_backend)
-25. [Object System (`object`)](#object-system-object)
-26. [Web Capabilities (`web`)](#web-capabilities-web)
-27. [Undo/Redo (`undo`)](#undoredo-undo)
-28. [Clipboard (`clipboard`)](#clipboard-clipboard)
-29. [GPU Acceleration (`gpu`, `wgpu_backend`)](#gpu-acceleration-gpu-wgpu_backend)
-30. [Embedded Support (`embedded`)](#embedded-support-embedded)
-31. [Language Bindings (`bindings`)](#language-bindings-bindings)
-32. [Feature Flags Reference](#feature-flags-reference)
-33. [Error Codes Reference](#error-codes-reference)
-34. [FFI / C ABI Reference](#ffi--c-abi-reference)
+5. [Widget Properties (`WidgetProperties`)](#widget-properties)
+6. [Layout System (`layout`)](#layout-system-layout)
+7. [Event System (`event`)](#event-system-event)
+8. [Rendering System (`render`)](#rendering-system-render)
+9. [Render Engine (`render_engine`)](#render-engine-render_engine)
+10. [Style & Theming (`style`, `theme`)](#style--theming-style-theme)
+11. [Platform Abstraction (`platform`)](#platform-abstraction-platform)
+12. [Error System (`error`)](#error-system-error)
+13. [Action Framework (`action`)](#action-framework-action)
+14. [Shortcut System (`shortcut`)](#shortcut-system-shortcut)
+15. [Data Binding (`data_binding`)](#data-binding-data_binding)
+16. [Signal/Slot (`signal`)](#signalslot-signal)
+17. [Internationalization (`i18n`)](#internationalization-i18n)
+18. [Gesture Recognition (`gesture`)](#gesture-recognition-gesture)
+19. [Charts & Data Visualization (`chart`)](#charts--data-visualization-chart)
+20. [PDF Generation (`pdf`)](#pdf-generation-pdf)
+21. [Printing (`print`)](#printing-print)
+22. [Memory Management (`memory`)](#memory-management-memory)
+23. [Performance (`performance`)](#performance-performance)
+24. [Adaptive Quality (`quality`)](#adaptive-quality-quality)
+25. [Control Backend (`control_backend`)](#control-backend-control_backend)
+26. [Object System (`object`)](#object-system-object)
+27. [Web Capabilities (`web`)](#web-capabilities-web)
+28. [Undo/Redo (`undo`)](#undoredo-undo)
+29. [Clipboard (`clipboard`)](#clipboard-clipboard)
+30. [GPU Acceleration (`gpu`, `wgpu_backend`)](#gpu-acceleration-gpu-wgpu_backend)
+31. [Embedded Support (`embedded`)](#embedded-support-embedded)
+32. [Language Bindings (`bindings`)](#language-bindings-bindings)
+33. [Feature Flags Reference](#feature-flags-reference)
+34. [Error Codes Reference](#error-codes-reference)
+35. [FFI / C ABI Reference](#ffi--c-abi-reference)
 
 ---
 
@@ -739,6 +740,159 @@ pub enum CapabilityAccessError { NotFound, WrongType, ReadOnly }
 
 ---
 
+## Widget Properties
+
+Since 2.0.0 every control publishes its own property contract. Read, write and
+**enumerate** a control's state without knowing its concrete type — the same code
+works for any control, on every platform.
+
+### The trait
+
+```rust
+pub trait WidgetProperties {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError>;
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError>;
+
+    /// Names this control exposes, including the four it inherits.
+    /// A `&'static [&'static str]`, so enumeration allocates nothing.
+    fn property_names(&self) -> &'static [&'static str];
+}
+```
+
+### The four shared properties
+
+Every control answers these, via `base_property_get` / `base_property_set`:
+
+```rust
+pub const BASE_PROPERTY_NAMES: &[&str] = &["enabled", "visible", "tooltip", "geometry"];
+```
+
+`geometry` is deliberately **read-only** through this contract: a control's rectangle
+is owned by the layout that placed it, so writing it here would silently fight the
+layout on the next pass. Use `widget::runtime::set_geometry` to move a control.
+
+### Value type
+
+```rust
+pub enum CapabilityValue {
+    Bool(bool),
+    Int(i64),
+    UInt(u64),
+    Float(f64),
+    String(String),
+    Null,
+}
+```
+
+There are **no** `From` conversions into `CapabilityValue` — construct the variant
+explicitly (`CapabilityValue::Int(7)`). That is deliberate: an implicit conversion
+would make a type mismatch invisible at the call site.
+
+### Reading by reference
+
+```rust
+use rust_widgets::core::Rect;
+use rust_widgets::widget::WidgetFactory;
+use rust_widgets::CapabilityValue;
+
+let factory = WidgetFactory::new_with_defaults();
+let mut slider = factory.create("slider", Rect::new(0, 0, 200, 24), "").unwrap();
+
+factory.write_property(slider.as_mut(), "value", CapabilityValue::Int(42))?;
+let value = factory.read_property(slider.as_ref(), "value")?;
+assert_eq!(value, CapabilityValue::Int(42));
+# Ok::<(), rust_widgets::CapabilityAccessError>(())
+```
+
+### Enumerating the contract
+
+This is the API for building a property editor, a serialiser or a docs table:
+
+```rust
+use rust_widgets::widget::{widget_property_get, widget_property_names};
+
+for name in widget_property_names(slider.as_ref()).unwrap_or(&[]) {
+    println!("{name} = {:?}", widget_property_get(slider.as_ref(), name)?);
+}
+# Ok::<(), rust_widgets::CapabilityAccessError>(())
+```
+
+Because the list comes from the control itself, it cannot go stale, and a test
+(`no_published_property_answers_unknown_when_written`) fails by name if a control
+advertises a property it will not answer.
+
+### Reading by id
+
+Backends and scripting hosts often hold ids rather than references. These resolve
+the id through the widget runtime, so **the control must be registered first**, and
+`runtime::register` **assigns** the id it will answer for — use its return value,
+not the one the factory handed out:
+
+```rust
+use rust_widgets::widget::{read_widget_property_by_id, write_widget_property_by_id};
+use rust_widgets::widget::runtime;
+
+let id = runtime::register(widget).expect("must run on the UI thread");
+write_widget_property_by_id(id, "value", CapabilityValue::Int(7))?;
+let value = read_widget_property_by_id(id, "value")?;
+
+runtime::unregister(id);
+# Ok::<(), rust_widgets::CapabilityAccessError>(())
+```
+
+### Error semantics
+
+| Error | Meaning |
+|---|---|
+| `UnknownProperty` | This control has **no property by that name** — a caller bug. |
+| `ReadOnlyProperty` | The property **exists** but is not writable (e.g. `geometry`, `row_count`). Render a disabled field. |
+| `TypeMismatch` | Wrong value type, or a value out of range. |
+| `UnsupportedOnWidget` | The control has no contract at all. Should not occur in 2.0.0. |
+| `UnknownWidget` | The id addresses nothing (by-id accessors only). |
+
+### Adding a contract to your own control
+
+```rust
+impl WidgetProperties for MyControl {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "progress" => Ok(CapabilityValue::Float(self.progress())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "progress" => {
+                self.set_progress(expect_f64(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["progress", BASE_PROPERTY_NAMES]
+    }
+}
+```
+
+and inside its `impl Widget` block, next to `impl_draw_bridge!();`:
+
+```rust
+impl_widget_property_hooks!();
+```
+
+Rules the contract must satisfy (each is enforced by a test):
+
+1. **Every name in `property_names()` must be readable by `get`.**
+2. `property_names()` must end with `BASE_PROPERTY_NAMES`.
+3. **A name with no setter must return `ReadOnlyProperty`, never `UnknownProperty`.**
+   `UnknownProperty` means "this name does not exist".
+4. Read real state via the control's own accessors, never a hardcoded constant.
+
+---
+
 ## Layout System (`layout`)
 
 ### Core Trait
@@ -857,7 +1011,7 @@ pub type TouchId = u64;
 pub type MouseEvent = (Point, u32);
 pub type KeyEvent = (u32, u32);
 
-pub enum EventPriority { Low, Normal, High }
+pub enum EventPriority { High, Normal, Idle }
 pub enum GestureClass { Single, Multi, Holographic }
 pub enum ScreenOrientation { Portrait, Landscape, ReversePortrait, ReverseLandscape }
 
@@ -1137,7 +1291,7 @@ pub struct TextStyle {
 ### Text Overflow
 
 ```rust
-pub enum TextOverflow { Clip, Ellipsis }
+pub enum TextOverflow { Clip, Ellipsis, Fade }
 pub enum TextClamp { None, Lines(u32), Pixels(f32) }
 pub fn apply_text_overflow(text: &str, max_width: f32, font: &Font, overflow: TextOverflow) -> String;
 pub fn apply_text_clamp(text: &str, max_lines: u32, font: &Font, width: f32, clamp: TextClamp) -> String;

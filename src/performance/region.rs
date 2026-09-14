@@ -13,11 +13,7 @@ impl RegionId {
         Self(COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed))
     }
 }
-impl Default for RegionId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(RegionId);
 /// A rectangular region that needs to be re-rendered.
 #[derive(Debug, Clone)]
 pub struct DirtyRegion {
@@ -129,8 +125,4 @@ impl DirtyRegionTracker {
         }
     }
 }
-impl Default for DirtyRegionTracker {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(DirtyRegionTracker);

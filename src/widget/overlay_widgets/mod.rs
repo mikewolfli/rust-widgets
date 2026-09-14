@@ -6,7 +6,6 @@
 #[cfg(not(alloc_frugal))]
 pub mod fab;
 #[cfg(not(alloc_frugal))]
-pub mod pull_to_refresh;
 #[cfg(not(alloc_frugal))]
 pub mod refresh_control;
 #[cfg(not(alloc_frugal))]

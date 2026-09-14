@@ -2,6 +2,186 @@
 
 All notable changes to this project are documented in this file.
 
+## 2.0.0 (2026-09-14) — Self-Drawn Controls Everywhere (BLUE15)
+
+A major release that completes the move to a **fully self-drawn** architecture. Every
+platform backend used to build native OS controls alongside the Rust renderer; now all
+ten backends build none. The library paints 100% of its own controls, so a control is
+pixel-identical on every platform, needs no GUI toolkit linked, and works on targets
+with no operating system at all.
+
+The release also collapsed the property layer onto a per-control contract (deleting a
+535-arm centralised dispatch), removed the duplicated platform probes and date/text
+helpers, and replaced 117 hand-written `Default` impls with a macro — **net −2,288 lines
+of source**, with no capability removed and four new mechanical contract gates added.
+
+Full detail, with reproduction commands, is in
+[docs/log/log-20260914-1.md](log/log-20260914-1.md).
+
+### ⚠️ Breaking changes
+
+#### 1. No native control construction on any platform
+
+Every backend's native control constructor implementations were deleted. `fn create_*`
+**implementations** in `src/platform/**` went from **606 → 0**, across all ten backends:
+
+| Backend | Removed |
+|---|---|
+| Windows | `CreateWindowExW`-based control creation |
+| macOS (cocoa + objc2) | `NSButton` / `NSTextView` / `NSComboBox` construction |
+| Linux GTK | `gtk_button_new` and siblings |
+| Wayland | xdg-shell control surfaces |
+| iOS | `UIButton` / `UILabel` / `UITextField` |
+| Android | `android.widget.*` via JNI |
+| Harmony / WASM | state-backed control records |
+
+**Migration:** controls are created through the control backend / `WidgetFactory`:
+
+```rust
+let factory = WidgetFactory::new_with_defaults();
+let mut button = factory.create("button", Rect::new(10, 10, 100, 30), "OK").unwrap();
+```
+
+Controls are still addressed by id; only their construction moved.
+
+> **Note on `Platform::create_*`.** The 42 trait *declarations* are kept, each with a
+default that returns `0` and documents why. They are not removed because a backend
+that genuinely owns a native primitive can still opt in deliberately, in one place,
+without an API change — and because returning `0` is the honest answer, whereas a
+constructor that reported success while creating nothing is the dishonesty the
+defaults exist to remove. **No shipped backend overrides any of them.**
+
+A backend now owns exactly four things: a surface, the event loop, input translation,
+and platform services (IME, clipboard, accessibility, native menus, file dialogs, DPI).
+
+> **The C ABI is unaffected.** `rw_create_button` and its 21 siblings, `rw_set_widget_text`,
+> `rw_get_widget_text` and the rest of the `rw_*` surface still exist and still work —
+> they are the control-backend API's C face, not the platform backends'.
+> `rw_bindings_api_version` remains `8`.
+
+#### 2. The property layer is per-control
+
+Every control implements `WidgetProperties` in its own file. The centralised
+`read_widget_property_legacy` / `write_widget_property_legacy` dispatch — 18 include
+files, **535 match arms**, and the 98 imports that only it used — was deleted, because
+it restated the contract for 39 controls and the two copies had already drifted.
+
+**Migration:** read and write through `WidgetFactory::{read_property, write_property}`,
+or the id-level `read_widget_property_by_id` / `write_widget_property_by_id`.
+`Platform::get_*`/`set_*` control-property methods are gone.
+
+#### 3. `Platform` de-controlified — 75 required methods → 6
+
+The removed methods now have honest defaults reporting `UnsupportedOnWidget` / `None`
+for a capability the host lacks, rather than a write that reports success without taking
+effect.
+
+#### 4. `NativeCapabilityContract` is now a type alias
+
+`pub type NativeCapabilityContract = PlatformCapabilities;`. The two held the same five
+flags and were kept in step by a field-by-field copy — the classic way such a pair
+drifts. The name is unchanged; `from_platform_caps` is gone.
+
+#### 5. Unused public modules deleted
+
+Each had **zero** references in `src/`, `tests/`, `examples/` and `tools/`, verified
+before removal:
+
+| Removed | Was reachable as | Use instead |
+|---|---|---|
+| `platform::detector` | `DeviceEnvironment` (406 lines) | — |
+| `platform::virtual_keyboard` | `VirtualKeyboard` (331 lines) | — |
+| `render::text_cache` | `TextCache` / `GlyphCache` (318 lines) | — |
+| `style::css_watcher` | `CssWatcher` (206 lines) | — |
+| `util::asset_watcher` | re-export shim | `crate::asset::{AssetWatcher, AssetEvent}` |
+| `widget::image` | re-export shim | `crate::image::{Image, ImageFormat}` |
+| `platform::ime_stubs` | doc-comment-only file | `platform::ime_windows` / `ime_macos` |
+| `widget::overlay_widgets::pull_to_refresh` | duplicate alias | `widget::PullToRefresh` |
+
+Also deleted: four `macos_objc2` modules that contained only an SPDX header
+(`clipboard_dnd`, `dialog_creation`, `menu_impl`, `widget_state`).
+
+#### 6. Android Java binding trimmed
+
+`bindings/java/RustWidgetsAndroid.java` no longer declares `nativeCreate*`,
+`nativeSetView*`, `nativeDestroyView` or `nativeSelfTest*`, because the Rust symbols
+they bound to no longer exist. A Java method whose Rust symbol is gone fails with
+`UnsatisfiedLinkError` at the first call, which is worse than its absence. The class
+keeps the platform handshake (`nativeInit`, `nativeAttachContext`,
+`nativeDetachContext`), the diagnostics, and `nativeOpenDocument(String mimeType)`.
+
+### Added
+
+- **Four factory-driven property-contract gates.** These are the substantive change of
+  the release: they turned "is every control's property surface complete?" from manual
+  review into a machine check. On first run they found — and this release fixes:
+
+  | Defect | Scale |
+  |---|---|
+  | Controls with no `WidgetProperties` contract at all | **59** |
+  | Shared `WidgetKind`s silently reading *another* control's schema | **10** |
+  | Published properties answering `UnknownProperty` where `ReadOnlyProperty` is right | **42** |
+  | Schema tables omitting the shared `visible`/`geometry` names | **155 of 155** |
+
+- **`surface_policy()`** — one strategy table for how each profile obtains a drawing
+  surface, with monotonicity invariant tests.
+- **A `portable` backend** (`platform::portable`) for targets with no OS behind them;
+  it carries `mini` and host-less `embedded`, and is fully testable because nothing in
+  the paint path is OS-dependent.
+- **`platform::os_probes`** — the `/proc` and `/sys` probes shared by the five
+  Linux-kernel backends (was 296 byte-identical lines across six files), plus the unix
+  print-spooler helper.
+- **`widget::text_utils::floor_char_boundary`** — shared by six text controls (was six
+  copies).
+- **`widget::misc_widgets::date_utils`** — month/day tables, leap-year arithmetic and an
+  ISO-8601 parser shared by three date pickers (was a third copy of `MONTH_NAMES`). It
+  also gains `parse_iso_date_checked`, which distinguishes "not a date" from "the day is
+  out of range for the month", so `2026-02-30` is rejected instead of clamped.
+- **`impl_default_via_new!`** — one macro replacing **117** identical `Default` impls.
+- **New control capabilities:** `Arc` gained readable `minimum`/`maximum`/`sweep_angle`/
+  `thickness`/`indeterminate` (they were writable but unpublished, i.e. undiscoverable);
+  `TabBar` gained `clear_current_index()` so `current_index` can round-trip through
+  `Null`; `TagInput` gained a real, settable `placeholder` that the renderer honours
+  (previously a hardcoded string); `DropdownMenu` gained `selected_index` accessors.
+
+### Changed
+
+- **`tools/check_apple_native.sh` now asserts self-painting.** The iOS Simulator probe
+  previously asserted that `rw_create_button` produced a real `UIButton` subview — it
+  asserted the *absence* of the feature this release implements, and so failed on correct
+  code. It now asserts the opposite via `no_backend_owned_window` and
+  `self_painted_no_native_views`, which **fail if native construction ever returns**.
+- **`tools/check_jni_signatures.sh`** repaired from 20 errors to 0.
+- **Android feature gating widened** so `--features android` and `--features android,android-jni`
+  build cleanly; fixed a real pre-existing bug where `LOGCAT_LOGGER` was referenced but
+  never declared.
+
+### Performance & size
+
+- **Net −2,288 lines of source**, with no capability removed.
+- A property read is **one direct `match`**, replacing up to nine serial category probes.
+  `property_names()` returns `&'static [&'static str]` — zero allocation.
+- `src/platform` shrank from **43,151 → 22,010** lines across the BLUE15 series.
+- One fewer parse of `/proc/meminfo`, `/sys/class/power_supply` and `/proc/self/status`
+  in five backends (the code existed five times, though only one copy ran per process).
+
+### Verification
+
+```text
+cargo test --no-default-features --features desktop  --lib   4016 passed; 0 failed
+cargo test --no-default-features --features embedded --lib   1459 passed; 0 failed
+cargo test --no-default-features --features mini     --lib   1388 passed; 0 failed
+cargo fmt -- --check                                         0 diff
+cargo clippy --features desktop|embedded|mini --all-targets -- -D warnings
+                                                             0 warnings (all three)
+9 real feature combinations x --all-targets                  0 errors
+16 QA gates                                                  all PASS
+  (including a real iOS Simulator run)
+```
+
+> **No ABI change**: `rw_bindings_api_version` remains `8`; no exported `rw_*` symbol was
+> added, removed or changed.
+
 ## 1.1.3 (2026-09-13) — Unified Native-Control Property API Release
 
 A feature release that closes the gap between "native controls exist" and "native controls are

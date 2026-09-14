@@ -82,8 +82,4 @@ impl GestureRecognizer for PinchGesture {
     }
 }
 
-impl Default for PinchGesture {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(PinchGesture);

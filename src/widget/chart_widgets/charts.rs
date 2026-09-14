@@ -306,11 +306,7 @@ impl LineChart {
         self.show_grid = enabled;
     }
 }
-impl Default for LineChart {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(LineChart);
 impl Chart for LineChart {
     fn add_series(&mut self, series: ChartSeries) {
         self.series.push(series);
@@ -445,11 +441,7 @@ impl BarChart {
         self.show_grid = enabled;
     }
 }
-impl Default for BarChart {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(BarChart);
 impl Chart for BarChart {
     fn add_series(&mut self, series: ChartSeries) {
         self.series.push(series);
@@ -571,11 +563,7 @@ impl PieChart {
         PALETTE[index % PALETTE.len()]
     }
 }
-impl Default for PieChart {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(PieChart);
 impl Chart for PieChart {
     fn add_series(&mut self, series: ChartSeries) {
         self.series.push(series);
@@ -696,11 +684,7 @@ impl ScatterChart {
         self.point_radius = radius.max(1.0);
     }
 }
-impl Default for ScatterChart {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(ScatterChart);
 impl Chart for ScatterChart {
     fn add_series(&mut self, series: ChartSeries) {
         self.series.push(series);
@@ -832,11 +816,7 @@ impl AreaChart {
         self.stacked = stacked;
     }
 }
-impl Default for AreaChart {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(AreaChart);
 impl Chart for AreaChart {
     fn add_series(&mut self, series: ChartSeries) {
         self.series.push(series);

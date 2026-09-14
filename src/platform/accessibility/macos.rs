@@ -72,11 +72,7 @@ impl MacOSAccessibilityBridge {
     }
 }
 
-impl Default for MacOSAccessibilityBridge {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(MacOSAccessibilityBridge);
 
 impl AccessibilityBridge for MacOSAccessibilityBridge {
     fn set_accessibility_name(&self, id: ObjectId, name: &str) {

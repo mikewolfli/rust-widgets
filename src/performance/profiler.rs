@@ -110,11 +110,7 @@ impl Profiler {
         ProfileReport { entries, total_duration: self.get_total_duration() }
     }
 }
-impl Default for Profiler {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(Profiler);
 #[derive(Debug, Clone)]
 pub struct ProfileReportEntry {
     pub name: String,
@@ -293,11 +289,7 @@ impl PerformanceMonitor {
         self.frame_profiler.clear();
     }
 }
-impl Default for PerformanceMonitor {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(PerformanceMonitor);
 #[derive(Debug, Clone)]
 pub struct PerformanceReport {
     pub profiler_report: ProfileReport,

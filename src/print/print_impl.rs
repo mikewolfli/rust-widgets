@@ -147,11 +147,7 @@ impl PrintPagination {
         expanded
     }
 }
-impl Default for PrintPagination {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(PrintPagination);
 fn parse_page_range_spec(spec: &str) -> Result<Vec<(u32, u32)>, String> {
     let trimmed = spec.trim();
     if trimmed.is_empty() {
@@ -276,11 +272,7 @@ impl PrintDialog {
         self.shown
     }
 }
-impl Default for PrintDialog {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(PrintDialog);
 /// Print preview dialog
 pub struct PrintPreviewDialog {
     /// Total document pages.
@@ -421,11 +413,7 @@ impl Printer {
         self.backend.name()
     }
 }
-impl Default for Printer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(Printer);
 struct PrintJobPayload {
     /// Page size used while recording drawing commands.
     page_size: Size,
@@ -725,11 +713,7 @@ impl PrintManager {
     }
 }
 
-impl Default for PrintManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(PrintManager);
 
 /// Console-based print confirmation for desktop platforms.
 ///

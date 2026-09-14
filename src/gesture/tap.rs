@@ -75,11 +75,7 @@ impl GestureRecognizer for TapGesture {
     }
 }
 
-impl Default for TapGesture {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(TapGesture);
 
 // ────────────────────────────────────────────
 // DoubleTapGesture
@@ -137,11 +133,7 @@ impl GestureRecognizer for DoubleTapGesture {
     }
 }
 
-impl Default for DoubleTapGesture {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(DoubleTapGesture);
 
 // ────────────────────────────────────────────
 // TwoFingerTapGesture
@@ -238,8 +230,4 @@ impl GestureRecognizer for TwoFingerTapGesture {
     }
 }
 
-impl Default for TwoFingerTapGesture {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(TwoFingerTapGesture);

@@ -124,11 +124,7 @@ impl StyleSheet {
     }
 }
 
-impl Default for StyleSheet {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(StyleSheet);
 
 #[cfg(test)]
 mod tests {

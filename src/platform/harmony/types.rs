@@ -38,11 +38,7 @@ impl HarmonyPlatform {
         Self { state: BackendState::new(), runtime: HarmonyRuntimeState::new() }
     }
 }
-impl Default for HarmonyPlatform {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(HarmonyPlatform);
 impl HarmonyPlatform {
     /// Insert widget state and return allocated logical id.
     pub(crate) fn insert_widget(

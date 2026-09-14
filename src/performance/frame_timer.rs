@@ -83,11 +83,7 @@ impl FrameTimer {
     }
 }
 
-impl Default for FrameTimer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(FrameTimer);
 
 #[cfg(test)]
 mod tests {

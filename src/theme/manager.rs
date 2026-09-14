@@ -154,11 +154,7 @@ impl ThemeManager {
     }
 }
 
-impl Default for ThemeManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(ThemeManager);
 
 impl Default for Theme {
     fn default() -> Self {

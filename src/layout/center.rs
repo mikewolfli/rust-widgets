@@ -65,11 +65,7 @@ impl CenterLayout {
     }
 }
 
-impl Default for CenterLayout {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(CenterLayout);
 
 impl Layout for CenterLayout {
     fn as_any(&self) -> &dyn std::any::Any {

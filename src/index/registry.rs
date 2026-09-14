@@ -133,8 +133,4 @@ impl WidgetRegistry {
     }
 }
 
-impl Default for WidgetRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(WidgetRegistry);

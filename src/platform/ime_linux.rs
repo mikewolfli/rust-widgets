@@ -249,11 +249,7 @@ pub struct LinuxImeBridge {
     ibus_connection: Mutex<Option<IbusConnection>>,
 }
 
-impl Default for LinuxImeBridge {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(LinuxImeBridge);
 
 impl LinuxImeBridge {
     /// Create a new Linux IME bridge.

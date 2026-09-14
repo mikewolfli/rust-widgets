@@ -72,8 +72,14 @@ graph TB
 | **App Framework** | Application lifecycle, widget handles, event loop orchestration | `app::App`, `AppConfig`, `WindowHandle`, `AppLifecycle` |
 | **Widget Model** | Widget trait contract, base widget state, signal slots, rendering dispatch, container composition | `widget::Widget`, `BaseWidget`, `Draw`, `WidgetKind`, `SimpleRegistry` |
 | **Core Systems** | Layout, rendering, events, signals, styling, data binding, actions, undo/redo | `layout`, `render`, `event`, `signal`, `style`, `data_binding`, `action`, `undo` |
-| **Platform Abstraction** | OS-native widget creation, event translation, clipboard, IME, accessibility | `control_backend::ControlBackend`, `platform` |
+| **Platform Abstraction** | Window/surface creation, event translation, clipboard, IME, accessibility, native menus | `control_backend::ControlBackend`, `platform` |
 | **OS / GPU** | Raw platform APIs, GPU drivers | OS SDKs + `wgpu` |
+
+> **No layer creates native controls.** Since 2.0.0 the library paints every widget
+> itself (BLUE15), so a backend's job is to supply a **surface**, the **event loop**,
+> **input translation** and **platform services**. `Platform::create_*` survives only as
+> an opt-in seam whose default returns `0`; no shipped backend overrides it.
+> See [platform-support.md](platform-support.md) and the root `README.md`.
 
 ---
 

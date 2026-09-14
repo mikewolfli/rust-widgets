@@ -20,11 +20,7 @@ impl EmbeddedRenderEngine {
     }
 }
 
-impl Default for EmbeddedRenderEngine {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(EmbeddedRenderEngine);
 
 impl RenderEngine for EmbeddedRenderEngine {
     fn name(&self) -> &'static str {

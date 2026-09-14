@@ -46,11 +46,7 @@ impl LightweightConfig {
         self
     }
 }
-impl Default for LightweightConfig {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(LightweightConfig);
 /// Lightweight widget wrapper that reduces memory footprint
 pub struct LightweightWidget<W: Widget> {
     inner: W,
@@ -114,11 +110,7 @@ impl LightweightWidgetFactory {
         self.widget_count
     }
 }
-impl Default for LightweightWidgetFactory {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(LightweightWidgetFactory);
 /// Optimized widget style for embedded systems
 #[derive(Debug, Clone)]
 pub struct LightweightStyle {
@@ -151,11 +143,7 @@ impl LightweightStyle {
         }
     }
 }
-impl Default for LightweightStyle {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(LightweightStyle);
 /// Memory-efficient widget pool
 pub struct WidgetPool<T> {
     available: Vec<T>,

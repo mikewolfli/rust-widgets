@@ -23,8 +23,4 @@ impl CustomPaintControlBackend {
     }
 }
 
-impl Default for CustomPaintControlBackend {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(CustomPaintControlBackend);

@@ -94,11 +94,7 @@ impl TestRunner {
     }
 }
 
-impl Default for TestRunner {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(TestRunner);
 
 /// Performance benchmark
 pub struct Benchmark {

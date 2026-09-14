@@ -272,11 +272,7 @@ impl App {
     }
 }
 
-impl Default for App {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(App);
 
 // ── Startup / shutdown one-shot callbacks ─────────────────────
 // Using OnceLock + Mutex instead of thread_local! so callbacks

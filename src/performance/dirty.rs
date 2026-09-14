@@ -45,8 +45,4 @@ impl WidgetDirtyState {
         self.dirty_rects.values().copied().collect()
     }
 }
-impl Default for WidgetDirtyState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(WidgetDirtyState);

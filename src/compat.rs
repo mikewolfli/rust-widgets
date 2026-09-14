@@ -149,11 +149,7 @@ impl MiniArena {
 }
 
 #[cfg(alloc_frugal)]
-impl Default for MiniArena {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(MiniArena);
 
 #[cfg(not(alloc_frugal))]
 #[derive(Default)]
@@ -367,11 +363,7 @@ impl Condvar {
 }
 
 #[cfg(alloc_frugal)]
-impl Default for Condvar {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(Condvar);
 
 #[cfg(not(alloc_frugal))]
 pub use std::sync::Condvar;

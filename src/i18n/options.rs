@@ -33,8 +33,4 @@ impl InitReport {
         Self { files_loaded: 0, translations_count: 0, errors: Vec::new() }
     }
 }
-impl Default for InitReport {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(InitReport);

@@ -112,11 +112,7 @@ impl PdfReader {
         self.backend_name
     }
 }
-impl Default for PdfReader {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(PdfReader);
 
 pub(crate) fn parse_pdf_pages(text: &str) -> Vec<ParsedPdfPage> {
     let objects = parse_pdf_objects(text);

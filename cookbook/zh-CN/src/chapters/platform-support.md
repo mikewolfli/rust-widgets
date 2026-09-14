@@ -1,30 +1,91 @@
 # 平台支持
 
-rust-widgets 在八个支持的平台上提供了统一的 API。本章涵盖平台抽象层、后端选择、设备检测、剪贴板、拖放、IME、无障碍、菜单、能力协商和虚拟键盘支持。
+rust-widgets 在九个支持的平台上提供了统一的 API。本章涵盖平台抽象层、后端选择、设备检测、剪贴板、拖放、IME、无障碍、菜单、能力协商和虚拟键盘支持。
+
+> **请先读这一段 —— 所有控件都是自绘的。**
+>
+> 后端**不会**创建原生操作系统控件。它只拥有四样东西：**绘制表面**、**事件循环**、
+> **输入转换**，以及**平台服务**（IME、剪贴板、无障碍、原生菜单、文件对话框、DPI、壁纸）。
+>
+> 因此下文所说的“平台支持”指的是*某个平台如何提供这四样东西* —— **而不是**存在哪些控件。
+> 控件的可用性是**配置文件**的问题，而不是操作系统的问题；参见 [§1.2](#12-控件可用性按配置文件划分而非按操作系统)。
 
 ---
 
-## 1. 八个支持的平台
+## 1. 九个支持的平台
 
-| # | 平台 | 后端 | 特性标志 | 状态 |
+### 1.1 后端
+
+| # | 平台 | 后端提供 | 特性标志 | 状态 |
 |---|------|------|:---:|:---:|
-| 1 | **Linux (GTK)** | 原生 GTK3 窗口 | `gtk-native` | ✅ 原生窗口 |
-| 2 | **Linux (Wayland)** | 原生 Wayland 协议 | `wayland-native` | ✅ 自动检测会话 |
-| 3 | **Windows** | Win32 API | *(始终开启)* | ✅ 原生 |
-| 4 | **macOS** | Cocoa / objc2 桥接 | `objc2-macos` | ✅ 原生 |
-| 5 | **iOS** | UIKit 状态后端 | `ios` | ✅ 状态驱动 |
-| 6 | **Android** | JNI 桥接 | `android-jni` | ✅ JNI 桥接 |
-| 7 | **WASM** | WebAssembly 画布 | `wasm` | ✅ 浏览器 |
-| 8 | **HarmonyOS** | NAPI 桥接 | `harmony` | ✅ 预览版 |
-| 9 | **嵌入式** | Stub / no_std | `embedded` / `mini` | ✅ no_std |
+| 1 | **Windows** | Win32 窗口 + 消息循环 | `windows` | ✅ 已验证 |
+| 2 | **macOS** | Cocoa/objc2 `NSView` 绘制表面 | `macos` | ✅ 已验证 |
+| 3 | **macOS**（预览） | objc2，状态驱动 | `macos` | ✅ 预览 |
+| 4 | **Linux (GTK)** | GTK3 窗口 + 事件循环 | `linux-gtk` | ✅ 已验证 |
+| 5 | **Linux (Wayland)** | Wayland `wl_surface` + 输入 | `linux-wayland` | ✅ 已验证 |
+| 6 | **iOS** | UIKit 绘制表面，状态驱动 | `ios` | ✅ 已验证 |
+| 7 | **Android** | JNI 绘制表面，状态驱动 | `android` / `android-jni` | ✅ 已验证 |
+| 8 | **HarmonyOS** | NAPI 桥接 | `harmony` | ✅ 预览 |
+| 9 | **WASM** | DOM canvas + 浏览器事件 | `wasm` | ✅ 已验证 |
+| 10 | **Portable** | 内存帧缓冲，无操作系统 | —（无匹配项时的默认值） | ✅ 已验证 |
 
 在 Linux 上，运行时通过 `$WAYLAND_DISPLAY` 和 `$XDG_SESSION_TYPE` 环境变量自动检测 Wayland 和 X11/GTK。
+
+如果没有任何后端匹配目标平台，就会选中 `portable`：一个背后没有操作系统的内存绘制表面。这是一种受支持的配置，而不是降级方案 —— `mini` 和无宿主的 `embedded` 构建正是这样工作的，而且它与其他任何后端一样容易测试，因为绘制路径中没有任何环节依赖操作系统。
+
+### 1.2 控件可用性按配置文件划分，而非按操作系统
+
+因为所有控件都是自绘的，**同样的 167 种控件在每个操作系统上都能工作**。真正有差异的是
+**编译进来多少控件**，而这由*配置文件*决定：
+
+| 配置文件 | 控件种类 | 注册表 | 自绘控件托管 | 渲染器 |
+|---------|:-----------:|:--------:|:-----------------------:|----------|
+| `desktop` | 167（完整） | ✅ | ✅ | wgpu（GPU） |
+| `tablet` | 167（完整） | ✅ | ✅ | wgpu（GPU） |
+| `mobile` | 167（完整） | ✅ | ✅ | wgpu（GPU） |
+| `embedded` | 精简核心集 | — | — | 软件 |
+| `mini` | 精简核心集 | — | — | 软件 |
+
+破折号表示**被编译移除，而非降级**：模块不存在，因此
+`supports_custom_widgets()` 返回 `false`，你应当拒绝该操作，
+而不是挂载到空白表面上。
+
+**实际影响：** 你在 macOS 上编写并测试的控件，在 Windows、Linux、iOS 和 Web 上会
+逐像素渲染出完全一致的结果，而你的代码中不需要任何 `cfg(target_os)`。
+只有当你需要后端所拥有的四件事之一时，才需要接触操作系统专有 API。
+
+### 1.3 平台服务确实因操作系统而异
+
+用 `PlatformCapabilities` 查询*宿主*提供什么。切勿假设 —— 一个运行在与其编译目标
+不匹配的操作系统上的后端会返回 `false`。
+
+| 操作系统 | DPI 缩放 | IME | 无障碍 | 原生菜单 |
+|----|:-----------:|:---:|:-------------:|:-----------:|
+| Windows | ✅ | ✅ | ✅ | ✅ |
+| macOS | ✅ | ✅ | ✅ | ✅ |
+| Linux / GTK | ✅ | ✅ | ✅ | ✅ |
+| Linux / Wayland | ✅ | ✅ | ✅ | ❌ |
+| iOS | ✅ | ✅ | ✅ | ❌ |
+| Android | ✅ | ✅ | ✅ | ❌ |
+| HarmonyOS | ✅ | ✅ | ✅ | ❌ |
+| WASM | ❌ | ❌ | ❌ | ❌ |
+| Portable | ❌ | ❌ | ❌ | ❌ |
+
+Wayland 没有菜单栏协议，因此其后端把菜单树保存在进程内、由宿主负责渲染 ——
+在那里声称支持原生菜单将是虚假的。
+
+`native_menu` 这一列很容易被误读，所以值得说明这些取值的来源：
+`Platform::capabilities` 的默认值是「若后端报告 `Desktop` 家族则为 `true`」，
+只有 Wayland、iOS、Android 与 HarmonyOS 将其覆写为 `false`。这意味着一个桌面家族的
+后端如果*忘记*覆写，就会静默地继承 `native_menu: true` —— 默认值是过度声称，
+覆写才是诚实。`default_capabilities_for(family)` 暴露了这个默认值，
+便于你与后端自身的报告作对照；而上表由测试钉住，不会与源码脱节。
 
 ---
 
 ## 2. `Platform` 特质 — 通用契约
 
-`Platform` 特质定义了约 70 个方法，涵盖 26 个窗口部件创建函数。每个后端都实现此特质，确保跨平台的 API 表面一致。
+`Platform` 特质定义了后端必须提供的**六个必需方法** —— 绘制表面、事件循环和生命周期。其余所有方法都有一个诚实的默认实现：当宿主缺少某项能力时，它会报告 `UnsupportedOnWidget` / `None`，而不是报告写入成功却没有真正生效。
 
 ```rust
 use rust_widgets::platform::{Platform, PlatformCapabilities};
@@ -137,7 +198,10 @@ let text = state.clipboard_text();
 ### 编译时选择
 
 ```rust
-// src/platform/runtime.rs — 按目标条件编译
+// src/platform/runtime.rs — 按目标条件编译。
+//
+// 注意选择后端是*为了*什么：它的绘制表面和事件循环。它从来不是因为
+// “它能构建哪些控件”而被选中的，因为每个后端绘制的都是同一套 Rust 自绘控件。
 
 #[cfg(all(target_os = "windows", not(feature = "embedded")))]
 fn create_native_platform() -> Box<dyn Platform> {
@@ -149,7 +213,7 @@ fn create_native_platform() -> Box<dyn Platform> {
     Box::new(SelectedMacOSPlatform::new())  // 分发到 objc2 或 cocoa
 }
 
-#[cfg(all(target_os = "linux", not(feature = "embedded"), feature = "wayland-native"))]
+#[cfg(all(target_os = "linux", not(feature = "embedded"), feature = "linux-wayland"))]
 fn create_native_platform() -> Box<dyn Platform> {
     if is_wayland_session() {
         Box::new(WaylandPlatform::new())
@@ -157,7 +221,35 @@ fn create_native_platform() -> Box<dyn Platform> {
         Box::new(LinuxPlatform::new())
     }
 }
+
+// 没有匹配的操作系统：一个背后没有宿主的内存绘制表面。这是受支持的
+// 后端，而不是错误 —— 正是它让 `mini` 可测试。
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+fn create_native_platform() -> Box<dyn Platform> {
+    Box::new(PortablePlatform::new())
+}
 ```
+
+### 控件从何而来
+
+既然后端不再构建控件，请求一个控件就要通过控制后端 / 工厂，而绝不会通过 `Platform`：
+
+```rust
+use rust_widgets::widget::WidgetFactory;
+use rust_widgets::core::Rect;
+
+let factory = WidgetFactory::new_with_defaults();
+let mut button = factory
+    .create("button", Rect::new(10, 10, 100, 30), "OK")
+    .expect("button is a registered widget kind");
+
+// Properties are read and written through the same contract, whatever the OS.
+let label = factory.read_property(button.as_ref(), "text")?;
+factory.write_property(button.as_mut(), "text", "Save".into())?;
+# Ok::<(), rust_widgets::CapabilityAccessError>(())
+```
+
+应该优先选用这套通用属性 API。每个控件自己实现 `WidgetProperties`，因此一个存在的属性在每个平台上都以同样的方式可读可写 —— 调用点不需要按操作系统写 `if`/`else`。
 
 ### 全局单例
 
@@ -562,7 +654,9 @@ pub struct PlatformCapabilities {
 
 ### `NativeCapabilityContract`
 
-用于桌面运行时（Windows、macOS、Linux）：
+供具备桌面能力的运行时（Windows、macOS、Linux）使用。
+
+它是 `PlatformCapabilities` 的**类型别名**，而不是一个独立的 struct。它携带同样的五个标志，而且必须如此：否则协商结果与后端自己的报告就可能相互矛盾，新增的能力也可能被加到其中一边而被另一边默默丢弃。保留这个名字是因为它属于协商 API 的词汇（`CapabilityContract::Native(..)`、`Platform::native_capability_contract`）；正因为它是别名，两者可以互换，也不存在任何可能弄错的转换。
 
 | 字段 | 描述 |
 |-------|-------------|
@@ -664,7 +758,7 @@ Hidden ← (on_hidden) ← Hiding ← (request_hide) ←─────┘
 
 ```rust
 // 自动检测 Wayland 与 X11/GTK
-#[cfg(all(target_os = "linux", feature = "wayland-native"))]
+#[cfg(all(target_os = "linux", feature = "linux-wayland"))]
 fn is_wayland_session() -> bool {
     std::env::var("WAYLAND_DISPLAY").is_ok()
         || std::env::var("XDG_SESSION_TYPE")
@@ -683,7 +777,7 @@ fn is_wayland_session() -> bool {
 
 ### 移动端（iOS / Android）
 
-状态驱动后端（`IosMobilePlatform`、Android JNI 桥接）使用 `BackendState<K>` 进行窗口部件管理。Android JNI 桥接暴露用于视图创建的原生方法。
+状态驱动后端（`IosMobilePlatform`、Android JNI 桥接）使用 `BackendState<K>` 进行窗口部件管理。Android JNI 桥接暴露用于接入原生视图（绘制表面）的方法。
 
 ```rust
 #[cfg(feature = "mobile-api")]

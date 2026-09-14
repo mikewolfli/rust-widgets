@@ -227,11 +227,7 @@ impl PluginManager {
         self.allowed_permissions.clear();
     }
 }
-impl Default for PluginManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(PluginManager);
 
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]

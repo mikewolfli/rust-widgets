@@ -234,11 +234,7 @@ impl ProjectionRenderConfig {
     }
 }
 
-impl Default for ProjectionRenderConfig {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(ProjectionRenderConfig);
 
 // ────────────────────────────────────────────────────────
 // ProjectionLayoutHelper — layout calculations for projection

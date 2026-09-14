@@ -197,8 +197,4 @@ impl QualityManager {
             .clamp(self.config.min_quality, self.config.max_quality);
     }
 }
-impl Default for QualityManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(QualityManager);

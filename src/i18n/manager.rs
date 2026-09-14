@@ -232,8 +232,4 @@ impl I18nManager {
         key.to_string()
     }
 }
-impl Default for I18nManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(I18nManager);

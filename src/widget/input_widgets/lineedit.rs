@@ -12,6 +12,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string, expect_usi
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::text_utils::floor_char_boundary;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
@@ -588,21 +589,6 @@ impl Draw for LineEdit {
         // Draw cursor if focused
         // Note: Would need focus state tracking
     }
-}
-
-/// Manual implementation of `floor_char_boundary` for MSRV compatibility
-/// (stable since Rust 1.91, but MSRV is 1.87).
-fn floor_char_boundary(s: &str, index: usize) -> usize {
-    let len = s.len();
-    if index >= len {
-        return len;
-    }
-    let bytes = s.as_bytes();
-    let mut i = index;
-    while i > 0 && bytes[i] & 0xC0 == 0x80 {
-        i -= 1;
-    }
-    i
 }
 
 #[cfg(test)]

@@ -167,11 +167,7 @@ impl StagingBufferPoolConfig {
         self
     }
 }
-impl Default for StagingBufferPoolConfig {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(StagingBufferPoolConfig);
 /// A single ring buffer slot
 #[derive(Debug)]
 pub struct GpuRingBufferSlot {

@@ -154,11 +154,7 @@ impl IosMobilePlatform {
     }
 }
 
-impl Default for IosMobilePlatform {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(IosMobilePlatform);
 
 impl crate::platform::types::MobilePlatformExtension for IosMobilePlatform {
     fn mobile_backend(&self) -> crate::platform::types::MobileBackend {

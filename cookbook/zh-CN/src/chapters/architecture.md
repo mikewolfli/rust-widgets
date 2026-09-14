@@ -69,8 +69,13 @@ graph TB
 | **应用框架** | 应用生命周期、控件句柄、事件循环编排 | `app::App`, `AppConfig`, `WindowHandle`, `AppLifecycle` |
 | **控件模型** | 控件 trait 契约、基础控件状态、信号槽位、渲染分发、容器组合 | `widget::Widget`, `BaseWidget`, `Draw`, `WidgetKind`, `SimpleRegistry` |
 | **核心系统** | 布局、渲染、事件、信号、样式、数据绑定、动作、撤销/重做 | `layout`, `render`, `event`, `signal`, `style`, `data_binding`, `action`, `undo` |
-| **平台抽象** | 操作系统原生控件创建、事件转换、剪贴板、输入法、辅助功能 | `control_backend::ControlBackend`, `platform` |
+| **平台抽象** | 窗口/绘制表面创建、事件转换、剪贴板、输入法、辅助功能、原生菜单 | `control_backend::ControlBackend`, `platform` |
 | **操作系统/GPU** | 原始平台 API、GPU 驱动 | 操作系统 SDK + `wgpu` |
+
+> **没有任何一层会创建原生控件。** 自 2.0.0 起，库会自行绘制每一个控件（BLUE15），
+> 因此后端的工作只是提供**绘制表面**、**事件循环**、**输入转换**和**平台服务**。
+> `Platform::create_*` 仅作为一个可选接入点保留，其默认实现返回 `0`；没有任何内置后端
+> 会覆盖它。参见 [platform-support.md](platform-support.md) 与根目录的 `README.md`。
 
 ---
 
@@ -799,7 +804,7 @@ impl UndoStack {
 
 ### `ControlBackend` Trait — 180+ 方法
 
-`ControlBackend` trait 定义了控件模型与平台原生实现之间的接口。它是添加新平台的唯一集成点：
+`ControlBackend` trait 定义了控件模型与平台实现之间的接口。它是添加新平台的唯一集成点：
 
 ```rust
 pub trait ControlBackend {
@@ -861,7 +866,7 @@ pub trait ControlBackend {
 
 ### 调度策略
 
-`control_backend::dispatcher` 中的调度器根据编译时的功能标志将控件创建调用路由到相应的后端。`control_backend::routing` 中的路由系统处理 180+ 种控件类型，将每种类型映射到正确的原生或自定义实现。
+`control_backend::dispatcher` 中的调度器根据编译时的功能标志将控件创建调用路由到相应的后端。`control_backend::routing` 中的路由系统处理 180+ 种控件类型，将每种类型映射到正确的自绘实现。
 
 ---
 
@@ -876,7 +881,7 @@ pub trait ControlBackend {
 | **GPU vs CPU 渲染** | `#[cfg(feature = "wgpu/software")]` | 编译时 |
 | **控件可用性** | `WidgetKind` 变体上的 `#[cfg(not(feature = "mini"))]` | 编译时 |
 | **内存模型** | `compat.rs` 将 `HashMap`/`Mutex`/`Vec` 映射到 std 或 heapless | 编译时 |
-| **控件创建** | `ControlBackend::create_*` 分发到操作系统原生或自定义实现 | 运行时 |
+| **控件创建** | `ControlBackend::create_*` 分发到自绘实现 | 运行时 |
 | **事件转换** | 平台事件由后端转换为 `Event` 枚举 | 运行时 |
 | **布局** | 由用户选择布局算法，在运行时应用 | 运行时 |
 | **信号连接** | `Signal::connect()` / `connect_scoped()` | 运行时 |

@@ -68,73 +68,29 @@ impl Platform for MacOSPlatform {
         PlatformFamily::Desktop
     }
 
-    /// Reads `hw.memsize` through `sysctl`, the documented way to obtain
-    /// installed physical memory on macOS.
+    /// Reads `MemTotal` from `/proc/meminfo` via [`os_probes`].
     fn total_memory_mb(&self) -> Option<u64> {
-        let output =
-            std::process::Command::new("sysctl").args(["-n", "hw.memsize"]).output().ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let bytes = String::from_utf8_lossy(&output.stdout).trim().parse::<u64>().ok()?;
-        Some(bytes / (1024 * 1024))
+        crate::platform::os_probes::total_memory_mb()
     }
 
-    /// Reports `true` when the machine has a battery that is not fully charged
-    /// and not on AC power.
-    ///
-    /// `pmset -g batt` prints a line such as `Now drawing from 'Battery Power'`
-    /// while discharging and `'AC Power'` while plugged in. Desktops report AC
-    /// unconditionally, so they answer `false`.
+    /// Reports whether any battery in `/sys/class/power_supply` is discharging.
     fn is_on_battery(&self) -> bool {
-        let Ok(output) = std::process::Command::new("pmset").args(["-g", "batt"]).output() else {
-            return false;
-        };
-        if !output.status.success() {
-            return false;
-        }
-        String::from_utf8_lossy(&output.stdout).contains("Battery Power")
+        crate::platform::os_probes::is_on_battery()
     }
 
-    /// Samples this process's RSS against the machine's total memory.
-    ///
-    /// `ps -o rss=` reports resident kilobytes. The total comes from
-    /// [`Platform::total_memory_mb`] rather than a hard-coded "typical" figure,
-    /// so the ratio is meaningful on any machine.
+    /// Samples RSS over VmSize for this process from `/proc/self/status`.
     fn process_memory_utilization(&self) -> Option<f32> {
-        let pid = std::process::id().to_string();
-        let output =
-            std::process::Command::new("ps").args(["-o", "rss=", "-p", &pid]).output().ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let rss_kb = String::from_utf8_lossy(&output.stdout).trim().parse::<f64>().ok()?;
-        let total_kb = self.total_memory_mb()? as f64 * 1024.0;
-        if total_kb <= 0.0 {
-            return None;
-        }
-        Some(((rss_kb / total_kb) as f32).clamp(0.0, 1.0))
+        crate::platform::os_probes::process_memory_utilization()
     }
 
-    /// CPU load is not read from a stable public interface here, so this backend
-    /// honestly reports `None` and the monitor falls back to its default.
+    /// Estimates CPU load as thread count over twice the available cores.
     fn process_cpu_utilization(&self) -> Option<f32> {
-        None
+        crate::platform::os_probes::process_cpu_utilization()
     }
 
-    /// Submits through the CUPS `lpr` client, falling back to `lp`.
+    /// Submits the job to the unix print spooler via [`os_probes`].
     fn spawn_print_job(&self, job_file: &std::path::Path) -> Result<(), String> {
-        if let Ok(status) = std::process::Command::new("lpr").arg(job_file).status() {
-            if status.success() {
-                return Ok(());
-            }
-        }
-        if let Ok(status) = std::process::Command::new("lp").arg(job_file).status() {
-            if status.success() {
-                return Ok(());
-            }
-        }
-        Err("no available system print command succeeded (tried: lpr, lp)".to_string())
+        crate::platform::os_probes::spawn_print_job(job_file)
     }
 
     /// macOS ships CUPS, so `lp`/`lpr` are present on every normal install.

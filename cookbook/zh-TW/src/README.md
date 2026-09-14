@@ -2,9 +2,27 @@
 
 **rust-widgets** 是一套純 Rust 開發、跨平台的原生 GUI 函式庫，專為建構可在各種環境中執行的應用程式而設計——從桌面工作站到嵌入式微控制器，從行動裝置到網頁瀏覽器，皆可執行。
 
+## 所有控件均為自繪
+
+**rust-widgets 會自行繪製 100% 的控件，在任何平台上都不會建立作業系統的原生控件。**
+這個 crate 中沒有 `CreateWindowExW`、沒有 `NSButton`、沒有 `gtk_button_new`，
+也沒有 `android.widget.Button`。後端提供的是**繪製面**、**事件迴圈**、
+**輸入轉譯**與**平台服務**（IME、剪貼簿、無障礙、原生選單、檔案對話框、DPI）
+—— 除此之外別無其他。
+
+在繼續閱讀之前，有兩個結果值得先內化：
+
+1. **控件在每個作業系統上看起來完全相同。** 你的按鈕在 Windows、macOS、Linux、iOS、Android 與網頁上擁有相同的像素，因為它們都是由同一套 Rust 光柵化器所繪製。
+2. **Widget 可用性屬於*設定檔*問題，而非作業系統問題。** 在 `desktop`/`tablet`/`mobile` 設定檔中，全部 167 種 widget 在每個平台上都可使用。只有資源受限的 `embedded`/`mini` 設定檔會編譯精簡的集合。
+
+這就是為什麼平台章節記載的是[每個作業系統*提供*什麼](chapters/platform-support.md#13-平台服務確實會因作業系統而異)（DPI、IME、無障礙、原生選單），而不是列出哪些控件在哪些地方能用 —— 因為那張清單到處都一樣。
+
 ## 什麼是 rust-widgets？
 
-rust-widgets 讓您只需一套 Rust 程式碼庫，即可在各大平台上產出原生風格的介面。它包含了豐富的控制項庫、硬體自適應渲染，以及深度的平台整合——所有功能皆透過簡潔、地道風格的 Rust API 提供。
+rust-widgets 讓您只需一套 Rust 程式碼庫，即可在各大平台上產出一致的介面。它包含了豐富的控制項庫、硬體自適應渲染，以及深度的平台整合——所有功能皆透過簡潔、地道風格的 Rust API 提供。
+
+> 下方程式碼片段僅用於說明預期的 API 形式。若需要能對 2.0.0 編譯的程式碼，請從 [`chapters/getting-started.md`](chapters/getting-started.md) 開始，
+> 該檔案已針對目前的 crate 驗證過。
 
 ```rust
 use rust_widgets::prelude::*;
@@ -26,9 +44,9 @@ fn main() {
 
 ## 主要特色
 
-### 豐富的控制項函式庫 — 超過 140 種控制項
+### 豐富的控制項函式庫 — 167 種控件
 
-內建超過 140 種控制項，涵蓋各種常見的 UI 需求：
+內建 167 種控件，涵蓋各種常見的 UI 需求，而且**全部都是自繪的，因此每個平台都能使用**：
 
 - **核心控制項**：Button、CheckBox、RadioButton、Label、LineEdit、TextEdit、
   ComboBox、SpinBox、Slider、ScrollBar、ProgressBar
@@ -57,18 +75,23 @@ fn main() {
 | **SoftwarePaintBackend** | 嵌入式、精簡裝置 | 以 CPU 光柵化輸出至 RGBA 幀緩衝區 |
 | **SvgPaintBackend** | 測試、文件 | 輸出 SVG 管線，用於像素級精確驗證 |
 
-### 八大平台，統一 API
+### 九大平台，統一 API
 
-| 平台 | 後端 | 功能標記 |
-|----------|---------|:------------:|
-| Linux (Wayland) | `linux-wayland` | `linux-wayland` |
-| Windows (Win32) | `windows` | `windows` |
-| macOS (Cocoa/objc2) | `macos` | `macos` |
-| iOS (UIKit) | `ios` | `ios` |
-| Android (JNI) | `android` | `android` |
-| Web (WASM) | `wasm` | `wasm` |
-| HarmonyOS | `harmony` | `harmony` |
-| Embedded (no_std-ready) | `embedded` / `mini` | `embedded` / `mini` |
+下表列出的是**各平台如何提供繪製表面與事件迴圈**——而非哪些控件可用。
+因為所有控件皆為自繪，下列每個平台都支援全部 167 種控件；只有
+`embedded`/`mini` 設定檔會減少編譯進來的控件數量。
+
+| 平台 | 後端提供 | 功能標記 |
+|----------|------------------|:------------:|
+| Windows (Win32) | Win32 視窗 + 訊息迴圈 | `windows` |
+| macOS (Cocoa/objc2) | `NSView` 表面 | `macos` |
+| Linux (GTK) | GTK3 視窗 + 事件迴圈 | `linux-gtk` |
+| Linux (Wayland) | `wl_surface` + 輸入 | `linux-wayland` |
+| iOS (UIKit) | UIKit 表面 | `ios` |
+| Android (JNI) | JNI 表面 | `android` |
+| HarmonyOS | NAPI 橋接 | `harmony` |
+| Web (WASM) | DOM canvas + 瀏覽器事件 | `wasm` |
+| Portable / 無頭 | 記憶體幀緩衝，無作業系統 | `embedded` / `mini` |
 
 ### 觸控與手勢
 
@@ -143,10 +166,10 @@ TwoFingerTap、TwoFingerSwipe、LongPressDrag、Pinch 與 Rotate——並支援�
 
 | | |
 |---|---|
-| **版本** | 1.1.2 |
+| **版本** | 2.0.0 |
 | **授權條款** | [MIT](https://github.com/mikewolfli/rust-widgets/blob/main/LICENSE) |
 | **儲存庫** | [github.com/mikewolfli/rust-widgets](https://github.com/mikewolfli/rust-widgets) |
-| **測試數量** | 3400+ |
+| **測試數量** | 4000+ |
 | **MSRV** | Rust 1.87 |
 
 準備好開始了嗎？請前往[快速入門](chapters/getting-started.md)。

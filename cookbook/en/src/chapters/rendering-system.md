@@ -574,7 +574,7 @@ let gradient = GradientBuilder::linear(Point::new(0, 0), Point::new(200, 0))
 // Apply to a RenderCommand
 backend.execute_command(&RenderCommand::DrawGradient {
     rect: Rect::new(0, 0, 200, 100),
-    gradient: &gradient,
+    gradient,
 });
 ```
 
@@ -650,7 +650,6 @@ set_quality_level(QualityLevel::Low);
 // Query current metrics
 let fps = current_fps();
 let frame_time = average_frame_time();
-```
 
 // Adaptive mode: auto-adjusts based on frame time
 // If frame_time > 16ms → reduce quality
@@ -736,7 +735,7 @@ fn render_animated_background(scene: &mut RenderScene, time: f32) {
 
     layer.push(RenderCommand::DrawGradient {
         rect: Rect::new(0, 0, 800, 600),
-        gradient: &gradient,
+        gradient,
     });
 
     scene.add_layer(layer);

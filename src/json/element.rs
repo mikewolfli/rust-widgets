@@ -179,11 +179,7 @@ impl BoundJsonLayout {
     }
 }
 
-impl Default for BoundJsonLayout {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(BoundJsonLayout);
 
 #[cfg(test)]
 mod tests {

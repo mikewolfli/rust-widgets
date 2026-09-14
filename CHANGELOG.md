@@ -4,6 +4,114 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 
+## 2.0.0 (2026-09-14) — Self-Drawn Controls Everywhere (BLUE15)
+
+See [docs/reports/CHANGELOG.md](docs/reports/CHANGELOG.md),
+[docs/MIGRATION_GUIDE.md](docs/MIGRATION_GUIDE.md) and the nine execution logs
+[docs/log/log-20260914-1.md](docs/log/log-20260914-1.md) for full details.
+
+### ⚠️ Breaking changes
+
+- **Native control creation is gone from all ten backends.** `Platform::create_*`
+  and every platform-side control constructor were deleted — Windows `CreateWindowExW`,
+  macOS `NSButton`/`NSTextView`, GTK `gtk_button_new`, Android
+  `android.widget.*` via JNI, iOS `UIButton`, and the rest. `fn create_*` went from
+  **606 → 0** in `src/platform/**`.
+
+  **The library paints 100% of its own controls.** A backend now supplies only what
+  genuinely belongs to the OS: a surface, the event loop, input translation, and
+  platform services (IME, clipboard, accessibility, file dialogs, DPI).
+
+  *Migration:* replace any `Platform::create_button(...)`-style call with the
+  control-backend API (`control_backend::create` / `WidgetFactory`). Controls are
+  still addressed by id; only their construction moved.
+
+- **The property layer is now per-control.** Every control implements
+  `WidgetProperties` in its own file (`get` / `set` / `property_names`). The
+  centralised `read_widget_property_legacy` / `write_widget_property_legacy`
+  dispatch — 18 include files and **535 match arms** — was deleted.
+
+  *Migration:* `Platform::get_*`/`set_*` control-property methods are gone. Read and
+  write through `WidgetFactory::{read_property, write_property}` or the id-level
+  `read_widget_property_by_id` / `write_widget_property_by_id`.
+
+- **`Platform` was de-controlified**: its required methods went from **75 → 6**
+  (surface, event loop, lifecycle). The removed methods now have honest defaults that
+  report `UnsupportedOnWidget` rather than pretending to act.
+
+- **`NativeCapabilityContract` is now a type alias** for `PlatformCapabilities`.
+  They held the same five flags and were kept in step by a field-by-field copy, which
+  is how such pairs drift. The name is unchanged; the conversion function is gone.
+
+- **Deleted unused public modules** (zero in-tree references, verified before
+  removal): `platform::detector` (`DeviceEnvironment`), `platform::virtual_keyboard`,
+  `render::text_cache`, `style::css_watcher`, `util::asset_watcher`,
+  `widget::image` (a re-export shim), and `platform::ime_stubs`.
+
+  *Migration:* use `crate::image::{Image, ImageFormat}` (was `widget::image`), and
+  `crate::asset::{AssetWatcher, AssetEvent}` (was `util::asset_watcher`).
+
+- **`bindings/java/RustWidgetsAndroid.java` no longer declares** `nativeCreate*`,
+  `nativeSetView*`, `nativeDestroyView` or the `nativeSelfTest*` probes, because the
+  Rust symbols they bound to no longer exist. The class keeps the platform handshake
+  (`nativeInit`, `nativeAttachContext`, `nativeDetachContext`), diagnostics and
+  `nativeOpenDocument(String mimeType)`.
+
+### Added
+
+- **Four factory-driven property-contract gates**, which turned "is every control's
+  property surface complete?" from manual review into a machine check:
+  `every_factory_widget_declares_a_property_contract`,
+  `every_shared_kind_has_a_tie_break`,
+  `no_published_property_answers_unknown_when_written`,
+  `schema_and_contract_publish_the_same_names`. They found, and this release fixes:
+  59 controls with no contract, 10 shared `WidgetKind`s silently reading another
+  control's schema, 42 properties answering `UnknownProperty` where `ReadOnlyProperty`
+  is correct, and 155/155 schema tables omitting the shared `visible`/`geometry` names.
+- **`Platform::surface()` / `render_engine::surface_policy()`** — one strategy table
+  describing how each profile gets a drawing surface, with invariant tests.
+- **A `portable` backend** (`platform::portable`) for targets with no OS behind them;
+  it carries `mini` and host-less `embedded`.
+- **`platform::os_probes`** — the `/proc` and `/sys` system probes shared by the five
+  Linux-kernel backends, and the unix print spooler helper.
+- **`widget::text_utils::floor_char_boundary`** and
+  **`widget::misc_widgets::date_utils`** — shared by six text controls and three date
+  pickers respectively.
+- **`impl_default_via_new!`** — one macro replacing 117 identical `Default` impls.
+- **New widget capabilities**: `Arc` gained readable `minimum`/`maximum`/`sweep_angle`/
+  `thickness`/`indeterminate`; `TabBar` gained `clear_current_index()` so
+  `current_index` reads as `Null` and can be written back to `Null` (the round trip
+  previously did not close); `TagInput` gained a real `placeholder`; `DropdownMenu`
+  gained `selected_index` accessors.
+
+### Changed
+
+- **`check_apple_native.sh` now asserts self-painting instead of native controls.**
+  The iOS Simulator probe previously asserted that `rw_create_button` produced a real
+  `UIButton` subview — i.e. it asserted the *absence* of the feature this release
+  implements, and failed on correct code. It now asserts the opposite:
+  `no_backend_owned_window` and `self_painted_no_native_views`, which fail if native
+  construction ever returns.
+- **`check_jni_signatures.sh`** repaired from 20 errors to 0.
+- **Android gating widened** so `--features android` and `android,android-jni` build
+  cleanly; fixed a real pre-existing bug where `LOGCAT_LOGGER` was referenced but never
+  declared.
+
+### Performance & size
+
+- **Net −2,288 lines of source** in this release, with no capability removed.
+- Property reads are **one direct `match`** instead of up to nine serial category
+  probes; `property_names()` returns a `&'static [&'static str]` (zero allocation).
+- `src/platform` shrank from **43,151 → 22,010** lines across the BLUE15 series.
+
+### Verification
+
+- **4,016 tests passing** (desktop), 1,459 (embedded), 1,388 (mini); 0 failing.
+- **0 clippy warnings** on `desktop`/`embedded`/`mini` with `--all-targets -D warnings`.
+- **0 errors** across 9 real feature combinations × `--all-targets`.
+- **16/16 QA gates pass**, including a real iOS Simulator run.
+- **No ABI change**: `rw_bindings_api_version` remains `8`.
+
 ## 1.1.3 (2026-09-13) — Unified Native-Control Property API Release
 
 See [docs/reports/CHANGELOG.md](docs/reports/CHANGELOG.md) and

@@ -11,6 +11,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::text_utils::floor_char_boundary;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
@@ -40,20 +41,6 @@ pub struct TextArea {
     undo_stack: UndoStack,
     history_target: Rc<RefCell<String>>,
     restoring_history: bool,
-}
-
-fn floor_char_boundary(s: &str, index: usize) -> usize {
-    let len = s.len();
-    if index >= len {
-        return len;
-    }
-    let bytes = s.as_bytes();
-    // Find the last UTF-8 start byte at or before `index`
-    let mut i = index;
-    while i > 0 && bytes[i] & 0xC0 == 0x80 {
-        i -= 1;
-    }
-    i
 }
 
 impl TextArea {

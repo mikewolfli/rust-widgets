@@ -68,11 +68,7 @@ impl EventQueue {
         }
     }
 }
-impl Default for EventQueue {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(EventQueue);
 
 #[cfg(test)]
 mod tests {

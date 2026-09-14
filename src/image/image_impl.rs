@@ -146,11 +146,7 @@ impl Image {
     }
 }
 
-impl Default for Image {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(Image);
 
 #[cfg(test)]
 mod tests {

@@ -285,8 +285,4 @@ impl MenuConfig {
         }
     }
 }
-impl Default for MenuConfig {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(MenuConfig);

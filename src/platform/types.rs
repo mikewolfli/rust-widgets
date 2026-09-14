@@ -189,19 +189,18 @@ pub struct PlatformCapabilities {
     pub typed_widget_trigger: bool,
 }
 /// Native-runtime capability contract used by desktop-oriented negotiation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NativeCapabilityContract {
-    /// Whether DPI scaling is supported.
-    pub dpi_scaling: bool,
-    /// Whether IME integration is supported.
-    pub ime: bool,
-    /// Whether accessibility bridge is supported.
-    pub accessibility: bool,
-    /// Whether native menu integration is supported.
-    pub native_menu: bool,
-    /// Whether typed widget triggers are supported.
-    pub typed_widget_trigger: bool,
-}
+///
+/// This is the same five flags as [`PlatformCapabilities`], and deliberately so:
+/// the negotiation result and the backend's own report must not be able to
+/// disagree. It was previously a separate struct with a field-for-field
+/// `from_platform_caps` copy, which is exactly how the two drift — a new
+/// capability would be added to one and silently dropped by the other.
+///
+/// The name is kept because it is the vocabulary of the negotiation API
+/// (`CapabilityContract::Native(..)`, `Platform::native_capability_contract`),
+/// and renaming it would be a needless break for callers. Because it is an alias,
+/// the two types are interchangeable and no conversion is possible to get wrong.
+pub type NativeCapabilityContract = PlatformCapabilities;
 /// Embedded-runtime capability contract used by constrained-profile negotiation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EmbeddedCapabilityContract {
@@ -218,17 +217,26 @@ pub enum CapabilityContract {
     Native(NativeCapabilityContract),
     Embedded(EmbeddedCapabilityContract),
 }
-impl NativeCapabilityContract {
-    pub(crate) fn from_platform_caps(caps: PlatformCapabilities) -> Self {
-        Self {
-            dpi_scaling: caps.dpi_scaling,
-            ime: caps.ime,
-            accessibility: caps.accessibility,
-            native_menu: caps.native_menu,
-            typed_widget_trigger: caps.typed_widget_trigger,
-        }
+/// The capabilities a backend with the given `family` reports when it does **not**
+/// override [`Platform::capabilities`].
+///
+/// Exposed so the documented OS capability matrix can be checked against source
+/// rather than trusted. A backend cannot be instantiated off its own host, but the
+/// *trait default* is a pure function of the family, and that is the half of the
+/// answer a reader of the matrix is least able to verify.
+///
+/// Pair it with the backend's own `fn capabilities` when one exists.
+pub fn default_capabilities_for(family: PlatformFamily) -> PlatformCapabilities {
+    let desktop = matches!(family, PlatformFamily::Desktop);
+    PlatformCapabilities {
+        dpi_scaling: desktop,
+        ime: desktop,
+        accessibility: desktop,
+        native_menu: desktop,
+        typed_widget_trigger: true,
     }
 }
+
 /// Platform backend contract used by widget/runtime layers.
 ///
 /// Core lifecycle methods are required. Optional capabilities (IME,
@@ -258,6 +266,20 @@ pub trait Platform: Send + Sync {
     /// Returns platform family classification.
     fn family(&self) -> PlatformFamily;
     /// Runtime capabilities exposed by the current backend.
+    ///
+    /// # What the default answers, and why the family decides it
+    ///
+    /// A backend that does not override this reports `true` for `dpi_scaling`, `ime`,
+    /// `accessibility` and `native_menu` **iff it reports the `Desktop` family**.
+    /// Those four are host integrations, and a backend that classifies itself as a
+    /// desktop is asserting the host has them. `typed_widget_trigger` is always
+    /// `true` because it is implemented by the library, not the host.
+    ///
+    /// The practical consequence: **overriding matters for the desktop family.**
+    /// Wayland, HarmonyOS and Android-style backends classify as `Desktop` (or a
+    /// mobile analogue) yet do not honour a native menu, so each must override and
+    /// say so. A backend that forgets inherits `true`, which is a silent
+    /// over-claim — see [`capability_matrix_probe`], which makes that visible.
     fn capabilities(&self) -> PlatformCapabilities {
         let desktop = matches!(self.family(), PlatformFamily::Desktop);
         PlatformCapabilities {
@@ -271,7 +293,9 @@ pub trait Platform: Send + Sync {
     /// Native capability contract published by desktop-capable runtimes.
     fn native_capability_contract(&self) -> Option<NativeCapabilityContract> {
         if matches!(self.family(), PlatformFamily::Desktop) {
-            Some(NativeCapabilityContract::from_platform_caps(self.capabilities()))
+            // The two types are one alias, so the backend's own report *is* the
+            // contract — there is nothing to convert and nothing to keep in sync.
+            Some(self.capabilities())
         } else {
             None
         }

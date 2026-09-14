@@ -16,41 +16,20 @@ use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::misc_widgets::date_utils::{days_in_month, DAY_STRINGS, MONTH_NAMES};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
-
-const MONTH_NAMES: &[&str] =
-    &["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-/// Pre-formatted day strings ("01" through "31") reused across draw calls.
-const DAY_STRINGS: &[&str] = &[
-    "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13", "14", "15", "16",
-    "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31",
-];
-
-/// Returns the number of days in the given month, accounting for leap years.
-fn days_in_month(year: i32, month: u32) -> u32 {
-    match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 => {
-            if (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0) {
-                29
-            } else {
-                28
-            }
-        }
-        _ => 30,
-    }
-}
 
 /// Parses an ISO `YYYY-MM-DD` date into a `(year, month, day)` tuple.
 ///
 /// Returns `None` for anything that is not exactly that shape, so the property
 /// contract can answer [`CapabilityAccessError::TypeMismatch`] instead of
-/// silently clamping a malformed string into a valid-looking date. The
-/// day-of-month range is left to [`CupertinoDatePicker::set_selected_date`],
-/// which normalises it against the month's real length.
+/// silently clamping a malformed string into a valid-looking date.
+///
+/// The day is only range-checked to `1..=31`, not against the length of the
+/// specific month: [`CupertinoDatePicker::set_selected_date`] normalises it
+/// afterwards, and clamping there is what lets a caller step through months
+/// without the day being rejected first.
 fn parse_iso_date(text: &str) -> Option<(i32, u32, u32)> {
     let mut parts = text.split('-');
     let year = parts.next()?.parse::<i32>().ok()?;

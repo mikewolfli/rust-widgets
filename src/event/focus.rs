@@ -165,11 +165,7 @@ impl FocusManager {
         self.on_focus_changed = Some(cb);
     }
 }
-impl Default for FocusManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(FocusManager);
 
 /// Focus traversal order strategy (BLUE11 R7.2).
 pub enum FocusTraversalStrategy {

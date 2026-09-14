@@ -200,11 +200,7 @@ impl HardwareInputManager {
         self.last_touch_position = None;
     }
 }
-impl Default for HardwareInputManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(HardwareInputManager);
 pub struct InputFilter {
     min_pressure: f32,
     max_pressure: f32,
@@ -255,11 +251,7 @@ impl InputFilter {
         self.last_position = None;
     }
 }
-impl Default for InputFilter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(InputFilter);
 #[cfg(test)]
 mod tests {
     use super::*;

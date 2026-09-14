@@ -1,36 +1,109 @@
 # Platform Support
 
-rust-widgets provides a unified API across eight supported platforms. This chapter
+rust-widgets provides a unified API across nine supported platforms. This chapter
 covers the platform abstraction layer, backend selection, device detection,
 clipboard, drag & drop, IME, accessibility, menus, capability negotiation, and
 virtual keyboard support.
 
+> **Read this first — every control is self-drawn.**
+>
+> A backend does **not** create native OS controls. It owns four things and
+> nothing else: a **drawing surface**, the **event loop**, **input translation**,
+> and **platform services** (IME, clipboard, accessibility, native menus, file
+> dialogs, DPI, wallpaper).
+>
+> So "platform support" below means *how a platform provides those four things* —
+> **not** which controls exist. Control availability is a **profile** question, not
+> an OS question; see [§1.2](#12-widget-availability-is-per-profile-not-per-os).
+
 ---
 
-## 1. Eight Supported Platforms
+## 1. Nine Supported Platforms
 
-| # | Platform | Backend(s) | Feature Flag | Status |
-|---|----------|-----------|:---:|:---:|
-| 1 | **Linux (GTK)** | Native GTK3 windowing | `gtk-native` | ✅ Native windows |
-| 2 | **Linux (Wayland)** | Native Wayland protocol | `wayland-native` | ✅ Auto-detect session |
-| 3 | **Windows** | Win32 API | *(always on)* | ✅ Native |
-| 4 | **macOS** | Cocoa / objc2 bridge | `objc2-macos` | ✅ Native |
-| 5 | **iOS** | UIKit state-backed | `ios` | ✅ State-driven |
-| 6 | **Android** | JNI bridge | `android-jni` | ✅ JNI bridge |
-| 7 | **WASM** | WebAssembly canvas | `wasm` | ✅ Browser |
+### 1.1 Backends
+
+| # | Platform | Backend supplies | Feature Flag | Status |
+|---|----------|------------------|:---:|:---:|
+| 1 | **Windows** | Win32 window + message loop | `windows` | ✅ Verified |
+| 2 | **macOS** | Cocoa/objc2 `NSView` surface | `macos` | ✅ Verified |
+| 3 | **macOS** (preview) | objc2, state-backed | `macos` | ✅ Preview |
+| 4 | **Linux (GTK)** | GTK3 window + event loop | `linux-gtk` | ✅ Verified |
+| 5 | **Linux (Wayland)** | Wayland `wl_surface` + input | `linux-wayland` | ✅ Verified |
+| 6 | **iOS** | UIKit surface, state-backed | `ios` | ✅ Verified |
+| 7 | **Android** | JNI surface, state-backed | `android` / `android-jni` | ✅ Verified |
 | 8 | **HarmonyOS** | NAPI bridge | `harmony` | ✅ Preview |
-| 9 | **Embedded** | Stub / no_std | `embedded` / `mini` | ✅ no_std |
+| 9 | **WASM** | DOM canvas + browser events | `wasm` | ✅ Verified |
+| 10 | **Portable** | In-memory framebuffer, no OS | — (default when nothing matches) | ✅ Verified |
 
 On Linux, the runtime auto-detects between Wayland and X11/GTK via the
 `$WAYLAND_DISPLAY` and `$XDG_SESSION_TYPE` environment variables.
+
+If no backend matches the target, `portable` is selected: an in-memory drawing
+surface with no operating system behind it. That is a supported configuration,
+not a degraded one — it is how `mini` and host-less `embedded` builds work, and it
+is as testable as any other backend because nothing in the paint path is
+OS-dependent.
+
+### 1.2 Widget availability is per profile, not per OS
+
+Because every control is self-drawn, **the same 167 widget kinds work on every
+OS**. What varies is how much of the widget set is compiled in, which is chosen by
+*profile*:
+
+| Profile | Widget kinds | Registry | Custom-painted controls | Renderer |
+|---------|:-----------:|:--------:|:-----------------------:|----------|
+| `desktop` | 167 (full) | ✅ | ✅ | wgpu (GPU) |
+| `tablet` | 167 (full) | ✅ | ✅ | wgpu (GPU) |
+| `mobile` | 167 (full) | ✅ | ✅ | wgpu (GPU) |
+| `embedded` | reduced core set | — | — | software |
+| `mini` | reduced core set | — | — | software |
+
+An em-dash means **absent, not degraded**: the module is compiled out, so
+`supports_custom_widgets()` reports `false` and you should refuse the operation
+rather than mount into a blank surface.
+
+**The practical consequence:** a control you write and test on macOS renders
+identically on Windows, Linux, iOS and the web, pixel for pixel, without a single
+`cfg(target_os)` in your code. You only touch OS-specific APIs when you need one of
+the four things a backend owns.
+
+### 1.3 Platform services do vary by OS
+
+Use `PlatformCapabilities` to query what the *host* offers. Never assume — a
+backend running on an OS it was not compiled for reports `false`.
+
+| OS | DPI scaling | IME | Accessibility | Native menu |
+|----|:-----------:|:---:|:-------------:|:-----------:|
+| Windows | ✅ | ✅ | ✅ | ✅ |
+| macOS | ✅ | ✅ | ✅ | ✅ |
+| Linux / GTK | ✅ | ✅ | ✅ | ✅ |
+| Linux / Wayland | ✅ | ✅ | ✅ | ❌ |
+| iOS | ✅ | ✅ | ✅ | ❌ |
+| Android | ✅ | ✅ | ✅ | ❌ |
+| HarmonyOS | ✅ | ✅ | ✅ | ❌ |
+| WASM | ❌ | ❌ | ❌ | ❌ |
+| Portable | ❌ | ❌ | ❌ | ❌ |
+
+Wayland has no menu-bar protocol, so its backend keeps the menu tree in-process
+and the host renders it — advertising a native menu there would be false.
+
+The `native_menu` column is easy to misread, so it is worth knowing where the
+values come from: `Platform::capabilities` defaults to "`true` if the backend
+reports the `Desktop` family", and only Wayland, iOS, Android and HarmonyOS
+override it to `false`. That means a desktop-family backend which *forgets* to
+override silently inherits `native_menu: true` — the default is the over-claim, and
+the override is the honesty. `default_capabilities_for(family)` exposes the default
+so you can compare it against a backend's own report, and the table above is pinned
+by a test so it cannot drift from the source.
 
 ---
 
 ## 2. The `Platform` Trait — Universal Contract
 
-The `Platform` trait defines ~70 methods across 26 widget creation functions.
-Every backend implements this trait, ensuring identical API surface across
-platforms.
+The `Platform` trait defines the **six required methods** a backend must supply —
+surface, event loop and lifecycle. Everything else has an honest default that
+reports `UnsupportedOnWidget` / `None` for a capability the host lacks, rather than
+a write that reports success without taking effect.
 
 ```rust
 use rust_widgets::platform::{Platform, PlatformCapabilities};
@@ -150,7 +223,11 @@ Backend selection happens at compile time and auto-detection at runtime:
 ### Compile-Time Selection
 
 ```rust
-// src/platform/runtime.rs — conditional compilation per target
+// src/platform/runtime.rs — conditional compilation per target.
+//
+// Note what a backend is chosen *for*: its surface and event loop. It is never
+// chosen for "which controls it can build", because every backend paints the same
+// Rust-drawn controls.
 
 #[cfg(all(target_os = "windows", not(feature = "embedded")))]
 fn create_native_platform() -> Box<dyn Platform> {
@@ -162,7 +239,7 @@ fn create_native_platform() -> Box<dyn Platform> {
     Box::new(SelectedMacOSPlatform::new())  // Dispatches to objc2 or cocoa
 }
 
-#[cfg(all(target_os = "linux", not(feature = "embedded"), feature = "wayland-native"))]
+#[cfg(all(target_os = "linux", not(feature = "embedded"), feature = "linux-wayland"))]
 fn create_native_platform() -> Box<dyn Platform> {
     if is_wayland_session() {
         Box::new(WaylandPlatform::new())
@@ -170,7 +247,38 @@ fn create_native_platform() -> Box<dyn Platform> {
         Box::new(LinuxPlatform::new())
     }
 }
+
+// No OS matched: an in-memory surface with no host behind it. This is a
+// supported backend, not an error — it is what makes `mini` testable.
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+fn create_native_platform() -> Box<dyn Platform> {
+    Box::new(PortablePlatform::new())
+}
 ```
+
+### Where controls come from
+
+Since a backend no longer builds controls, asking for one goes through the
+control backend / factory, never through `Platform`:
+
+```rust
+use rust_widgets::widget::WidgetFactory;
+use rust_widgets::core::Rect;
+
+let factory = WidgetFactory::new_with_defaults();
+let mut button = factory
+    .create("button", Rect::new(10, 10, 100, 30), "OK")
+    .expect("button is a registered widget kind");
+
+// Properties are read and written through the same contract, whatever the OS.
+let label = factory.read_property(button.as_ref(), "text")?;
+factory.write_property(button.as_mut(), "text", "Save".into())?;
+# Ok::<(), rust_widgets::CapabilityAccessError>(())
+```
+
+The generic property API is the one to reach for. Each control implements
+`WidgetProperties` itself, so a property that exists is readable and writable the
+same way on every platform — there is no per-OS `if`/`else` at the call site.
 
 ### Global Singleton
 
@@ -586,7 +694,15 @@ pub struct PlatformCapabilities {
 
 ### `NativeCapabilityContract`
 
-Used by desktop runtimes (Windows, macOS, Linux):
+Used by desktop-capable runtimes (Windows, macOS, Linux).
+
+This is a **type alias** for `PlatformCapabilities`, not a separate struct. It
+carries the same five flags, and it must: the negotiation result and the backend's
+own report would otherwise be able to disagree, and a new capability would be
+added to one and silently dropped by the other. The name is kept because it is the
+vocabulary of the negotiation API (`CapabilityContract::Native(..)`,
+`Platform::native_capability_contract`); because it is an alias, the two are
+interchangeable and no conversion exists to get wrong.
 
 | Field | Description |
 |-------|-------------|
@@ -690,7 +806,7 @@ Hidden ← (on_hidden) ← Hiding ← (request_hide) ←─────┘
 
 ```rust
 // Auto-detection of Wayland vs X11/GTK
-#[cfg(all(target_os = "linux", feature = "wayland-native"))]
+#[cfg(all(target_os = "linux", feature = "linux-wayland"))]
 fn is_wayland_session() -> bool {
     std::env::var("WAYLAND_DISPLAY").is_ok()
         || std::env::var("XDG_SESSION_TYPE")

@@ -78,6 +78,51 @@ macro_rules! impl_draw_bridge {
     };
 }
 
+/// Implements `Default` by delegating to a type's `new()`.
+///
+/// # Why this exists
+///
+/// A type whose `new()` takes its geometry has no universal default — but many
+/// types in this crate have a zero-argument `new()`, and for those the impl is
+/// always the identical five lines:
+///
+/// ```ignore
+/// impl Default for Thing {
+///     fn default() -> Self {
+///         Self::new()
+///     }
+/// }
+/// ```
+///
+/// That block appeared **117 times**, which is 117 copies of one fact. It is also
+/// the kind of boilerplate that silently drifts: a `new()` that gains a required
+/// argument leaves a `Default` impl that no longer describes it, because nothing
+/// forces the two to be read together.
+///
+/// # Usage
+///
+/// ```ignore
+/// impl Thing {
+///     pub fn new() -> Self { /* … */ }
+/// }
+///
+/// crate::impl_default_via_new!(Thing);
+/// ```
+///
+/// The macro generates an inherent-free impl, so it can be invoked anywhere in the
+/// module that defines the type — normally immediately after the type's own `impl`
+/// block, so the two are read together.
+#[macro_export]
+macro_rules! impl_default_via_new {
+    ($type:ty) => {
+        impl ::core::default::Default for $type {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+    };
+}
+
 /// Returns the painting channel for `widget`, or `None` when it paints nothing.
 ///
 /// The single entry point the render loop should use. It asks the widget itself,

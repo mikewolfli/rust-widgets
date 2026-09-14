@@ -215,8 +215,4 @@ impl ShortcutManager {
         self.entries.values().filter(|e| e.shortcut.conflicts_with(shortcut)).collect()
     }
 }
-impl Default for ShortcutManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(ShortcutManager);

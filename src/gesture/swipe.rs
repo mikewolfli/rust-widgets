@@ -84,11 +84,7 @@ impl GestureRecognizer for SwipeGesture {
     }
 }
 
-impl Default for SwipeGesture {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(SwipeGesture);
 
 // ────────────────────────────────────────────
 // TwoFingerSwipeGesture
@@ -197,11 +193,7 @@ impl GestureRecognizer for TwoFingerSwipeGesture {
     }
 }
 
-impl Default for TwoFingerSwipeGesture {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(TwoFingerSwipeGesture);
 
 // ────────────────────────────────────────────
 // FlingGesture
@@ -309,8 +301,4 @@ impl GestureRecognizer for FlingGesture {
     }
 }
 
-impl Default for FlingGesture {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(FlingGesture);

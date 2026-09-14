@@ -44,11 +44,7 @@ impl PdfWriter {
         self.backend_name
     }
 }
-impl Default for PdfWriter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(PdfWriter);
 
 pub(crate) fn build_minimal_pdf_bytes(doc: &PdfDocumentImpl) -> Result<Vec<u8>, std::io::Error> {
     if doc.pages.is_empty() {

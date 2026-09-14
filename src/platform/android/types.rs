@@ -52,11 +52,7 @@ impl AndroidRuntimeState {
     }
 }
 
-impl Default for AndroidRuntimeState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(AndroidRuntimeState);
 
 /// State-backed Android platform adapter.
 ///
@@ -160,11 +156,7 @@ impl AndroidPlatform {
     }
 }
 
-impl Default for AndroidPlatform {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(AndroidPlatform);
 
 #[cfg(test)]
 mod tests {

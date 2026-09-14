@@ -170,11 +170,7 @@ pub struct MacOsImeBridge {
     native_token: Mutex<Option<Box<dyn std::any::Any + Send>>>,
 }
 
-impl Default for MacOsImeBridge {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(MacOsImeBridge);
 
 impl MacOsImeBridge {
     /// Create a new macOS IME bridge with empty state.

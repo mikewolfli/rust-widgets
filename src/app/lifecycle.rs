@@ -249,11 +249,7 @@ impl AppLifecycle {
     }
 }
 
-impl Default for AppLifecycle {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(AppLifecycle);
 
 // ═══════════════════════════════════════════════════════════════
 // Tests

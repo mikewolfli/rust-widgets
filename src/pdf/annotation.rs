@@ -230,11 +230,7 @@ impl AnnotationManager {
         self.page_annotations.len()
     }
 }
-impl Default for AnnotationManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(AnnotationManager);
 #[cfg(test)]
 mod tests {
     use super::*;

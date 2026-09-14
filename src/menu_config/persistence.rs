@@ -131,8 +131,4 @@ impl ConfigPersistence {
         self.config_file_path().exists()
     }
 }
-impl Default for ConfigPersistence {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(ConfigPersistence);

@@ -52,11 +52,7 @@ struct RegistryEntry {
 // access to the HashMap requires V: Sync.
 unsafe impl Send for SimpleRegistry {}
 
-impl Default for SimpleRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(SimpleRegistry);
 
 impl SimpleRegistry {
     /// Creates a new empty registry.

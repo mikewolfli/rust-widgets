@@ -20,11 +20,7 @@ impl NativeRenderEngine {
     }
 }
 
-impl Default for NativeRenderEngine {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(NativeRenderEngine);
 
 #[cfg(not(alloc_frugal))]
 impl RenderEngine for NativeRenderEngine {

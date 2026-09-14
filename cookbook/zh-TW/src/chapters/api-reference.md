@@ -2,46 +2,47 @@
 
 本章提供完整的、按模組劃分的 `rust_widgets` 公開 API 參考文件。當您需要為任務查找正確的型別、函式或特徵時，可將其用作快速查閱手冊。
 
-此處記載的函式庫版本為 **1.1.2**。程式碼範例假設使用 `use rust_widgets::*;` 或如所示使用顯式路徑。
+此處記載的函式庫版本為 **2.0.0**。程式碼範例假設使用 `use rust_widgets::*;` 或如所示使用顯式路徑。
 
 ---
 
 ## 目錄
 
-1. [頂層函式](#top-level-functions)
-2. [應用生命週期 (`app`)](#application-lifecycle-app)
-3. [核心型別 (`core`)](#core-primitives-core)
-4. [控制項系統 (`widget`)](#widget-system-widget)
-5. [佈局系統 (`layout`)](#layout-system-layout)
-6. [事件系統 (`event`)](#event-system-event)
-7. [渲染系統 (`render`)](#rendering-system-render)
-8. [渲染引擎 (`render_engine`)](#render-engine-render_engine)
-9. [樣式與主題 (`style`, `theme`)](#style--theming-style-theme)
-10. [平台抽象 (`platform`)](#platform-abstraction-platform)
-11. [錯誤系統 (`error`)](#error-system-error)
-12. [動作框架 (`action`)](#action-framework-action)
-13. [快捷鍵系統 (`shortcut`)](#shortcut-system-shortcut)
-14. [資料繫結 (`data_binding`)](#data-binding-data_binding)
-15. [信號/槽 (`signal`)](#signalslot-signal)
-16. [國際化 (`i18n`)](#internationalization-i18n)
-17. [手勢辨識 (`gesture`)](#gesture-recognition-gesture)
-18. [圖表與資料視覺化 (`chart`)](#charts--data-visualization-chart)
-19. [PDF 生成 (`pdf`)](#pdf-generation-pdf)
-20. [列印 (`print`)](#printing-print)
-21. [記憶體管理 (`memory`)](#memory-management-memory)
-22. [效能 (`performance`)](#performance-performance)
-23. [自適應品質 (`quality`)](#adaptive-quality-quality)
-24. [控制後端 (`control_backend`)](#control-backend-control_backend)
-25. [物件系統 (`object`)](#object-system-object)
-26. [Web 能力 (`web`)](#web-capabilities-web)
-27. [復原/重做 (`undo`)](#undoredo-undo)
-28. [剪貼簿 (`clipboard`)](#clipboard-clipboard)
-29. [GPU 加速 (`gpu`, `wgpu_backend`)](#gpu-acceleration-gpu-wgpu_backend)
-30. [嵌入式支援 (`embedded`)](#embedded-support-embedded)
-31. [語言繫結 (`bindings`)](#language-bindings-bindings)
-32. [功能旗標參考](#feature-flags-reference)
-33. [錯誤碼參考](#error-codes-reference)
-34. [FFI / C ABI 參考](#ffi--c-abi-reference)
+1. [頂層函式](#頂層函式)
+2. [應用生命週期 (`app`)](#應用生命週期-app)
+3. [核心型別 (`core`)](#核心型別-core)
+4. [控制項系統 (`widget`)](#控制項系統-widget)
+5. [控制項屬性 (`WidgetProperties`)](#控制項屬性)
+6. [佈局系統 (`layout`)](#佈局系統-layout)
+7. [事件系統 (`event`)](#事件系統-event)
+8. [渲染系統 (`render`)](#渲染系統-render)
+9. [渲染引擎 (`render_engine`)](#渲染引擎-render_engine)
+10. [樣式與主題 (`style`, `theme`)](#樣式與主題-style-theme)
+11. [平台抽象 (`platform`)](#平台抽象-platform)
+12. [錯誤系統 (`error`)](#錯誤系統-error)
+13. [動作框架 (`action`)](#動作框架-action)
+14. [快捷鍵系統 (`shortcut`)](#快捷鍵系統-shortcut)
+15. [資料繫結 (`data_binding`)](#資料繫結-data_binding)
+16. [信號/槽 (`signal`)](#信號槽-signal)
+17. [國際化 (`i18n`)](#國際化-i18n)
+18. [手勢辨識 (`gesture`)](#手勢辨識-gesture)
+19. [圖表與資料視覺化 (`chart`)](#圖表與資料視覺化-chart)
+20. [PDF 生成 (`pdf`)](#pdf-生成-pdf)
+21. [列印 (`print`)](#列印-print)
+22. [記憶體管理 (`memory`)](#記憶體管理-memory)
+23. [效能 (`performance`)](#效能-performance)
+24. [自適應品質 (`quality`)](#自適應品質-quality)
+25. [控制後端 (`control_backend`)](#控制後端-control_backend)
+26. [物件系統 (`object`)](#物件系統-object)
+27. [Web 能力 (`web`)](#web-能力-web)
+28. [復原/重做 (`undo`)](#復原重做-undo)
+29. [剪貼簿 (`clipboard`)](#剪貼簿-clipboard)
+30. [GPU 加速 (`gpu`, `wgpu_backend`)](#gpu-加速-gpu-wgpu_backend)
+31. [嵌入式支援 (`embedded`)](#嵌入式支援-embedded)
+32. [語言繫結 (`bindings`)](#語言繫結-bindings)
+33. [功能旗標參考](#功能旗標參考)
+34. [錯誤碼參考](#錯誤碼參考)
+35. [FFI / C ABI 參考](#ffi--c-abi-參考)
 
 ---
 
@@ -732,6 +733,148 @@ pub enum CapabilityAccessError { NotFound, WrongType, ReadOnly }
 
 ---
 
+## 控制項屬性
+
+自 2.0.0 起，每個控件都會公佈自己的屬性合約。你可以在不知道控件具體型別的情況下，讀取、寫入並**列舉**控件的狀態 —— 同一份程式碼可套用於任何控件、任何平台。
+
+### 特徵
+
+```rust
+pub trait WidgetProperties {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError>;
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError>;
+
+    /// Names this control exposes, including the four it inherits.
+    /// A `&'static [&'static str]`, so enumeration allocates nothing.
+    fn property_names(&self) -> &'static [&'static str];
+}
+```
+
+### 四個共用屬性
+
+每個控件都能透過 `base_property_get` / `base_property_set` 回答這些屬性：
+
+```rust
+pub const BASE_PROPERTY_NAMES: &[&str] = &["enabled", "visible", "tooltip", "geometry"];
+```
+
+`geometry` 在這個合約中刻意設計為**唯讀**：控件的矩形由擺放它的佈局所擁有，因此在這裡寫入會在下一輪佈局時默默與佈局互相拉扯。若要移動控件，請使用 `widget::runtime::set_geometry`。
+
+### 值型別
+
+```rust
+pub enum CapabilityValue {
+    Bool(bool),
+    Int(i64),
+    UInt(u64),
+    Float(f64),
+    String(String),
+    Null,
+}
+```
+
+**沒有**任何 `From` 轉換可以產生 `CapabilityValue` —— 請明確建構變體（`CapabilityValue::Int(7)`）。這是刻意的：隱式轉換會讓型別不符在呼叫端變得不可見。
+
+### 以參考讀取
+
+```rust
+use rust_widgets::core::Rect;
+use rust_widgets::widget::WidgetFactory;
+use rust_widgets::CapabilityValue;
+
+let factory = WidgetFactory::new_with_defaults();
+let mut slider = factory.create("slider", Rect::new(0, 0, 200, 24), "").unwrap();
+
+factory.write_property(slider.as_mut(), "value", CapabilityValue::Int(42))?;
+let value = factory.read_property(slider.as_ref(), "value")?;
+assert_eq!(value, CapabilityValue::Int(42));
+# Ok::<(), rust_widgets::CapabilityAccessError>(())
+```
+
+### 列舉合約
+
+這是用來建構屬性編輯器、序列化器或文件表格的 API：
+
+```rust
+use rust_widgets::widget::{widget_property_get, widget_property_names};
+
+for name in widget_property_names(slider.as_ref()).unwrap_or(&[]) {
+    println!("{name} = {:?}", widget_property_get(slider.as_ref(), name)?);
+}
+# Ok::<(), rust_widgets::CapabilityAccessError>(())
+```
+
+由於這份清單來自控件本身，因此不可能過時；而且只要控件公佈了它不願回答的屬性，測試（`no_published_property_answers_unknown_when_written`）就會以屬性名稱失敗。
+
+### 以 id 讀取
+
+後端與腳本宿主經常持有的是 id 而非參考。這些存取子會透過 widget runtime 解析 id，因此**控件必須先完成註冊**，而且 `runtime::register` 會**指派**它往後據以回答的 id —— 請使用它的回傳值，而不是 factory 發出的那個：
+
+```rust
+use rust_widgets::widget::{read_widget_property_by_id, write_widget_property_by_id};
+use rust_widgets::widget::runtime;
+
+let id = runtime::register(widget).expect("must run on the UI thread");
+write_widget_property_by_id(id, "value", CapabilityValue::Int(7))?;
+let value = read_widget_property_by_id(id, "value")?;
+
+runtime::unregister(id);
+# Ok::<(), rust_widgets::CapabilityAccessError>(())
+```
+
+### 錯誤語意
+
+| 錯誤 | 含義 |
+|---|---|
+| `UnknownProperty` | 此控件**沒有這個名稱的屬性** —— 呼叫端的錯誤。 |
+| `ReadOnlyProperty` | 屬性**存在**但不可寫入（例如 `geometry`、`row_count`）。請繪製為停用狀態的欄位。 |
+| `TypeMismatch` | 值型別錯誤，或值超出範圍。 |
+| `UnsupportedOnWidget` | 此控件完全沒有屬性合約。在 2.0.0 中不應發生。 |
+| `UnknownWidget` | 該 id 未指向任何東西（僅適用於以 id 存取的方式）。 |
+
+### 為自己的控件加入合約
+
+```rust
+impl WidgetProperties for MyControl {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "progress" => Ok(CapabilityValue::Float(self.progress())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "progress" => {
+                self.set_progress(expect_f64(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["progress", BASE_PROPERTY_NAMES]
+    }
+}
+```
+
+並在它的 `impl Widget` 區塊中、`impl_draw_bridge!();` 的旁邊：
+
+```rust
+impl_widget_property_hooks!();
+```
+
+此合約必須滿足的規則（每一條都有測試把關）：
+
+1. **`property_names()` 中的每個名稱都必須能由 `get` 讀取。**
+2. `property_names()` 必須以 `BASE_PROPERTY_NAMES` 結尾。
+3. **沒有 setter 的名稱必須回傳 `ReadOnlyProperty`，絕不可回傳 `UnknownProperty`。**
+   `UnknownProperty` 代表「這個名稱不存在」。
+4. 透過控件自身的存取子讀取真實狀態，絕不要使用硬編碼的常數。
+
+---
+
 ## 佈局系統 (`layout`)
 
 ### 核心特徵
@@ -850,7 +993,7 @@ pub type TouchId = u64;
 pub type MouseEvent = (Point, u32);
 pub type KeyEvent = (u32, u32);
 
-pub enum EventPriority { Low, Normal, High }
+pub enum EventPriority { High, Normal, Idle }
 pub enum GestureClass { Single, Multi, Holographic }
 pub enum ScreenOrientation { Portrait, Landscape, ReversePortrait, ReverseLandscape }
 
@@ -1130,7 +1273,7 @@ pub struct TextStyle {
 ### 文字溢出
 
 ```rust
-pub enum TextOverflow { Clip, Ellipsis }
+pub enum TextOverflow { Clip, Ellipsis, Fade }
 pub enum TextClamp { None, Lines(u32), Pixels(f32) }
 pub fn apply_text_overflow(text: &str, max_width: f32, font: &Font, overflow: TextOverflow) -> String;
 pub fn apply_text_clamp(text: &str, max_lines: u32, font: &Font, width: f32, clamp: TextClamp) -> String;
@@ -2602,7 +2745,7 @@ pub use binding_impl::*;
 pub mod java_jni;
 ```
 
-完整的 C API 請參閱下方的 [FFI / C ABI 參考](#ffi--c-abi-reference) 一節。
+完整的 C API 請參閱下方的 [FFI / C ABI 參考](#ffi--c-abi-參考) 一節。
 
 ---
 

@@ -78,8 +78,4 @@ impl GestureRecognizer for RotateGesture {
     }
 }
 
-impl Default for RotateGesture {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(RotateGesture);

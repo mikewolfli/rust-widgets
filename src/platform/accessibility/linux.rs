@@ -279,11 +279,7 @@ impl LinuxAccessibilityBridge {
     }
 }
 
-impl Default for LinuxAccessibilityBridge {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(LinuxAccessibilityBridge);
 
 impl AccessibilityBridge for LinuxAccessibilityBridge {
     fn set_accessibility_name(&self, id: ObjectId, name: &str) {

@@ -63,11 +63,7 @@ pub struct MockImeBridge {
     pub(crate) candidate_position: crate::compat::Mutex<ImeCandidatePosition>,
 }
 
-impl Default for MockImeBridge {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(MockImeBridge);
 
 impl MockImeBridge {
     pub fn new() -> Self {

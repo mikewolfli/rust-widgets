@@ -12,6 +12,7 @@
 //! A `date_changed` signal is emitted with a "YYYY-MM-DD" formatted string
 //! whenever the date changes.
 
+use super::date_utils::{days_in_month, parse_iso_date, MONTH_NAMES};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -22,41 +23,6 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
-
-const MONTH_NAMES: &[&str] =
-    &["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-/// Returns the number of days in the given month, accounting for leap years.
-fn days_in_month(year: i32, month: u32) -> u32 {
-    match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 => {
-            if (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0) {
-                29
-            } else {
-                28
-            }
-        }
-        _ => 30,
-    }
-}
-
-/// Parses an ISO `YYYY-MM-DD` date, returning `None` when the text does not match
-/// that shape.
-fn parse_iso_date(text: &str) -> Option<(i32, u32, u32)> {
-    let mut parts = text.split('-');
-    let year = parts.next()?.parse().ok()?;
-    let month = parts.next()?.parse().ok()?;
-    let day = parts.next()?.parse().ok()?;
-    if parts.next().is_some()
-        || !(1..=12).contains(&month)
-        || !(1..=days_in_month(year, month)).contains(&day)
-    {
-        return None;
-    }
-    Some((year, month, day))
-}
 
 /// Mobile-style date picker with year/month/day column spinners.
 ///

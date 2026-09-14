@@ -227,23 +227,6 @@ macro_rules! property_names_of {
     };
 }
 
-/// Maps the marker idents `yes` / `no` to a `bool`.
-///
-/// Used by the `properties_*.in.rs` schema tables so a long declaration reads as
-/// prose rather than a column of bare `true`s.
-#[macro_export]
-macro_rules! bool_marker {
-    (yes) => {
-        true
-    };
-    (no) => {
-        false
-    };
-    ($other:ident) => {
-        compile_error!("use `yes` or `no` for the readable/writable marker")
-    };
-}
-
 /// Emits the `dyn Widget` hooks that reach a control's [`WidgetProperties`] impl.
 ///
 /// Invoke **inside** the control's `impl Widget for X` block, next to

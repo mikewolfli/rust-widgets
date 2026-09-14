@@ -108,11 +108,7 @@ impl Shadow {
     }
 }
 
-impl Default for Shadow {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(Shadow);
 
 /// Minimum touch target dimensions by device class (BLUE8 P4-4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

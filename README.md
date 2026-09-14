@@ -4,14 +4,55 @@
   <img src="snapshots/header.jpg" alt="rust_widgets" width="800">
 </p>
 
-Cross-platform native GUI library in pure Rust. Hardware-adaptive rendering, widget library, touch/gesture support, i18n, and SVG output. Supports desktop, tablet, mobile, embedded, and minimal-profile **mini** targets.
+Cross-platform GUI library in pure Rust. Hardware-adaptive rendering, widget library, touch/gesture support, i18n, and SVG output. Supports desktop, tablet, mobile, embedded, and minimal-profile **mini** targets.
 
-All 167 widget kinds compile and are covered by the platform capability matrix
-(`docs/plans/platform_capability_matrix.md`), which is generated from source and
-gated for drift in CI.
+## ✨ Every control is self-drawn
+
+**The library paints 100% of its own controls. It does not create native OS controls — on any platform.**
+
+There is no `CreateWindowExW`/`NSButton`/`gtk_button_new`/`android.widget.Button` anywhere in this crate. Each backend's only job is to hand the renderer a surface to paint into; every button, list, editor, menu and chart below is drawn by the same Rust rasterizer, so a control looks and behaves identically whether it is running on Windows, macOS, Linux, iOS, Android or the web.
+
+```
+        ┌──────────────────────────────────────────┐
+        │  rust_widgets  —  paints its own controls │
+        └──────────────────────────────────────────┘
+             │  rasterizer output (RGBA / SVG / GPU)
+             ▼
+  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐
+  │ Windows HWND │   │ macOS NSView │   │  GTK widget  │   … one surface per backend
+  └──────────────┘   └──────────────┘   └──────────────┘
+```
+
+### Why this matters
+
+| Property | Self-drawn (this library) | Native controls |
+|---|---|---|
+| Appearance | **Identical on every OS** | Differs per OS toolkit and version |
+| Widget count | **167 kinds, all platforms** | Only what the OS toolkit offers |
+| Dependency weight | **No GUI toolkit linked** | GTK / AppKit / Win32 / Android SDK |
+| Headless & embedded | **Runs with no OS at all** (`mini`, SVG) | Impossible |
+| Deterministic tests | **Pixel/serialise snapshots** | Needs a real display |
+
+### What each backend *does* own
+
+Self-drawing is not "one backend". A backend still owns the parts that genuinely belong to the operating system, and only those:
+
+- **Surface + event loop** — window creation, the paint callback, resize.
+- **Input** — keyboard/mouse/touch translated into a unified `Event`.
+- **Platform services** — IME, clipboard, accessibility bridge, file dialogs, DPI scaling.
+
+A backend that cannot supply even a surface (for example a bare framebuffer) still works: it paints into an in-memory buffer instead. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+> **Migrating from 1.x?** Native control creation was removed from all ten backends in 2.0.0. See [`CHANGELOG.md`](CHANGELOG.md) and [`docs/MIGRATION_GUIDE.md`](docs/MIGRATION_GUIDE.md).
+
+All 167 widget kinds are registered in the factory and each publishes its own
+property contract; the platform capability matrix
+([`docs/plans/platform_capability_matrix.md`](docs/plans/platform_capability_matrix.md))
+is generated from source and gated for drift in CI.
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![tests](https://img.shields.io/badge/tests-3850%2B-brightgreen)]()
+[![version](https://img.shields.io/badge/version-2.0.0-blue)]()
+[![tests](https://img.shields.io/badge/tests-4000%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
 <p align="center">
@@ -65,8 +106,8 @@ cargo check --features mini
 
 | Profile | Command | Backend | Widgets | i18n | GPU |
 |---------|---------|---------|---------|------|-----|
-| Desktop | `cargo check` | Native OS | Full widget set | ✅ | ✅ (wgpu enabled by desktop) |
-| Tablet | `--no-default-features --features tablet` | Native OS | Full widget set | ✅ | ✅ (wgpu enabled by tablet) |
+| Desktop | `cargo check` | OS surface + event loop | Full widget set | ✅ | ✅ (wgpu enabled by desktop) |
+| Tablet | `--no-default-features --features tablet` | OS surface + event loop | Full widget set | ✅ | ✅ (wgpu enabled by tablet) |
 | Mobile | `--no-default-features --features mobile` | Mobile API | Full widget set | ✅ | ✅ (wgpu enabled by mobile) |
 | Embedded | `--no-default-features --features embedded` | Software | Core widget set | — | — |
 | **Mini** | `--no-default-features --features mini` | **reduced std** + alloc | **Core widget set** | — | — |
@@ -137,6 +178,84 @@ Two consequences worth knowing before you rely on these profiles:
 | Android (JNI) | `android` | ✅ |
 | Web (WASM) | `wasm` | — |
 | HarmonyOS | `harmony` | — |
+
+---
+
+## OS Support Matrix
+
+### 1. Platform services per OS
+
+These are the capabilities a backend *reports about the operating system*. Every
+one is queried at runtime through `PlatformCapabilities`
+(`rust_widgets::PlatformCapabilities`) — read it rather than assume, because a
+backend running on an OS it was not compiled for reports `false`.
+
+| OS | Backend | Family | DPI scaling | IME | Accessibility | Native menu | Configurable |
+|----|---------|--------|:-----------:|:---:|:-------------:|:------------:|:------------:|
+| **Windows** | `WindowsPlatform` | Desktop | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **macOS** | `cocoa` | Desktop | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **macOS** (objc2 preview) | `macos-objc2-preview` | Desktop | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Linux / GTK** | GTK backend | Desktop | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Linux / Wayland** | `wayland` | Desktop | ✅ | ✅ | ✅ | ❌ | ✅ |
+| **iOS** | `ios-state-backend` | Mobile | ✅ | ✅ | ✅ | ❌ | ❌ |
+| **Android** | `android-state-backend` | Mobile | ✅ | ✅ | ✅ | ❌ | ❌ |
+| **HarmonyOS** | `harmony-desktop` | Desktop | ✅ | ✅ | ✅ | ❌ | ❌ |
+| **Web (WASM)** | `wasm-state-backend` | Embedded | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Portable / no-OS** | `portable` | Embedded | ❌ | ❌ | ❌ | ❌ | ❌ |
+
+**Legend.** *Native menu* means the OS exposes a menu-bar protocol. Wayland has none,
+so its backend keeps the menu tree in-process and the host renders it — advertising a
+native menu would be false. *Configurable* means the backend exposes OS-level settings
+(theme, accent colour, notifier) beyond the capability flags.
+
+> **How to read the `native_menu` column.** A backend that does not override
+> `Platform::capabilities` inherits the trait default, which is
+> "`true` if the backend reports the `Desktop` family". Wayland, iOS, Android and
+> HarmonyOS override it to `false` because they genuinely have no menu protocol;
+> Windows, macOS and GTK keep the default. The values above are pinned by a test
+> (`published_os_capability_matrix_matches_the_trait_default`), so they cannot drift.
+>
+> **The control set is *not* in this table, on purpose.** Because every control is
+> self-drawn, widget availability does not vary by OS — it varies by **profile**.
+> That is the next table.
+
+### 2. Widget availability per profile
+
+What differs across targets is how much of the widget set is **compiled in**, not
+what the OS can draw.
+
+| Profile | Widget set | Registry | Custom-painted controls | GPU | i18n |
+|---------|-----------|:--------:|:-----------------------:|:---:|:----:|
+| `desktop` | **167 kinds** (full) | ✅ | ✅ | ✅ wgpu | ✅ |
+| `tablet` | **167 kinds** (full) | ✅ | ✅ | ✅ wgpu | ✅ |
+| `mobile` | **167 kinds** (full) | ✅ | ✅ | ✅ wgpu | ✅ |
+| `embedded` | reduced core set | — | — | — software | — |
+| `mini` | reduced core set | — | — | — software | — |
+
+A `—` is **absent, not degraded**: the module is compiled out, so
+`supports_custom_widgets()` returns `false` and callers are expected to refuse the
+operation rather than mount into a blank surface.
+
+The reduced `embedded`/`mini` set is: Window, Button, CheckBox, RadioButton, Label,
+LineEdit, ComboBox, SpinBox, ListBox, ProgressBar, Slider, ScrollBar, ScrollArea,
+Panel, Frame, GroupBox, TileView, Line, Meter, MiniChart, ImageView, MiniCanvas,
+Arc, Spinner, Roller, Dropdown, TextArea, Keyboard, Switch.
+
+### 3. What "support" means per OS
+
+Reading the two tables together:
+
+| Concern | Varies by OS? | Varies by profile? |
+|---|:---:|:---:|
+| Control appearance | ❌ (self-drawn) | ❌ |
+| Which controls exist | ❌ | ✅ |
+| DPI scaling / IME / a11y | ✅ | ❌ |
+| Native menu bar | ✅ | ❌ |
+| File/colour/font dialogs | ✅ (host-provided) | ❌ |
+| Rendering backend | ❌ | ✅ (GPU vs software) |
+
+So an app that avoids OS-specific APIs is portable by construction: build it once
+per profile, and it renders the same everywhere.
 
 ---
 
@@ -226,6 +345,52 @@ Two consequences worth knowing before you rely on these profiles:
 ### Mini / Embedded (reduced core widget set)
 
 Window, Button, CheckBox, RadioButton, Label, LineEdit, ComboBox, SpinBox, ListBox, ProgressBar, Slider, ScrollBar, ScrollArea, Panel, Frame, GroupBox, TileView, Line, Meter, MiniChart, ImageView, MiniCanvas, Arc, Spinner, Roller, Dropdown, TextArea, Keyboard, Switch
+
+---
+
+## Widget Properties
+
+Every control publishes its own property contract, so you can read, write and
+**enumerate** a control's state without knowing its concrete type. The same code
+works for a button, a chart and a code editor, on every platform.
+
+```rust
+use rust_widgets::core::Rect;
+use rust_widgets::widget::{
+    widget_property_get, widget_property_names, widget_property_set, WidgetFactory,
+};
+use rust_widgets::CapabilityValue;
+
+let factory = WidgetFactory::new_with_defaults();
+let mut button = factory.create("button", Rect::new(10, 10, 100, 30), "OK").unwrap();
+
+// Read and write by name
+factory.write_property(button.as_mut(), "text", CapabilityValue::String("Save".into())).unwrap();
+let text = factory.read_property(button.as_ref(), "text").unwrap();
+assert_eq!(text, CapabilityValue::String("Save".into()));
+
+// Or enumerate the whole contract — the API for a property editor or a serialiser.
+// `enabled`, `visible`, `tooltip` and `geometry` appear here for every control.
+for name in widget_property_names(button.as_ref()).unwrap() {
+    println!("{name} = {:?}", widget_property_get(button.as_ref(), name).unwrap());
+}
+```
+
+Because the list comes from the control itself, it cannot go stale — and a test
+fails by name if a control advertises a property it will not answer.
+
+### Error semantics
+
+| Error | Meaning |
+|---|---|
+| `UnknownProperty` | This control has **no property by that name** — a caller bug. |
+| `ReadOnlyProperty` | The property **exists** but is not writable (e.g. `geometry`, `row_count`). Render a disabled field. |
+| `TypeMismatch` | Wrong value type, or a value out of range. |
+| `UnsupportedOnWidget` | The control has no contract at all. Should not occur in 2.0.0. |
+
+> Reading by **id** (`rust_widgets::widget::read_widget_property_by_id`) resolves
+> through the widget runtime, so the control must be registered first; use the id
+> `runtime::register` returns. See [`docs/MIGRATION_GUIDE.md`](docs/MIGRATION_GUIDE.md).
 
 ---
 

@@ -83,11 +83,7 @@ impl VideoMetadata {
     }
 }
 
-impl Default for VideoMetadata {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(VideoMetadata);
 
 #[cfg(test)]
 mod tests {

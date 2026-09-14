@@ -296,8 +296,4 @@ impl WindowsPlatform {
     }
 }
 
-impl Default for WindowsPlatform {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(WindowsPlatform);

@@ -4,13 +4,129 @@
   <img src="snapshots/header.jpg" alt="rust_widgets" width="800">
 </p>
 
-纯 Rust 编写的跨平台原生 GUI 库。支持桌面、平板、手机、嵌入式以及精简特性（**mini**）目标。
+纯 Rust 编写的跨平台 GUI 库。支持桌面、平板、手机、嵌入式以及精简特性（**mini**）目标。
 
-全部 167 种控件均可编译，并由平台能力矩阵（`docs/plans/platform_capability_matrix.md`）
-覆盖——该矩阵由源码机械派生，并在 CI 中设有防脱节门禁。
+## ✨ 所有控件均为自绘
+
+**本库 100% 自绘全部控件，在任何平台上都不创建操作系统原生控件。**
+
+整个 crate 中没有任何 `CreateWindowExW`／`NSButton`／`gtk_button_new`／
+`android.widget.Button` 调用。后端唯一的职责是把一块**绘图表面**交给渲染器；
+下文列出的每一个按钮、列表、编辑器、菜单与图表，都由同一套 Rust 光栅化器绘制，
+因此无论在 Windows、macOS、Linux、iOS、Android 还是 Web 上，控件的外观与行为完全一致。
+
+```
+        ┌──────────────────────────────────────────┐
+        │  rust_widgets  —  自绘全部控件            │
+        └──────────────────────────────────────────┘
+             │  光栅化输出（RGBA / SVG / GPU）
+             ▼
+  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐
+  │ Windows HWND │   │ macOS NSView │   │  GTK widget  │   … 每个后端一块表面
+  └──────────────┘   └──────────────┘   └──────────────┘
+```
+
+### 为什么这很重要
+
+| 特性 | 自绘（本库） | 原生控件 |
+|---|---|---|
+| 外观 | **跨 OS 完全一致** | 随各 OS 工具包与版本变化 |
+| 控件数量 | **167 种，全平台可用** | 仅限该 OS 工具包提供的 |
+| 依赖体积 | **不链接任何 GUI 工具包** | GTK / AppKit / Win32 / Android SDK |
+| 无头与嵌入式 | **无 OS 也能运行**（`mini`、SVG） | 不可能 |
+| 测试确定性 | **像素／序列化快照** | 需要真实显示器 |
+
+### 每个后端*仍*负责什么
+
+自绘不等于「不需要后端」。后端仍拥有真正属于操作系统的部分，且仅限于此：
+
+- **表面与事件循环** — 创建窗口、绘制回调、resize。
+- **输入** — 键盘／鼠标／触摸，转换为统一的 `Event`。
+- **平台服务** — IME、剪贴板、无障碍桥、文件对话框、DPI 缩放。
+
+连表面都无法提供的目标（例如裸帧缓冲）同样可用：它改为绘制到内存缓冲区。
+参见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
+
+> **从 1.x 升级？** 2.0.0 已从全部十个后端移除原生控件构造。
+> 参见 [`CHANGELOG.md`](CHANGELOG.md) 与 [`docs/MIGRATION_GUIDE.md`](docs/MIGRATION_GUIDE.md)。
+
+---
+
+## OS 支持矩阵
+
+### 1. 各 OS 的平台服务
+
+以下是后端对*操作系统*能力的报告。全部可通过运行时接口
+`PlatformCapabilities`（`rust_widgets::PlatformCapabilities`）查询——
+请读取它而不要假设：后端若运行在编译时未匹配的 OS 上，会如实返回 `false`。
+
+| OS | 后端 | 家族 | DPI 缩放 | IME | 无障碍 | 原生菜单 | 可配置 |
+|----|------|------|:-------:|:---:|:------:|:-------:|:------:|
+| **Windows** | `WindowsPlatform` | Desktop | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **macOS** | `cocoa` | Desktop | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **macOS**（objc2 预览） | `macos-objc2-preview` | Desktop | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Linux / GTK** | GTK 后端 | Desktop | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Linux / Wayland** | `wayland` | Desktop | ✅ | ✅ | ✅ | ❌ | ✅ |
+| **iOS** | `ios-state-backend` | Mobile | ✅ | ✅ | ✅ | ❌ | ❌ |
+| **Android** | `android-state-backend` | Mobile | ✅ | ✅ | ✅ | ❌ | ❌ |
+| **HarmonyOS** | `harmony-desktop` | Desktop | ✅ | ✅ | ✅ | ❌ | ❌ |
+| **Web (WASM)** | `wasm-state-backend` | Embedded | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Portable / 无 OS** | `portable` | Embedded | ❌ | ❌ | ❌ | ❌ | ❌ |
+
+**说明。** *原生菜单* 指该 OS 提供菜单栏协议。Wayland 没有该协议，
+故其后端把菜单树保存在进程内、由宿主渲染——声称支持原生菜单将是虚假的。
+*可配置* 指后端除能力标志外还暴露 OS 级设置（主题、强调色、通知器）。
+
+> **如何读 `native_menu` 一列。** 未覆写 `Platform::capabilities` 的后端会继承 trait 默认值，
+> 即「若后端报告 `Desktop` 家族则为 `true`」。Wayland、iOS、Android、HarmonyOS
+> 显式覆写为 `false`，因为它们确实没有菜单协议；Windows、macOS、GTK 保持默认。
+> 上表数值由测试（`published_os_capability_matrix_matches_the_trait_default`）钉住，不会脱节。
+>
+> **控件集刻意*不在*此表中。** 因为所有控件均自绘，控件可用性不随 OS 变化，
+> 而是随 **profile** 变化——即下一张表。
+
+### 2. 各 profile 的控件可用性
+
+跨目标真正有差异的，是**编译进来多少控件**，而非 OS 能画什么。
+
+| Profile | 控件集 | 注册表 | 自绘控件托管 | GPU | i18n |
+|---------|-------|:------:|:-----------:|:---:|:----:|
+| `desktop` | **167 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
+| `tablet` | **167 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
+| `mobile` | **167 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
+| `embedded` | 精简核心集 | — | — | — 软件 | — |
+| `mini` | 精简核心集 | — | — | — 软件 | — |
+
+`—` 表示**被编译移除，而非降级**：模块不存在，
+故 `supports_custom_widgets()` 返回 `false`，调用方应拒绝该操作，
+而不是挂载到空白表面上。
+
+精简集（`embedded`／`mini`）包含：Window、Button、CheckBox、RadioButton、Label、
+LineEdit、ComboBox、SpinBox、ListBox、ProgressBar、Slider、ScrollBar、ScrollArea、
+Panel、Frame、GroupBox、TileView、Line、Meter、MiniChart、ImageView、MiniCanvas、
+Arc、Spinner、Roller、Dropdown、TextArea、Keyboard、Switch。
+
+### 3. 「支持」在两表中的含义
+
+| 关注点 | 随 OS 变化？ | 随 profile 变化？ |
+|---|:---:|:---:|
+| 控件外观 | ❌（自绘） | ❌ |
+| 哪些控件存在 | ❌ | ✅ |
+| DPI 缩放 / IME / 无障碍 | ✅ | ❌ |
+| 原生菜单栏 | ✅ | ❌ |
+| 文件／颜色／字体对话框 | ✅（宿主提供） | ❌ |
+| 渲染后端 | ❌ | ✅（GPU 或软件） |
+
+因此，避开 OS 专有 API 的应用天然可移植：按 profile 构建一次，处处渲染一致。
+
+---
+
+全部 167 种控件均已注册进工厂，且各自发布独立属性契约；平台能力矩阵
+（`docs/plans/platform_capability_matrix.md`）由源码机械派生，并在 CI 中设有防脱节门禁。
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![tests](https://img.shields.io/badge/tests-3850%2B-brightgreen)]()
+[![version](https://img.shields.io/badge/version-2.0.0-blue)]()
+[![tests](https://img.shields.io/badge/tests-4000%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
 <p align="center">

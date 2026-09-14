@@ -5,7 +5,6 @@
 pub mod animation;
 pub mod animation_group;
 pub mod css;
-pub mod css_watcher;
 pub mod gradient;
 pub mod primitives;
 pub mod selector;

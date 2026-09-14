@@ -22,6 +22,7 @@ use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::text_utils::floor_char_boundary;
 use crate::widget::{BaseWidget, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use alloc::boxed::Box;
@@ -3058,15 +3059,6 @@ pub(crate) fn decimal_digits(value: usize) -> usize {
         digits += 1;
     }
     digits
-}
-
-/// Returns the largest `char` boundary at or below `byte`.
-fn floor_char_boundary(text: &str, byte: usize) -> usize {
-    let mut offset = byte.min(text.len());
-    while offset > 0 && !text.is_char_boundary(offset) {
-        offset -= 1;
-    }
-    offset
 }
 
 /// Returns the character length of `text`.

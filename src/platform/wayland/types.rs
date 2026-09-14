@@ -110,11 +110,7 @@ impl WaylandPlatform {
     }
 }
 
-impl Default for WaylandPlatform {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(WaylandPlatform);
 
 impl WaylandPlatform {
     /// Insert widget state record and return allocated logical id.

@@ -104,11 +104,7 @@ impl StyleSheetManager {
     }
 }
 
-impl Default for StyleSheetManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(StyleSheetManager);
 
 /// Get the global stylesheet manager instance (thread-safe).
 ///

@@ -34,11 +34,7 @@ impl StackLayout {
         self.items.get(index).copied()
     }
 }
-impl Default for StackLayout {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(StackLayout);
 impl Layout for StackLayout {
     fn as_any(&self) -> &dyn std::any::Any {
         self

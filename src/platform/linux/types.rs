@@ -89,11 +89,7 @@ impl LinuxPlatform {
         }
     }
 }
-impl Default for LinuxPlatform {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(LinuxPlatform);
 impl LinuxPlatform {
     /// Insert and initialize one widget state record.
     pub(crate) fn insert_widget(

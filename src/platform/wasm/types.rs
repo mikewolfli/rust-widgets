@@ -89,8 +89,4 @@ impl WasmPlatform {
     }
 }
 
-impl Default for WasmPlatform {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(WasmPlatform);

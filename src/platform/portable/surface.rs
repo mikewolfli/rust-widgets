@@ -87,11 +87,7 @@ impl FrameBuffer {
     }
 }
 
-impl Default for FrameBuffer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(FrameBuffer);
 
 /// Bytes needed to hold `geometry`, or `None` if it cannot be expressed.
 fn required_bytes(geometry: SurfaceGeometry) -> Option<usize> {

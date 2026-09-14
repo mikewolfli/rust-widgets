@@ -51,6 +51,10 @@ pub mod wasm;
 
 /// Platform accessibility bridges (macOS, Windows, Linux).
 pub mod accessibility;
+
+/// Linux-kernel system probes (`/proc`, `/sys`) shared by the backends that sit
+/// on a Linux kernel: Android, HarmonyOS, Linux/GTK, Wayland and mobile.
+pub mod os_probes;
 /// The portable host backend — a drawing surface with no operating system behind it.
 ///
 /// This is the build target for `mini`, for `embedded` on a host without a
@@ -72,7 +76,6 @@ pub mod clipboard;
 pub mod clipboard_stubs;
 mod contract;
 /// Device class detection and adaptive layout support (BLUE8 P4-6).
-pub mod detector;
 /// Laser holographic keyboard detector (BLUE8 P4-5a, experimental).
 #[cfg(feature = "holographic")]
 pub mod holographic;
@@ -90,7 +93,6 @@ pub mod ime_linux;
 /// bridge runs in pure state-machine mode.
 pub mod ime_macos;
 /// Platform-specific IME stubs (macOS, Windows).
-pub mod ime_stubs;
 /// Real Windows IME bridge (TSF integration).
 ///
 /// The composition/marked-text state machine is platform-independent, so the
@@ -115,8 +117,6 @@ mod teardown_tests;
 #[cfg(all(test, not(alloc_frugal)))]
 mod tests;
 /// Virtual keyboard controller for touch text input (BLUE8 P4-7).
-pub mod virtual_keyboard;
-
 // Re-exports: everything that was previously defined directly in mod.rs
 pub use crate::platform::contract::{negotiate_capability_contract, CapabilityContract};
 pub use crate::platform::contract::{EmbeddedCapabilityContract, NativeCapabilityContract};

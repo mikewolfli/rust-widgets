@@ -8,6 +8,7 @@
 //! a date range. The range between the two dates is visually highlighted.
 //! A `range_changed` signal is emitted whenever the selection changes.
 
+use super::date_utils::{days_in_month, parse_iso_date, DAY_NAMES, MONTH_NAMES};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -21,27 +22,6 @@ use crate::{impl_widget_property_hooks, property_names_of};
 
 /// A selected date range: `(start_date, end_date)` each as `(year, month, day)`.
 pub(crate) type DateRange = (Option<(i32, u32, u32)>, Option<(i32, u32, u32)>);
-
-const MONTH_NAMES: &[&str] =
-    &["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-const DAY_NAMES: &[&str] = &["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
-
-/// Returns the number of days in the given month, accounting for leap years.
-fn days_in_month(year: i32, month: u32) -> u32 {
-    match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 => {
-            if (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0) {
-                29
-            } else {
-                28
-            }
-        }
-        _ => 30,
-    }
-}
 
 /// Returns the day of week (0=Sunday, 1=Monday, ..., 6=Saturday)
 /// for the given date using Zeller-like / Tomohiko Sakamoto's algorithm.
@@ -214,24 +194,11 @@ fn date_to_ordinal(date: (i32, u32, u32)) -> i64 {
 }
 
 /// Formats a date as an ISO `YYYY-MM-DD` string.
+///
+/// Thin wrapper over [`date_utils::format_iso_date`] so this module can keep
+/// passing its `(year, month, day)` tuples around as one value.
 fn format_iso_date(date: (i32, u32, u32)) -> String {
-    format!("{:04}-{:02}-{:02}", date.0, date.1, date.2)
-}
-
-/// Parses an ISO `YYYY-MM-DD` date, returning `None` when the text does not match
-/// that shape or is not a real calendar date.
-fn parse_iso_date(text: &str) -> Option<(i32, u32, u32)> {
-    let mut parts = text.split('-');
-    let year = parts.next()?.parse().ok()?;
-    let month = parts.next()?.parse().ok()?;
-    let day = parts.next()?.parse().ok()?;
-    if parts.next().is_some()
-        || !(1..=12).contains(&month)
-        || !(1..=days_in_month(year, month)).contains(&day)
-    {
-        return None;
-    }
-    Some((year, month, day))
+    super::date_utils::format_iso_date(date.0, date.1, date.2)
 }
 
 impl Widget for DateRangePicker {

@@ -79,11 +79,7 @@ impl I18nFileWatcher {
         guard.as_ref().map(|m| m.is_hot_reload_enabled()).unwrap_or(false)
     }
 }
-impl Default for I18nFileWatcher {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(I18nFileWatcher);
 /// Initialize i18n with hot reload support
 pub fn init_with_hot_reload(
     options: crate::i18n::options::InitOptions,

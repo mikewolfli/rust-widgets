@@ -176,11 +176,7 @@ impl HyperlinkManager {
         self.named_destinations.len()
     }
 }
-impl Default for HyperlinkManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(HyperlinkManager);
 #[cfg(test)]
 mod tests {
     use super::*;

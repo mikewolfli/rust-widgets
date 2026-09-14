@@ -474,11 +474,7 @@ impl AdapterSelector {
         self.strategy = strategy;
     }
 }
-impl Default for AdapterSelector {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(AdapterSelector);
 /// Errors that can occur during adapter selection
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AdapterSelectionError {

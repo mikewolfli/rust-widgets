@@ -145,11 +145,7 @@ impl AssetWatcher {
     }
 }
 
-impl Default for AssetWatcher {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(AssetWatcher);
 
 // File-watcher tests need `tempfile`, which is unavailable on wasm32 (no FS).
 #[cfg(all(test, not(target_arch = "wasm32")))]

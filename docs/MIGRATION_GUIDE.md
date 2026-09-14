@@ -1,3 +1,218 @@
+# Migration Guide
+
+> **Latest: 1.x → 2.0.0** — see [the 2.0.0 section](#10x--200-self-drawn-controls) below.
+> The rest of this document covers the earlier 0.9.x → 1.0.0 transition and is kept
+> for projects still on that line.
+
+---
+
+# 1.x → 2.0.0: Self-Drawn Controls
+
+2.0.0 is a **major** release: the library no longer creates native OS controls on any
+platform. There are three breaking changes, and they all stem from that one decision.
+
+## TL;DR
+
+| You used to call | Now call |
+|---|---|
+| `Platform::create_button(parent, text, …)` | `WidgetFactory::create("button", rect, text)` |
+| `platform.get_widget_text(id)` / `set_widget_text` | `WidgetFactory::read_property` / `write_property` |
+| `platform.set_slider_value(id, v)` (or any `set_*` control method) | `write_property(widget, "value", CapabilityValue::Int(v))` |
+| `NativeCapabilityContract::from_platform_caps(c)` | nothing — they are the same type now |
+| `rust_widgets::widget::image::Image` | `rust_widgets::image::Image` |
+| `rust_widgets::util::asset_watcher::AssetWatcher` | `rust_widgets::asset::AssetWatcher` |
+
+If your code only ever used widgets through the `widget::runtime` API, **you very
+likely need no changes at all** — that API was already the self-drawn path.
+
+---
+
+## 1. Native control creation is gone
+
+### What changed
+
+Every backend's `create_*` methods were deleted — **606 functions → 0**. That covers
+Windows `CreateWindowExW`, macOS `NSButton`/`NSTextView`, GTK `gtk_button_new`,
+Wayland control surfaces, iOS `UIButton`, Android `android.widget.*`, and the
+Harmony/WASM state-backed equivalents.
+
+### Why
+
+A native control and a self-drawn control cannot be made to look the same, and
+keeping both meant every feature had to be implemented twice with two sets of bugs.
+The self-drawn path was already the one the widget library used; this release removed
+the second path rather than maintaining both.
+
+### What a backend still owns
+
+Exactly four things, and nothing else:
+
+1. **A drawing surface** — window creation, the paint callback, resize.
+2. **The event loop.**
+3. **Input translation** — keyboard/mouse/touch into a unified `Event`.
+4. **Platform services** — IME, clipboard, accessibility bridge, native menus, file
+   dialogs, DPI, wallpaper.
+
+### How to migrate
+
+```rust
+// BEFORE (1.x) — a native control, built by the platform backend
+let button = platform.create_button(window, "OK", 10, 10, 100, 30);
+platform.set_widget_text(button, "Save");
+let text = platform.get_widget_text(button);
+
+// AFTER (2.0) — a self-drawn control, built by the factory
+use rust_widgets::widget::WidgetFactory;
+use rust_widgets::core::Rect;
+
+let factory = WidgetFactory::new_with_defaults();
+let mut button = factory
+    .create("button", Rect::new(10, 10, 100, 30), "OK")
+    .expect("button is registered");
+
+factory.write_property(button.as_mut(), "text", CapabilityValue::String("Save".into()))?;
+let text = factory.read_property(button.as_ref(), "text")?;
+```
+
+Controls are still addressed by id, so code that stores a handle keeps working. Only
+*construction* moved.
+
+### If you need a capability the host has
+
+The four items above are queried, not assumed:
+
+```rust
+use rust_widgets::platform;
+
+let caps = platform::capabilities();
+if caps.ime { /* the host has an IME integration to talk to */ }
+if caps.native_menu { /* the host exposes a menu-bar protocol */ }
+```
+
+`caps` reflects the **host**, not the target triple — a backend running on an OS it
+was not compiled for answers `false` rather than claiming a feature it cannot deliver.
+
+---
+
+## 2. The property layer is per-control
+
+### What changed
+
+The centralised property dispatch was deleted: `read_widget_property_legacy`,
+`write_widget_property_legacy`, their 18 `access_{read,write}_*.in.rs` include files,
+**535 match arms**, and the 98 imports only they used.
+
+Each control now implements `WidgetProperties` (`get` / `set` / `property_names`)
+in its own file. All **156** controls do; a test asserts every factory-constructible
+control has one.
+
+### Why
+
+The centralised table restated the contract for 39 controls, and the two copies had
+already drifted. It also meant a control could not be added without editing a
+central file — the opposite of the extensibility the capability layer exists for.
+
+### How to migrate
+
+`Platform::get_*` / `set_*` control-property methods are gone. Use either level:
+
+```rust
+// By widget reference (what most applications want)
+let value = factory.read_property(list.as_ref(), "selected_row")?;
+factory.write_property(list.as_mut(), "selected_row", CapabilityValue::UInt(4))?;
+
+// By id (for a backend or a scripting host that holds ids).
+//
+// Note: these resolve the id through the widget runtime, so the control must be
+// registered first — and `runtime::register` assigns the id it will answer for,
+// so use its return value rather than the id the factory handed out.
+use rust_widgets::widget::{read_widget_property_by_id, write_widget_property_by_id};
+use rust_widgets::widget::runtime;
+
+let id = runtime::register(widget).expect("must run on the UI thread");
+write_widget_property_by_id(id, "selected_row", CapabilityValue::UInt(4))?;
+let value = read_widget_property_by_id(id, "selected_row")?;
+```
+
+### Enumerate a control's properties at runtime
+
+```rust
+use rust_widgets::{widget_property_get, widget_property_names, widget_property_set};
+
+// The published contract, including the four every control shares
+// (enabled, visible, tooltip, geometry).
+for name in widget_property_names(widget.as_ref()).unwrap_or(&[]) {
+    println!("  {name} = {:?}", widget_property_get(widget.as_ref(), name)?);
+}
+```
+
+This is the API for building a property editor or a serialiser; it cannot go stale
+because it reads the same contract the control answers through.
+
+### Error semantics to be aware of
+
+The two "this did not work" errors mean different things, and 2.0.0 enforces the
+distinction (42 call sites were corrected):
+
+| Error | Meaning |
+|---|---|
+| `UnknownProperty` | This control has **no property by that name**. |
+| `ReadOnlyProperty` | The property **exists**, but is not writable (e.g. `geometry`, `row_count`). |
+| `UnsupportedOnWidget` | The **control itself** has no contract — it was not migrated. Should not occur in 2.0.0. |
+| `TypeMismatch` | Wrong value type, or an out-of-range value. |
+
+A property editor should render `ReadOnlyProperty` as a disabled field and
+`UnknownProperty` as a bug in its own name list.
+
+---
+
+## 3. `Platform` lost its control methods
+
+Required `Platform` methods went **75 → 6** (surface, event loop, lifecycle). The
+rest became honest defaults that report `UnsupportedOnWidget` / `None` rather than
+silently doing nothing.
+
+If you implemented the `Platform` trait yourself, you can now delete the control
+methods from that impl — they are no longer part of the contract.
+
+---
+
+## 4. Smaller breaks
+
+| Removed | Replacement |
+|---|---|
+| `NativeCapabilityContract::from_platform_caps(c)` | None needed — `NativeCapabilityContract` is now `pub type NativeCapabilityContract = PlatformCapabilities;` |
+| `rust_widgets::widget::image::{Image, ImageFormat}` | `rust_widgets::image::{Image, ImageFormat}` |
+| `rust_widgets::util::asset_watcher::{AssetWatcher, AssetEvent}` | `rust_widgets::asset::{AssetWatcher, AssetEvent}` |
+| `platform::detector::DeviceEnvironment` | Deleted (no in-tree consumer) |
+| `platform::virtual_keyboard::VirtualKeyboard` | Deleted (no in-tree consumer) |
+| `render::text_cache::TextCache` | Deleted (no in-tree consumer) |
+| `style::css_watcher::CssWatcher` | Deleted (no in-tree consumer) |
+| `widget::overlay_widgets::pull_to_refresh` | `rust_widgets::widget::PullToRefresh` (unchanged) |
+
+**ABI is unchanged**: `rw_bindings_api_version` remains `8`, and no exported `rw_*`
+symbol was added, removed or changed. C, Python and Node bindings need no update.
+
+---
+
+## 5. Behaviour changes worth knowing
+
+These are fixes, not migrations, but they change what you observe:
+
+- **`TagInput::placeholder` is now real.** The renderer used to draw a hardcoded
+  `"Type and press Enter..."` regardless of state. The placeholder is now a settable
+  property (default `"Type and press Enter\u{2026}"`), and the draw path honours it.
+- **`TabBar.current_index` can now be cleared.** `set` accepts `Null` to select no tab,
+  matching what `get` publishes for that state. Previously `get` could return `Null`
+  but `set` rejected it, so a read → write → read round trip did not close.
+- **`Arc` publishes five more properties** (`minimum`, `maximum`, `sweep_angle`,
+  `thickness`, `indeterminate`). They were writable before but absent from
+  `property_names()`, i.e. invisible to anything that enumerates the contract.
+- **`DataGrid` is not paginated.** It never was; it is a virtualised scroller with a
+  window cache. If you are looking for paging properties, there are none to find.
+
+---
+
 # Migration Guide: 0.9.x → 1.0.0
 
 > **Note (2026-09-02)**: this guide was originally drafted for the planned

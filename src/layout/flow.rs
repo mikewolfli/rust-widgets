@@ -288,11 +288,7 @@ impl FlowLayout {
         Size::new(width, height)
     }
 }
-impl Default for FlowLayout {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(FlowLayout);
 
 impl Layout for FlowLayout {
     fn as_any(&self) -> &dyn std::any::Any {

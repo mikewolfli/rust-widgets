@@ -13,11 +13,7 @@ impl NativeControlBackend {
         Self
     }
 }
-impl Default for NativeControlBackend {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(NativeControlBackend);
 impl ControlBackend for NativeControlBackend {
     fn backend_name(&self) -> &'static str {
         "native-control-backend"

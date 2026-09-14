@@ -74,11 +74,7 @@ impl WindowsAccessibilityBridge {
     }
 }
 
-impl Default for WindowsAccessibilityBridge {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+crate::impl_default_via_new!(WindowsAccessibilityBridge);
 
 impl AccessibilityBridge for WindowsAccessibilityBridge {
     fn set_accessibility_name(&self, id: ObjectId, name: &str) {
