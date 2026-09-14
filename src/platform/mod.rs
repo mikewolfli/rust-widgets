@@ -16,13 +16,14 @@ pub mod android;
 pub mod android_jni;
 #[cfg(any(target_os = "ohos", feature = "harmony"))]
 pub mod harmony;
-/// iOS mobile backend (state-driven, UIKit bridge behind `ios-uikit-ffi`).
+/// iOS mobile backend (state-driven).
 ///
 /// The widget state machine is platform-independent, so the module is compiled
-/// on every host to keep its unit tests executable. All UIKit (`objc2`) touch
-/// points are `#[cfg(feature = "ios-uikit-ffi")]`-gated internally, and that
-/// feature transitively requires the iOS target (`ios = ["dep:objc2", ...]`);
-/// on other hosts the backend runs in pure state mode.
+/// on every host to keep its unit tests executable. The only UIKit (`objc2`)
+/// touch point left is the window the library paints into, which is
+/// `#[cfg(feature = "ios-uikit-ffi")]`-gated internally; that feature
+/// transitively requires the iOS target (`ios = ["dep:objc2", ...]`), so on other
+/// hosts the backend runs in pure state mode.
 pub mod ios;
 #[cfg(any(target_os = "linux", doc))]
 pub mod linux;
@@ -50,6 +51,13 @@ pub mod wasm;
 
 /// Platform accessibility bridges (macOS, Windows, Linux).
 pub mod accessibility;
+/// The portable host backend — a drawing surface with no operating system behind it.
+///
+/// This is the build target for `mini`, for `embedded` on a host without a
+/// backend, and for any target that has no backend module. Those three are one
+/// fact ("a surface, no OS controls"), which is why they share one backend
+/// instead of three `cfg` branches. See the module docs for the reasoning.
+pub mod portable;
 /// Compile-time runtime-profile facts — the single gating entry point.
 ///
 /// This is the only module in `src/` permitted to read the `mini` / `embedded`
@@ -112,6 +120,7 @@ pub mod virtual_keyboard;
 // Re-exports: everything that was previously defined directly in mod.rs
 pub use crate::platform::contract::{negotiate_capability_contract, CapabilityContract};
 pub use crate::platform::contract::{EmbeddedCapabilityContract, NativeCapabilityContract};
+pub use crate::platform::portable::{FrameBuffer, SurfaceGeometry};
 pub use crate::platform::runtime::RuntimeGuiMode;
 #[cfg(not(alloc_frugal))]
 pub use crate::platform::runtime::{backend_name, capabilities, get_platform, init, quit, run};
@@ -135,29 +144,26 @@ pub use a11y_wiring::wire_focus_manager_to_a11y;
 /// singleton** (`get_platform` is `not(mini)`), so a direct call would fail to
 /// compile there.
 ///
-/// `platform_facts()` closes that gap: outside `mini` it returns the real
-/// backend; inside `mini` it returns a zero-sized value whose *default* trait
-/// implementations report "unknown" for every capability. That is the honest
-/// answer for a profile with no OS integration, and it keeps the call sites free
-/// of `cfg` branching (principle #35).
-#[cfg(not(alloc_frugal))]
-pub fn platform_facts() -> &'static dyn Platform {
-    runtime::get_platform()
-}
-
-/// `mini` profile: no platform singleton exists, so capabilities are all absent.
+/// Every build's platform-facts accessor, including `mini`.
 ///
-/// Returns a `StubPlatform`, which already implements the full `Platform`
-/// surface (widget creation, menus, list/combo storage) and inherits the trait
-/// defaults for every optional capability. That yields "unknown" for total
-/// memory, `false` for battery and print support, and `None` for the web engine —
-/// the honest answer for a profile whose whole point is to omit OS integration.
-#[cfg(alloc_frugal)]
+/// Upper layers (print, GPU adaptation, menu hardware detection) need to ask the
+/// backend about OS facts — total memory, battery state, spooler availability.
+/// The `mini` profile is deliberately alloc-frugal and has **no platform
+/// singleton** (`get_platform` is `not(alloc_frugal)`), so a direct call would
+/// fail to compile there.
+///
+/// Both arms return the *same kind* of value: a host that reports, for every
+/// capability it does not have, the honest absence (`None` / `false` / empty)
+/// rather than a made-up figure (principle #37). Outside `mini` that is whichever
+/// OS backend this target has; inside `mini` it is the portable host. Call sites
+/// stay free of `cfg` branching (principle #35).
 pub fn platform_facts() -> &'static dyn Platform {
-    use crate::compat::OnceLock;
-
-    static NO_FACTS: OnceLock<StubPlatform> = OnceLock::new();
-    NO_FACTS.get_or_init(|| {
-        StubPlatform::new("mini-no-platform", crate::core::PlatformFamily::Embedded)
-    })
+    #[cfg(not(alloc_frugal))]
+    {
+        runtime::get_platform()
+    }
+    #[cfg(alloc_frugal)]
+    {
+        crate::platform::portable::instance()
+    }
 }

@@ -27,6 +27,8 @@
 //!
 //! [`with_widget_mut`]: crate::widget::runtime::with_widget_mut
 
+#[cfg(full_widgets)]
+use crate::core::Point;
 use crate::core::{ObjectId, Rect, Size};
 use crate::event::Event;
 use crate::render::{PaintBackend, RenderContext, SoftwarePaintBackend};
@@ -122,6 +124,23 @@ pub fn is_mounted(id: ObjectId) -> bool {
     MOUNTED.try_with(|map| map.borrow().contains_key(&id)).unwrap_or(false)
 }
 
+/// Returns whether the widget mounted under `id` can carry a tri-state value.
+///
+/// Asked of the widget itself rather than of a table of kinds: checkability is a
+/// capability of the control's own property set, so any type that declares
+/// `checked` in [`crate::widget::WidgetProperties::property_names`] answers
+/// `true` here — including a third-party widget the library has never heard of.
+/// Hosts use this to decide whether a `set_widget_tristate` request is
+/// meaningful (principle #37: a request the control cannot honour is refused,
+/// never silently stored).
+pub fn widget_is_checkable(id: ObjectId) -> bool {
+    with_widget(id, |widget| {
+        crate::widget::capability::properties_trait::widget_property_names(widget)
+            .is_some_and(|names| names.contains(&"checked"))
+    })
+    .unwrap_or(false)
+}
+
 /// Returns the number of widgets mounted on this thread.
 pub fn mounted_count() -> usize {
     MOUNTED.try_with(|map| map.borrow().len()).unwrap_or(0)
@@ -172,6 +191,56 @@ pub fn with_widget<R>(id: ObjectId, f: impl FnOnce(&dyn Widget) -> R) -> Option<
 /// widget's responsibility (see `position_at_point`).
 pub fn dispatch_event(id: ObjectId, event: &Event) -> bool {
     with_widget_mut(id, |widget| widget.handle_event(event)).is_some()
+}
+
+/// Opens `menu_id` as a context menu at `position`, clamped to `viewport`.
+///
+/// This is the one operation a right-click needs, and it lives here rather than in
+/// each widget because a context menu is opened *at a pointer position on another
+/// widget*: the target widget knows the position, the menu owns the popup, and the
+/// registry is the only thing that can reach both.
+///
+/// Returns `false` when `menu_id` is not a mounted menu, or when it is not a menu
+/// at all — the honest answer, reported instead of a silent no-op, so a caller
+/// wiring a right-click handler learns immediately that it pointed at the wrong id.
+///
+/// Gated with the menu widget itself: a profile that compiles `Menu` out has no
+/// context menu to open, and reporting that at compile time is more useful than a
+/// function that could only ever return `false`.
+#[cfg(full_widgets)]
+pub fn open_context_menu(menu_id: ObjectId, position: Point, viewport: Rect) -> bool {
+    with_widget_mut(menu_id, |widget| {
+        let Some(menu) = (widget as &mut dyn core::any::Any).downcast_mut::<crate::Menu>() else {
+            log::warn!(
+                "widget::runtime: id {menu_id} is not a menu, so a context menu cannot be opened \
+                 at {position:?}"
+            );
+            return false;
+        };
+        menu.open_at(position, viewport);
+        true
+    })
+    .unwrap_or_else(|| {
+        log::warn!("widget::runtime: no widget is mounted as id {menu_id}");
+        false
+    })
+}
+
+/// Opens the context menu at the pointer position of a secondary-button press.
+///
+/// Convenience for the common wiring: a widget forwards its right-clicks here and
+/// the menu appears where the user clicked. Returns `false` for any event that is
+/// not a secondary-button press, or when the menu cannot be opened — so a caller
+/// can pass every event through without testing the button itself.
+#[cfg(full_widgets)]
+pub fn open_context_menu_for_event(menu_id: ObjectId, event: &Event, viewport: Rect) -> bool {
+    let Event::MousePress { pos, button } = event else {
+        return false;
+    };
+    if *button != crate::event::mouse_button::SECONDARY {
+        return false;
+    }
+    open_context_menu(menu_id, *pos, viewport)
 }
 
 /// Asks the platform to repaint a mounted widget.
@@ -389,6 +458,76 @@ mod tests {
         let cursor =
             with_widget_mut(id, |widget| editor_of(widget).map(|editor| editor.cursor())).flatten();
         assert!(cursor.is_some(), "widget must still be the editor");
+        unregister(id);
+    }
+
+    /// A secondary-button press opens the menu at the pointer, clamped to the
+    /// viewport — the whole right-click path in one assertion.
+    #[cfg(full_widgets)]
+    #[test]
+    fn a_secondary_press_opens_the_mounted_context_menu() {
+        let mut menu = crate::Menu::new("Edit", Rect::new(0, 0, 160, 100));
+        menu.add_action("Copy");
+        let id = register(Box::new(menu)).expect("registry");
+
+        let viewport = Rect::new(0, 0, 500, 400);
+        let opened = open_context_menu_for_event(
+            id,
+            &Event::MousePress {
+                pos: Point::new(120, 90),
+                button: crate::event::mouse_button::SECONDARY,
+            },
+            viewport,
+        );
+
+        assert!(opened, "a secondary press must open the context menu");
+        let geometry = geometry_of(id).expect("mounted");
+        assert_eq!((geometry.x, geometry.y), (120, 90));
+        assert!(is_mounted(id));
+        unregister(id);
+    }
+
+    /// The convenience wrapper must ignore every event that is not a secondary
+    /// press, so a caller can forward its whole event stream without testing the
+    /// button itself.
+    #[cfg(full_widgets)]
+    #[test]
+    fn non_secondary_events_do_not_open_the_context_menu() {
+        let mut menu = crate::Menu::new("Edit", Rect::new(0, 0, 160, 100));
+        menu.add_action("Copy");
+        let id = register(Box::new(menu)).expect("registry");
+        let viewport = Rect::new(0, 0, 500, 400);
+
+        assert!(!open_context_menu_for_event(
+            id,
+            &Event::MousePress {
+                pos: Point::new(10, 10),
+                button: crate::event::mouse_button::PRIMARY
+            },
+            viewport,
+        ));
+        assert!(!open_context_menu_for_event(
+            id,
+            &Event::MouseMove { pos: Point::new(10, 10) },
+            viewport
+        ));
+        unregister(id);
+    }
+
+    /// Pointing the helper at an id that is not a menu must report failure rather
+    /// than silently doing nothing, which is how a mis-wired right-click handler
+    /// would otherwise go unnoticed.
+    #[cfg(full_widgets)]
+    #[test]
+    fn opening_a_context_menu_on_a_non_menu_reports_failure() {
+        let label = crate::widget::base_widgets::label::Label::new(
+            "hi".to_string(),
+            Rect::new(0, 0, 80, 24),
+        );
+        let id = register(Box::new(label)).expect("registry");
+
+        assert!(!open_context_menu(id, Point::new(5, 5), Rect::new(0, 0, 400, 400)));
+        assert!(!open_context_menu(9_999, Point::new(5, 5), Rect::new(0, 0, 400, 400)));
         unregister(id);
     }
 }

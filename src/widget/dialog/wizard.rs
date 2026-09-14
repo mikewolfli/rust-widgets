@@ -9,8 +9,13 @@
 
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
+use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::widget::capability::coercion::expect_string;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 /// A single step in the wizard.
@@ -36,6 +41,11 @@ pub struct WizardDialog {
     base: BaseWidget,
     steps: Vec<WizardStep>,
     current_step: usize,
+    /// Title shown in the wizard's own chrome.
+    ///
+    /// Kept on the control rather than in a host-side map: the title is part of
+    /// what the dialog *is*, and a host that held it separately could not paint it.
+    title: String,
     /// Emitted when the user clicks Finish on the last step.
     pub finished: GenericSignal,
     /// Emitted when the user clicks Cancel.
@@ -45,16 +55,33 @@ pub struct WizardDialog {
 }
 
 impl WizardDialog {
-    /// Creates a new WizardDialog with the given geometry.
+    /// Creates a new WizardDialog with geometry and no title.
     pub fn new(geometry: Rect) -> Self {
+        Self::with_title(String::new(), geometry)
+    }
+
+    /// Creates a new WizardDialog with a title and geometry.
+    pub fn with_title(title: String, geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::WizardDialog, geometry, "WizardDialog"),
             steps: Vec::new(),
             current_step: 0,
+            title,
             finished: GenericSignal::new(),
             cancelled: GenericSignal::new(),
             step_changed: Signal1::new(),
         }
+    }
+
+    /// Returns the wizard's title.
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    /// Sets the wizard's title.
+    pub fn set_title(&mut self, title: String) {
+        self.title = title;
+        self.base.request_redraw();
     }
 
     /// Adds a step to the wizard.
@@ -180,7 +207,61 @@ impl Widget for WizardDialog {
     fn size_hint(&self) -> Size {
         crate::core::Size::new(500, 400)
     }
-    impl_draw_bridge!();
+
+    /// Reports this widget as the object that paints it.
+    ///
+    /// `WizardDialog` implements `Draw`, so `Some(self)` is total and cannot be
+    /// wrong.
+    fn as_draw_mut(&mut self) -> Option<&mut dyn crate::widget::Draw> {
+        Some(self)
+    }
+
+    /// Returns this widget as its property contract.
+    fn properties_dyn(
+        &self,
+    ) -> Option<&dyn crate::widget::capability::properties_trait::WidgetProperties> {
+        Some(self)
+    }
+
+    /// Mutable counterpart to `properties_dyn`.
+    fn properties_dyn_mut(
+        &mut self,
+    ) -> Option<&mut dyn crate::widget::capability::properties_trait::WidgetProperties> {
+        Some(self)
+    }
+}
+
+/// `WizardDialog`'s property contract.
+///
+/// The wizard exposes its title and its step bookkeeping. Step *content* is
+/// managed through `add_step` rather than the property layer, because a step is a
+/// structured object and flattening it into a scalar would lose information.
+impl WidgetProperties for WizardDialog {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "title" => Ok(CapabilityValue::String(self.title().to_string())),
+            "step_count" => Ok(CapabilityValue::UInt(self.step_count() as u64)),
+            "current_step" => Ok(CapabilityValue::UInt(self.current_step() as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "title" => {
+                self.set_title(expect_string(value)?);
+                Ok(())
+            }
+            // Moving between steps is navigation, not an assignment: it is driven
+            // by `next_step` / `previous_step`, which emit `step_changed`.
+            "step_count" | "current_step" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["title", "step_count", "current_step", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for WizardDialog {

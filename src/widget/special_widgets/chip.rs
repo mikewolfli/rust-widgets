@@ -48,7 +48,7 @@ impl Chip {
     /// Creates empty chip widget.
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::CheckListBox, geometry, "Chip"),
+            base: BaseWidget::new(WidgetKind::Chip, geometry, "Chip"),
             items: Vec::new(),
             multi_select: false,
             focused_index: None,

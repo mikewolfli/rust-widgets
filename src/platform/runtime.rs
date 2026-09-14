@@ -31,7 +31,7 @@ use crate::platform::linux::LinuxPlatform;
     not(alloc_frugal),
     target_os = "macos",
     not(embedded_surface),
-    any(feature = "macos", feature = "macos-legacy"),
+    any(feature = "macos", feature = "cocoa-legacy"),
     // Must mirror the `create_native_platform` gate below exactly: this import has
     // no other user, so if the two ever diverge the build warns about an unused
     // import (or fails outright).
@@ -117,7 +117,7 @@ fn create_native_platform() -> Box<dyn Platform> {
     not(alloc_frugal),
     target_os = "macos",
     not(embedded_surface),
-    any(feature = "macos", feature = "macos-legacy"),
+    any(feature = "macos", feature = "cocoa-legacy"),
     not(feature = "harmony")
 ))]
 fn create_native_platform() -> Box<dyn Platform> {
@@ -129,7 +129,7 @@ fn create_native_platform() -> Box<dyn Platform> {
     not(alloc_frugal),
     target_os = "macos",
     not(embedded_surface),
-    not(any(feature = "macos", feature = "macos-legacy")),
+    not(any(feature = "macos", feature = "cocoa-legacy")),
     not(feature = "harmony")
 ))]
 fn create_native_platform() -> Box<dyn Platform> {

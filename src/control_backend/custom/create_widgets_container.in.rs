@@ -11,24 +11,7 @@ macro_rules! impl_container_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "ScrollArea".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::ScrollArea,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::ScrollArea, parent, "", x, y, width, height)
         }
         #[cfg(widgets_unstripped)]
         fn create_dock_panel(
@@ -39,24 +22,7 @@ macro_rules! impl_container_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "DockPanel".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::DockPanel,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::DockPanel, parent, "", x, y, width, height)
         }
         #[cfg(widgets_unstripped)]
         fn create_tab_widget(
@@ -67,24 +33,7 @@ macro_rules! impl_container_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "TabWidget".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::TabWidget,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::TabWidget, parent, "", x, y, width, height)
         }
         #[cfg(widgets_unstripped)]
         fn create_splitter(
@@ -95,24 +44,7 @@ macro_rules! impl_container_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "Splitter".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::Splitter,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::Splitter, parent, "", x, y, width, height)
         }
         #[cfg(widgets_unstripped)]
         fn create_stack_widget(
@@ -123,24 +55,7 @@ macro_rules! impl_container_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "StackWidget".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::StackedWidget,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::StackedWidget, parent, "", x, y, width, height)
         }
         #[cfg(widgets_unstripped)]
         fn create_mdi_area(
@@ -151,24 +66,7 @@ macro_rules! impl_container_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "MdiArea".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::MdiArea,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::MdiArea, parent, "", x, y, width, height)
         }
         #[cfg(widgets_unstripped)]
         fn create_toolbox(
@@ -179,24 +77,7 @@ macro_rules! impl_container_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "Toolbox".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::Toolbox,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::Toolbox, parent, "", x, y, width, height)
         }
         #[cfg(widgets_unstripped)]
         fn create_collapsible_pane(
@@ -208,26 +89,7 @@ macro_rules! impl_container_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            log::warn!("shallow implementation: CollapsiblePane is an alias for Panel");
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.texts.insert(widget_id, title.to_string());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, title.to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::CollapsiblePane,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::CollapsiblePane, parent, title, x, y, width, height)
         }
         #[cfg(widgets_unstripped)]
         fn create_dock_widget(
@@ -239,25 +101,7 @@ macro_rules! impl_container_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.texts.insert(widget_id, title.to_string());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, title.to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::DockWidget,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::DockWidget, parent, title, x, y, width, height)
         }
     };
 }

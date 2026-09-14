@@ -12,24 +12,7 @@ macro_rules! impl_advanced_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "Calendar".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::Calendar,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::Calendar, parent, "", x, y, width, height)
         }
         #[cfg(not(alloc_frugal))]
         fn create_date_picker(
@@ -40,24 +23,7 @@ macro_rules! impl_advanced_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "DatePicker".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::DatePicker,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::DatePicker, parent, "", x, y, width, height)
         }
         #[cfg(not(alloc_frugal))]
         fn create_time_picker(
@@ -68,24 +34,7 @@ macro_rules! impl_advanced_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "TimePicker".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::TimePicker,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::TimePicker, parent, "", x, y, width, height)
         }
         #[cfg(not(alloc_frugal))]
         fn create_date_time_picker(
@@ -96,24 +45,7 @@ macro_rules! impl_advanced_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "DateTimePicker".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::DateTimePicker,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::DateTimePicker, parent, "", x, y, width, height)
         }
     };
 }

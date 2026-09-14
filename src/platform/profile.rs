@@ -200,6 +200,77 @@ pub const fn route_name() -> &'static str {
     }
 }
 
+/// What this build's self-hosted runtime must provide.
+///
+/// # Why a table
+///
+/// `embedded` and `mini` differ in exactly two facts — whether an OS window
+/// exists, and whether the alloc-frugal caps apply — but before this table those
+/// two facts were re-derived at every call site that needed a budget: buffer size,
+/// texture cap, font cache, event queue. Each derivation was a fresh chance to
+/// disagree, and the four answers below were previously four separate `if`s in
+/// `src/embedded/flags.rs` reading two unrelated atomic flags.
+///
+/// Encoding the whole policy once means a new profile is a new row here, and a
+/// caller that needs a budget asks this table instead of testing a feature name
+/// (rules #57/#58).
+///
+/// # Fields
+///
+/// * `os_window` — does an OS own a window this build paints into?
+/// * `max_widgets` — upper bound on simultaneously mounted controls.
+/// * `max_texture` — largest square texture the surface may allocate, in pixels.
+/// * `font_cache_bytes` — glyph atlas budget.
+/// * `event_queue` — depth of the platform event queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SurfacePolicy {
+    /// Whether an OS owns a window this build paints into.
+    pub os_window: bool,
+    /// Upper bound on simultaneously mounted controls.
+    pub max_widgets: usize,
+    /// Largest square texture the surface may allocate, in pixels.
+    pub max_texture: u32,
+    /// Glyph atlas budget, in bytes.
+    pub font_cache_bytes: usize,
+    /// Depth of the platform event queue.
+    pub event_queue: usize,
+}
+
+/// The resource policy for this build's profile.
+///
+/// The three arms correspond to the three `ProfileClass` values, so a new profile
+/// cannot be added without deciding its budget — this `match` is exhaustive by
+/// construction rather than by a comment asking the next person to remember.
+///
+/// A device profile keeps desktop-sized budgets: it has both an OS window and a
+/// full allocator. `Surface` (a bare render surface, no OS runtime) sits in the
+/// middle, and `Minimal` (`mini`) is deliberately frugal.
+pub const fn surface_policy() -> SurfacePolicy {
+    match profile_class() {
+        ProfileClass::Device => SurfacePolicy {
+            os_window: true,
+            max_widgets: 4096,
+            max_texture: 4096,
+            font_cache_bytes: 2 * 1024 * 1024,
+            event_queue: 256,
+        },
+        ProfileClass::Surface => SurfacePolicy {
+            os_window: false,
+            max_widgets: 512,
+            max_texture: 2048,
+            font_cache_bytes: 1024 * 1024,
+            event_queue: 128,
+        },
+        ProfileClass::Minimal => SurfacePolicy {
+            os_window: false,
+            max_widgets: 64,
+            max_texture: 1024,
+            font_cache_bytes: 256 * 1024,
+            event_queue: 64,
+        },
+    }
+}
+
 /// Runtime profile category, for code that needs the `core` enum rather than
 /// this module's typed facts.
 pub const fn runtime_profile() -> RuntimeProfile {

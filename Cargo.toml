@@ -149,7 +149,7 @@ macos = [
     "serde",
     "serde_json",
 ]
-macos-legacy = ["dep:cocoa", "dep:objc", "dep:objc-foundation"]
+macos-legacy = ["cocoa-legacy"]
 ios = [
     "dep:objc2",
     "dep:objc2-foundation",
@@ -240,7 +240,18 @@ symphonia-codecs = ["symphonia"]
 
 # Old OS backends
 objc2-macos = ["macos"]
-cocoa-legacy = ["macos-legacy"]
+
+# `cocoa-legacy` is the name the macOS backend modules are gated on
+# (`#[cfg(feature = "cocoa-legacy")]` in `src/platform/macos/`), so it is the one
+# that must carry the cocoa/objc dependencies. `macos-legacy` is the documented
+# user-facing alias and forwards to it.
+#
+# The alias used to point the other way (`cocoa-legacy = ["macos-legacy"]`), which
+# meant `--features macos-legacy` pulled in the crate but never activated the gate
+# the backend modules are written against: the backend was never compiled, and the
+# build failed on a missing type instead of using the legacy backend it had asked
+# for. Direction matters, because a Cargo feature alias is not symmetric.
+cocoa-legacy = ["dep:cocoa", "dep:objc"]
 ios-uikit-ffi = ["ios"]
 gtk-native = ["linux-gtk"]
 wayland-native = ["linux-wayland"]
@@ -383,7 +394,6 @@ winapi = { version = "0.3", features = [
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = { version = "0.2", optional = true }
-objc-foundation = { version = "0.1", optional = true }
 objc2 = { version = "0.6", optional = true }
 objc2-foundation = { version = "0.3", optional = true }
 objc2-app-kit = { version = "0.3", optional = true }

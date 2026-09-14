@@ -10,59 +10,44 @@ use crate::core::{ObjectId, PlatformFamily};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
-/// Logical handle kinds used by mobile baseline state model.
+
+/// Logical handle kinds that survive the self-drawn widget strategy.
+///
+/// # BLUE15: the host no longer builds controls
+///
+/// Widget creation used to allocate one state row per logical control kind
+/// (`Button`, `Label`, `CheckBox`, `ListBox`, `ComboBox`, ...). Under the
+/// self-drawn strategy the host owes the widget layer a window and a drawing
+/// surface, and the library paints every `WidgetKind`, so a per-kind
+/// `create_*` has no host object to map onto (BLUE15 #56). Only the handles the
+/// host itself still owns are modelled here: the window, plus the menu tree that
+/// the Activity materialises through its own menu callbacks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum MobileHandleKind {
+    /// Top-level window handed to the library as a drawing surface.
     Window,
-    Button,
-    LineEdit,
-    Label,
-    CheckBox,
-    RadioButton,
-    Slider,
-    ProgressBar,
-    ComboBox,
-    ListBox,
-    Panel,
+    /// Root menu bar bound to the host Activity's own menu.
     MenuBar,
+    /// Hierarchical menu node.
     Menu,
+    /// Actionable menu leaf item.
     MenuItem,
-    ToolBar,
-    StatusBar,
-    GroupBox,
-    Frame,
-    TabWidget,
-    Splitter,
-    ToggleButton,
-    Calendar,
-    ScrollBar,
-    DoubleSpinBox,
-    FontComboBox,
-    ContextMenu,
-    PopupWindow,
-    Dialog,
-    InputDialog,
-    ProgressDialog,
-    DirectoryDialog,
-    DatePicker,
-    TimePicker,
-    DateTimePicker,
-    ActivityIndicator,
 }
+
+/// Mobile platform menu state.
 #[derive(Default)]
 struct MobileMenuState {
+    /// Window id -> attached menu bar id mapping.
     attached_menu_bar: HashMap<ObjectId, ObjectId>,
+    /// Parent menu id -> direct child menu/menu-item ids.
     menu_children: HashMap<ObjectId, Vec<ObjectId>>,
 }
+
 /// Baseline Android mobile platform adapter.
 pub struct AndroidMobilePlatform {
     state: BackendState<MobileHandleKind>,
     attached_native_view: AtomicUsize,
     menus: Mutex<MobileMenuState>,
-    combo_items: Mutex<HashMap<ObjectId, Vec<String>>>,
-    combo_current_index: Mutex<HashMap<ObjectId, Option<usize>>>,
-    list_items: Mutex<HashMap<ObjectId, Vec<String>>>,
-    list_current_index: Mutex<HashMap<ObjectId, Option<usize>>>,
 }
 impl AndroidMobilePlatform {
     /// Creates a new Android mobile platform adapter.
@@ -71,10 +56,6 @@ impl AndroidMobilePlatform {
             state: BackendState::new(),
             attached_native_view: AtomicUsize::new(0),
             menus: Mutex::new(MobileMenuState::default()),
-            combo_items: Mutex::new(HashMap::new()),
-            combo_current_index: Mutex::new(HashMap::new()),
-            list_items: Mutex::new(HashMap::new()),
-            list_current_index: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -95,22 +76,6 @@ impl AndroidMobilePlatform {
         height: u32,
     ) -> ObjectId {
         self.state.create_widget(kind, text, x, y, width, height)
-    }
-    #[allow(clippy::too_many_arguments)]
-    fn create_child_widget(
-        &self,
-        parent: ObjectId,
-        kind: MobileHandleKind,
-        text: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        if !self.state.contains_widget(parent) {
-            return 0;
-        }
-        self.insert_widget(kind, text, x, y, width, height)
     }
     /// Returns currently attached native view handle when present.
     pub fn attached_native_view(&self) -> Option<usize> {
@@ -214,12 +179,10 @@ impl Platform for AndroidMobilePlatform {
     }
     /// Release every registry entry the backend holds for `widget_id`.
     ///
-    /// Besides the authoritative `BackendState` record the mobile backend keeps
-    /// five per-widget side tables: the menu bookkeeping (`menus`) plus the
-    /// combo-box item/index and list-box item/index maps. All of them must be
-    /// purged, otherwise a UI rebuilt in a create/destroy loop would leak one
-    /// entry per discarded widget. Each lock is scoped to its own statement so no
-    /// two guards are ever held at the same time.
+    /// Besides the authoritative `BackendState` record the mobile backend keeps one
+    /// per-widget side table: the menu bookkeeping (`menus`). It must be purged,
+    /// otherwise a UI rebuilt in a create/destroy loop would leak one entry per
+    /// discarded widget.
     fn destroy_widget(&self, widget_id: ObjectId) -> bool {
         {
             let mut menus = self.menus.lock().expect("mobile menu lock poisoned");
@@ -232,323 +195,27 @@ impl Platform for AndroidMobilePlatform {
             }
         }
 
-        self.combo_items.lock().expect("mobile combo lock poisoned").remove(&widget_id);
-        self.combo_current_index
-            .lock()
-            .expect("mobile combo index lock poisoned")
-            .remove(&widget_id);
-
-        self.list_items.lock().expect("mobile list lock poisoned").remove(&widget_id);
-        self.list_current_index.lock().expect("mobile list index lock poisoned").remove(&widget_id);
-
         // The state record is the authority on whether the widget existed.
         self.state.destroy_widget(widget_id)
     }
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         self.insert_widget(MobileHandleKind::Window, title, x, y, width, height)
     }
-    fn create_button(
-        &self,
-        parent: ObjectId,
-        text: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        self.create_child_widget(parent, MobileHandleKind::Button, text, x, y, width, height)
-    }
-    fn create_line_edit(
-        &self,
-        parent: ObjectId,
-        text: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        self.create_child_widget(parent, MobileHandleKind::LineEdit, text, x, y, width, height)
-    }
-    fn create_label(
-        &self,
-        parent: ObjectId,
-        text: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        self.create_child_widget(parent, MobileHandleKind::Label, text, x, y, width, height)
-    }
-    fn create_checkbox(
-        &self,
-        parent: ObjectId,
-        text: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        self.create_child_widget(parent, MobileHandleKind::CheckBox, text, x, y, width, height)
-    }
-    fn create_radio_button(
-        &self,
-        parent: ObjectId,
-        text: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        self.create_child_widget(parent, MobileHandleKind::RadioButton, text, x, y, width, height)
-    }
-    fn create_slider(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
-        self.create_child_widget(parent, MobileHandleKind::Slider, "Slider", x, y, width, height)
-    }
-    fn create_progress_bar(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        self.create_child_widget(
-            parent,
-            MobileHandleKind::ProgressBar,
-            "ProgressBar",
-            x,
-            y,
-            width,
-            height,
-        )
-    }
-    fn create_combo_box(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        let id = self.create_child_widget(
-            parent,
-            MobileHandleKind::ComboBox,
-            "ComboBox",
-            x,
-            y,
-            width,
-            height,
-        );
-        if id != 0 {
-            self.combo_items.lock().expect("mobile combo lock poisoned").entry(id).or_default();
-            self.combo_current_index
-                .lock()
-                .expect("mobile combo index lock poisoned")
-                .entry(id)
-                .or_insert(None);
-        }
-        id
-    }
-    fn create_list_box(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        let id = self.create_child_widget(
-            parent,
-            MobileHandleKind::ListBox,
-            "ListBox",
-            x,
-            y,
-            width,
-            height,
-        );
-        if id != 0 {
-            self.list_items.lock().expect("mobile list lock poisoned").entry(id).or_default();
-            self.list_current_index
-                .lock()
-                .expect("mobile list index lock poisoned")
-                .entry(id)
-                .or_insert(None);
-        }
-        id
-    }
-    fn list_box_add_item(&self, list_box: ObjectId, text: &str) -> bool {
-        if !matches!(self.kind_of(list_box), Some(MobileHandleKind::ListBox)) {
-            return false;
-        }
-        self.list_items
-            .lock()
-            .expect("mobile list lock poisoned")
-            .entry(list_box)
-            .or_default()
-            .push(text.to_string());
-        true
-    }
-    fn list_box_remove_item(&self, list_box: ObjectId, index: usize) -> bool {
-        if !matches!(self.kind_of(list_box), Some(MobileHandleKind::ListBox)) {
-            return false;
-        }
-        let mut items = self.list_items.lock().expect("mobile list lock poisoned");
-        let Some(vec) = items.get_mut(&list_box) else {
-            return false;
-        };
-        if index >= vec.len() {
-            return false;
-        }
-        vec.remove(index);
-        drop(items);
-        let mut current = self.list_current_index.lock().expect("mobile list index lock poisoned");
-        if let Some(sel) = current.get_mut(&list_box) {
-            *sel = match *sel {
-                Some(i) if i == index => None,
-                Some(i) if i > index => Some(i - 1),
-                other => other,
-            };
-        }
-        true
-    }
-    fn list_box_clear_items(&self, list_box: ObjectId) -> bool {
-        if !matches!(self.kind_of(list_box), Some(MobileHandleKind::ListBox)) {
-            return false;
-        }
-        self.list_items
-            .lock()
-            .expect("mobile list lock poisoned")
-            .entry(list_box)
-            .or_default()
-            .clear();
-        self.list_current_index
-            .lock()
-            .expect("mobile list index lock poisoned")
-            .insert(list_box, None);
-        true
-    }
-    fn list_box_set_current_index(&self, list_box: ObjectId, index: usize) -> bool {
-        if !matches!(self.kind_of(list_box), Some(MobileHandleKind::ListBox)) {
-            return false;
-        }
-        let count = self.list_box_item_count(list_box);
-        if index >= count {
-            return false;
-        }
-        self.list_current_index
-            .lock()
-            .expect("mobile list index lock poisoned")
-            .insert(list_box, Some(index));
-        true
-    }
-    fn list_box_current_index(&self, list_box: ObjectId) -> Option<usize> {
-        if !matches!(self.kind_of(list_box), Some(MobileHandleKind::ListBox)) {
-            return None;
-        }
-        self.list_current_index
-            .lock()
-            .expect("mobile list index lock poisoned")
-            .get(&list_box)
-            .copied()
-            .flatten()
-    }
-    fn list_box_item_count(&self, list_box: ObjectId) -> usize {
-        if !matches!(self.kind_of(list_box), Some(MobileHandleKind::ListBox)) {
-            return 0;
-        }
-        self.list_items
-            .lock()
-            .expect("mobile list lock poisoned")
-            .get(&list_box)
-            .map_or(0, Vec::len)
-    }
-    fn list_box_item_text(&self, list_box: ObjectId, index: usize) -> Option<String> {
-        if !matches!(self.kind_of(list_box), Some(MobileHandleKind::ListBox)) {
-            return None;
-        }
-        self.list_items
-            .lock()
-            .expect("mobile list lock poisoned")
-            .get(&list_box)
-            .and_then(|items| items.get(index).cloned())
-    }
-    fn combo_box_add_item(&self, combo_box: ObjectId, text: &str) -> bool {
-        if !matches!(self.kind_of(combo_box), Some(MobileHandleKind::ComboBox)) {
-            return false;
-        }
-        self.combo_items
-            .lock()
-            .expect("mobile combo lock poisoned")
-            .entry(combo_box)
-            .or_default()
-            .push(text.to_string());
-        true
-    }
-    fn combo_box_clear_items(&self, combo_box: ObjectId) -> bool {
-        if !matches!(self.kind_of(combo_box), Some(MobileHandleKind::ComboBox)) {
-            return false;
-        }
-        self.combo_items
-            .lock()
-            .expect("mobile combo lock poisoned")
-            .entry(combo_box)
-            .or_default()
-            .clear();
-        self.combo_current_index
-            .lock()
-            .expect("mobile combo index lock poisoned")
-            .insert(combo_box, None);
-        true
-    }
-    fn combo_box_set_current_index(&self, combo_box: ObjectId, index: usize) -> bool {
-        if !matches!(self.kind_of(combo_box), Some(MobileHandleKind::ComboBox)) {
-            return false;
-        }
-        let count = self.combo_box_item_count(combo_box);
-        if index >= count {
-            return false;
-        }
-        self.combo_current_index
-            .lock()
-            .expect("mobile combo index lock poisoned")
-            .insert(combo_box, Some(index));
-        true
-    }
-    fn combo_box_current_index(&self, combo_box: ObjectId) -> Option<usize> {
-        if !matches!(self.kind_of(combo_box), Some(MobileHandleKind::ComboBox)) {
-            return None;
-        }
-        self.combo_current_index
-            .lock()
-            .expect("mobile combo index lock poisoned")
-            .get(&combo_box)
-            .copied()
-            .flatten()
-    }
-    fn combo_box_item_count(&self, combo_box: ObjectId) -> usize {
-        if !matches!(self.kind_of(combo_box), Some(MobileHandleKind::ComboBox)) {
-            return 0;
-        }
-        self.combo_items
-            .lock()
-            .expect("mobile combo lock poisoned")
-            .get(&combo_box)
-            .map_or(0, Vec::len)
-    }
-    fn combo_box_item_text(&self, combo_box: ObjectId, index: usize) -> Option<String> {
-        if !matches!(self.kind_of(combo_box), Some(MobileHandleKind::ComboBox)) {
-            return None;
-        }
-        self.combo_items
-            .lock()
-            .expect("mobile combo lock poisoned")
-            .get(&combo_box)
-            .and_then(|items| items.get(index).cloned())
-    }
-    fn create_panel(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
-        self.create_child_widget(parent, MobileHandleKind::Panel, "Panel", x, y, width, height)
-    }
+
+    // ─── Menu model ──────────────────────────────────────────────────────
+    //
+    // These are NOT control construction. Android has no standalone menu-bar or
+    // menu *View*: the host Activity owns the menu and materialises it through
+    // `onCreateOptionsMenu` / `onOptionsItemSelected`. What lives here is the
+    // in-process model that maps a Rust-side menu tree onto that callback surface,
+    // plus an injectable trigger queue so the library's own menu widget can report
+    // activations without a UI toolkit of its own.
+    //
+    // They therefore survive the self-drawing change, exactly as on Android/iOS:
+    // the library paints the menu *appearance*, while the host still owns the menu
+    // *identity* the OS asks about. `capabilities().native_menu` stays `false`,
+    // because no OS menu object is created here.
+
     fn create_menu_bar(
         &self,
         parent: ObjectId,
@@ -557,6 +224,7 @@ impl Platform for AndroidMobilePlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
+        // A menu bar is owned by a window.
         if !matches!(self.kind_of(parent), Some(MobileHandleKind::Window)) {
             return 0;
         }
@@ -571,6 +239,7 @@ impl Platform for AndroidMobilePlatform {
         width: u32,
         height: u32,
     ) -> ObjectId {
+        // A menu hangs off a menu bar or another menu.
         if !matches!(self.kind_of(parent), Some(MobileHandleKind::MenuBar | MobileHandleKind::Menu))
         {
             return 0;
@@ -604,6 +273,7 @@ impl Platform for AndroidMobilePlatform {
         text: &str,
         _shortcut: Option<&str>,
     ) -> ObjectId {
+        // A menu item must hang off a menu.
         if !matches!(self.kind_of(parent_menu), Some(MobileHandleKind::Menu)) {
             return 0;
         }
@@ -616,33 +286,6 @@ impl Platform for AndroidMobilePlatform {
             .or_default()
             .push(item_id);
         item_id
-    }
-    fn create_tool_bar(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        if !matches!(self.kind_of(parent), Some(MobileHandleKind::Window)) {
-            return 0;
-        }
-        self.insert_widget(MobileHandleKind::ToolBar, "ToolBar", x, y, width, height)
-    }
-    fn create_status_bar(
-        &self,
-        parent: ObjectId,
-        text: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        if !matches!(self.kind_of(parent), Some(MobileHandleKind::Window)) {
-            return 0;
-        }
-        self.insert_widget(MobileHandleKind::StatusBar, text, x, y, width, height)
     }
     fn show_widget(&self, widget_id: ObjectId) {
         self.state.set_visible(widget_id, true);
@@ -675,6 +318,7 @@ impl Platform for AndroidMobilePlatform {
         self.state.pop_menu_event()
     }
     fn inject_menu_trigger(&self, menu_item_id: ObjectId) -> bool {
+        // Only a menu item may produce a menu trigger.
         if !matches!(self.kind_of(menu_item_id), Some(MobileHandleKind::MenuItem)) {
             return false;
         }
@@ -694,402 +338,6 @@ impl Platform for AndroidMobilePlatform {
         self.state.push_widget_event(WidgetTriggerEvent { widget_id, kind });
         true
     }
-    fn create_message_box(
-        &self,
-        _parent: ObjectId,
-        title: &str,
-        _text: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        self.insert_widget(MobileHandleKind::Window, title, x, y, width, height)
-    }
-    fn create_file_dialog(
-        &self,
-        _parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        self.insert_widget(MobileHandleKind::Window, "file_dialog", x, y, width, height)
-    }
-    fn create_color_dialog(
-        &self,
-        _parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        self.insert_widget(MobileHandleKind::Window, "color_dialog", x, y, width, height)
-    }
-    fn create_font_dialog(
-        &self,
-        _parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        self.insert_widget(MobileHandleKind::Window, "font_dialog", x, y, width, height)
-    }
-    fn create_spin_box(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        self.create_child_widget(
-            parent,
-            MobileHandleKind::LineEdit,
-            "spin_box",
-            x,
-            y,
-            width,
-            height,
-        )
-    }
-    fn create_list_view(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        self.create_child_widget(
-            parent,
-            MobileHandleKind::ListBox,
-            "list_view",
-            x,
-            y,
-            width,
-            height,
-        )
-    }
-    fn create_scroll_area(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        self.create_child_widget(
-            parent,
-            MobileHandleKind::Panel,
-            "scroll_area",
-            x,
-            y,
-            width,
-            height,
-        )
-    }
-    fn create_group_box(
-        &self,
-        parent: ObjectId,
-        title: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        self.create_child_widget(parent, MobileHandleKind::GroupBox, title, x, y, width, height)
-    }
-    fn create_frame(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
-        self.create_child_widget(parent, MobileHandleKind::Frame, "Frame", x, y, width, height)
-    }
-    fn create_tab_widget(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        self.create_child_widget(
-            parent,
-            MobileHandleKind::TabWidget,
-            "TabWidget",
-            x,
-            y,
-            width,
-            height,
-        )
-    }
-    fn create_splitter(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        self.create_child_widget(
-            parent,
-            MobileHandleKind::Splitter,
-            "Splitter",
-            x,
-            y,
-            width,
-            height,
-        )
-    }
-    fn create_toggle_button(
-        &self,
-        parent: ObjectId,
-        text: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        self.create_child_widget(parent, MobileHandleKind::ToggleButton, text, x, y, width, height)
-    }
-    fn create_calendar(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        self.create_child_widget(
-            parent,
-            MobileHandleKind::Calendar,
-            "Calendar",
-            x,
-            y,
-            width,
-            height,
-        )
-    }
-    fn create_scroll_bar(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        self.create_child_widget(
-            parent,
-            MobileHandleKind::ScrollBar,
-            "ScrollBar",
-            x,
-            y,
-            width,
-            height,
-        )
-    }
-    fn create_double_spin_box(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        self.create_child_widget(
-            parent,
-            MobileHandleKind::DoubleSpinBox,
-            "DoubleSpinBox",
-            x,
-            y,
-            width,
-            height,
-        )
-    }
-    fn create_font_combo_box(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        self.create_child_widget(
-            parent,
-            MobileHandleKind::FontComboBox,
-            "FontComboBox",
-            x,
-            y,
-            width,
-            height,
-        )
-    }
-    fn create_context_menu(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        self.create_child_widget(
-            parent,
-            MobileHandleKind::ContextMenu,
-            "ContextMenu",
-            x,
-            y,
-            width,
-            height,
-        )
-    }
-    fn create_popup_window(
-        &self,
-        parent: ObjectId,
-        title: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        self.create_child_widget(parent, MobileHandleKind::PopupWindow, title, x, y, width, height)
-    }
-    fn create_dialog(
-        &self,
-        parent: ObjectId,
-        title: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        self.create_child_widget(parent, MobileHandleKind::Dialog, title, x, y, width, height)
-    }
-    fn create_input_dialog(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        self.create_child_widget(
-            parent,
-            MobileHandleKind::InputDialog,
-            "Input",
-            x,
-            y,
-            width,
-            height,
-        )
-    }
-    fn create_progress_dialog(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        self.create_child_widget(
-            parent,
-            MobileHandleKind::ProgressDialog,
-            "Progress",
-            x,
-            y,
-            width,
-            height,
-        )
-    }
-    fn create_directory_dialog(
-        &self,
-        parent: ObjectId,
-        title: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        self.create_child_widget(
-            parent,
-            MobileHandleKind::DirectoryDialog,
-            title,
-            x,
-            y,
-            width,
-            height,
-        )
-    }
-    fn create_date_picker(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        self.create_child_widget(
-            parent,
-            MobileHandleKind::DatePicker,
-            "DatePicker",
-            x,
-            y,
-            width,
-            height,
-        )
-    }
-    fn create_time_picker(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        self.create_child_widget(
-            parent,
-            MobileHandleKind::TimePicker,
-            "TimePicker",
-            x,
-            y,
-            width,
-            height,
-        )
-    }
-    fn create_date_time_picker(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        self.create_child_widget(
-            parent,
-            MobileHandleKind::DateTimePicker,
-            "DateTimePicker",
-            x,
-            y,
-            width,
-            height,
-        )
-    }
-    fn create_activity_indicator(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        self.create_child_widget(
-            parent,
-            MobileHandleKind::ActivityIndicator,
-            "ActivityIndicator",
-            x,
-            y,
-            width,
-            height,
-        )
-    }
 }
 impl MobilePlatformExtension for AndroidMobilePlatform {
     fn mobile_backend(&self) -> MobileBackend {
@@ -1108,106 +356,157 @@ static MOBILE_PLATFORM: OnceLock<AndroidMobilePlatform> = OnceLock::new();
 pub fn get_mobile_platform() -> &'static AndroidMobilePlatform {
     MOBILE_PLATFORM.get_or_init(AndroidMobilePlatform::new)
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The window is the one primitive the host still owns, so it must keep working.
     #[test]
-    fn mobile_backend_creates_extended_controls() {
+    fn mobile_backend_creates_window() {
         let platform = AndroidMobilePlatform::new();
         let window = platform.create_window("mobile", 0, 0, 320, 480);
         assert_ne!(window, 0);
-        let line_edit = platform.create_line_edit(window, "name", 10, 10, 120, 24);
-        let label = platform.create_label(window, "label", 10, 40, 120, 24);
-        let checkbox = platform.create_checkbox(window, "check", 10, 70, 120, 24);
-        let slider = platform.create_slider(window, 10, 100, 160, 24);
-        assert_ne!(line_edit, 0);
-        assert_ne!(label, 0);
-        assert_ne!(checkbox, 0);
-        assert_ne!(slider, 0);
-        assert_eq!(platform.state.kind_of(line_edit), Some(MobileHandleKind::LineEdit));
-        assert_eq!(platform.state.kind_of(label), Some(MobileHandleKind::Label));
-        assert_eq!(platform.state.kind_of(checkbox), Some(MobileHandleKind::CheckBox));
-        assert_eq!(platform.state.kind_of(slider), Some(MobileHandleKind::Slider));
+        assert_eq!(platform.kind_of(window), Some(MobileHandleKind::Window));
     }
+
+    /// The library paints every control, so the host no longer builds any of them.
+    ///
+    /// Each `create_*` now falls through to the `Platform` trait default, which
+    /// returns `0` even when handed a valid window id. Returning a non-zero handle
+    /// here would claim that a host control exists when none does (BLUE15 #56).
     #[test]
-    fn mobile_backend_routes_trigger_events_for_extended_controls() {
+    fn mobile_backend_builds_no_controls() {
         let platform = AndroidMobilePlatform::new();
         let window = platform.create_window("mobile", 0, 0, 320, 480);
-        let line_edit = platform.create_line_edit(window, "", 10, 10, 120, 24);
-        let checkbox = platform.create_checkbox(window, "", 10, 40, 120, 24);
-        assert!(platform.inject_widget_trigger_event(line_edit, WidgetTriggerKind::ValueChanged));
-        assert!(platform.inject_widget_trigger_event(checkbox, WidgetTriggerKind::Clicked));
-        let first = platform.poll_widget_trigger_event().expect("first event should exist");
-        let second = platform.poll_widget_trigger_event().expect("second event should exist");
-        assert_eq!(first.widget_id, line_edit);
-        assert_eq!(first.kind, WidgetTriggerKind::ValueChanged);
-        assert_eq!(second.widget_id, checkbox);
-        assert_eq!(second.kind, WidgetTriggerKind::Clicked);
+        assert_ne!(window, 0);
+
+        assert_eq!(platform.create_button(window, "b", 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_checkbox(window, "c", 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_line_edit(window, "", 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_label(window, "l", 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_radio_button(window, "r", 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_slider(window, 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_progress_bar(window, 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_combo_box(window, 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_list_box(window, 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_panel(window, 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_tool_bar(window, 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_status_bar(window, "s", 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_toggle_button(window, "t", 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_spin_box(window, 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_list_view(window, 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_scroll_area(window, 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_group_box(window, "g", 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_frame(window, 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_tab_widget(window, 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_splitter(window, 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_calendar(window, 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_scroll_bar(window, 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_double_spin_box(window, 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_font_combo_box(window, 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_context_menu(window, 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_popup_window(window, "p", 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_dialog(window, "d", 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_input_dialog(window, 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_progress_dialog(window, 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_directory_dialog(window, "x", 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_date_picker(window, 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_time_picker(window, 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_date_time_picker(window, 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_activity_indicator(window, 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_message_box(window, "m", "body", 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_file_dialog(window, 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_color_dialog(window, 0, 0, 80, 24), 0);
+        assert_eq!(platform.create_font_dialog(window, 0, 0, 80, 24), 0);
     }
+
+    /// Item storage went away with the controls that owned it.
+    ///
+    /// A combo box and a list box can no longer be created, so the item operations
+    /// have no widget to attach to and must report that nothing was stored.
     #[test]
-    fn mobile_backend_creates_menu_host_controls_and_validates_triggers() {
+    fn mobile_backend_tracks_no_control_items() {
+        let platform = AndroidMobilePlatform::new();
+        let window = platform.create_window("mobile", 0, 0, 320, 480);
+
+        assert!(!platform.combo_box_add_item(window, "One"));
+        assert_eq!(platform.combo_box_item_count(window), 0);
+        assert_eq!(platform.combo_box_current_index(window), None);
+        assert!(!platform.combo_box_set_current_index(window, 0));
+        assert!(!platform.combo_box_clear_items(window));
+
+        assert!(!platform.list_box_add_item(window, "A"));
+        assert_eq!(platform.list_box_item_count(window), 0);
+        assert_eq!(platform.list_box_current_index(window), None);
+        assert!(!platform.list_box_set_current_index(window, 0));
+        assert!(!platform.list_box_remove_item(window, 0));
+        assert!(!platform.list_box_clear_items(window));
+    }
+
+    /// Typed trigger events remain a library-side queue, independent of controls.
+    ///
+    /// The window is a real handle, so it can carry an injected event; an id that
+    /// was never created cannot.
+    #[test]
+    fn mobile_backend_routes_widget_trigger_events() {
+        let platform = AndroidMobilePlatform::new();
+        let window = platform.create_window("mobile", 0, 0, 320, 480);
+
+        assert!(platform.inject_widget_trigger_event(window, WidgetTriggerKind::ValueChanged));
+        let event = platform.poll_widget_trigger_event().expect("event should exist");
+        assert_eq!(event.widget_id, window);
+        assert_eq!(event.kind, WidgetTriggerKind::ValueChanged);
+
+        assert!(!platform.inject_widget_trigger_event(0, WidgetTriggerKind::Clicked));
+        assert!(platform.poll_widget_trigger_event().is_none());
+    }
+
+    /// The menu tree is an in-process model the Activity materialises itself.
+    #[test]
+    fn mobile_backend_models_menu_tree_and_validates_triggers() {
         let platform = AndroidMobilePlatform::new();
         let window = platform.create_window("mobile", 0, 0, 320, 480);
         let menu_bar = platform.create_menu_bar(window, 0, 0, 320, 24);
         let menu = platform.create_menu(menu_bar, "File", 0, 0, 100, 24);
         let menu_item = platform.menu_add_item(menu, "Open", None);
-        let tool_bar = platform.create_tool_bar(window, 0, 24, 320, 24);
-        let status_bar = platform.create_status_bar(window, "Ready", 0, 456, 320, 24);
+
         assert_ne!(menu_bar, 0);
         assert_ne!(menu, 0);
         assert_ne!(menu_item, 0);
-        assert_ne!(tool_bar, 0);
-        assert_ne!(status_bar, 0);
+        assert_eq!(platform.kind_of(menu_bar), Some(MobileHandleKind::MenuBar));
+        assert_eq!(platform.kind_of(menu), Some(MobileHandleKind::Menu));
+        assert_eq!(platform.kind_of(menu_item), Some(MobileHandleKind::MenuItem));
+
+        // A menu bar requires a window; a menu requires a menu bar or menu.
+        assert_eq!(platform.create_menu_bar(menu, 0, 0, 320, 24), 0);
+        assert_eq!(platform.create_menu(window, "Bad", 0, 0, 100, 24), 0);
+        assert_eq!(platform.menu_add_item(window, "Bad", None), 0);
+
         assert!(platform.attach_menu_bar_to_window(window, menu_bar));
+        assert!(!platform.attach_menu_bar_to_window(window, menu_item));
+
+        // Only a menu item may be injected as a menu trigger.
         assert!(platform.inject_menu_trigger(menu_item));
+        assert!(!platform.inject_menu_trigger(window));
+        assert!(!platform.inject_menu_trigger(menu_bar));
         assert_eq!(platform.poll_menu_triggered(), Some(menu_item));
-        assert!(!platform.inject_menu_trigger(tool_bar));
     }
 
+    /// The menu claim is honest: the host owns the menu, the library paints it.
     #[test]
-    fn mobile_combo_box_item_operations_are_state_backed() {
+    fn mobile_backend_does_not_claim_a_native_menu() {
         let platform = AndroidMobilePlatform::new();
-        let window = platform.create_window("mobile", 0, 0, 320, 480);
-        let combo = platform.create_combo_box(window, 10, 10, 120, 24);
-        assert_ne!(combo, 0);
-
-        assert!(platform.combo_box_add_item(combo, "One"));
-        assert!(platform.combo_box_add_item(combo, "Two"));
-        assert_eq!(platform.combo_box_item_count(combo), 2);
-        assert_eq!(platform.combo_box_item_text(combo, 0).as_deref(), Some("One"));
-        assert_eq!(platform.combo_box_item_text(combo, 1).as_deref(), Some("Two"));
-
-        assert!(platform.combo_box_set_current_index(combo, 1));
-        assert_eq!(platform.combo_box_current_index(combo), Some(1));
-
-        assert!(platform.combo_box_clear_items(combo));
-        assert_eq!(platform.combo_box_item_count(combo), 0);
-        assert_eq!(platform.combo_box_current_index(combo), None);
+        assert!(!platform.capabilities().native_menu);
     }
 
+    /// Attaching a native view is the host capability that survived.
     #[test]
-    fn mobile_list_box_item_operations_are_state_backed() {
+    fn mobile_backend_attaches_native_view() {
         let platform = AndroidMobilePlatform::new();
-        let window = platform.create_window("mobile", 0, 0, 320, 480);
-        let list = platform.create_list_box(window, 10, 10, 120, 120);
-        assert_ne!(list, 0);
-
-        assert!(platform.list_box_add_item(list, "A"));
-        assert!(platform.list_box_add_item(list, "B"));
-        assert!(platform.list_box_add_item(list, "C"));
-        assert_eq!(platform.list_box_item_count(list), 3);
-        assert_eq!(platform.list_box_item_text(list, 2).as_deref(), Some("C"));
-
-        assert!(platform.list_box_set_current_index(list, 2));
-        assert_eq!(platform.list_box_current_index(list), Some(2));
-
-        assert!(platform.list_box_remove_item(list, 1));
-        assert_eq!(platform.list_box_item_count(list), 2);
-        assert_eq!(platform.list_box_item_text(list, 1).as_deref(), Some("C"));
-        assert_eq!(platform.list_box_current_index(list), Some(1));
-
-        assert!(platform.list_box_clear_items(list));
-        assert_eq!(platform.list_box_item_count(list), 0);
-        assert_eq!(platform.list_box_current_index(list), None);
+        assert_eq!(platform.attached_native_view(), None);
+        assert!(!platform.attach_to_native_view(0));
+        assert!(platform.attach_to_native_view(0x1234));
+        assert_eq!(platform.attached_native_view(), Some(0x1234));
     }
 }

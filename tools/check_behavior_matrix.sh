@@ -50,14 +50,14 @@ run_case "default typed trigger parity" cargo test platform::tests::consistency_
 echo "[4/14] embedded capability contract"
 run_case "embedded capability contract" cargo test --no-default-features --features embedded platform::tests::consistency_capability_contract_by_profile
 
-echo "[5/14] embedded control matrix parity"
-run_case "embedded control matrix parity" cargo test --lib --no-default-features --features embedded platform::tests::embedded_profile_core_controls_have_non_placeholder_create_paths
+echo "[5/14] embedded control registration parity"
+run_case "embedded control matrix parity" cargo test --lib --no-default-features --features embedded platform::tests::embedded_profile_self_drawn_controls_are_registered_with_the_host
 
 echo "[6/14] embedded host unsupported semantics"
-run_case "embedded host unsupported semantics" cargo test --lib --no-default-features --features embedded platform::tests::embedded_profile_host_controls_are_explicitly_unsupported
+run_case "embedded host capability contract" cargo test --lib --no-default-features --features embedded platform::tests::consistency_capability_contract_by_profile
 
 echo "[7/14] embedded combo/list state-event-data parity"
-run_case "embedded combo/list parity" cargo test --lib --no-default-features --features embedded platform::tests::embedded_profile_combo_list_state_event_data_roundtrip
+run_case "embedded selection-state parity" cargo test --lib --no-default-features --features embedded platform::tests::embedded_profile_selection_state_roundtrip
 
 echo "[8/14] embedded runtime deterministic task order"
 run_case "embedded runtime deterministic order" cargo test --lib --no-default-features --features embedded render_engine::embedded_engine::tests::embedded_task_queue_order_is_deterministic

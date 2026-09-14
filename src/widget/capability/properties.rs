@@ -636,7 +636,12 @@ pub(crate) fn segmented_control_capability() -> WidgetCapability {
 #[cfg(not(alloc_frugal))]
 pub(crate) fn chip_capability() -> WidgetCapability {
     WidgetCapability {
-        kind: WidgetKind::CheckListBox,
+        // `WidgetKind::Chip` names this control. It previously declared
+        // `CheckListBox` — which is a *type alias for `ListBox`* — so the lookup for
+        // `Chip` found nothing and the lookup for `CheckListBox` was ambiguous
+        // between this entry and the real list box. See the alias table in
+        // `factory_name_for_kind` for the other half of that fix.
+        kind: WidgetKind::Chip,
         canonical_name: "chip",
         aliases: &["chips"],
         properties: CHIP_PROPERTIES,

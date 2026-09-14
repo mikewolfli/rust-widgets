@@ -12,25 +12,9 @@ macro_rules! impl_base_widgets {
         }
 
         fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.texts.insert(widget_id, title.to_string());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, title.to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: None,
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::Window,
-                },
-            );
-            widget_id
+
+            self.mount_widget_of_kind(WidgetKind::Window, 0, title, x, y, width, height)
+
         }
         fn create_button(
             &self,
@@ -41,25 +25,7 @@ macro_rules! impl_base_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.texts.insert(widget_id, text.to_string());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, text.to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::Button,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::Button, parent, text, x, y, width, height)
         }
         fn create_checkbox(
             &self,
@@ -70,25 +36,7 @@ macro_rules! impl_base_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.texts.insert(widget_id, text.to_string());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, text.to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::CheckBox,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::CheckBox, parent, text, x, y, width, height)
         }
         fn create_label(
             &self,
@@ -99,25 +47,7 @@ macro_rules! impl_base_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.texts.insert(widget_id, text.to_string());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, text.to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::Label,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::Label, parent, text, x, y, width, height)
         }
         fn create_radio_button(
             &self,
@@ -128,25 +58,7 @@ macro_rules! impl_base_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.texts.insert(widget_id, text.to_string());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, text.to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::RadioButton,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::RadioButton, parent, text, x, y, width, height)
         }
         fn create_panel(
             &self,
@@ -156,24 +68,7 @@ macro_rules! impl_base_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "Panel".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::Panel,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::Panel, parent, "", x, y, width, height)
         }
         fn create_group_box(
             &self,
@@ -184,25 +79,7 @@ macro_rules! impl_base_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.texts.insert(widget_id, title.to_string());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, title.to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::GroupBox,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::GroupBox, parent, title, x, y, width, height)
         }
         fn create_toggle_button(
             &self,
@@ -213,28 +90,15 @@ macro_rules! impl_base_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.texts.insert(widget_id, text.to_string());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, text.to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    #[cfg(widgets_unstripped)]
-                    widget_kind: WidgetKind::ToggleButton,
-                    #[cfg(stripped_widgets)]
-                    widget_kind: WidgetKind::Button,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(
+                crate::control_backend::custom::TOGGLE_BUTTON_KIND,
+                parent,
+                text,
+                x,
+                y,
+                width,
+                height,
+            )
         }
     };
 }

@@ -5,83 +5,22 @@
 use crate::compat::HashMap;
 use crate::compat::Mutex;
 use crate::platform::state::BackendState;
-use crate::platform::WidgetTriggerEvent;
-use alloc::collections::VecDeque;
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+/// Logical handle kinds that survive the self-drawn widget strategy.
+///
+/// # BLUE15: the host no longer builds controls
+///
+/// This used to enumerate every logical control (`Button`, `Label`, `ListBox`,
+/// `MenuBar`, ...). Under the self-drawn strategy the host owes the widget layer a
+/// window and a drawing surface, and the library paints every `WidgetKind`, so a
+/// per-kind `create_*` has no host object to map onto (BLUE15 #56). The window is
+/// the one primitive GTK still supplies; the menu is an in-process model the host
+/// materialises through its own widgets.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum LinuxHandleKind {
+    /// Top-level GTK window handed to the library as a drawing surface.
     Window,
-    Button,
-    CheckBox,
-    LineEdit,
-    Label,
-    RadioButton,
-    Slider,
-    ProgressBar,
-    ComboBox,
-    ListBox,
-    Panel,
-    MenuBar,
-    Menu,
-    MenuItem,
-    ToolBar,
-    StatusBar,
-    MessageBox,
-    FileDialog,
-    ColorDialog,
-    FontDialog,
-    SpinBox,
-    ListView,
-    ScrollArea,
-    GroupBox,
-    Frame,
-    TabWidget,
-    Splitter,
-    ToggleButton,
-    Calendar,
-    ScrollBar,
-    DoubleSpinBox,
-    FontComboBox,
-    ContextMenu,
-    PopupWindow,
-    Dialog,
-    InputDialog,
-    ProgressDialog,
-    DirectoryDialog,
-    DatePicker,
-    TimePicker,
-    DateTimePicker,
-    ActivityIndicator,
 }
-#[derive(Default)]
-pub(crate) struct LinuxMenuState {
-    /// Tracks menu bar attachment by window id.
-    pub(crate) attached_menu_bar: HashMap<u64, u64>,
-    /// Maintains menu tree relationships.
-    pub(crate) menu_children: HashMap<u64, Vec<u64>>,
-    /// Parent lookup for geometry updates in gtk-native fixed containers.
-    pub(crate) widget_parent: HashMap<u64, u64>,
-    /// FIFO queue for menu triggers.
-    pub(crate) pending_menu_events: VecDeque<u64>,
-    /// FIFO queue for typed widget triggers.
-    pub(crate) pending_widget_events: VecDeque<WidgetTriggerEvent>,
-    /// Display text of each menu item's accelerator, keyed by item id.
-    ///
-    /// Kept separately from the GTK label because a host running without a
-    /// usable GTK runtime (or querying before the widget is realised) must still
-    /// be able to inspect which chord was bound.
-    pub(crate) menu_item_shortcuts: HashMap<u64, String>,
-}
-/// Internal list data storage for ComboBox and ListBox widgets.
-#[derive(Default)]
-pub(crate) struct ListData {
-    /// Ordered item text entries.
-    pub(crate) items: Vec<String>,
-    /// Currently selected index, if any.
-    pub(crate) current_index: Option<usize>,
-}
-
 /// Runtime lifecycle state for Linux backend main loop fallback.
 pub(crate) struct LinuxRuntimeState {
     pub(crate) initialized: AtomicBool,
@@ -95,15 +34,12 @@ impl LinuxRuntimeState {
 /// Linux desktop platform adapter.
 pub struct LinuxPlatform {
     pub(crate) state: BackendState<LinuxHandleKind>,
-    pub(crate) menus: Arc<Mutex<LinuxMenuState>>,
     pub(crate) runtime: LinuxRuntimeState,
     #[cfg(all(target_os = "linux", feature = "gtk-native"))]
     pub(crate) native: Mutex<LinuxNativeState>,
     /// Platform IME bridge for text input method integration (Linux only).
     #[cfg(target_os = "linux")]
     pub(crate) ime_bridge: crate::platform::ime_linux::LinuxImeBridge,
-    /// Shared list storage for ComboBox and ListBox widgets.
-    pub(crate) list_data: Mutex<HashMap<u64, ListData>>,
 }
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]
 #[derive(Default)]
@@ -116,28 +52,9 @@ pub(crate) struct LinuxNativeState {
     pub(crate) content_fixed: HashMap<u64, gtk::Fixed>,
     /// Generic widget registry for visibility/text/enabled operations.
     pub(crate) widgets: HashMap<u64, gtk::Widget>,
-    pub(crate) menu_bars: HashMap<u64, gtk::MenuBar>,
-    pub(crate) menus: HashMap<u64, gtk::Menu>,
-    /// Native GTK dialogs (message box / file chooser / color / font)
-    /// indexed by logical widget id.
-    pub(crate) dialogs: HashMap<u64, gtk::Dialog>,
-    /// Native GTK color selection widgets for `create_color_dialog`.
-    pub(crate) color_choosers: HashMap<u64, gtk::ColorChooser>,
-    /// Native GTK font selection widgets for `create_font_dialog`.
-    pub(crate) font_choosers: HashMap<u64, gtk::FontChooser>,
     /// Native `DrawingArea`s hosting self-drawn widgets, indexed by the widget
     /// registry id they paint (see `linux/canvas.rs`).
     pub(crate) canvases: HashMap<u64, gtk::DrawingArea>,
-    /// Window accelerator group. Menu item accelerators are registered against
-    /// it so that a bound chord actually fires the item, instead of only being
-    /// printed in the label (see `menu_add_item_impl`).
-    pub(crate) accel_groups: HashMap<u64, gtk::AccelGroup>,
-    /// Menus whose accelerator group has already received this item.
-    ///
-    /// `gtk_menu_item_set_accel_path` is global per item, so re-adding the same
-    /// item to a second group would be ignored by GTK; tracking it keeps the
-    /// bookkeeping explicit rather than relying on that silent no-op.
-    pub(crate) accel_paths: HashMap<u64, String>,
 }
 
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]
@@ -164,13 +81,11 @@ impl LinuxPlatform {
     pub fn new() -> Self {
         Self {
             state: BackendState::new(),
-            menus: Arc::new(Mutex::new(LinuxMenuState::default())),
             runtime: LinuxRuntimeState::new(),
             #[cfg(all(target_os = "linux", feature = "gtk-native"))]
             native: Mutex::new(LinuxNativeState::default()),
             #[cfg(target_os = "linux")]
             ime_bridge: crate::platform::ime_linux::LinuxImeBridge::new(),
-            list_data: Mutex::new(HashMap::new()),
         }
     }
 }

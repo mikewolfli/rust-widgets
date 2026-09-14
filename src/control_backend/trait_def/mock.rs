@@ -1,15 +1,32 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! Mock/test implementation of the `ControlBackend` trait (BLUE11 R9.1).
+//! Mock/test implementation of the `ControlBackend` trait (BLUE11 R9.1, BLUE15 Phase C).
 
 use super::trait_def::ControlBackend;
 use crate::control_backend::types::ControlBackendKind;
 use crate::core::ObjectId;
-use crate::platform::{WidgetTriggerEvent, WidgetTriggerKind};
 
-/// A minimal test backend that implements ControlBackend for testing defaults.
+/// A test double that implements only the required surface of `ControlBackend`.
+///
+/// # Why it is tiny
+///
+/// This type used to override ~90 optional methods with the value `100 + n` so
+/// that a test could read a hard-coded id back out. Those overrides described a
+/// backend that creates controls, which no backend does any more: the library
+/// paints every `WidgetKind`, and the host only supplies a window and a drawing
+/// surface (BLUE15 #55/#56). A double that still pretended to build widgets would
+/// be exactly the kind of "still looks native from the outside" surface the
+/// refactor removed.
+///
+/// What a test double must actually prove is that the *contract* is complete and
+/// that the defaults are honest — that is, that an unimplemented member reports
+/// absence (`0` / `false` / `None`) rather than a plausible-looking value. Both
+/// are asserted below.
 struct TestBackend;
+
+/// The id this double reports for the one member it really implements.
+const WINDOW_ID: ObjectId = 100;
 
 impl ControlBackend for TestBackend {
     fn backend_name(&self) -> &'static str {
@@ -21,9 +38,14 @@ impl ControlBackend for TestBackend {
     }
 
     fn create_window(&self, _title: &str, _x: i32, _y: i32, _width: u32, _height: u32) -> ObjectId {
-        100
+        WINDOW_ID
     }
 
+    // The creation members the trait still declares as required. They are no-ops on
+    // purpose: this double models a host that supplies a window only, which is what
+    // every real backend now does (BLUE15 #56). Reporting `0` keeps a caller's
+    // `assert_ne!(id, 0)` meaningful instead of handing it an id that addresses
+    // nothing.
     fn create_button(
         &self,
         _parent: ObjectId,
@@ -33,7 +55,7 @@ impl ControlBackend for TestBackend {
         _width: u32,
         _height: u32,
     ) -> ObjectId {
-        101
+        0
     }
 
     fn create_checkbox(
@@ -45,7 +67,7 @@ impl ControlBackend for TestBackend {
         _width: u32,
         _height: u32,
     ) -> ObjectId {
-        102
+        0
     }
 
     fn create_line_edit(
@@ -57,7 +79,7 @@ impl ControlBackend for TestBackend {
         _width: u32,
         _height: u32,
     ) -> ObjectId {
-        103
+        0
     }
 
     fn create_label(
@@ -69,7 +91,7 @@ impl ControlBackend for TestBackend {
         _width: u32,
         _height: u32,
     ) -> ObjectId {
-        104
+        0
     }
 
     fn create_radio_button(
@@ -81,7 +103,7 @@ impl ControlBackend for TestBackend {
         _width: u32,
         _height: u32,
     ) -> ObjectId {
-        105
+        0
     }
 
     fn create_slider(
@@ -92,7 +114,7 @@ impl ControlBackend for TestBackend {
         _width: u32,
         _height: u32,
     ) -> ObjectId {
-        106
+        0
     }
 
     fn create_progress_bar(
@@ -103,7 +125,7 @@ impl ControlBackend for TestBackend {
         _width: u32,
         _height: u32,
     ) -> ObjectId {
-        107
+        0
     }
 
     fn create_combo_box(
@@ -114,7 +136,7 @@ impl ControlBackend for TestBackend {
         _width: u32,
         _height: u32,
     ) -> ObjectId {
-        108
+        0
     }
 
     fn create_list_box(
@@ -125,7 +147,7 @@ impl ControlBackend for TestBackend {
         _width: u32,
         _height: u32,
     ) -> ObjectId {
-        109
+        0
     }
 
     fn create_panel(
@@ -136,208 +158,7 @@ impl ControlBackend for TestBackend {
         _width: u32,
         _height: u32,
     ) -> ObjectId {
-        110
-    }
-
-    fn create_menu_bar(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        111
-    }
-
-    fn create_menu(
-        &self,
-        _parent: ObjectId,
-        _text: &str,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        112
-    }
-
-    fn attach_menu_bar_to_window(&self, _window: ObjectId, _menu_bar: ObjectId) -> bool {
-        false
-    }
-
-    fn menu_add_item(
-        &self,
-        _parent_menu: ObjectId,
-        _text: &str,
-        _shortcut: Option<&str>,
-    ) -> ObjectId {
-        201
-    }
-
-    fn create_tool_bar(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        113
-    }
-
-    fn create_status_bar(
-        &self,
-        _parent: ObjectId,
-        _text: &str,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        114
-    }
-
-    fn create_dialog(
-        &self,
-        _parent: ObjectId,
-        _title: &str,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        115
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn create_message_box(
-        &self,
-        _parent: ObjectId,
-        _title: &str,
-        _text: &str,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        116
-    }
-
-    fn create_file_dialog(
-        &self,
-        _parent: ObjectId,
-        _title: &str,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        117
-    }
-
-    fn create_color_dialog(
-        &self,
-        _parent: ObjectId,
-        _title: &str,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        118
-    }
-
-    fn create_font_dialog(
-        &self,
-        _parent: ObjectId,
-        _title: &str,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        119
-    }
-
-    fn create_popup_window(
-        &self,
-        _parent: ObjectId,
-        _title: &str,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        120
-    }
-
-    fn create_text_edit(
-        &self,
-        _parent: ObjectId,
-        _text: &str,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        121
-    }
-
-    fn create_rich_edit(
-        &self,
-        _parent: ObjectId,
-        _text: &str,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        122
-    }
-
-    fn create_spin_box(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        123
-    }
-
-    fn create_list_view(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        124
-    }
-
-    fn create_tree_view(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        125
-    }
-
-    fn create_scroll_bar(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        126
+        0
     }
 
     fn create_scroll_area(
@@ -348,18 +169,7 @@ impl ControlBackend for TestBackend {
         _width: u32,
         _height: u32,
     ) -> ObjectId {
-        127
-    }
-
-    fn create_dock_panel(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        128
+        0
     }
 
     fn create_group_box(
@@ -371,95 +181,7 @@ impl ControlBackend for TestBackend {
         _width: u32,
         _height: u32,
     ) -> ObjectId {
-        129
-    }
-
-    fn create_tab_widget(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        130
-    }
-
-    fn create_splitter(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        131
-    }
-
-    fn create_stack_widget(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        132
-    }
-
-    fn create_mdi_area(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        133
-    }
-
-    fn create_canvas(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        134
-    }
-
-    fn create_table(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        135
-    }
-
-    fn create_grid(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        136
-    }
-
-    fn create_chart(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        137
+        0
     }
 
     fn create_toggle_button(
@@ -471,418 +193,12 @@ impl ControlBackend for TestBackend {
         _width: u32,
         _height: u32,
     ) -> ObjectId {
-        138
+        0
     }
 
-    fn create_check_list_box(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        139
-    }
-
-    fn create_double_spin_box(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        140
-    }
-
-    fn create_dial(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        141
-    }
-
-    fn create_wizard(
-        &self,
-        _parent: ObjectId,
-        _title: &str,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        142
-    }
-
-    fn create_date_picker(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        143
-    }
-
-    fn create_time_picker(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        144
-    }
-
-    fn create_date_time_picker(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        145
-    }
-
-    fn create_directory_dialog(
-        &self,
-        _parent: ObjectId,
-        _title: &str,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        146
-    }
-
-    fn create_data_view(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        147
-    }
-
-    fn create_property_grid(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        148
-    }
-
-    fn create_toolbox(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        149
-    }
-
-    fn create_collapsible_pane(
-        &self,
-        _parent: ObjectId,
-        _title: &str,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        150
-    }
-
-    fn create_dock_widget(
-        &self,
-        _parent: ObjectId,
-        _title: &str,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        151
-    }
-
-    fn create_web_view(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        152
-    }
-
-    fn create_activity_indicator(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        153
-    }
-
-    fn create_calendar(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        154
-    }
-
-    fn create_column_view(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        155
-    }
-
-    fn create_undo_view(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        156
-    }
-
-    fn create_command_link(
-        &self,
-        _parent: ObjectId,
-        _text: &str,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        157
-    }
-
-    fn create_lcd_number(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        158
-    }
-
-    fn create_font_combo_box(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        159
-    }
-
-    fn create_web_engine_view(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        160
-    }
-
-    fn create_web_engine_page(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        161
-    }
-
-    fn create_web_engine_settings(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        162
-    }
-
-    fn create_web_engine_download_item(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        163
-    }
-
-    fn create_web_engine_cookie_store(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        164
-    }
-
-    fn create_web_engine_web_channel(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        165
-    }
-
-    fn create_web_engine_find_text_result(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        166
-    }
-
-    fn create_web_engine_notification(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        167
-    }
-
-    fn create_web_engine_script_dialog(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        168
-    }
-
-    fn create_web_engine_context_menu_request(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        169
-    }
-
-    fn create_action(
-        &self,
-        _parent: ObjectId,
-        _text: &str,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        170
-    }
-
-    fn create_tool_button(
-        &self,
-        _parent: ObjectId,
-        _text: &str,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        171
-    }
-
-    fn create_tool_box(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        172
-    }
-
-    fn create_context_menu(
-        &self,
-        _parent: ObjectId,
-        _text: &str,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        173
-    }
-
-    fn poll_menu_triggered(&self) -> Option<ObjectId> {
-        None
-    }
-
-    fn inject_menu_trigger(&self, _menu_item_id: ObjectId) -> bool {
-        false
-    }
-
-    fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
-        None
-    }
-
-    fn inject_widget_trigger_event(&self, _widget_id: ObjectId, _kind: WidgetTriggerKind) -> bool {
-        false
-    }
-
+    // Control state members. This double holds no state, so a mutation reports
+    // failure and a read reports the empty/absent value. Returning an invented
+    // value here would make a test pass against a backend that cannot happen.
     fn set_widget_text(&self, _widget_id: ObjectId, _text: &str) {}
 
     fn get_widget_text(&self, _widget_id: ObjectId) -> String {
@@ -940,69 +256,55 @@ mod tests {
     }
 
     #[test]
-    fn create_widget_default_returns_zero() {
-        let backend = TestBackend;
-        let id = ControlBackend::create_widget(&backend, "test", 0, "hello", 10, 20, 100, 200);
-        assert_eq!(id, 0, "default create_widget must return 0");
-    }
-
-    #[test]
-    fn create_widget_default_with_various_kinds() {
-        let backend = TestBackend;
-        assert_eq!(ControlBackend::create_widget(&backend, "button", 0, "", 0, 0, 50, 30), 0,);
-        assert_eq!(ControlBackend::create_widget(&backend, "label", 1, "Hello", 5, 5, 80, 20), 0,);
-        assert_eq!(ControlBackend::create_widget(&backend, "window", 0, "Main", 0, 0, 800, 600), 0,);
-    }
-
-    #[test]
     fn test_backend_creates_window() {
         let backend = TestBackend;
-        let id = backend.create_window("Test", 0, 0, 800, 600);
-        assert_eq!(id, 100);
+        assert_eq!(backend.create_window("Test", 0, 0, 800, 600), WINDOW_ID);
     }
 
+    /// A member this double does not implement must report absence.
+    ///
+    /// This is the meaningful assertion now: the trait's defaults have to be
+    /// honest. A default that returned a non-zero id would let a caller treat a
+    /// control that was never created as a live one.
     #[test]
-    fn test_backend_creates_button() {
+    fn unimplemented_creation_reports_absence() {
         let backend = TestBackend;
-        let id = backend.create_button(1, "Click", 10, 20, 100, 30);
-        assert_eq!(id, 101);
+        assert_eq!(backend.create_button(100, "Click", 10, 20, 100, 30), 0);
+        assert_eq!(backend.create_label(100, "Hello", 0, 0, 200, 50), 0);
+        assert_eq!(
+            backend.create_window("W", 0, 0, 1, 1),
+            WINDOW_ID,
+            "the one override still answers"
+        );
     }
 
+    /// The name-based entry must answer `0` unless a backend resolves the name.
     #[test]
-    fn test_backend_creates_label() {
+    fn create_widget_by_name_default_is_absent() {
         let backend = TestBackend;
-        let id = backend.create_label(0, "Hello", 0, 0, 200, 50);
-        assert_eq!(id, 104);
+        assert_eq!(
+            ControlBackend::create_widget(&backend, "button", 0, "x", 0, 0, 10, 10),
+            0,
+            "an unimplemented name lookup must report absence"
+        );
     }
 
+    /// Typed trigger polling has no queue in this double, so it reports `None`.
     #[test]
-    fn test_backend_show_hide_widget_defaults() {
+    fn typed_trigger_poll_reports_none() {
         let backend = TestBackend;
-        // show_widget and hide_widget have default implementations
-        backend.show_widget(42);
-        backend.hide_widget(42);
-        // default set_widget_visible is no-op, so nothing to assert beyond no panic
+        assert!(backend.poll_widget_trigger_event().is_none());
+        assert!(backend.poll_widget_triggered().is_none());
     }
 
+    /// Mutation of a control that does not exist must not claim success.
     #[test]
-    fn test_backend_poll_widget_triggered_default() {
+    fn unimplemented_mutation_reports_failure() {
         let backend = TestBackend;
-        // poll_widget_triggered has a default impl calling poll_widget_trigger_event
-        let triggered = backend.poll_widget_triggered();
-        assert!(triggered.is_none());
-    }
-
-    #[test]
-    fn backend_name_variations() {
-        let backend = TestBackend;
-        let name = backend.backend_name();
-        assert!(!name.is_empty(), "backend_name must not be empty");
-        assert_eq!(name, "test-backend");
-    }
-
-    #[test]
-    fn kind_is_native() {
-        let backend = TestBackend;
-        assert_eq!(backend.kind(), ControlBackendKind::Native);
+        assert!(!backend.set_widget_accessibility_name(7, "name"));
+        assert!(
+            !backend.inject_widget_trigger_event(7, crate::platform::WidgetTriggerKind::Clicked)
+        );
+        assert!(!backend.destroy_widget(7));
     }
 }

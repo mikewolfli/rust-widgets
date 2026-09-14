@@ -1,16 +1,15 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
+// `LABEL_PROPERTY_NAMES` is used by the label accessors, which are only compiled
+// where the property registry exists.
+#[cfg(widgets_unstripped)]
+use crate::control_backend::custom::LABEL_PROPERTY_NAMES;
 use crate::control_backend::trait_def::ControlBackend;
-use crate::control_backend::types::{ControlBackendKind, CustomWidgetProperties};
+use crate::control_backend::types::ControlBackendKind;
 use crate::core::ObjectId;
 use crate::platform::{WidgetTriggerEvent, WidgetTriggerKind};
 use crate::widget::WidgetKind;
-
-// Re-exported so the per-category macro bodies can name them without repeating
-// the full path in every `.in.rs` file.
-#[allow(unused_imports)]
-use crate::control_backend::custom::CustomPaintControlBackend;
 
 // Pull in per-category macros that define method bodies.
 include!("create_widgets_base.in.rs");
@@ -53,21 +52,23 @@ impl ControlBackend for super::CustomPaintControlBackend {
         self.create_qr_code(parent, x, y, width, height)
     }
 
-    /// Drop every piece of per-widget state the custom backend keeps.
+    /// Drops every piece of host state this backend keeps for `widget_id`.
     ///
-    /// The backend stores one entry per widget across six maps; without this
-    /// method a create/discard UI churn grew all six without bound.
+    /// The widget object itself is released through
+    /// [`crate::widget::runtime::unregister`], which owns it; what remains here is
+    /// the IME policy and accessible-name override, which no widget holds.
     fn destroy_widget(&self, widget_id: ObjectId) -> bool {
+        // `widget::runtime` is compiled out of the alloc-frugal profile, which
+        // holds no widget objects by design; only the host-side maps remain there.
+        #[cfg(not(alloc_frugal))]
+        let released = crate::widget::runtime::unregister(widget_id);
+        #[cfg(alloc_frugal)]
+        let released = false;
+
         let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        // `widget_properties` is populated for every created widget, so its
-        // presence is the authoritative "did this widget exist" signal.
-        let existed = state.widget_properties.remove(&widget_id).is_some();
-        state.texts.remove(&widget_id);
-        state.enabled.remove(&widget_id);
-        state.visible.remove(&widget_id);
-        state.ime_enabled.remove(&widget_id);
-        state.accessibility_names.remove(&widget_id);
-        existed
+        let had_host_state = state.ime_enabled.remove(&widget_id).is_some()
+            || state.accessibility_names.remove(&widget_id).is_some();
+        released || had_host_state
     }
     impl_helpers!();
 }

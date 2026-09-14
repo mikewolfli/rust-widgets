@@ -3,8 +3,18 @@
 
 //! iOS mobile platform types and state container.
 //!
-//! This module provides state-backed platform implementation for iOS,
-//! serving as a foundation for progressive UIKit/SwiftUI integration.
+//! This module provides the state-backed platform implementation for iOS: every
+//! widget is recorded in `BackendState<IosHandleKind>`, and platform contract
+//! methods translate between the Rust API and state mutations.
+//!
+//! # BLUE15: the state model is the whole widget story
+//!
+//! Widget creation used to instantiate a real UIKit control per logical widget
+//! and mirror the state into it. Under the self-drawn strategy the library paints
+//! every `WidgetKind`, so the host owes a **window** and a **drawing surface** and
+//! nothing per-kind (rules #55/#56). The state record is therefore not a shadow of
+//! a UIKit object any more; it is the authority, and it stays because it is what
+//! the host's window, menu and event plumbing is expressed in.
 
 use crate::platform::state::BackendState;
 #[cfg(all(feature = "serde", widgets_unstripped))]
@@ -12,84 +22,28 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 
-/// iOS-specific widget handle type discriminator.
+/// iOS-specific handle type discriminator.
+///
+/// # Why this is small
+///
+/// It used to enumerate every `WidgetKind` the host could build a `UIView` for,
+/// because the host owned a real control per kind. The library paints every
+/// `WidgetKind` now, so the host owns exactly two things a widget cannot: the
+/// **window** and the **menu data model** (iOS ships no native menu bar, so the
+/// menu tree is in-process bookkeeping the caller drives through
+/// `inject_menu_trigger`). Everything else a `create_*` used to record here is
+/// state the widget already holds, reached through [`crate::widget::runtime`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(all(feature = "serde", widgets_unstripped), derive(Serialize, Deserialize))]
 pub(crate) enum IosHandleKind {
     /// Top-level window.
     Window,
-    /// Push button control.
-    Button,
-    /// Toggleable checkbox control (UI Switch on iOS).
-    CheckBox,
-    /// Single-line editable text input.
-    LineEdit,
-    /// Static text label.
-    Label,
-    /// Exclusive selection radio button.
-    RadioButton,
-    /// Range slider.
-    Slider,
-    /// Determinate/indeterminate progress indicator.
-    ProgressBar,
-    /// Drop-down selection control (UI Picker on iOS).
-    ComboBox,
-    /// List selection control (UI TableView on iOS).
-    ListBox,
-    /// Numeric stepper/edit control.
-    SpinBox,
-    /// List/table view control.
-    ListView,
-    /// Scrollable content region.
-    ScrollArea,
-    /// Generic container panel.
-    Panel,
     /// Root menu bar container.
     MenuBar,
     /// Hierarchical menu node.
     Menu,
     /// Actionable menu leaf item.
     MenuItem,
-    /// Window toolbar region.
-    ToolBar,
-    /// Window status bar region.
-    StatusBar,
-    /// Modal message box dialog.
-    MessageBox,
-    /// File open/save dialog (not standard on iOS).
-    FileDialog,
-    /// Color picker dialog (UI ColorPickerViewController on iOS).
-    ColorDialog,
-    /// Font selection dialog.
-    FontDialog,
-    GroupBox,
-    Frame,
-    TabWidget,
-    Splitter,
-    ToggleButton,
-    Calendar,
-    ScrollBar,
-    DoubleSpinBox,
-    FontComboBox,
-    ContextMenu,
-    PopupWindow,
-    Dialog,
-    InputDialog,
-    ProgressDialog,
-    DirectoryDialog,
-    DatePicker,
-    TimePicker,
-    DateTimePicker,
-    ActivityIndicator,
-}
-
-/// List storage state for ComboBox and ListBox.
-#[derive(Default)]
-pub(crate) struct ListData {
-    /// Ordered item text entries.
-    pub(crate) items: Vec<String>,
-    /// Currently selected index, if any.
-    pub(crate) current_index: Option<usize>,
 }
 
 /// iOS platform menu state.
@@ -126,8 +80,16 @@ impl IosRuntimeState {
 /// behind the `mobile-api` feature flag, enabling progressive integration
 /// with native UIKit/SwiftUI without requiring full native bindings upfront.
 ///
-/// All widget state is stored in `BackendState<IosHandleKind>`, and
-/// platform contract methods translate between Rust API and state mutations.
+/// The widget state machine is platform-independent, so it compiles on every
+/// host and its unit tests stay executable there. The one UIKit touch point —
+/// the window the library paints into — lives in the `native` sub-module behind
+/// `#[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]`.
+///
+/// All host state is stored in `BackendState<IosHandleKind>`, and platform contract
+/// methods translate between the Rust API and state mutations. Per-control list and
+/// combo storage used to live here as two maps mirroring what the controls held;
+/// they are gone with the controls, because a duplicate of a widget's own state can
+/// disagree with it (BLUE15 §10.3).
 pub struct IosMobilePlatform {
     /// Internal state for all widgets and handles.
     pub(crate) state: BackendState<IosHandleKind>,
@@ -135,10 +97,6 @@ pub struct IosMobilePlatform {
     pub(crate) menus: Mutex<IosMenuState>,
     /// Runtime state for init/run/quit.
     pub(crate) runtime: IosRuntimeState,
-    /// Shared list storage for ListBox widgets.
-    pub(crate) list_data: Mutex<HashMap<u64, ListData>>,
-    /// Shared list storage for ComboBox widgets.
-    pub(crate) combo_data: Mutex<HashMap<u64, ListData>>,
     /// Native root view handle attached via `MobilePlatformExtension`.
     pub(crate) attached_native_view: std::sync::atomic::AtomicUsize,
 }
@@ -150,8 +108,6 @@ impl IosMobilePlatform {
             state: BackendState::new(),
             menus: Mutex::new(IosMenuState::default()),
             runtime: IosRuntimeState::new(),
-            list_data: Mutex::new(HashMap::new()),
-            combo_data: Mutex::new(HashMap::new()),
             attached_native_view: std::sync::atomic::AtomicUsize::new(0),
         }
     }
@@ -195,34 +151,6 @@ impl IosMobilePlatform {
     pub(crate) fn ios_runtime_marker(&self) -> usize {
         // Marker for iOS platform backend
         0
-    }
-
-    /// Returns `true` when `ios-uikit-ffi` feature is enabled
-    /// and real UIKit views are being created.
-    #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
-    pub fn ui_kit_available(&self) -> bool {
-        true
-    }
-
-    /// Returns `false` — no real UIKit FFI bindings are wired yet.
-    ///
-    /// Once UIKit FFI is integrated (e.g. via `objc2` crates), this
-    /// should return `true` and the creation methods should additionally
-    /// construct and return native `UIView` handles.
-    ///
-    /// # Integration Path
-    ///
-    /// 1. Add `objc2` and `objc2-foundation` / `objc2-ui-kit` dependencies.
-    /// 2. Replace each `insert_widget` call with real `UIView` creation:
-    ///    - `UIButton` for `Button`
-    ///    - `UILabel` for `Label`
-    ///    - `UIWindow` for `Window`
-    ///    - etc.
-    /// 3. Use `objc_id::Id<Object>` or `*mut Object` as the handle value.
-    /// 4. Gate the real FFI code behind `#[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]`.
-    #[cfg(not(feature = "ios-uikit-ffi"))]
-    pub fn ui_kit_available(&self) -> bool {
-        false
     }
 }
 

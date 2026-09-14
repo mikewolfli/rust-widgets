@@ -48,7 +48,8 @@ fn create_window_is_enabled_and_visible() {
 #[test]
 fn create_button_allocates_valid_id() {
     let backend = CustomPaintControlBackend::new();
-    let id = backend.create_button(0, "Click", 10, 20, 100, 30);
+    let parent = backend.create_window("Parent", 0, 0, 400, 300);
+    let id = backend.create_button(parent, "Click", 10, 20, 100, 30);
     assert_ne!(id, 0);
 }
 
@@ -109,7 +110,7 @@ fn widget_ids_are_incremental() {
     let backend = CustomPaintControlBackend::new();
     let id1 = backend.create_window("A", 0, 0, 100, 100);
     let id2 = backend.create_window("B", 0, 0, 100, 100);
-    let id3 = backend.create_button(0, "C", 0, 0, 50, 20);
+    let id3 = backend.create_button(id1, "C", 0, 0, 50, 20);
     assert!(id1 < id2, "first alloc id ({}) must be < second ({})", id1, id2);
     assert!(id2 < id3, "second alloc id ({}) must be < third ({})", id2, id3);
 }
@@ -686,17 +687,10 @@ fn modern_widgets_store_correct_widget_kind() {
     let pie_menu = backend.create_pie_menu(parent, 0, 0, 120, 120);
     let ribbon_bar = backend.create_ribbon_bar(parent, 0, 0, 240, 64);
 
-    // The backend exposes no kind accessor; read the stored properties directly
-    // (the same state the custom painter consumes).
-    let stored_kind = |id: crate::core::ObjectId| {
-        backend
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .widget_properties
-            .get(&id)
-            .map(|props| props.widget_kind)
-    };
+    // Read the mounted widget's kind through the registry, which is where the
+    // control actually lives now (the backend keeps no per-widget kind map).
+    let stored_kind =
+        |id: crate::core::ObjectId| crate::widget::runtime::with_widget(id, |widget| widget.kind());
 
     assert_eq!(stored_kind(arc), Some(WidgetKind::Arc));
     assert_eq!(stored_kind(switch), Some(WidgetKind::Switch));
@@ -720,8 +714,8 @@ fn modern_widgets_register_standard_state() {
     assert!(backend.is_widget_visible(id));
     assert!(!backend.is_widget_ime_enabled(id));
     assert_eq!(backend.get_widget_accessibility_name(id), "Arc");
-    // Geometry is recorded in the custom-paint properties state.
-    let props = backend.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    let props = props.widget_properties.get(&id).expect("modern widget properties must be stored");
-    assert_eq!((props.x, props.y, props.width, props.height), (0, 0, 100, 100));
+    // Geometry lives on the widget now, so read it from the control itself rather
+    // than from a backend-side copy that could disagree with it.
+    let geometry = crate::widget::runtime::geometry_of(id).expect("mounted widget");
+    assert_eq!((geometry.x, geometry.y, geometry.width, geometry.height), (0, 0, 100, 100));
 }

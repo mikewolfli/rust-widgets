@@ -1,22 +1,43 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
+//! The one control backend, and the two entry points that reach it.
+//!
+//! # Why the `cfg` tower is gone
+//!
+//! This module used to select a backend through a matrix of feature
+//! combinations: `controls-native` × `controls-custom`, with a separate
+//! `stripped_widgets` arm — five copies each of [`get_control_backend`],
+//! [`get_control_backend_for_widget`] and [`active_control_policy`], which had to
+//! keep agreeing by hand. They could not: the mutation test above found two arms
+//! answering with different values for the same build.
+//!
+//! There is one mechanism now (the library paints every `WidgetKind`; the host
+//! supplies a window and a surface), so the selection collapses to the two real
+//! cases: a build that can paint, and a build without the painting backend at all.
+//! `controls-native` no longer selects anything — it is retained only where the
+//! `native` backend wrapper itself is compiled.
+
 #[cfg(feature = "controls-custom")]
 use crate::compat::OnceLock;
 #[cfg(feature = "controls-custom")]
 use crate::control_backend::custom::CustomPaintControlBackend;
 #[cfg(all(feature = "controls-native", widgets_unstripped))]
 use crate::control_backend::native::NativeControlBackend;
-#[cfg(all(feature = "controls-native", widgets_unstripped, feature = "controls-custom"))]
-use crate::control_backend::routing::route_preference_for_widget_kind;
 use crate::control_backend::trait_def::ControlBackend;
-#[cfg(all(feature = "controls-native", feature = "controls-custom", widgets_unstripped))]
-use crate::control_backend::types::ControlRoutePreference;
-#[cfg(all(not(feature = "controls-native"), not(feature = "controls-custom")))]
+#[cfg(not(feature = "controls-custom"))]
 use crate::core::ObjectId;
 use crate::widget::WidgetKind;
 
+/// The wrapper backend over `Platform` primitives.
+///
+/// It is compiled where `controls-native` is enabled but nothing selects it:
+/// its control methods forward to `Platform` members whose defaults report "no
+/// such control", so choosing it would make every `rw_create_*` return `0`. It is
+/// kept because it is the named place a backend would report a genuine platform
+/// primitive from, and because the feature-completeness gate still builds it.
 #[cfg(all(feature = "controls-native", widgets_unstripped))]
+#[allow(dead_code)]
 fn native_control_backend() -> &'static NativeControlBackend {
     static BACKEND: NativeControlBackend = NativeControlBackend::new();
     &BACKEND
@@ -26,9 +47,9 @@ fn custom_control_backend() -> &'static CustomPaintControlBackend {
     static BACKEND: OnceLock<CustomPaintControlBackend> = OnceLock::new();
     BACKEND.get_or_init(CustomPaintControlBackend::new)
 }
-#[cfg(all(not(feature = "controls-native"), not(feature = "controls-custom")))]
+#[cfg(not(feature = "controls-custom"))]
 struct NoControlBackend;
-#[cfg(all(not(feature = "controls-native"), not(feature = "controls-custom")))]
+#[cfg(not(feature = "controls-custom"))]
 impl crate::control_backend::trait_def::ControlBackend for NoControlBackend {
     fn backend_name(&self) -> &'static str {
         "no-control-backend"
@@ -210,115 +231,62 @@ impl crate::control_backend::trait_def::ControlBackend for NoControlBackend {
         String::new()
     }
 }
-#[cfg(all(not(feature = "controls-native"), not(feature = "controls-custom")))]
+#[cfg(not(feature = "controls-custom"))]
 fn no_control_backend() -> &'static NoControlBackend {
     static BACKEND: NoControlBackend = NoControlBackend;
     &BACKEND
 }
-/// Return active control backend selected by compile-time features.
-#[cfg(all(feature = "controls-native", widgets_unstripped, feature = "controls-custom"))]
-pub fn get_control_backend() -> &'static dyn ControlBackend {
-    native_control_backend()
-}
-/// Return active control backend selected by compile-time features.
-#[cfg(all(not(feature = "controls-native"), feature = "controls-custom", widgets_unstripped))]
-pub fn get_control_backend() -> &'static dyn ControlBackend {
-    custom_control_backend()
-}
-/// Return active control backend selected by compile-time features.
-#[cfg(all(feature = "controls-native", widgets_unstripped, not(feature = "controls-custom")))]
-pub fn get_control_backend() -> &'static dyn ControlBackend {
-    native_control_backend()
-}
-/// No backend enabled at all (no native, no custom).
-#[cfg(all(not(feature = "controls-native"), not(feature = "controls-custom")))]
-pub fn get_control_backend() -> &'static dyn ControlBackend {
-    no_control_backend()
-}
-/// Mini mode uses custom backend.
-#[cfg(all(stripped_widgets, feature = "controls-custom"))]
-pub fn get_control_backend() -> &'static dyn ControlBackend {
-    custom_control_backend()
-}
 /// Returns control backend resolved by compile-time policy for one widget kind.
 ///
-/// # Create-time vs id-space semantics
+/// With one mechanism there is nothing left to resolve, so this is
+/// [`get_control_backend`]. It is kept as a named entry point because "which
+/// backend creates this kind" remains a real question, and the day a backend
+/// gains a genuine primitive it must answer **here**, deliberately.
+pub fn get_control_backend_for_widget(_kind: WidgetKind) -> &'static dyn ControlBackend {
+    get_control_backend()
+}
+/// Returns the control backend every caller should use.
 ///
-/// In the hybrid (`controls-native` + `controls-custom`) profile this is the
-/// canonical **create-time** selection entry: it consults
-/// [`route_preference_for_widget_kind`] so a widget whose kind is
-/// `CustomRequired` (e.g. self-drawn / native-surrogate kinds) resolves to the
-/// custom backend instead of blindly going native.
+/// # Why this is the custom-painting backend even when `controls-native` is on
 ///
-/// Existing-widget operations (state setters, item APIs, menu/status APIs)
-/// operate on a handle that was created by exactly one backend. Those callers
-/// use [`get_control_backend`] (native-first id-space) — see its doc comment
-/// for why the two entries do not conflict.
-#[cfg(all(feature = "controls-native", widgets_unstripped, feature = "controls-custom"))]
-pub fn get_control_backend_for_widget(kind: WidgetKind) -> &'static dyn ControlBackend {
-    resolve_control_backend_for_kind(kind).0
-}
-
-/// Canonical hybrid resolution chain (single source of truth).
+/// `controls-native` used to mean "hand widget creation to the host, which owns a
+/// real control for this kind". That is no longer a thing: the host supplies a
+/// window and a drawing surface, and the library paints every `WidgetKind`
+/// (BLUE15 #55/#56). The `native` backend's control methods therefore forward to
+/// `Platform` methods whose defaults report "no such control", so selecting it
+/// here made every `rw_create_*` return `0`.
 ///
-/// Every per-kind resolver (public [`get_control_backend_for_widget`] and any
-/// future create-time caller) must route through this function so that the
-/// native/custom choice for a widget kind can never drift between call sites.
-#[cfg(all(feature = "controls-native", widgets_unstripped, feature = "controls-custom"))]
-pub(crate) fn resolve_control_backend_for_kind(
-    kind: WidgetKind,
-) -> (&'static dyn ControlBackend, ControlRoutePreference) {
-    let preference = route_preference_for_widget_kind(kind);
-    let backend: &'static dyn ControlBackend = match preference {
-        ControlRoutePreference::NativePreferred => native_control_backend(),
-        ControlRoutePreference::CustomRequired => custom_control_backend(),
-    };
-    (backend, preference)
-}
-/// Returns control backend resolved by compile-time policy for one widget kind.
-#[cfg(all(not(feature = "controls-native"), feature = "controls-custom", widgets_unstripped))]
-pub fn get_control_backend_for_widget(_kind: WidgetKind) -> &'static dyn ControlBackend {
-    custom_control_backend()
-}
-/// Returns control backend resolved by compile-time policy for one widget kind.
-#[cfg(all(feature = "controls-native", widgets_unstripped, not(feature = "controls-custom")))]
-pub fn get_control_backend_for_widget(_kind: WidgetKind) -> &'static dyn ControlBackend {
-    native_control_backend()
-}
-/// Returns control backend resolved by compile-time policy for one widget kind (no backend available).
-#[cfg(all(not(feature = "controls-native"), not(feature = "controls-custom")))]
-pub fn get_control_backend_for_widget(_kind: WidgetKind) -> &'static dyn ControlBackend {
-    no_control_backend()
-}
-/// Returns control backend resolved by compile-time policy for one widget kind (mini mode).
-#[cfg(all(stripped_widgets, feature = "controls-custom"))]
-pub fn get_control_backend_for_widget(_kind: WidgetKind) -> &'static dyn ControlBackend {
-    custom_control_backend()
+/// Choosing the custom backend unconditionally is the honest expression of "there
+/// is one creation mechanism". It also closes the second creation path (BLUE15
+/// §2.5/G-4): previously the C ABI and `lib.rs::create_*` resolved the backend
+/// separately from `create_widget_of_kind`, so they could disagree about which
+/// mechanism built a widget.
+///
+/// # When there is no custom backend
+///
+/// `controls-custom` is the backend that *is* the painting mechanism, so a build
+/// without it has no control mechanism at all. Such a build (it is not part of any
+/// shipped profile) gets [`NoControlBackend`], whose members report absence — the
+/// same rule as everywhere else: an unimplemented capability says so rather than
+/// answering with a value that would look live.
+pub fn get_control_backend() -> &'static dyn ControlBackend {
+    #[cfg(feature = "controls-custom")]
+    {
+        custom_control_backend()
+    }
+    #[cfg(not(feature = "controls-custom"))]
+    {
+        no_control_backend()
+    }
 }
 /// Return compile-time control policy label used by diagnostics and docs.
-#[cfg(all(feature = "controls-native", widgets_unstripped, feature = "controls-custom"))]
+///
+/// Under self-drawing there is exactly one policy, so the label is constant. The
+/// function survives because the label is part of the diagnostics contract: a
+/// reader of a runtime trace should be able to see *which* mechanism a build
+/// selected, and that answer must not require reading `#[cfg]` attributes.
 pub fn active_control_policy() -> &'static str {
-    "hybrid-native-first"
-}
-/// Return compile-time control policy label used by diagnostics and docs.
-#[cfg(all(not(feature = "controls-native"), feature = "controls-custom", widgets_unstripped))]
-pub fn active_control_policy() -> &'static str {
-    "custom-full"
-}
-/// Return compile-time control policy label used by diagnostics and docs.
-#[cfg(all(feature = "controls-native", widgets_unstripped, not(feature = "controls-custom")))]
-pub fn active_control_policy() -> &'static str {
-    "native-strict"
-}
-/// Return compile-time control policy label used by diagnostics and docs (no backend, or mini without custom).
-#[cfg(all(not(feature = "controls-native"), not(feature = "controls-custom")))]
-pub fn active_control_policy() -> &'static str {
-    "none"
-}
-/// Return compile-time control policy label used by diagnostics and docs (mini mode).
-#[cfg(all(stripped_widgets, feature = "controls-custom"))]
-pub fn active_control_policy() -> &'static str {
-    "mini-custom"
+    "self-drawn"
 }
 
 #[cfg(test)]
@@ -369,148 +337,50 @@ mod tests {
     }
 
     #[test]
-    fn active_control_policy_returns_expected_string() {
-        let policy = active_control_policy();
-        assert!(!policy.is_empty(), "policy must not be empty");
+    fn active_control_policy_is_the_single_mechanism() {
+        assert_eq!(
+            active_control_policy(),
+            "self-drawn",
+            "the policy label must name the one mechanism that exists",
+        );
     }
 
     #[test]
     fn control_backend_is_send_sync() {
-        #[cfg(all(feature = "controls-native", feature = "controls-custom"))]
-        {
-            let backend = get_control_backend();
-            let _: &(dyn ControlBackend + Send + Sync) = backend;
-        }
+        let backend = get_control_backend();
+        let _: &(dyn ControlBackend + Send + Sync) = backend;
     }
 
-    #[cfg(all(feature = "controls-native", feature = "controls-custom", widgets_unstripped))]
+    /// Supports the "one mechanism" claim: the per-kind entry point and the
+    /// general one must be the *same value*, for every sampled kind. Two different
+    /// backends here is exactly how the second creation path used to exist.
+    ///
+    /// Gated on the full widget set because the sample spans categories that
+    /// reduced profiles compile out; the claim itself is profile-independent, since
+    /// [`get_control_backend_for_widget`] ignores its argument.
+    #[cfg(all(feature = "controls-custom", full_widgets))]
     #[test]
-    fn resolve_control_backend_parity_with_per_widget_entry() {
-        // get_control_backend_for_widget must be the canonical chain — both
-        // entries resolve to the exact same backend for every sampled kind.
-        use crate::control_backend::routing::route_preference_for_widget_kind;
+    fn every_kind_resolves_to_the_same_backend() {
+        let expected = get_control_backend();
+        // Kinds chosen to span the categories the old two-tier table used to
+        // separate: base, view, container, dialog and self-drawn kinds.
         let sample = [
-            WidgetKind::Window,
-            WidgetKind::MessageBox,
             WidgetKind::Button,
-            WidgetKind::TextEdit,
+            WidgetKind::Label,
+            WidgetKind::Slider,
             WidgetKind::Canvas,
+            WidgetKind::Table,
+            WidgetKind::DatePicker,
+            WidgetKind::PopupWindow,
             WidgetKind::Arc,
-            WidgetKind::Spinner,
-            WidgetKind::Roller,
-            WidgetKind::Dropdown,
-            WidgetKind::TextArea,
-            WidgetKind::Keyboard,
-            WidgetKind::TileView,
-            WidgetKind::Line,
-            WidgetKind::Meter,
             WidgetKind::MiniChart,
-            WidgetKind::ImageView,
-            WidgetKind::MiniCanvas,
             WidgetKind::MenuBar,
-            WidgetKind::StatusBar,
         ];
         for kind in &sample {
-            let (resolved, _pref) = resolve_control_backend_for_kind(*kind);
-            let via_entry = get_control_backend_for_widget(*kind);
+            let resolved = get_control_backend_for_widget(*kind);
             assert!(
-                std::ptr::eq(resolved, via_entry),
-                "canonical chain and get_control_backend_for_widget diverged for {:?}",
-                kind,
-            );
-            let pref = route_preference_for_widget_kind(*kind);
-            match pref {
-                ControlRoutePreference::NativePreferred => {
-                    assert_eq!(
-                        resolved.kind(),
-                        crate::control_backend::types::ControlBackendKind::Native,
-                        "{:?} routed NativePreferred but resolved to non-native backend",
-                        kind,
-                    );
-                }
-                ControlRoutePreference::CustomRequired => {
-                    assert_eq!(
-                        resolved.kind(),
-                        crate::control_backend::types::ControlBackendKind::Custom,
-                        "{:?} routed CustomRequired but resolved to non-custom backend",
-                        kind,
-                    );
-                }
-            }
-        }
-    }
-
-    #[cfg(all(feature = "controls-native", feature = "controls-custom", widgets_unstripped))]
-    #[test]
-    fn custom_paint_kinds_never_resolve_native_backend() {
-        // Regression guard for the historical silent-0 class: self-drawn
-        // widgets (Arc/Spinner/…) must resolve to the custom backend, never to
-        // a native backend that lacks a create path for them.
-        let custom_paint = [
-            WidgetKind::Arc,
-            WidgetKind::Spinner,
-            WidgetKind::Roller,
-            WidgetKind::Dropdown,
-            WidgetKind::TextArea,
-            WidgetKind::Keyboard,
-            WidgetKind::TileView,
-            WidgetKind::Line,
-            WidgetKind::Meter,
-            WidgetKind::MiniChart,
-            WidgetKind::ImageView,
-            WidgetKind::MiniCanvas,
-        ];
-        for kind in &custom_paint {
-            let backend = get_control_backend_for_widget(*kind);
-            assert_eq!(
-                backend.kind(),
-                crate::control_backend::types::ControlBackendKind::Custom,
-                "self-drawn WidgetKind::{:?} must resolve to custom backend",
-                kind,
-            );
-        }
-    }
-
-    /// End-to-end guard for the 2026-09-11 routing change: kinds whose native
-    /// path silently degrades to a different control must resolve to the custom
-    /// backend at create time, otherwise creating e.g. a `DatePicker` would
-    /// return a `Panel` with no date functionality.
-    #[cfg(all(feature = "controls-native", feature = "controls-custom", widgets_unstripped))]
-    #[test]
-    fn native_degraded_kinds_resolve_to_custom_backend() {
-        let degraded = [
-            WidgetKind::DatePicker,
-            WidgetKind::TimePicker,
-            WidgetKind::DateTimePicker,
-            WidgetKind::Calendar,
-            WidgetKind::ActivityIndicator,
-            WidgetKind::Dial,
-            WidgetKind::LCDNumber,
-            WidgetKind::FontComboBox,
-            WidgetKind::DoubleSpinBox,
-            WidgetKind::ToggleButton,
-            WidgetKind::ScrollBar,
-            WidgetKind::ScrollArea,
-            WidgetKind::TabWidget,
-            WidgetKind::Splitter,
-            WidgetKind::GroupBox,
-            WidgetKind::Frame,
-            WidgetKind::ContextMenu,
-            WidgetKind::MenuItem,
-            WidgetKind::DirectoryDialog,
-            WidgetKind::Dialog,
-            WidgetKind::InputDialog,
-            WidgetKind::ProgressDialog,
-            WidgetKind::PopupWindow,
-        ];
-        for kind in &degraded {
-            let backend = get_control_backend_for_widget(*kind);
-            assert_eq!(
-                backend.kind(),
-                crate::control_backend::types::ControlBackendKind::Custom,
-                "WidgetKind::{:?} degrades on the native path and must resolve to \
-                 the custom backend",
-                kind,
+                std::ptr::eq(resolved, expected),
+                "WidgetKind::{kind:?} resolved to a different backend than the general entry",
             );
         }
     }

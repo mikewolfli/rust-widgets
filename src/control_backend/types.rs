@@ -1,76 +1,68 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! Control backend abstraction for native and custom-painted control paths.
-use crate::compat::HashMap;
+//! Control backend abstraction for the library-painted control path.
 use crate::core::ObjectId;
 use crate::platform::WidgetTriggerEvent;
-use crate::widget::WidgetKind;
 use alloc::collections::VecDeque;
-/// Control backend family used by runtime routing.
+/// Control backend family, used to report which implementation is active.
+///
+/// Both variants are library-painted now; the distinction that remains is whether
+/// a backend wraps platform primitives or owns its surface outright, which
+/// diagnostics and tests report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlBackendKind {
-    /// Native platform control implementation.
+    /// Backend that wraps platform-provided primitives where they exist.
     Native,
-    /// Custom-painted control implementation.
+    /// Backend that paints every control on a surface it owns.
     Custom,
 }
-/// Compile-time control route preference for a widget kind.
+/// Policy answer for a widget kind's creation route.
+///
+/// Kept as an enum rather than deleted: [`crate::control_backend::routing`] returns
+/// a single value today, but a backend that gains a real primitive must be able to
+/// say so **deliberately** rather than through an implicit fallback (BLUE15 §七).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlRoutePreference {
-    /// Prefer native backend when available.
+    /// Prefer a platform-provided primitive where one exists.
     NativePreferred,
-    /// Require custom-painted backend route.
+    /// The library paints this kind on the host surface.
     CustomRequired,
 }
-impl Default for CustomControlState {
-    fn default() -> Self {
-        Self {
-            next_widget_id: 1,
-            texts: HashMap::new(),
-            enabled: HashMap::new(),
-            visible: HashMap::new(),
-            ime_enabled: HashMap::new(),
-            accessibility_names: HashMap::new(),
-            #[cfg(not(embedded_surface))]
-            menu_trigger_queue: VecDeque::new(),
-            widget_trigger_queue: VecDeque::new(),
-            widget_properties: HashMap::new(),
-        }
-    }
-}
+
+/// State the backend owns that does **not** belong to a widget.
+///
+/// # What was removed and why
+///
+/// This type used to hold six maps mirroring widget state — `texts`, `enabled`,
+/// `visible`, `ime_enabled`, `accessibility_names` and per-widget geometry — plus a
+/// `widget_properties` entry for every control. That was a second copy of data the
+/// widget already owned, so the two could disagree, and it meant `create_*` could
+/// return an id with no widget behind it (BLUE15 §10.3).
+///
+/// Control state now lives in the widget, reached through
+/// [`crate::widget::runtime`]. What remains here is only what a widget cannot hold:
+///
+/// - `ime_enabled` — describes how the *host* routes composition events to a
+///   control, which is a backend policy rather than a control property.
+/// - `accessibility_names` — an override supplied by the host for assistive
+///   technology; a control's own name is derived from its properties.
+/// - the two trigger queues — pending events produced by the backend's input
+///   handling and consumed by [`crate::ControlBackend::poll_widget_trigger_event`].
+#[derive(Default)]
 pub(crate) struct CustomControlState {
-    pub(crate) next_widget_id: ObjectId,
-    pub(crate) texts: HashMap<ObjectId, String>,
-    pub(crate) enabled: HashMap<ObjectId, bool>,
-    pub(crate) visible: HashMap<ObjectId, bool>,
-    pub(crate) ime_enabled: HashMap<ObjectId, bool>,
-    pub(crate) accessibility_names: HashMap<ObjectId, String>,
+    /// Host policy: does this control accept composition input?
+    pub(crate) ime_enabled: crate::compat::HashMap<ObjectId, bool>,
+    /// Host-supplied accessible name, overriding the control's own.
+    pub(crate) accessibility_names: crate::compat::HashMap<ObjectId, String>,
+    /// Menu activations awaiting delivery.
     #[cfg(not(embedded_surface))]
     pub(crate) menu_trigger_queue: VecDeque<ObjectId>,
+    /// Widget activations awaiting delivery.
     pub(crate) widget_trigger_queue: VecDeque<WidgetTriggerEvent>,
-    // Store widget properties for custom painting
-    pub(crate) widget_properties: HashMap<ObjectId, CustomWidgetProperties>,
-}
-/// Properties for custom-painted controls.
-/// Stores geometry and kind metadata used by the custom-paint control backend
-/// for layout and rendering dispatch.
-pub(crate) struct CustomWidgetProperties {
-    pub(crate) parent: Option<ObjectId>,
-    pub(crate) x: i32,
-    pub(crate) y: i32,
-    pub(crate) width: u32,
-    pub(crate) height: u32,
-    pub(crate) widget_kind: WidgetKind,
 }
 
-impl CustomControlState {
-    /// Look up properties for a widget by its id.
-    pub(crate) fn widget_property(&self, widget_id: ObjectId) -> Option<&CustomWidgetProperties> {
-        self.widget_properties.get(&widget_id)
-    }
-}
-
+/// Unit tests for the remaining backend-owned state.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,59 +88,15 @@ mod tests {
         let _ = format!("{:?}", ControlRoutePreference::CustomRequired);
     }
 
+    /// The remaining state must start empty: anything pre-populated would be a
+    /// hidden default that a control could inherit without asking.
     #[test]
-    fn custom_control_state_default_values() {
+    fn custom_control_state_starts_empty() {
         let state = CustomControlState::default();
-        assert_eq!(state.next_widget_id, 1);
-        assert!(state.texts.is_empty());
-        assert!(state.enabled.is_empty());
-        assert!(state.visible.is_empty());
         assert!(state.ime_enabled.is_empty());
         assert!(state.accessibility_names.is_empty());
         #[cfg(not(embedded_surface))]
         assert!(state.menu_trigger_queue.is_empty());
         assert!(state.widget_trigger_queue.is_empty());
-        assert!(state.widget_properties.is_empty());
-    }
-
-    #[test]
-    fn custom_control_state_default_uses_impl() {
-        // Verify that Default trait is implemented by explicit impl, not derive.
-        let _state: CustomControlState = CustomControlState::default();
-        // Also verify we can construct via struct literal + ..Default
-        let _state2 = CustomControlState { next_widget_id: 42, ..CustomControlState::default() };
-    }
-
-    #[test]
-    fn widget_property_returns_stored_properties() {
-        let mut state = CustomControlState::default();
-        let id = state.next_widget_id;
-        state.next_widget_id += 1;
-
-        state.widget_properties.insert(
-            id,
-            CustomWidgetProperties {
-                parent: Some(0),
-                x: 10,
-                y: 20,
-                width: 200,
-                height: 100,
-                widget_kind: WidgetKind::Button,
-            },
-        );
-
-        let props = state.widget_property(id).expect("properties should exist");
-        assert_eq!(props.parent, Some(0));
-        assert_eq!(props.x, 10);
-        assert_eq!(props.y, 20);
-        assert_eq!(props.width, 200);
-        assert_eq!(props.height, 100);
-        assert_eq!(props.widget_kind, WidgetKind::Button);
-    }
-
-    #[test]
-    fn widget_property_returns_none_for_missing_id() {
-        let state = CustomControlState::default();
-        assert!(state.widget_property(999).is_none());
     }
 }

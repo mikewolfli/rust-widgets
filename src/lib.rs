@@ -665,20 +665,43 @@ pub fn create_widget_of_kind(
 ///
 /// Derived from the widget capability registry (the same table the factory
 /// dispatches on) rather than from `Debug` output, so the two can never disagree.
-/// Falls back to the debug name for kinds with no registered capability or when
-/// the capability module is compiled out (embedded/mini).
-#[cfg(not(alloc_frugal))]
+/// Only the registry-backed arm exists where the registry does; every other build
+/// derives the name from the variant, which is the same convention the registry
+/// uses.
+#[cfg(all(not(alloc_frugal), full_widgets))]
 fn kind_name(kind: widget::WidgetKind) -> alloc::string::String {
-    #[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
-    {
-        use alloc::string::ToString;
-        if let Some(capability) =
-            widget::WidgetFactory::new_with_defaults().capability_by_kind(kind)
-        {
-            return capability.canonical_name.to_string();
+    use alloc::string::ToString;
+    if let Some(capability) = widget::WidgetFactory::new_with_defaults().capability_by_kind(kind) {
+        return capability.canonical_name.to_string();
+    }
+    widget::capability::factory_name_for_kind(kind).to_string()
+}
+
+/// See the `full_widgets` definition: the capability registry is gated with the
+/// full widget set, so without it there is nothing to consult. Deriving the name
+/// from the variant's own spelling follows the same convention the registry uses,
+/// which is what keeps the two in step.
+#[cfg(all(not(alloc_frugal), not(full_widgets)))]
+#[allow(dead_code)]
+fn kind_name(kind: widget::WidgetKind) -> alloc::string::String {
+    use alloc::string::ToString;
+    let debug = alloc::format!("{kind:?}");
+    let mut snake = alloc::string::String::with_capacity(debug.len() + 4);
+    for (index, ch) in debug.chars().enumerate() {
+        if ch.is_ascii_uppercase() {
+            // A run of capitals (`QRCode`) is one word, so only a capital after a
+            // lowercase letter or digit starts a new one.
+            let starts_word =
+                index > 0 && !debug.chars().nth(index - 1).is_some_and(|p| p.is_ascii_uppercase());
+            if starts_word {
+                snake.push('_');
+            }
+            snake.push(ch.to_ascii_lowercase());
+        } else {
+            snake.push(ch);
         }
     }
-    alloc::format!("{kind:?}").to_lowercase()
+    snake.to_string()
 }
 
 /// Stub for mini mode (no platform runtime, no windows).

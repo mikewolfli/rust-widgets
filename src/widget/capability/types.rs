@@ -90,7 +90,14 @@ pub(crate) type WidgetCtor = fn(Rect, &str) -> Box<dyn Widget>;
 /// concrete control type, so it only exists where those types do. The
 /// [property contract](crate::widget::capability::properties_trait::WidgetProperties)
 /// is independent of it and available in every profile.
+///
+/// The four tables are only ever *filled* by `register_core_widgets`, which is
+/// itself gated on the full widget set. In a build without it the factory still
+/// exists — the creation path needs a value to ask and get an honest "no" from —
+/// but every table stays empty, so the dead-code allowance below covers exactly
+/// that profile and nothing else.
 #[cfg(widgets_unstripped)]
+#[cfg_attr(not(full_widgets), allow(dead_code))]
 pub struct WidgetFactory {
     pub(crate) capabilities: Vec<WidgetCapability>,
     pub(crate) key_to_index: HashMap<String, usize>,

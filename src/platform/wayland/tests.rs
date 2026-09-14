@@ -3,9 +3,15 @@
 
 //! Integration tests for the Wayland backend.
 //!
-//! These tests verify platform creation, basic widget lifecycle,
-//! clipboard roundtrip, list data methods, dialog creation, and
-//! extended control creation for the Wayland platform backend.
+//! These tests verify the host-facing capabilities that survived BLUE15: platform
+//! creation and the runtime loop, the native session and its degrade path, window
+//! lifecycle state, clipboard roundtrip, the in-process menu model, the injectable
+//! widget-trigger queue, drag and drop, IME and accessibility names.
+//!
+//! Tests for the deleted `create_*` control creators are gone with their subject.
+//! They asserted that a `create_button`-style call returned a non-zero id, which is
+//! exactly the behaviour BLUE15 removed: the library paints every `WidgetKind`, and
+//! those methods now fall through to the `Platform` defaults that return `0`.
 
 use crate::platform::wayland::WaylandPlatform;
 use crate::platform::Platform;
@@ -140,71 +146,47 @@ fn platform_creates_and_runs() {
     backend.init();
     assert_eq!(backend.backend_name(), "wayland");
 
-    // Create a window and basic widgets.
+    // The window is the one host capability this backend owns.
     let window = backend.create_window("TestWindow", 50, 50, 400, 300);
     assert!(window > 0, "Window should be created");
-
-    let button = backend.create_button(window, "Click", 10, 10, 80, 24);
-    assert!(button > 0, "Button should be created");
-
-    let label = backend.create_label(window, "Hello", 10, 40, 80, 24);
-    assert!(label > 0, "Label should be created");
-
-    let checkbox = backend.create_checkbox(window, "Check", 10, 70, 80, 24);
-    assert!(checkbox > 0, "Checkbox should be created");
-
-    let line_edit = backend.create_line_edit(window, "edit", 10, 100, 160, 24);
-    assert!(line_edit > 0, "LineEdit should be created");
-
-    let radio = backend.create_radio_button(window, "Radio", 10, 130, 80, 24);
-    assert!(radio > 0, "RadioButton should be created");
-
-    let slider = backend.create_slider(window, 10, 160, 200, 24);
-    assert!(slider > 0, "Slider should be created");
-
-    let progress = backend.create_progress_bar(window, 10, 190, 200, 24);
-    assert!(progress > 0, "ProgressBar should be created");
-
-    let combo = backend.create_combo_box(window, 10, 220, 140, 24);
-    assert!(combo > 0, "ComboBox should be created");
-
-    let list_box = backend.create_list_box(window, 10, 250, 140, 80);
-    assert!(list_box > 0, "ListBox should be created");
 }
 
+/// The three controls the library paints are *not* created by the host, so the
+/// `Platform` defaults answer for them. This pins the post-BLUE15 contract for the
+/// Wayland backend: the advertised capabilities and the control creators must agree.
 #[test]
-fn widget_lifecycle() {
+fn host_creates_no_controls() {
+    let backend = WaylandPlatform::new();
+    backend.init();
+    assert!(
+        !backend.capabilities().native_menu,
+        "the Wayland menu is an in-process tree, not a compositor menu"
+    );
+
+    let window = backend.create_window("NoControls", 0, 0, 400, 300);
+    assert!(window > 0, "Window should be created");
+
+    // A valid parent is supplied, so only the removed override can explain a 0.
+    assert_eq!(backend.create_button(window, "Click", 10, 10, 80, 24), 0);
+    assert_eq!(backend.create_label(window, "Hello", 10, 40, 80, 24), 0);
+    assert_eq!(backend.create_checkbox(window, "Check", 10, 70, 80, 24), 0);
+    assert_eq!(backend.create_line_edit(window, "edit", 10, 100, 160, 24), 0);
+    assert_eq!(backend.create_combo_box(window, 10, 220, 140, 24), 0);
+    assert_eq!(backend.create_list_box(window, 10, 250, 140, 80), 0);
+    assert_eq!(backend.create_spin_box(window, 10, 10, 80, 24), 0);
+    assert_eq!(backend.create_message_box(window, "Title", "Body", 10, 10, 300, 150), 0);
+}
+
+/// The window is a real state record, so the ordinary widget operations still
+/// round-trip on it.
+#[test]
+fn window_lifecycle() {
     let backend = WaylandPlatform::new();
     backend.init();
 
     let window = backend.create_window("Lifecycle", 0, 0, 200, 120);
     assert!(window > 0, "Window should be created");
 
-    let button = backend.create_button(window, "btn", 10, 10, 80, 24);
-    assert!(button > 0, "Button should be created");
-
-    // Text roundtrip.
-    backend.set_widget_text(button, "updated");
-    assert_eq!(backend.get_widget_text(button), "updated");
-
-    // Show/hide roundtrip.
-    backend.show_widget(button);
-    assert!(backend.is_widget_visible(button), "Button should be visible after show");
-
-    backend.hide_widget(button);
-    assert!(!backend.is_widget_visible(button), "Button should be hidden after hide");
-
-    // Enable/disable roundtrip.
-    backend.set_widget_enabled(button, false);
-    assert!(!backend.is_widget_enabled(button), "Button should be disabled");
-
-    backend.set_widget_enabled(button, true);
-    assert!(backend.is_widget_enabled(button), "Button should be enabled");
-
-    // Geometry update.
-    backend.set_widget_geometry(button, 20, 20, 120, 32);
-
-    // Window-level lifecycle.
     backend.set_widget_text(window, "UpdatedTitle");
     assert_eq!(backend.get_widget_text(window), "UpdatedTitle");
 
@@ -213,6 +195,17 @@ fn widget_lifecycle() {
 
     backend.hide_widget(window);
     assert!(!backend.is_widget_visible(window), "Window should be hidden");
+
+    backend.set_widget_enabled(window, false);
+    assert!(!backend.is_widget_enabled(window), "Window should be disabled");
+
+    backend.set_widget_geometry(window, 20, 20, 320, 240);
+
+    backend.set_widget_accessibility_name(window, "MainWindow");
+    assert_eq!(backend.get_widget_accessibility_name(window), "MainWindow");
+
+    assert!(backend.destroy_widget(window), "Window should be destroyed");
+    assert!(!backend.destroy_widget(window), "A destroyed window cannot be destroyed twice");
 }
 
 #[test]
@@ -234,80 +227,6 @@ fn clipboard_roundtrip() {
     // Empty string.
     assert!(backend.set_clipboard_text(""), "Should set empty clipboard");
     assert_eq!(backend.get_clipboard_text(), "", "Empty clipboard should match");
-}
-
-#[test]
-fn combo_box_data_methods() {
-    let backend = WaylandPlatform::new();
-    backend.init();
-
-    let window = backend.create_window("ComboTest", 0, 0, 200, 120);
-    let combo = backend.create_combo_box(window, 10, 10, 140, 24);
-    assert!(combo > 0, "ComboBox should be created");
-
-    // Add items.
-    assert!(backend.combo_box_add_item(combo, "Item A"), "Should add Item A");
-    assert!(backend.combo_box_add_item(combo, "Item B"), "Should add Item B");
-    assert!(backend.combo_box_add_item(combo, "Item C"), "Should add Item C");
-
-    assert_eq!(backend.combo_box_item_count(combo), 3);
-
-    // Item text retrieval.
-    assert_eq!(backend.combo_box_item_text(combo, 0), Some("Item A".to_string()));
-    assert_eq!(backend.combo_box_item_text(combo, 1), Some("Item B".to_string()));
-    assert_eq!(backend.combo_box_item_text(combo, 2), Some("Item C".to_string()));
-    assert_eq!(backend.combo_box_item_text(combo, 5), None);
-
-    // Set and get current index.
-    assert!(backend.combo_box_set_current_index(combo, 1), "Should set index 1");
-    assert_eq!(backend.combo_box_current_index(combo), Some(1));
-
-    // Clear items.
-    assert!(backend.combo_box_clear_items(combo), "Should clear items");
-    assert_eq!(backend.combo_box_item_count(combo), 0);
-    assert_eq!(backend.combo_box_current_index(combo), None);
-}
-
-#[test]
-fn list_box_data_methods() {
-    let backend = WaylandPlatform::new();
-    backend.init();
-
-    let window = backend.create_window("ListBoxTest", 0, 0, 200, 200);
-    let list_box = backend.create_list_box(window, 10, 10, 140, 80);
-    assert!(list_box > 0, "ListBox should be created");
-
-    // Add items.
-    assert!(backend.list_box_add_item(list_box, "Item 1"), "Should add Item 1");
-    assert!(backend.list_box_add_item(list_box, "Item 2"), "Should add Item 2");
-    assert!(backend.list_box_add_item(list_box, "Item 3"), "Should add Item 3");
-
-    assert_eq!(backend.list_box_item_count(list_box), 3);
-
-    // Item text retrieval.
-    assert_eq!(backend.list_box_item_text(list_box, 0), Some("Item 1".to_string()));
-    assert_eq!(backend.list_box_item_text(list_box, 1), Some("Item 2".to_string()));
-    assert_eq!(backend.list_box_item_text(list_box, 2), Some("Item 3".to_string()));
-
-    // Set and get current index.
-    assert!(backend.list_box_set_current_index(list_box, 1), "Should set index 1");
-    assert_eq!(backend.list_box_current_index(list_box), Some(1));
-
-    // Remove item at index 0 — remaining: [Item 2, Item 3], current should shift.
-    assert!(backend.list_box_remove_item(list_box, 0), "Should remove Item 1");
-    assert_eq!(backend.list_box_item_count(list_box), 2);
-    assert_eq!(backend.list_box_item_text(list_box, 0), Some("Item 2".to_string()));
-    // Current index adjusts from 1 to 0 after removal.
-    assert_eq!(
-        backend.list_box_current_index(list_box),
-        Some(0),
-        "Current index should adjust after removal"
-    );
-
-    // Clear items.
-    assert!(backend.list_box_clear_items(list_box), "Should clear items");
-    assert_eq!(backend.list_box_item_count(list_box), 0);
-    assert_eq!(backend.list_box_current_index(list_box), None);
 }
 
 #[test]
@@ -353,48 +272,17 @@ fn widget_trigger_events() {
     backend.init();
 
     let window = backend.create_window("TriggerTest", 0, 0, 200, 120);
-    let button = backend.create_button(window, "Click", 10, 10, 80, 24);
 
     assert!(
-        backend.inject_widget_trigger_event(button, WidgetTriggerKind::Clicked),
+        backend.inject_widget_trigger_event(window, WidgetTriggerKind::Clicked),
         "Should inject click event"
     );
 
     let event = backend.poll_widget_trigger_event();
     assert!(event.is_some(), "Should poll trigger event");
-    assert_eq!(event.unwrap().widget_id, button);
+    assert_eq!(event.unwrap().widget_id, window);
     assert_eq!(event.unwrap().kind, WidgetTriggerKind::Clicked, "Should match Clicked kind");
-}
-
-#[test]
-fn dialog_and_extended_controls() {
-    let backend = WaylandPlatform::new();
-    backend.init();
-
-    let window = backend.create_window("DialogTest", 0, 0, 500, 400);
-
-    // Dialogs.
-    let msg_box = backend.create_message_box(window, "Title", "Hello", 10, 10, 300, 150);
-    assert!(msg_box > 0, "MessageBox should be created");
-
-    let file_dlg = backend.create_file_dialog(window, 10, 170, 400, 300);
-    assert!(file_dlg > 0, "FileDialog should be created");
-
-    let color_dlg = backend.create_color_dialog(window, 10, 10, 300, 300);
-    assert!(color_dlg > 0, "ColorDialog should be created");
-
-    let font_dlg = backend.create_font_dialog(window, 10, 10, 300, 300);
-    assert!(font_dlg > 0, "FontDialog should be created");
-
-    // Extended controls.
-    let spin = backend.create_spin_box(window, 10, 10, 80, 24);
-    assert!(spin > 0, "SpinBox should be created");
-
-    let list_view = backend.create_list_view(window, 10, 40, 200, 150);
-    assert!(list_view > 0, "ListView should be created");
-
-    let scroll = backend.create_scroll_area(window, 10, 200, 200, 150);
-    assert!(scroll > 0, "ScrollArea should be created");
+    assert_eq!(backend.poll_widget_triggered(), None, "The queue must be drained");
 }
 
 #[test]
@@ -406,15 +294,6 @@ fn invalid_parent_and_kind_validation() {
     assert!(window > 0);
 
     let bogus = 9999;
-    // Parented creators reject an unknown parent instead of orphaning widgets.
-    assert_eq!(backend.create_button(bogus, "b", 0, 0, 10, 10), 0);
-    assert_eq!(backend.create_label(bogus, "l", 0, 0, 10, 10), 0);
-    assert_eq!(backend.create_combo_box(bogus, 0, 0, 10, 10), 0);
-    assert_eq!(backend.create_list_box(bogus, 0, 0, 10, 10), 0);
-    assert_eq!(backend.create_message_box(bogus, "t", "m", 0, 0, 10, 10), 0);
-    assert_eq!(backend.create_file_dialog(bogus, 0, 0, 10, 10), 0);
-    assert_eq!(backend.create_spin_box(bogus, 0, 0, 10, 10), 0);
-    assert_eq!(backend.create_scroll_area(bogus, 0, 0, 10, 10), 0);
 
     // A menu must hang off a menu bar (or another menu), not a window.
     assert_eq!(backend.create_menu(window, "File", 0, 0, 10, 10), 0);
@@ -444,6 +323,10 @@ fn invalid_parent_and_kind_validation() {
     use crate::platform::WidgetTriggerKind;
     assert!(!backend.inject_widget_trigger_event(bogus, WidgetTriggerKind::Clicked));
     assert!(backend.inject_widget_trigger_event(window, WidgetTriggerKind::Clicked));
+
+    // Destroying a menu bar detaches it from its window.
+    assert!(backend.destroy_widget(menu_bar));
+    assert_eq!(backend.create_menu(window, "File", 0, 0, 10, 10), 0);
 }
 
 #[test]
@@ -452,16 +335,15 @@ fn drag_and_drop() {
     backend.init();
 
     let window = backend.create_window("DragTest", 0, 0, 400, 300);
-    let source = backend.create_button(window, "Drag", 10, 10, 80, 24);
 
-    // Begin drag from source.
-    assert!(backend.begin_drag(source, "text/plain", b"drag payload"), "Should begin drag");
+    // Begin drag from the window; the library paints the drag source's feedback.
+    assert!(backend.begin_drag(window, "text/plain", b"drag payload"), "Should begin drag");
 
     // Poll drop event.
     let drop = backend.poll_drop_event();
     assert!(drop.is_some(), "Should poll drop event");
     let drop = drop.unwrap();
-    assert_eq!(drop.source_widget_id, source);
+    assert_eq!(drop.source_widget_id, window);
     assert_eq!(drop.mime, "text/plain");
     assert_eq!(drop.payload, b"drag payload");
 }
@@ -472,22 +354,22 @@ fn ime_and_accessibility() {
     backend.init();
 
     let window = backend.create_window("IMETest", 0, 0, 400, 300);
-    let line_edit = backend.create_line_edit(window, "input", 10, 10, 160, 24);
 
-    // IME roundtrip.
-    assert!(backend.set_widget_ime_enabled(line_edit, true), "Should enable IME");
-    assert!(backend.is_widget_ime_enabled(line_edit), "IME should be enabled");
+    // The IME flag is a per-widget flag the input path consults, so it round-trips
+    // on the window even though the host creates no text field for it.
+    assert!(backend.set_widget_ime_enabled(window, true), "Should enable IME");
+    assert!(backend.is_widget_ime_enabled(window), "IME should be enabled");
 
-    assert!(backend.set_widget_ime_enabled(line_edit, false), "Should disable IME");
-    assert!(!backend.is_widget_ime_enabled(line_edit), "IME should be disabled");
+    assert!(backend.set_widget_ime_enabled(window, false), "Should disable IME");
+    assert!(!backend.is_widget_ime_enabled(window), "IME should be disabled");
 
     // Accessibility name roundtrip.
     assert!(
-        backend.set_widget_accessibility_name(line_edit, "InputField"),
+        backend.set_widget_accessibility_name(window, "InputField"),
         "Should set accessibility name"
     );
     assert_eq!(
-        backend.get_widget_accessibility_name(line_edit),
+        backend.get_widget_accessibility_name(window),
         "InputField",
         "Accessibility name should match"
     );

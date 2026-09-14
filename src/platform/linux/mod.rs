@@ -2,13 +2,19 @@
 // SPDX-License-Identifier: MIT
 
 //! Linux backend platform (sub-module split).
-pub mod menu_impl;
+//!
+//! This backend owns exactly what a host must supply: the GTK toplevel and its
+//! event loop, the `gtk::DrawingArea` self-drawn surface (`canvas.rs`), the
+//! `/proc` and `lpr`/`lp` fact probes, and clipboard/IME/accessibility
+//! forwarding. It creates **no** native controls and **no** native menu: every
+//! `WidgetKind` is painted by the library itself, and the menu is an in-process
+//! model the host materialises through its own GTK widgets. The control
+//! construction, menu construction and control-state methods therefore keep the
+//! `Platform` trait defaults (BLUE15 #55/#56).
 pub mod platform_impl;
 #[cfg(test)]
 pub mod tests;
 pub mod types;
-pub mod widget_creation;
-pub mod widget_state;
 
 /// Native surface for self-drawn widgets (Linux/GTK).
 ///

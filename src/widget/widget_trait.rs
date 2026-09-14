@@ -137,13 +137,40 @@ pub trait Widget: EventHandler + Any {
     ///
     /// Default behavior prefers tooltip text when present, then falls back to the
     /// widget kind so every widget has a stable non-empty label.
+    /// Returns the name assistive technology announces for this widget.
+    ///
+    /// # Order of preference
+    ///
+    /// 1. The tooltip, when the host set one: it is an explicit description written
+    ///    for this control, so it says more than a label does.
+    /// 2. The control's own label (`text` / `title` / `message`), which is what a
+    ///    sighted user reads and therefore what a screen-reader user expects.
+    /// 3. The kind name, as a last resort so the result is never empty.
+    ///
+    /// Step 2 is what changed: skipping it made every labelled control announce
+    /// itself as `"Button"` / `"Label"` — the kind, not the control. The label is
+    /// read through the property contract rather than a per-kind table, so a control
+    /// added later is announced correctly without touching this method.
     fn accessible_name(&self) -> String {
         let tooltip = self.tooltip().trim();
-        if tooltip.is_empty() {
-            format!("{:?}", self.kind())
-        } else {
-            tooltip.to_string()
+        if !tooltip.is_empty() {
+            return tooltip.to_string();
         }
+        // Read the label through the property contract rather than a per-kind
+        // table, so a control added later is announced correctly without editing
+        // this method. A control with no contract simply skips to the fallback.
+        if let Some(props) = self.properties_dyn() {
+            for property in crate::control_backend::custom::LABEL_PROPERTY_NAMES {
+                if let Ok(crate::widget::capability::CapabilityValue::String(label)) =
+                    props.get(property)
+                {
+                    if !label.trim().is_empty() {
+                        return label;
+                    }
+                }
+            }
+        }
+        format!("{:?}", self.kind())
     }
     /// Returns the semantic accessibility role for this widget.
     fn accessible_role(&self) -> AccessibleRole {
@@ -413,12 +440,24 @@ mod tests {
     use crate::widget::base_widgets::button::Button;
 
     #[test]
-    fn widget_accessible_name_uses_tooltip_when_present() {
+    fn widget_accessible_name_prefers_the_label_then_the_tooltip() {
         let mut button = Button::new("Open".to_string(), Rect::new(0, 0, 100, 32));
-        assert_eq!(button.accessible_name(), "Button");
+        // The control's own label is what a screen-reader user expects to hear, so
+        // it wins over the kind name. Reporting `"Button"` for a labelled control
+        // was the old behaviour and told the user nothing about which button it is.
+        assert_eq!(button.accessible_name(), "Open");
 
+        // An explicit tooltip is a better description than the label, so it wins
+        // when present.
         button.set_tooltip("Open file".to_string());
         assert_eq!(button.accessible_name(), "Open file");
+    }
+
+    /// An unlabelled control still gets a non-empty name.
+    #[test]
+    fn widget_accessible_name_falls_back_to_the_kind() {
+        let button = Button::new(String::new(), Rect::new(0, 0, 100, 32));
+        assert_eq!(button.accessible_name(), "Button");
     }
 
     #[test]

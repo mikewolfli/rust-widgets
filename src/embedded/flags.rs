@@ -2,8 +2,22 @@
 // SPDX-License-Identifier: MIT
 
 //! Embedded mode flag management and memory configuration helpers.
+//!
+//! # Where the numbers come from
+//!
+//! The four budget functions below used to derive their answers from two unrelated
+//! run-time flags (`EMBEDDED_MODE` / `LOW_MEMORY_MODE`) with their own `if` chains,
+//! so `mini`'s and `embedded`'s budgets were described in two places that had to
+//! agree by hand. They now read [`crate::platform::profile::surface_policy`], which
+//! is the single table for "what does this profile's host provide" (BLUE15 Phase E).
+//!
+//! The run-time flags survive because they are a *caller* choice: an application can
+//! put a desktop build into low-memory mode at run time, and that narrows the budget
+//! further. They can only tighten the policy, never widen it — a build cannot gain
+//! resources its profile does not have.
 
 use crate::core::Size;
+use crate::platform::profile::surface_policy;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static EMBEDDED_MODE: AtomicBool = AtomicBool::new(false);
@@ -29,9 +43,18 @@ pub fn set_low_memory_mode(enabled: bool) {
     LOW_MEMORY_MODE.store(enabled, Ordering::Relaxed);
 }
 
+/// `true` when the caller asked for the reduced budget on top of the profile's own.
+///
+/// The policy's frugal rows already imply the reduced budget, so an embedded or
+/// `mini` build is frugal whether or not this flag is set — which is why the
+/// accessors below test the policy first and this flag only as a further narrowing.
+fn budget_is_reduced() -> bool {
+    is_embedded_mode() || is_low_memory_mode() || !surface_policy().os_window
+}
+
 /// Get recommended buffer size for current mode
 pub fn recommended_buffer_size() -> Size {
-    if is_low_memory_mode() {
+    if budget_is_reduced() {
         Size::new(800, 600)
     } else {
         Size::new(1920, 1080)
@@ -40,29 +63,30 @@ pub fn recommended_buffer_size() -> Size {
 
 /// Get maximum recommended texture size
 pub fn max_texture_size() -> u32 {
-    if is_embedded_mode() {
-        1024
-    } else {
-        4096
-    }
+    surface_policy().max_texture
 }
 
 /// Get recommended font cache size
 pub fn font_cache_size() -> usize {
     if is_low_memory_mode() {
-        256 * 1024
+        // A caller-requested reduction must be able to go below the profile cap.
+        (surface_policy().font_cache_bytes / 4).max(64 * 1024)
     } else {
-        2 * 1024 * 1024
+        surface_policy().font_cache_bytes
     }
 }
 
 /// Get recommended event queue size
 pub fn event_queue_size() -> usize {
-    if is_embedded_mode() {
-        64
-    } else {
-        256
-    }
+    surface_policy().event_queue
+}
+
+/// Maximum number of simultaneously mounted controls this profile budgets for.
+///
+/// Exposed here so a pool or widget allocator can size itself from the same table
+/// the rest of the runtime uses, rather than carrying another constant.
+pub fn max_widgets() -> usize {
+    surface_policy().max_widgets
 }
 
 /// Initialize embedded environment with optimal settings

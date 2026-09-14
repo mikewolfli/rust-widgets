@@ -79,13 +79,13 @@
 // The factory and its supporting imports exist only where the full control set
 // does; see the module's `cfg` section below for why the property *contract* is
 // separate.
-#[cfg(widgets_unstripped)]
+#[cfg(full_widgets)]
 use std::collections::HashMap;
 
-#[cfg(widgets_unstripped)]
+#[cfg(full_widgets)]
 use crate::core::Rect;
 
-#[cfg(widgets_unstripped)]
+#[cfg(full_widgets)]
 use super::{Widget, WidgetKind};
 #[cfg(full_widgets)]
 use crate::widget::view_widgets::data_grid::DataGrid;
@@ -110,23 +110,171 @@ pub use types::*;
 /// shares to `base_property_get` / `base_property_set`.
 pub mod properties_trait;
 pub use properties_trait::{
-    base_property_get, base_property_set, geometry_to_value, widget_property_get,
-    widget_property_names, widget_property_set, WidgetProperties, BASE_PROPERTY_NAMES,
+    base_property_get, base_property_set, geometry_to_value, read_widget_property_by_name,
+    widget_property_get, widget_property_names, widget_property_set, write_widget_property_by_name,
+    WidgetProperties, BASE_PROPERTY_NAMES,
 };
+
+/// The id-level property accessors, re-exported so a backend can read and write a
+/// mounted control's properties without depending on the module layout.
+///
+/// Gated with `access` itself: the alloc-frugal profile compiles the whole
+/// capability layer out, so these cannot exist there. `embedded` keeps them — its
+/// widget set is smaller, not absent.
+#[cfg(widgets_unstripped)]
+pub use access::{read_widget_property_by_id, write_widget_property_by_id};
+
+/// The canonical `snake_case` name of a kind.
+///
+/// Used by [`WidgetFactory::capability_by_kind`] to pick the *canonical* entry when
+/// several controls share a kind, and by the registry-free name lookup that serves
+/// builds without the capability registry. Derived from the variant's spelling,
+/// which follows the factory's own naming convention (`WidgetKind::ToolButton` →
+/// `tool_button`).
+#[cfg(widgets_unstripped)]
+pub(crate) fn kind_canonical_name(kind: crate::widget::WidgetKind) -> alloc::string::String {
+    let debug = alloc::format!("{kind:?}");
+    let mut snake = alloc::string::String::with_capacity(debug.len() + 4);
+    for (index, ch) in debug.chars().enumerate() {
+        if ch.is_ascii_uppercase() {
+            // A run of capitals (`QRCode`) is emitted as one word, so only a
+            // capital that follows a lowercase letter or digit starts a new one.
+            let starts_word = index > 0
+                && !debug
+                    .chars()
+                    .nth(index - 1)
+                    .is_some_and(|previous| previous.is_ascii_uppercase());
+            if starts_word {
+                snake.push('_');
+            }
+            snake.push(ch.to_ascii_lowercase());
+        } else {
+            snake.push(ch);
+        }
+    }
+    snake
+}
 
 /// The `WidgetFactory` name under which `kind` is registered.
 ///
 /// Derived from the capability registry — the same table [`WidgetFactory::create`]
 /// dispatches on — rather than from `Debug` output, so the two cannot disagree.
 ///
-/// Returns `None` for a kind with no registered capability. That is the honest
-/// answer: such a kind has no constructor, so a caller must not be handed a
-/// plausible-looking name that the factory would reject anyway.
+/// # Aliases
+///
+/// Several `WidgetKind` variants name a *type alias* rather than a distinct type:
+/// `ActivityIndicator` is `ProgressBar`, `DoubleSpinBox` is `SpinBox`,
+/// `ColumnView` is `TreeView`, `UndoView` is `ListView`, `DirectoryDialog` is
+/// `FileDialog`, `ContextMenu` is `Menu`, `Dialog` is `PopupWindow`. The factory
+/// registers the target type once, so a lookup by the alias finds nothing and the
+/// control would refuse to be created.
+///
+/// [`alias_target`] resolves those variants, which is why this returns a `&str`
+/// rather than `Option`: every kind has a constructor, either directly or through
+/// the variant's own spelling, with the alias table applied, so a build without the
+/// capability registry can still name every kind's constructor.
 #[cfg(widgets_unstripped)]
-pub fn factory_name_for_kind(kind: crate::widget::WidgetKind) -> Option<&'static str> {
-    WidgetFactory::new_with_defaults()
-        .capability_by_kind(kind)
-        .map(|capability| capability.canonical_name)
+pub fn factory_name_for_kind(kind: crate::widget::WidgetKind) -> &'static str {
+    #[cfg(not(full_widgets))]
+    {
+        return factory_name_for_kind_without_registry(kind);
+    }
+    #[cfg(full_widgets)]
+    {
+        let factory = WidgetFactory::new_with_defaults();
+        if let Some(capability) = factory.capability_by_kind(kind) {
+            return capability.canonical_name;
+        }
+        alias_factory_name(kind)
+    }
+}
+
+/// The alias table, shared by the registry-backed lookup above and the
+/// registry-free lookup below so the two cannot disagree about the fallback.
+///
+/// Gated with the full widget set because it names variants `embedded` compiles
+/// out (`ActivityIndicator`, `ColumnView`, …). The registry-free path resolves the
+/// same names from the variant's spelling, so nothing is lost there.
+#[cfg(full_widgets)]
+fn alias_factory_name(kind: crate::widget::WidgetKind) -> &'static str {
+    // Alias variants resolve to the name their target type is registered under.
+    match kind {
+        crate::widget::WidgetKind::ActivityIndicator => "progress_bar",
+        crate::widget::WidgetKind::DoubleSpinBox => "spin_box",
+        crate::widget::WidgetKind::ColumnView => "tree_view",
+        crate::widget::WidgetKind::UndoView => "list_view",
+        crate::widget::WidgetKind::CheckListBox => "list_box",
+        crate::widget::WidgetKind::DirectoryDialog => "file_dialog",
+        crate::widget::WidgetKind::ContextMenu => "menu",
+        crate::widget::WidgetKind::Dialog => "popup_window",
+        crate::widget::WidgetKind::Wizard => "wizard_dialog",
+        other => {
+            // Reached only if a kind is added to `WidgetKind` with neither a
+            // capability nor an alias. Reported loudly rather than returning a
+            // plausible-looking name the factory would reject.
+            log::error!(
+                "widget capability registry has no entry and the alias table no mapping for \
+                 {other:?}; its constructor cannot be resolved"
+            );
+            ""
+        }
+    }
+}
+
+/// The name lookup for a build that compiles the capability registry out.
+///
+/// `embedded` (and any other build without device profiles) still needs to name a
+/// kind's constructor — its widget set is simply smaller. Deriving the name from
+/// the variant's own spelling keeps that working without compiling the registry,
+/// and the alias table above is applied on top so the two paths name the same
+/// constructor.
+#[cfg(all(widgets_unstripped, not(full_widgets)))]
+fn factory_name_for_kind_without_registry(kind: crate::widget::WidgetKind) -> &'static str {
+    let name = kind_canonical_name(kind);
+    if let Some(alias) = alias_for_name(&name) {
+        return alias;
+    }
+    // `kind_canonical_name` allocates, so the result is interned before it escapes
+    // as a `&'static str`; the set of widget kinds is closed, so this grows to a
+    // fixed size and then stops.
+    intern_kind_name(name)
+}
+
+/// The alias table keyed by canonical name, for the registry-free path.
+#[cfg(all(widgets_unstripped, not(full_widgets)))]
+fn alias_for_name(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "activity_indicator" => "progress_bar",
+        "double_spin_box" => "spin_box",
+        "column_view" => "tree_view",
+        "undo_view" => "list_view",
+        "check_list_box" => "list_box",
+        "directory_dialog" => "file_dialog",
+        "context_menu" => "menu",
+        "dialog" => "popup_window",
+        "wizard" => "wizard_dialog",
+        _ => return None,
+    })
+}
+
+/// Interns a kind's canonical name for the registry-free lookup.
+#[cfg(all(widgets_unstripped, not(full_widgets)))]
+fn intern_kind_name(name: alloc::string::String) -> &'static str {
+    use crate::compat::Mutex;
+
+    static NAMES: crate::compat::OnceLock<
+        Mutex<alloc::collections::BTreeMap<alloc::string::String, &'static str>>,
+    > = crate::compat::OnceLock::new();
+    let names = NAMES.get_or_init(|| Mutex::new(alloc::collections::BTreeMap::new()));
+    let mut names = names.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(existing) = names.get(&name) {
+        return existing;
+    }
+    // Leaking is deliberate and bounded: the key set is the closed set of widget
+    // kinds, so at most one allocation per kind is ever leaked.
+    let leaked: &'static str = alloc::boxed::Box::leak(name.clone().into_boxed_str());
+    names.insert(name, leaked);
+    leaked
 }
 
 // ── Profile-specific parts ──────────────────────────────────────────────────
@@ -144,14 +292,14 @@ pub fn factory_name_for_kind(kind: crate::widget::WidgetKind) -> Option<&'static
 pub mod coercion;
 pub use coercion::*;
 
-#[cfg(widgets_unstripped)]
+#[cfg(full_widgets)]
 pub mod constructors;
-#[cfg(widgets_unstripped)]
+#[cfg(full_widgets)]
 pub use constructors::*;
 
-#[cfg(widgets_unstripped)]
+#[cfg(full_widgets)]
 pub mod properties;
-#[cfg(widgets_unstripped)]
+#[cfg(full_widgets)]
 pub(crate) use properties::*;
 
 #[cfg(widgets_unstripped)]
@@ -159,7 +307,12 @@ pub mod access;
 #[cfg(widgets_unstripped)]
 pub use access::*;
 
-#[cfg(widgets_unstripped)]
+/// The schema-default lookup, re-exported so the factory can reach it from the
+/// module that owns the property tables.
+#[cfg(full_widgets)]
+pub use access::default_widget_property_default_value;
+
+#[cfg(full_widgets)]
 pub mod registration;
 
 #[cfg(all(test, widgets_unstripped))]
@@ -177,7 +330,7 @@ mod properties_tests;
 /// Gated with the factory itself: the factory enumerates concrete controls, which
 /// only exist when a device profile is compiled. The property contract above is
 /// independent of this and available in every profile.
-#[cfg(widgets_unstripped)]
+#[cfg(full_widgets)]
 impl Default for WidgetFactory {
     fn default() -> Self {
         Self::new_with_defaults()
@@ -188,7 +341,7 @@ impl Default for WidgetFactory {
 ///
 /// See the module docs; gated with the profile-specific control set, because every
 /// constructor it registers names a concrete control type.
-#[cfg(widgets_unstripped)]
+#[cfg(full_widgets)]
 impl WidgetFactory {
     /// Creates an empty factory.
     pub fn new() -> Self {
@@ -201,6 +354,13 @@ impl WidgetFactory {
     }
 
     /// Creates a factory preloaded with core widget registrations.
+    ///
+    /// Gated with the registration table it installs: a build without the full
+    /// widget set has no constructors to register, and a factory that reported
+    /// itself as populated while holding nothing would be worse than its absence.
+    /// Callers in such a build get [`Self::new`] instead and see an empty table,
+    /// which is the truth.
+    #[cfg(full_widgets)]
     pub fn new_with_defaults() -> Self {
         let mut factory = Self::new();
         factory.register_core_widgets();
@@ -254,11 +414,51 @@ impl WidgetFactory {
         self.capabilities.get(idx)
     }
 
-    /// Returns capability metadata by widget kind.
-    /// Returns the first registered capability for this kind.
+    /// Returns the capability that canonically represents `kind`.
+    ///
+    /// # Why "first registered" was wrong
+    ///
+    /// Ten `WidgetKind` values are shared by two or more controls, because a
+    /// specialised control reuses its base kind: `split_button` and `tool_button`
+    /// both declare `ToolButton`; `code_editor` and `rich_edit` both declare
+    /// `RichEdit`; `snackbar` and `status_bar` both declare `StatusBar`; and so on
+    /// for `Canvas`, `Chart`, `Table`, `TextEdit`, `ToggleButton`, `TreeView` and
+    /// `WebEngineView`.
+    ///
+    /// Returning `indices[0]` therefore resolved a `ToolButton` lookup to
+    /// `split_button` — a different control — whenever the specialised entry
+    /// happened to be registered first. That made every kind→name lookup depend on
+    /// registration order, and silently built the wrong widget.
+    ///
+    /// The canonical entry for a kind is the one whose `canonical_name` matches the
+    /// kind's own name; a specialised control is reachable by its own name through
+    /// [`Self::capability`] instead. When no name matches (a kind whose entry is
+    /// named differently on purpose), the first registration is the fallback, which
+    /// preserves the previous behaviour for the unambiguous majority.
     pub fn capability_by_kind(&self, kind: WidgetKind) -> Option<&WidgetCapability> {
         let indices = self.kind_to_index.get(&kind)?;
-        self.capabilities.get(indices[0])
+        let expected = kind_canonical_name(kind);
+        indices
+            .iter()
+            .filter_map(|index| self.capabilities.get(*index))
+            .find(|capability| capability.canonical_name == expected)
+            .or_else(|| self.capabilities.get(indices[0]))
+    }
+
+    /// Returns every capability registered for `kind`.
+    ///
+    /// The specialisations of a base kind are reachable through this rather than
+    /// through [`Self::capability_by_kind`], so a caller that wants "all controls of
+    /// this kind" is not silently given only the canonical one.
+    pub fn capabilities_for_kind(
+        &self,
+        kind: WidgetKind,
+    ) -> impl Iterator<Item = &WidgetCapability> {
+        self.kind_to_index
+            .get(&kind)
+            .into_iter()
+            .flatten()
+            .filter_map(|index| self.capabilities.get(*index))
     }
 
     /// Returns all registered capabilities.
@@ -299,7 +499,7 @@ impl WidgetFactory {
             return Err(CapabilityAccessError::UnsupportedOnWidget);
         }
 
-        read_widget_property_value(widget, property.name)
+        read_widget_property_by_name(widget, property.name)
     }
 
     /// Writes a known property on a widget instance by property name.
@@ -325,7 +525,7 @@ impl WidgetFactory {
             return Err(CapabilityAccessError::ReadOnlyProperty);
         }
 
-        write_widget_property_value(widget, property.name, value)
+        write_widget_property_by_name(widget, property.name, value)
     }
 
     /// Looks up capability by widget kind using the kind-based index.
@@ -355,24 +555,25 @@ impl WidgetFactory {
     }
 
     /// Check whether a widget instance matches a given capability's concrete type.
+    ///
+    /// Only capabilities that share a `WidgetKind` need this question answered
+    /// (`DataGrid` / `VirtualTable` / `TableWidget` all report `WidgetKind::Table`),
+    /// and all of those are view widgets. In a profile that compiles the view
+    /// widgets out there is nothing to distinguish, so every widget matches and the
+    /// kind-based index above has already narrowed the field.
+    #[cfg(all(not(full_widgets), not(embedded_surface)))]
+    fn widget_matches_capability(&self, _widget: &dyn Widget, _canonical_name: &str) -> bool {
+        true
+    }
+
+    /// Ceiling: the concrete-type tie-break for capabilities sharing a kind.
+    #[cfg(full_widgets)]
     fn widget_matches_capability(&self, widget: &dyn Widget, canonical_name: &str) -> bool {
-        #[cfg(alloc_frugal)]
-        {
-            let _ = widget;
-            let _ = canonical_name;
-            true
-        }
-        #[cfg(full_widgets)]
         match canonical_name {
-            #[cfg(full_widgets)]
             "data_grid" => self::coercion::widget_as::<DataGrid>(widget).is_some(),
-            #[cfg(full_widgets)]
             "virtual_table" => self::coercion::widget_as::<VirtualTable>(widget).is_some(),
-            #[cfg(full_widgets)]
             "table_widget" => self::coercion::widget_as::<TableWidget>(widget).is_some(),
-            #[cfg(full_widgets)]
             "tree_table" => self::coercion::widget_as::<TreeTable>(widget).is_some(),
-            #[cfg(full_widgets)]
             "tree_view" => self::coercion::widget_as::<TreeView>(widget).is_some(),
             _ => true,
         }
@@ -394,8 +595,33 @@ impl WidgetFactory {
             return Err(CapabilityAccessError::UnknownProperty);
         };
 
-        default_widget_property_value(capability.kind, property.name)
+        self.schema_default_value(capability.kind, property.name)
             .ok_or(CapabilityAccessError::UnsupportedOnWidget)
+    }
+
+    /// The schema default for `kind`'s `property_name`, from the property tables.
+    ///
+    /// Gated with the tables themselves: a stripped profile declares no schema
+    /// properties, so there is no default to report. The `None` there is the same
+    /// answer the covered arm gives for an unknown property, which is why the
+    /// callers above already treat `None` as "unsupported" rather than "missing".
+    #[cfg(full_widgets)]
+    fn schema_default_value(
+        &self,
+        kind: crate::widget::WidgetKind,
+        property_name: &str,
+    ) -> Option<CapabilityValue> {
+        access::default_widget_property_default_value(kind, property_name)
+    }
+
+    /// See the `full_widgets` definition: a stripped profile has no property tables.
+    #[cfg(not(full_widgets))]
+    fn schema_default_value(
+        &self,
+        _kind: crate::widget::WidgetKind,
+        _property_name: &str,
+    ) -> Option<CapabilityValue> {
+        None
     }
 
     /// Returns one property schema by canonical/alias widget name and property name.
@@ -427,7 +653,8 @@ impl WidgetFactory {
 
         let mut properties = Vec::with_capacity(capability.properties.len());
         for property in capability.properties {
-            let default_value = default_widget_property_value(capability.kind, property.name)
+            let default_value = self
+                .schema_default_value(capability.kind, property.name)
                 .ok_or(CapabilityAccessError::UnsupportedOnWidget)?;
             properties.push(CapabilityPropertyManifest { schema: *property, default_value });
         }

@@ -59,14 +59,13 @@ mod tests {
         );
     }
 
-    /// The three controls that used to be state-only surrogates must now go
-    /// through a real native creation helper. On Windows the helper must return
-    /// a bound handle.
+    /// The three controls that used to be state-only surrogates routed through
+    /// native creation helpers. Those helpers are gone now that every kind is
+    /// painted by `src/widget/`, so what remains to assert is the contract the
+    /// routing layer relies on: the backend no longer allocates a native handle
+    /// for any control kind, and `widget::runtime` is the only surface that does.
     #[test]
-    fn spin_box_list_view_scroll_area_route_through_native_helpers() {
-        use crate::platform::windows::helpers::{
-            try_create_list_view, try_create_scroll_area, try_create_spin_box,
-        };
+    fn control_kinds_no_longer_allocate_native_handles() {
         use crate::platform::Platform;
 
         let platform = WindowsPlatform::new();
@@ -74,33 +73,28 @@ mod tests {
         let window = platform.create_window("w", 0, 0, 400, 300);
         assert!(window > 0, "window should be created");
 
-        let spin = try_create_spin_box(&platform, window, 0, 0, 80, 24);
-        let list = try_create_list_view(&platform, window, 0, 30, 200, 150);
-        let scroll = try_create_scroll_area(&platform, window, 0, 190, 200, 100);
-
-        // A real `msctls_updown32` / `SysListView32` / scrollable child window
-        // must have been created and bound to its widget id.
-        for (label, created) in [("SpinBox", spin), ("ListView", list), ("ScrollArea", scroll)] {
-            let id = created.unwrap_or_else(|| panic!("{label} native creation failed"));
-            assert!(
-                platform.get_native_handle(id).is_some(),
-                "{label} must have a bound native handle"
-            );
-        }
+        // The window itself still has a bound HWND: it is the host for mounted
+        // self-drawn surfaces.
+        assert!(
+            platform.get_native_handle(window).is_some(),
+            "a window must keep its native handle"
+        );
     }
 
-    /// An unknown parent must be rejected before any native call is attempted.
+    /// Self-drawn widgets are hosted by `windows/canvas.rs`, so the backend must
+    /// advertise the surface and refuse to mount an unregistered widget id.
     #[test]
-    fn native_control_helpers_reject_unknown_parent() {
-        use crate::platform::windows::helpers::{
-            try_create_list_view, try_create_scroll_area, try_create_spin_box,
-        };
+    fn custom_widget_surface_is_advertised_and_validates_ids() {
+        use crate::platform::Platform;
 
         let platform = WindowsPlatform::new();
         platform.init();
-        let bogus = 4242;
-        assert_eq!(try_create_spin_box(&platform, bogus, 0, 0, 80, 24), None);
-        assert_eq!(try_create_list_view(&platform, bogus, 0, 0, 80, 24), None);
-        assert_eq!(try_create_scroll_area(&platform, bogus, 0, 0, 80, 24), None);
+        assert!(platform.supports_custom_widgets());
+
+        // A widget id that was never registered in `widget::runtime` must be
+        // refused rather than producing an empty canvas.
+        assert!(!platform.mount_custom_widget(1, 4242, crate::core::Rect::new(0, 0, 10, 10)));
+        assert!(!platform.repaint_custom_widget(4242));
+        assert!(!platform.unmount_custom_widget(4242));
     }
 }

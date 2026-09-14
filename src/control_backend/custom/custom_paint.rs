@@ -1,33 +1,25 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! Custom-painted control backend scaffold.
+//! Custom-painted control backend: paints every control on a host surface.
 
 use crate::compat::Mutex;
 use crate::control_backend::types::CustomControlState;
-use crate::core::ObjectId;
 
-/// Custom-painted control backend scaffold.
+/// Backend that paints every control on a surface it owns.
+///
+/// It holds no per-widget state of its own: control state belongs to the widget
+/// object, reached through [`crate::widget::runtime`]. What remains in
+/// [`CustomControlState`] is host policy that a widget cannot express (see its
+/// docs).
 pub struct CustomPaintControlBackend {
     pub(crate) state: Mutex<CustomControlState>,
 }
 
 impl CustomPaintControlBackend {
-    /// Create custom-painted control backend.
+    /// Creates the custom-painted control backend.
     pub fn new() -> Self {
-        Self {
-            state: Mutex::new(CustomControlState {
-                next_widget_id: 1,
-                ..CustomControlState::default()
-            }),
-        }
-    }
-
-    pub(crate) fn alloc_widget_id(&self) -> ObjectId {
-        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let widget_id = state.next_widget_id;
-        state.next_widget_id = state.next_widget_id.saturating_add(1);
-        widget_id
+        Self { state: Mutex::new(CustomControlState::default()) }
     }
 }
 

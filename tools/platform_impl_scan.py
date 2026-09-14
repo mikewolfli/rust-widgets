@@ -109,9 +109,6 @@ OS_SOURCES: Dict[str, List[str]] = {
     ],
     "linux": [
         "src/platform/linux/platform_impl.rs",
-        "src/platform/linux/widget_state.rs",
-        "src/platform/linux/widget_creation.rs",
-        "src/platform/linux/menu_impl.rs",
     ],
     "macos": ["src/platform/macos/platform_impl.rs"],
     "macos_objc2": ["src/platform/macos_objc2/platform_impl.rs"],

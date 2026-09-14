@@ -196,15 +196,18 @@ fn dialog_widgets_satisfy_the_contract() {
     use crate::widget::dialog::progress_dialog::ProgressDialog;
 
     let mut message = MessageBox::new(Rect::new(0, 0, 350, 150));
-    assert!(widget_property_get(&message, "title").is_ok());
-    assert!(widget_property_get(&message, "text").is_ok());
-    // `title` / `text` are read-only: the old write layer had no arm for this kind,
-    // so a write falls through the shared fallback and reports the name as unknown
-    // rather than as a write the control accepted.
+    // Both strings are writable: a message box is defined by its title and body,
+    // and the factory seeds them from the constructor arguments.
     assert_eq!(
-        widget_property_set(&mut message, "title", CapabilityValue::String("x".into())),
-        Err(CapabilityAccessError::UnknownProperty)
+        widget_property_set(&mut message, "title", CapabilityValue::String("t".into())),
+        Ok(())
     );
+    assert_eq!(get(&message, "title"), CapabilityValue::String("t".into()));
+    assert_eq!(
+        widget_property_set(&mut message, "text", CapabilityValue::String("body".into())),
+        Ok(())
+    );
+    assert_eq!(get(&message, "text"), CapabilityValue::String("body".into()));
     assert_contract(&mut message, "MessageBox");
 
     let mut file = FileDialog::new(Rect::new(0, 0, 500, 400));

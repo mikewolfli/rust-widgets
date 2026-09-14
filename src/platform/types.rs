@@ -538,6 +538,22 @@ pub trait Platform: Send + Sync {
     }
 
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> ObjectId;
+
+    // ── Control construction ────────────────────────────────────────────────
+    //
+    // Every method below has a default that reports "this host creates no such
+    // control". That is the truthful answer now that the library paints every
+    // `WidgetKind`: the host supplies a window and a drawing surface, not controls
+    // (BLUE15 #55/#56). The declarations are kept rather than deleted so a backend
+    // that genuinely owns a native primitive can still opt in — deliberately, in
+    // one place — without an API change.
+    //
+    // A backend implementing one of these must make it return a real, usable id;
+    // returning `0` while claiming support is the dishonesty this default removes.
+
+    /// Creates a push button control.
+    ///
+    /// Default: no control is created, because the library paints buttons itself.
     fn create_button(
         &self,
         parent: ObjectId,
@@ -546,7 +562,11 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
+    ) -> ObjectId {
+        let _ = (parent, text, x, y, width, height);
+        0
+    }
+    /// Creates a check box control. See [`Platform::create_button`] for the default.
     fn create_checkbox(
         &self,
         parent: ObjectId,
@@ -555,7 +575,11 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
+    ) -> ObjectId {
+        let _ = (parent, text, x, y, width, height);
+        0
+    }
+    /// Creates a single-line text field. See [`Platform::create_button`].
     fn create_line_edit(
         &self,
         parent: ObjectId,
@@ -564,7 +588,11 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
+    ) -> ObjectId {
+        let _ = (parent, text, x, y, width, height);
+        0
+    }
+    /// Creates a static label. See [`Platform::create_button`].
     fn create_label(
         &self,
         parent: ObjectId,
@@ -573,7 +601,11 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
+    ) -> ObjectId {
+        let _ = (parent, text, x, y, width, height);
+        0
+    }
+    /// Creates a radio button. See [`Platform::create_button`].
     fn create_radio_button(
         &self,
         parent: ObjectId,
@@ -582,8 +614,16 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
-    fn create_slider(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId;
+    ) -> ObjectId {
+        let _ = (parent, text, x, y, width, height);
+        0
+    }
+    /// Creates a slider. See [`Platform::create_button`].
+    fn create_slider(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        let _ = (parent, x, y, width, height);
+        0
+    }
+    /// Creates a progress bar. See [`Platform::create_button`].
     fn create_progress_bar(
         &self,
         parent: ObjectId,
@@ -591,7 +631,11 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
+    ) -> ObjectId {
+        let _ = (parent, x, y, width, height);
+        0
+    }
+    /// Creates a combo box. See [`Platform::create_button`].
     fn create_combo_box(
         &self,
         parent: ObjectId,
@@ -599,13 +643,41 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
-    fn combo_box_add_item(&self, combo_box: ObjectId, _text: &str) -> bool;
-    fn combo_box_clear_items(&self, combo_box: ObjectId) -> bool;
-    fn combo_box_set_current_index(&self, combo_box: ObjectId, index: usize) -> bool;
-    fn combo_box_current_index(&self, combo_box: ObjectId) -> Option<usize>;
-    fn combo_box_item_count(&self, combo_box: ObjectId) -> usize;
-    fn combo_box_item_text(&self, combo_box: ObjectId, index: usize) -> Option<String>;
+    ) -> ObjectId {
+        let _ = (parent, x, y, width, height);
+        0
+    }
+    /// Appends an item to a combo box. Default: no storage, so nothing is added.
+    fn combo_box_add_item(&self, combo_box: ObjectId, _text: &str) -> bool {
+        let _ = combo_box;
+        false
+    }
+    /// Clears a combo box's items. Default: no storage, so nothing changes.
+    fn combo_box_clear_items(&self, combo_box: ObjectId) -> bool {
+        let _ = combo_box;
+        false
+    }
+    /// Selects a combo-box item. Default: no storage.
+    fn combo_box_set_current_index(&self, combo_box: ObjectId, index: usize) -> bool {
+        let _ = (combo_box, index);
+        false
+    }
+    /// Returns the selected combo-box index. Default: none is tracked.
+    fn combo_box_current_index(&self, combo_box: ObjectId) -> Option<usize> {
+        let _ = combo_box;
+        None
+    }
+    /// Returns how many items a combo box holds. Default: none are tracked.
+    fn combo_box_item_count(&self, combo_box: ObjectId) -> usize {
+        let _ = combo_box;
+        0
+    }
+    /// Returns a combo-box item's text. Default: none are tracked.
+    fn combo_box_item_text(&self, combo_box: ObjectId, index: usize) -> Option<String> {
+        let _ = (combo_box, index);
+        None
+    }
+    /// Creates a list box. See [`Platform::create_button`].
     fn create_list_box(
         &self,
         parent: ObjectId,
@@ -613,15 +685,51 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
-    fn list_box_add_item(&self, list_box: ObjectId, text: &str) -> bool;
-    fn list_box_remove_item(&self, list_box: ObjectId, index: usize) -> bool;
-    fn list_box_clear_items(&self, list_box: ObjectId) -> bool;
-    fn list_box_set_current_index(&self, list_box: ObjectId, index: usize) -> bool;
-    fn list_box_current_index(&self, list_box: ObjectId) -> Option<usize>;
-    fn list_box_item_count(&self, list_box: ObjectId) -> usize;
-    fn list_box_item_text(&self, list_box: ObjectId, index: usize) -> Option<String>;
-    fn create_panel(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId;
+    ) -> ObjectId {
+        let _ = (parent, x, y, width, height);
+        0
+    }
+    /// Appends an item to a list box. Default: no storage.
+    fn list_box_add_item(&self, list_box: ObjectId, text: &str) -> bool {
+        let _ = (list_box, text);
+        false
+    }
+    /// Removes a list-box item. Default: no storage.
+    fn list_box_remove_item(&self, list_box: ObjectId, index: usize) -> bool {
+        let _ = (list_box, index);
+        false
+    }
+    /// Clears a list box. Default: no storage.
+    fn list_box_clear_items(&self, list_box: ObjectId) -> bool {
+        let _ = list_box;
+        false
+    }
+    /// Selects a list-box item. Default: no storage.
+    fn list_box_set_current_index(&self, list_box: ObjectId, index: usize) -> bool {
+        let _ = (list_box, index);
+        false
+    }
+    /// Returns the selected list-box index. Default: none is tracked.
+    fn list_box_current_index(&self, list_box: ObjectId) -> Option<usize> {
+        let _ = list_box;
+        None
+    }
+    /// Returns how many items a list box holds. Default: none are tracked.
+    fn list_box_item_count(&self, list_box: ObjectId) -> usize {
+        let _ = list_box;
+        0
+    }
+    /// Returns a list-box item's text. Default: none are tracked.
+    fn list_box_item_text(&self, list_box: ObjectId, index: usize) -> Option<String> {
+        let _ = (list_box, index);
+        None
+    }
+    /// Creates a container panel. See [`Platform::create_button`].
+    fn create_panel(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        let _ = (parent, x, y, width, height);
+        0
+    }
+    /// Creates a menu bar. See [`Platform::create_button`].
     fn create_menu_bar(
         &self,
         parent: ObjectId,
@@ -629,7 +737,11 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
+    ) -> ObjectId {
+        let _ = (parent, x, y, width, height);
+        0
+    }
+    /// Creates a menu. See [`Platform::create_button`].
     fn create_menu(
         &self,
         parent: ObjectId,
@@ -638,8 +750,15 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
-    fn attach_menu_bar_to_window(&self, window: ObjectId, menu_bar: ObjectId) -> bool;
+    ) -> ObjectId {
+        let _ = (parent, text, x, y, width, height);
+        0
+    }
+    /// Attaches a menu bar to a window. Default: no native menus are managed.
+    fn attach_menu_bar_to_window(&self, window: ObjectId, menu_bar: ObjectId) -> bool {
+        let _ = (window, menu_bar);
+        false
+    }
     /// Adds an item to a menu.
     ///
     /// # `shortcut`
@@ -655,7 +774,12 @@ pub trait Platform: Send + Sync {
     /// concrete OS: building it here keeps the platform-specific spelling out of
     /// the caller, and lets platforms that register accelerators separately (for
     /// example a Win32 `ACCEL` table) parse the text instead of re-deriving it.
-    fn menu_add_item(&self, parent_menu: ObjectId, text: &str, shortcut: Option<&str>) -> ObjectId;
+    ///
+    /// Default: no native menu exists, so no item is added.
+    fn menu_add_item(&self, parent_menu: ObjectId, text: &str, shortcut: Option<&str>) -> ObjectId {
+        let _ = (parent_menu, text, shortcut);
+        0
+    }
     /// Returns the accelerator display text bound to a menu item.
     ///
     /// `None` when the id is not a menu item or it has no accelerator. Useful to
@@ -676,11 +800,29 @@ pub trait Platform: Send + Sync {
     fn get_native_handle(&self, _widget: ObjectId) -> Option<usize> {
         None
     }
-    fn poll_menu_triggered(&self) -> Option<ObjectId>;
-    fn inject_menu_trigger(&self, menu_item_id: ObjectId) -> bool;
-    fn poll_widget_triggered(&self) -> Option<ObjectId>;
-    fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent>;
-    fn inject_widget_trigger_event(&self, widget_id: ObjectId, kind: WidgetTriggerKind) -> bool;
+    /// Returns the next pending menu activation. Default: none are produced.
+    fn poll_menu_triggered(&self) -> Option<ObjectId> {
+        None
+    }
+    /// Queues a menu activation as if the user had chosen it. Default: no queue.
+    fn inject_menu_trigger(&self, menu_item_id: ObjectId) -> bool {
+        let _ = menu_item_id;
+        false
+    }
+    /// Returns the next pending widget activation. Default: none are produced.
+    fn poll_widget_triggered(&self) -> Option<ObjectId> {
+        None
+    }
+    /// Returns the next pending typed widget activation. Default: none are produced.
+    fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
+        None
+    }
+    /// Queues a typed widget activation. Default: no queue.
+    fn inject_widget_trigger_event(&self, widget_id: ObjectId, kind: WidgetTriggerKind) -> bool {
+        let _ = (widget_id, kind);
+        false
+    }
+    /// Creates a tool bar. See [`Platform::create_button`].
     fn create_tool_bar(
         &self,
         parent: ObjectId,
@@ -688,7 +830,11 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
+    ) -> ObjectId {
+        let _ = (parent, x, y, width, height);
+        0
+    }
+    /// Creates a status bar. See [`Platform::create_button`].
     fn create_status_bar(
         &self,
         parent: ObjectId,
@@ -697,8 +843,12 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
+    ) -> ObjectId {
+        let _ = (parent, text, x, y, width, height);
+        0
+    }
     #[allow(clippy::too_many_arguments)]
+    /// Creates a message box. See [`Platform::create_button`].
     fn create_message_box(
         &self,
         parent: ObjectId,
@@ -708,7 +858,11 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
+    ) -> ObjectId {
+        let _ = (parent, title, text, x, y, width, height);
+        0
+    }
+    /// Creates a file chooser. See [`Platform::create_button`].
     fn create_file_dialog(
         &self,
         parent: ObjectId,
@@ -716,7 +870,11 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
+    ) -> ObjectId {
+        let _ = (parent, x, y, width, height);
+        0
+    }
+    /// Creates a colour chooser. See [`Platform::create_button`].
     fn create_color_dialog(
         &self,
         parent: ObjectId,
@@ -724,7 +882,11 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
+    ) -> ObjectId {
+        let _ = (parent, x, y, width, height);
+        0
+    }
+    /// Creates a font chooser. See [`Platform::create_button`].
     fn create_font_dialog(
         &self,
         parent: ObjectId,
@@ -732,7 +894,11 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
+    ) -> ObjectId {
+        let _ = (parent, x, y, width, height);
+        0
+    }
+    /// Creates a spin box. See [`Platform::create_button`].
     fn create_spin_box(
         &self,
         parent: ObjectId,
@@ -740,7 +906,11 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
+    ) -> ObjectId {
+        let _ = (parent, x, y, width, height);
+        0
+    }
+    /// Creates a list view. See [`Platform::create_button`].
     fn create_list_view(
         &self,
         parent: ObjectId,
@@ -748,7 +918,11 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
+    ) -> ObjectId {
+        let _ = (parent, x, y, width, height);
+        0
+    }
+    /// Creates a scrollable area. See [`Platform::create_button`].
     fn create_scroll_area(
         &self,
         parent: ObjectId,
@@ -756,14 +930,15 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
+    ) -> ObjectId {
+        let _ = (parent, x, y, width, height);
+        0
+    }
 
-    /// Create a labelled group frame (a real border+label container where the
-    /// platform provides one).
+    /// Creates a labelled group frame.
     ///
-    /// Backends without a dedicated group primitive return a plain panel; the
-    /// hybrid route sends `WidgetKind::GroupBox` to the self-drawn backend, so
-    /// this method only needs to be meaningful for `NativePreferred` callers.
+    /// The hybrid route sends `WidgetKind::GroupBox` to the library, so this only
+    /// matters to a host that owns a dedicated group primitive. Default: none.
     fn create_group_box(
         &self,
         parent: ObjectId,
@@ -772,12 +947,18 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
+    ) -> ObjectId {
+        let _ = (parent, title, x, y, width, height);
+        0
+    }
 
-    /// Create a plain bordered frame container.
-    fn create_frame(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId;
+    /// Creates a plain bordered frame container. See [`Platform::create_button`].
+    fn create_frame(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        let _ = (parent, x, y, width, height);
+        0
+    }
 
-    /// Create a tabbed container.
+    /// Creates a tabbed container. See [`Platform::create_button`].
     fn create_tab_widget(
         &self,
         parent: ObjectId,
@@ -785,9 +966,12 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
+    ) -> ObjectId {
+        let _ = (parent, x, y, width, height);
+        0
+    }
 
-    /// Create a draggable splitter (two panes with a movable divider).
+    /// Creates a draggable splitter. See [`Platform::create_button`].
     fn create_splitter(
         &self,
         parent: ObjectId,
@@ -795,9 +979,12 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
+    ) -> ObjectId {
+        let _ = (parent, x, y, width, height);
+        0
+    }
 
-    /// Create a toggle button (a button with a persistent active state).
+    /// Creates a toggle button. See [`Platform::create_button`].
     fn create_toggle_button(
         &self,
         parent: ObjectId,
@@ -806,9 +993,12 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
+    ) -> ObjectId {
+        let _ = (parent, text, x, y, width, height);
+        0
+    }
 
-    /// Create a calendar view.
+    /// Creates a calendar view. See [`Platform::create_button`].
     fn create_calendar(
         &self,
         parent: ObjectId,
@@ -816,9 +1006,12 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
+    ) -> ObjectId {
+        let _ = (parent, x, y, width, height);
+        0
+    }
 
-    /// Create a scroll bar (a scrollbar control with an adjustment model).
+    /// Creates a scroll bar. See [`Platform::create_button`].
     fn create_scroll_bar(
         &self,
         parent: ObjectId,
@@ -826,9 +1019,12 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
+    ) -> ObjectId {
+        let _ = (parent, x, y, width, height);
+        0
+    }
 
-    /// Create a fractional (double) spin box.
+    /// Creates a fractional spin box. See [`Platform::create_button`].
     fn create_double_spin_box(
         &self,
         parent: ObjectId,
@@ -836,9 +1032,12 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
+    ) -> ObjectId {
+        let _ = (parent, x, y, width, height);
+        0
+    }
 
-    /// Create a font-family combo box.
+    /// Creates a font-family combo box. See [`Platform::create_button`].
     fn create_font_combo_box(
         &self,
         parent: ObjectId,
@@ -846,10 +1045,12 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
+    ) -> ObjectId {
+        let _ = (parent, x, y, width, height);
+        0
+    }
 
-    /// Create a context (popup) menu: a menu shown on demand rather than
-    /// attached to a menu bar.
+    /// Creates a context (on-demand) menu. See [`Platform::create_button`].
     fn create_context_menu(
         &self,
         parent: ObjectId,
@@ -857,9 +1058,12 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
+    ) -> ObjectId {
+        let _ = (parent, x, y, width, height);
+        0
+    }
 
-    /// Create a transient popup window.
+    /// Creates a transient popup window. See [`Platform::create_button`].
     fn create_popup_window(
         &self,
         parent: ObjectId,
@@ -868,9 +1072,12 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
+    ) -> ObjectId {
+        let _ = (parent, title, x, y, width, height);
+        0
+    }
 
-    /// Create a generic dialog window (title + content area).
+    /// Creates a generic dialog. See [`Platform::create_button`].
     fn create_dialog(
         &self,
         parent: ObjectId,
@@ -879,9 +1086,12 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
+    ) -> ObjectId {
+        let _ = (parent, title, x, y, width, height);
+        0
+    }
 
-    /// Create an input dialog.
+    /// Creates an input dialog. See [`Platform::create_button`].
     fn create_input_dialog(
         &self,
         parent: ObjectId,
@@ -889,9 +1099,12 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
+    ) -> ObjectId {
+        let _ = (parent, x, y, width, height);
+        0
+    }
 
-    /// Create a progress dialog.
+    /// Creates a progress dialog. See [`Platform::create_button`].
     fn create_progress_dialog(
         &self,
         parent: ObjectId,
@@ -899,9 +1112,12 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
+    ) -> ObjectId {
+        let _ = (parent, x, y, width, height);
+        0
+    }
 
-    /// Create a directory (folder) chooser dialog.
+    /// Creates a directory chooser. See [`Platform::create_button`].
     fn create_directory_dialog(
         &self,
         parent: ObjectId,
@@ -910,9 +1126,12 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
+    ) -> ObjectId {
+        let _ = (parent, title, x, y, width, height);
+        0
+    }
 
-    /// Create a date picker.
+    /// Creates a date picker. See [`Platform::create_button`].
     fn create_date_picker(
         &self,
         parent: ObjectId,
@@ -920,9 +1139,12 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
+    ) -> ObjectId {
+        let _ = (parent, x, y, width, height);
+        0
+    }
 
-    /// Create a time picker.
+    /// Creates a time picker. See [`Platform::create_button`].
     fn create_time_picker(
         &self,
         parent: ObjectId,
@@ -930,9 +1152,12 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
+    ) -> ObjectId {
+        let _ = (parent, x, y, width, height);
+        0
+    }
 
-    /// Create a combined date+time picker.
+    /// Creates a combined date+time picker. See [`Platform::create_button`].
     fn create_date_time_picker(
         &self,
         parent: ObjectId,
@@ -940,9 +1165,12 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
+    ) -> ObjectId {
+        let _ = (parent, x, y, width, height);
+        0
+    }
 
-    /// Create a busy/activity indicator (indeterminate progress).
+    /// Creates a busy/activity indicator. See [`Platform::create_button`].
     fn create_activity_indicator(
         &self,
         parent: ObjectId,
@@ -950,17 +1178,50 @@ pub trait Platform: Send + Sync {
         y: i32,
         width: u32,
         height: u32,
-    ) -> ObjectId;
+    ) -> ObjectId {
+        let _ = (parent, x, y, width, height);
+        0
+    }
 
-    fn show_widget(&self, widget_id: ObjectId);
-    fn hide_widget(&self, widget_id: ObjectId);
-    fn set_widget_geometry(&self, widget_id: ObjectId, x: i32, y: i32, width: u32, height: u32);
-    fn set_widget_text(&self, widget_id: ObjectId, text: &str);
-    fn get_widget_text(&self, widget_id: ObjectId) -> String;
-    fn set_widget_enabled(&self, widget_id: ObjectId, enabled: bool);
-    fn is_widget_enabled(&self, widget_id: ObjectId) -> bool;
-    fn set_widget_visible(&self, widget_id: ObjectId, visible: bool);
-    fn is_widget_visible(&self, widget_id: ObjectId) -> bool;
+    /// Shows a control. Default: the host holds no controls to show.
+    fn show_widget(&self, widget_id: ObjectId) {
+        let _ = widget_id;
+    }
+    /// Hides a control. Default: the host holds no controls to hide.
+    fn hide_widget(&self, widget_id: ObjectId) {
+        let _ = widget_id;
+    }
+    /// Moves and resizes a control. Default: the host holds no controls.
+    fn set_widget_geometry(&self, widget_id: ObjectId, x: i32, y: i32, width: u32, height: u32) {
+        let _ = (widget_id, x, y, width, height);
+    }
+    /// Updates a control's label. Default: the host holds no controls.
+    fn set_widget_text(&self, widget_id: ObjectId, text: &str) {
+        let _ = (widget_id, text);
+    }
+    /// Reads a control's label. Default: the host holds no controls.
+    fn get_widget_text(&self, widget_id: ObjectId) -> String {
+        let _ = widget_id;
+        String::new()
+    }
+    /// Enables or disables a control. Default: the host holds no controls.
+    fn set_widget_enabled(&self, widget_id: ObjectId, enabled: bool) {
+        let _ = (widget_id, enabled);
+    }
+    /// Reports whether a control is enabled. Default: the host holds no controls.
+    fn is_widget_enabled(&self, widget_id: ObjectId) -> bool {
+        let _ = widget_id;
+        false
+    }
+    /// Shows or hides a control. Default: the host holds no controls.
+    fn set_widget_visible(&self, widget_id: ObjectId, visible: bool) {
+        let _ = (widget_id, visible);
+    }
+    /// Reports whether a control is visible. Default: the host holds no controls.
+    fn is_widget_visible(&self, widget_id: ObjectId) -> bool {
+        let _ = widget_id;
+        false
+    }
 
     // ─────────────────────────────────────────────────────────────
     // Uniform native-control properties (one API, every OS)
@@ -1341,9 +1602,4 @@ pub trait MobilePlatformExtension: Send + Sync {
     fn mobile_backend(&self) -> MobileBackend;
     /// Attaches runtime to an externally provided native view handle.
     fn attach_to_native_view(&self, _native_handle: usize) -> bool;
-}
-
-#[derive(Debug)]
-pub(crate) struct MenuNodeState {
-    pub(crate) text: String,
 }

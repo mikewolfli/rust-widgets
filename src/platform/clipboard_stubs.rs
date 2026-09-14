@@ -4,7 +4,7 @@
 //! Platform-specific rich clipboard stubs.
 //! These will be replaced with real platform clipboard bindings.
 
-#[cfg(all(target_os = "macos", feature = "macos-legacy"))]
+#[cfg(all(target_os = "macos", feature = "cocoa-legacy"))]
 pub mod macos {
     //! Real macOS clipboard using NSPasteboard rich content APIs.
     //! Reference: NSPasteboard, NSPasteboardItem, NSPasteboardItemDataProvider

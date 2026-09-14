@@ -120,8 +120,10 @@ win.new_menu_item_with_shortcut(&menu, "Undo", Some(undo));
   AppKit 实际存的 `keyEquivalent`、再触发菜单动作并确认队列里收到对应 item id。
 * Windows 解析规则：`tools/win32_accel_probe`（在宿主机上跑，因为 `winapi` 的
   `um` 模块不在非 Windows target 上暴露）。
-* GTK 安装路径：`tools/gtk_accel_check.py` 把 `menu_impl.rs` 里的加速键安装代码
-  抽出来，对着真的 `gtk`/`gdk` crate 编译。
+* GTK 安装路径：已随 BLUE15 自绘重构删除。GTK 菜单/工具栏/状态栏的控件构造与
+  加速键安装（`platform/linux/menu_impl.rs`）整体下线——库自绘每一个 `WidgetKind`，
+  宿主只提供窗口与绘制面；菜单加速键现由库侧的 `src/shortcut/` 表达。
+  原先抽该文件代码做类型检查的 `tools/gtk_accel_check.py` 已随之删除。
 
 ## 该选哪一层：判断标准
 

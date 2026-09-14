@@ -17,9 +17,9 @@ use crate::widget::advanced_widgets::date_edit::Date;
 #[cfg(full_widgets)]
 use crate::widget::advanced_widgets::time_edit::Time;
 use crate::widget::base_widgets::checkbox::CheckState;
-#[cfg(full_widgets)]
+#[cfg(widgets_unstripped)]
 use crate::widget::display_widgets::lcd_number::{LCDNumberMode, SegmentStyle};
-#[cfg(full_widgets)]
+#[cfg(widgets_unstripped)]
 use crate::widget::display_widgets::slider::TickPosition;
 use crate::widget::input_widgets::listbox::SelectionMode as ListBoxSelectionMode;
 #[cfg(full_widgets)]
@@ -383,7 +383,7 @@ pub fn expect_tick_position(value: CapabilityValue) -> Result<TickPosition, Capa
     }
 }
 
-#[cfg(full_widgets)]
+#[cfg(widgets_unstripped)]
 pub fn expect_lcd_mode(value: CapabilityValue) -> Result<LCDNumberMode, CapabilityAccessError> {
     let token = match value {
         CapabilityValue::String(v) => normalize_key(&v),
@@ -399,7 +399,7 @@ pub fn expect_lcd_mode(value: CapabilityValue) -> Result<LCDNumberMode, Capabili
     }
 }
 
-#[cfg(full_widgets)]
+#[cfg(widgets_unstripped)]
 pub fn expect_segment_style(value: CapabilityValue) -> Result<SegmentStyle, CapabilityAccessError> {
     let token = match value {
         CapabilityValue::String(v) => normalize_key(&v),
@@ -412,6 +412,42 @@ pub fn expect_segment_style(value: CapabilityValue) -> Result<SegmentStyle, Capa
         "flat" => Ok(SegmentStyle::Flat),
         _ => Err(CapabilityAccessError::TypeMismatch),
     }
+}
+
+/// The string spelling of an [`LCDNumberMode`], the inverse of [`expect_lcd_mode`].
+///
+/// Lives beside its inverse rather than in the property-access module: the two are
+/// a codec pair, and a control that can write a mode must be able to read it back
+/// in every profile it exists in (BLUE15 §2, the `full_widgets` gate drift).
+#[cfg(widgets_unstripped)]
+pub fn lcd_mode_to_str(mode: LCDNumberMode) -> &'static str {
+    match mode {
+        LCDNumberMode::Hex => "hex",
+        LCDNumberMode::Dec => "dec",
+        LCDNumberMode::Oct => "oct",
+        LCDNumberMode::Bin => "bin",
+    }
+}
+
+/// The string spelling of a [`SegmentStyle`], the inverse of [`expect_segment_style`].
+#[cfg(widgets_unstripped)]
+pub fn segment_style_to_str(style: SegmentStyle) -> &'static str {
+    match style {
+        SegmentStyle::Outline => "outline",
+        SegmentStyle::Filled => "filled",
+        SegmentStyle::Flat => "flat",
+    }
+}
+
+/// Formats a [`TickPosition`] as its published token.
+///
+/// The authoritative mapping lives beside the `Slider` widget that owns the type
+/// (`display_widgets::slider::tick_position_to_str`), because `Slider` exists in
+/// every profile while this module's other converters are gated. This delegates
+/// rather than repeating the match, so the two cannot drift (principle #54).
+#[cfg(widgets_unstripped)]
+pub fn tick_position_to_str(tick_position: TickPosition) -> &'static str {
+    crate::widget::display_widgets::slider::tick_position_to_str(tick_position)
 }
 
 // ---------------------------------------------------------------------------

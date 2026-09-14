@@ -19,78 +19,12 @@ use std::sync::Mutex;
 pub(crate) enum AndroidHandleKind {
     /// Top-level window (Android Activity / Dialog).
     Window,
-    /// Push button control.
-    Button,
-    /// Toggleable checkbox control.
-    CheckBox,
-    /// Single-line editable text input.
-    LineEdit,
-    /// Static text label.
-    Label,
-    /// Exclusive selection radio button.
-    RadioButton,
-    /// Range slider (SeekBar on Android).
-    Slider,
-    /// Determinate/indeterminate progress indicator.
-    ProgressBar,
-    /// Drop-down selection control (Spinner on Android).
-    ComboBox,
-    /// List selection control (ListView on Android).
-    ListBox,
-    /// Generic container panel (ViewGroup on Android).
-    Panel,
-    /// Root menu bar container.
+    /// Root menu bar bound to the host Activity's own menu.
     MenuBar,
     /// Hierarchical menu node.
     Menu,
     /// Actionable menu leaf item.
     MenuItem,
-    /// Window toolbar region.
-    ToolBar,
-    /// Window status bar region.
-    StatusBar,
-    /// Modal message box dialog.
-    MessageBox,
-    /// File open/save dialog.
-    FileDialog,
-    /// Color picker dialog.
-    ColorDialog,
-    /// Font selection dialog.
-    FontDialog,
-    /// Spin box (numeric value picker).
-    SpinBox,
-    /// List view (multi-column / detailed list).
-    ListView,
-    /// Scrollable content area.
-    ScrollArea,
-    GroupBox,
-    Frame,
-    TabWidget,
-    Splitter,
-    ToggleButton,
-    Calendar,
-    ScrollBar,
-    DoubleSpinBox,
-    FontComboBox,
-    ContextMenu,
-    PopupWindow,
-    Dialog,
-    InputDialog,
-    ProgressDialog,
-    DirectoryDialog,
-    DatePicker,
-    TimePicker,
-    DateTimePicker,
-    ActivityIndicator,
-}
-
-/// List storage state for ComboBox and ListBox.
-#[derive(Default)]
-pub(crate) struct AndroidListData {
-    /// Ordered item text entries.
-    pub(crate) items: Vec<String>,
-    /// Currently selected index, if any.
-    pub(crate) current_index: Option<usize>,
 }
 
 /// Android platform menu state.
@@ -127,15 +61,19 @@ impl Default for AndroidRuntimeState {
 /// State-backed Android platform adapter.
 ///
 /// This backend provides a deterministic, state-driven implementation
-/// behind the `target_os = "android"` cfg gate, enabling progressive
-/// integration with native Android views via JNI without requiring
-/// full native bindings upfront.
+/// behind the `target_os = "android"` cfg gate.
 ///
 /// All widget state is stored in `BackendState<AndroidHandleKind>`, and
 /// platform contract methods translate between Rust API and state mutations.
-/// When the `android-jni` feature is enabled, widget creation and mutation
-/// methods additionally call into the JNI bridge to create/manage real
-/// Android native `View` objects.
+///
+/// # BLUE15: the host no longer builds Android views
+///
+/// Widget creation used to call into JNI to instantiate a real `android.view.View`
+/// per logical widget. Under the self-drawn strategy the host owes the widget layer
+/// a window and a drawing surface, and the library paints every `WidgetKind`, so a
+/// per-kind `create_*` here has no OS object to map onto (BLUE15 #56). The state
+/// model is retained because it is what the host's window and event plumbing is
+/// expressed in.
 pub struct AndroidPlatform {
     /// Internal state for all widgets and handles.
     pub(crate) state: BackendState<AndroidHandleKind>,
@@ -143,14 +81,8 @@ pub struct AndroidPlatform {
     pub(crate) menus: Mutex<AndroidMenuState>,
     /// Runtime state for init/run/quit.
     pub(crate) runtime: AndroidRuntimeState,
-    /// Shared list storage for ComboBox and ListBox widgets.
-    pub(crate) list_data: Mutex<HashMap<u64, AndroidListData>>,
     /// Optional JVM pointer (set via `init_jvm`).
     pub(crate) jvm: Option<*mut std::ffi::c_void>,
-    /// Maps logical widget id → JNI view-registry id for widgets that have a
-    /// real native Android `View` (only populated under `android-jni`).
-    #[cfg(feature = "android-jni")]
-    pub(crate) native_views: Mutex<HashMap<u64, crate::core::ObjectId>>,
 }
 
 // Safety: `jvm` is a raw pointer only used within JNI calls that are
@@ -165,80 +97,33 @@ impl AndroidPlatform {
             state: BackendState::new(),
             menus: Mutex::new(AndroidMenuState::default()),
             runtime: AndroidRuntimeState::new(),
-            list_data: Mutex::new(HashMap::new()),
             jvm: None,
-            #[cfg(feature = "android-jni")]
-            native_views: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Initialize JVM pointer for JNI-based native view operations.
+    /// Initialize JVM pointer for JNI-based operations.
     pub fn init_jvm(&mut self, jvm: *mut std::ffi::c_void) {
         self.jvm = Some(jvm);
     }
 
-    /// Store the JNI view-registry id backing a logical widget id.
-    #[cfg(feature = "android-jni")]
-    pub(crate) fn set_native_view(&self, logical_id: u64, jni_id: crate::core::ObjectId) {
-        self.native_views
-            .lock()
-            .expect("android native views lock poisoned")
-            .insert(logical_id, jni_id);
-    }
-
-    /// Look up the JNI view-registry id backing a logical widget id.
-    #[cfg(feature = "android-jni")]
-    pub(crate) fn native_view_of(&self, logical_id: u64) -> Option<crate::core::ObjectId> {
-        self.native_views
-            .lock()
-            .expect("android native views lock poisoned")
-            .get(&logical_id)
-            .copied()
-    }
-
-    /// Create a native Android view for `logical_id` when JNI is available.
-    ///
-    /// Returns the created JNI registry id, or `None` when the bridge is not
-    /// initialized or the view could not be constructed.
-    #[cfg(feature = "android-jni")]
-    pub(crate) fn attach_native_view(
-        &self,
-        logical_id: u64,
-        class: crate::platform::android_jni::AndroidViewClass,
-        text: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> Option<crate::core::ObjectId> {
-        if !self.jni_available() {
-            return None;
-        }
-        let jni_id =
-            crate::platform::android_jni::create_native_view(class, text, x, y, width, height)?;
-        self.set_native_view(logical_id, jni_id);
-        Some(jni_id)
-    }
-
-    /// Check whether native view creation is possible.
+    /// Check whether the JNI bridge can be reached.
     ///
     /// True when the `android-jni` feature is enabled, the JNI bridge has a
     /// `JavaVM` (`nativeInit` ran), and an Activity `Context` has been stored
-    /// (via [`Self::attach_to_native_view`] or `android_jni::set_activity_context`).
+    /// (via `android_jni::set_activity_context`).
     ///
-    /// The legacy `jvm` raw pointer is no longer required: `attach_to_native_view`
-    /// takes `&self` and cannot populate it, so requiring it made every widget
-    /// silently stay state-backed even after a successful Context attach. The
-    /// bridge's own readiness is the authoritative signal.
+    /// The legacy `jvm` raw pointer is not part of the readiness signal: the attach
+    /// entry point takes `&self` and cannot populate it, so requiring it made
+    /// readiness depend on a field nobody could set. The bridge's own readiness is
+    /// authoritative.
     pub fn jni_available(&self) -> bool {
+        let _ = &self.jvm;
         #[cfg(feature = "android-jni")]
         {
-            let _ = &self.jvm;
             crate::platform::android_jni::native_view_creation_ready()
         }
         #[cfg(not(feature = "android-jni"))]
         {
-            let _ = &self.jvm;
             false
         }
     }
@@ -301,11 +186,16 @@ mod tests {
         assert!(!platform.jni_available());
     }
 
+    /// `insert_widget` is the state allocator the surviving host capabilities use.
+    ///
+    /// It used to be exercised with `AndroidHandleKind::Button`, a control the host
+    /// no longer builds; the window is the kind that still exists, so it is what the
+    /// allocator is verified against.
     #[test]
     fn test_android_platform_insert_widget() {
         let platform = AndroidPlatform::new();
-        let id = platform.insert_widget(AndroidHandleKind::Button, "Click", 10, 20, 100, 30);
+        let id = platform.insert_widget(AndroidHandleKind::Window, "Main", 10, 20, 100, 30);
         assert_ne!(id, 0);
-        assert_eq!(platform.kind_of(id), Some(AndroidHandleKind::Button));
+        assert_eq!(platform.kind_of(id), Some(AndroidHandleKind::Window));
     }
 }

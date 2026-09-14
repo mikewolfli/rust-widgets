@@ -162,7 +162,10 @@ fn factory_creates_registered_widgets_by_alias() {
     assert_eq!(segmented.kind(), WidgetKind::ToggleButton);
 
     let chips = factory.create("chips", rect, "").expect("chip must be created via alias");
-    assert_eq!(chips.kind(), WidgetKind::CheckListBox);
+    // A `Chip` is its own kind. It previously reported `CheckListBox` — a type alias
+    // for `ListBox` — which made the kind→control lookup ambiguous and left
+    // `WidgetKind::Chip` with no capability at all.
+    assert_eq!(chips.kind(), WidgetKind::Chip);
 
     let grid =
         factory.create("gridwidget", rect, "").expect("grid widget must be created via alias");

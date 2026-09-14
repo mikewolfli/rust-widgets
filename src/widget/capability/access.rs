@@ -3,7 +3,7 @@
 
 //! Generic read/write property dispatch for all widget kinds.
 //!
-//! [`read_widget_property_value`] and [`write_widget_property_value`] are the
+//! [`read_widget_property_legacy`] and [`write_widget_property_legacy`] are the
 //! two large match-on-`widget.kind()` functions that form the core of the
 //! capability-based reflection layer. They downcast the `&dyn Widget` trait
 //! object to the concrete widget type (via [`widget_as`] / [`widget_as_mut`])
@@ -13,6 +13,10 @@
 //! `WidgetFactory::write_property` after the property schema has been
 //! validated — so the match arms here can assume the property exists and is
 //! accessible.
+
+/// The reflection entry points, re-exported so the fallback path below and the
+/// id-level accessors in this module resolve them from one place.
+pub use super::properties_trait::{read_widget_property_by_name, write_widget_property_by_name};
 
 #[cfg(full_widgets)]
 use chrono::Weekday;
@@ -104,7 +108,7 @@ use crate::widget::display_widgets::arc::Arc;
 #[cfg(full_widgets)]
 use crate::widget::display_widgets::image_view::ImageView;
 #[cfg(full_widgets)]
-use crate::widget::display_widgets::lcd_number::{LCDNumber, LCDNumberMode, SegmentStyle};
+use crate::widget::display_widgets::lcd_number::LCDNumber;
 #[cfg(full_widgets)]
 use crate::widget::display_widgets::line::{Line, LineOrientation};
 #[cfg(full_widgets)]
@@ -119,7 +123,7 @@ use crate::widget::display_widgets::roller::Roller;
 #[cfg(full_widgets)]
 use crate::widget::display_widgets::scrollbar::ScrollBar;
 #[cfg(full_widgets)]
-use crate::widget::display_widgets::slider::{Slider, TickPosition};
+use crate::widget::display_widgets::slider::Slider;
 #[cfg(full_widgets)]
 use crate::widget::display_widgets::spinner::Spinner;
 #[cfg(full_widgets)]
@@ -225,7 +229,10 @@ use crate::widget::view_widgets::virtual_table::VirtualTable;
 use crate::widget::web_widgets::web_view::WebView;
 #[cfg(full_widgets)]
 use crate::widget::window::Window;
-use crate::widget::{Widget, WidgetKind};
+#[cfg(full_widgets)]
+use crate::widget::Widget;
+#[cfg(full_widgets)]
+use crate::widget::WidgetKind;
 
 #[cfg(full_widgets)]
 include!("access_read_base.in.rs");
@@ -246,18 +253,19 @@ include!("access_read_media.in.rs");
 #[cfg(full_widgets)]
 include!("access_read_other.in.rs");
 
+/// The old nine-category serial probe over the property tables.
+///
+/// Prefer [`read_widget_property_by_name`]: it asks the control's own contract
+/// first, which is the single source of truth for what a control exposes. This
+/// function remains only as the fallback for the controls whose readers have not
+/// moved onto the contract yet (BLUE15 Phase C-1), and it is deliberately free of
+/// any second look at the contract — the caller already made that attempt, and two
+/// places answering the same question is how they drift.
 #[cfg(full_widgets)]
-pub fn read_widget_property_value(
+pub fn read_widget_property_legacy(
     widget: &dyn Widget,
     property_name: &str,
 ) -> Result<CapabilityValue, CapabilityAccessError> {
-    // A control that declares its own contract answers for itself; the category
-    // probes below remain as the compatibility path for controls that have not
-    // migrated yet (BLUE15 Phase C-1), so both spellings keep working while the
-    // old dispatch is retired.
-    if let Ok(value) = crate::widget::capability::widget_property_get(widget, property_name) {
-        return Ok(value);
-    }
     // Try each category; propagate the first non-Unsupported result (even if Err).
     let result = read_base_props(widget, property_name);
     if !matches!(result, Err(CapabilityAccessError::UnsupportedOnWidget)) {
@@ -317,24 +325,13 @@ include!("access_write_media.in.rs");
 #[cfg(full_widgets)]
 include!("access_write_other.in.rs");
 
+/// Write-side counterpart of [`read_widget_property_legacy`].
 #[cfg(full_widgets)]
-pub fn write_widget_property_value(
+pub fn write_widget_property_legacy(
     widget: &mut dyn Widget,
     property_name: &str,
     value: CapabilityValue,
 ) -> Result<(), CapabilityAccessError> {
-    // A control that declares its own contract answers for itself; the category
-    // probes below remain as the compatibility path for controls that have not
-    // migrated yet (BLUE15 Phase C-1).
-    match crate::widget::capability::widget_property_set(widget, property_name, value.clone()) {
-        Ok(()) => return Ok(()),
-        Err(CapabilityAccessError::UnsupportedOnWidget) => {}
-        // `UnknownProperty` / `ReadOnlyProperty` / `TypeMismatch` are definitive
-        // answers from the control's own contract, so they must not be retried
-        // against the legacy probes — that would let a category arm override the
-        // control's own decision.
-        Err(error) => return Err(error),
-    }
     // Try each category; propagate the first non-Unsupported result (even if Err).
     let result = write_base_props(widget, property_name, value.clone());
     if !matches!(result, Err(CapabilityAccessError::UnsupportedOnWidget)) {
@@ -376,7 +373,7 @@ pub fn write_widget_property_value(
 }
 
 #[cfg(stripped_widgets)]
-pub fn read_widget_property_value(
+pub fn read_widget_property_legacy(
     _widget: &dyn Widget,
     _property_name: &str,
 ) -> Result<CapabilityValue, CapabilityAccessError> {
@@ -384,7 +381,7 @@ pub fn read_widget_property_value(
 }
 
 #[cfg(stripped_widgets)]
-pub fn write_widget_property_value(
+pub fn write_widget_property_legacy(
     _widget: &mut dyn Widget,
     _property_name: &str,
     _value: CapabilityValue,
@@ -394,7 +391,7 @@ pub fn write_widget_property_value(
 
 /// Reads a property from the widget registered under `widget_id`.
 ///
-/// The id-level counterpart to [`read_widget_property_value`]. Backends hold
+/// The id-level counterpart to [`read_widget_property_by_name`]. Backends hold
 /// widget **ids**, not `&dyn Widget`, so they need this shape; resolving the id
 /// through [`crate::widget::runtime`] also means the answer always describes the
 /// live control rather than a copy (BLUE15 §10.3).
@@ -405,7 +402,7 @@ pub fn read_widget_property_by_id(
     property_name: &str,
 ) -> Result<CapabilityValue, CapabilityAccessError> {
     crate::widget::runtime::with_widget(widget_id, |widget| {
-        read_widget_property_value(widget, property_name)
+        read_widget_property_by_name(widget, property_name)
     })
     .unwrap_or(Err(CapabilityAccessError::UnknownWidget))
 }
@@ -421,7 +418,7 @@ pub fn write_widget_property_by_id(
     value: CapabilityValue,
 ) -> Result<(), CapabilityAccessError> {
     let written = crate::widget::runtime::with_widget_mut(widget_id, |widget| {
-        write_widget_property_value(widget, property_name, value)
+        write_widget_property_by_name(widget, property_name, value)
     })
     .unwrap_or(Err(CapabilityAccessError::UnknownWidget));
     if written.is_ok() {
@@ -462,13 +459,19 @@ pub fn selection_mode_to_str(mode: SelectionMode) -> &'static str {
     }
 }
 
-/// Alias of [`selection_mode_to_str`] kept for the list-box call sites.
+/// The published token for a list-box selection mode.
 ///
-/// The list box and the list view now share one `SelectionMode`, so this was a
-/// second implementation of the same mapping; it delegates rather than repeating
-/// the match (principle #54).
+/// `ListBox`'s `SelectionMode` is a type alias of the list view's, so this is a
+/// spelling of the same mapping, not a second one — it delegates rather than
+/// repeating the match (principle #54). It is available wherever `ListBox` is,
+/// which is why it is not gated with the list-view-only converters above.
 pub fn list_box_selection_mode_to_str(mode: ListBoxSelectionMode) -> &'static str {
-    crate::widget::capability::access::selection_mode_to_str(mode)
+    match mode {
+        ListBoxSelectionMode::Single => "single",
+        ListBoxSelectionMode::Multi => "multi",
+        ListBoxSelectionMode::Extended => "extended",
+        ListBoxSelectionMode::None => "none",
+    }
 }
 
 #[cfg(full_widgets)]
@@ -497,36 +500,10 @@ pub fn scroll_bar_policy_to_str(policy: ScrollBarPolicy) -> &'static str {
     }
 }
 
-pub use super::coercion::{alignment_to_str, check_state_to_str, orientation_to_str};
-
-/// Formats a [`TickPosition`] as its published token.
-///
-/// The authoritative mapping now lives beside the `Slider` widget that owns the
-/// type (`display_widgets::slider::tick_position_to_str`), because `Slider` is
-/// available in every profile while this module is gated to the device profiles.
-/// This delegates rather than repeating the match, so the two cannot drift.
-pub fn tick_position_to_str(tick_position: TickPosition) -> &'static str {
-    crate::widget::display_widgets::slider::tick_position_to_str(tick_position)
-}
-
-#[cfg(full_widgets)]
-pub fn lcd_mode_to_str(mode: LCDNumberMode) -> &'static str {
-    match mode {
-        LCDNumberMode::Hex => "hex",
-        LCDNumberMode::Dec => "dec",
-        LCDNumberMode::Oct => "oct",
-        LCDNumberMode::Bin => "bin",
-    }
-}
-
-#[cfg(full_widgets)]
-pub fn segment_style_to_str(style: SegmentStyle) -> &'static str {
-    match style {
-        SegmentStyle::Outline => "outline",
-        SegmentStyle::Filled => "filled",
-        SegmentStyle::Flat => "flat",
-    }
-}
+pub use super::coercion::{
+    alignment_to_str, check_state_to_str, lcd_mode_to_str, orientation_to_str,
+    segment_style_to_str, tick_position_to_str,
+};
 
 #[cfg(full_widgets)]
 pub fn weekday_to_str(weekday: Weekday) -> &'static str {
@@ -556,7 +533,7 @@ pub fn time_to_string(time: Time) -> String {
 // ---------------------------------------------------------------------------
 
 #[cfg(full_widgets)]
-pub fn default_widget_property_value(
+pub fn default_widget_property_default_value(
     kind: WidgetKind,
     property_name: &str,
 ) -> Option<CapabilityValue> {
@@ -918,7 +895,11 @@ pub fn default_widget_property_value(
             "selected_id" => CapabilityValue::Null,
             _ => return None,
         },
-        WidgetKind::CheckListBox => match property_name {
+        // A `Chip` declares these; `CheckListBox` is a *type alias for `ListBox`* and
+        // is served by the `ListBox` arm below. The two were conflated before, which
+        // left `WidgetKind::Chip` with no capability and made the list-box lookup
+        // ambiguous.
+        WidgetKind::Chip => match property_name {
             "item_count" => CapabilityValue::UInt(0),
             "multi_select" => CapabilityValue::Bool(false),
             "focused_index" => CapabilityValue::Null,
@@ -1490,7 +1471,7 @@ pub fn default_widget_property_value(
 }
 
 #[cfg(stripped_widgets)]
-pub fn default_widget_property_value(
+pub fn default_widget_property_default_value(
     _kind: WidgetKind,
     _property_name: &str,
 ) -> Option<CapabilityValue> {

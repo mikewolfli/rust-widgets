@@ -6,6 +6,24 @@ use crate::core::{Point, Size};
 /// A unique identifier for a touch contact point (used by `touch` and `holographic` features).
 pub type TouchId = u64;
 
+/// The mouse button codes carried by [`Event::MousePress`] and friends.
+///
+/// These are named because every widget that cares about a *specific* button was
+/// comparing against a bare literal (`button == 1`), which made the two facts that
+/// matter — "is this the primary button?" and "is this a secondary click that
+/// should open a context menu?" — impossible to grep for and easy to mistype.
+///
+/// The numbering follows the platform convention shared by the desktop backends:
+/// 1 is primary, 2 is secondary, 3 is middle.
+pub mod mouse_button {
+    /// The primary (usually left) button, used for activation.
+    pub const PRIMARY: u32 = 1;
+    /// The secondary (usually right) button, used to open a context menu.
+    pub const SECONDARY: u32 = 2;
+    /// The middle button.
+    pub const MIDDLE: u32 = 3;
+}
+
 /// Screen orientation enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ScreenOrientation {

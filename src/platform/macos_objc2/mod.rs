@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 //! macOS objc2 migration preview backend (sub-module split).
+//!
+//! This backend creates no native controls: the library paints every `WidgetKind`
+//! itself, so it supplies a window, a native view surface and menu/event plumbing,
+//! and the `Platform` trait defaults cover control construction and control state
+//! (BLUE15 #55/#56).
 pub mod clipboard_dnd;
 pub mod dialog_creation;
 pub mod menu_impl;
@@ -13,7 +18,6 @@ pub mod platform_impl;
 #[cfg(test)]
 pub mod tests;
 pub mod types;
-pub mod widget_creation;
 pub mod widget_state;
 
 pub use types::*;

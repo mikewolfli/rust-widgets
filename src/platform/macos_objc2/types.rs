@@ -13,81 +13,11 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 
-/// Internal list data storage for ComboBox and ListBox widgets.
-#[derive(Default)]
-pub(crate) struct ListData {
-    /// Ordered item text entries.
-    pub(crate) items: Vec<String>,
-    /// Currently selected index, if any.
-    pub(crate) current_index: Option<usize>,
-}
+/// Runtime lifecycle markers used by the preview run loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(crate) enum MacObjc2HandleKind {
     /// Top-level native window surrogate.
     Window,
-    /// Push button control.
-    Button,
-    /// Toggleable checkbox control.
-    CheckBox,
-    /// Single-line editable text input.
-    LineEdit,
-    /// Static text label.
-    Label,
-    /// Exclusive selection radio button.
-    RadioButton,
-    /// Range slider.
-    Slider,
-    /// Determinate/indeterminate progress indicator.
-    ProgressBar,
-    /// Drop-down selection control.
-    ComboBox,
-    /// List selection control.
-    ListBox,
-    /// Numeric stepper/edit control.
-    SpinBox,
-    /// List/table view control.
-    ListView,
-    /// Scrollable content region.
-    ScrollArea,
-    /// Generic container panel.
-    Panel,
-    /// Root menu bar container.
-    MenuBar,
-    /// Hierarchical menu node.
-    Menu,
-    /// Actionable menu leaf item.
-    MenuItem,
-    /// Window toolbar region.
-    ToolBar,
-    /// Window status bar region.
-    StatusBar,
-    /// Modal message box dialog.
-    MessageBox,
-    /// File open/save dialog.
-    FileDialog,
-    /// Color picker dialog.
-    ColorDialog,
-    /// Font selection dialog.
-    FontDialog,
-    GroupBox,
-    Frame,
-    TabWidget,
-    Splitter,
-    ToggleButton,
-    Calendar,
-    ScrollBar,
-    DoubleSpinBox,
-    FontComboBox,
-    ContextMenu,
-    PopupWindow,
-    Dialog,
-    InputDialog,
-    ProgressDialog,
-    DirectoryDialog,
-    DatePicker,
-    TimePicker,
-    DateTimePicker,
-    ActivityIndicator,
 }
 #[derive(Default)]
 pub(crate) struct MacObjc2MenuState {
@@ -122,8 +52,6 @@ pub struct MacOSObjc2Platform {
     pub(crate) menus: Mutex<MacObjc2MenuState>,
     /// Runtime state for init/run/quit
     pub(crate) runtime: MacObjc2RuntimeState,
-    /// Shared list storage for ComboBox and ListBox widgets.
-    pub(crate) list_data: Mutex<HashMap<u64, ListData>>,
 }
 impl MacOSObjc2Platform {
     /// Serialize all widget state for parity/regression testing
@@ -139,7 +67,6 @@ impl MacOSObjc2Platform {
             state: BackendState::new(),
             menus: Mutex::new(MacObjc2MenuState::default()),
             runtime: MacObjc2RuntimeState::new(),
-            list_data: Mutex::new(HashMap::new()),
         }
     }
     pub(crate) fn insert_widget(
@@ -154,49 +81,10 @@ impl MacOSObjc2Platform {
         // Centralized state insertion keeps id allocation deterministic for parity tests.
         self.state.create_widget(kind, text, x, y, width, height)
     }
-    pub(crate) fn kind_of(&self, id: u64) -> Option<MacObjc2HandleKind> {
-        // Handle-kind checks gate parent/child relationships and trigger validation.
-        self.state.kind_of(id)
-    }
     pub(crate) fn objc2_runtime_marker(&self) -> usize {
         // Marker for objc2 migration preview backend
         0
     }
-
-    #[cfg(test)]
-    pub(crate) fn menu_shortcut_of(&self, item_id: u64) -> Option<(String, u64)> {
-        self.menus
-            .lock()
-            .expect("mac objc2 menu lock poisoned")
-            .menu_item_shortcuts
-            .get(&item_id)
-            .cloned()
-    }
-}
-
-/// Derives the native-view registry id used to store the `NSMenu` submenu that
-/// backs a `Menu` widget.
-///
-/// Each `Menu` widget owns both an `NSMenuItem` (stored under the widget id) and
-/// an `NSMenu` submenu (stored under this derived id), mirroring the AppKit
-/// item/submenu pair the cocoa-legacy backend builds. The offset is far above
-/// the monotonically increasing widget ids, so the two namespaces cannot
-/// collide for realistic widget counts.
-pub(crate) const SUBMENU_ID_OFFSET: u64 = 1 << 60;
-
-/// Returns the native-view registry id for the `NSMenu` submenu of a widget.
-pub(crate) fn submenu_id(widget_id: u64) -> u64 {
-    widget_id.wrapping_add(SUBMENU_ID_OFFSET)
-}
-
-/// Parses a displayed accelerator into a Cocoa key equivalent and modifier mask.
-///
-/// Delegates to the shared parser so the two macOS implementations cannot drift
-/// apart: a shortcut that works in one must work in the other. The parser lives
-/// in `macos/accelerator.rs`, not in `macos/types.rs`, because the latter is
-/// gated on `cocoa-legacy` while this backend is selected by `macos`.
-pub(crate) fn parse_shortcut(shortcut: Option<&str>) -> (String, u64) {
-    crate::platform::macos::accelerator::parse_shortcut(shortcut)
 }
 
 impl Default for MacOSObjc2Platform {

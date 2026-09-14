@@ -104,11 +104,31 @@ impl MenuEntry {
     }
 }
 /// Menu widget.
+///
+/// # Two uses
+///
+/// The same type serves a menu-bar drop-down and a **context menu** (the menu a
+/// right-click opens). `WidgetKind::ContextMenu` resolves to this type, so the
+/// behaviour a context menu needs lives here rather than in a second, parallel
+/// menu implementation (principle #54):
+///
+/// * [`Self::open_at`] places the popup at a pointer position, clamping it so the
+///   menu stays on screen;
+/// * a press **outside** the popup dismisses it, which is what makes a context
+///   menu feel like a context menu rather than a panel that will not go away.
+///
+/// # Why dismissal is not keyed on the button
+///
+/// A popup is dismissed by a press anywhere outside it, whichever button the user
+/// pressed. Handling only the secondary button would leave the menu open when the
+/// user left-clicks away, which is the single most common way people dismiss one.
 pub struct Menu {
     base: BaseWidget,
     title: String,
     items: Vec<MenuEntry>,
     hovered_index: Option<usize>,
+    /// Screen position the popup was opened at, for diagnostics and tests.
+    invoker_position: Option<Point>,
     pub triggered: Signal1<String>,
     pub triggered_index: Signal1<usize>,
     pub about_to_show: GenericSignal,
@@ -116,16 +136,78 @@ pub struct Menu {
 }
 impl Menu {
     pub fn new(title: impl Into<String>, geometry: Rect) -> Self {
-        Self {
+        let mut menu = Self {
             base: BaseWidget::new(WidgetKind::Menu, geometry, "Menu"),
             title: title.into(),
             items: Vec::new(),
             hovered_index: None,
+            invoker_position: None,
             triggered: Signal1::new(),
             triggered_index: Signal1::new(),
             about_to_show: GenericSignal::new(),
             about_to_hide: GenericSignal::new(),
-        }
+        };
+        // A menu is a popup, so it starts hidden. `BaseWidget` defaults to visible,
+        // which is right for a control that owns part of the surface but wrong for
+        // one that appears on demand: before this, a freshly created `Menu` (and so
+        // a `WidgetKind::ContextMenu`) painted itself immediately at its stored
+        // geometry, i.e. as a permanently open drop-down with no way to have created
+        // it closed.
+        //
+        // Callers that want a menu on screen call `open_at`, or any of the menu
+        // bar's own open paths, so hiding here does not remove a capability.
+        menu.base.hide();
+        menu
+    }
+
+    /// Opens this menu as a context menu at `position`.
+    ///
+    /// `viewport` is the area the popup must stay inside — the widget's parent
+    /// surface. The popup is shifted left/up when it would overflow, which is what
+    /// keeps a menu opened near the right or bottom edge fully reachable instead of
+    /// clipped at the edge.
+    ///
+    /// The popup is positioned by its top-left corner, so the menu appears to the
+    /// lower-right of the pointer, matching the platform convention.
+    pub fn open_at(&mut self, position: Point, viewport: Rect) {
+        let popup_h = self.popup_height() as i32;
+        let popup_w = self.geometry().width as i32;
+
+        // Clamp so the whole popup fits; never go negative, because a popup at a
+        // negative coordinate is off-screen on every backend.
+        let max_x = (viewport.x + viewport.width as i32).saturating_sub(popup_w);
+        let max_y = (viewport.y + viewport.height as i32).saturating_sub(popup_h);
+        let x = position.x.clamp(viewport.x, max_x.max(viewport.x));
+        let y = position.y.clamp(viewport.y, max_y.max(viewport.y));
+
+        let rect = self.geometry();
+        self.set_geometry(Rect::new(x, y, rect.width, rect.height));
+        self.invoker_position = Some(position);
+        // Pre-select the first actionable entry so keyboard navigation has a
+        // starting point; a menu opened with no selection cannot be driven by
+        // arrow keys without a first press that has no visible effect.
+        self.hovered_index =
+            self.items.iter().position(|item| !item.is_separator() && item.is_enabled());
+        self.show();
+    }
+
+    /// The pointer position this menu was opened at, if it was opened via
+    /// [`Self::open_at`].
+    pub fn invoker_position(&self) -> Option<Point> {
+        self.invoker_position
+    }
+
+    /// Whether `point` lies inside the popup's drawn area.
+    ///
+    /// The drawn height follows the item list, not `geometry().height`, because a
+    /// menu is as tall as its entries — using the widget's stored height would make
+    /// the "outside" test disagree with what the user sees.
+    pub fn contains_point(&self, point: Point) -> bool {
+        let rect = self.geometry();
+        point.x >= rect.x
+            && point.x < rect.x + rect.width as i32
+            && point.y >= rect.y
+            && point.y < rect.y + self.popup_height() as i32
     }
     pub fn title(&self) -> &str {
         &self.title
@@ -236,6 +318,10 @@ impl Widget for Menu {
     }
     fn hide(&mut self) {
         self.base.hide();
+        // Clear the invoker position with the popup: it describes an open menu, and
+        // leaving it set would make a reopened menu report a stale origin.
+        self.invoker_position = None;
+        self.hovered_index = None;
         self.about_to_hide.emit();
     }
     impl_draw_bridge!();
@@ -301,7 +387,7 @@ impl EventHandler for Menu {
             Event::MousePress { pos, button: 1 } => {
                 let rect = self.geometry();
                 let mut y = rect.y as f32 + 2.0;
-                for item in self.items.iter() {
+                for (index, item) in self.items.iter().enumerate() {
                     let h = if item.is_separator() {
                         Self::separator_height()
                     } else {
@@ -314,17 +400,31 @@ impl EventHandler for Menu {
                     {
                         let text = item.text().to_string();
                         self.triggered.emit(text);
+                        self.triggered_index.emit(index);
                         self.hide();
                         break;
                     }
                     y += h;
+                }
+                // A press inside the popup that missed every entry still belongs to
+                // the menu (a click on its padding), so it must not dismiss it.
+                if !self.contains_point(*pos) {
+                    self.hide();
+                }
+            }
+            // A context menu is dismissed by a press anywhere outside it, whichever
+            // button was used. Restricting this to the secondary button left the menu
+            // open after the most common dismissal gesture, a left-click elsewhere.
+            Event::MousePress { pos, .. } => {
+                if !self.contains_point(*pos) {
+                    self.hide();
                 }
             }
             #[cfg(feature = "touch")]
             Event::Tap { pos } => {
                 let rect = self.geometry();
                 let mut y = rect.y as f32 + 2.0;
-                for item in &self.items {
+                for (index, item) in self.items.iter().enumerate() {
                     let h = if item.is_separator() {
                         Self::separator_height()
                     } else {
@@ -337,11 +437,15 @@ impl EventHandler for Menu {
                     {
                         let text = item.text().to_string();
                         self.triggered.emit(text);
+                        self.triggered_index.emit(index);
                         self.hide();
                         break;
                     }
                     y += h;
                 }
+                // Touch has no outside-press event: a tap outside the popup is the
+                // dismissal gesture, and it is not routed to this widget at all once
+                // the menu is no longer topmost, so nothing further is needed here.
             }
             Event::KeyPress { key, .. } => {
                 if *key == 27 {
@@ -476,5 +580,130 @@ mod tests {
         menu.set_item_checked(idx, true);
         assert_eq!(menu.item_checked(idx), Some(true));
         assert_eq!(menu.item_checked(99), None);
+    }
+
+    fn context_menu() -> Menu {
+        let mut menu = Menu::new("Edit", Rect::new(0, 0, 160, 100));
+        menu.add_action("Cut");
+        menu.add_action("Copy");
+        menu.add_separator();
+        menu.add_action("Paste");
+        menu
+    }
+
+    /// A context menu must appear where the pointer was, and report that origin.
+    #[test]
+    fn open_at_places_the_popup_at_the_pointer() {
+        let mut menu = context_menu();
+        // A menu is born hidden: it is a popup, not a panel, so `open_at` is what
+        // makes it appear. Asserting that first keeps the test from passing on a
+        // menu that was already visible for an unrelated reason.
+        assert!(!menu.is_visible(), "a menu must start hidden");
+
+        menu.open_at(Point::new(300, 200), Rect::new(0, 0, 1000, 800));
+
+        assert!(menu.is_visible());
+        assert_eq!(menu.invoker_position(), Some(Point::new(300, 200)));
+        assert_eq!(menu.geometry().x, 300);
+        assert_eq!(menu.geometry().y, 200);
+    }
+
+    /// Opened near an edge, the popup must shift so it stays fully on screen —
+    /// otherwise part of the menu is unreachable.
+    #[test]
+    fn open_at_clamps_a_popup_that_would_overflow() {
+        let viewport = Rect::new(0, 0, 200, 150);
+        let mut menu = context_menu();
+
+        menu.open_at(Point::new(195, 148), viewport);
+
+        let rect = menu.geometry();
+        assert!(
+            rect.x + rect.width as i32 <= viewport.width as i32,
+            "popup must not extend past the right edge: {rect:?}",
+        );
+        assert!(
+            rect.y + menu.popup_height() as i32 <= viewport.height as i32,
+            "popup must not extend past the bottom edge",
+        );
+        // The invoker position is recorded unclamped: it describes where the user
+        // clicked, which is a different fact from where the popup ended up.
+        assert_eq!(menu.invoker_position(), Some(Point::new(195, 148)));
+    }
+
+    /// A press inside the popup that hits an entry triggers it and closes the menu.
+    #[test]
+    fn pressing_an_entry_triggers_it_and_closes_the_menu() {
+        use std::sync::{Arc, Mutex};
+
+        let mut menu = context_menu();
+        menu.open_at(Point::new(10, 10), Rect::new(0, 0, 400, 400));
+        // Signal slots are `Send + Sync`, so the sink is an `Arc<Mutex<_>>` rather
+        // than the `Rc<RefCell<_>>` a single-threaded test would otherwise use.
+        let fired = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&fired);
+        menu.triggered.connect(move |text: Arc<String>| {
+            sink.lock().expect("sink poisoned").push((*text).clone());
+        });
+
+        // First entry sits just below the popup's 2px top padding.
+        menu.handle_event(&Event::MousePress { pos: Point::new(20, 14), button: 1 });
+
+        assert_eq!(&*fired.lock().expect("sink poisoned"), &["Cut".to_string()]);
+        assert!(!menu.is_visible(), "choosing an entry must close the menu");
+    }
+
+    /// The dismissal gesture people actually use is a left-click elsewhere, so an
+    /// outside press must close the menu whichever button was used.
+    #[test]
+    fn a_press_outside_the_popup_closes_it_with_either_button() {
+        for button in [crate::event::mouse_button::PRIMARY, crate::event::mouse_button::SECONDARY] {
+            let mut menu = context_menu();
+            menu.open_at(Point::new(100, 100), Rect::new(0, 0, 400, 400));
+            assert!(menu.is_visible());
+
+            menu.handle_event(&Event::MousePress { pos: Point::new(5, 5), button });
+
+            assert!(!menu.is_visible(), "button {button} outside the popup must dismiss it");
+        }
+    }
+
+    /// A press on the popup's own padding is still "inside": it must not dismiss,
+    /// or clicking a menu's edge would close it before an entry could be chosen.
+    #[test]
+    fn a_press_inside_the_popup_does_not_dismiss_it() {
+        let mut menu = context_menu();
+        menu.open_at(Point::new(100, 100), Rect::new(0, 0, 400, 400));
+
+        // x is inside the popup but past the text column; y is the top padding.
+        menu.handle_event(&Event::MousePress { pos: Point::new(250, 101), button: 1 });
+
+        assert!(menu.is_visible(), "padding inside the popup must not dismiss the menu");
+    }
+
+    /// Reopening must not report the previous invocation's position.
+    #[test]
+    fn hiding_clears_the_invoker_position() {
+        let mut menu = context_menu();
+        menu.open_at(Point::new(10, 10), Rect::new(0, 0, 400, 400));
+        assert!(menu.invoker_position().is_some());
+
+        menu.hide();
+
+        assert_eq!(menu.invoker_position(), None);
+        assert_eq!(menu.hovered_index(), None);
+    }
+
+    /// The popup's hit area follows its drawn height, not the stored geometry
+    /// height, so the outside test agrees with what the user sees.
+    #[test]
+    fn contains_point_follows_the_drawn_height() {
+        let mut menu = context_menu();
+        // Geometry height is 100 but the four entries plus padding draw shorter.
+        menu.open_at(Point::new(0, 0), Rect::new(0, 0, 400, 400));
+
+        let drawn = menu.popup_height() as i32;
+        assert!(menu.contains_point(Point::new(5, drawn - 1)));
+        assert!(!menu.contains_point(Point::new(5, drawn)));
     }
 }

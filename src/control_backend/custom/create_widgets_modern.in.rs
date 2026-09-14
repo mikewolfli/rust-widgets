@@ -8,10 +8,8 @@
 // `impl ControlBackend for CustomPaintControlBackend` block in
 // `create_widgets.rs`. Method bodies are written literally (same pattern as the
 // other `create_widgets_*.in.rs` files) so the control-route matrix tooling can
-// parse the real implementations; each method allocates a widget id, registers
-// the standard state maps (enabled/visible/ime/accessibility), and records
-// `CustomWidgetProperties` with the matching `WidgetKind` so the widget is a
-// real state-backed control instead of a trait-default `0` placeholder.
+// parse the real implementations; each method builds the widget through
+// `WidgetFactory` and mounts it, so the returned id addresses a live control.
 //
 // Methods for `WidgetKind` variants that exist in every profile (Arc, Switch,
 // Frame, ...) are emitted ungated; variants gated by
@@ -29,24 +27,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "AdaptiveScaffold".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::AdaptiveScaffold,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::AdaptiveScaffold, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -58,24 +39,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "AnimatedImage".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::AnimatedImage,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::AnimatedImage, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -87,24 +51,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "AppBar".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::AppBar,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::AppBar, parent, "", x, y, width, height)
         }
 
         fn create_arc(
@@ -115,24 +62,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "Arc".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::Arc,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::Arc, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -144,24 +74,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "AudioVisualizer".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::AudioVisualizer,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::AudioVisualizer, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -173,24 +86,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "AutoCompleteEdit".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::AutoCompleteEdit,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::AutoCompleteEdit, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -202,24 +98,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "Avatar".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::Avatar,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::Avatar, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -231,24 +110,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "Badge".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::Badge,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::Badge, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -260,24 +122,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "BarChart".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::BarChart,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::BarChart, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -289,24 +134,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "BarcodeScanner".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::BarcodeScanner,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::BarcodeScanner, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -318,24 +146,15 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "BezierCurveEditor".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::BezierCurveEditor,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(
+                WidgetKind::BezierCurveEditor,
+                parent,
+                "",
+                x,
+                y,
+                width,
+                height,
+            )
         }
 
         #[cfg(not(alloc_frugal))]
@@ -347,24 +166,15 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "BottomNavigationBar".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::BottomNavigationBar,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(
+                WidgetKind::BottomNavigationBar,
+                parent,
+                "",
+                x,
+                y,
+                width,
+                height,
+            )
         }
 
         #[cfg(not(alloc_frugal))]
@@ -376,24 +186,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "BottomSheet".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::BottomSheet,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::BottomSheet, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -405,24 +198,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "CameraPreview".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::CameraPreview,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::CameraPreview, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -434,24 +210,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "Carousel".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::Carousel,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::Carousel, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -463,24 +222,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "Chip".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::Chip,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::Chip, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -492,24 +234,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "ColorHistory".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::ColorHistory,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::ColorHistory, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -521,24 +246,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "ColorWell".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::ColorWell,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::ColorWell, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -550,24 +258,15 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "CupertinoAlertDialog".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::CupertinoAlertDialog,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(
+                WidgetKind::CupertinoAlertDialog,
+                parent,
+                "",
+                x,
+                y,
+                width,
+                height,
+            )
         }
 
         #[cfg(not(alloc_frugal))]
@@ -579,24 +278,15 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "CupertinoDatePicker".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::CupertinoDatePicker,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(
+                WidgetKind::CupertinoDatePicker,
+                parent,
+                "",
+                x,
+                y,
+                width,
+                height,
+            )
         }
 
         #[cfg(not(alloc_frugal))]
@@ -608,24 +298,15 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "CupertinoNavigationBar".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::CupertinoNavigationBar,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(
+                WidgetKind::CupertinoNavigationBar,
+                parent,
+                "",
+                x,
+                y,
+                width,
+                height,
+            )
         }
 
         #[cfg(not(alloc_frugal))]
@@ -637,24 +318,15 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "CupertinoSegmentedControl".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::CupertinoSegmentedControl,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(
+                WidgetKind::CupertinoSegmentedControl,
+                parent,
+                "",
+                x,
+                y,
+                width,
+                height,
+            )
         }
 
         #[cfg(not(alloc_frugal))]
@@ -666,24 +338,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "CupertinoSlider".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::CupertinoSlider,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::CupertinoSlider, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -695,24 +350,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "CupertinoSwitch".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::CupertinoSwitch,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::CupertinoSwitch, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -724,24 +362,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "DateRangePicker".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::DateRangePicker,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::DateRangePicker, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -753,24 +374,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "Divider".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::Divider,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::Divider, parent, "", x, y, width, height)
         }
 
         fn create_dropdown(
@@ -781,24 +385,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "Dropdown".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::Dropdown,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::Dropdown, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -810,24 +397,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "DropdownMenu".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::DropdownMenu,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::DropdownMenu, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -839,24 +409,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "EditableComboBox".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::EditableComboBox,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::EditableComboBox, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -868,24 +421,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "EmptyState".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::EmptyState,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::EmptyState, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -897,24 +433,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "FAB".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::FAB,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::FAB, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -926,24 +445,15 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "FindReplaceDialog".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::FindReplaceDialog,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(
+                WidgetKind::FindReplaceDialog,
+                parent,
+                "",
+                x,
+                y,
+                width,
+                height,
+            )
         }
 
         #[cfg(not(alloc_frugal))]
@@ -955,24 +465,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "FloatingLabel".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::FloatingLabel,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::FloatingLabel, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -984,24 +477,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "FontPreview".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::FontPreview,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::FontPreview, parent, "", x, y, width, height)
         }
 
         fn create_frame(
@@ -1012,24 +488,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "Frame".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::Frame,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::Frame, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -1041,24 +500,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "GridTable".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::GridTable,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::GridTable, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -1070,24 +512,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "HeroAnimation".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::HeroAnimation,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::HeroAnimation, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -1099,24 +524,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "Icon".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::Icon,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::Icon, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -1128,24 +536,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "ImageGallery".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::ImageGallery,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::ImageGallery, parent, "", x, y, width, height)
         }
 
         fn create_image_view(
@@ -1156,24 +547,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "ImageView".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::ImageView,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::ImageView, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -1185,24 +559,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "ImePreedit".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::ImePreedit,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::ImePreedit, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -1214,24 +571,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "InplaceEditor".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::InplaceEditor,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::InplaceEditor, parent, "", x, y, width, height)
         }
 
         fn create_keyboard(
@@ -1242,24 +582,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "Keyboard".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::Keyboard,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::Keyboard, parent, "", x, y, width, height)
         }
 
         fn create_line(
@@ -1270,24 +593,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "Line".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::Line,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::Line, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -1299,24 +605,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "LineChart".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::LineChart,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::LineChart, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -1328,24 +617,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "LottieWidget".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::LottieWidget,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::LottieWidget, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -1357,24 +629,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "MaskedEdit".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::MaskedEdit,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::MaskedEdit, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -1386,24 +641,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "MasonryLayout".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::MasonryLayout,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::MasonryLayout, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -1415,24 +653,15 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "MaterialNavigationRail".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::MaterialNavigationRail,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(
+                WidgetKind::MaterialNavigationRail,
+                parent,
+                "",
+                x,
+                y,
+                width,
+                height,
+            )
         }
 
         #[cfg(not(alloc_frugal))]
@@ -1444,24 +673,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "MaterialSnackbar".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::MaterialSnackbar,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::MaterialSnackbar, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -1473,24 +685,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "MenuButton".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::MenuButton,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::MenuButton, parent, "", x, y, width, height)
         }
 
         fn create_meter(
@@ -1501,24 +696,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "Meter".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::Meter,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::Meter, parent, "", x, y, width, height)
         }
 
         fn create_mini_canvas(
@@ -1529,24 +707,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "MiniCanvas".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::MiniCanvas,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::MiniCanvas, parent, "", x, y, width, height)
         }
 
         fn create_mini_chart(
@@ -1557,24 +718,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "MiniChart".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::MiniChart,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::MiniChart, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -1586,24 +730,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "MobileDatePicker".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::MobileDatePicker,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::MobileDatePicker, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -1615,24 +742,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "ModalBottomSheet".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::ModalBottomSheet,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::ModalBottomSheet, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -1644,24 +754,15 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "MultiSelectComboBox".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::MultiSelectComboBox,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(
+                WidgetKind::MultiSelectComboBox,
+                parent,
+                "",
+                x,
+                y,
+                width,
+                height,
+            )
         }
 
         #[cfg(not(alloc_frugal))]
@@ -1673,24 +774,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "NavigationDrawer".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::NavigationDrawer,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::NavigationDrawer, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -1702,24 +786,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "NavigationStack".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::NavigationStack,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::NavigationStack, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -1731,24 +798,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "PagerPageView".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::PagerPageView,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::PagerPageView, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -1760,24 +810,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "PieChart".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::PieChart,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::PieChart, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -1789,24 +822,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "Popover".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::Popover,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::Popover, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -1818,24 +834,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "ProgressCircle".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::ProgressCircle,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::ProgressCircle, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -1847,24 +846,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "PropertiesPanel".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::PropertiesPanel,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::PropertiesPanel, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -1876,24 +858,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "QRCode".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::QRCode,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::QRCode, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -1905,24 +870,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "RangeSlider".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::RangeSlider,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::RangeSlider, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -1934,24 +882,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "Rating".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::Rating,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::Rating, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -1963,24 +894,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "RefreshControl".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::RefreshControl,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::RefreshControl, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -1992,24 +906,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "RiveWidget".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::RiveWidget,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::RiveWidget, parent, "", x, y, width, height)
         }
 
         fn create_roller(
@@ -2020,24 +917,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "Roller".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::Roller,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::Roller, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -2049,24 +929,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "SafeArea".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::SafeArea,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::SafeArea, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -2078,24 +941,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "SearchBar".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::SearchBar,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::SearchBar, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -2107,24 +953,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "SearchBox".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::SearchBox,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::SearchBox, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -2136,24 +965,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "SegmentedButton".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::SegmentedButton,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::SegmentedButton, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -2165,24 +977,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "ShortcutEditor".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::ShortcutEditor,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::ShortcutEditor, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -2194,24 +989,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "SkeletonLoader".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::SkeletonLoader,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::SkeletonLoader, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -2223,24 +1001,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "Sparkline".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::Sparkline,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::Sparkline, parent, "", x, y, width, height)
         }
 
         fn create_spinner(
@@ -2251,24 +1012,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "Spinner".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::Spinner,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::Spinner, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -2280,24 +1024,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "Stepper".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::Stepper,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::Stepper, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -2309,24 +1036,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "SwipeToDismiss".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::SwipeToDismiss,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::SwipeToDismiss, parent, "", x, y, width, height)
         }
 
         fn create_switch(
@@ -2337,24 +1047,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "Switch".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::Switch,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::Switch, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -2366,24 +1059,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "TabView".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::TabView,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::TabView, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -2395,24 +1071,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "TagInput".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::TagInput,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::TagInput, parent, "", x, y, width, height)
         }
 
         fn create_text_area(
@@ -2423,24 +1082,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "TextArea".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::TextArea,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::TextArea, parent, "", x, y, width, height)
         }
 
         fn create_tile_view(
@@ -2451,24 +1093,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "TileView".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::TileView,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::TileView, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -2480,24 +1105,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "Tooltip".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::Tooltip,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::Tooltip, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -2509,24 +1117,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "VideoPlayer".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::VideoPlayer,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::VideoPlayer, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -2538,24 +1129,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "WizardDialog".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::WizardDialog,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::WizardDialog, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -2567,24 +1141,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "FreeformShape".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::FreeformShape,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::FreeformShape, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -2596,24 +1153,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "TabBar".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::TabBar,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::TabBar, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -2625,24 +1165,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "PieMenu".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::PieMenu,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::PieMenu, parent, "", x, y, width, height)
         }
 
         #[cfg(not(alloc_frugal))]
@@ -2654,24 +1177,7 @@ macro_rules! impl_modern_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, "RibbonBar".to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::RibbonBar,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::RibbonBar, parent, "", x, y, width, height)
         }
     };
 }

@@ -6,6 +6,7 @@ use crate::core::{ObjectId, Rect, Size};
 use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
+use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -14,21 +15,44 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 pub struct PopupWindow {
     base: BaseWidget,
     content_widget: Option<ObjectId>,
+    /// Title shown in the popup's own chrome.
+    ///
+    /// Kept on the control rather than in a host-side map: the title is part of
+    /// what the popup *is*, and a host that held it separately could not paint it.
+    title: String,
     /// Emitted when the popup is opened.
     pub opened: GenericSignal,
     /// Emitted when the popup is closed.
     pub closed: GenericSignal,
 }
 impl PopupWindow {
-    /// Creates a popup window with geometry.
+    /// Creates a popup window with geometry and no title.
     pub fn new(geometry: Rect) -> Self {
+        Self::with_title(String::new(), geometry)
+    }
+
+    /// Creates a popup window with a title and geometry.
+    pub fn with_title(title: String, geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::PopupWindow, geometry, "PopupWindow"),
             content_widget: None,
+            title,
             opened: GenericSignal::new(),
             closed: GenericSignal::new(),
         }
     }
+
+    /// Returns the popup's title.
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    /// Sets the popup's title.
+    pub fn set_title(&mut self, title: String) {
+        self.title = title;
+        self.base.request_redraw();
+    }
+
     /// Returns the content widget ID, if any.
     pub fn content_widget(&self) -> Option<ObjectId> {
         self.content_widget
@@ -101,17 +125,27 @@ impl Widget for PopupWindow {
 impl WidgetProperties for PopupWindow {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
+            "title" => Ok(CapabilityValue::String(self.title().to_string())),
             "has_content" => Ok(CapabilityValue::Bool(self.content_widget().is_some())),
             _ => base_property_get(self, name),
         }
     }
 
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
-        base_property_set(self, name, value)
+        match name {
+            "title" => {
+                self.set_title(expect_string(value)?);
+                Ok(())
+            }
+            // A popup's content is supplied by its owner via `set_content_widget`,
+            // not through the property layer: the property reports presence only.
+            "has_content" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["has_content", BASE_PROPERTY_NAMES]
+        property_names_of!["title", "has_content", BASE_PROPERTY_NAMES]
     }
 }
 impl Draw for PopupWindow {

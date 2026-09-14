@@ -310,6 +310,88 @@ pub fn widget_property_names(widget: &dyn Widget) -> Option<&'static [&'static s
     widget.properties_dyn().map(WidgetProperties::property_names)
 }
 
+/// The compatibility probe, resolved at the call site rather than imported: it
+/// exists only under `full_widgets`, while this dispatcher exists wherever the
+/// contract does. A stripped profile has no property tables to probe, so the
+/// fallback reports [`CapabilityAccessError::UnsupportedOnWidget`] there, which is
+/// the same answer the tables themselves would give.
+#[cfg(full_widgets)]
+fn legacy_read(widget: &dyn Widget, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+    super::access::read_widget_property_legacy(widget, name)
+}
+
+#[cfg(not(full_widgets))]
+fn legacy_read(
+    _widget: &dyn Widget,
+    _name: &str,
+) -> Result<CapabilityValue, CapabilityAccessError> {
+    Err(CapabilityAccessError::UnsupportedOnWidget)
+}
+
+#[cfg(full_widgets)]
+fn legacy_write(
+    widget: &mut dyn Widget,
+    name: &str,
+    value: CapabilityValue,
+) -> Result<(), CapabilityAccessError> {
+    super::access::write_widget_property_legacy(widget, name, value)
+}
+
+#[cfg(not(full_widgets))]
+fn legacy_write(
+    _widget: &mut dyn Widget,
+    _name: &str,
+    _value: CapabilityValue,
+) -> Result<(), CapabilityAccessError> {
+    Err(CapabilityAccessError::UnsupportedOnWidget)
+}
+
+/// Reads a control's property by name, contract first and legacy table second.
+///
+/// # Why two paths
+///
+/// [`widget_property_get`] is the contract path: it asks the control's own
+/// `WidgetProperties` impl, which is the single source of truth for what the
+/// control exposes. The legacy probe is the fallback for controls whose readers
+/// have not moved onto the contract yet (BLUE15 Phase C-1); it keeps the published
+/// `WidgetFactory::read_property` behaviour intact instead of returning
+/// [`CapabilityAccessError::UnsupportedOnWidget`] for a property the factory
+/// advertises as readable.
+///
+/// # What falls through
+///
+/// **Only** `UnsupportedOnWidget` — the one answer that means "this control has no
+/// contract at all", which is exactly the case the fallback exists for. Every
+/// other error is the contract's *decision* and is returned unchanged:
+///
+/// * `UnknownProperty` — the control has a contract and does not declare this
+///   name. Delegating here would let a category arm invent a property the control
+///   deliberately does not expose.
+/// * `ReadOnlyProperty` / `TypeMismatch` — the control refused the request, and an
+///   older table must not overrule that.
+pub fn read_widget_property_by_name(
+    widget: &dyn Widget,
+    name: &str,
+) -> Result<CapabilityValue, CapabilityAccessError> {
+    match widget_property_get(widget, name) {
+        Err(CapabilityAccessError::UnsupportedOnWidget) => legacy_read(widget, name),
+        answer => answer,
+    }
+}
+
+/// Write-side counterpart to [`read_widget_property_by_name`], with the same
+/// fall-through rule: only "no contract at all" delegates.
+pub fn write_widget_property_by_name(
+    widget: &mut dyn Widget,
+    name: &str,
+    value: CapabilityValue,
+) -> Result<(), CapabilityAccessError> {
+    match widget_property_set(widget, name, value.clone()) {
+        Err(CapabilityAccessError::UnsupportedOnWidget) => legacy_write(widget, name, value),
+        answer => answer,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,6 +411,11 @@ mod tests {
         fn base_mut(&mut self) -> &mut BaseWidget {
             &mut self.base
         }
+
+        // Without these the type would implement `WidgetProperties` yet be
+        // unreachable through `dyn Widget`, which is exactly the failure mode the
+        // dispatcher tests below exist to catch.
+        crate::impl_widget_property_hooks!();
     }
 
     impl crate::event::EventHandler for Probe {
@@ -395,6 +482,51 @@ mod tests {
     fn unknown_names_are_distinguished() {
         let widget = probe();
         assert_eq!(widget.get("nope"), Err(CapabilityAccessError::UnknownProperty));
+    }
+
+    /// A property the contract rejects definitively must not be handed to the
+    /// legacy tables.
+    ///
+    /// `ReadOnlyProperty` is a decision, not a gap: if the fallback saw it, a
+    /// control could declare a property read-only and still have an older category
+    /// arm write it (BLUE15 Phase C-1).
+    #[test]
+    fn definitive_contract_answers_are_not_delegated() {
+        let mut widget = probe();
+        assert_eq!(
+            write_widget_property_by_name(
+                &mut widget,
+                "geometry",
+                CapabilityValue::String("0,0,1,1".into()),
+            ),
+            Err(CapabilityAccessError::ReadOnlyProperty),
+        );
+    }
+
+    /// The dispatcher must reach the contract through `dyn Widget`, not only on
+    /// the concrete type.
+    ///
+    /// This pins the whole point of the reflection hooks: a control can implement
+    /// `WidgetProperties` and still be invisible if its `impl Widget` forgets them.
+    /// An unknown name then answers from the contract (`UnknownProperty`) instead
+    /// of falling through to "this control has no contract at all".
+    #[test]
+    fn the_dispatcher_reaches_the_contract_through_dyn_widget() {
+        let mut widget = probe();
+        let dynamic: &mut dyn crate::widget::Widget = &mut widget;
+        assert_eq!(
+            write_widget_property_by_name(dynamic, "not_a_property", CapabilityValue::Bool(true)),
+            Err(CapabilityAccessError::UnknownProperty),
+        );
+        let dynamic: &dyn crate::widget::Widget = &widget;
+        assert_eq!(
+            read_widget_property_by_name(dynamic, "not_a_property"),
+            Err(CapabilityAccessError::UnknownProperty),
+        );
+        assert_eq!(
+            read_widget_property_by_name(dynamic, "enabled"),
+            Ok(CapabilityValue::Bool(true))
+        );
     }
 
     /// The published name list must match what `get` actually answers, so schema

@@ -27,6 +27,9 @@ pub use focus::FocusManager;
 pub use r#loop::AnimationFrameRequest;
 pub use r#loop::EventLoop;
 pub use timer::TimerManager;
+/// Named mouse-button codes, re-exported so a widget never writes a bare `2` to
+/// mean "secondary button".
+pub use types::mouse_button;
 pub use types::{Event, EventHandler, EventPriority, GestureClass, TouchId};
 // Re-export queue utilities
 pub use queue::{FixedSizeQueue, QueueError, DEFAULT_QUEUE_CAPACITY};

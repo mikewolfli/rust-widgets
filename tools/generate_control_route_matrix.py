@@ -132,15 +132,20 @@ def parse_widget_kinds(kind_rs: pathlib.Path) -> List[str]:
     return variants
 
 
-def parse_route_preferences(routing_rs: pathlib.Path) -> Dict[str, str]:
-    """Resolve kind -> preference, honouring platform-conditional overrides.
+def parse_route_preferences(routing_rs: pathlib.Path, kind_rs: pathlib.Path) -> Dict[str, str]:
+    """Resolve kind -> preference for every `WidgetKind`.
 
-    `route_preference_for_widget_kind` may contain an early-return
-    `#[cfg(target_os = "...")]` block *before* the main `match`. Those entries
-    intentionally take precedence for that platform and may also appear in the
-    general match (where they describe the other platforms). Modelling this as
-    "last arm wins" would either raise a false conflict or silently drop the
-    override, so the conditional block is parsed first and layered on top.
+    `route_preference_for_widget_kind` used to be a two-tier `match` with an
+    early-return `#[cfg(target_os = ...)]` block before it, so this parser walked
+    the arms and layered the platform override on top. There is one mechanism now
+    (the library paints every `WidgetKind`), and the function returns a single
+    constant, so a parse-the-arms approach finds nothing to read at all.
+
+    The function is therefore read for the constant it returns, and that value is
+    applied to every variant in `kind.rs`. If a future backend gains a real
+    primitive it must reintroduce a `match`, and this parser will need the arm
+    walk back — the assertion below is what makes that change loud instead of
+    silently reporting "all self-drawn".
     """
     text = routing_rs.read_text(encoding="utf-8")
     fn_start = text.find("pub fn route_preference_for_widget_kind")
@@ -151,6 +156,21 @@ def parse_route_preferences(routing_rs: pathlib.Path) -> Dict[str, str]:
         raise ValueError("Could not isolate route_preference_for_widget_kind body")
 
     body = text[fn_start:tests_mod]
+
+    # Single-valued form: the function returns one preference for every kind.
+    single_re = re.compile(
+        r"ControlRoutePreference::(NativePreferred|CustomRequired)\s*$", re.MULTILINE
+    )
+    has_match = "match kind" in body
+
+    if not has_match:
+        found = single_re.search(body)
+        if not found:
+            raise ValueError(
+                "route_preference_for_widget_kind neither matches on kind nor returns a "
+                "preference constant; the routing policy shape is unrecognised"
+            )
+        return {kind: found.group(1) for kind in parse_widget_kinds(kind_rs)}
 
     segment_re = re.compile(
         r"(?P<arms>(?:.|\n)*?)=>\s*ControlRoutePreference::(?P<pref>NativePreferred|CustomRequired)",
@@ -455,7 +475,7 @@ def main() -> int:
     output_file = pathlib.Path(args.output)
 
     kinds = parse_widget_kinds(kind_file)
-    preference_map = parse_route_preferences(routing_file)
+    preference_map = parse_route_preferences(routing_file, kind_file)
     native_methods, native_delegates = parse_native_delegates(native_file)
     custom_methods = parse_custom_methods(custom_file)
     trait_methods = parse_trait_methods(trait_file)

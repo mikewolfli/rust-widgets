@@ -3,84 +3,88 @@
 
 # iOS Backend Status
 
-> Last verified: 2026-09-11 on a real iOS 26.2 Simulator (Xcode 26.2, arm64
-> simulator on an Apple Silicon Mac).
-> Evidence: `docs/log/log-20260911-2.md`, gate `tools/check_apple_native.sh`,
-> host app `bindings/ios/main.m`.
+## Current Status
 
-## Architecture
+The iOS backend (`src/platform/ios/`) is a **state-driven** backend. It
+implements the `Platform` contract — widget creation, geometry, text,
+visibility, enablement, menu tree, list/combo data, clipboard, drag/drop, IME
+and accessibility metadata — through `BackendState<IosHandleKind>`.
 
-`IosMobilePlatform` (`src/platform/ios/platform_impl.rs`) implements the full
-`Platform` contract. The widget state machine is platform-independent and
-compiles on every host (so its unit tests are always executable). The real
-UIKit FFI lives in `src/platform/ios/native.rs` and is gated behind
-`#[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]`; elsewhere the
+The one thing the host owes the library is a **window** to paint into. That is
+the single UIKit object this backend creates (`native::create_ui_window` in
+`src/platform/ios/native.rs`), and it is gated behind
+`#[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]`. Elsewhere the
 backend runs in pure state mode.
+
+## BLUE15: no per-kind UIKit controls
+
+The backend used to instantiate a real `UIView` per logical widget —
+`UIButton`, `UILabel`, `UISwitch`, `UITextField`, `UIPickerView`,
+`UITableView`, `UIProgressView`, `UISlider`, `UIScrollView`,
+`UIAlertController`, `UIStackView`, `UIActivityIndicatorView` — and mirror every
+state mutation into it through `native::*` helpers (`store_native_view`,
+`add_as_subview`, `wire_button_action`, `set_native_text`, `set_native_frame`,
+`set_native_hidden`, `set_native_enabled`).
+
+Under the self-drawn strategy (BLUE15 #55/#56) the library paints every
+`WidgetKind`, so the host supplies a **window plus a drawing surface** and
+nothing per-kind. The control creators, the view registry, the `ButtonTarget`
+Objective-C class and its event queue existed only to serve that path and have
+been **deleted** (#59: delete means delete). The drawing surface is mounted
+through `MobilePlatformExtension::attach_to_native_view`.
 
 ## What is implemented
 
 | Area | Status | Notes |
 |---|---|---|
-| `Platform` contract (all `create_*`) | ✅ Implemented | state-backed with UIKit side effects when the FFI feature is on |
-| `UIWindow` creation | ✅ Verified on Simulator | real `UIWindow` with a root view controller, visible |
-| `UIButton` / `UILabel` / `UITextField` | ✅ Verified on Simulator | real subviews of the window's content view |
-| `UISwitch`/`UISlider`/`UIProgressView`/`UIPickerView`/`UITableView`/`UIScrollView` | ✅ Implemented | created via `objc2-ui-kit` |
-| Text round-trip | ✅ Verified on Simulator | `rw_set_widget_text` / `rw_get_widget_text` |
-| Geometry / visibility / enabled | ✅ Verified on Simulator | `setFrame`/`setHidden`/`setEnabled` on the live view |
-| `UIAlertController` message box | ✅ Implemented | presented on the root view controller when available |
+| `Platform` contract (`create_window` + full window contract) | ✅ Implemented | state-backed, with parent/kind validation |
+| `UIWindow` creation | ✅ Implemented | real `UIWindow` with a root view controller, visible |
+| Per-kind UIKit controls (`UIButton` / `UILabel` / …) | ⛔ Deleted | BLUE15 #59 — the library paints them |
+| Menu tree (MenuBar/Menu/MenuItem) | ✅ Implemented | in-process tree + injectable trigger queue |
+| ComboBox / ListBox data paths | ✅ Implemented | shared list-data tables |
+| Show / hide / geometry / text / enabled | ✅ Implemented | logical state round-trips |
+| Clipboard | ✅ Implemented | in-process store |
+| Drag & drop | ✅ Implemented | injectable drop-event queue |
 | IME + accessibility metadata | ✅ Implemented | modelled state |
+| Print facts | ✅ Implemented | honest error: `UIPrintInteractionController` is not bound |
 
-## Verification (real iOS Simulator, 2026-09-11)
+## Capabilities (honest contract)
 
-`tools/build_ios_testapp.sh` builds a real `.app` (staticlib + Objective-C host,
-no Xcode project), and `tools/run_ios_testapp.sh` installs, launches, and
-asserts the probe's `RESULT: PASS`:
+`IosMobilePlatform::capabilities()` declares the flags explicitly rather than
+inheriting desktop defaults:
 
-```
-[PASS] ui_application: UIApplication.sharedApplication = 0x10b606df0
-[PASS] create_window_id: rw_create_window = 1
-[PASS] native_uikit_window: app.windows=2 rustWindow=0x10e006c90 rootVC=0x10b611ed0
-[PASS] native_view_ids: button=2 label=3 line_edit=4
-[PASS] native_uikit_subviews: UIButton=0x10e007030 UILabel=0x10e008e40 UITextField=0x10d02f000
-[PASS] text_roundtrip: rw_get_widget_text = Tapped
-[PASS] native_text_applied: UIButton title = Tapped
-[PASS] visibility_geometry: hidden_reported=1 shown_reported=1
-[PASS] native_frame_applied: UIButton.frame = {{20, 60}, {140, 44}}
-```
+- `dpi_scaling: true`, `ime: true`, `accessibility: true` — the state model
+  tracks these.
+- `native_menu: false` — the menu is an in-process tree served through an
+  injectable queue, **not** an OS menu. This is asserted by
+  `ios_platform_reports_explicit_mobile_capabilities`.
 
-> Fixed 2026-09-11: `native::set_native_text` probed `setTitle:forState:` with a
-> one-argument `respondsToSelector:`, which always returns `false` for a
-> two-argument selector. The loop therefore fell through to
-> `setAccessibilityLabel:`, so `rw_set_widget_text` updated the Rust state but
-> **never changed the visible `UIButton` title** — a silent no-op, not a crash.
-> It now dispatches typed `setTitle:forState:` / `setText:` /
-> `setAccessibilityLabel:` messages. The `native_text_applied` check
-> (`UIButton.titleForState == "Tapped"`) was added to make this class of
-> "state-only fake fix" impossible to miss.
-
-Reproduce:
+## Build and test
 
 ```bash
-rustup target add aarch64-apple-ios-sim
-xcrun simctl boot <device-udid>          # or use tools/run_ios_testapp.sh
-bash tools/run_ios_testapp.sh
+# Host (feature-gated preview backend; UIKit code is compiled out)
+cargo test --lib --no-default-features --features "mobile-api" platform::ios
+
+# iOS target cross-compile (installs: rustup target add aarch64-apple-ios-sim)
+cargo check --target aarch64-apple-ios-sim --no-default-features \
+  --features "ios ios-uikit-ffi"
 ```
-
-Cross-target compile checks (0 errors, 0 warnings):
-
-| Target / features | Result |
-|---|---|
-| `aarch64-apple-ios` (state backend) | ✅ 0 errors |
-| `aarch64-apple-ios` + `ios-uikit-ffi` | ✅ 0 errors |
-| `aarch64-apple-ios-sim` + `ios-uikit-ffi` | ✅ 0 errors |
-| `cargo clippy --target aarch64-apple-ios-sim ... -D warnings` | ✅ 0 warnings |
 
 ## Honest boundaries
 
-- The probe runs on the **Simulator**, not a physical iPhone. A physical-device
-  run (signing + provisioning) is not part of this gate.
+Client-verified facts for this revision:
+
+- The **host** test suite runs the state backend and is green on every host
+  (`cargo test --no-default-features --features desktop --lib`).
+- The iOS-target compile checks and the Simulator probe outputs that earlier
+  revisions of this file recorded (`tools/run_ios_testapp.sh`) were taken
+  **before** the BLUE15 control deletion and have **not** been re-run: the
+  development host is macOS with no iOS SDK/toolchain in this workspace, so the
+  `ios-uikit-ffi` build and the Simulator probe are **unverified** for this
+  revision. Re-running `tools/run_ios_testapp.sh` on a Mac with Xcode is the
+  required next step.
 - `create_ui_window` uses `initWithFrame:` (scene-less) because the library has
   no access to a `UIWindowScene` instance; `initWithWindowScene:` would be the
   modern path once a scene is threaded through by the host app.
 - The library ships no AndroidX-equivalent framework dependency; UIKit is the
-  system framework, so no bundling is required (unlike the Android Toolbar case).
+  system framework, so no bundling is required.

@@ -26,150 +26,13 @@
 //!    so the state-only backend remains the default for testing and CI.
 
 use super::types::{AndroidHandleKind, AndroidPlatform};
-use crate::core::{ObjectId, PlatformFamily};
-#[cfg(feature = "android-jni")]
-use crate::platform::android_jni::AndroidViewClass;
+use crate::core::PlatformFamily;
 use crate::platform::{DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind};
 use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
 
-impl AndroidPlatform {
-    /// Map a logical handle kind to the Android view class used for its native
-    /// counterpart, or `None` for kinds with no single-view equivalent.
-    #[cfg(feature = "android-jni")]
-    fn view_class_for(kind: AndroidHandleKind) -> Option<AndroidViewClass> {
-        use crate::platform::android_jni::AndroidLogicalKind as L;
-        let logical = match kind {
-            AndroidHandleKind::Window => L::Window,
-            AndroidHandleKind::Button => L::Button,
-            AndroidHandleKind::CheckBox => L::CheckBox,
-            AndroidHandleKind::LineEdit => L::LineEdit,
-            AndroidHandleKind::Label => L::Label,
-            AndroidHandleKind::RadioButton => L::RadioButton,
-            AndroidHandleKind::Slider => L::Slider,
-            AndroidHandleKind::ProgressBar => L::ProgressBar,
-            AndroidHandleKind::ComboBox => L::ComboBox,
-            AndroidHandleKind::ListBox => L::ListBox,
-            AndroidHandleKind::Panel => L::Panel,
-            AndroidHandleKind::MenuBar => L::MenuBar,
-            AndroidHandleKind::Menu => L::Menu,
-            AndroidHandleKind::MenuItem => L::MenuItem,
-            AndroidHandleKind::ToolBar => L::ToolBar,
-            AndroidHandleKind::StatusBar => L::StatusBar,
-            AndroidHandleKind::MessageBox => L::MessageBox,
-            AndroidHandleKind::FileDialog => L::FileDialog,
-            AndroidHandleKind::ColorDialog => L::ColorDialog,
-            AndroidHandleKind::FontDialog => L::FontDialog,
-            AndroidHandleKind::SpinBox => L::SpinBox,
-            AndroidHandleKind::ListView => L::ListView,
-            AndroidHandleKind::ScrollArea => L::ScrollArea,
-            // Container / input kinds added for the Round-2/3 native work.
-            // Android has no single-View equivalent for these, so they map to
-            // the logical kinds that `view_class_for` resolves to `None`; the
-            // hybrid route keeps them on the self-drawn backend.
-            AndroidHandleKind::GroupBox => L::Panel,
-            AndroidHandleKind::Frame => L::Panel,
-            AndroidHandleKind::TabWidget => L::Panel,
-            AndroidHandleKind::Splitter => L::Panel,
-            AndroidHandleKind::ToggleButton => L::CheckBox,
-            AndroidHandleKind::Calendar
-            | AndroidHandleKind::ScrollBar
-            | AndroidHandleKind::DoubleSpinBox
-            | AndroidHandleKind::FontComboBox
-            | AndroidHandleKind::ContextMenu
-            | AndroidHandleKind::PopupWindow
-            | AndroidHandleKind::InputDialog
-            | AndroidHandleKind::ProgressDialog
-            | AndroidHandleKind::DirectoryDialog
-            | AndroidHandleKind::DatePicker
-            | AndroidHandleKind::TimePicker
-            | AndroidHandleKind::DateTimePicker
-            | AndroidHandleKind::ActivityIndicator => return None,
-            // A generic dialog has no single View equivalent; it maps onto the
-            // logical Dialog kind, which `view_class_for` resolves to None.
-            AndroidHandleKind::Dialog => return None,
-        };
-        crate::platform::android_jni::view_class_for(logical)
-    }
-
-    /// Register a native Android view for a freshly created logical widget.
-    ///
-    /// No-op (returning `None`) when the bridge is uninitialized or the kind has
-    /// no single-view equivalent, so the state backend stays authoritative.
-    #[cfg(feature = "android-jni")]
-    fn attach_view(
-        &self,
-        logical_id: u64,
-        kind: AndroidHandleKind,
-        text: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> Option<crate::core::ObjectId> {
-        let class = Self::view_class_for(kind)?;
-        self.attach_native_view(logical_id, class, text, x, y, width, height)
-    }
-
-    /// Create a logical widget and, when JNI is available, its native view.
-    ///
-    /// This exists in both feature configurations: without `android-jni` it is
-    /// identical to [`Self::insert_widget`], which keeps every `create_*` method
-    /// a single expression and avoids duplicated `#[cfg]` blocks.
-    #[cfg(feature = "android-jni")]
-    fn create_with_native(
-        &self,
-        kind: AndroidHandleKind,
-        text: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> u64 {
-        let id = self.insert_widget(kind, text, x, y, width, height);
-        self.attach_view(id, kind, text, x, y, width, height);
-        id
-    }
-
-    #[cfg(not(feature = "android-jni"))]
-    fn create_with_native(
-        &self,
-        kind: AndroidHandleKind,
-        text: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> u64 {
-        self.insert_widget(kind, text, x, y, width, height)
-    }
-
-    /// Create a combo box or list box: a logical widget plus its native view,
-    /// and an entry in the shared list-data table.
-    fn create_with_list_data(
-        &self,
-        kind: AndroidHandleKind,
-        text: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> u64 {
-        let id = self.create_with_native(kind, text, x, y, width, height);
-        self.list_data.lock().expect("android list data lock poisoned").entry(id).or_default();
-        id
-    }
-
-    /// Whether a logical kind is backed by an `AlertDialog` rather than a `View`.
-    ///
-    /// Dialogs implement `show()`/`dismiss()`/`setMessage()` instead of the
-    /// `View` visibility/text API, so the setters must dispatch on this.
-    #[cfg(feature = "android-jni")]
-    fn is_dialog_kind(&self, logical_id: u64) -> bool {
-        matches!(self.kind_of(logical_id), Some(AndroidHandleKind::MessageBox))
-    }
-}
+impl AndroidPlatform {}
 
 impl Platform for AndroidPlatform {
     fn as_any(&self) -> &dyn std::any::Any {
@@ -279,19 +142,12 @@ impl Platform for AndroidPlatform {
 
     /// Release every registry entry the backend holds for `widget_id`.
     ///
-    /// Android keeps three per-widget side tables beyond the authoritative
-    /// `BackendState` record: the shared list storage (`list_data`, used by
-    /// ComboBox/ListBox), the native-view id mapping (`native_views`, only under
-    /// `android-jni`) and menu bookkeeping (`menus`). All of them must be purged,
+    /// Android keeps one per-widget side table beyond the authoritative
+    /// `BackendState` record: the menu bookkeeping (`menus`). It must be purged,
     /// otherwise a UI rebuilt in a create/destroy loop would leak one entry per
-    /// discarded widget. Each lock is scoped to its own statement so no two
-    /// guards are ever held at the same time, and no JNI call is made here.
+    /// discarded widget. The lock is scoped to its own statement so no two guards
+    /// are held at the same time.
     fn destroy_widget(&self, widget_id: u64) -> bool {
-        self.list_data.lock().expect("android list data lock poisoned").remove(&widget_id);
-
-        #[cfg(feature = "android-jni")]
-        self.native_views.lock().expect("android native views lock poisoned").remove(&widget_id);
-
         {
             let mut menus = self.menus.lock().expect("android menus lock poisoned");
             menus.attached_menu_bar.remove(&widget_id);
@@ -312,320 +168,46 @@ impl Platform for AndroidPlatform {
     // ─── Widget creation ─────────────────────────────────────────────────
 
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        self.create_with_native(AndroidHandleKind::Window, title, x, y, width, height)
+        self.insert_widget(AndroidHandleKind::Window, title, x, y, width, height)
     }
 
-    fn create_button(
-        &self,
-        parent: u64,
-        text: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> u64 {
-        if self.kind_of(parent).is_none() {
-            return 0;
-        }
-        self.create_with_native(AndroidHandleKind::Button, text, x, y, width, height)
-    }
-
-    fn create_checkbox(
-        &self,
-        parent: u64,
-        text: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> u64 {
-        if self.kind_of(parent).is_none() {
-            return 0;
-        }
-        self.create_with_native(AndroidHandleKind::CheckBox, text, x, y, width, height)
-    }
-
-    fn create_line_edit(
-        &self,
-        parent: u64,
-        text: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> u64 {
-        if self.kind_of(parent).is_none() {
-            return 0;
-        }
-        self.create_with_native(AndroidHandleKind::LineEdit, text, x, y, width, height)
-    }
-
-    fn create_label(
-        &self,
-        parent: u64,
-        text: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> u64 {
-        if self.kind_of(parent).is_none() {
-            return 0;
-        }
-        self.create_with_native(AndroidHandleKind::Label, text, x, y, width, height)
-    }
-
-    fn create_radio_button(
-        &self,
-        parent: u64,
-        text: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> u64 {
-        if self.kind_of(parent).is_none() {
-            return 0;
-        }
-        self.create_with_native(AndroidHandleKind::RadioButton, text, x, y, width, height)
-    }
-
-    fn create_slider(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        if self.kind_of(parent).is_none() {
-            return 0;
-        }
-        self.create_with_native(AndroidHandleKind::Slider, "Slider", x, y, width, height)
-    }
-
-    fn create_progress_bar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        if self.kind_of(parent).is_none() {
-            return 0;
-        }
-        self.create_with_native(AndroidHandleKind::ProgressBar, "ProgressBar", x, y, width, height)
-    }
-
-    fn create_combo_box(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        if self.kind_of(parent).is_none() {
-            return 0;
-        }
-        self.create_with_list_data(AndroidHandleKind::ComboBox, "ComboBox", x, y, width, height)
-    }
-
-    fn combo_box_add_item(&self, combo_box: u64, text: &str) -> bool {
-        if !matches!(self.kind_of(combo_box), Some(AndroidHandleKind::ComboBox)) {
-            return false;
-        }
-        let mut data = self.list_data.lock().expect("android list data lock poisoned");
-        let entry = data.entry(combo_box).or_default();
-        entry.items.push(text.to_string());
-        #[cfg(feature = "android-jni")]
-        let is_first_item = entry.items.len() == 1;
-        drop(data);
-
-        // Mirror the appended item onto the native Spinner adapter when present
-        // so the native view and logical state stay in sync.
-        #[cfg(feature = "android-jni")]
-        if let Some(jni_id) = self.native_view_of(combo_box) {
-            if !crate::platform::android_jni::append_spinner_item(jni_id, text, is_first_item) {
-                log::warn!(
-                    "[android] combo_box_add_item({combo_box}): native adapter update failed"
-                );
-            }
-        }
-
-        true
-    }
-
-    fn combo_box_clear_items(&self, combo_box: u64) -> bool {
-        if !matches!(self.kind_of(combo_box), Some(AndroidHandleKind::ComboBox)) {
-            return false;
-        }
-        let mut data = self.list_data.lock().expect("android list data lock poisoned");
-        if let Some(entry) = data.get_mut(&combo_box) {
-            entry.items.clear();
-            entry.current_index = None;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn combo_box_set_current_index(&self, combo_box: u64, index: usize) -> bool {
-        if !matches!(self.kind_of(combo_box), Some(AndroidHandleKind::ComboBox)) {
-            return false;
-        }
-        let mut data = self.list_data.lock().expect("android list data lock poisoned");
-        if let Some(entry) = data.get_mut(&combo_box) {
-            if index < entry.items.len() {
-                entry.current_index = Some(index);
-                return true;
-            }
-        }
-        false
-    }
-
-    fn combo_box_current_index(&self, combo_box: u64) -> Option<usize> {
-        if !matches!(self.kind_of(combo_box), Some(AndroidHandleKind::ComboBox)) {
-            return None;
-        }
-        let data = self.list_data.lock().expect("android list data lock poisoned");
-        data.get(&combo_box).and_then(|entry| entry.current_index)
-    }
-
-    fn combo_box_item_count(&self, combo_box: u64) -> usize {
-        if !matches!(self.kind_of(combo_box), Some(AndroidHandleKind::ComboBox)) {
-            return 0;
-        }
-        let data = self.list_data.lock().expect("android list data lock poisoned");
-        data.get(&combo_box).map(|entry| entry.items.len()).unwrap_or(0)
-    }
-
-    fn combo_box_item_text(&self, combo_box: u64, index: usize) -> Option<String> {
-        if !matches!(self.kind_of(combo_box), Some(AndroidHandleKind::ComboBox)) {
-            return None;
-        }
-        let data = self.list_data.lock().expect("android list data lock poisoned");
-        data.get(&combo_box).and_then(|entry| entry.items.get(index).cloned())
-    }
-
-    fn create_list_box(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        if self.kind_of(parent).is_none() {
-            return 0;
-        }
-        self.create_with_list_data(AndroidHandleKind::ListBox, "ListBox", x, y, width, height)
-    }
-
-    fn list_box_add_item(&self, list_box: u64, text: &str) -> bool {
-        if !matches!(self.kind_of(list_box), Some(AndroidHandleKind::ListBox)) {
-            return false;
-        }
-        let mut data = self.list_data.lock().expect("android list data lock poisoned");
-        let entry = data.entry(list_box).or_default();
-        entry.items.push(text.to_string());
-        drop(data);
-
-        #[cfg(feature = "android-jni")]
-        if let Some(jni_id) = self.native_view_of(list_box) {
-            if !crate::platform::android_jni::append_list_item(jni_id, &[text]) {
-                log::warn!("[android] list_box_add_item({list_box}): native list update failed");
-            }
-        }
-
-        true
-    }
-
-    fn list_box_remove_item(&self, list_box: u64, index: usize) -> bool {
-        if !matches!(self.kind_of(list_box), Some(AndroidHandleKind::ListBox)) {
-            return false;
-        }
-        let mut data = self.list_data.lock().expect("android list data lock poisoned");
-        let entry = match data.get_mut(&list_box) {
-            Some(e) => e,
-            None => return false,
-        };
-        if index >= entry.items.len() {
-            return false;
-        }
-        entry.items.remove(index);
-        if let Some(cur) = entry.current_index {
-            if cur == index {
-                entry.current_index = None;
-            } else if cur > index {
-                entry.current_index = Some(cur - 1);
-            }
-        }
-        true
-    }
-
-    fn list_box_clear_items(&self, list_box: u64) -> bool {
-        if !matches!(self.kind_of(list_box), Some(AndroidHandleKind::ListBox)) {
-            return false;
-        }
-        let mut data = self.list_data.lock().expect("android list data lock poisoned");
-        if let Some(entry) = data.get_mut(&list_box) {
-            entry.items.clear();
-            entry.current_index = None;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn list_box_set_current_index(&self, list_box: u64, index: usize) -> bool {
-        if !matches!(self.kind_of(list_box), Some(AndroidHandleKind::ListBox)) {
-            return false;
-        }
-        let mut data = self.list_data.lock().expect("android list data lock poisoned");
-        if let Some(entry) = data.get_mut(&list_box) {
-            if index < entry.items.len() {
-                entry.current_index = Some(index);
-                return true;
-            }
-        }
-        false
-    }
-
-    fn list_box_current_index(&self, list_box: u64) -> Option<usize> {
-        if !matches!(self.kind_of(list_box), Some(AndroidHandleKind::ListBox)) {
-            return None;
-        }
-        let data = self.list_data.lock().expect("android list data lock poisoned");
-        data.get(&list_box).and_then(|entry| entry.current_index)
-    }
-
-    fn list_box_item_count(&self, list_box: u64) -> usize {
-        if !matches!(self.kind_of(list_box), Some(AndroidHandleKind::ListBox)) {
-            return 0;
-        }
-        let data = self.list_data.lock().expect("android list data lock poisoned");
-        data.get(&list_box).map(|entry| entry.items.len()).unwrap_or(0)
-    }
-
-    fn list_box_item_text(&self, list_box: u64, index: usize) -> Option<String> {
-        if !matches!(self.kind_of(list_box), Some(AndroidHandleKind::ListBox)) {
-            return None;
-        }
-        let data = self.list_data.lock().expect("android list data lock poisoned");
-        data.get(&list_box).and_then(|entry| entry.items.get(index).cloned())
-    }
-
-    fn create_panel(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        if self.kind_of(parent).is_none() {
-            return 0;
-        }
-        self.create_with_native(AndroidHandleKind::Panel, "Panel", x, y, width, height)
-    }
+    // ─── Menu model ──────────────────────────────────────────────────────
+    //
+    // These are NOT control construction. Android has no standalone menu-bar or
+    // menu *View*: the host Activity owns the menu and materialises it through the
+    // platform's own `onCreateOptionsMenu` / `onOptionsItemSelected` callbacks. What
+    // lives here is the in-process model that maps a Rust-side menu tree onto that
+    // callback surface, plus an injectable trigger queue so the library's own menu
+    // widget can report activations without a UI toolkit of its own.
+    //
+    // They therefore survive the self-drawing change, exactly as on iOS: the
+    // library paints the menu *appearance*, while the host still owns the menu
+    // *identity* the OS asks about. `capabilities().native_menu` stays `false`,
+    // because no OS menu object is created here.
 
     fn create_menu_bar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
         if !matches!(self.kind_of(parent), Some(AndroidHandleKind::Window)) {
             return 0;
         }
-        // Android has no standalone native menu-bar View; the menu is modelled
-        // as in-process data consumed by the host Activity's own menu.
         self.insert_widget(AndroidHandleKind::MenuBar, "MenuBar", x, y, width, height)
     }
 
     fn create_menu(&self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        // A menu must hang off a menu bar or another menu, matching the
-        // Harmony/Wayland contract.
+        // A menu hangs off a menu bar or another menu.
         if !matches!(
             self.kind_of(parent),
-            Some(AndroidHandleKind::MenuBar | AndroidHandleKind::Menu)
+            Some(AndroidHandleKind::MenuBar) | Some(AndroidHandleKind::Menu)
         ) {
             return 0;
         }
-        let id = self.insert_widget(AndroidHandleKind::Menu, text, x, y, width, height);
-
-        let mut menus = self.menus.lock().expect("android menus lock poisoned");
-        menus.menu_children.entry(parent).or_default().push(id);
-        drop(menus);
-
-        // Android menus are modelled as in-process data and rendered by the host
-        // Activity's own `onCreateOptionsMenu`; there is no per-item native View
-        // to create here, so the logical handle is the complete representation.
-        id
+        self.insert_widget(AndroidHandleKind::Menu, text, x, y, width, height)
     }
 
+    /// Binds `menu_bar` to `window` as that window's menu.
+    ///
+    /// Both ids and their kinds are validated, so a caller cannot attach a menu bar
+    /// to something that is not a window (or attach a non-menu-bar), which would make
+    /// the host ask a widget for a menu it does not have.
     fn attach_menu_bar_to_window(&self, window: u64, menu_bar: u64) -> bool {
         if !matches!(self.kind_of(window), Some(AndroidHandleKind::Window)) {
             return false;
@@ -686,462 +268,22 @@ impl Platform for AndroidPlatform {
         self.state.inject_widget_trigger_event(widget_id, kind)
     }
 
-    fn create_tool_bar(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        if self.kind_of(parent).is_none() {
-            return 0;
-        }
-        // `androidx.appcompat.widget.Toolbar` belongs to the AndroidX support
-        // library and is not guaranteed on every device, so the toolbar stays a
-        // logical region the host Activity populates.
-        self.insert_widget(AndroidHandleKind::ToolBar, "ToolBar", x, y, width, height)
-    }
-
-    fn create_status_bar(
-        &self,
-        parent: u64,
-        text: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> u64 {
-        if self.kind_of(parent).is_none() {
-            return 0;
-        }
-        self.create_with_native(AndroidHandleKind::StatusBar, text, x, y, width, height)
-    }
-
-    fn create_message_box(
-        &self,
-        parent: u64,
-        title: &str,
-        text: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> u64 {
-        if self.kind_of(parent).is_none() {
-            return 0;
-        }
-        let combined = format!("{}: {}", title, text);
-        let id = self.insert_widget(AndroidHandleKind::MessageBox, &combined, x, y, width, height);
-        // Create a real `AlertDialog` when the bridge is ready; the dialog object
-        // is registered under the same id so show/hide/text forward to it.
-        #[cfg(feature = "android-jni")]
-        if self.jni_available() {
-            if let Some(jni_id) = crate::platform::android_jni::create_native_dialog(title, text) {
-                self.set_native_view(id, jni_id);
-            } else {
-                log::warn!("[android] create_message_box({id}): native AlertDialog not created");
-            }
-        }
-        id
-    }
-
-    fn create_file_dialog(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        if self.kind_of(parent).is_none() {
-            return 0;
-        }
-        // Android has no file-picker View: selection is an Activity operation.
-        // The logical handle records the request, and when the bridge holds an
-        // Activity we launch ACTION_OPEN_DOCUMENT through it (see
-        // `android_jni::launch_file_dialog`). The picker result is delivered to
-        // the host Activity's own callback. A non-Activity Context cannot do
-        // this; the bridge logs that explicitly instead of failing silently.
-        let id =
-            self.insert_widget(AndroidHandleKind::FileDialog, "FileDialog", x, y, width, height);
-        #[cfg(feature = "android-jni")]
-        if self.jni_available() {
-            // Empty MIME type selects `*/*`; callers that need a filter can
-            // drive `launch_file_dialog` directly.
-            if !crate::platform::android_jni::launch_file_dialog("") {
-                log::info!(
-                    "[android] create_file_dialog({id}): ACTION_OPEN_DOCUMENT not launched \
-                     (see the preceding [android-jni] diagnostic)"
-                );
-            }
-        }
-        id
-    }
-
-    fn create_color_dialog(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        if self.kind_of(parent).is_none() {
-            return 0;
-        }
-        // Android has no platform color picker; the host app supplies one.
-        let id =
-            self.insert_widget(AndroidHandleKind::ColorDialog, "ColorDialog", x, y, width, height);
-        #[cfg(feature = "android-jni")]
-        if self.jni_available() {
-            log::info!(
-                "[android] create_color_dialog({id}): logical only — Android has no platform \
-                 color picker, the host app must provide one"
-            );
-        }
-        id
-    }
-
-    fn create_font_dialog(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        if self.kind_of(parent).is_none() {
-            return 0;
-        }
-        // Android has no platform font picker; the host app supplies one.
-        let id =
-            self.insert_widget(AndroidHandleKind::FontDialog, "FontDialog", x, y, width, height);
-        #[cfg(feature = "android-jni")]
-        if self.jni_available() {
-            log::info!(
-                "[android] create_font_dialog({id}): logical only — Android has no platform \
-                 font picker, the host app must provide one"
-            );
-        }
-        id
-    }
-
-    fn create_spin_box(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        if self.kind_of(parent).is_none() {
-            return 0;
-        }
-        self.create_with_native(AndroidHandleKind::SpinBox, "SpinBox", x, y, width, height)
-    }
-
-    fn create_list_view(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        if self.kind_of(parent).is_none() {
-            return 0;
-        }
-        self.create_with_list_data(AndroidHandleKind::ListView, "ListView", x, y, width, height)
-    }
-
-    fn create_scroll_area(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        if self.kind_of(parent).is_none() {
-            return 0;
-        }
-        self.create_with_native(AndroidHandleKind::ScrollArea, "ScrollArea", x, y, width, height)
-    }
-    fn create_group_box(
-        &self,
-        parent: ObjectId,
-        title: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        if self.state.kind_of(parent).is_none() {
-            return 0;
-        }
-        self.state.create_widget(AndroidHandleKind::GroupBox, title, x, y, width, height)
-    }
-    fn create_frame(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
-        if self.state.kind_of(parent).is_none() {
-            return 0;
-        }
-        self.state.create_widget(AndroidHandleKind::Frame, "Frame", x, y, width, height)
-    }
-    fn create_tab_widget(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        if self.state.kind_of(parent).is_none() {
-            return 0;
-        }
-        self.state.create_widget(AndroidHandleKind::TabWidget, "TabWidget", x, y, width, height)
-    }
-    fn create_splitter(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        if self.state.kind_of(parent).is_none() {
-            return 0;
-        }
-        self.state.create_widget(AndroidHandleKind::Splitter, "Splitter", x, y, width, height)
-    }
-    fn create_toggle_button(
-        &self,
-        parent: ObjectId,
-        text: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        if self.state.kind_of(parent).is_none() {
-            return 0;
-        }
-        self.state.create_widget(AndroidHandleKind::ToggleButton, text, x, y, width, height)
-    }
-    fn create_calendar(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        if self.state.kind_of(parent).is_none() {
-            return 0;
-        }
-        self.state.create_widget(AndroidHandleKind::Calendar, "Calendar", x, y, width, height)
-    }
-    fn create_scroll_bar(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        if self.state.kind_of(parent).is_none() {
-            return 0;
-        }
-        self.state.create_widget(AndroidHandleKind::ScrollBar, "ScrollBar", x, y, width, height)
-    }
-    fn create_double_spin_box(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        if self.state.kind_of(parent).is_none() {
-            return 0;
-        }
-        self.state.create_widget(
-            AndroidHandleKind::DoubleSpinBox,
-            "DoubleSpinBox",
-            x,
-            y,
-            width,
-            height,
-        )
-    }
-    fn create_font_combo_box(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        if self.state.kind_of(parent).is_none() {
-            return 0;
-        }
-        self.state.create_widget(
-            AndroidHandleKind::FontComboBox,
-            "FontComboBox",
-            x,
-            y,
-            width,
-            height,
-        )
-    }
-    fn create_context_menu(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        if self.state.kind_of(parent).is_none() {
-            return 0;
-        }
-        self.state.create_widget(AndroidHandleKind::ContextMenu, "ContextMenu", x, y, width, height)
-    }
-    fn create_popup_window(
-        &self,
-        parent: ObjectId,
-        title: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        if self.state.kind_of(parent).is_none() {
-            return 0;
-        }
-        self.state.create_widget(AndroidHandleKind::PopupWindow, title, x, y, width, height)
-    }
-    fn create_dialog(
-        &self,
-        parent: ObjectId,
-        title: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        if self.state.kind_of(parent).is_none() {
-            return 0;
-        }
-        self.state.create_widget(AndroidHandleKind::Dialog, title, x, y, width, height)
-    }
-    fn create_input_dialog(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        if self.state.kind_of(parent).is_none() {
-            return 0;
-        }
-        self.state.create_widget(AndroidHandleKind::InputDialog, "Input", x, y, width, height)
-    }
-    fn create_progress_dialog(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        if self.state.kind_of(parent).is_none() {
-            return 0;
-        }
-        self.state.create_widget(AndroidHandleKind::ProgressDialog, "Progress", x, y, width, height)
-    }
-    fn create_directory_dialog(
-        &self,
-        parent: ObjectId,
-        title: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        if self.state.kind_of(parent).is_none() {
-            return 0;
-        }
-        self.state.create_widget(AndroidHandleKind::DirectoryDialog, title, x, y, width, height)
-    }
-    fn create_date_picker(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        if self.state.kind_of(parent).is_none() {
-            return 0;
-        }
-        self.state.create_widget(AndroidHandleKind::DatePicker, "DatePicker", x, y, width, height)
-    }
-    fn create_time_picker(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        if self.state.kind_of(parent).is_none() {
-            return 0;
-        }
-        self.state.create_widget(AndroidHandleKind::TimePicker, "TimePicker", x, y, width, height)
-    }
-    fn create_date_time_picker(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        if self.state.kind_of(parent).is_none() {
-            return 0;
-        }
-        self.state.create_widget(
-            AndroidHandleKind::DateTimePicker,
-            "DateTimePicker",
-            x,
-            y,
-            width,
-            height,
-        )
-    }
-    fn create_activity_indicator(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        if self.state.kind_of(parent).is_none() {
-            return 0;
-        }
-        self.state.create_widget(
-            AndroidHandleKind::ActivityIndicator,
-            "ActivityIndicator",
-            x,
-            y,
-            width,
-            height,
-        )
-    }
-
     // ─── Widget manipulation ─────────────────────────────────────────────
 
     fn show_widget(&self, widget_id: u64) {
         self.state.set_visible(widget_id, true);
-
-        #[cfg(feature = "android-jni")]
-        if let Some(jni_id) = self.native_view_of(widget_id) {
-            if self.is_dialog_kind(widget_id) {
-                crate::platform::android_jni::set_native_dialog_visible(jni_id, true);
-            } else {
-                crate::platform::android_jni::set_native_view_visibility(jni_id, true);
-            }
-        }
     }
 
     fn hide_widget(&self, widget_id: u64) {
         self.state.set_visible(widget_id, false);
-
-        #[cfg(feature = "android-jni")]
-        if let Some(jni_id) = self.native_view_of(widget_id) {
-            if self.is_dialog_kind(widget_id) {
-                crate::platform::android_jni::set_native_dialog_visible(jni_id, false);
-            } else {
-                crate::platform::android_jni::set_native_view_visibility(jni_id, false);
-            }
-        }
     }
 
     fn set_widget_geometry(&self, widget_id: u64, x: i32, y: i32, width: u32, height: u32) {
         self.state.set_geometry(widget_id, x, y, width, height);
-
-        #[cfg(feature = "android-jni")]
-        if let Some(jni_id) = self.native_view_of(widget_id) {
-            crate::platform::android_jni::set_native_view_bounds(jni_id, x, y, width, height);
-        }
     }
 
     fn set_widget_text(&self, widget_id: u64, text: &str) {
         self.state.set_text(widget_id, text);
-
-        #[cfg(feature = "android-jni")]
-        if let Some(jni_id) = self.native_view_of(widget_id) {
-            if matches!(self.kind_of(widget_id), Some(AndroidHandleKind::MessageBox)) {
-                // A dialog's body is its message, not a `View` text field.
-                crate::platform::android_jni::set_native_dialog_message(jni_id, text);
-            } else {
-                crate::platform::android_jni::set_native_view_text(jni_id, text);
-            }
-        }
     }
 
     fn get_widget_text(&self, widget_id: u64) -> String {
@@ -1150,11 +292,6 @@ impl Platform for AndroidPlatform {
 
     fn set_widget_enabled(&self, widget_id: u64, enabled: bool) {
         self.state.set_enabled(widget_id, enabled);
-
-        #[cfg(feature = "android-jni")]
-        if let Some(jni_id) = self.native_view_of(widget_id) {
-            crate::platform::android_jni::set_native_view_enabled(jni_id, enabled);
-        }
     }
 
     fn is_widget_enabled(&self, widget_id: u64) -> bool {
@@ -1163,11 +300,6 @@ impl Platform for AndroidPlatform {
 
     fn set_widget_visible(&self, widget_id: u64, visible: bool) {
         self.state.set_visible(widget_id, visible);
-
-        #[cfg(feature = "android-jni")]
-        if let Some(jni_id) = self.native_view_of(widget_id) {
-            crate::platform::android_jni::set_native_view_visibility(jni_id, visible);
-        }
     }
 
     fn is_widget_visible(&self, widget_id: u64) -> bool {
@@ -1228,8 +360,9 @@ impl crate::platform::contract::MobilePlatformExtension for AndroidPlatform {
 
     fn attach_to_native_view(&self, native_handle: usize) -> bool {
         // The handle is the host Activity's Java `Context` reference. Store it as
-        // a GlobalRef so `create_native_view` can construct Android Views on any
-        // later thread; without it the state-only path stays active.
+        // a GlobalRef so a later platform request (a document picker, say) can
+        // resolve an `Activity` from any thread; without it this host cannot
+        // serve such requests at all.
         #[cfg(feature = "android-jni")]
         {
             if native_handle == 0 || !crate::platform::android_jni::is_initialized() {
@@ -1270,119 +403,37 @@ mod tests {
         assert_eq!(platform.family(), PlatformFamily::Mobile);
     }
 
+    /// A control id must never address something the host did not create.
+    ///
+    /// This replaces a test that asserted the opposite — that a `create_button` under
+    /// a valid window produced a live id — because the host no longer builds
+    /// controls. Asserting `0` for both a bad *and* a good parent is what makes the
+    /// answer meaningful: the id is absent, not merely parent-sensitive.
     #[test]
-    fn android_platform_button_requires_valid_parent() {
+    fn control_members_report_absence_for_every_parent() {
         let platform = AndroidPlatform::new();
         platform.init();
 
-        // Attempt to create button without valid parent should fail
-        let button_id = platform.create_button(999, "Button", 0, 0, 80, 44);
-        assert_eq!(button_id, 0);
+        assert_eq!(platform.create_button(999, "Button", 0, 0, 80, 44), 0);
 
-        // Create window as parent
         let window_id = platform.create_window("Window", 0, 0, 320, 568);
         assert_ne!(window_id, 0);
-
-        // Now button creation should succeed
-        let button_id = platform.create_button(window_id, "Button", 0, 0, 80, 44);
-        assert_ne!(button_id, 0);
+        assert_eq!(platform.create_button(window_id, "Button", 0, 0, 80, 44), 0);
     }
 
+    /// The per-control list storage went with the controls that backed it, so these
+    /// members must report absence rather than accept writes into a model nothing
+    /// can read.
     #[test]
-    fn android_platform_combo_box_items() {
+    fn combo_box_data_members_report_absence() {
         let platform = AndroidPlatform::new();
         platform.init();
 
         let window_id = platform.create_window("Window", 0, 0, 320, 568);
-        assert_ne!(window_id, 0);
-
-        let combo_id = platform.create_combo_box(window_id, 0, 0, 200, 40);
-        assert_ne!(combo_id, 0);
-
-        assert!(platform.combo_box_add_item(combo_id, "Item 1"));
-        assert!(platform.combo_box_add_item(combo_id, "Item 2"));
-        assert!(platform.combo_box_add_item(combo_id, "Item 3"));
-
-        assert_eq!(platform.combo_box_item_count(combo_id), 3);
-        assert_eq!(platform.combo_box_item_text(combo_id, 0), Some("Item 1".to_string()));
-        assert!(platform.combo_box_set_current_index(combo_id, 1));
-        assert_eq!(platform.combo_box_current_index(combo_id), Some(1));
-
-        assert!(platform.combo_box_clear_items(combo_id));
-        assert_eq!(platform.combo_box_item_count(combo_id), 0);
-    }
-
-    #[cfg(feature = "android-jni")]
-    #[test]
-    fn android_platform_degrades_to_state_without_jvm() {
-        // Without a stored JavaVM the native view path must be skipped and the
-        // logical state handle must remain authoritative (honest degradation).
-        let platform = AndroidPlatform::new();
-        platform.init();
-        assert!(!platform.jni_available());
-
-        let window_id = platform.create_window("Window", 0, 0, 320, 568);
-        assert_ne!(window_id, 0);
-        assert!(platform.native_view_of(window_id).is_none());
-
-        let button = platform.create_button(window_id, "Button", 0, 0, 80, 44);
-        assert_ne!(button, 0);
-        assert!(platform.native_view_of(button).is_none());
-
-        // State-backed property roundtrips must still work.
-        platform.set_widget_text(button, "Updated");
-        assert_eq!(platform.get_widget_text(button), "Updated");
-        platform.set_widget_enabled(button, false);
-        assert!(!platform.is_widget_enabled(button));
-        platform.hide_widget(button);
-        assert!(!platform.is_widget_visible(button));
-    }
-
-    #[cfg(feature = "android-jni")]
-    #[test]
-    fn android_view_class_mapping_is_complete_for_native_kinds() {
-        // Every handle kind that maps to a concrete Android widget must resolve
-        // to exactly one view class; dialog/menu kinds intentionally map to None.
-        let native_kinds = [
-            AndroidHandleKind::Button,
-            AndroidHandleKind::Label,
-            AndroidHandleKind::StatusBar,
-            AndroidHandleKind::LineEdit,
-            AndroidHandleKind::CheckBox,
-            AndroidHandleKind::RadioButton,
-            AndroidHandleKind::Slider,
-            AndroidHandleKind::ProgressBar,
-            AndroidHandleKind::ComboBox,
-            AndroidHandleKind::ListBox,
-            AndroidHandleKind::ListView,
-            AndroidHandleKind::ScrollArea,
-            AndroidHandleKind::SpinBox,
-            AndroidHandleKind::Panel,
-            AndroidHandleKind::Window,
-        ];
-        for kind in native_kinds {
-            assert!(
-                AndroidPlatform::view_class_for(kind).is_some(),
-                "{kind:?} should map to a native view"
-            );
-        }
-
-        let logical_only = [
-            AndroidHandleKind::MenuBar,
-            AndroidHandleKind::Menu,
-            AndroidHandleKind::MenuItem,
-            AndroidHandleKind::ToolBar,
-            AndroidHandleKind::MessageBox,
-            AndroidHandleKind::FileDialog,
-            AndroidHandleKind::ColorDialog,
-            AndroidHandleKind::FontDialog,
-        ];
-        for kind in logical_only {
-            assert!(
-                AndroidPlatform::view_class_for(kind).is_none(),
-                "{kind:?} has no standalone native view and must map to None"
-            );
-        }
+        assert_eq!(platform.create_combo_box(window_id, 0, 0, 200, 40), 0);
+        assert!(!platform.combo_box_add_item(window_id, "Item 1"));
+        assert_eq!(platform.combo_box_item_count(window_id), 0);
+        assert!(!platform.combo_box_clear_items(window_id));
     }
 
     #[test]

@@ -13,25 +13,7 @@ macro_rules! impl_dialog_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.texts.insert(widget_id, title.to_string());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, title.to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::Dialog,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::Dialog, parent, title, x, y, width, height)
         }
         #[cfg(not(alloc_frugal))]
         fn create_message_box(
@@ -44,25 +26,28 @@ macro_rules! impl_dialog_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.texts.insert(widget_id, text.to_string());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, title.to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::MessageBox,
-                },
+            let id = self.mount_widget_of_kind(
+                WidgetKind::MessageBox,
+                parent,
+                title,
+                x,
+                y,
+                width,
+                height,
             );
-            widget_id
+            // A message box carries two strings; the factory seeds the title, so the
+            // body is written through the property contract afterwards. Writing it
+            // here — rather than leaving the parameter unused — is what makes the
+            // dialog show the message the caller passed.
+            if id != 0 {
+                crate::widget::capability::write_widget_property_by_id(
+                    id,
+                    "text",
+                    crate::widget::capability::CapabilityValue::String(text.to_string()),
+                )
+                .ok();
+            }
+            id
         }
         #[cfg(not(alloc_frugal))]
         fn create_file_dialog(
@@ -74,25 +59,7 @@ macro_rules! impl_dialog_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.texts.insert(widget_id, title.to_string());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, title.to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::FileDialog,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::FileDialog, parent, title, x, y, width, height)
         }
         #[cfg(not(alloc_frugal))]
         fn create_color_dialog(
@@ -104,25 +71,7 @@ macro_rules! impl_dialog_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.texts.insert(widget_id, title.to_string());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, title.to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::ColorDialog,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::ColorDialog, parent, title, x, y, width, height)
         }
         #[cfg(not(alloc_frugal))]
         fn create_font_dialog(
@@ -134,25 +83,7 @@ macro_rules! impl_dialog_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.texts.insert(widget_id, title.to_string());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, title.to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::FontDialog,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::FontDialog, parent, title, x, y, width, height)
         }
         #[cfg(not(alloc_frugal))]
         fn create_popup_window(
@@ -164,25 +95,7 @@ macro_rules! impl_dialog_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.texts.insert(widget_id, title.to_string());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, title.to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::PopupWindow,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::PopupWindow, parent, title, x, y, width, height)
         }
         #[cfg(not(alloc_frugal))]
         fn create_wizard(
@@ -194,25 +107,7 @@ macro_rules! impl_dialog_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.texts.insert(widget_id, title.to_string());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, title.to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::Wizard,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(WidgetKind::Wizard, parent, title, x, y, width, height)
         }
         #[cfg(not(alloc_frugal))]
         fn create_directory_dialog(
@@ -224,25 +119,15 @@ macro_rules! impl_dialog_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            let widget_id = self.alloc_widget_id();
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.texts.insert(widget_id, title.to_string());
-            state.enabled.insert(widget_id, true);
-            state.visible.insert(widget_id, true);
-            state.ime_enabled.insert(widget_id, false);
-            state.accessibility_names.insert(widget_id, title.to_string());
-            state.widget_properties.insert(
-                widget_id,
-                CustomWidgetProperties {
-                    parent: Some(parent),
-                    x,
-                    y,
-                    width,
-                    height,
-                    widget_kind: WidgetKind::DirectoryDialog,
-                },
-            );
-            widget_id
+            self.mount_widget_of_kind(
+                WidgetKind::DirectoryDialog,
+                parent,
+                title,
+                x,
+                y,
+                width,
+                height,
+            )
         }
     };
 }
