@@ -394,6 +394,8 @@ impl WidgetProperties for ListView {
                 self.set_view_mode(expect_view_mode(value)?);
                 Ok(())
             }
+            "has_model" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "row_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }

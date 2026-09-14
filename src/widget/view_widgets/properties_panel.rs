@@ -12,7 +12,11 @@ use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 use std::collections::HashMap;
 
 /// How a property is represented and edited inside a [`PropertiesPanel`].
@@ -277,6 +281,36 @@ impl Widget for PropertiesPanel {
         crate::core::Size::new(300, 400)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `PropertiesPanel`'s property contract.
+///
+/// Read semantics are carried over unchanged from the centralised
+/// `access_read_view.in.rs` dispatch, so callers see the same value shape as
+/// before; the count now comes from the panel's real entries instead of the
+/// placeholder default. `property_count` is derived from the entry list and has
+/// no setter, so writes are refused with
+/// [`CapabilityAccessError::ReadOnlyProperty`].
+impl WidgetProperties for PropertiesPanel {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "property_count" => Ok(CapabilityValue::UInt(self.properties().len() as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            // Derived from the entry list, which owns it.
+            "property_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["property_count", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for PropertiesPanel {

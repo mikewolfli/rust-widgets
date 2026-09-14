@@ -11,7 +11,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::expect_usize;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Events emitted by NavigationStack when the page stack changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,6 +62,12 @@ impl NavigationStack {
         self.pages.push(page);
         self.navigation_changed.emit(NavigationEvent::Pushed);
         self.base.request_redraw();
+    }
+
+    /// Returns the index of the current (topmost) page, or `None` when the
+    /// stack is empty.
+    pub fn current_page_index(&self) -> Option<usize> {
+        self.pages.len().checked_sub(1)
     }
 
     /// Pops the topmost page from the stack and returns it.
@@ -154,6 +165,50 @@ impl Widget for NavigationStack {
         crate::core::Size::new(400, 600)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `NavigationStack`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_dialog.in.rs` / `access_write_dialog.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before. `page_count` is derived from
+/// the page stack, so it is readable but read-only.
+impl WidgetProperties for NavigationStack {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "page_count" => Ok(CapabilityValue::UInt(self.page_count() as u64)),
+            "current_page" => match self.current_page_index() {
+                Some(index) => Ok(CapabilityValue::UInt(index as u64)),
+                None => Ok(CapabilityValue::Null),
+            },
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            // The stack has no random-access setter: pages move only through
+            // `push` / `pop`, so an out-of-range index is refused rather than
+            // silently ignored, and a valid one is reached by popping down to it.
+            "current_page" => {
+                let target = expect_usize(value)?;
+                if target >= self.page_count() {
+                    return Err(CapabilityAccessError::UnsupportedOnWidget);
+                }
+                while self.page_count() > target + 1 {
+                    self.pop();
+                }
+                Ok(())
+            }
+            "page_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["page_count", "current_page", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for NavigationStack {

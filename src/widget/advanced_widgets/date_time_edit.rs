@@ -8,6 +8,7 @@ use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack};
 use crate::widget::advanced_widgets::{date_edit::Date, time_edit::Time};
+use crate::widget::capability::coercion::{expect_bool, expect_datetime, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -302,7 +303,21 @@ impl WidgetProperties for DateTimeEdit {
     }
 
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
-        base_property_set(self, name, value)
+        match name {
+            "datetime" => {
+                self.set_datetime(expect_datetime(value)?);
+                Ok(())
+            }
+            "display_format" => {
+                self.set_display_format(expect_string(value)?);
+                Ok(())
+            }
+            "calendar_popup" => {
+                self.set_calendar_popup(expect_bool(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
     }
 
     fn property_names(&self) -> &'static [&'static str] {

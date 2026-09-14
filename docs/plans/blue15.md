@@ -1150,12 +1150,12 @@ Step 10 Phase F            上层与文档同步（含视觉基线重生）
 
 | Phase | 状态 | 完成率 | 证据 |
 |---|---|---:|---|
-| A 门控收敛 | ✅ 完成 | **100%** | 门控字面量 1512→0；OS 门禁 0；`profile.rs` 建立；desktop/embedded/mini/gpu 四档构建全绿 |
+| A 门控收敛 | ✅ 完成 | **100%** | 门控字面量 1512→0；OS 门禁 0；`profile.rs` 建立；desktop/embedded/mini 三档构建全绿（`gpu` 单独不是可测试档位，见下）|
 | **C-0 as_draw_mut 桥接补齐** | ✅ 完成 | **100%** | 167 个 `Draw` 类型全部可绘画（零例外）；`impl_draw_bridge!` 宏 + `every_factory_widget_can_be_painted` |
-| **C-1 属性层重建** | ✅ 完成 | **100%** | **96 个 `impl WidgetProperties`**（全显式手写）；167 kind 全部可达；新增契约测试 |
+| **C-1 属性层重建** | ✅ 完成 | **100%** | **156 个 `impl WidgetProperties`**（全显式手写）；**4 条机械门禁测试**证明：工厂可造控件 100% 有契约 / 共享 kind 100% 可反查 / 发布名与 `set` 语义一致 / schema 与契约同名；**legacy 死路径（18 文件、535 arm）已删除**，`access.rs` 1498 → 1177 行 |
 | **C 控件语义落地 + 两路径合并** | ✅ 完成 | **100%** | **166 个 `create_*` 均挂载真实控件**；`CustomControlState` 影子状态删除；路由恒为 `CustomRequired` |
 | B trait 去控件化 | ✅ 完成 | **100%** | `Platform` 必需方法 75 → **6**；控件方法改为诚实默认 |
-| **C' QA 门禁重写（§2.8）** | ✅ 完成 | **100%** | **14 个门禁全部实跑 PASS**（新增 `check_single_creation_mechanism.sh`，并注入假回归验证其能失败）|
+| **C' QA 门禁重写（§2.8）** | ✅ 完成 | **100%** | **16 个门禁全部实跑 PASS**（新增 `check_single_creation_mechanism.sh` 并注入假回归验证其能失败；`check_jni_signatures.sh` 与 `check_apple_native.sh` 由 FAIL 修复为 PASS）|
 | **D 删除原生构造** | ✅ 完成 | **100%** | **全部 10 个后端**清零；`fn create_*` 606 → **76**（全部为 trait 声明）；`src/platform` 43151 → **22010** 行 |
 | **D-5 `portable` 后端** | ✅ 完成 | **100%** | `platform/portable/` 建立；R-3 帧缓冲复用落地并有测试；`mini` 由它承载 |
 | **D-6 Cargo 依赖清理（原则 #63）** | ✅ 完成 | **100%** | `objc-foundation` 经 grep + `cargo tree -i` 双重取证后删除；`gtk`/`webkit2gtk`/`cocoa`/`objc`/`objc2-ui-kit` 经取证均仍在用，**保留并登记理由** |
@@ -1189,12 +1189,44 @@ $ cargo check --target x86_64-unknown-linux-gnu --features linux-gtk            
 | **macOS surface resize 不重绘**（BLUE14 F-5 复发） | 重写后的 Apple 门禁 `[B]` 报出 | `setFrame:` → `setFrame:display:` |
 | **cross-module 共享单例无共享锁** | `embedded_target_fps_clamps` 随机失败；**HEAD 基线也失败**（git stash 对比） | 新增 `pub(crate) embedded_test_guard()`，两处改用它；8 次连跑稳定 |
 | `embedded::flags` 把 `!os_window` 拌进“调用方要求降级” | `test_buffer_size` 在 `embedded` 下必失败 | 拆分为 `caller_requested_reduction()`；预算由策略表给 |
-| 属性派发 fall-through 过宽 | `geometry` 只读判定被旧表推翻 | 仅 `UnsupportedOnWidget` 才委托旧路径 |
+| 属性派发 fall-through 过宽 | `geometry` 只读判定被旧表推翻 | 仅 `UnsupportedOnWidget` 才委托旧路径（**第六轮已整体删除该回退**）|
 | `dispatcher.rs` 的 `get_control_backend` 4 个定义同时存在 | `E0428` | 收敛为 1 |
 | `Menu` 默认可见 | 弹出的菜单无法创建为关闭态 | `Menu::new` 置为隐藏；7 个上下文菜单测试 |
 | 两个门禁在**正确代码上必然失败** | `orderOut:` 全仓从未存在（`git log -S` 取证）；`[D]` 阀值来自已删 setter | 按实情重定判据，并写明取证过程 |
 
-### C' QA 门禁本轮实跑结果（12/12 PASS）
+### 第六轮补充：C-1 的真实收尾（完成率更正）
+
+> 第五轮把 C-1 记为 100%，但那是按**当时已迁移的 96 个控件**统计的。
+> 新增 4 条**工厂驱动**的机械门禁后，缺口才现形（详见 `log-20260914-1.md` §12）。
+
+| 缺陷 | 取证（门禁首跑） | 处置 |
+|---|---|---|
+| **59 个控件无 `WidgetProperties` 契约** | `every_factory_widget_declares_a_property_contract` 列出 59 个名字 | 分 3 批补齐，共 156 个实现 |
+| **10 个共享 `WidgetKind` 无反查依据** | `every_shared_kind_has_a_tie_break` 列出 10 组 | `widget_matches_capability` 分支 7 → 20 + 14 个导入 |
+| **42 处发布名回 `UnknownProperty`** | `no_published_property_answers_unknown_when_written` | 7 个接真实 setter，其余显式 `ReadOnlyProperty` |
+| **155/155 张 schema 表缺 `visible`/`geometry`** | `schema_and_contract_publish_the_same_names` | 脚本补齐 **613 条**；删掉掩盖它的 24 项 skip-list |
+| **`Arc` 可写属性不在发布清单** | schema 声明 6 个，契约只发布 1 个 | 补 5 个 getter 并全部发布 |
+| **`TabBar.current_index` 读→写→读不闭合** | `get` 返回 `Null`，`set` 用 `expect_usize` 拒 `Null` | 新增 `clear_current_index()`；`Null` = 清除选中 |
+| **legacy 死路径仍在（535 arm）** | 探针证明零控件可达后才删 | 删 18 个 `.in.rs` + 4 个函数；`access.rs` 1498 → 1177 行 |
+| **Android JNI 绑定与 Rust 导出脱节（20 处）** | `check_jni_signatures.sh` 由 PASS 变 FAIL | 删 Java 陈旧声明（依据 §D-4），重写为 7 个握手/诊断方法 |
+| **`check_apple_native.sh` 测的是已删的旧架构** | iOS 探针断言存在 `UIButton`/`UILabel`/`UITextField`——正是 §D-4 删掉的东西 | **判据方向反转**：`no_backend_owned_window` + `self_painted_no_native_views`，把「旧行为消失」变成正向断言 |
+| **16 处手写 `properties_dyn`** | 与宏展开逐字比对，全是重复的 `Some(self)` | 全部换为 `impl_widget_property_hooks!();` |
+| **文档引用了不存在的 `schema_names`** | `grep -rn "fn schema_names" src/` → 0 | 重写该段：说明为何不能从 schema 派生（`const fn` 无法投影 slice），实际靠测试兜底 |
+| `DataGrid` 缺分页属性（审计 H）| **复核后为误报**：全库零 `page_size`/`total_pages`，本库无分页模型 | 不实现；凭空造 API 与「精炼」相反 |
+
+> **教训（写入原则）：完成率必须由机械门禁背书，而非由「已迁移清单」背书。**
+> 后者只能证明「做过的做对了」，不能证明「该做的都做了」。
+
+#### 登记：`gpu` 不是可独立测试的档位（原则 #19，不冒充修复）
+
+`cargo test --features gpu --lib` 报 **63 failed**。用 `git stash` 回到 `HEAD` 取证：
+**`gpu` 在 HEAD 上连编译都不过**（70 个 error，`WidgetFactory::new_with_defaults` 找不到）。
+原因：`gpu = ["dep:wgpu"]` 只开 wgpu，不含 `full_widgets`/`controls-custom`，
+而 `control_backend/custom/tests.rs` 依赖后者。
+计划 §5.2 的验证矩阵本身也只是 `desktop|embedded|mini`。
+**已完成矩阵以这三档为准**（另加 9 个真实 feature 组合的 `--all-targets` 构建）。
+
+### C' QA 门禁本轮实跑结果（15/15 PASS）
 
 ```text
 check_profiles.sh                             PASS

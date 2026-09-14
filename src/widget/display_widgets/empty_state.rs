@@ -12,7 +12,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
+use crate::widget::capability::coercion::expect_string;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Fallback icon used when no icon has been explicitly set.
 const DEFAULT_EMPTY_ICON: &str = "📭";
@@ -115,6 +120,23 @@ impl EmptyState {
         !self.action_text.is_empty()
     }
 
+    /// Returns the descriptive message shown below the title.
+    ///
+    /// The `description` property reads this rather than [`EmptyState::message`]
+    /// because the schema publishes `message` as the widget's title line and
+    /// `description` as the explanatory sentence below it.
+    pub fn description(&self) -> &str {
+        &self.message
+    }
+
+    /// Sets the descriptive message shown below the title.
+    ///
+    /// The `description` property writes through here, mirroring
+    /// [`EmptyState::set_message`].
+    pub fn set_description(&mut self, description: &str) {
+        self.set_message(description);
+    }
+
     /// Computes the rectangle for the action button, if it is visible.
     fn action_button_rect(&self) -> Option<Rect> {
         if !self.has_action() {
@@ -140,6 +162,43 @@ impl Widget for EmptyState {
         crate::core::Size::new(300, 200)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `EmptyState`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before. The legacy dispatch served
+/// `message` / `description` for another `WidgetKind` entirely, so neither name was
+/// ever routed here; both are now backed by this control's real state, with
+/// `message` mapped to the title line and `description` to the sentence beneath it.
+impl WidgetProperties for EmptyState {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "message" => Ok(CapabilityValue::String(self.title().to_string())),
+            "description" => Ok(CapabilityValue::String(self.description().to_string())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "message" => {
+                self.set_title(&expect_string(value)?);
+                Ok(())
+            }
+            "description" => {
+                self.set_description(&expect_string(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["message", "description", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for EmptyState {

@@ -704,6 +704,7 @@ impl WidgetProperties for FreeformShapeWidget {
                 self.set_stroke_width(expect_u32(value)?);
                 Ok(())
             }
+            "path_kind" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }

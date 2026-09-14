@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::Event;
+use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, Signal1};
@@ -419,19 +420,7 @@ impl Widget for DataGrid {
         Some(self)
     }
 
-    /// Returns this widget as its property contract.
-    fn properties_dyn(
-        &self,
-    ) -> Option<&dyn crate::widget::capability::properties_trait::WidgetProperties> {
-        Some(self)
-    }
-
-    /// Mutable counterpart to `properties_dyn`.
-    fn properties_dyn_mut(
-        &mut self,
-    ) -> Option<&mut dyn crate::widget::capability::properties_trait::WidgetProperties> {
-        Some(self)
-    }
+    impl_widget_property_hooks!();
 }
 
 /// `DataGrid`'s property contract.

@@ -13,7 +13,12 @@ use crate::core::ObjectId;
 use crate::core::{Color, Font, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::widget::capability::coercion::{expect_bool, expect_string};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Default delay (ms) before the tooltip appears after mouse enters the target.
 const DEFAULT_SHOW_DELAY_MS: u64 = 500;
@@ -115,6 +120,30 @@ impl Tooltip {
         self.visible
     }
 
+    /// Reports the tooltip's own shown-state.
+    ///
+    /// Deliberately distinct from [`Widget::is_visible`], which this widget
+    /// overrides to hide `BaseWidget::visible`. The property contract publishes
+    /// the inherited `visible` for the control, so the popup state is published
+    /// under the `shown` name instead; without this separation the base property
+    /// would be unreachable.
+    pub fn is_shown(&self) -> bool {
+        self.visible
+    }
+
+    /// Sets the tooltip's own shown-state, scheduling nothing.
+    ///
+    /// The counterpart to [`is_shown`](Self::is_shown); it routes through the
+    /// existing `show` / `hide` accessors so the pending-timer bookkeeping stays
+    /// consistent.
+    pub fn set_shown(&mut self, shown: bool) {
+        if shown {
+            self.show();
+        } else {
+            self.hide();
+        }
+    }
+
     /// Sets the target widget id that this tooltip is attached to.
     /// The tooltip responds to mouse enter/leave events associated with
     /// this target by scheduling show/hide.
@@ -173,6 +202,47 @@ impl Widget for Tooltip {
         crate::core::Size::new(100, 30)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `Tooltip`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_dialog.in.rs` / `access_write_dialog.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before.
+///
+/// The legacy table served a `visible` arm for this kind, but there is a name
+/// collision to resolve: this widget overrides [`Widget::is_visible`] to return its
+/// *popup* state, so a `visible` arm here would shadow the shared `visible` that
+/// [`base_property_get`] serves — the two would be indistinguishable and the base
+/// one unreachable. The popup state is therefore published as `shown`, and bare
+/// `visible` keeps meaning what it means for every other control.
+impl WidgetProperties for Tooltip {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "text" => Ok(CapabilityValue::String(self.text().to_string())),
+            "shown" => Ok(CapabilityValue::Bool(self.is_shown())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "text" => {
+                self.set_text(&expect_string(value)?);
+                Ok(())
+            }
+            "shown" => {
+                self.set_shown(expect_bool(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["text", "shown", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl EventHandler for Tooltip {

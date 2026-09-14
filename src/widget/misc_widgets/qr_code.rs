@@ -13,7 +13,12 @@ use std::hash::{Hash, Hasher};
 use crate::core::{Color, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::widget::capability::coercion::{expect_string, expect_usize};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Size of the QR code matrix (rows × columns).
 const MATRIX_SIZE: u32 = 21;
@@ -53,6 +58,12 @@ impl QRCode {
     /// Returns the current module size in pixels.
     pub fn module_size(&self) -> u32 {
         self.module_size
+    }
+
+    /// Returns the rendered side length of the whole symbol in pixels,
+    /// including the quiet zone on both edges.
+    pub fn size(&self) -> u32 {
+        (MATRIX_SIZE + self.quiet_zone * 2) * self.module_size
     }
 
     /// Sets the size of each module (cell) in logical pixels.
@@ -114,6 +125,46 @@ impl Widget for QRCode {
         crate::core::Size::new(150, 150)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `QRCode`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_dialog.in.rs` / `access_write_dialog.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before. `size` reports the rendered
+/// symbol extent in pixels; a write is carried to the module size, which is the
+/// only knob the matrix has, and the value then reads back rounded to a whole
+/// number of modules. Negative writes are clamped to one pixel per module rather
+/// than rejected, matching `set_module_size`.
+impl WidgetProperties for QRCode {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "data" => Ok(CapabilityValue::String(self.data().to_string())),
+            "size" => Ok(CapabilityValue::UInt(self.size() as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "data" => {
+                self.set_data(&expect_string(value)?);
+                Ok(())
+            }
+            "size" => {
+                let requested = expect_usize(value)? as u32;
+                let module = (requested / (MATRIX_SIZE + self.quiet_zone * 2)).max(1);
+                self.set_module_size(module);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["data", "size", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for QRCode {

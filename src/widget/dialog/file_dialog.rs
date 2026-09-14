@@ -8,7 +8,9 @@ use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::tr;
 
+use crate::impl_widget_property_hooks;
 use crate::property_names_of;
+use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -179,19 +181,7 @@ impl Widget for FileDialog {
         Some(self)
     }
 
-    /// Returns this widget as its property contract.
-    fn properties_dyn(
-        &self,
-    ) -> Option<&dyn crate::widget::capability::properties_trait::WidgetProperties> {
-        Some(self)
-    }
-
-    /// Mutable counterpart to `properties_dyn`.
-    fn properties_dyn_mut(
-        &mut self,
-    ) -> Option<&mut dyn crate::widget::capability::properties_trait::WidgetProperties> {
-        Some(self)
-    }
+    impl_widget_property_hooks!();
 }
 
 /// `FileDialog`'s property contract.
@@ -210,7 +200,17 @@ impl WidgetProperties for FileDialog {
     }
 
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
-        base_property_set(self, name, value)
+        match name {
+            "title" => {
+                self.set_title(expect_string(value)?);
+                Ok(())
+            }
+            "modal" => {
+                self.set_modal(expect_bool(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
     }
 
     fn property_names(&self) -> &'static [&'static str] {

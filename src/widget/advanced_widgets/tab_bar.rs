@@ -233,6 +233,9 @@ impl TabBar {
     }
 
     /// Sets the current tab index.
+    ///
+    /// An index outside the tab list is ignored; use [`Self::clear_current_index`]
+    /// to deliberately select nothing.
     pub fn set_current_index(&mut self, index: usize) {
         if index < self.tabs.len() {
             let changed = self.current_index != Some(index);
@@ -241,6 +244,18 @@ impl TabBar {
                 self.current_changed.emit(index);
                 self.base.request_redraw();
             }
+        }
+    }
+
+    /// Clears the selection so no tab is current.
+    ///
+    /// The property contract needs this: `current_index` reads as `Null` when
+    /// nothing is selected, so a writer must be able to restore that state or the
+    /// read → write → read round-trip would not close.
+    pub fn clear_current_index(&mut self) {
+        if self.current_index.take().is_some() {
+            self.base.changed.emit();
+            self.base.request_redraw();
         }
     }
 
@@ -539,10 +554,18 @@ impl WidgetProperties for TabBar {
 
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         match name {
-            "current_index" => {
-                self.set_current_index(expect_usize(value)?);
-                Ok(())
-            }
+            "current_index" => match value {
+                // `Null` mirrors what `get` publishes when no tab is selected, so
+                // the two directions agree on the meaning of an absent index.
+                CapabilityValue::Null => {
+                    self.clear_current_index();
+                    Ok(())
+                }
+                other => {
+                    self.set_current_index(expect_usize(other)?);
+                    Ok(())
+                }
+            },
             "closable" => {
                 self.set_closable(expect_bool(value)?);
                 Ok(())
@@ -559,6 +582,7 @@ impl WidgetProperties for TabBar {
                 self.set_tab_max_width(expect_usize(value)? as u32);
                 Ok(())
             }
+            "tab_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }

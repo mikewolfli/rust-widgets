@@ -9,7 +9,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::{expect_u32, expect_usize};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 use super::data_source::IncrementalTableDataSource;
 
@@ -237,6 +242,91 @@ impl Widget for VirtualTable {
         crate::core::Size::new(400, 300)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `VirtualTable`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_view.in.rs` / `access_write_view.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before. `VirtualTable` reports
+/// `WidgetKind::Table`, shared with `TableWidget` and `DataGrid`; dispatching on
+/// the concrete type here is what keeps the three contracts separate.
+impl WidgetProperties for VirtualTable {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "has_data_source" => Ok(CapabilityValue::Bool(self.has_data_source())),
+            "row_count" => Ok(CapabilityValue::UInt(self.row_count() as u64)),
+            "column_count" => Ok(CapabilityValue::UInt(self.column_count() as u64)),
+            "scroll_row" => Ok(CapabilityValue::UInt(self.scroll_row() as u64)),
+            "scroll_column" => Ok(CapabilityValue::UInt(self.scroll_column() as u64)),
+            "row_height" => Ok(CapabilityValue::UInt(self.row_height() as u64)),
+            "column_width" => Ok(CapabilityValue::UInt(self.column_width() as u64)),
+            "overscan_rows" => Ok(CapabilityValue::UInt(self.overscan_rows() as u64)),
+            "overscan_columns" => Ok(CapabilityValue::UInt(self.overscan_columns() as u64)),
+            "visible_window" => {
+                let (row_start, row_len, column_start, column_len) = self.visible_window();
+                Ok(CapabilityValue::String(format!(
+                    "rows={row_start}..{},{},columns={column_start}..{}",
+                    row_start.saturating_add(row_len),
+                    row_len,
+                    column_start.saturating_add(column_len)
+                )))
+            }
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "scroll_row" => {
+                self.set_scroll_row(expect_usize(value)?);
+                Ok(())
+            }
+            "scroll_column" => {
+                self.set_scroll_column(expect_usize(value)?);
+                Ok(())
+            }
+            "row_height" => {
+                self.set_row_height(expect_u32(value)?);
+                Ok(())
+            }
+            "column_width" => {
+                self.set_column_width(expect_u32(value)?);
+                Ok(())
+            }
+            "overscan_rows" => {
+                self.set_overscan_rows(expect_usize(value)?);
+                Ok(())
+            }
+            "overscan_columns" => {
+                self.set_overscan_columns(expect_usize(value)?);
+                Ok(())
+            }
+            // Derived counts and the visible-window summary are computed from the
+            // data source and layout, so they are refused as read-only rather
+            // than reported as names this control does not know.
+            "has_data_source" | "row_count" | "column_count" | "visible_window" => {
+                Err(CapabilityAccessError::ReadOnlyProperty)
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![
+            "has_data_source",
+            "row_count",
+            "column_count",
+            "scroll_row",
+            "scroll_column",
+            "row_height",
+            "column_width",
+            "overscan_rows",
+            "overscan_columns",
+            BASE_PROPERTY_NAMES
+        ]
+    }
 }
 
 impl EventHandler for VirtualTable {

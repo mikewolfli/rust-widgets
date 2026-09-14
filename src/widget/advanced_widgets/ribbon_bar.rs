@@ -905,6 +905,7 @@ impl WidgetProperties for RibbonBar {
                 self.set_minimized(expect_bool(value)?);
                 Ok(())
             }
+            "tab_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }

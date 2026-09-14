@@ -12,7 +12,12 @@ use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::{expect_bool, expect_string};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Padding inside the dialog.
 const PADDING: i32 = 8;
@@ -38,6 +43,8 @@ pub struct FindReplaceDialog {
     use_regex: bool,
     /// Highlight all matches toggle state.
     highlight_all: bool,
+    /// Whether a search that reaches the end of the document continues from the top.
+    wrap_around: bool,
     /// Whether the dialog is visible.
     visible: bool,
 
@@ -72,6 +79,7 @@ impl FindReplaceDialog {
             whole_word: false,
             use_regex: false,
             highlight_all: false,
+            wrap_around: true,
             visible: false,
             find_next_signal: Signal1::new(),
             find_previous_signal: Signal1::new(),
@@ -157,6 +165,19 @@ impl FindReplaceDialog {
     /// Sets the highlight all toggle.
     pub fn set_highlight_all(&mut self, value: bool) {
         self.highlight_all = value;
+        self.base.request_redraw();
+    }
+
+    // ── Wrap around ──
+
+    /// Returns whether a search wraps around to the start of the document.
+    pub fn is_wrap_around(&self) -> bool {
+        self.wrap_around
+    }
+
+    /// Sets the wrap-around toggle.
+    pub fn set_wrap_around(&mut self, value: bool) {
+        self.wrap_around = value;
         self.base.request_redraw();
     }
 
@@ -271,6 +292,56 @@ impl Widget for FindReplaceDialog {
         crate::core::Size::new(350, 200)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `FindReplaceDialog`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_dialog.in.rs` / `access_write_dialog.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before.
+impl WidgetProperties for FindReplaceDialog {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "find_text" => Ok(CapabilityValue::String(self.find_text().to_string())),
+            "replace_text" => Ok(CapabilityValue::String(self.replace_text().to_string())),
+            "match_case" => Ok(CapabilityValue::Bool(self.is_match_case())),
+            "wrap_around" => Ok(CapabilityValue::Bool(self.is_wrap_around())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "find_text" => {
+                self.set_find_text(&expect_string(value)?);
+                Ok(())
+            }
+            "replace_text" => {
+                self.set_replace_text(&expect_string(value)?);
+                Ok(())
+            }
+            "match_case" => {
+                self.set_match_case(expect_bool(value)?);
+                Ok(())
+            }
+            "wrap_around" => {
+                self.set_wrap_around(expect_bool(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![
+            "find_text",
+            "replace_text",
+            "match_case",
+            "wrap_around",
+            BASE_PROPERTY_NAMES
+        ]
+    }
 }
 
 impl Draw for FindReplaceDialog {

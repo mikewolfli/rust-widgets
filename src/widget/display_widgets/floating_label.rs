@@ -12,7 +12,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::{expect_bool, expect_string};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// A text input with a floating label (Material Design TextInputLayout style).
 ///
@@ -131,6 +136,45 @@ impl Widget for FloatingLabel {
         crate::core::Size::new(200, 40)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `FloatingLabel`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_input.in.rs` / `access_write_input.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before.
+impl WidgetProperties for FloatingLabel {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "text" => Ok(CapabilityValue::String(self.text().to_string())),
+            "placeholder" => Ok(CapabilityValue::String(self.placeholder().to_string())),
+            "focused" => Ok(CapabilityValue::Bool(self.is_focused())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "text" => {
+                self.set_text(expect_string(value)?);
+                Ok(())
+            }
+            "placeholder" => {
+                self.set_placeholder(expect_string(value)?);
+                Ok(())
+            }
+            "focused" => {
+                self.set_focused(expect_bool(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["text", "placeholder", "focused", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for FloatingLabel {

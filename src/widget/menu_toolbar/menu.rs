@@ -352,6 +352,8 @@ impl WidgetProperties for Menu {
                 self.set_title(expect_string(value)?);
                 Ok(())
             }
+            "hovered_index" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }

@@ -188,8 +188,12 @@ mod tests {
     ///
     /// Gated on the full widget set for the same reason the factory itself is:
     /// a stripped profile compiles neither the factory nor the registry of
-    /// constructors this walks.
-    #[cfg(widgets_unstripped)]
+    /// constructors this walks. The attribute must match that sentence — it
+    /// previously said `widgets_unstripped`, which is wider than the factory's own
+    /// `full_widgets` gate, so a build with no device profile (such as
+    /// `--features android`) compiled this test against an absent
+    /// `new_with_defaults`.
+    #[cfg(full_widgets)]
     #[test]
     fn every_factory_widget_can_be_painted() {
         use crate::widget::capability::WidgetFactory;

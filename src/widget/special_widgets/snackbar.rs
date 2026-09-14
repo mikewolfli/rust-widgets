@@ -7,7 +7,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::expect_string;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Snackbar with optional action and progress display.
 pub struct Snackbar {
@@ -127,6 +132,47 @@ impl Widget for Snackbar {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(300, 48)
+    }
+
+    impl_widget_property_hooks!();
+}
+
+/// `Snackbar`'s property contract.
+///
+/// Read semantics are carried over unchanged from the centralised
+/// `access_read_base.in.rs` dispatch. `visible` is deliberately *not* listed
+/// here: the snackbar's own visibility flag hides it through `dismiss`, and the
+/// shared four already publish a `visible` property, so a second name for the
+/// same concept would be ambiguous. `action_label` is owned by `show_with_action`
+/// and has no setter, so writes are refused with
+/// [`CapabilityAccessError::ReadOnlyProperty`].
+impl WidgetProperties for Snackbar {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "message" => Ok(CapabilityValue::String(self.message().to_string())),
+            "action_label" => match self.action_label() {
+                Some(label) => Ok(CapabilityValue::String(label.to_string())),
+                None => Ok(CapabilityValue::Null),
+            },
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "message" => {
+                // `show` clears the action label, so setting a plain message
+                // matches the legacy "message" write, which showed without action.
+                self.show(expect_string(value)?);
+                Ok(())
+            }
+            "action_label" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["message", "action_label", BASE_PROPERTY_NAMES]
     }
 }
 

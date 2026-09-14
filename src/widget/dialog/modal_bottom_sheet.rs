@@ -11,7 +11,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
+use crate::widget::capability::coercion::expect_bool;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Material-style modal bottom sheet widget.
 ///
@@ -65,6 +70,15 @@ impl ModalBottomSheet {
 
     /// Returns whether the sheet is currently visible.
     pub fn is_visible(&self) -> bool {
+        self.is_visible
+    }
+
+    /// Reports the sheet's own visibility flag.
+    ///
+    /// Deliberately distinct from [`Widget::is_visible`], which this widget
+    /// overrides to return the same flag. Keeping the two entry points separate
+    /// lets the property contract call the inherent one unambiguously.
+    pub fn is_sheet_visible(&self) -> bool {
         self.is_visible
     }
 
@@ -160,6 +174,41 @@ impl Widget for ModalBottomSheet {
         crate::core::Size::new(300, 200)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `ModalBottomSheet`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_dialog.in.rs` / `access_write_dialog.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before. `visible` is served by the
+/// inherent accessor rather than the base fallthrough, so a modal sheet's own
+/// show/hide state is what the name reports.
+impl WidgetProperties for ModalBottomSheet {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "visible" => Ok(CapabilityValue::Bool(self.is_sheet_visible())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "visible" => {
+                if expect_bool(value)? {
+                    self.show();
+                } else {
+                    self.hide();
+                }
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["visible", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for ModalBottomSheet {

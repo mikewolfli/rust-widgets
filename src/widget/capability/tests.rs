@@ -469,34 +469,6 @@ fn schema_defaults_are_readable_and_writable_when_declared() {
     let factory = WidgetFactory::new_with_defaults();
     for capability in factory.capabilities() {
         for prop in capability.properties {
-            // Skip properties that are known to be unreadable through path quirks
-            if prop.name == "modal"
-                || prop.name == "title"
-                || prop.name == "label_text"
-                || prop.name == "widget_resizable"
-                || prop.name == "horizontal_scroll_bar_policy"
-                || prop.name == "vertical_scroll_bar_policy"
-                || prop.name == "tab_count"
-                || prop.name == "current_index"
-                || prop.name == "widget_count"
-                || prop.name == "collapsed"
-                || prop.name == "floating"
-                || prop.name == "subwindow_count"
-                || prop.name == "active_subwindow"
-                || prop.name == "view_mode"
-                || prop.name == "text"
-                || prop.name == "placeholder_text"
-                || prop.name == "url"
-                || prop.name == "loading"
-                || prop.name == "title_bar_height"
-                || prop.name == "item_count"
-                || prop.name == "radius"
-                || prop.name == "inner_radius"
-                || prop.name == "has_content"
-                || prop.name == "hovered_index"
-            {
-                continue;
-            }
             if prop.readable {
                 assert!(
                     factory.default_property_value(capability.canonical_name, prop.name).is_ok(),

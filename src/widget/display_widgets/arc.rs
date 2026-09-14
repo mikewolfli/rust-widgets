@@ -61,6 +61,31 @@ impl Arc {
         self.value
     }
 
+    /// Returns the minimum value of the range.
+    pub fn minimum(&self) -> u32 {
+        self.min
+    }
+
+    /// Returns the maximum value of the range.
+    pub fn maximum(&self) -> u32 {
+        self.max
+    }
+
+    /// Returns the total sweep angle in degrees.
+    pub fn sweep_angle(&self) -> u16 {
+        self.sweep_angle
+    }
+
+    /// Returns the arc thickness in pixels.
+    pub fn thickness(&self) -> u32 {
+        self.thickness
+    }
+
+    /// Returns whether the arc is drawn in indeterminate (spinning) mode.
+    pub fn is_indeterminate(&self) -> bool {
+        self.indeterminate
+    }
+
     /// Sets the value, clamped between min and max.
     ///
     /// Emits the `changed` signal when the value actually changes.
@@ -72,6 +97,16 @@ impl Arc {
         self.value = clamped;
         self.base.changed.emit();
         self.base.request_redraw();
+    }
+
+    /// Sets the minimum value of the range, re-clamping the current value.
+    pub fn set_minimum(&mut self, minimum: u32) {
+        self.set_range(minimum, self.max);
+    }
+
+    /// Sets the maximum value of the range, re-clamping the current value.
+    pub fn set_maximum(&mut self, maximum: u32) {
+        self.set_range(self.min, maximum);
     }
 
     /// Sets both minimum and maximum values in one call.
@@ -172,15 +207,18 @@ impl Widget for Arc {
 /// `Arc`'s property contract.
 ///
 /// Read/write semantics are carried over unchanged from the centralised
-/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch.
-///
-/// `thickness`, `sweep_angle` and `indeterminate` are writable but not
-/// readable: the old reader never served them, so they are deliberately absent
-/// from `get` and from the published names rather than invented here.
+/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch. Every name the
+/// `ARC_PROPERTIES` schema publishes as readable is answered here, so the schema
+/// and the contract cannot disagree about what exists.
 impl WidgetProperties for Arc {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "value" => Ok(CapabilityValue::UInt(self.value() as u64)),
+            "minimum" => Ok(CapabilityValue::UInt(self.minimum() as u64)),
+            "maximum" => Ok(CapabilityValue::UInt(self.maximum() as u64)),
+            "thickness" => Ok(CapabilityValue::UInt(self.thickness() as u64)),
+            "sweep_angle" => Ok(CapabilityValue::UInt(self.sweep_angle() as u64)),
+            "indeterminate" => Ok(CapabilityValue::Bool(self.is_indeterminate())),
             _ => base_property_get(self, name),
         }
     }
@@ -189,6 +227,14 @@ impl WidgetProperties for Arc {
         match name {
             "value" => {
                 self.set_value(expect_u32(value)?);
+                Ok(())
+            }
+            "minimum" => {
+                self.set_minimum(expect_u32(value)?);
+                Ok(())
+            }
+            "maximum" => {
+                self.set_maximum(expect_u32(value)?);
                 Ok(())
             }
             "thickness" => {
@@ -208,7 +254,15 @@ impl WidgetProperties for Arc {
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["value", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "value",
+            "minimum",
+            "maximum",
+            "thickness",
+            "sweep_angle",
+            "indeterminate",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 

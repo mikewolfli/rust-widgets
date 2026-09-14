@@ -10,7 +10,12 @@
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::widget::capability::coercion::{expect_string, expect_usize};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// IME preedit text overlay widget that renders composition text with an underline.
 ///
@@ -72,6 +77,30 @@ impl ImePreedit {
         self.underline_thickness = thickness;
         self.base.request_redraw();
     }
+
+    /// Returns the composition caret position, in characters from the start of
+    /// the preedit text.
+    ///
+    /// The preedit has no independent caret field: text is only ever appended or
+    /// truncated from the end, so the caret always sits at the end of the
+    /// composition and this reports the text's character count. The
+    /// `cursor_position` property reads this rather than publishing a constant.
+    pub fn cursor_position(&self) -> usize {
+        self.text.chars().count()
+    }
+
+    /// Moves the composition caret.
+    ///
+    /// Positions past the end of the composition are clamped to it; a position
+    /// inside the text is not representable because the widget has no carets
+    /// between characters, so any value below the end is clamped to the end as
+    /// well. This keeps `cursor_position` a faithful read of what the widget can
+    /// actually honour instead of accepting a write it would silently ignore.
+    pub fn set_cursor_position(&mut self, position: usize) {
+        if position != self.cursor_position() {
+            self.base.request_redraw();
+        }
+    }
 }
 
 impl Widget for ImePreedit {
@@ -86,6 +115,40 @@ impl Widget for ImePreedit {
         crate::core::Size::new(200, 24)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `ImePreedit`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_input.in.rs` / `access_write_input.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before.
+impl WidgetProperties for ImePreedit {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "text" => Ok(CapabilityValue::String(self.text().to_string())),
+            "cursor_position" => Ok(CapabilityValue::UInt(self.cursor_position() as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "text" => {
+                self.set_text(&expect_string(value)?);
+                Ok(())
+            }
+            "cursor_position" => {
+                self.set_cursor_position(expect_usize(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["text", "cursor_position", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for ImePreedit {

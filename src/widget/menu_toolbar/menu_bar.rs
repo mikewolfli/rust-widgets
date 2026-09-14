@@ -162,7 +162,14 @@ impl WidgetProperties for MenuBar {
     }
 
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
-        base_property_set(self, name, value)
+        match name {
+            // The entry vector and the hover/active cursors are owned by the
+            // control's own input handling, so they exist but refuse writes.
+            "entry_count" | "active_index" | "hovered_index" => {
+                Err(CapabilityAccessError::ReadOnlyProperty)
+            }
+            _ => base_property_set(self, name, value),
+        }
     }
 
     fn property_names(&self) -> &'static [&'static str] {

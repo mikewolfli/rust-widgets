@@ -11,7 +11,12 @@
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderCommand, RenderContext};
+use crate::widget::capability::coercion::expect_bool;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Arrow size in pixels from tip to base.
 const ARROW_SIZE: i32 = 10;
@@ -63,6 +68,47 @@ impl Popover {
     /// Returns whether the popover is currently visible.
     pub fn is_visible(&self) -> bool {
         self.visible
+    }
+
+    /// Reports the popover's own shown-state.
+    ///
+    /// Deliberately distinct from [`Widget::is_visible`], which this widget
+    /// overrides to return the popup state. The property contract publishes the
+    /// inherited `visible` for the control, so the popup state is published under
+    /// the `shown` name instead; without this separation the base property would
+    /// be unreachable.
+    pub fn is_shown(&self) -> bool {
+        self.visible
+    }
+
+    /// Sets the popover's shown-state without moving its anchor.
+    ///
+    /// The counterpart to [`is_shown`](Self::is_shown). Showing keeps the existing
+    /// anchor rectangle, so a caller that wants to reposition first uses
+    /// [`show`](Self::show) with the new anchor.
+    pub fn set_shown(&mut self, shown: bool) {
+        if shown {
+            self.show(self.anchor_rect);
+        } else {
+            self.hide();
+        }
+    }
+
+    /// Returns the title of the popover's content widget, or an empty string when
+    /// it has no content.
+    ///
+    /// A `Box<dyn Widget>` exposes no text of its own, so the concrete `Label`
+    /// case is read through a downcast; anything else answers honestly with the
+    /// empty string rather than inventing a rendering.
+    pub fn content_text(&self) -> String {
+        self.content
+            .as_deref()
+            .and_then(
+                crate::widget::capability::coercion::widget_as::<
+                    crate::widget::base_widgets::label::Label,
+                >,
+            )
+            .map_or_else(String::new, |label| label.text().to_string())
     }
 
     /// Sets the content widget displayed inside the popover.
@@ -143,6 +189,48 @@ impl Widget for Popover {
         crate::core::Size::new(200, 150)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `Popover`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_dialog.in.rs` / `access_write_dialog.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before.
+///
+/// The legacy table served a `visible` arm for this kind, but there is a name
+/// collision to resolve: this widget overrides [`Widget::is_visible`] to return its
+/// *popup* state, so a `visible` arm here would shadow the shared `visible` that
+/// [`base_property_get`] serves — the two would be indistinguishable and the base
+/// one unreachable. The popup state is therefore published as `shown`, and bare
+/// `visible` keeps meaning what it means for every other control.
+impl WidgetProperties for Popover {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "shown" => Ok(CapabilityValue::Bool(self.is_shown())),
+            "text" => Ok(CapabilityValue::String(self.content_text())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "shown" => {
+                self.set_shown(expect_bool(value)?);
+                Ok(())
+            }
+            // The text mirrors the content widget, so writing it would either be
+            // dropped by the next layout or require synthesising a `Label` the
+            // caller never asked for. A caller that means to set it installs the
+            // content widget through `set_content`.
+            "text" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["shown", "text", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for Popover {

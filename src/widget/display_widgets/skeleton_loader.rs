@@ -15,7 +15,12 @@
 use crate::core::{Color, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::widget::capability::coercion::{expect_bool, expect_string};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Shape variants for the skeleton placeholder.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -26,6 +31,33 @@ pub enum SkeletonShape {
     Circle(u32),
     /// Single text line placeholder (width).
     TextLine(u32),
+}
+
+/// The string spelling of a [`SkeletonShape`] discriminant, published by the
+/// `shape` property.
+///
+/// The `Rect`/`Circle`/`TextLine` payloads are deliberately left out: the
+/// property names the *kind* of placeholder, matching the token style the other
+/// enum properties use.
+pub fn skeleton_shape_to_str(shape: SkeletonShape) -> &'static str {
+    match shape {
+        SkeletonShape::Rect(..) => "rect",
+        SkeletonShape::Circle(..) => "circle",
+        SkeletonShape::TextLine(..) => "text_line",
+    }
+}
+
+/// Parses the [`skeleton_shape_to_str`] token back into a shape.
+///
+/// A `Rect` without dimensions is not representable, so the parse accepts only
+/// the tokens that name a bare kind and rebuilds the default sizes for them.
+fn expect_skeleton_shape(value: CapabilityValue) -> Result<SkeletonShape, CapabilityAccessError> {
+    match expect_string(value)?.as_str() {
+        "rect" => Ok(SkeletonShape::Rect(200, 20)),
+        "circle" => Ok(SkeletonShape::Circle(20)),
+        "text_line" => Ok(SkeletonShape::TextLine(200)),
+        _ => Err(CapabilityAccessError::TypeMismatch),
+    }
 }
 
 /// Timer ID used to drive the shimmer animation.
@@ -104,6 +136,43 @@ impl Widget for SkeletonLoader {
         crate::core::Size::new(300, 20)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `SkeletonLoader`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before. The legacy table spelled the
+/// animation flag `active`, which is kept as the published name and maps onto
+/// [`SkeletonLoader::is_animated`]; `shape` is published alongside it so the
+/// placeholder kind is describable too.
+impl WidgetProperties for SkeletonLoader {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "active" => Ok(CapabilityValue::Bool(self.is_animated())),
+            "shape" => Ok(CapabilityValue::String(skeleton_shape_to_str(self.shape()).to_string())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "active" => {
+                self.set_animated(expect_bool(value)?);
+                Ok(())
+            }
+            "shape" => {
+                self.set_shape(expect_skeleton_shape(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["active", "shape", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for SkeletonLoader {

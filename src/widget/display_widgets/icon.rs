@@ -11,7 +11,12 @@
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::widget::capability::coercion::{expect_f64, expect_string};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Common icon names for use with the Icon widget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1152,6 +1157,40 @@ impl Widget for Icon {
         crate::core::Size::new(24, 24)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `Icon`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before.
+impl WidgetProperties for Icon {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "icon_name" => Ok(CapabilityValue::String(self.icon().to_string())),
+            "size" => Ok(CapabilityValue::Float(f64::from(self.size()))),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "icon_name" => {
+                self.set_icon(&expect_string(value)?);
+                Ok(())
+            }
+            "size" => {
+                self.set_size(expect_f64(value)? as f32);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["icon_name", "size", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for Icon {

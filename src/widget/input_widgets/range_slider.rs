@@ -12,7 +12,12 @@ use crate::core::{Color, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::expect_f64;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Orientation of the RangeSlider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -129,6 +134,44 @@ impl RangeSlider {
     /// Returns the maximum possible value.
     pub fn max_value(&self) -> f64 {
         self.max_value
+    }
+
+    /// Sets the minimum possible value, keeping the range well formed.
+    ///
+    /// The upper bound is pulled down first when it would otherwise sit below
+    /// the new minimum, so `min_value <= max_value` always holds and the current
+    /// handles stay inside the bounds.
+    pub fn set_min_value(&mut self, min_value: f64) {
+        if !min_value.is_finite() || min_value == self.min_value {
+            return;
+        }
+        self.min_value = min_value;
+        if self.max_value < self.min_value {
+            self.max_value = self.min_value;
+        }
+        self.lower_value = self.lower_value.clamp(self.min_value, self.max_value);
+        self.upper_value = self.upper_value.clamp(self.lower_value, self.max_value);
+        self.emit_range_changed();
+        self.base.request_redraw();
+    }
+
+    /// Sets the maximum possible value, keeping the range well formed.
+    ///
+    /// The lower bound is pushed up first when it would otherwise sit above the
+    /// new maximum, so `min_value <= max_value` always holds and the current
+    /// handles stay inside the bounds.
+    pub fn set_max_value(&mut self, max_value: f64) {
+        if !max_value.is_finite() || max_value == self.max_value {
+            return;
+        }
+        self.max_value = max_value;
+        if self.min_value > self.max_value {
+            self.min_value = self.max_value;
+        }
+        self.lower_value = self.lower_value.clamp(self.min_value, self.max_value);
+        self.upper_value = self.upper_value.clamp(self.lower_value, self.max_value);
+        self.emit_range_changed();
+        self.base.request_redraw();
     }
 
     /// Returns the current step increment.
@@ -250,6 +293,52 @@ impl Widget for RangeSlider {
         crate::core::Size::new(200, 28)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `RangeSlider`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_input.in.rs` / `access_write_input.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before. `lower` and `upper` keep the
+/// clamp-and-snap the widget already applied; `min_value` and `max_value` stay
+/// consistent with each other and with the handles.
+impl WidgetProperties for RangeSlider {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "min_value" => Ok(CapabilityValue::Float(self.min_value())),
+            "max_value" => Ok(CapabilityValue::Float(self.max_value())),
+            "lower" => Ok(CapabilityValue::Float(self.lower_value())),
+            "upper" => Ok(CapabilityValue::Float(self.upper_value())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "min_value" => {
+                self.set_min_value(expect_f64(value)?);
+                Ok(())
+            }
+            "max_value" => {
+                self.set_max_value(expect_f64(value)?);
+                Ok(())
+            }
+            "lower" => {
+                self.set_lower_value(expect_f64(value)?);
+                Ok(())
+            }
+            "upper" => {
+                self.set_upper_value(expect_f64(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["min_value", "max_value", "lower", "upper", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for RangeSlider {

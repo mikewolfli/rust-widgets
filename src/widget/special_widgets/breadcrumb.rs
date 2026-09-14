@@ -7,7 +7,11 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Single breadcrumb segment.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -173,6 +177,38 @@ impl Widget for Breadcrumb {
         crate::core::Size::new(300, 28)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `Breadcrumb`'s property contract.
+///
+/// Read semantics are carried over unchanged from the centralised
+/// `access_read_base.in.rs` dispatch. Both properties are derived counts of the
+/// segment path, so writes are refused with
+/// [`CapabilityAccessError::ReadOnlyProperty`]: the path is changed through
+/// `set_segments` / `push_segment` / `clear_segments`, not one index at a time.
+impl WidgetProperties for Breadcrumb {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "segment_count" => Ok(CapabilityValue::UInt(self.segments().len() as u64)),
+            "selected_index" => match self.selected_index() {
+                Some(index) => Ok(CapabilityValue::UInt(index as u64)),
+                None => Ok(CapabilityValue::Null),
+            },
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "segment_count" | "selected_index" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["segment_count", "selected_index", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl EventHandler for Breadcrumb {

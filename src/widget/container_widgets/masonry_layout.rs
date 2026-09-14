@@ -9,7 +9,12 @@
 use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::widget::capability::coercion::expect_u32;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// An individual item in the masonry layout.
 #[derive(Debug, Clone)]
@@ -113,6 +118,40 @@ impl Widget for MasonryLayout {
         crate::core::Size::new(300, 300)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `MasonryLayout`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_dialog.in.rs` / `access_write_dialog.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before. `item_count` is derived from
+/// the item list, so it is readable but read-only.
+impl WidgetProperties for MasonryLayout {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "column_count" => Ok(CapabilityValue::UInt(self.columns() as u64)),
+            "item_count" => Ok(CapabilityValue::UInt(self.items().len() as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "column_count" => {
+                self.set_columns(expect_u32(value)?);
+                Ok(())
+            }
+            // The item total is implied by how many items were added, so there is
+            // nothing sensible to assign to it.
+            "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["column_count", "item_count", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for MasonryLayout {

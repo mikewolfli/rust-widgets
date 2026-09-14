@@ -11,7 +11,12 @@
 use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::widget::capability::coercion::{expect_bool, expect_f64};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// ProgressCircle widget — a Material-style circular progress indicator.
 ///
@@ -96,6 +101,15 @@ impl ProgressCircle {
         self.stroke_width
     }
 
+    /// Returns the arc thickness published as the `thickness` property.
+    ///
+    /// The widget draws both the track and the progress arc with a single stroke
+    /// width, so `thickness` and [`ProgressCircle::stroke_width`] are the same
+    /// quantity read through the name the schema declares.
+    pub fn thickness(&self) -> f32 {
+        self.stroke_width
+    }
+
     /// Returns the diameter of the progress circle.
     pub fn diameter(&self) -> u32 {
         self.diameter
@@ -142,6 +156,47 @@ impl Widget for ProgressCircle {
         Size::new(self.diameter.max(60), self.diameter.max(60))
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `ProgressCircle`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before. The schema publishes the arc
+/// thickness as `thickness` although the widget draws through a single stroke
+/// width, so the two names address the same field.
+impl WidgetProperties for ProgressCircle {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "value" => Ok(CapabilityValue::Float(f64::from(self.value()))),
+            "thickness" => Ok(CapabilityValue::Float(f64::from(self.thickness()))),
+            "indeterminate" => Ok(CapabilityValue::Bool(self.is_indeterminate())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "value" => {
+                self.set_value(expect_f64(value)? as f32);
+                Ok(())
+            }
+            "thickness" => {
+                self.set_stroke_width(expect_f64(value)? as f32);
+                Ok(())
+            }
+            "indeterminate" => {
+                self.set_indeterminate(expect_bool(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["value", "thickness", "indeterminate", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for ProgressCircle {

@@ -337,6 +337,9 @@ impl WidgetProperties for VirtualList {
                 self.set_overscan(expect_usize(value)?);
                 Ok(())
             }
+            "has_data_source" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "row_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "selected_row" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }

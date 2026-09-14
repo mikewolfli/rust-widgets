@@ -239,6 +239,9 @@ impl WidgetProperties for TreeView {
                     }
                 }
             },
+            "has_model" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "node_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "selected_node" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }

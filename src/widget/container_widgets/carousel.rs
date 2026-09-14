@@ -13,7 +13,12 @@ use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::expect_usize;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Data for a single carousel page.
 pub struct CarouselPage {
@@ -94,6 +99,12 @@ impl Carousel {
     pub fn pages(&self) -> &[CarouselPage] {
         &self.pages
     }
+
+    /// Returns the title of the current page, or an empty string when the
+    /// carousel has no pages.
+    pub fn current_page_title(&self) -> &str {
+        self.current_page().map_or("", |page| page.title.as_str())
+    }
 }
 
 impl Widget for Carousel {
@@ -108,6 +119,45 @@ impl Widget for Carousel {
         crate::core::Size::new(300, 200)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `Carousel`'s property contract.
+///
+/// The legacy dispatch served no properties for this kind, so the published set is
+/// the natural one derived from the widget's own state: the page position, the page
+/// total, and the title of the page currently on screen. There is no wrap-around
+/// mode in `Carousel` — navigation stops at both ends — so no such property is
+/// published rather than one that `get` could not answer honestly. `item_count` and
+/// `current_page_title` are derived, so they are readable but read-only.
+impl WidgetProperties for Carousel {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "current_index" => Ok(CapabilityValue::UInt(self.current() as u64)),
+            "item_count" => Ok(CapabilityValue::UInt(self.page_count() as u64)),
+            "current_page_title" => {
+                Ok(CapabilityValue::String(self.current_page_title().to_string()))
+            }
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            // `set_current` clamps out-of-range indices to the last page, so an
+            // out-of-range write is accepted and lands on the nearest page.
+            "current_index" => {
+                self.set_current(expect_usize(value)?);
+                Ok(())
+            }
+            "item_count" | "current_page_title" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["current_index", "item_count", "current_page_title", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for Carousel {

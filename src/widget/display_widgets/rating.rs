@@ -11,7 +11,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::{expect_f64, expect_u32};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Star rating widget for selecting a rating from 1 to N stars.
 pub struct Rating {
@@ -94,6 +99,47 @@ impl Widget for Rating {
         crate::core::Size::new(120, 24)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `Rating`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before. The widget stores both the
+/// rating and its ceiling as `u32`, while the schema publishes them as `Float` and
+/// `UInt`; `set` therefore rounds a `Float` to the nearest whole star, exactly as
+/// an integral value would have been rounded by the old coercers.
+impl WidgetProperties for Rating {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "value" => Ok(CapabilityValue::Float(f64::from(self.rating()))),
+            "max" => Ok(CapabilityValue::UInt(u64::from(self.max_rating()))),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "value" => {
+                let value = expect_f64(value)?;
+                if !value.is_finite() {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                }
+                self.set_rating(value.round() as u32);
+                Ok(())
+            }
+            "max" => {
+                self.set_max_rating(expect_u32(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["value", "max", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for Rating {
@@ -138,6 +184,8 @@ impl EventHandler for Rating {
         if !self.base.is_enabled() {
             return;
         }
+        // Disabled controls consume nothing, so the base state stays authoritative.
+        self.base.handle_event(event);
         match event {
             Event::MouseRelease { pos, button } => {
                 if *button != 1 {

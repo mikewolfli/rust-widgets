@@ -44,7 +44,31 @@ macro_rules! impl_properties_advanced {
                 readable: true,
                 writable: true,
             },
-        ];
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
+            ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const CALENDAR_PROPERTIES: &[PropertySchema] = &[
@@ -102,7 +126,31 @@ macro_rules! impl_properties_advanced {
                 readable: true,
                 writable: true,
             },
-        ];
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
+            ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const DATE_EDIT_PROPERTIES: &[PropertySchema] = &[
@@ -136,7 +184,31 @@ macro_rules! impl_properties_advanced {
                 readable: true,
                 writable: true,
             },
-        ];
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
+            ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const TIME_EDIT_PROPERTIES: &[PropertySchema] = &[
@@ -164,7 +236,31 @@ macro_rules! impl_properties_advanced {
                 readable: true,
                 writable: true,
             },
-        ];
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
+            ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const RIBBON_BAR_PROPERTIES: &[PropertySchema] = &[
@@ -192,7 +288,31 @@ macro_rules! impl_properties_advanced {
                 readable: true,
                 writable: true,
             },
-        ];
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
+            ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const PIE_MENU_PROPERTIES: &[PropertySchema] = &[
@@ -220,7 +340,31 @@ macro_rules! impl_properties_advanced {
                 readable: false,
                 writable: false,
             },
-        ];
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
+            ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const DATE_TIME_EDIT_PROPERTIES: &[PropertySchema] = &[
@@ -254,6 +398,30 @@ macro_rules! impl_properties_advanced {
                 readable: false,
                 writable: false,
             },
-        ];
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
+            ];
     };
 }

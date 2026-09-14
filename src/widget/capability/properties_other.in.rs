@@ -31,6 +31,30 @@ macro_rules! impl_properties_other {
                 readable: true,
                 writable: true,
             },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -77,6 +101,30 @@ macro_rules! impl_properties_other {
                 readable: true,
                 writable: true,
             },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -111,6 +159,30 @@ macro_rules! impl_properties_other {
                 readable: true,
                 writable: false,
             },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -139,6 +211,30 @@ macro_rules! impl_properties_other {
                 readable: true,
                 writable: true,
             },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -154,6 +250,30 @@ macro_rules! impl_properties_other {
                 value_kind: PropertyValueKind::String,
                 readable: true,
                 writable: true,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
             },
         ];
 
@@ -175,6 +295,24 @@ macro_rules! impl_properties_other {
                 name: "action_label",
                 value_kind: PropertyValueKind::String,
                 readable: true,
+                writable: false,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
                 writable: false,
             },
         ];
@@ -209,6 +347,30 @@ macro_rules! impl_properties_other {
                 name: "selected_marker_id",
                 value_kind: PropertyValueKind::String,
                 readable: true,
+                writable: false,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
                 writable: false,
             },
         ];
@@ -257,6 +419,30 @@ macro_rules! impl_properties_other {
                 readable: true,
                 writable: true,
             },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -271,6 +457,30 @@ macro_rules! impl_properties_other {
                 name: "selected_index",
                 value_kind: PropertyValueKind::UInt,
                 readable: true,
+                writable: false,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
                 writable: false,
             },
         ];
@@ -301,6 +511,30 @@ macro_rules! impl_properties_other {
                 readable: true,
                 writable: true,
             },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -321,6 +555,30 @@ macro_rules! impl_properties_other {
                 name: "selected_id",
                 value_kind: PropertyValueKind::String,
                 readable: true,
+                writable: false,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
                 writable: false,
             },
         ];
@@ -349,6 +607,30 @@ macro_rules! impl_properties_other {
                 name: "selected_count",
                 value_kind: PropertyValueKind::UInt,
                 readable: true,
+                writable: false,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
                 writable: false,
             },
         ];
@@ -391,6 +673,30 @@ macro_rules! impl_properties_other {
                 readable: true,
                 writable: false,
             },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -418,6 +724,30 @@ macro_rules! impl_properties_other {
                 value_kind: PropertyValueKind::UInt,
                 readable: true,
                 writable: true,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
             },
         ];
 
@@ -450,6 +780,30 @@ macro_rules! impl_properties_other {
             PropertySchema {
                 name: "can_go_forward",
                 value_kind: PropertyValueKind::Bool,
+                readable: false,
+                writable: false,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
                 readable: false,
                 writable: false,
             },
@@ -492,6 +846,30 @@ macro_rules! impl_properties_other {
                 readable: true,
                 writable: true,
             },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
         ];
 
         pub(crate) const METER_PROPERTIES: &[PropertySchema] = &[
@@ -513,16 +891,91 @@ macro_rules! impl_properties_other {
                 readable: true,
                 writable: true,
             },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
         ];
 
-        pub(crate) const MINI_CHART_PROPERTIES: &[PropertySchema] = &[PropertySchema {
-            name: "chart_type",
-            value_kind: PropertyValueKind::Enum,
-            readable: true,
-            writable: true,
-        }];
+        pub(crate) const MINI_CHART_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema {
+                name: "chart_type",
+                value_kind: PropertyValueKind::Enum,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
+        ];
 
-        pub(crate) const MINI_CANVAS_PROPERTIES: &[PropertySchema] = &[];
+        pub(crate) const MINI_CANVAS_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
+        ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const CANVAS_PROPERTIES: &[PropertySchema] = &[
@@ -544,15 +997,65 @@ macro_rules! impl_properties_other {
                 readable: true,
                 writable: true,
             },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
         ];
 
         #[cfg(not(alloc_frugal))]
-        pub(crate) const CHART_PROPERTIES: &[PropertySchema] = &[PropertySchema {
-            name: "selected_marker_id",
-            value_kind: PropertyValueKind::String,
-            readable: true,
-            writable: false,
-        }];
+        pub(crate) const CHART_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema {
+                name: "selected_marker_id",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: false,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
+        ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const BADGE_PROPERTIES: &[PropertySchema] = &[
@@ -568,23 +1071,105 @@ macro_rules! impl_properties_other {
                 readable: true,
                 writable: true,
             },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
         ];
 
         #[cfg(not(alloc_frugal))]
-        pub(crate) const SKELETON_LOADER_PROPERTIES: &[PropertySchema] = &[PropertySchema {
-            name: "active",
-            value_kind: PropertyValueKind::Bool,
-            readable: true,
-            writable: true,
-        }];
+        pub(crate) const SKELETON_LOADER_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema {
+                name: "active",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "shape",
+                value_kind: PropertyValueKind::Enum,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
+        ];
 
         #[cfg(not(alloc_frugal))]
-        pub(crate) const FAB_PROPERTIES: &[PropertySchema] = &[PropertySchema {
-            name: "icon",
-            value_kind: PropertyValueKind::String,
-            readable: true,
-            writable: true,
-        }];
+        pub(crate) const FAB_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema {
+                name: "icon",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
+        ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const BOTTOM_NAVIGATION_BAR_PROPERTIES: &[PropertySchema] = &[
@@ -599,6 +1184,30 @@ macro_rules! impl_properties_other {
                 value_kind: PropertyValueKind::UInt,
                 readable: true,
                 writable: true,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
             },
         ];
 
@@ -616,23 +1225,99 @@ macro_rules! impl_properties_other {
                 readable: true,
                 writable: true,
             },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
         ];
 
         #[cfg(not(alloc_frugal))]
-        pub(crate) const APP_BAR_PROPERTIES: &[PropertySchema] = &[PropertySchema {
-            name: "title",
-            value_kind: PropertyValueKind::String,
-            readable: true,
-            writable: true,
-        }];
+        pub(crate) const APP_BAR_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema {
+                name: "title",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
+        ];
 
         #[cfg(not(alloc_frugal))]
-        pub(crate) const MOBILE_DATE_PICKER_PROPERTIES: &[PropertySchema] = &[PropertySchema {
-            name: "selected_date",
-            value_kind: PropertyValueKind::String,
-            readable: true,
-            writable: true,
-        }];
+        pub(crate) const MOBILE_DATE_PICKER_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema {
+                name: "selected_date",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
+        ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const DIVIDER_PROPERTIES: &[PropertySchema] = &[
@@ -647,6 +1332,30 @@ macro_rules! impl_properties_other {
                 value_kind: PropertyValueKind::Float,
                 readable: true,
                 writable: true,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
             },
         ];
 
@@ -664,6 +1373,30 @@ macro_rules! impl_properties_other {
                 readable: true,
                 writable: true,
             },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -679,6 +1412,30 @@ macro_rules! impl_properties_other {
                 value_kind: PropertyValueKind::String,
                 readable: true,
                 writable: true,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
             },
         ];
 
@@ -696,23 +1453,99 @@ macro_rules! impl_properties_other {
                 readable: true,
                 writable: true,
             },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
         ];
 
         #[cfg(not(alloc_frugal))]
-        pub(crate) const COLOR_HISTORY_PROPERTIES: &[PropertySchema] = &[PropertySchema {
-            name: "color_count",
-            value_kind: PropertyValueKind::UInt,
-            readable: true,
-            writable: false,
-        }];
+        pub(crate) const COLOR_HISTORY_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema {
+                name: "color_count",
+                value_kind: PropertyValueKind::UInt,
+                readable: true,
+                writable: false,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
+        ];
 
         #[cfg(not(alloc_frugal))]
-        pub(crate) const COLOR_WELL_PROPERTIES: &[PropertySchema] = &[PropertySchema {
-            name: "color",
-            value_kind: PropertyValueKind::String,
-            readable: true,
-            writable: true,
-        }];
+        pub(crate) const COLOR_WELL_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema {
+                name: "color",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
+        ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const QR_CODE_PROPERTIES: &[PropertySchema] = &[
@@ -727,6 +1560,30 @@ macro_rules! impl_properties_other {
                 value_kind: PropertyValueKind::UInt,
                 readable: true,
                 writable: true,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
             },
         ];
 
@@ -744,15 +1601,65 @@ macro_rules! impl_properties_other {
                 readable: true,
                 writable: true,
             },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
         ];
 
         #[cfg(not(alloc_frugal))]
-        pub(crate) const ADAPTIVE_SCAFFOLD_PROPERTIES: &[PropertySchema] = &[PropertySchema {
-            name: "title",
-            value_kind: PropertyValueKind::String,
-            readable: true,
-            writable: true,
-        }];
+        pub(crate) const ADAPTIVE_SCAFFOLD_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema {
+                name: "title",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
+        ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const SEGMENTED_BUTTON_PROPERTIES: &[PropertySchema] = &[
@@ -766,6 +1673,30 @@ macro_rules! impl_properties_other {
                 name: "segment_count",
                 value_kind: PropertyValueKind::UInt,
                 readable: true,
+                writable: false,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
                 writable: false,
             },
         ];
@@ -783,6 +1714,30 @@ macro_rules! impl_properties_other {
                 value_kind: PropertyValueKind::UInt,
                 readable: true,
                 writable: true,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
             },
         ];
 
@@ -806,6 +1761,30 @@ macro_rules! impl_properties_other {
                 readable: true,
                 writable: true,
             },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -821,6 +1800,30 @@ macro_rules! impl_properties_other {
                 value_kind: PropertyValueKind::Float,
                 readable: true,
                 writable: true,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
             },
         ];
 
@@ -844,6 +1847,30 @@ macro_rules! impl_properties_other {
                 readable: true,
                 writable: true,
             },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -860,15 +1887,65 @@ macro_rules! impl_properties_other {
                 readable: true,
                 writable: true,
             },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
         ];
 
         #[cfg(not(alloc_frugal))]
-        pub(crate) const REFRESH_CONTROL_PROPERTIES: &[PropertySchema] = &[PropertySchema {
-            name: "refreshing",
-            value_kind: PropertyValueKind::Bool,
-            readable: true,
-            writable: true,
-        }];
+        pub(crate) const REFRESH_CONTROL_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema {
+                name: "refreshing",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
+        ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const DATE_RANGE_PICKER_PROPERTIES: &[PropertySchema] = &[
@@ -884,79 +1961,336 @@ macro_rules! impl_properties_other {
                 readable: true,
                 writable: true,
             },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
         ];
 
         #[cfg(not(alloc_frugal))]
-        pub(crate) const MATERIAL_NAVIGATION_RAIL_PROPERTIES: &[PropertySchema] =
-            &[PropertySchema {
+        pub(crate) const MATERIAL_NAVIGATION_RAIL_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema {
                 name: "selected_index",
                 value_kind: PropertyValueKind::UInt,
                 readable: true,
                 writable: true,
-            }];
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
+        ];
 
         #[cfg(not(alloc_frugal))]
-        pub(crate) const TAB_VIEW_PROPERTIES: &[PropertySchema] = &[PropertySchema {
-            name: "selected_index",
-            value_kind: PropertyValueKind::UInt,
-            readable: true,
-            writable: true,
-        }];
+        pub(crate) const TAB_VIEW_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema {
+                name: "selected_index",
+                value_kind: PropertyValueKind::UInt,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
+        ];
 
         #[cfg(not(alloc_frugal))]
-        pub(crate) const SWIPE_TO_DISMISS_PROPERTIES: &[PropertySchema] = &[PropertySchema {
-            name: "is_dismissed",
-            value_kind: PropertyValueKind::Bool,
-            readable: true,
-            writable: false,
-        }];
+        pub(crate) const SWIPE_TO_DISMISS_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema {
+                name: "is_dismissed",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: false,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
+        ];
 
         #[cfg(not(alloc_frugal))]
-        pub(crate) const LINE_CHART_PROPERTIES: &[PropertySchema] = &[PropertySchema {
-            name: "stroke_width",
-            value_kind: PropertyValueKind::Float,
-            readable: true,
-            writable: true,
-        }];
+        pub(crate) const LINE_CHART_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema {
+                name: "stroke_width",
+                value_kind: PropertyValueKind::Float,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
+        ];
 
         #[cfg(not(alloc_frugal))]
-        pub(crate) const SPARKLINE_PROPERTIES: &[PropertySchema] = &[PropertySchema {
-            name: "stroke_width",
-            value_kind: PropertyValueKind::Float,
-            readable: true,
-            writable: true,
-        }];
+        pub(crate) const SPARKLINE_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema {
+                name: "stroke_width",
+                value_kind: PropertyValueKind::Float,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
+        ];
 
         #[cfg(not(alloc_frugal))]
-        pub(crate) const BAR_CHART_PROPERTIES: &[PropertySchema] = &[PropertySchema {
-            name: "bar_spacing",
-            value_kind: PropertyValueKind::Float,
-            readable: true,
-            writable: true,
-        }];
+        pub(crate) const BAR_CHART_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema {
+                name: "bar_spacing",
+                value_kind: PropertyValueKind::Float,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
+        ];
 
         #[cfg(not(alloc_frugal))]
-        pub(crate) const PIE_CHART_PROPERTIES: &[PropertySchema] = &[PropertySchema {
-            name: "donut",
-            value_kind: PropertyValueKind::Bool,
-            readable: true,
-            writable: true,
-        }];
+        pub(crate) const PIE_CHART_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema {
+                name: "donut",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
+        ];
 
         #[cfg(not(alloc_frugal))]
-        pub(crate) const BEZIER_CURVE_EDITOR_PROPERTIES: &[PropertySchema] = &[PropertySchema {
-            name: "snap_to_grid",
-            value_kind: PropertyValueKind::Bool,
-            readable: true,
-            writable: true,
-        }];
+        pub(crate) const BEZIER_CURVE_EDITOR_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema {
+                name: "snap_to_grid",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
+        ];
 
         #[cfg(not(alloc_frugal))]
-        pub(crate) const BARCODE_SCANNER_PROPERTIES: &[PropertySchema] = &[PropertySchema {
-            name: "is_scanning",
-            value_kind: PropertyValueKind::Bool,
-            readable: true,
-            writable: true,
-        }];
+        pub(crate) const BARCODE_SCANNER_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema {
+                name: "is_scanning",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
+        ];
     };
 }

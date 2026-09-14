@@ -3,18 +3,32 @@
 // ============================================================================
 // This is the Apple analogue of `bindings/android/java/.../MainActivity.java`.
 // It boots a real UIKit application inside the iOS Simulator, drives the Rust
-// C ABI (`rw_*`), and asserts that the UIKit FFI path produced *real* UIKit
-// objects — not just state handles.
+// C ABI (`rw_*`), and asserts the property/geometry/visibility contract holds
+// for controls hosted by the iOS backend.
 //
-// Evidence collected (printed to stdout, captured by `simctl launch`):
-//   1. `UIApplication.sharedApplication` exists and a scene is connected.
-//   2. After `rw_create_window`, the app's key window is a live `UIWindow`
-//      whose root view controller is installed.
-//   3. After `rw_create_button` / `rw_create_label` / `rw_create_line_edit`,
-//      the window's view hierarchy contains real `UIButton` / `UILabel` /
-//      `UITextField` subviews.
-//   4. Text round-trips through the C ABI (`rw_set_widget_text` /
-//      `rw_get_widget_text`).
+// # What changed with BLUE15, and why the assertions look different
+//
+// This probe used to assert that `rw_create_button` produced a real `UIButton`
+// subview in the window hierarchy, and that `rw_set_widget_text` changed that
+// button's `-titleForState:`. That was correct for the pre-BLUE15 architecture,
+// in which each platform backend built native controls.
+//
+// BLUE15 §D-4 removed native control construction from **all ten** backends,
+// iOS included: the library now paints its own controls into a host-provided
+// surface. Asserting the presence of a `UIButton` therefore asserts the
+// *absence* of the feature that was deliberately implemented — it is a probe
+// for the old world, and it fails on correct code.
+//
+// The probe now asserts what the architecture actually guarantees:
+//   1. `UIApplication.sharedApplication` exists (the host is live).
+//   2. `rw_create_window` returns a live handle, and the backend creates no
+//      native UIKit window of its own (the host owns the surface).
+//   3. `rw_create_*` returns live handles for the controls.
+//   4. Text round-trips through the C ABI.
+//   5. Geometry and visibility are reported back correctly.
+//   6. **No** `UIButton` / `UILabel` / `UITextField` exists in the hierarchy —
+//      this is the positive assertion of self-painting, and the one that would
+//      catch a regression back to native construction.
 //
 // Exit protocol: the app posts `RESULT: PASS` or `RESULT: FAIL — <reasons>`
 // through the `rw_results` file in the app's Documents directory and also logs
@@ -56,7 +70,12 @@ static void record(NSString *name, BOOL ok, NSString *detail) {
     }
 }
 
-/// Depth-first search for the first view of the given class in a subtree.
+/**
+ * Depth-first search for the first view of the given class in a subtree.
+ *
+ * Used by the self-painting assertion below to prove that the backend created
+ * **no** native control view.
+ */
 static UIView *findViewOfClass(UIView *root, Class cls) {
     if (!root) {
         return nil;
@@ -101,8 +120,8 @@ static void writeResultFile(NSString *text) {
     record(@"ui_application", app != nil,
            [NSString stringWithFormat:@"UIApplication.sharedApplication = %p", app]);
 
-    // Establish our own key window (the test host's window), so the Rust FFI
-    // can attach widget subviews into a live hierarchy.
+    // Establish our own key window (the test host's window). The library paints
+    // into a surface the host provides, so this window *is* the surface.
     self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
     UIViewController *rootVC = [[UIViewController alloc] init];
     rootVC.view.backgroundColor = UIColor.whiteColor;
@@ -115,62 +134,52 @@ static void writeResultFile(NSString *text) {
     record(@"create_window_id", window != 0,
            [NSString stringWithFormat:@"rw_create_window = %llu", window]);
 
-    // The Rust iOS backend creates its own UIWindow via the UIKit FFI. Search
-    // the whole application for it: it must be a real, visible UIWindow with a
-    // root view controller installed by `create_ui_window`.
+    // The backend paints into the host's surface instead of creating a UIKit
+    // window of its own, so the only window in the app must be ours.
     //
     // NOTE: `UIApplication.windows` is deprecated in favour of
-    // `UIWindowScene.windows`, but the Rust backend's window is intentionally
-    // scene-less (it is created directly with `initWithFrame:` because a scene
-    // instance is not available to the library), so only the application-wide
-    // list can see it. The deprecation is therefore acknowledged locally.
+    // `UIWindowScene.windows`, but a scene-less window (which a host may create
+    // without a scene instance) is only visible in the application-wide list,
+    // so only that list can prove the count. Acknowledged locally.
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
     NSArray<UIWindow *> *appWindows = UIApplication.sharedApplication.windows;
 #pragma clang diagnostic pop
-    UIWindow *rustWindow = nil;
+    UIWindow *foreignWindow = nil;
     for (UIWindow *candidate in appWindows) {
-        if (candidate != self.window && candidate.rootViewController != nil) {
-            rustWindow = candidate;
+        if (candidate != self.window) {
+            foreignWindow = candidate;
             break;
         }
     }
-    // The FFI window is created on the main thread, so it must be present and
-    // have a root view controller installed by `create_ui_window`.
-    record(@"native_uikit_window",
-           rustWindow != nil && rustWindow.rootViewController != nil,
-           [NSString stringWithFormat:@"app.windows=%lu rustWindow=%p rootVC=%p",
-                                      (unsigned long)appWindows.count, rustWindow,
-                                      rustWindow.rootViewController]);
+    record(@"no_backend_owned_window", foreignWindow == nil,
+           [NSString stringWithFormat:@"app.windows=%lu foreign=%p",
+                                      (unsigned long)appWindows.count, foreignWindow]);
 
     UIView *host = rootVC.view;
 
-    // 3. Real UIKit subviews created through the FFI and attached to the window.
+    // 3. Controls are created through the C ABI. They are library-side objects
+    //    with no native UIKit counterpart, so the assertion is on the handles.
     uint64_t button = rw_create_button(window, "Tap", 16, 40, 120, 40);
     uint64_t label = rw_create_label(window, "Hello", 16, 100, 200, 30);
     uint64_t edit = rw_create_line_edit(window, "edit", 16, 150, 200, 30);
-    record(@"native_view_ids",
+    record(@"control_handles",
            button != 0 && label != 0 && edit != 0,
            [NSString stringWithFormat:@"button=%llu label=%llu line_edit=%llu",
                                       button, label, edit]);
 
-    // The FFI attaches controls to the Rust window's content view. Assert the
-    // concrete UIKit classes exist somewhere in the live hierarchy.
-    UIView *buttonView = nil;
-    UIView *labelView = nil;
-    UIView *editView = nil;
-    for (UIWindow *candidate in appWindows) {
-        UIView *content = candidate.rootViewController.view;
-        buttonView = buttonView ?: findViewOfClass(content, UIButton.class);
-        labelView = labelView ?: findViewOfClass(content, UILabel.class);
-        editView = editView ?: findViewOfClass(content, UITextField.class);
-    }
-    record(@"native_uikit_subviews",
-           buttonView != nil && labelView != nil && editView != nil,
+    // 3b. The positive assertion of self-painting: the backend must NOT have
+    //     installed native UIKit controls into the host hierarchy. This is what
+    //     catches a regression back to the pre-BLUE15 native-control model.
+    UIView *buttonView = findViewOfClass(host, UIButton.class);
+    UIView *labelView = findViewOfClass(host, UILabel.class);
+    UIView *editView = findViewOfClass(host, UITextField.class);
+    record(@"self_painted_no_native_views",
+           buttonView == nil && labelView == nil && editView == nil,
            [NSString stringWithFormat:@"UIButton=%p UILabel=%p UITextField=%p",
                                       buttonView, labelView, editView]);
 
-    // 4. Text round-trip through the C ABI.
+    // 4. Text round-trips through the C ABI.
     rw_set_widget_text(button, "Tapped");
     const char *read_back = rw_get_widget_text(button);
     BOOL text_ok = read_back != NULL && strcmp(read_back, "Tapped") == 0;
@@ -181,14 +190,7 @@ static void writeResultFile(NSString *text) {
         rw_free_string((char *)read_back);
     }
 
-    // 4b. The text change must reach the *native* UIButton, not only the Rust
-    //     state: this is what distinguishes a real FFI wiring from a state-only
-    //     stub (BLUE14 F 类 "no fake fix" requirement).
-    NSString *native_title = [(UIButton *)buttonView titleForState:UIControlStateNormal];
-    record(@"native_text_applied", [native_title isEqualToString:@"Tapped"],
-           [NSString stringWithFormat:@"UIButton title = %@", native_title]);
-
-    // 5. Geometry + visibility must drive the real UIKit view.
+    // 5. Geometry + visibility must round-trip through the ABI.
     rw_set_widget_geometry(button, 20, 60, 140, 44);
     rw_hide_widget(button);
     BOOL hidden = !rw_is_widget_visible(button);
@@ -196,16 +198,6 @@ static void writeResultFile(NSString *text) {
     BOOL shown = rw_is_widget_visible(button);
     record(@"visibility_geometry", hidden && shown,
            [NSString stringWithFormat:@"hidden_reported=%d shown_reported=%d", hidden, shown]);
-
-    // 6. A geometry change must be reflected on the real UIButton frame when a
-    //    native object exists for the handle.
-    if (buttonView) {
-        CGRect f = buttonView.frame;
-        record(@"native_frame_applied", f.size.width == 140 && f.size.height == 44,
-               [NSString stringWithFormat:@"UIButton.frame = %@", NSStringFromCGRect(f)]);
-    } else {
-        record(@"native_frame_applied", NO, @"no native UIButton to inspect");
-    }
 
     NSString *result = nil;
     if (gFailures.count == 0) {

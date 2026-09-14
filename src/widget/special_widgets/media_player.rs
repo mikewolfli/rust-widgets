@@ -7,7 +7,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::{expect_bool, expect_string, expect_u32, expect_usize};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Lightweight media player stateful control.
 pub struct MediaPlayer {
@@ -215,6 +220,88 @@ impl Widget for MediaPlayer {
         crate::core::Size::new(320, 240)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `MediaPlayer`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before. `MediaPlayer` reports
+/// `WidgetKind::WebEngineView`, shared with `WebEngineView`; dispatching on the
+/// concrete type here is what keeps the two contracts separate.
+impl WidgetProperties for MediaPlayer {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "source" => match self.source() {
+                Some(source) => Ok(CapabilityValue::String(source.to_string())),
+                None => Ok(CapabilityValue::Null),
+            },
+            "playing" => Ok(CapabilityValue::Bool(self.is_playing())),
+            "duration_ms" => Ok(CapabilityValue::UInt(self.duration_ms())),
+            "position_ms" => Ok(CapabilityValue::UInt(self.position_ms())),
+            "volume" => Ok(CapabilityValue::UInt(self.volume() as u64)),
+            "muted" => Ok(CapabilityValue::Bool(self.muted())),
+            "fullscreen" => Ok(CapabilityValue::Bool(self.fullscreen())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "source" => match value {
+                CapabilityValue::Null => {
+                    self.clear_source();
+                    Ok(())
+                }
+                other => {
+                    let source = expect_string(other)?;
+                    let duration = self.duration_ms();
+                    self.set_source(source, duration);
+                    Ok(())
+                }
+            },
+            "playing" => {
+                if expect_bool(value)? {
+                    let _ = self.play();
+                } else {
+                    self.pause();
+                }
+                Ok(())
+            }
+            "duration_ms" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "position_ms" => {
+                self.seek_to(expect_usize(value)? as u64);
+                Ok(())
+            }
+            "volume" => {
+                self.set_volume(expect_u32(value)? as u8);
+                Ok(())
+            }
+            "muted" => {
+                self.set_muted(expect_bool(value)?);
+                Ok(())
+            }
+            "fullscreen" => {
+                self.set_fullscreen(expect_bool(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![
+            "source",
+            "playing",
+            "duration_ms",
+            "position_ms",
+            "volume",
+            "muted",
+            "fullscreen",
+            BASE_PROPERTY_NAMES
+        ]
+    }
 }
 
 impl EventHandler for MediaPlayer {

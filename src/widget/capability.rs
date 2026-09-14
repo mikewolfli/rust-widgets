@@ -88,6 +88,36 @@ use crate::core::Rect;
 #[cfg(full_widgets)]
 use super::{Widget, WidgetKind};
 #[cfg(full_widgets)]
+use crate::widget::base_widgets::toggle_button::ToggleButton;
+#[cfg(full_widgets)]
+use crate::widget::input_widgets::rich_edit::RichEdit;
+#[cfg(full_widgets)]
+use crate::widget::input_widgets::textedit::TextEdit;
+#[cfg(full_widgets)]
+use crate::widget::menu_toolbar::status_bar::StatusBar;
+#[cfg(full_widgets)]
+use crate::widget::menu_toolbar::tool_button::ToolButton;
+#[cfg(full_widgets)]
+use crate::widget::special_widgets::canvas::Canvas;
+#[cfg(full_widgets)]
+use crate::widget::special_widgets::chart::ChartWidget;
+#[cfg(full_widgets)]
+use crate::widget::special_widgets::code_editor::CodeEditor;
+#[cfg(full_widgets)]
+use crate::widget::special_widgets::gantt_widget::GanttWidget;
+#[cfg(full_widgets)]
+use crate::widget::special_widgets::map_view::MapView;
+#[cfg(full_widgets)]
+use crate::widget::special_widgets::media_player::MediaPlayer;
+#[cfg(full_widgets)]
+use crate::widget::special_widgets::segmented_control::SegmentedControl;
+#[cfg(full_widgets)]
+use crate::widget::special_widgets::snackbar::Snackbar;
+#[cfg(full_widgets)]
+use crate::widget::special_widgets::split_button::SplitButton;
+#[cfg(full_widgets)]
+use crate::widget::special_widgets::terminal_view::TerminalView;
+#[cfg(full_widgets)]
 use crate::widget::view_widgets::data_grid::DataGrid;
 #[cfg(full_widgets)]
 use crate::widget::view_widgets::table_widget::TableWidget;
@@ -97,6 +127,8 @@ use crate::widget::view_widgets::tree_table::TreeTable;
 use crate::widget::view_widgets::tree_view::TreeView;
 #[cfg(full_widgets)]
 use crate::widget::view_widgets::virtual_table::VirtualTable;
+#[cfg(full_widgets)]
+use crate::widget::web_widgets::web_view::WebView;
 
 pub mod types;
 pub use types::*;
@@ -315,7 +347,17 @@ pub use access::default_widget_property_default_value;
 #[cfg(full_widgets)]
 pub mod registration;
 
-#[cfg(all(test, widgets_unstripped))]
+/// Factory and registration tests.
+///
+/// Gated on `full_widgets`, matching the factory's own gate rather than the wider
+/// `widgets_unstripped`. The tests below call `WidgetFactory::new_with_defaults`
+/// and inspect the registry it populates, so they describe machinery that only
+/// exists where the core registrations are installed. Under a build with no device
+/// profile (such as `--features android`) the factory exists but is empty, and
+/// these assertions would be describing an absent table — the mismatch showed up as
+/// `cannot find type WidgetKind in this scope` because a doc/test `use` resolved into
+/// a module the wider gate let through.
+#[cfg(all(test, full_widgets))]
 pub mod tests;
 
 /// Contract tests for the per-control property layer (BLUE15 Phase C-1).
@@ -466,6 +508,17 @@ impl WidgetFactory {
         &self.capabilities
     }
 
+    /// Resolves the capability that describes `widget`, using its concrete type.
+    ///
+    /// Public because it is the only way to ask the question the registry answers
+    /// internally, and answering it from outside is what lets a test prove that
+    /// controls sharing a `WidgetKind` are still distinguishable. A caller walking
+    /// `property_schema` has an equivalent need: given a live control, which schema
+    /// describes it?
+    pub fn capability_for_kind_instance(&self, widget: &dyn Widget) -> Option<&WidgetCapability> {
+        self.capability_for_widget(widget)
+    }
+
     /// Returns the canonical name of every registered widget.
     ///
     /// Derived from [`Self::capabilities`] rather than kept as a second list, so
@@ -529,20 +582,21 @@ impl WidgetFactory {
     }
 
     /// Looks up capability by widget kind using the kind-based index.
-    /// When multiple capabilities share the same WidgetKind (e.g. DataGrid,
-    /// VirtualTable, TableWidget all use WidgetKind::Table), tries to match
-    /// by concrete widget type.
+    ///
+    /// When several capabilities share a `WidgetKind` (`DataGrid`, `VirtualTable`
+    /// and `TableWidget` all report `WidgetKind::Table`), the right one is chosen by
+    /// comparing the *concrete* widget type against the capability's canonical name.
     fn capability_for_widget(&self, widget: &dyn Widget) -> Option<&WidgetCapability> {
         let kind = widget.kind();
         let indices = self.kind_to_index.get(&kind)?;
 
-        // Fast path: only one capability for this kind
+        // Fast path: only one capability for this kind.
         if indices.len() == 1 {
             return self.capabilities.get(indices[0]);
         }
 
-        // Multiple capabilities share this kind — find the right one by
-        // matching the concrete widget type against the canonical name.
+        // Resolve by concrete type first. This is the only reliable tie-break: the
+        // kind alone cannot distinguish two types that report the same one.
         for &idx in indices.iter() {
             let cap = &self.capabilities[idx];
             if self.widget_matches_capability(widget, cap.canonical_name) {
@@ -550,32 +604,84 @@ impl WidgetFactory {
             }
         }
 
-        // Fallback: return the first registered capability
-        self.capabilities.get(indices[0])
+        // No type-based answer. Returning the first registered capability (the old
+        // behaviour) is what made `segmented_control` report `UnknownProperty` for
+        // its own `item_count`: the lookup landed on `toggle_button` — whichever
+        // registered first — and searched that schema instead. A wrong schema is
+        // worse than no schema, because the caller gets "this name does not exist"
+        // for a name the widget really has.
+        //
+        // An empty capability is the honest answer: it declares no properties rather
+        // than another control's. The caller's own `properties_dyn` contract still
+        // serves the real properties, so nothing is lost — the schema lookup simply
+        // stops lying.
+        log::warn!(
+            "widget capability registry has no type-based tie-break for {kind:?}; \
+             falling back to an empty schema rather than another control's"
+        );
+        self.capabilities.iter().find(|cap| cap.kind == kind && cap.properties.is_empty())
     }
 
     /// Check whether a widget instance matches a given capability's concrete type.
     ///
     /// Only capabilities that share a `WidgetKind` need this question answered
-    /// (`DataGrid` / `VirtualTable` / `TableWidget` all report `WidgetKind::Table`),
-    /// and all of those are view widgets. In a profile that compiles the view
-    /// widgets out there is nothing to distinguish, so every widget matches and the
-    /// kind-based index above has already narrowed the field.
+    /// (`DataGrid` / `VirtualTable` / `TableWidget` all report `WidgetKind::Table`).
+    ///
+    /// `false` is the default rather than `true`: a name this table does not know is
+    /// not evidence that the widget matches it. Answering `true` made the caller
+    /// accept the *first* candidate for an unknown name, which is how a widget ended
+    /// up reading another control's schema.
+    ///
+    /// A profile that compiles the concrete types out cannot answer at all; there the
+    /// kind-based index has already narrowed the field to one entry, so the question
+    /// is only reached for kinds that cannot be ambiguous.
     #[cfg(all(not(full_widgets), not(embedded_surface)))]
     fn widget_matches_capability(&self, _widget: &dyn Widget, _canonical_name: &str) -> bool {
         true
     }
 
-    /// Ceiling: the concrete-type tie-break for capabilities sharing a kind.
+    /// Concrete-type tie-break for capabilities sharing a kind.
+    ///
+    /// Every capability whose canonical name can collide with another *must* have a
+    /// row here. `every_shared_kind_has_a_tie_break` in the tests enforces that, so a
+    /// newly registered control cannot quietly inherit another's schema the way
+    /// `segmented_control` inherited `toggle_button`'s.
     #[cfg(full_widgets)]
     fn widget_matches_capability(&self, widget: &dyn Widget, canonical_name: &str) -> bool {
         match canonical_name {
+            // `WidgetKind::Table`
             "data_grid" => self::coercion::widget_as::<DataGrid>(widget).is_some(),
             "virtual_table" => self::coercion::widget_as::<VirtualTable>(widget).is_some(),
             "table_widget" => self::coercion::widget_as::<TableWidget>(widget).is_some(),
+            // `WidgetKind::TreeView`
             "tree_table" => self::coercion::widget_as::<TreeTable>(widget).is_some(),
             "tree_view" => self::coercion::widget_as::<TreeView>(widget).is_some(),
-            _ => true,
+            // `WidgetKind::ToggleButton`
+            "segmented_control" => self::coercion::widget_as::<SegmentedControl>(widget).is_some(),
+            "toggle_button" => self::coercion::widget_as::<ToggleButton>(widget).is_some(),
+            // `WidgetKind::TextEdit`
+            "text_edit" => self::coercion::widget_as::<TextEdit>(widget).is_some(),
+            "terminal_view" => self::coercion::widget_as::<TerminalView>(widget).is_some(),
+            // `WidgetKind::RichEdit`
+            "rich_edit" => self::coercion::widget_as::<RichEdit>(widget).is_some(),
+            "code_editor" => self::coercion::widget_as::<CodeEditor>(widget).is_some(),
+            // `WidgetKind::StatusBar`
+            "status_bar" => self::coercion::widget_as::<StatusBar>(widget).is_some(),
+            "snackbar" => self::coercion::widget_as::<Snackbar>(widget).is_some(),
+            // `WidgetKind::Canvas`
+            "canvas" => self::coercion::widget_as::<Canvas>(widget).is_some(),
+            "map_view" => self::coercion::widget_as::<MapView>(widget).is_some(),
+            // `WidgetKind::Chart`
+            "chart" => self::coercion::widget_as::<ChartWidget>(widget).is_some(),
+            "gantt_widget" => self::coercion::widget_as::<GanttWidget>(widget).is_some(),
+            // `WidgetKind::WebEngineView`
+            "web_view" => self::coercion::widget_as::<WebView>(widget).is_some(),
+            "media_player" => self::coercion::widget_as::<MediaPlayer>(widget).is_some(),
+            // `WidgetKind::ToolButton`
+            "tool_button" => self::coercion::widget_as::<ToolButton>(widget).is_some(),
+            "split_button" => self::coercion::widget_as::<SplitButton>(widget).is_some(),
+            // A name this table does not know is not evidence of a match.
+            _ => false,
         }
     }
 

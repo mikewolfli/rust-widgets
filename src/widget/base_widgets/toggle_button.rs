@@ -159,6 +159,7 @@ impl WidgetProperties for ToggleButton {
                 self.set_checked(expect_bool(value)?);
                 Ok(())
             }
+            "state" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }

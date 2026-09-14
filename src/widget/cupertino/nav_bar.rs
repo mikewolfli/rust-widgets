@@ -11,7 +11,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::{expect_bool, expect_string};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// iOS-style large title navigation bar.
 ///
@@ -104,6 +109,42 @@ impl Widget for CupertinoNavigationBar {
         WidgetKind::CupertinoNavigationBar
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `CupertinoNavigationBar`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before. Both properties now report
+/// the bar's real state instead of the placeholder defaults that dispatch
+/// returned.
+impl WidgetProperties for CupertinoNavigationBar {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "title" => Ok(CapabilityValue::String(self.title().to_string())),
+            "large_title" => Ok(CapabilityValue::Bool(self.is_large_title())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "title" => {
+                self.set_title(&expect_string(value)?);
+                Ok(())
+            }
+            "large_title" => {
+                self.set_large_title(expect_bool(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["title", "large_title", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for CupertinoNavigationBar {

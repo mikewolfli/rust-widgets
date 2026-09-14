@@ -11,7 +11,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::expect_usize;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// iOS-style segmented control.
 ///
@@ -102,6 +107,41 @@ impl Widget for CupertinoSegmentedControl {
         WidgetKind::CupertinoSegmentedControl
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `CupertinoSegmentedControl`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_input.in.rs` / `access_write_input.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before. `selected_index` reads the
+/// control's real selection; `segment_count` is derived from the segment list and
+/// has no setter, so writes are refused with
+/// [`CapabilityAccessError::ReadOnlyProperty`].
+impl WidgetProperties for CupertinoSegmentedControl {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "selected_index" => Ok(CapabilityValue::UInt(self.selected_index() as u64)),
+            "segment_count" => Ok(CapabilityValue::UInt(self.segment_count() as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "selected_index" => {
+                self.set_selected_index(expect_usize(value)?);
+                Ok(())
+            }
+            // Derived from the segment list, which owns it.
+            "segment_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["selected_index", "segment_count", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for CupertinoSegmentedControl {

@@ -10,7 +10,12 @@
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::widget::capability::coercion::expect_string;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Avatar widget for displaying user profile images or initials-based placeholders.
 ///
@@ -21,6 +26,12 @@ pub struct Avatar {
     base: BaseWidget,
     /// Initials text displayed inside the avatar (typically 1-2 characters).
     text: String,
+    /// Optional source path or URL of the avatar image.
+    ///
+    /// The widget has no image pipeline yet, so this is carried as state and
+    /// reported through the `image_source` property; the initials remain the
+    /// rendered fallback until a loader is wired in.
+    image_source: String,
     /// Background fill color of the avatar.
     bg_color: Color,
     /// When `true`, renders as a rounded square instead of a circle.
@@ -47,6 +58,7 @@ impl Avatar {
                 "Avatar",
             ),
             text: String::new(),
+            image_source: String::new(),
             bg_color: Color::PRIMARY,
             square: false,
             size: sz,
@@ -62,6 +74,20 @@ impl Avatar {
     /// Returns the current initials text.
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    /// Returns the configured avatar image source, or an empty string when the
+    /// avatar falls back to its initials.
+    pub fn image_source(&self) -> &str {
+        &self.image_source
+    }
+
+    /// Sets the source path or URL of the avatar image.
+    ///
+    /// An empty string clears the source and restores the initials fallback.
+    pub fn set_image_source(&mut self, source: &str) {
+        self.image_source = source.to_string();
+        self.base.request_redraw();
     }
 
     /// Sets whether the avatar renders as a rounded square (instead of a circle).
@@ -113,6 +139,41 @@ impl Widget for Avatar {
         crate::core::Size::new(40, 40)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `Avatar`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_dialog.in.rs` / `access_write_dialog.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before. `initials` reports the
+/// widget's own placeholder text and `image_source` its configured image.
+impl WidgetProperties for Avatar {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "initials" => Ok(CapabilityValue::String(self.text().to_string())),
+            "image_source" => Ok(CapabilityValue::String(self.image_source().to_string())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "initials" => {
+                self.set_text(&expect_string(value)?);
+                Ok(())
+            }
+            "image_source" => {
+                self.set_image_source(&expect_string(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["initials", "image_source", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for Avatar {

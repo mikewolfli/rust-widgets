@@ -14,7 +14,7 @@ use crate::core::{Color, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
-use crate::widget::capability::coercion::{expect_f32, expect_usize};
+use crate::widget::capability::coercion::{expect_f32, expect_string, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -178,6 +178,42 @@ impl Widget for MaterialSnackbar {
         crate::core::Size::new(300, 48)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `MaterialSnackbar`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before. Both properties now report
+/// the snackbar's real text instead of the placeholder defaults that dispatch
+/// returned.
+impl WidgetProperties for MaterialSnackbar {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "message" => Ok(CapabilityValue::String(self.message().to_string())),
+            "action_text" => Ok(CapabilityValue::String(self.action_text().to_string())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "message" => {
+                self.set_message(&expect_string(value)?);
+                Ok(())
+            }
+            "action_text" => {
+                self.set_action_text(&expect_string(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["message", "action_text", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for MaterialSnackbar {
@@ -368,6 +404,42 @@ impl Widget for CupertinoAlertDialog {
         WidgetKind::CupertinoAlertDialog
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `CupertinoAlertDialog`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before. Both properties now report
+/// the dialog's real text instead of the placeholder defaults that dispatch
+/// returned.
+impl WidgetProperties for CupertinoAlertDialog {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "title" => Ok(CapabilityValue::String(self.title().to_string())),
+            "message" => Ok(CapabilityValue::String(self.message().to_string())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "title" => {
+                self.set_title(&expect_string(value)?);
+                Ok(())
+            }
+            "message" => {
+                self.set_message(&expect_string(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["title", "message", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for CupertinoAlertDialog {

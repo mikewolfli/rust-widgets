@@ -11,7 +11,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::widget::capability::coercion::{expect_bool, expect_f32};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// A single item in the navigation drawer, consisting of an icon and a label.
 #[derive(Clone, Debug)]
@@ -148,6 +153,46 @@ impl Widget for NavigationDrawer {
         crate::core::Size::new(300, 400)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `NavigationDrawer`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_dialog.in.rs` / `access_write_dialog.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before. `width` reports the panel
+/// width, which is a `u32` internally and published as a `Float` to match the
+/// legacy shape.
+impl WidgetProperties for NavigationDrawer {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "open" => Ok(CapabilityValue::Bool(self.is_open())),
+            "width" => Ok(CapabilityValue::Float(f64::from(self.panel_width()))),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "open" => {
+                if expect_bool(value)? {
+                    self.open();
+                } else {
+                    self.close();
+                }
+                Ok(())
+            }
+            "width" => {
+                self.set_panel_width(expect_f32(value)? as u32);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["open", "width", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for NavigationDrawer {

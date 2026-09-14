@@ -13,7 +13,12 @@ use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::expect_usize;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// A single item in the bottom navigation bar.
 ///
@@ -113,6 +118,40 @@ impl Widget for BottomNavigationBar {
         crate::core::Size::new(400, 48)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `BottomNavigationBar`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_dialog.in.rs` / `access_write_dialog.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before. `item_count` is derived from
+/// the item list, so it is readable but read-only.
+impl WidgetProperties for BottomNavigationBar {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "item_count" => Ok(CapabilityValue::UInt(self.item_count() as u64)),
+            "selected_index" => Ok(CapabilityValue::UInt(self.selected_index() as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "selected_index" => {
+                self.set_selected_index(expect_usize(value)?);
+                Ok(())
+            }
+            // The item total is implied by how many items were added, so there is
+            // nothing sensible to assign to it.
+            "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["item_count", "selected_index", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for BottomNavigationBar {

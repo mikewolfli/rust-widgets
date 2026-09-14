@@ -12,7 +12,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
+use crate::widget::capability::coercion::expect_bool;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Progress state for the refresh pull gesture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,6 +177,35 @@ impl Widget for RefreshControl {
         crate::core::Size::new(400, 400)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `RefreshControl`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before.
+impl WidgetProperties for RefreshControl {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "refreshing" => Ok(CapabilityValue::Bool(self.is_refreshing())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "refreshing" => {
+                self.set_is_refreshing(expect_bool(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["refreshing", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for RefreshControl {

@@ -178,6 +178,24 @@ pub fn expect_time(value: CapabilityValue) -> Result<Time, CapabilityAccessError
     }
 }
 
+/// Parses the `"<date> <time>"` spelling that [`crate::widget::advanced_widgets::date_time_edit::DateTime`]
+/// renders through its `Display` impl.
+///
+/// The read side of the contract publishes exactly that string, so this is its
+/// inverse: a writer can round-trip whatever a reader returned. The two halves are
+/// split on the first space and delegated to [`expect_date`] / [`expect_time`], so
+/// the date and time rules are stated once each rather than repeated here.
+#[cfg(full_widgets)]
+pub fn expect_datetime(
+    value: CapabilityValue,
+) -> Result<crate::widget::advanced_widgets::date_time_edit::DateTime, CapabilityAccessError> {
+    let text = expect_string(value)?;
+    let (date_part, time_part) = text.split_once(' ').ok_or(CapabilityAccessError::TypeMismatch)?;
+    let date = expect_date(CapabilityValue::String(date_part.to_string()))?;
+    let time = expect_time(CapabilityValue::String(time_part.to_string()))?;
+    Ok(crate::widget::advanced_widgets::date_time_edit::DateTime::new(date, time))
+}
+
 #[cfg(full_widgets)]
 pub fn expect_weekday(value: CapabilityValue) -> Result<Weekday, CapabilityAccessError> {
     let token = match value {

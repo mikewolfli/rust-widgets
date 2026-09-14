@@ -157,7 +157,11 @@ impl WidgetProperties for SwipeToDismiss {
 
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         match name {
-            "is_dismissed" => Err(CapabilityAccessError::UnsupportedOnWidget),
+            // Dismissal is owned by the gesture recogniser, not by an external
+            // writer, so the name exists but refuses writes. Reporting
+            // `UnsupportedOnWidget` here would claim the control has no such
+            // property at all, which is not true — `get` answers it.
+            "is_dismissed" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }

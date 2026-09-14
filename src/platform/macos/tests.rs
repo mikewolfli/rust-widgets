@@ -122,6 +122,13 @@ fn macos_destroy_widget_releases_the_record() {
 ///
 /// The regression it guards is real: an earlier revision hand-built
 /// `home.join(".config")`, which on macOS wrote settings to the wrong place.
+///
+/// Gated on `advanced-widgets`: the assertion calls `dirs::config_dir()`, and
+/// `dirs` is an optional dependency enabled only by that feature. `macos-legacy`
+/// alone does not pull it in, so without this gate the test compiled against an
+/// absent crate. The check is worth keeping where it can run rather than being
+/// rewritten to avoid the very API the production path uses.
+#[cfg(feature = "advanced-widgets")]
 #[test]
 fn config_dir_uses_application_support_not_xdg() {
     let Some(base) = dirs::config_dir() else {

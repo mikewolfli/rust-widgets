@@ -11,7 +11,11 @@ use crate::core::{Color, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 const SWATCHES_PER_ROW: u32 = 5;
 const SWATCH_SIZE: u32 = 20;
@@ -155,6 +159,34 @@ impl Widget for ColorHistory {
         crate::core::Size::new(200, 40)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `ColorHistory`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before. `color_count` is derived from
+/// the swatch list, so it is refused as read-only rather than reported as a name
+/// this control does not know.
+impl WidgetProperties for ColorHistory {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "color_count" => Ok(CapabilityValue::UInt(self.colors().len() as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "color_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["color_count", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for ColorHistory {

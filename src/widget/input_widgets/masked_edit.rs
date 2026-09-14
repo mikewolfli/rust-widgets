@@ -20,7 +20,12 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::undo::{TextSnapshotCommand, UndoStack};
+use crate::widget::capability::coercion::expect_string;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -321,6 +326,42 @@ impl Widget for MaskedEdit {
         crate::core::Size::new(200, 28)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `MaskedEdit`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_input.in.rs` / `access_write_input.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before. `text` reads the formatted
+/// display string the widget draws; a write goes through
+/// [`MaskedEdit::set_text`], which re-validates each character against the mask.
+impl WidgetProperties for MaskedEdit {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "text" => Ok(CapabilityValue::String(self.text().to_string())),
+            "mask" => Ok(CapabilityValue::String(self.mask().to_string())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "text" => {
+                self.set_text(&expect_string(value)?);
+                Ok(())
+            }
+            "mask" => {
+                self.set_mask(&expect_string(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["text", "mask", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for MaskedEdit {

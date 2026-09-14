@@ -6,7 +6,11 @@ use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderCommand, RenderContext};
 use crate::signal::GenericSignal;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Simplified canvas for drawing basic shapes.
 pub struct MiniCanvas {
@@ -85,6 +89,28 @@ impl Widget for MiniCanvas {
         Size::new(200, 200)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `MiniCanvas`'s property contract.
+///
+/// `MiniCanvas` carries only its retained draw command list, and the legacy
+/// dispatch served no property for it (its schema table `MINI_CANVAS_PROPERTIES`
+/// is empty), so the contract publishes the shared four and nothing else. It owns
+/// no derived count worth exposing: `commands()` is the retained command list,
+/// which callers read directly rather than through reflection.
+impl WidgetProperties for MiniCanvas {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        base_property_get(self, name)
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        base_property_set(self, name, value)
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![BASE_PROPERTY_NAMES]
+    }
 }
 
 impl EventHandler for MiniCanvas {

@@ -12,7 +12,12 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack};
+use crate::widget::capability::coercion::expect_string;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -91,6 +96,7 @@ pub struct TagInput {
     base: BaseWidget,
     tags: Vec<String>,
     input_buffer: String,
+    placeholder: String,
     focused: bool,
     /// Emitted when the tags list changes, providing the full list of tags.
     pub tags_changed: Signal1<Vec<String>>,
@@ -105,6 +111,7 @@ impl TagInput {
             base: BaseWidget::new(WidgetKind::TagInput, geometry, "TagInput"),
             tags: Vec::new(),
             input_buffer: String::new(),
+            placeholder: "Type and press Enter\u{2026}".to_string(),
             focused: false,
             tags_changed: Signal1::new(),
             undo_stack: UndoStack::new(),
@@ -148,6 +155,17 @@ impl TagInput {
     /// Returns a slice of all current tags.
     pub fn tags(&self) -> &[String] {
         &self.tags
+    }
+
+    /// Returns the placeholder shown while the input area is empty.
+    pub fn placeholder(&self) -> &str {
+        &self.placeholder
+    }
+
+    /// Sets the placeholder shown while the input area is empty.
+    pub fn set_placeholder(&mut self, placeholder: &str) {
+        self.placeholder = placeholder.to_string();
+        self.base.request_redraw();
     }
 
     /// Clears all tags. Emits `tags_changed` if the list was non-empty.
@@ -309,6 +327,40 @@ impl Widget for TagInput {
         crate::core::Size::new(200, 28)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `TagInput`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_input.in.rs` / `access_write_input.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before. The tag list is published as
+/// the comma-joined string the schema declares and is read-only: there is no
+/// writer for a collection through a single string, and the legacy write side had
+/// no `tags` arm either, so `set` refuses the name rather than inventing a parse.
+impl WidgetProperties for TagInput {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "tags" => Ok(CapabilityValue::String(self.tags().join(","))),
+            "placeholder" => Ok(CapabilityValue::String(self.placeholder().to_string())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "tags" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "placeholder" => {
+                self.set_placeholder(&expect_string(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["tags", "placeholder", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for TagInput {
@@ -407,7 +459,7 @@ impl Draw for TagInput {
             Color::rgba(160, 160, 160, 200)
         };
         let display_text = if self.input_buffer.is_empty() && self.tags.is_empty() {
-            "Type and press Enter..."
+            self.placeholder.as_str()
         } else if self.input_buffer.is_empty() {
             ""
         } else {

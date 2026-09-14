@@ -175,6 +175,7 @@ impl WidgetProperties for Roller {
                 self.set_visible_count(expect_u32(value)?);
                 Ok(())
             }
+            "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }

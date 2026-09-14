@@ -11,7 +11,12 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::undo::{TextSnapshotCommand, UndoStack};
+use crate::widget::capability::coercion::{expect_bool, expect_string};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -224,6 +229,46 @@ impl Widget for InplaceEditor {
         crate::core::Size::new(200, 28)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `InplaceEditor`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_input.in.rs` / `access_write_input.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before. `editing` maps onto the
+/// widget's edit mode: writing `true` starts an edit, writing `false` cancels it,
+/// matching the legacy arm.
+impl WidgetProperties for InplaceEditor {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "text" => Ok(CapabilityValue::String(self.text().to_string())),
+            "editing" => Ok(CapabilityValue::Bool(self.is_editing())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "text" => {
+                self.set_text(&expect_string(value)?);
+                Ok(())
+            }
+            "editing" => {
+                if expect_bool(value)? {
+                    self.start_edit();
+                } else {
+                    self.finish_edit(false);
+                }
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["text", "editing", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for InplaceEditor {

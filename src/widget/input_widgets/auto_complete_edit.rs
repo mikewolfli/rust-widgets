@@ -12,7 +12,12 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::undo::{TextSnapshotCommand, UndoStack};
+use crate::widget::capability::coercion::expect_string;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -159,6 +164,14 @@ impl AutoCompleteEdit {
         self.show_dropdown
     }
 
+    /// Returns the number of suggestions currently offered for the typed text.
+    ///
+    /// Counts the filtered list the dropdown draws, not the full suggestion set,
+    /// so the number matches what the user can actually pick right now.
+    pub fn suggestion_count(&self) -> usize {
+        self.filtered_suggestions.len()
+    }
+
     /// Shows the dropdown (if there are filtered suggestions).
     pub fn show_dropdown(&mut self) {
         if !self.filtered_suggestions.is_empty() {
@@ -255,6 +268,39 @@ impl Widget for AutoCompleteEdit {
         crate::core::Size::new(200, 28)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `AutoCompleteEdit`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_input.in.rs` / `access_write_input.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before. `suggestion_count` is derived
+/// from the filtered list, so it is refused as read-only rather than reported as a
+/// name this control does not know.
+impl WidgetProperties for AutoCompleteEdit {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "text" => Ok(CapabilityValue::String(self.text().to_string())),
+            "suggestion_count" => Ok(CapabilityValue::UInt(self.suggestion_count() as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "text" => {
+                self.set_text(expect_string(value)?);
+                Ok(())
+            }
+            "suggestion_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["text", "suggestion_count", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for AutoCompleteEdit {

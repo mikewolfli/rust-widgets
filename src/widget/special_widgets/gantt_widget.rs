@@ -7,7 +7,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::expect_i64;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// One gantt task bar.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -171,6 +176,63 @@ impl Widget for GanttWidget {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(600, 200)
+    }
+
+    impl_widget_property_hooks!();
+}
+
+/// `GanttWidget`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before. `GanttWidget` reports
+/// `WidgetKind::Chart`, shared with `ChartWidget` and `TimelineWidget`;
+/// dispatching on the concrete type here is what keeps the three contracts
+/// separate.
+impl WidgetProperties for GanttWidget {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "task_count" => Ok(CapabilityValue::UInt(self.tasks().len() as u64)),
+            "selected_id" => match self.selected_id() {
+                Some(id) => Ok(CapabilityValue::String(id.to_string())),
+                None => Ok(CapabilityValue::Null),
+            },
+            "viewport_start" => Ok(CapabilityValue::Int(self.viewport().0)),
+            "viewport_end" => Ok(CapabilityValue::Int(self.viewport().1)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "viewport_start" => {
+                let start = expect_i64(value)?;
+                let (_, end) = self.viewport();
+                self.set_viewport(start, end);
+                Ok(())
+            }
+            "viewport_end" => {
+                let end = expect_i64(value)?;
+                let (start, _) = self.viewport();
+                self.set_viewport(start, end);
+                Ok(())
+            }
+            // Derived counts and the selection identity are computed from the task
+            // list, so they are refused as read-only rather than reported as names
+            // this control does not know.
+            "task_count" | "selected_id" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![
+            "task_count",
+            "selected_id",
+            "viewport_start",
+            "viewport_end",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 

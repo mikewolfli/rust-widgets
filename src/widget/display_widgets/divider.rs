@@ -10,8 +10,13 @@
 use crate::core::{Color, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::widget::capability::coercion::{expect_f32, expect_string};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::display_widgets::draw_line;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Divider/Separator widget for visually separating content sections.
 ///
@@ -46,6 +51,11 @@ impl Divider {
         self.vertical
     }
 
+    /// Returns the current line thickness in pixels.
+    pub fn thickness(&self) -> u32 {
+        self.thickness
+    }
+
     /// Sets the line thickness in pixels.
     pub fn set_thickness(&mut self, thickness: u32) {
         self.thickness = thickness;
@@ -71,6 +81,53 @@ impl Widget for Divider {
         crate::core::Size::new(100, 2)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `Divider`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before. `orientation` is published as
+/// the `horizontal` / `vertical` token pair and `thickness` as the `Float` the
+/// schema declares, even though the widget stores it as a pixel count.
+impl WidgetProperties for Divider {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "orientation" => Ok(CapabilityValue::String(
+                if self.is_vertical() { "vertical" } else { "horizontal" }.to_string(),
+            )),
+            "thickness" => Ok(CapabilityValue::Float(self.thickness() as f64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "orientation" => {
+                let orientation = expect_string(value)?;
+                match orientation.as_str() {
+                    "horizontal" => self.set_vertical(false),
+                    "vertical" => self.set_vertical(true),
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                }
+                Ok(())
+            }
+            "thickness" => {
+                let thickness = expect_f32(value)?;
+                if !thickness.is_finite() || thickness < 0.0 {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                }
+                self.set_thickness(thickness as u32);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["orientation", "thickness", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for Divider {

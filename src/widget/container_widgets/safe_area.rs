@@ -5,7 +5,12 @@
 use crate::core::{Color, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::widget::capability::coercion::expect_f32;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Safe area insets for mobile devices.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -48,6 +53,22 @@ impl SafeArea {
     pub fn set_margin_color(&mut self, color: Color) {
         self.margin_color = color;
     }
+    /// Sets the top inset, preserving the other three edges.
+    pub fn set_top_inset(&mut self, top: u32) {
+        self.set_insets(SafeAreaInsets { top, ..self.insets });
+    }
+    /// Sets the bottom inset, preserving the other three edges.
+    pub fn set_bottom_inset(&mut self, bottom: u32) {
+        self.set_insets(SafeAreaInsets { bottom, ..self.insets });
+    }
+    /// Sets the left inset, preserving the other three edges.
+    pub fn set_left_inset(&mut self, left: u32) {
+        self.set_insets(SafeAreaInsets { left, ..self.insets });
+    }
+    /// Sets the right inset, preserving the other three edges.
+    pub fn set_right_inset(&mut self, right: u32) {
+        self.set_insets(SafeAreaInsets { right, ..self.insets });
+    }
     pub fn content_rect(&self) -> Rect {
         let g = self.geometry();
         Rect::new(
@@ -71,6 +92,58 @@ impl Widget for SafeArea {
         crate::core::Size::new(300, 200)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `SafeArea`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_dialog.in.rs` / `access_write_dialog.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before. The insets are stored as
+/// `u32` internally and published as `Float` to match the legacy shape.
+impl WidgetProperties for SafeArea {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        let insets = self.insets();
+        match name {
+            "top_inset" => Ok(CapabilityValue::Float(f64::from(insets.top))),
+            "bottom_inset" => Ok(CapabilityValue::Float(f64::from(insets.bottom))),
+            "left_inset" => Ok(CapabilityValue::Float(f64::from(insets.left))),
+            "right_inset" => Ok(CapabilityValue::Float(f64::from(insets.right))),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "top_inset" => {
+                self.set_top_inset(expect_f32(value)? as u32);
+                Ok(())
+            }
+            "bottom_inset" => {
+                self.set_bottom_inset(expect_f32(value)? as u32);
+                Ok(())
+            }
+            "left_inset" => {
+                self.set_left_inset(expect_f32(value)? as u32);
+                Ok(())
+            }
+            "right_inset" => {
+                self.set_right_inset(expect_f32(value)? as u32);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![
+            "top_inset",
+            "bottom_inset",
+            "left_inset",
+            "right_inset",
+            BASE_PROPERTY_NAMES
+        ]
+    }
 }
 
 impl Draw for SafeArea {

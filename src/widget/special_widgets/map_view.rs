@@ -7,7 +7,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::expect_f32;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// One map marker with logical world coordinates.
 #[derive(Debug, Clone, PartialEq)]
@@ -178,6 +183,67 @@ impl Widget for MapView {
         crate::core::Size::new(400, 300)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `MapView`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before. `MapView` reports
+/// `WidgetKind::Canvas`, shared with `Canvas`; dispatching on the concrete type
+/// here is what keeps the two contracts separate.
+impl WidgetProperties for MapView {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "center_x" => Ok(CapabilityValue::Float(self.center().0 as f64)),
+            "center_y" => Ok(CapabilityValue::Float(self.center().1 as f64)),
+            "zoom" => Ok(CapabilityValue::Float(self.zoom() as f64)),
+            "marker_count" => Ok(CapabilityValue::UInt(self.markers().len() as u64)),
+            "selected_marker_id" => match self.selected_marker_id() {
+                Some(id) => Ok(CapabilityValue::String(id.to_string())),
+                None => Ok(CapabilityValue::Null),
+            },
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "center_x" => {
+                let x = expect_f32(value)?;
+                let (_, y) = self.center();
+                self.set_center(x, y);
+                Ok(())
+            }
+            "center_y" => {
+                let y = expect_f32(value)?;
+                let (x, _) = self.center();
+                self.set_center(x, y);
+                Ok(())
+            }
+            "zoom" => {
+                self.set_zoom(expect_f32(value)?);
+                Ok(())
+            }
+            // Derived counts and the selection identity are computed from the marker
+            // list, so they are refused as read-only rather than reported as names
+            // this control does not know.
+            "marker_count" | "selected_marker_id" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![
+            "center_x",
+            "center_y",
+            "zoom",
+            "marker_count",
+            "selected_marker_id",
+            BASE_PROPERTY_NAMES
+        ]
+    }
 }
 
 impl EventHandler for MapView {

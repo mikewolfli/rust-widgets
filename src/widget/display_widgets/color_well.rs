@@ -12,7 +12,12 @@ use crate::core::{Color, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
+use crate::widget::capability::coercion::expect_string;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// A compact color swatch widget that displays a color and emits a signal
 /// when clicked.
@@ -74,6 +79,41 @@ impl Widget for ColorWell {
         crate::core::Size::new(40, 24)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `ColorWell`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before. The colour travels as the
+/// `#RRGGBBAA` hex string [`Color::to_hex_rgba`] produces, and a write accepts
+/// anything [`Color::parse_hex`] understands.
+impl WidgetProperties for ColorWell {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "color" => Ok(CapabilityValue::String(self.color().to_hex_rgba())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "color" => {
+                let raw = expect_string(value)?;
+                let Some(color) = Color::parse_hex(&raw) else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                self.set_color(color);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["color", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for ColorWell {

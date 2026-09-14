@@ -13,7 +13,12 @@ use crate::core::{Color, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
+use crate::widget::capability::coercion::{expect_bool, expect_f32};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// BottomSheet widget — a modal panel that slides up from the bottom edge.
 ///
@@ -71,6 +76,11 @@ impl BottomSheet {
     pub fn is_open(&self) -> bool {
         self.open
     }
+
+    /// Returns the height of the sheet panel in pixels.
+    pub fn content_height(&self) -> u32 {
+        self.content_height
+    }
 }
 
 impl Widget for BottomSheet {
@@ -86,6 +96,45 @@ impl Widget for BottomSheet {
         crate::core::Size::new(300, 200)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `BottomSheet`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_dialog.in.rs` / `access_write_dialog.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before. The panel height is stored as
+/// a `u32` internally and published as `Float` to match the legacy shape.
+impl WidgetProperties for BottomSheet {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "expanded" => Ok(CapabilityValue::Bool(self.is_open())),
+            "peek_height" => Ok(CapabilityValue::Float(f64::from(self.content_height()))),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "expanded" => {
+                if expect_bool(value)? {
+                    self.open();
+                } else {
+                    self.dismiss();
+                }
+                Ok(())
+            }
+            "peek_height" => {
+                self.set_content_height(expect_f32(value)? as u32);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["expanded", "peek_height", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for BottomSheet {

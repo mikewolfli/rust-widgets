@@ -12,7 +12,12 @@ use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::expect_i64;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Stepper widget for numeric increment/decrement with +/- buttons.
 pub struct Stepper {
@@ -69,9 +74,24 @@ impl Stepper {
         self.set_value(self.value);
     }
 
+    /// Returns the minimum value (inclusive).
+    pub fn min(&self) -> i32 {
+        self.min
+    }
+
+    /// Returns the maximum value (inclusive).
+    pub fn max(&self) -> i32 {
+        self.max
+    }
+
     /// Sets the step increment/decrement amount.
     pub fn set_step(&mut self, step: i32) {
         self.step = step.max(1);
+    }
+
+    /// Returns the step increment/decrement amount.
+    pub fn step(&self) -> i32 {
+        self.step
     }
 
     /// Increments the value by the step amount, clamped to max.
@@ -97,6 +117,51 @@ impl Widget for Stepper {
         crate::core::Size::new(120, 30)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `Stepper`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_dialog.in.rs` / `access_write_dialog.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before, including the `i32`
+/// truncation and the `min`/`max` clamping the setters perform.
+impl WidgetProperties for Stepper {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "value" => Ok(CapabilityValue::Int(self.value() as i64)),
+            "minimum" => Ok(CapabilityValue::Int(self.min() as i64)),
+            "maximum" => Ok(CapabilityValue::Int(self.max() as i64)),
+            "step" => Ok(CapabilityValue::Int(self.step() as i64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "value" => {
+                self.set_value(expect_i64(value)? as i32);
+                Ok(())
+            }
+            "minimum" => {
+                self.set_min(expect_i64(value)? as i32);
+                Ok(())
+            }
+            "maximum" => {
+                self.set_max(expect_i64(value)? as i32);
+                Ok(())
+            }
+            "step" => {
+                self.set_step(expect_i64(value)? as i32);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["value", "minimum", "maximum", "step", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for Stepper {

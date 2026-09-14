@@ -12,7 +12,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::expect_bool;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 use std::collections::HashSet;
 
 /// An item in a MultiSelectComboBox with an identifier, display text, and enabled state.
@@ -183,6 +188,23 @@ impl MultiSelectComboBox {
         self.selection_changed.emit(ids);
     }
 
+    /// Returns the number of currently selected items.
+    pub fn selected_count(&self) -> usize {
+        self.selected.len()
+    }
+
+    /// Returns whether the dropdown is currently expanded.
+    pub fn is_expanded(&self) -> bool {
+        self.expanded
+    }
+
+    /// Sets the expanded/collapsed state of the dropdown.
+    pub fn set_expanded(&mut self, expanded: bool) {
+        if self.expanded != expanded {
+            self.toggle_expand();
+        }
+    }
+
     /// Returns the summary text shown when the dropdown is collapsed.
     fn summary_text(&self) -> String {
         let selected_count = self.selected.len();
@@ -215,6 +237,39 @@ impl Widget for MultiSelectComboBox {
         crate::core::Size::new(200, 28)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `MultiSelectComboBox`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_input.in.rs` / `access_write_input.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before. `selected_count` is derived
+/// from the selection set, so it is refused as read-only rather than reported as a
+/// name this control does not know.
+impl WidgetProperties for MultiSelectComboBox {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "selected_count" => Ok(CapabilityValue::UInt(self.selected_count() as u64)),
+            "expanded" => Ok(CapabilityValue::Bool(self.is_expanded())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "expanded" => {
+                self.set_expanded(expect_bool(value)?);
+                Ok(())
+            }
+            "selected_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["selected_count", "expanded", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for MultiSelectComboBox {

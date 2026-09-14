@@ -12,7 +12,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::expect_string;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 const MONTH_NAMES: &[&str] =
     &["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -37,6 +42,24 @@ fn days_in_month(year: i32, month: u32) -> u32 {
         }
         _ => 30,
     }
+}
+
+/// Parses an ISO `YYYY-MM-DD` date into a `(year, month, day)` tuple.
+///
+/// Returns `None` for anything that is not exactly that shape, so the property
+/// contract can answer [`CapabilityAccessError::TypeMismatch`] instead of
+/// silently clamping a malformed string into a valid-looking date. The
+/// day-of-month range is left to [`CupertinoDatePicker::set_selected_date`],
+/// which normalises it against the month's real length.
+fn parse_iso_date(text: &str) -> Option<(i32, u32, u32)> {
+    let mut parts = text.split('-');
+    let year = parts.next()?.parse::<i32>().ok()?;
+    let month = parts.next()?.parse::<u32>().ok()?;
+    let day = parts.next()?.parse::<u32>().ok()?;
+    if parts.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    Some((year, month, day))
 }
 
 /// A valid date range for year generation.
@@ -179,6 +202,42 @@ impl Widget for CupertinoDatePicker {
         crate::core::Size::new(300, 200)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `CupertinoDatePicker`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_input.in.rs` / `access_write_input.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before. `selected_date` reads the
+/// picker's real date and publishes it as ISO `YYYY-MM-DD`, replacing the fixed
+/// `2025-01-01` the centralised defaults table returned.
+impl WidgetProperties for CupertinoDatePicker {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "selected_date" => {
+                let (year, month, day) = self.selected_date();
+                Ok(CapabilityValue::String(format!("{year:04}-{month:02}-{day:02}")))
+            }
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "selected_date" => {
+                let parsed = parse_iso_date(&expect_string(value)?)
+                    .ok_or(CapabilityAccessError::TypeMismatch)?;
+                self.set_selected_date(parsed.0, parsed.1, parsed.2);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["selected_date", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for CupertinoDatePicker {

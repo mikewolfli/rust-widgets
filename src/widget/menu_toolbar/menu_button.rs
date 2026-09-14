@@ -12,7 +12,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderCommand, RenderContext};
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::{expect_bool, expect_string};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Default width of the dropdown menu panel.
 const DEFAULT_MENU_WIDTH: u32 = 180;
@@ -248,6 +253,51 @@ impl Widget for MenuButton {
         crate::core::Size::new(120, 28)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `MenuButton`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before. `expanded` is the published
+/// name for the open/closed state [`MenuButton::is_menu_open`] reports, because
+/// that is the name the schema declares. `item_count` is derived from the menu
+/// item list and has no setter, so writes are refused with
+/// [`CapabilityAccessError::ReadOnlyProperty`].
+impl WidgetProperties for MenuButton {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "text" => Ok(CapabilityValue::String(self.text().to_string())),
+            "item_count" => Ok(CapabilityValue::UInt(self.item_count() as u64)),
+            "expanded" => Ok(CapabilityValue::Bool(self.is_menu_open())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "text" => {
+                self.set_text(&expect_string(value)?);
+                Ok(())
+            }
+            "expanded" => {
+                if expect_bool(value)? {
+                    self.open_menu();
+                } else {
+                    self.close_menu();
+                }
+                Ok(())
+            }
+            // Derived from the menu item list, which owns it.
+            "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["text", "item_count", "expanded", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for MenuButton {

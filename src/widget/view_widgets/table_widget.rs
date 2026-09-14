@@ -268,6 +268,10 @@ impl WidgetProperties for TableWidget {
                 self.set_selection_mode(expect_selection_mode(value)?);
                 Ok(())
             }
+            "column_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "has_delegate" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "has_model" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "row_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }

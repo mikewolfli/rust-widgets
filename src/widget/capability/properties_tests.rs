@@ -26,7 +26,8 @@
 use crate::core::Rect;
 use crate::widget::capability::types::CapabilityValue;
 use crate::widget::capability::{
-    widget_property_get, widget_property_names, widget_property_set, BASE_PROPERTY_NAMES,
+    widget_property_get, widget_property_names, widget_property_set, WidgetFactory,
+    BASE_PROPERTY_NAMES,
 };
 use crate::widget::{CapabilityAccessError, Widget};
 
@@ -312,6 +313,144 @@ fn view_widgets_satisfy_the_contract() {
     assert_contract(&mut tree, "TreeView");
 }
 
+/// Cupertino widgets.
+///
+/// The Cupertino controls answer through their own `WidgetProperties` impls but
+/// share `WidgetKind`s with unrelated controls in some cases, so these assertions
+/// pin that each one reads its *own* state rather than a neighbour's schema.
+#[test]
+fn cupertino_widgets_satisfy_the_contract() {
+    use crate::widget::cupertino::CupertinoAlertDialog;
+    use crate::widget::cupertino::CupertinoDatePicker;
+    use crate::widget::cupertino::CupertinoNavigationBar;
+    use crate::widget::cupertino::CupertinoSegmentedControl;
+    use crate::widget::special_widgets::snackbar::Snackbar;
+
+    let mut dialog = CupertinoAlertDialog::new(Rect::new(0, 0, 270, 150));
+    assert_eq!(get(&dialog, "title"), CapabilityValue::String(String::new()));
+    assert_eq!(
+        widget_property_set(&mut dialog, "title", CapabilityValue::String("T".into())),
+        Ok(())
+    );
+    assert_eq!(get(&dialog, "title"), CapabilityValue::String("T".into()));
+    assert_eq!(
+        widget_property_set(&mut dialog, "message", CapabilityValue::String("m".into())),
+        Ok(())
+    );
+    assert_eq!(get(&dialog, "message"), CapabilityValue::String("m".into()));
+    assert_contract(&mut dialog, "CupertinoAlertDialog");
+
+    let mut bar = CupertinoNavigationBar::new(Rect::new(0, 0, 375, 96));
+    assert_eq!(get(&bar, "large_title"), CapabilityValue::Bool(true));
+    assert_eq!(widget_property_set(&mut bar, "large_title", CapabilityValue::Bool(false)), Ok(()));
+    assert_eq!(get(&bar, "large_title"), CapabilityValue::Bool(false));
+    assert_contract(&mut bar, "CupertinoNavigationBar");
+
+    let mut segmented = CupertinoSegmentedControl::new(Rect::new(0, 0, 300, 32));
+    assert_eq!(get(&segmented, "segment_count"), CapabilityValue::UInt(0));
+    segmented.set_segments(vec!["A".to_string(), "B".to_string(), "C".to_string()]);
+    assert_eq!(get(&segmented, "segment_count"), CapabilityValue::UInt(3));
+    assert_eq!(
+        widget_property_set(&mut segmented, "selected_index", CapabilityValue::UInt(2)),
+        Ok(())
+    );
+    assert_eq!(get(&segmented, "selected_index"), CapabilityValue::UInt(2));
+    // Derived from the segment list, so it must be refused rather than reported
+    // as a name this control does not know.
+    assert_eq!(
+        widget_property_set(&mut segmented, "segment_count", CapabilityValue::UInt(1)),
+        Err(CapabilityAccessError::ReadOnlyProperty)
+    );
+    assert_contract(&mut segmented, "CupertinoSegmentedControl");
+
+    let mut picker = CupertinoDatePicker::new(Rect::new(0, 0, 300, 200));
+    // The real date, not the fixed placeholder the centralised defaults returned.
+    assert_eq!(get(&picker, "selected_date"), CapabilityValue::String("2025-01-01".into()));
+    assert_eq!(
+        widget_property_set(
+            &mut picker,
+            "selected_date",
+            CapabilityValue::String("2024-02-29".into())
+        ),
+        Ok(())
+    );
+    assert_eq!(get(&picker, "selected_date"), CapabilityValue::String("2024-02-29".into()));
+    assert_eq!(
+        widget_property_set(
+            &mut picker,
+            "selected_date",
+            CapabilityValue::String("not-a-date".into())
+        ),
+        Err(CapabilityAccessError::TypeMismatch)
+    );
+    assert_contract(&mut picker, "CupertinoDatePicker");
+
+    let mut snackbar = Snackbar::new(Rect::new(0, 0, 420, 120));
+    assert_eq!(
+        widget_property_set(&mut snackbar, "message", CapabilityValue::String("hi".into())),
+        Ok(())
+    );
+    assert_eq!(get(&snackbar, "message"), CapabilityValue::String("hi".into()));
+    assert_contract(&mut snackbar, "Snackbar");
+}
+
+/// Menu/toolbar dropdowns and the properties panel.
+#[test]
+fn menu_and_property_controls_satisfy_the_contract() {
+    use crate::widget::menu_toolbar::dropdown_menu::DropdownMenu;
+    use crate::widget::menu_toolbar::menu_button::MenuButton;
+    use crate::widget::view_widgets::properties_panel::PropertiesPanel;
+
+    let mut dropdown = DropdownMenu::new(Rect::new(0, 0, 200, 32));
+    assert_eq!(get(&dropdown, "selected_index"), CapabilityValue::Null);
+    dropdown.add_item(crate::widget::menu_toolbar::dropdown_menu::DropdownItem::new("a", "A"));
+    dropdown.add_item(crate::widget::menu_toolbar::dropdown_menu::DropdownItem::new("b", "B"));
+    assert_eq!(get(&dropdown, "item_count"), CapabilityValue::UInt(2));
+    assert_eq!(
+        widget_property_set(&mut dropdown, "selected_index", CapabilityValue::UInt(1)),
+        Ok(())
+    );
+    assert_eq!(get(&dropdown, "selected_index"), CapabilityValue::UInt(1));
+    assert_eq!(widget_property_set(&mut dropdown, "expanded", CapabilityValue::Bool(true)), Ok(()));
+    assert_eq!(get(&dropdown, "expanded"), CapabilityValue::Bool(true));
+    assert_eq!(
+        widget_property_set(&mut dropdown, "item_count", CapabilityValue::UInt(9)),
+        Err(CapabilityAccessError::ReadOnlyProperty)
+    );
+    assert_contract(&mut dropdown, "DropdownMenu");
+
+    let mut menu = MenuButton::new("File", Rect::new(0, 0, 120, 28));
+    assert_eq!(get(&menu, "text"), CapabilityValue::String("File".into()));
+    assert_eq!(
+        widget_property_set(&mut menu, "text", CapabilityValue::String("Edit".into())),
+        Ok(())
+    );
+    assert_eq!(get(&menu, "text"), CapabilityValue::String("Edit".into()));
+    assert_eq!(widget_property_set(&mut menu, "expanded", CapabilityValue::Bool(true)), Ok(()));
+    assert_eq!(get(&menu, "expanded"), CapabilityValue::Bool(true));
+    assert_eq!(
+        widget_property_set(&mut menu, "item_count", CapabilityValue::UInt(9)),
+        Err(CapabilityAccessError::ReadOnlyProperty)
+    );
+    assert_contract(&mut menu, "MenuButton");
+
+    let mut panel = PropertiesPanel::new(Rect::new(0, 0, 300, 400));
+    assert_eq!(get(&panel, "property_count"), CapabilityValue::UInt(0));
+    panel.add_property(crate::widget::view_widgets::properties_panel::PropertyEntry::new(
+        "width",
+        crate::widget::view_widgets::properties_panel::PropertyValue::Number(10.0),
+        None,
+        None,
+        true,
+    ));
+    assert_eq!(get(&panel, "property_count"), CapabilityValue::UInt(1));
+    assert_eq!(
+        widget_property_set(&mut panel, "property_count", CapabilityValue::UInt(9)),
+        Err(CapabilityAccessError::ReadOnlyProperty)
+    );
+    assert_contract(&mut panel, "PropertiesPanel");
+}
+
 /// A control with no properties of its own still exposes the shared set.
 ///
 /// This is the case that caught a wrong assumption during migration: an empty
@@ -377,5 +516,229 @@ fn a_widget_without_a_contract_reports_none_not_empty() {
         widget_property_get(dyn_widget, "text"),
         Err(CapabilityAccessError::UnsupportedOnWidget),
         "reflection must say the control has no contract, not that the name is wrong"
+    );
+}
+
+/// Every widget the factory can build must expose a property contract.
+///
+/// # Why this test exists
+///
+/// The migration of properties onto per-widget `WidgetProperties` impls was
+/// checked only by hand-enumerated per-category tests, each naming its widgets as
+/// string literals. Those tests pass whether or not a given widget was migrated, so
+/// 59 factory-constructible widgets sat with no contract at all and nothing failed.
+/// The gap was invisible precisely because no test ever asked the factory what it
+/// could build.
+///
+/// A hand-typed list here would recreate the same blind spot, so the list comes from
+/// the factory and this test's failure output names the offenders.
+///
+/// # What "has a contract" means
+///
+/// `properties_dyn()` returning `Some` — i.e. the widget answers the reflection
+/// interface at all. It does **not** require the widget to declare many properties:
+/// a control with no state beyond the shared four is legitimate, and
+/// `property_names()` returning `BASE_PROPERTY_NAMES` satisfies this test. What is
+/// not legitimate is a widget that answers *nothing*, because every read and write
+/// against it then reports `UnsupportedOnWidget`, which a generated property editor
+/// renders as "this control is not editable" rather than "this control does not
+/// exist".
+#[test]
+fn every_factory_widget_declares_a_property_contract() {
+    let factory = WidgetFactory::new_with_defaults();
+    let names = factory.widget_names();
+    assert!(!names.is_empty(), "the factory must register widgets");
+
+    let mut contractless = Vec::new();
+    for name in names {
+        let Some(widget) = factory.create(name, Rect::new(0, 0, 64, 48), "x") else {
+            continue;
+        };
+        if widget.properties_dyn().is_none() {
+            contractless.push(name);
+        }
+    }
+
+    assert!(
+        contractless.is_empty(),
+        "these widgets are constructible but expose no WidgetProperties contract, so \
+         every property read/write against them reports `UnsupportedOnWidget`: \
+         {contractless:?}"
+    );
+}
+
+/// A published name must never answer `UnknownProperty` when written.
+///
+/// # Why this test exists
+///
+/// `UnknownProperty` and `ReadOnlyProperty` answer different questions:
+///
+/// - `UnknownProperty` — "this control has no property by that name".
+/// - `ReadOnlyProperty` — "the property exists, but it is not writable".
+///
+/// A control that publishes a name from `property_names()` and then answers
+/// `UnknownProperty` when asked to write it is contradicting itself: the name is in
+/// the published contract, so it is not unknown. A property editor driven from
+/// `property_names()` renders that answer as a broken control rather than as a
+/// read-only field, and a scripted client that trusts the contract gets a
+/// misleading error.
+///
+/// The correct answer for a name with no setter is `ReadOnlyProperty`. This test
+/// asks every factory-constructible control for exactly that, so the whole class of
+/// contradiction is caught mechanically instead of by reading 156 `property_names`
+/// implementations by hand.
+///
+/// # Why the write value is a `Bool`
+///
+/// The test cares only about *which* error comes back, and for a name with no
+/// setter arm the answer must not depend on the value. `Bool` is chosen because it
+/// is the type a wrong-typed write is least likely to coincide with, so a control
+/// that does have a setter reports `TypeMismatch` and is correctly skipped rather
+/// than being mistaken for a violation.
+#[test]
+fn no_published_property_answers_unknown_when_written() {
+    let factory = WidgetFactory::new_with_defaults();
+
+    let mut offenders = alloc::vec::Vec::new();
+    for name in factory.widget_names() {
+        let Some(mut widget) = factory.create(name, Rect::new(0, 0, 64, 48), "x") else {
+            continue;
+        };
+        let Some(published) = widget_property_names(widget.as_ref()) else {
+            continue;
+        };
+        for property in published {
+            // A name that cannot even be read is a different defect, owned by
+            // `assert_contract`; skip it so this test reports one thing.
+            if widget_property_get(widget.as_ref(), property).is_err() {
+                continue;
+            }
+            if widget_property_set(widget.as_mut(), property, CapabilityValue::Bool(false))
+                == Err(CapabilityAccessError::UnknownProperty)
+            {
+                offenders.push((name, property));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "these properties are published by property_names() but answer UnknownProperty when \
+         written, which contradicts the contract — a name with no setter must answer \
+         ReadOnlyProperty (widget, property): {offenders:?}"
+    );
+}
+
+/// The registered schema and the control's own contract must publish the same names.
+///
+/// # Why this test exists
+///
+/// The capability layer carries the property list **twice**: as a static
+/// `*_PROPERTIES` table (what the factory validates writes against, and what
+/// `capability_manifest()` exports) and as `property_names()` on the control's own
+/// `WidgetProperties` impl. Those are two statements of one fact.
+///
+/// They had already drifted: every one of the 155 schema tables omitted
+/// `visible` and `geometry`, which every contract publishes through
+/// `BASE_PROPERTY_NAMES`. A generated property editor would therefore read the
+/// schema, never offer the two fields, and silently hide state the control reports
+/// as settable. Nothing failed, because no test compared the two lists.
+///
+/// # What this pins
+///
+/// For each registered capability, the names the control publishes must appear in
+/// the schema. The reverse direction is checked implicitly: the schema is what the
+/// factory serves, and a schema name the control cannot read would already be
+/// caught by `assert_contract` in the per-category tests.
+///
+/// The comparison is by name only, deliberately. `readable` / `writable` are
+/// *policy* about a name (and `geometry` is published yet read-only), while the
+/// name set is *existence*. Mixing the two here would make the test fail for a
+/// legitimate design choice and hide the defect it is meant to catch.
+#[test]
+fn schema_and_contract_publish_the_same_names() {
+    let factory = WidgetFactory::new_with_defaults();
+
+    let mut missing = alloc::vec::Vec::new();
+    for capability in factory.capabilities() {
+        let Some(widget) = factory.create(capability.canonical_name, Rect::new(0, 0, 64, 48), "x")
+        else {
+            continue;
+        };
+        let Some(published) = widget_property_names(widget.as_ref()) else {
+            continue;
+        };
+        let declared: alloc::vec::Vec<&str> =
+            capability.properties.iter().map(|schema| schema.name).collect();
+        for name in published {
+            if !declared.contains(name) {
+                missing.push((capability.canonical_name, name));
+            }
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "these controls publish properties their registered schema does not declare, so the \
+         schema and the contract disagree about what exists (widget, property): {missing:?}"
+    );
+}
+
+/// Every `WidgetKind` claimed by more than one capability must have a tie-break.
+///
+/// # Why this test exists
+///
+/// Several controls share a `WidgetKind` (`DataGrid`, `VirtualTable` and
+/// `TableWidget` all report `WidgetKind::Table`). The factory resolves such a kind
+/// by comparing the *concrete* type against a hand-maintained table. Where that
+/// table has no row, the lookup used to return the first registered capability —
+/// so `segmented_control` (sharing `WidgetKind::ToggleButton` with `ToggleButton`)
+/// read `ToggleButton`'s schema and reported `UnknownProperty` for its own
+/// `item_count`.
+///
+/// The bug was invisible because nothing checked the invariant. This test asks the
+/// registry directly: group every registered capability by kind, and for any kind
+/// with more than one entry, require that each entry can be distinguished. It reads
+/// the same table the lookup does, so it cannot drift from it.
+#[test]
+fn every_shared_kind_has_a_tie_break() {
+    let factory = WidgetFactory::new_with_defaults();
+
+    // Group canonical names by the kind each capability declares.
+    let mut by_kind: alloc::collections::BTreeMap<
+        crate::widget::WidgetKind,
+        alloc::vec::Vec<&'static str>,
+    > = alloc::collections::BTreeMap::new();
+    for capability in factory.capabilities() {
+        by_kind.entry(capability.kind).or_default().push(capability.canonical_name);
+    }
+
+    let mut ambiguous = alloc::vec::Vec::new();
+    for (kind, mut names) in by_kind {
+        if names.len() < 2 {
+            continue;
+        }
+        names.sort_unstable();
+        // A shared kind needs every member distinguishable. Instantiating each
+        // member and asking the factory to resolve it back is the only check that
+        // exercises the real table rather than a copy of it.
+        for name in &names {
+            let Some(widget) = factory.create(name, Rect::new(0, 0, 32, 32), "") else {
+                // Not constructible: it cannot be mis-resolved at runtime either.
+                continue;
+            };
+            let resolved = factory.capability_for_kind_instance(widget.as_ref());
+            let resolved_name = resolved.map(|cap| cap.canonical_name);
+            if resolved_name != Some(*name) {
+                ambiguous.push((kind, *name, resolved_name));
+            }
+        }
+    }
+
+    assert!(
+        ambiguous.is_empty(),
+        "these controls share a WidgetKind but the factory cannot resolve them back \
+         to their own capability, so they would read another control's schema \
+         (kind, created-as, resolved-as): {ambiguous:?}"
     );
 }

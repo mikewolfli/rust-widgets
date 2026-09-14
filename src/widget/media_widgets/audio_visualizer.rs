@@ -9,6 +9,7 @@
 
 use crate::core::{Color, Rect};
 use crate::event::{Event, EventHandler};
+use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::widget::capability::coercion::expect_usize;
@@ -181,19 +182,7 @@ impl Widget for AudioVisualizer {
         Some(self)
     }
 
-    /// Returns this widget as its property contract.
-    fn properties_dyn(
-        &self,
-    ) -> Option<&dyn crate::widget::capability::properties_trait::WidgetProperties> {
-        Some(self)
-    }
-
-    /// Mutable counterpart to `properties_dyn`.
-    fn properties_dyn_mut(
-        &mut self,
-    ) -> Option<&mut dyn crate::widget::capability::properties_trait::WidgetProperties> {
-        Some(self)
-    }
+    impl_widget_property_hooks!();
 }
 
 /// `AudioVisualizer`'s property contract.

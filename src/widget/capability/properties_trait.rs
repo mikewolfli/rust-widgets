@@ -128,12 +128,23 @@ pub fn geometry_to_value(geometry: Rect) -> CapabilityValue {
 ///
 /// # Where the name list comes from
 ///
-/// `property_names()` returns the control's existing `*_PROPERTIES` schema
-/// (declared in `properties_*.in.rs`), through [`schema_names`]. The schema already
-/// records every property, its kind and whether it is writable — it is what the
-/// factory validates against — so deriving the names from it means the two cannot
-/// disagree. Declaring a parallel `&[&str]` list would be a second source of truth
-/// for the same fact, which is the duplication this trait exists to remove.
+/// `property_names()` names the properties directly, through the
+/// [`property_names_of`] macro, and appends [`BASE_PROPERTY_NAMES`] for the shared
+/// four.
+///
+/// # Why not derive them from the schema table
+///
+/// The schema table (`properties_*.in.rs`) and this list are two statements of the
+/// same fact, and an earlier draft of this doc-comment proposed deriving one from
+/// the other with a `schema_names(BUTTON_PROPERTIES)` helper. `property_names` must
+/// return a `'static` slice, and no `const fn` can project a slice of
+/// `PropertySchema` structs into a slice of `&str`, so that helper cannot exist
+/// without allocating on every call.
+///
+/// The two lists are therefore kept in step by test instead:
+/// `schema_and_contract_publish_the_same_names` fails when they disagree. That is
+/// the arrangement actually in force — this comment previously described a function
+/// that was never written, which is worse than no comment at all.
 ///
 /// # How a control declares the contract
 ///
@@ -151,7 +162,9 @@ pub fn geometry_to_value(geometry: Rect) -> CapabilityValue {
 ///             _ => base_property_set(self, name, value),
 ///         }
 ///     }
-///     fn property_names(&self) -> &'static [&'static str] { schema_names(BUTTON_PROPERTIES) }
+///     fn property_names(&self) -> &'static [&'static str] {
+///         property_names_of!["text", "pressed", "default", BASE_PROPERTY_NAMES]
+///     }
 /// }
 /// ```
 pub trait WidgetProperties {
@@ -310,88 +323,34 @@ pub fn widget_property_names(widget: &dyn Widget) -> Option<&'static [&'static s
     widget.properties_dyn().map(WidgetProperties::property_names)
 }
 
-/// The compatibility probe, resolved at the call site rather than imported: it
-/// exists only under `full_widgets`, while this dispatcher exists wherever the
-/// contract does. A stripped profile has no property tables to probe, so the
-/// fallback reports [`CapabilityAccessError::UnsupportedOnWidget`] there, which is
-/// the same answer the tables themselves would give.
-#[cfg(full_widgets)]
-fn legacy_read(widget: &dyn Widget, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
-    super::access::read_widget_property_legacy(widget, name)
-}
-
-#[cfg(not(full_widgets))]
-fn legacy_read(
-    _widget: &dyn Widget,
-    _name: &str,
-) -> Result<CapabilityValue, CapabilityAccessError> {
-    Err(CapabilityAccessError::UnsupportedOnWidget)
-}
-
-#[cfg(full_widgets)]
-fn legacy_write(
-    widget: &mut dyn Widget,
-    name: &str,
-    value: CapabilityValue,
-) -> Result<(), CapabilityAccessError> {
-    super::access::write_widget_property_legacy(widget, name, value)
-}
-
-#[cfg(not(full_widgets))]
-fn legacy_write(
-    _widget: &mut dyn Widget,
-    _name: &str,
-    _value: CapabilityValue,
-) -> Result<(), CapabilityAccessError> {
-    Err(CapabilityAccessError::UnsupportedOnWidget)
-}
-
-/// Reads a control's property by name, contract first and legacy table second.
+/// The contract path, with no fallback.
 ///
-/// # Why two paths
+/// # Why there is only one path now
 ///
-/// [`widget_property_get`] is the contract path: it asks the control's own
-/// `WidgetProperties` impl, which is the single source of truth for what the
-/// control exposes. The legacy probe is the fallback for controls whose readers
-/// have not moved onto the contract yet (BLUE15 Phase C-1); it keeps the published
-/// `WidgetFactory::read_property` behaviour intact instead of returning
-/// [`CapabilityAccessError::UnsupportedOnWidget`] for a property the factory
-/// advertises as readable.
+/// This used to try the control's own `WidgetProperties` impl and, on
+/// `UnsupportedOnWidget`, delegate to a centralised nine-category probe over the
+/// property tables (BLUE15 Phase C-1). That second path duplicated the contract
+/// for every control that had migrated — two places answering "what properties does
+/// this control have", which is exactly the drift the contract exists to prevent.
 ///
-/// # What falls through
-///
-/// **Only** `UnsupportedOnWidget` — the one answer that means "this control has no
-/// contract at all", which is exactly the case the fallback exists for. Every
-/// other error is the contract's *decision* and is returned unchanged:
-///
-/// * `UnknownProperty` — the control has a contract and does not declare this
-///   name. Delegating here would let a category arm invent a property the control
-///   deliberately does not expose.
-/// * `ReadOnlyProperty` / `TypeMismatch` — the control refused the request, and an
-///   older table must not overrule that.
+/// Every registered control now implements `WidgetProperties`, and a test asserts
+/// it, so nothing can reach the fallback. It has been deleted rather than left as
+/// dead code, and this function is consequently a plain forward.
 pub fn read_widget_property_by_name(
     widget: &dyn Widget,
     name: &str,
 ) -> Result<CapabilityValue, CapabilityAccessError> {
-    match widget_property_get(widget, name) {
-        Err(CapabilityAccessError::UnsupportedOnWidget) => legacy_read(widget, name),
-        answer => answer,
-    }
+    widget_property_get(widget, name)
 }
 
-/// Write-side counterpart to [`read_widget_property_by_name`], with the same
-/// fall-through rule: only "no contract at all" delegates.
+/// Write-side counterpart to [`read_widget_property_by_name`].
 pub fn write_widget_property_by_name(
     widget: &mut dyn Widget,
     name: &str,
     value: CapabilityValue,
 ) -> Result<(), CapabilityAccessError> {
-    match widget_property_set(widget, name, value.clone()) {
-        Err(CapabilityAccessError::UnsupportedOnWidget) => legacy_write(widget, name, value),
-        answer => answer,
-    }
+    widget_property_set(widget, name, value)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

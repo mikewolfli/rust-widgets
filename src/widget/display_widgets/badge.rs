@@ -11,7 +11,12 @@
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::widget::capability::coercion::{expect_i64, expect_string};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Severity level for a badge, determining its color scheme.
 /// Badge severity/notification level.
@@ -153,6 +158,43 @@ impl Widget for Badge {
         crate::core::Size::new(24, 24)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `Badge`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before.
+impl WidgetProperties for Badge {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "text" => Ok(CapabilityValue::String(self.text().to_string())),
+            "count" => Ok(CapabilityValue::Int(self.count() as i64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "text" => {
+                self.set_text(expect_string(value)?);
+                Ok(())
+            }
+            "count" => {
+                let count = expect_i64(value)?;
+                let count =
+                    u32::try_from(count).map_err(|_| CapabilityAccessError::TypeMismatch)?;
+                self.set_count(count);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["text", "count", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for Badge {

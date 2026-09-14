@@ -10,7 +10,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::Event;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
+use crate::widget::capability::coercion::expect_usize;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Hierarchical model abstraction for TreeTable.
 pub trait TreeTableModel: Send + Sync {
@@ -292,6 +297,90 @@ impl Widget for TreeTable {
         crate::core::Size::new(400, 300)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `TreeTable`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_view.in.rs` / `access_write_view.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before. `TreeTable` reports
+/// `WidgetKind::TreeView`, which it shares with `TreeView`; dispatching on the
+/// concrete type here keeps the two contracts from answering for each other.
+impl WidgetProperties for TreeTable {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "has_model" => Ok(CapabilityValue::Bool(self.has_model())),
+            "row_count" => Ok(CapabilityValue::UInt(self.row_count() as u64)),
+            "column_count" => Ok(CapabilityValue::UInt(self.column_count() as u64)),
+            "selected_row" => match self.selected_row() {
+                Some(row) => Ok(CapabilityValue::UInt(row as u64)),
+                None => Ok(CapabilityValue::Null),
+            },
+            "row_height" => Ok(CapabilityValue::UInt(self.row_height() as u64)),
+            "column_width" => Ok(CapabilityValue::UInt(self.column_width() as u64)),
+            "projection_state" => {
+                let selected = match self.selected_row() {
+                    Some(row) => format!("Some({row})"),
+                    None => "None".to_string(),
+                };
+                Ok(CapabilityValue::String(format!(
+                    "rows={},selected={}",
+                    self.row_count(),
+                    selected
+                )))
+            }
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "selected_row" => match value {
+                CapabilityValue::Null => {
+                    if let Some(selected) = self.selected_row() {
+                        let _ = self.select_row(selected);
+                    }
+                    Ok(())
+                }
+                other => {
+                    let row = expect_usize(other)?;
+                    if self.select_row(row) || self.row_count() == 0 {
+                        Ok(())
+                    } else {
+                        Err(CapabilityAccessError::UnsupportedOnWidget)
+                    }
+                }
+            },
+            "row_height" => {
+                self.set_row_height(crate::widget::capability::coercion::expect_u32(value)?);
+                Ok(())
+            }
+            "column_width" => {
+                self.set_column_width(crate::widget::capability::coercion::expect_u32(value)?);
+                Ok(())
+            }
+            // Derived counts and the projection summary are computed from the
+            // model, so they are refused as read-only rather than reported as
+            // names this control does not know.
+            "has_model" | "row_count" | "column_count" | "projection_state" => {
+                Err(CapabilityAccessError::ReadOnlyProperty)
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![
+            "has_model",
+            "row_count",
+            "column_count",
+            "selected_row",
+            "row_height",
+            "column_width",
+            BASE_PROPERTY_NAMES
+        ]
+    }
 }
 
 impl Draw for TreeTable {

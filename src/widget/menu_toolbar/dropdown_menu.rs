@@ -12,7 +12,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderCommand, RenderContext};
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::{expect_bool, expect_usize};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Default height of the dropdown list when expanded.
 const DEFAULT_DROPDOWN_HEIGHT: u32 = 200;
@@ -119,6 +124,41 @@ impl DropdownMenu {
         self.selected_value.as_ref().and_then(|val| {
             self.items.iter().find(|item| item.value == *val).map(|item| item.label.clone())
         })
+    }
+
+    /// Returns the index of the selected item, or `None` when nothing is selected.
+    ///
+    /// The index addresses the item list as a whole, so it matches the index of
+    /// the entry whose value is currently selected in
+    /// [`selected_value`](Self::selected_value).
+    pub fn selected_index(&self) -> Option<usize> {
+        let selected = self.selected_value.as_deref()?;
+        self.items.iter().position(|item| item.value == selected)
+    }
+
+    /// Selects the item at `index`.
+    ///
+    /// Mirrors what a click on that row does: an in-range, enabled item becomes
+    /// the selection and emits [`item_selected`](Self::item_selected); an
+    /// out-of-range index or a disabled item leaves the selection untouched.
+    /// Returns whether the selection changed as a result.
+    pub fn set_selected_index(&mut self, index: usize) -> Result<(), CapabilityAccessError> {
+        let Some(item) = self.items.get(index) else {
+            return Err(CapabilityAccessError::TypeMismatch);
+        };
+        if !item.enabled {
+            // Disabled rows are presented but deliberately not selectable.
+            return Ok(());
+        }
+        let value = item.value.clone();
+        if self.selected_value.as_deref() == Some(value.as_str()) {
+            return Ok(());
+        }
+
+        self.selected_value = Some(value.clone());
+        self.item_selected.emit(value);
+        self.base.request_redraw();
+        Ok(())
     }
 
     /// Adds an item to the dropdown.
@@ -236,6 +276,49 @@ impl Widget for DropdownMenu {
         crate::core::Size::new(200, 200)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `DropdownMenu`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before. `item_count` is derived from
+/// the item list and has no setter, so writes are refused with
+/// [`CapabilityAccessError::ReadOnlyProperty`].
+impl WidgetProperties for DropdownMenu {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "item_count" => Ok(CapabilityValue::UInt(self.item_count() as u64)),
+            "selected_index" => match self.selected_index() {
+                Some(index) => Ok(CapabilityValue::UInt(index as u64)),
+                None => Ok(CapabilityValue::Null),
+            },
+            "expanded" => Ok(CapabilityValue::Bool(self.is_expanded())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "selected_index" => self.set_selected_index(expect_usize(value)?),
+            "expanded" => {
+                if expect_bool(value)? {
+                    self.expand();
+                } else {
+                    self.collapse();
+                }
+                Ok(())
+            }
+            // Derived from the item list, which owns it.
+            "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["item_count", "selected_index", "expanded", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for DropdownMenu {

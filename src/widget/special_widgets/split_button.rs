@@ -7,7 +7,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::{expect_bool, expect_string, expect_u32};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// One selectable action in a split button drop-down list.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -281,6 +286,53 @@ impl Widget for SplitButton {
         crate::core::Size::new(100, 28)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `SplitButton`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before. `SplitButton` reports
+/// `WidgetKind::ToolButton`, shared with `ToolButton`; dispatching on the concrete
+/// type here is what keeps the two contracts separate.
+impl WidgetProperties for SplitButton {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "text" => Ok(CapabilityValue::String(self.text().to_string())),
+            "action_count" => Ok(CapabilityValue::UInt(self.actions().len() as u64)),
+            "menu_open" => Ok(CapabilityValue::Bool(self.menu_open())),
+            "row_height" => Ok(CapabilityValue::UInt(self.row_height() as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "text" => {
+                self.set_text(expect_string(value)?);
+                Ok(())
+            }
+            "action_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "menu_open" => {
+                if expect_bool(value)? {
+                    self.open_menu();
+                } else {
+                    self.close_menu();
+                }
+                Ok(())
+            }
+            "row_height" => {
+                self.set_row_height(expect_u32(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["text", "action_count", "menu_open", "row_height", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl EventHandler for SplitButton {

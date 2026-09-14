@@ -12,6 +12,7 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::widget::capability::coercion::{expect_f32, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -452,7 +453,23 @@ impl WidgetProperties for PieMenu {
     }
 
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
-        base_property_set(self, name, value)
+        match name {
+            "radius" => {
+                self.set_radius(expect_f32(value)?);
+                Ok(())
+            }
+            "inner_radius" => {
+                self.set_inner_radius(expect_f32(value)?);
+                Ok(())
+            }
+            "current_index" => {
+                self.set_current_index(expect_usize(value)?);
+                Ok(())
+            }
+            // Derived from the item vector, so there is nothing to assign.
+            "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
     }
 
     fn property_names(&self) -> &'static [&'static str] {

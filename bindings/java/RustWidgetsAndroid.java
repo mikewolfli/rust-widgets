@@ -1,7 +1,7 @@
 package rust_widgets;
 
 /**
- * JNI declarations for the Android native-view bridge.
+ * JNI declarations for the Android bridge.
  *
  * <p>These methods bind to the Rust {@code #[no_mangle]} exports in
  * {@code src/platform/android_jni.rs}. The symbol prefix is derived from this
@@ -9,9 +9,23 @@ package rust_widgets;
  * {@code _1} is the JNI escape for {@code _} in the package name.
  *
  * <p>Unlike the cross-platform C-ABI binding ({@code io.github.rustwidgets.RustWidgets}),
- * this class creates and manipulates real Android {@code View} objects. It is
- * therefore only meaningful on Android, where the host {@code Activity} passes
- * its {@code Context} in.
+ * this class is Android-only and carries the JavaVM/Context handshake the Android
+ * host needs.
+ *
+ * <h2>Why there are no {@code nativeCreate*} methods</h2>
+ *
+ * <p>This class used to declare {@code nativeCreateButton}, {@code nativeCreateTextView},
+ * and five siblings, each constructing a real {@code android.widget.*} view, plus the
+ * matching {@code nativeSetView*} mutators and {@code nativeDestroyView}. Those were
+ * removed together with the Rust-side view construction (BLUE15 §D-4): the library no
+ * longer builds native {@code View}s on any platform, so the Android backend paints
+ * its own controls like every other backend. A Java method whose Rust symbol no longer
+ * exists would fail at the first call with {@code UnsatisfiedLinkError}, which is worse
+ * than its absence — hence the deletion rather than a deprecated stub.
+ *
+ * <p>Controls are now created through the cross-platform entry point
+ * ({@code RustWidgets.create}); this class only owns the platform handshake that has to
+ * happen before any control exists.
  *
  * <p>Signature parity with the Rust side is enforced by
  * {@code tools/check_jni_signatures.py}; run it after editing either side.
@@ -26,105 +40,74 @@ public final class RustWidgets {
         throw new AssertionError("No instances");
     }
 
+    // ---- Platform handshake -----------------------------------------------
+
     /**
      * Store the JavaVM so later JNI calls can attach the calling thread.
      *
-     * <p>Call once after loading the library, before creating any view.
+     * <p>Call once after loading the library, before creating any control.
      */
     public static native void nativeInit();
 
-    // ---- View creation ----------------------------------------------------
-
-    /** Create an {@code android.widget.Button}. Returns the native handle, or 0. */
-    public static native long nativeCreateButton(
-            android.content.Context context, String text,
-            int x, int y, int w, int h);
-
-    /** Create an {@code android.widget.TextView}. Returns the native handle, or 0. */
-    public static native long nativeCreateTextView(
-            android.content.Context context, String text,
-            int x, int y, int w, int h);
-
-    /** Create an {@code android.widget.EditText}. Returns the native handle, or 0. */
-    public static native long nativeCreateEditText(
-            android.content.Context context, String text,
-            int x, int y, int w, int h);
-
-    /** Create an {@code android.widget.CheckBox}. Returns the native handle, or 0. */
-    public static native long nativeCreateCheckBox(
-            android.content.Context context, String text,
-            int x, int y, int w, int h);
-
-    /** Create an {@code android.widget.RadioButton}. Returns the native handle, or 0. */
-    public static native long nativeCreateRadioButton(
-            android.content.Context context, String text,
-            int x, int y, int w, int h);
-
-    /** Create an {@code android.widget.ProgressBar}. Returns the native handle, or 0. */
-    public static native long nativeCreateProgressBar(
-            android.content.Context context,
-            int x, int y, int w, int h);
-
-    /** Create an {@code android.widget.SeekBar}. Returns the native handle, or 0. */
-    public static native long nativeCreateSeekBar(
-            android.content.Context context,
-            int x, int y, int w, int h);
-
-    // ---- View mutation ----------------------------------------------------
-
-    /** Set the text of a view created by one of the {@code nativeCreate*} methods. */
-    public static native void nativeSetViewText(long nativePtr, String text);
-
-    /** Set the bounds of a view created by one of the {@code nativeCreate*} methods. */
-    public static native void nativeSetViewBounds(
-            long nativePtr, int x, int y, int w, int h);
-
-    /** Show or hide a view ({@code View.VISIBLE} / {@code View.GONE}). */
-    public static native void nativeSetViewVisibility(long nativePtr, boolean visible);
-
-    /** Enable or disable a view. */
-    public static native void nativeSetViewEnabled(long nativePtr, boolean enabled);
-
-    /** Release the global reference held for a view. */
-    public static native void nativeDestroyView(long nativePtr);
-
-    // ---- Rust-driven creation (Rust→Java direction) -----------------------
-
     /**
-     * Hand the host {@code Context} to the Rust-side view factory.
+     * Hand the host {@code Context} to the Rust-side bridge.
      *
-     * <p>Once stored, the Rust {@code AndroidPlatform} backend creates real
-     * Android views directly (without a per-call Java entry point).
+     * <p>Once stored, the backend can resolve Android system services (the
+     * document picker, logging) without a per-call Java entry point.
      *
      * @return {@code true} when the Context was accepted
      */
     public static native boolean nativeAttachContext(android.content.Context context);
 
     /**
-     * Run the Rust-side create path for every native widget kind.
+     * Drop the stored {@code Context}.
      *
-     * @return the number of widgets created; negative values indicate the
-     *         bridge was not ready ({@code -1}) or a specific step failed
+     * <p>Call from {@code Activity.onDestroy} so the bridge does not keep the host
+     * {@code Activity} alive past its own lifetime.
      */
-    public static native int nativeSelfTestKinds();
+    public static native void nativeDetachContext();
+
+    // ---- Diagnostics ------------------------------------------------------
 
     /**
-     * Exercise the Rust-side dialog path (create / update / dismiss / show).
+     * Route Rust {@code log} output through Android's {@code logcat}.
      *
-     * @return {@code 1} on success, negative on failure
+     * <p>Idempotent: a second call is a no-op rather than installing a second
+     * logger.
      */
-    public static native int nativeSelfTestDialog();
+    public static native void nativeInstallLogging();
 
     /**
-     * Exercise the Rust-side file-dialog path: create a file dialog through the
-     * backend and launch the system document picker
-     * ({@code ACTION_OPEN_DOCUMENT}) on the stored Activity.
+     * Report how many JNI methods the Rust bridge exports.
+     *
+     * <p>Used by the host's self-test to detect a stale {@code .so} loaded against a
+     * newer Java binding: a mismatch means the two halves were built from different
+     * revisions.
+     *
+     * @return the exported method count
+     */
+    public static native int nativeMethodCount();
+
+    /**
+     * Report the bridge's integration state as a human-readable string.
+     *
+     * <p>Intended for a host self-test or a crash-report breadcrumb.
+     *
+     * @return a description of which bridge features are wired up
+     */
+    public static native String nativeIntegrationStatus();
+
+    // ---- Platform actions -------------------------------------------------
+
+    /**
+     * Launch the system document picker ({@code ACTION_OPEN_DOCUMENT}).
      *
      * <p>The picker result is delivered to the host Activity's own
-     * {@code onActivityResult} / result launcher; the bridge does not intercept
-     * it.
+     * {@code onActivityResult} / result launcher; the bridge does not intercept it.
+     * Requires {@link #nativeAttachContext} to have been called with a live Context.
      *
-     * @return {@code 1} on success, negative on failure
+     * @param mimeType the MIME type filter, e.g. {@code "*/*"}
+     * @return {@code 1} on success, {@code 0} on failure
      */
-    public static native int nativeSelfTestFileDialog();
+    public static native int nativeOpenDocument(String mimeType);
 }

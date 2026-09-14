@@ -15,6 +15,7 @@
 use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -440,7 +441,20 @@ impl WidgetProperties for WebEngineView {
     }
 
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
-        base_property_set(self, name, value)
+        match name {
+            "url" => {
+                self.set_url(expect_string(value)?);
+                Ok(())
+            }
+            // Loading is a state the load pipeline drives, not a value a caller
+            // assigns; navigation is the way to change it (`set_url` / `reload`).
+            "loading" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "title" => {
+                self.set_title(expect_string(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
     }
 
     fn property_names(&self) -> &'static [&'static str] {

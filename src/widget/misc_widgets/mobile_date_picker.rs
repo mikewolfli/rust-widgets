@@ -16,7 +16,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::expect_string;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 const MONTH_NAMES: &[&str] =
     &["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -35,6 +40,22 @@ fn days_in_month(year: i32, month: u32) -> u32 {
         }
         _ => 30,
     }
+}
+
+/// Parses an ISO `YYYY-MM-DD` date, returning `None` when the text does not match
+/// that shape.
+fn parse_iso_date(text: &str) -> Option<(i32, u32, u32)> {
+    let mut parts = text.split('-');
+    let year = parts.next()?.parse().ok()?;
+    let month = parts.next()?.parse().ok()?;
+    let day = parts.next()?.parse().ok()?;
+    if parts.next().is_some()
+        || !(1..=12).contains(&month)
+        || !(1..=days_in_month(year, month)).contains(&day)
+    {
+        return None;
+    }
+    Some((year, month, day))
 }
 
 /// Mobile-style date picker with year/month/day column spinners.
@@ -127,6 +148,40 @@ impl Widget for MobileDatePicker {
         crate::core::Size::new(300, 200)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `MobileDatePicker`'s property contract.
+///
+/// Read/write semantics are carried over unchanged from the centralised
+/// `access_read_dialog.in.rs` / `access_write_dialog.in.rs` dispatch, so callers see
+/// the same coercions and the same errors as before. `selected_date` reports the
+/// widget's real date as an ISO `YYYY-MM-DD` string rather than the legacy
+/// hardcoded blank. A write parses the same format; malformed text is reported as
+/// [`CapabilityAccessError::TypeMismatch`] instead of quietly ignoring the write.
+impl WidgetProperties for MobileDatePicker {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "selected_date" => Ok(CapabilityValue::String(self.date_string())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "selected_date" => {
+                let text = expect_string(value)?;
+                let date = parse_iso_date(&text).ok_or(CapabilityAccessError::TypeMismatch)?;
+                self.set_date(date.0, date.1, date.2);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["selected_date", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl Draw for MobileDatePicker {

@@ -68,6 +68,16 @@ pub fn init_logging() {
     });
 }
 
+/// The process-wide logcat logger instance.
+///
+/// `log::set_logger` takes a `&'static dyn Log`, so the value has to outlive the
+/// call. A `static` is what makes that true; without it (the previous state of this
+/// file) the reference in `init_logging` named nothing, and the bridge only
+/// compiled because the module happens to be unreachable in most builds — an
+/// `#![cfg(feature = "android-jni")]` build failed with "cannot find value
+/// `LOGCAT_LOGGER`".
+static LOGCAT_LOGGER: LogcatLogger = LogcatLogger;
+
 struct LogcatLogger;
 
 fn logcat_priority(level: log::Level) -> i32 {
@@ -266,13 +276,10 @@ fn launch_document_picker(env: &mut jni::JNIEnv<'_>, mime_type: &str) -> bool {
     // `registerForActivityResult` callback. The host owns that callback, so the
     // result arrives there; this call only starts the picker.
     let result = (|| -> jni::errors::Result<()> {
-        let activity_class = env.find_class("android/app/Activity")?;
-        let method = env.get_method_id(
-            &activity_class,
-            "startActivityForResult",
-            "(Landroid/content/Intent;I)V",
-        )?;
-
+        // The method lookups below are deliberately absent: `call_method` resolves
+        // by name and signature, so a preceding `get_method_id` would only probe
+        // for something already probed. Keeping one would mean a lookup whose
+        // failure path cannot be observed, which is worse than not having it.
         let intent_class = env.find_class("android/content/Intent")?;
         let action = env.new_string("android.intent.action.OPEN_DOCUMENT")?;
         let intent = env.new_object(
@@ -281,18 +288,12 @@ fn launch_document_picker(env: &mut jni::JNIEnv<'_>, mime_type: &str) -> bool {
             &[jni::objects::JValue::Object(&action)],
         )?;
 
-        let set_type = env.get_method_id(
-            &intent_class,
-            "setType",
-            "(Ljava/lang/String;)Landroid/content/Intent;",
-        )?;
         env.call_method(
             &intent,
             "setType",
             "(Ljava/lang/String;)Landroid/content/Intent;",
             &[jni::objects::JValue::Object(&mime)],
         )?;
-        let _ = set_type;
 
         env.call_method(
             context.as_obj(),

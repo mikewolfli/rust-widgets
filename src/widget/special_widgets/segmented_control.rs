@@ -7,7 +7,11 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Single segment entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,6 +157,46 @@ impl Widget for SegmentedControl {
         crate::core::Size::new(300, 32)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `SegmentedControl`'s property contract.
+///
+/// Read semantics are carried over unchanged from the centralised
+/// `access_read_other.in.rs` dispatch. All three properties describe the item set
+/// and the current selection and have no writers in the legacy path, so `set`
+/// refuses them with [`CapabilityAccessError::ReadOnlyProperty`] rather than
+/// pretending the name does not exist. `SegmentedControl` reports
+/// `WidgetKind::ToggleButton`, shared with `ToggleButton`; dispatching on the
+/// concrete type here is what keeps the two contracts separate.
+impl WidgetProperties for SegmentedControl {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "item_count" => Ok(CapabilityValue::UInt(self.items().len() as u64)),
+            "selected_index" => match self.selected_index() {
+                Some(index) => Ok(CapabilityValue::UInt(index as u64)),
+                None => Ok(CapabilityValue::Null),
+            },
+            "selected_id" => match self.selected_id() {
+                Some(id) => Ok(CapabilityValue::String(id.to_string())),
+                None => Ok(CapabilityValue::Null),
+            },
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "item_count" | "selected_index" | "selected_id" => {
+                Err(CapabilityAccessError::ReadOnlyProperty)
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["item_count", "selected_index", "selected_id", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl EventHandler for SegmentedControl {

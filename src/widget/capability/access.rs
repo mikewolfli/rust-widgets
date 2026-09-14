@@ -1,21 +1,30 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! Generic read/write property dispatch for all widget kinds.
+//! Id-level property access and the value/name codecs the schema layer publishes.
 //!
-//! [`read_widget_property_legacy`] and [`write_widget_property_legacy`] are the
-//! two large match-on-`widget.kind()` functions that form the core of the
-//! capability-based reflection layer. They downcast the `&dyn Widget` trait
-//! object to the concrete widget type (via [`widget_as`] / [`widget_as_mut`])
-//! and call the native getter or setter.
+//! Backends hold widget **ids**, not `&dyn Widget`, so [`read_widget_property_by_id`]
+//! and [`write_widget_property_by_id`] are the entry points they use. Resolving the
+//! id through [`crate::widget::runtime`] means the answer always describes the live
+//! control rather than a copy (BLUE15 §10.3).
 //!
-//! These functions are called by `WidgetFactory::read_property` and
-//! `WidgetFactory::write_property` after the property schema has been
-//! validated — so the match arms here can assume the property exists and is
-//! accessible.
+//! # History
+//!
+//! This module used to also host `read_widget_property_legacy` /
+//! `write_widget_property_legacy`: two large match-on-`widget.kind()` functions that
+//! downcast the trait object and call native getters and setters, as a fallback for
+//! controls whose readers had not yet moved onto their own `WidgetProperties`
+//! impl (BLUE15 Phase C-1). Every registered control now implements the contract and
+//! a test asserts it, so those two functions — and the nine `access_read_*.in.rs` /
+//! `access_write_*.in.rs` arms they dispatched over — duplicated the contract for
+//! 39 controls and have been deleted rather than left as dead code.
+//!
+//! What remains are the shared codecs below: they convert the enum-backed property
+//! values to and from the strings the schema publishes, and several controls call
+//! them directly from their own `set` / `get` arms.
 
-/// The reflection entry points, re-exported so the fallback path below and the
-/// id-level accessors in this module resolve them from one place.
+/// The reflection entry points, re-exported so the id-level accessors in this module
+/// resolve them from one place.
 pub use super::properties_trait::{read_widget_property_by_name, write_widget_property_by_name};
 
 #[cfg(full_widgets)]
@@ -24,370 +33,22 @@ use chrono::Weekday;
 use crate::core::ObjectId;
 
 #[cfg(full_widgets)]
-use crate::widget::advanced_widgets::calendar::Calendar;
-#[cfg(full_widgets)]
 use crate::widget::advanced_widgets::date_edit::Date;
-#[cfg(full_widgets)]
-use crate::widget::advanced_widgets::date_edit::DateEdit;
-#[cfg(full_widgets)]
-use crate::widget::advanced_widgets::date_time_edit::DateTimeEdit;
-#[cfg(full_widgets)]
-use crate::widget::advanced_widgets::dial::Dial;
-#[cfg(full_widgets)]
-use crate::widget::advanced_widgets::pie_menu::PieMenu;
-#[cfg(full_widgets)]
-use crate::widget::advanced_widgets::ribbon_bar::RibbonBar;
-#[cfg(full_widgets)]
-use crate::widget::advanced_widgets::tab_bar::TabBar;
 #[cfg(full_widgets)]
 use crate::widget::advanced_widgets::time_edit::Time;
 #[cfg(full_widgets)]
-use crate::widget::advanced_widgets::time_edit::TimeEdit;
-#[cfg(full_widgets)]
-use crate::widget::base_widgets::button::Button;
-#[cfg(full_widgets)]
-use crate::widget::base_widgets::checkbox::CheckBox;
-#[cfg(full_widgets)]
-use crate::widget::base_widgets::label::Label;
-#[cfg(full_widgets)]
-use crate::widget::base_widgets::radiobutton::RadioButton;
-#[cfg(full_widgets)]
-use crate::widget::base_widgets::toggle_button::{ToggleButton, ToggleButtonState};
-#[cfg(full_widgets)]
 use crate::widget::capability::coercion::*;
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
-#[cfg(full_widgets)]
-use crate::widget::chart_widgets::bar_chart::BarChart;
-#[cfg(full_widgets)]
-use crate::widget::chart_widgets::line_chart::LineChart;
-#[cfg(full_widgets)]
-use crate::widget::chart_widgets::pie_chart::PieChart;
-#[cfg(full_widgets)]
-use crate::widget::chart_widgets::sparkline::Sparkline;
-#[cfg(full_widgets)]
-use crate::widget::container_widgets::collapsible_pane::CollapsiblePane;
-#[cfg(full_widgets)]
-use crate::widget::container_widgets::dockwidget::DockWidget;
-#[cfg(full_widgets)]
-use crate::widget::container_widgets::groupbox::GroupBox;
-#[cfg(full_widgets)]
-use crate::widget::container_widgets::mdiarea::MdiArea;
-#[cfg(full_widgets)]
-use crate::widget::container_widgets::pager_page_view::PagerPageView;
-#[cfg(full_widgets)]
-use crate::widget::container_widgets::scrollarea::ScrollArea;
 use crate::widget::container_widgets::scrollarea::ScrollBarPolicy;
-#[cfg(full_widgets)]
-use crate::widget::container_widgets::splitter::Splitter;
-#[cfg(full_widgets)]
-use crate::widget::container_widgets::stackedwidget::StackedWidget;
-#[cfg(full_widgets)]
-use crate::widget::container_widgets::tabwidget::TabWidget;
-#[cfg(full_widgets)]
-use crate::widget::container_widgets::tile_view::TileView;
-#[cfg(full_widgets)]
-use crate::widget::container_widgets::toolbox::ToolBox;
-#[cfg(full_widgets)]
-use crate::widget::cupertino::core::CupertinoSlider;
-#[cfg(full_widgets)]
-use crate::widget::cupertino::core::MaterialNavigationRail;
-#[cfg(full_widgets)]
-use crate::widget::dialog::file_dialog::FileDialog;
-#[cfg(full_widgets)]
-use crate::widget::dialog::font_dialog::FontDialog;
-#[cfg(full_widgets)]
-use crate::widget::dialog::input_dialog::InputDialog;
-#[cfg(full_widgets)]
-use crate::widget::dialog::message_box::MessageBox;
-#[cfg(full_widgets)]
-use crate::widget::dialog::popup_window::PopupWindow;
-#[cfg(full_widgets)]
-use crate::widget::dialog::progress_dialog::ProgressDialog;
-#[cfg(full_widgets)]
-use crate::widget::display_widgets::arc::Arc;
-#[cfg(full_widgets)]
-use crate::widget::display_widgets::image_view::ImageView;
-#[cfg(full_widgets)]
-use crate::widget::display_widgets::lcd_number::LCDNumber;
-#[cfg(full_widgets)]
-use crate::widget::display_widgets::line::{Line, LineOrientation};
-#[cfg(full_widgets)]
-use crate::widget::display_widgets::meter::Meter;
-#[cfg(full_widgets)]
-use crate::widget::display_widgets::mini_chart::{ChartType, MiniChart};
-#[cfg(full_widgets)]
-use crate::widget::display_widgets::progressbar::ProgressBar;
-#[cfg(full_widgets)]
-#[cfg(full_widgets)]
-use crate::widget::display_widgets::roller::Roller;
-#[cfg(full_widgets)]
-use crate::widget::display_widgets::scrollbar::ScrollBar;
-#[cfg(full_widgets)]
-use crate::widget::display_widgets::slider::Slider;
-#[cfg(full_widgets)]
-use crate::widget::display_widgets::spinner::Spinner;
-#[cfg(full_widgets)]
-use crate::widget::display_widgets::switch::Switch;
-#[cfg(full_widgets)]
-use crate::widget::input_widgets::combobox::ComboBox;
-#[cfg(full_widgets)]
-use crate::widget::input_widgets::command_link::CommandLink;
-#[cfg(full_widgets)]
-use crate::widget::input_widgets::dropdown::Dropdown;
-#[cfg(full_widgets)]
-use crate::widget::input_widgets::font_combo_box::FontComboBox;
-#[cfg(full_widgets)]
-use crate::widget::input_widgets::keyboard::{Keyboard, KeyboardLayout};
-#[cfg(full_widgets)]
-use crate::widget::input_widgets::lineedit::LineEdit;
-#[cfg(full_widgets)]
-use crate::widget::input_widgets::listbox::ListBox;
 use crate::widget::input_widgets::listbox::SelectionMode as ListBoxSelectionMode;
-#[cfg(full_widgets)]
-use crate::widget::input_widgets::search_bar::SearchBar;
-#[cfg(full_widgets)]
-use crate::widget::input_widgets::shortcut_editor::ShortcutEditor;
-#[cfg(full_widgets)]
-use crate::widget::input_widgets::spinbox::SpinBox;
-#[cfg(full_widgets)]
-use crate::widget::input_widgets::textarea::TextArea;
-#[cfg(full_widgets)]
-use crate::widget::media_widgets::animated_image::AnimatedImage;
-#[cfg(full_widgets)]
-use crate::widget::media_widgets::audio_visualizer::AudioVisualizer;
-#[cfg(full_widgets)]
-use crate::widget::media_widgets::camera_preview::CameraPreview;
-#[cfg(full_widgets)]
-use crate::widget::media_widgets::hero_animation::HeroAnimation;
-#[cfg(full_widgets)]
-use crate::widget::media_widgets::lottie_widget::LottieWidget;
-#[cfg(full_widgets)]
-use crate::widget::media_widgets::rive_widget::RiveWidget;
-#[cfg(full_widgets)]
-use crate::widget::media_widgets::video_player::VideoPlayer;
-#[cfg(full_widgets)]
-use crate::widget::menu_toolbar::action::Action;
-#[cfg(full_widgets)]
-use crate::widget::menu_toolbar::menu::Menu;
-#[cfg(full_widgets)]
-use crate::widget::menu_toolbar::menu_bar::MenuBar;
-#[cfg(full_widgets)]
-use crate::widget::menu_toolbar::status_bar::StatusBar;
-#[cfg(full_widgets)]
-use crate::widget::menu_toolbar::tool_bar::ToolBar;
 #[cfg(full_widgets)]
 use crate::widget::menu_toolbar::tool_bar::ToolBarOrientation;
 #[cfg(full_widgets)]
-use crate::widget::menu_toolbar::tool_button::ToolButton;
+use crate::widget::view_widgets::data_grid::{ColumnFilter, SortSpec};
 #[cfg(full_widgets)]
-use crate::widget::misc_widgets::barcode_scanner::BarcodeScanner;
-#[cfg(full_widgets)]
-use crate::widget::misc_widgets::bezier_curve_editor::BezierCurveEditor;
-#[cfg(full_widgets)]
-use crate::widget::nav_widgets::tab_view::TabView;
-#[cfg(full_widgets)]
-use crate::widget::overlay_widgets::swipe_to_dismiss::SwipeToDismiss;
-#[cfg(full_widgets)]
-use crate::widget::special_widgets::breadcrumb::Breadcrumb;
-#[cfg(full_widgets)]
-use crate::widget::special_widgets::chip::Chip;
-#[cfg(full_widgets)]
-use crate::widget::special_widgets::code_editor::CodeEditor;
-#[cfg(full_widgets)]
-use crate::widget::special_widgets::color_picker::ColorPicker;
-#[cfg(full_widgets)]
-use crate::widget::special_widgets::freeform_shape::{FreeformShapeWidget, ShapePath};
-#[cfg(full_widgets)]
-use crate::widget::special_widgets::gantt_widget::GanttWidget;
-#[cfg(full_widgets)]
-use crate::widget::special_widgets::grid::GridWidget;
-#[cfg(full_widgets)]
-use crate::widget::special_widgets::map_view::MapView;
-#[cfg(full_widgets)]
-use crate::widget::special_widgets::media_player::MediaPlayer;
-#[cfg(full_widgets)]
-use crate::widget::special_widgets::terminal_view::TerminalView;
-#[cfg(full_widgets)]
-use crate::widget::view_widgets::data_grid::{ColumnFilter, DataGrid, SortSpec};
-#[cfg(full_widgets)]
-use crate::widget::view_widgets::image_gallery::ImageGallery;
-#[cfg(full_widgets)]
-use crate::widget::view_widgets::list_view::{ListView, SelectionMode, ViewMode};
-#[cfg(full_widgets)]
-use crate::widget::view_widgets::property_grid::PropertyGrid;
-#[cfg(full_widgets)]
-use crate::widget::view_widgets::table_widget::TableWidget;
-#[cfg(full_widgets)]
-use crate::widget::view_widgets::tree_table::TreeTable;
-#[cfg(full_widgets)]
-use crate::widget::view_widgets::tree_view::TreeView;
-#[cfg(full_widgets)]
-use crate::widget::view_widgets::virtual_list::VirtualList;
-#[cfg(full_widgets)]
-use crate::widget::view_widgets::virtual_table::VirtualTable;
-#[cfg(full_widgets)]
-use crate::widget::web_widgets::web_view::WebView;
-#[cfg(full_widgets)]
-use crate::widget::window::Window;
-#[cfg(full_widgets)]
-use crate::widget::Widget;
+use crate::widget::view_widgets::list_view::{SelectionMode, ViewMode};
 #[cfg(full_widgets)]
 use crate::widget::WidgetKind;
-
-#[cfg(full_widgets)]
-include!("access_read_base.in.rs");
-#[cfg(full_widgets)]
-include!("access_read_view.in.rs");
-#[cfg(full_widgets)]
-include!("access_read_container.in.rs");
-#[cfg(full_widgets)]
-include!("access_read_dialog.in.rs");
-#[cfg(full_widgets)]
-include!("access_read_menu.in.rs");
-#[cfg(full_widgets)]
-include!("access_read_input.in.rs");
-#[cfg(full_widgets)]
-include!("access_read_advanced.in.rs");
-#[cfg(full_widgets)]
-include!("access_read_media.in.rs");
-#[cfg(full_widgets)]
-include!("access_read_other.in.rs");
-
-/// The old nine-category serial probe over the property tables.
-///
-/// Prefer [`read_widget_property_by_name`]: it asks the control's own contract
-/// first, which is the single source of truth for what a control exposes. This
-/// function remains only as the fallback for the controls whose readers have not
-/// moved onto the contract yet (BLUE15 Phase C-1), and it is deliberately free of
-/// any second look at the contract — the caller already made that attempt, and two
-/// places answering the same question is how they drift.
-#[cfg(full_widgets)]
-pub fn read_widget_property_legacy(
-    widget: &dyn Widget,
-    property_name: &str,
-) -> Result<CapabilityValue, CapabilityAccessError> {
-    // Try each category; propagate the first non-Unsupported result (even if Err).
-    let result = read_base_props(widget, property_name);
-    if !matches!(result, Err(CapabilityAccessError::UnsupportedOnWidget)) {
-        return result;
-    }
-    let result = read_input_props(widget, property_name);
-    if !matches!(result, Err(CapabilityAccessError::UnsupportedOnWidget)) {
-        return result;
-    }
-    let result = read_view_props(widget, property_name);
-    if !matches!(result, Err(CapabilityAccessError::UnsupportedOnWidget)) {
-        return result;
-    }
-    let result = read_container_props(widget, property_name);
-    if !matches!(result, Err(CapabilityAccessError::UnsupportedOnWidget)) {
-        return result;
-    }
-    let result = read_dialog_props(widget, property_name);
-    if !matches!(result, Err(CapabilityAccessError::UnsupportedOnWidget)) {
-        return result;
-    }
-    let result = read_menu_props(widget, property_name);
-    if !matches!(result, Err(CapabilityAccessError::UnsupportedOnWidget)) {
-        return result;
-    }
-    let result = read_advanced_props(widget, property_name);
-    if !matches!(result, Err(CapabilityAccessError::UnsupportedOnWidget)) {
-        return result;
-    }
-    let result = read_media_props(widget, property_name);
-    if !matches!(result, Err(CapabilityAccessError::UnsupportedOnWidget)) {
-        return result;
-    }
-    let result = read_other_props(widget, property_name);
-    if !matches!(result, Err(CapabilityAccessError::UnsupportedOnWidget)) {
-        return result;
-    }
-    result
-}
-
-#[cfg(full_widgets)]
-include!("access_write_base.in.rs");
-#[cfg(full_widgets)]
-include!("access_write_input.in.rs");
-#[cfg(full_widgets)]
-include!("access_write_view.in.rs");
-#[cfg(full_widgets)]
-include!("access_write_container.in.rs");
-#[cfg(full_widgets)]
-include!("access_write_dialog.in.rs");
-#[cfg(full_widgets)]
-include!("access_write_menu.in.rs");
-#[cfg(full_widgets)]
-include!("access_write_advanced.in.rs");
-#[cfg(full_widgets)]
-include!("access_write_media.in.rs");
-#[cfg(full_widgets)]
-include!("access_write_other.in.rs");
-
-/// Write-side counterpart of [`read_widget_property_legacy`].
-#[cfg(full_widgets)]
-pub fn write_widget_property_legacy(
-    widget: &mut dyn Widget,
-    property_name: &str,
-    value: CapabilityValue,
-) -> Result<(), CapabilityAccessError> {
-    // Try each category; propagate the first non-Unsupported result (even if Err).
-    let result = write_base_props(widget, property_name, value.clone());
-    if !matches!(result, Err(CapabilityAccessError::UnsupportedOnWidget)) {
-        return result;
-    }
-    let result = write_input_props(widget, property_name, value.clone());
-    if !matches!(result, Err(CapabilityAccessError::UnsupportedOnWidget)) {
-        return result;
-    }
-    let result = write_view_props(widget, property_name, value.clone());
-    if !matches!(result, Err(CapabilityAccessError::UnsupportedOnWidget)) {
-        return result;
-    }
-    let result = write_container_props(widget, property_name, value.clone());
-    if !matches!(result, Err(CapabilityAccessError::UnsupportedOnWidget)) {
-        return result;
-    }
-    let result = write_dialog_props(widget, property_name, value.clone());
-    if !matches!(result, Err(CapabilityAccessError::UnsupportedOnWidget)) {
-        return result;
-    }
-    let result = write_menu_props(widget, property_name, value.clone());
-    if !matches!(result, Err(CapabilityAccessError::UnsupportedOnWidget)) {
-        return result;
-    }
-    let result = write_advanced_props(widget, property_name, value.clone());
-    if !matches!(result, Err(CapabilityAccessError::UnsupportedOnWidget)) {
-        return result;
-    }
-    let result = write_media_props(widget, property_name, value.clone());
-    if !matches!(result, Err(CapabilityAccessError::UnsupportedOnWidget)) {
-        return result;
-    }
-    let result = write_other_props(widget, property_name, value);
-    if !matches!(result, Err(CapabilityAccessError::UnsupportedOnWidget)) {
-        return result;
-    }
-    result
-}
-
-#[cfg(stripped_widgets)]
-pub fn read_widget_property_legacy(
-    _widget: &dyn Widget,
-    _property_name: &str,
-) -> Result<CapabilityValue, CapabilityAccessError> {
-    Err(CapabilityAccessError::UnsupportedOnWidget)
-}
-
-#[cfg(stripped_widgets)]
-pub fn write_widget_property_legacy(
-    _widget: &mut dyn Widget,
-    _property_name: &str,
-    _value: CapabilityValue,
-) -> Result<(), CapabilityAccessError> {
-    Err(CapabilityAccessError::UnsupportedOnWidget)
-}
 
 /// Reads a property from the widget registered under `widget_id`.
 ///
@@ -537,6 +198,36 @@ pub fn default_widget_property_default_value(
     kind: WidgetKind,
     property_name: &str,
 ) -> Option<CapabilityValue> {
+    // The properties every control inherits from `BaseWidget` get their defaults
+    // here, once, rather than being repeated in every kind's arm below. Every
+    // schema declares them (they are part of each control's published contract),
+    // so a per-kind arm could only ever be a copy of these values.
+    match property_name {
+        "enabled" => return Some(CapabilityValue::Bool(true)),
+        "tooltip" => return Some(CapabilityValue::String(String::new())),
+        "geometry" => {
+            return Some(CapabilityValue::String("0,0,0,0".to_string()));
+        }
+        // `visible` is shared by every control and declared by every schema, but
+        // four kinds give the name their own meaning: `Tooltip`, `Popover` and
+        // `ModalBottomSheet` read it as "the popup is shown", `StatusBar` as "the
+        // status text is shown". Those must fall through to their own arm below,
+        // so they are excluded here; every other kind means the base widget's
+        // visibility, which defaults to shown.
+        "visible"
+            if !matches!(
+                kind,
+                WidgetKind::Tooltip
+                    | WidgetKind::Popover
+                    | WidgetKind::ModalBottomSheet
+                    | WidgetKind::StatusBar
+            ) =>
+        {
+            return Some(CapabilityValue::Bool(true));
+        }
+        _ => {}
+    }
+
     let value = match kind {
         WidgetKind::Button => match property_name {
             "text" => CapabilityValue::String(String::new()),
@@ -861,7 +552,9 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::Carousel => match property_name {
-            "page_count" => CapabilityValue::UInt(0),
+            "current_index" => CapabilityValue::UInt(0),
+            "item_count" => CapabilityValue::UInt(0),
+            "current_page_title" => CapabilityValue::String(String::new()),
             _ => return None,
         },
         WidgetKind::WebEngineView => match property_name {
@@ -1027,6 +720,7 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::PopupWindow => match property_name {
+            "title" => CapabilityValue::String(String::new()),
             "has_content" => CapabilityValue::Bool(false),
             _ => return None,
         },
@@ -1099,6 +793,7 @@ pub fn default_widget_property_default_value(
         },
         WidgetKind::SkeletonLoader => match property_name {
             "active" => CapabilityValue::Bool(true),
+            "shape" => CapabilityValue::String("rect".to_string()),
             _ => return None,
         },
         WidgetKind::FAB => match property_name {
@@ -1198,6 +893,7 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::WizardDialog => match property_name {
+            "title" => CapabilityValue::String(String::new()),
             "current_step" => CapabilityValue::UInt(0),
             "step_count" => CapabilityValue::UInt(0),
             "can_go_back" => CapabilityValue::Bool(false),
@@ -1224,6 +920,7 @@ pub fn default_widget_property_default_value(
         },
         WidgetKind::Tooltip => match property_name {
             "text" => CapabilityValue::String(String::new()),
+            "shown" => CapabilityValue::Bool(false),
             "visible" => CapabilityValue::Bool(false),
             _ => return None,
         },
@@ -1266,6 +963,7 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::Popover => match property_name {
+            "shown" => CapabilityValue::Bool(false),
             "visible" => CapabilityValue::Bool(false),
             "text" => CapabilityValue::String(String::new()),
             _ => return None,

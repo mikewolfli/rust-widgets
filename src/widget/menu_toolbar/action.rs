@@ -262,6 +262,7 @@ impl WidgetProperties for Action {
                 }
                 Ok(())
             }
+            "separator" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }

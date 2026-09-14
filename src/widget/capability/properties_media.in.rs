@@ -12,7 +12,32 @@ macro_rules! impl_properties_media {
             value_kind: PropertyValueKind::Bool,
             readable: true,
             writable: true,
-        }];
+        },
+        PropertySchema {
+            name: "enabled",
+            value_kind: PropertyValueKind::Bool,
+            readable: true,
+            writable: true,
+        },
+        PropertySchema {
+            name: "visible",
+            value_kind: PropertyValueKind::Bool,
+            readable: true,
+            writable: true,
+        },
+        PropertySchema {
+            name: "tooltip",
+            value_kind: PropertyValueKind::String,
+            readable: true,
+            writable: true,
+        },
+        PropertySchema {
+            name: "geometry",
+            value_kind: PropertyValueKind::String,
+            readable: false,
+            writable: false,
+        },
+        ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const HERO_ANIMATION_PROPERTIES: &[PropertySchema] = &[PropertySchema {
@@ -20,7 +45,32 @@ macro_rules! impl_properties_media {
             value_kind: PropertyValueKind::Float,
             readable: true,
             writable: true,
-        }];
+        },
+        PropertySchema {
+            name: "enabled",
+            value_kind: PropertyValueKind::Bool,
+            readable: true,
+            writable: true,
+        },
+        PropertySchema {
+            name: "visible",
+            value_kind: PropertyValueKind::Bool,
+            readable: true,
+            writable: true,
+        },
+        PropertySchema {
+            name: "tooltip",
+            value_kind: PropertyValueKind::String,
+            readable: true,
+            writable: true,
+        },
+        PropertySchema {
+            name: "geometry",
+            value_kind: PropertyValueKind::String,
+            readable: false,
+            writable: false,
+        },
+        ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const LOTTIE_WIDGET_PROPERTIES: &[PropertySchema] = &[PropertySchema {
@@ -28,7 +78,32 @@ macro_rules! impl_properties_media {
             value_kind: PropertyValueKind::Bool,
             readable: true,
             writable: true,
-        }];
+        },
+        PropertySchema {
+            name: "enabled",
+            value_kind: PropertyValueKind::Bool,
+            readable: true,
+            writable: true,
+        },
+        PropertySchema {
+            name: "visible",
+            value_kind: PropertyValueKind::Bool,
+            readable: true,
+            writable: true,
+        },
+        PropertySchema {
+            name: "tooltip",
+            value_kind: PropertyValueKind::String,
+            readable: true,
+            writable: true,
+        },
+        PropertySchema {
+            name: "geometry",
+            value_kind: PropertyValueKind::String,
+            readable: false,
+            writable: false,
+        },
+        ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const RIVE_WIDGET_PROPERTIES: &[PropertySchema] = &[PropertySchema {
@@ -36,7 +111,32 @@ macro_rules! impl_properties_media {
             value_kind: PropertyValueKind::Bool,
             readable: true,
             writable: true,
-        }];
+        },
+        PropertySchema {
+            name: "enabled",
+            value_kind: PropertyValueKind::Bool,
+            readable: true,
+            writable: true,
+        },
+        PropertySchema {
+            name: "visible",
+            value_kind: PropertyValueKind::Bool,
+            readable: true,
+            writable: true,
+        },
+        PropertySchema {
+            name: "tooltip",
+            value_kind: PropertyValueKind::String,
+            readable: true,
+            writable: true,
+        },
+        PropertySchema {
+            name: "geometry",
+            value_kind: PropertyValueKind::String,
+            readable: false,
+            writable: false,
+        },
+        ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const VIDEO_PLAYER_PROPERTIES: &[PropertySchema] = &[
@@ -52,7 +152,31 @@ macro_rules! impl_properties_media {
                 readable: true,
                 writable: true,
             },
-        ];
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
+            ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const AUDIO_VISUALIZER_PROPERTIES: &[PropertySchema] = &[PropertySchema {
@@ -60,7 +184,32 @@ macro_rules! impl_properties_media {
             value_kind: PropertyValueKind::UInt,
             readable: true,
             writable: true,
-        }];
+        },
+        PropertySchema {
+            name: "enabled",
+            value_kind: PropertyValueKind::Bool,
+            readable: true,
+            writable: true,
+        },
+        PropertySchema {
+            name: "visible",
+            value_kind: PropertyValueKind::Bool,
+            readable: true,
+            writable: true,
+        },
+        PropertySchema {
+            name: "tooltip",
+            value_kind: PropertyValueKind::String,
+            readable: true,
+            writable: true,
+        },
+        PropertySchema {
+            name: "geometry",
+            value_kind: PropertyValueKind::String,
+            readable: false,
+            writable: false,
+        },
+        ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const CAMERA_PREVIEW_PROPERTIES: &[PropertySchema] = &[PropertySchema {
@@ -68,6 +217,31 @@ macro_rules! impl_properties_media {
             value_kind: PropertyValueKind::Bool,
             readable: true,
             writable: true,
-        }];
+        },
+        PropertySchema {
+            name: "enabled",
+            value_kind: PropertyValueKind::Bool,
+            readable: true,
+            writable: true,
+        },
+        PropertySchema {
+            name: "visible",
+            value_kind: PropertyValueKind::Bool,
+            readable: true,
+            writable: true,
+        },
+        PropertySchema {
+            name: "tooltip",
+            value_kind: PropertyValueKind::String,
+            readable: true,
+            writable: true,
+        },
+        PropertySchema {
+            name: "geometry",
+            value_kind: PropertyValueKind::String,
+            readable: false,
+            writable: false,
+        },
+        ];
     };
 }

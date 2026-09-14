@@ -170,6 +170,7 @@ impl WidgetProperties for PropertyGrid {
                 }
                 Ok(())
             }
+            "property_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }
