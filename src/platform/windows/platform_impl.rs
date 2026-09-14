@@ -312,16 +312,16 @@ impl Platform for WindowsPlatform {
             .unwrap_or(false)
     }
 
-    /// A self-drawn widget gets a child `HWND` of its own class; `WM_PAINT`
+    /// A library-painted widget gets a child `HWND` of its own class; `WM_PAINT`
     /// blits a frame from `widget::runtime`. See `windows/canvas.rs`.
     ///
     /// Gated on the same profile conditions as `canvas.rs`: without a widget
     /// registry there is no frame to render, so the trait defaults apply and
-    /// `supports_custom_widgets()` reports `false`.
+    /// `supports_surfaces()` reports `false`.
     #[cfg(widgets_unstripped)]
-    fn mount_custom_widget(&self, parent: ObjectId, id: ObjectId, rect: crate::core::Rect) -> bool {
+    fn mount_surface(&self, parent: ObjectId, id: ObjectId, rect: crate::core::Rect) -> bool {
         let Some(parent_hwnd) = self.get_native_handle(parent) else {
-            log::error!("[windows] mount_custom_widget: unknown parent window {parent}");
+            log::error!("[windows] mount_surface: unknown parent window {parent}");
             return false;
         };
         let Some(hwnd) = super::canvas::mount_canvas(parent_hwnd, id, rect) else {
@@ -333,9 +333,9 @@ impl Platform for WindowsPlatform {
     }
 
     #[cfg(widgets_unstripped)]
-    fn resize_custom_widget(&self, id: ObjectId, rect: crate::core::Rect) -> bool {
+    fn resize_surface(&self, id: ObjectId, rect: crate::core::Rect) -> bool {
         let Some(hwnd) = super::canvas::hwnd_for_widget(id) else {
-            log::error!("[windows] resize_custom_widget: id={id} is not mounted");
+            log::error!("[windows] resize_surface: id={id} is not mounted");
             return false;
         };
         if !super::canvas::resize_canvas(hwnd, rect) {
@@ -346,23 +346,23 @@ impl Platform for WindowsPlatform {
     }
 
     #[cfg(widgets_unstripped)]
-    fn unmount_custom_widget(&self, id: ObjectId) -> bool {
+    fn unmount_surface(&self, id: ObjectId) -> bool {
         let Some(hwnd) = super::canvas::hwnd_for_widget(id) else {
-            log::error!("[windows] unmount_custom_widget: id={id} is not mounted");
+            log::error!("[windows] unmount_surface: id={id} is not mounted");
             return false;
         };
         super::canvas::unmount_canvas(hwnd)
     }
 
-    /// `true` only when the self-drawn surface exists for this profile.
+    /// `true` only when the widget surface exists for this profile.
     #[cfg(widgets_unstripped)]
-    fn supports_custom_widgets(&self) -> bool {
+    fn supports_surfaces(&self) -> bool {
         true
     }
 
     /// Invalidate the canvas window so the OS sends a fresh `WM_PAINT`.
     #[cfg(widgets_unstripped)]
-    fn repaint_custom_widget(&self, id: ObjectId) -> bool {
+    fn invalidate_surface(&self, id: ObjectId) -> bool {
         match super::canvas::hwnd_for_widget(id) {
             Some(hwnd) => {
                 super::canvas::invalidate_canvas(hwnd);

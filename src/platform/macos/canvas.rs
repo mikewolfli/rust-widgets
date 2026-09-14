@@ -17,7 +17,7 @@
 //! render frames, and `widget::runtime` does not exist in `mini`/`embedded`
 //! builds (see `src/widget/mod.rs`). It is therefore gated on the same pair
 //! conditions — a profile that has no widget registry has no way to host a
-//! self-drawn surface, and `supports_custom_widgets()` reports `false` accordingly.
+//! self-drawn surface, and `supports_surfaces()` reports `false` accordingly.
 //!
 //! Without this gate the `mini` profile fails to build with seven errors about a
 //! missing `widget::runtime`, which is a worse outcome than simply not offering
@@ -332,32 +332,27 @@ pub(crate) fn view_for(id: ObjectId) -> Option<id> {
 
 impl MacOSPlatform {
     /// Creates the canvas view and adds it to the parent window's content view.
-    pub(crate) fn mount_custom_widget_impl(
-        &self,
-        parent: ObjectId,
-        id: ObjectId,
-        rect: Rect,
-    ) -> bool {
+    pub(crate) fn mount_surface_impl(&self, parent: ObjectId, id: ObjectId, rect: Rect) -> bool {
         if !macos_types::is_main_thread() {
             log::error!(
-                "[macos] mount_custom_widget: refused off the AppKit main thread (parent={parent}, id={id})"
+                "[macos] mount_surface: refused off the AppKit main thread (parent={parent}, id={id})"
             );
             return false;
         }
         if !crate::widget::runtime::is_mounted(id) {
             log::error!(
-                "[macos] mount_custom_widget: id={id} is not in widget::runtime; \
+                "[macos] mount_surface: id={id} is not in widget::runtime; \
                  call runtime::register before mounting"
             );
             return false;
         }
         let Some(parent_handle) = self.get_handle(parent) else {
-            log::error!("[macos] mount_custom_widget: unknown parent window {parent}");
+            log::error!("[macos] mount_surface: unknown parent window {parent}");
             return false;
         };
         if !matches!(parent_handle.kind, HandleKind::Window) {
             log::error!(
-                "[macos] mount_custom_widget: parent {parent} is {:?}, expected a Window",
+                "[macos] mount_surface: parent {parent} is {:?}, expected a Window",
                 parent_handle.kind
             );
             return false;
@@ -379,14 +374,14 @@ impl MacOSPlatform {
                 )
             ];
             if view == nil {
-                log::error!("[macos] mount_custom_widget: canvas view allocation failed");
+                log::error!("[macos] mount_surface: canvas view allocation failed");
                 pool.drain();
                 return false;
             }
             set_widget_id(view, id);
             let content_view = NSWindow::contentView(MacOSPlatform::as_id(parent_handle));
             if content_view == nil {
-                log::error!("[macos] mount_custom_widget: window {parent} has no content view");
+                log::error!("[macos] mount_surface: window {parent} has no content view");
                 pool.drain();
                 return false;
             }
@@ -413,7 +408,7 @@ impl MacOSPlatform {
             .expect("macos handle lock poisoned")
             .insert(id, CocoaHandle { ptr: view as usize, kind: HandleKind::Canvas });
         log::debug!(
-            "[macos] mount_custom_widget: id={id} mounted at ({}, {}, {}, {})",
+            "[macos] mount_surface: id={id} mounted at ({}, {}, {}, {})",
             rect.x,
             rect.y,
             rect.width,
@@ -423,26 +418,32 @@ impl MacOSPlatform {
     }
 
     /// Resizes a mounted canvas view.
-    pub(crate) fn resize_custom_widget_impl(&self, id: ObjectId, rect: Rect) -> bool {
+    pub(crate) fn resize_surface_impl(&self, id: ObjectId, rect: Rect) -> bool {
         if !macos_types::is_main_thread() {
-            log::error!("[macos] resize_custom_widget: refused off the AppKit main thread");
+            log::error!("[macos] resize_surface: refused off the AppKit main thread");
             return false;
         }
         let Some(view) = view_for(id) else {
-            log::error!("[macos] resize_custom_widget: id={id} is not mounted");
+            log::error!("[macos] resize_surface: id={id} is not mounted");
             return false;
         };
-        // SAFETY: `view` was produced by mount_custom_widget_impl and is only
-        // removed by unmount_custom_widget_impl.
+        // SAFETY: `view` was produced by mount_surface_impl and is only
+        // removed by unmount_surface_impl.
         unsafe {
+            // `setFrame:display:` rather than a bare `setFrame:`. A view has to be
+            // told to redraw: AppKit does not schedule a display pass for a frame
+            // change on its own, so a bare `setFrame:` leaves the old pixels on
+            // screen until some unrelated invalidation happens to arrive. That
+            // asymmetry is BLUE14 F-5, and it is why this gate checks the two-
+            // argument selector by name.
             let _: () = msg_send![
                 view,
                 setFrame: NSRect::new(
                     NSPoint::new(rect.x as f64, rect.y as f64),
                     NSSize::new(rect.width as f64, rect.height as f64),
                 )
+                display: YES
             ];
-            let _: () = msg_send![view, setNeedsDisplay: YES];
         }
         crate::widget::runtime::set_geometry(id, rect);
         true
@@ -453,15 +454,15 @@ impl MacOSPlatform {
     /// Used when a widget is mutated from outside the event loop (a menu action
     /// or tool-bar button), so the change becomes visible without waiting for an
     /// unrelated invalidation.
-    pub(crate) fn repaint_custom_widget_impl(&self, id: ObjectId) -> bool {
+    pub(crate) fn invalidate_surface_impl(&self, id: ObjectId) -> bool {
         let Some(view) = view_for(id) else {
             return false;
         };
         if !macos_types::is_main_thread() {
-            log::error!("[macos] repaint_custom_widget: refused off the AppKit main thread");
+            log::error!("[macos] invalidate_surface: refused off the AppKit main thread");
             return false;
         }
-        // SAFETY: `view` came from the side table populated by mount_custom_widget_impl;
+        // SAFETY: `view` came from the side table populated by mount_surface_impl;
         // setNeedsDisplay: is a valid NSView selector.
         unsafe {
             let _: () = msg_send![view, setNeedsDisplay: YES];
@@ -470,14 +471,14 @@ impl MacOSPlatform {
     }
 
     /// Removes a mounted canvas view from its window.
-    pub(crate) fn unmount_custom_widget_impl(&self, id: ObjectId) -> bool {
+    pub(crate) fn unmount_surface_impl(&self, id: ObjectId) -> bool {
         if !macos_types::is_main_thread() {
-            log::error!("[macos] unmount_custom_widget: refused off the AppKit main thread");
+            log::error!("[macos] unmount_surface: refused off the AppKit main thread");
             return false;
         }
         let view = mounted_views().lock().expect("canvas view lock poisoned").remove(&id);
         let Some(view) = view else {
-            log::error!("[macos] unmount_custom_widget: id={id} is not mounted");
+            log::error!("[macos] unmount_surface: id={id} is not mounted");
             return false;
         };
         // SAFETY: the side-table entry was removed just above, so the view has

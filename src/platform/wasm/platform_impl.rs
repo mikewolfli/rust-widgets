@@ -119,7 +119,7 @@ impl Platform for WasmPlatform {
     ///
     /// The trait method is about display surfaces, not about native window
     /// handles, so it is answered here rather than in a window-mutator stub.
-    fn supports_custom_widgets(&self) -> bool {
+    fn supports_surfaces(&self) -> bool {
         true
     }
 
@@ -228,15 +228,18 @@ mod tests {
         assert_eq!(p.family(), PlatformFamily::Desktop);
     }
 
-    /// A freshly created window is a plain state record: the backend no longer
-    /// allocates a native handle for any widget kind, because every kind is drawn
-    /// by `src/widget/`.
+    /// A freshly created window is a plain state record, and the same handle is
+    /// findable through the property API — the observable contract, rather than the
+    /// internal handle-kind accessor this test used to reach for. That accessor is
+    /// gone: it only existed so the deleted per-kind control creators could be
+    /// asserted against, and a helper with no production caller is dead code.
     #[test]
     fn create_window_records_state_only() {
         let p = make_platform();
         let win = p.create_window("test", 0, 0, 800, 600);
         assert!(win > 0);
-        assert_eq!(p.kind_of(win), Some(WasmHandleKind::Window));
+        p.set_widget_text(win, "probe");
+        assert_eq!(p.get_widget_text(win), "probe");
     }
 
     /// The WASM backend paints self-drawn widgets into the host canvas element it
@@ -244,7 +247,7 @@ mod tests {
     #[test]
     fn custom_widget_support_is_advertised() {
         let p = make_platform();
-        assert!(p.supports_custom_widgets());
+        assert!(p.supports_surfaces());
     }
 
     /// Teardown must report whether the widget existed, and a second call must not

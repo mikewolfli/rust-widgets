@@ -1196,6 +1196,10 @@ mod tests {
     }
     #[test]
     fn embedded_target_fps_abi_roundtrip_clamps_values() {
+        // Shares the embedded engine's process-wide test lock: this test drives the
+        // same singleton as `render_engine::embedded`'s tests, so a module-local
+        // lock here would exclude nothing and the two would interleave.
+        let _guard = crate::render_engine::embedded::embedded_test_guard();
         let original = rw_get_embedded_target_fps();
         let low = rw_set_embedded_target_fps(0);
         assert_eq!(low, 1);

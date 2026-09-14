@@ -29,40 +29,40 @@ impl Platform for MacOSPlatform {
         "cocoa"
     }
 
-    /// A self-drawn widget gets an `NSView` subclass whose `drawRect:` blits a
+    /// A library-painted widget gets an `NSView` subclass whose `drawRect:` blits a
     /// frame out of `widget::runtime`. See `macos/canvas.rs`.
     ///
     /// Gated on the same profile conditions as `canvas.rs`: `widget::runtime` is
     /// absent from `mini`/`embedded`, so the fallback defaults below apply there
-    /// and `supports_custom_widgets()` honestly reports `false`.
+    /// and `supports_surfaces()` honestly reports `false`.
     #[cfg(widgets_unstripped)]
-    fn mount_custom_widget(&self, parent: ObjectId, id: ObjectId, rect: crate::core::Rect) -> bool {
-        self.mount_custom_widget_impl(parent, id, rect)
+    fn mount_surface(&self, parent: ObjectId, id: ObjectId, rect: crate::core::Rect) -> bool {
+        self.mount_surface_impl(parent, id, rect)
     }
 
     #[cfg(widgets_unstripped)]
-    fn resize_custom_widget(&self, id: ObjectId, rect: crate::core::Rect) -> bool {
-        self.resize_custom_widget_impl(id, rect)
+    fn resize_surface(&self, id: ObjectId, rect: crate::core::Rect) -> bool {
+        self.resize_surface_impl(id, rect)
     }
 
     #[cfg(widgets_unstripped)]
-    fn unmount_custom_widget(&self, id: ObjectId) -> bool {
-        self.unmount_custom_widget_impl(id)
+    fn unmount_surface(&self, id: ObjectId) -> bool {
+        self.unmount_surface_impl(id)
     }
 
-    /// `true` only when the self-drawn surface actually exists for this profile.
+    /// `true` only when the surface actually exists for this profile.
     ///
     /// Reporting `true` in a build where `canvas.rs` is compiled out would be a
     /// lie: a host would mount a widget and get an empty window with no error.
     #[cfg(widgets_unstripped)]
-    fn supports_custom_widgets(&self) -> bool {
+    fn supports_surfaces(&self) -> bool {
         true
     }
 
     /// Mark the canvas view as needing display, which schedules `drawRect:`.
     #[cfg(widgets_unstripped)]
-    fn repaint_custom_widget(&self, id: ObjectId) -> bool {
-        self.repaint_custom_widget_impl(id)
+    fn invalidate_surface(&self, id: ObjectId) -> bool {
+        self.invalidate_surface_impl(id)
     }
     fn family(&self) -> PlatformFamily {
         PlatformFamily::Desktop

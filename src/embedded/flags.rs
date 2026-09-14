@@ -45,19 +45,23 @@ pub fn set_low_memory_mode(enabled: bool) {
 
 /// `true` when the caller asked for the reduced budget on top of the profile's own.
 ///
-/// The policy's frugal rows already imply the reduced budget, so an embedded or
-/// `mini` build is frugal whether or not this flag is set — which is why the
-/// accessors below test the policy first and this flag only as a further narrowing.
-fn budget_is_reduced() -> bool {
-    is_embedded_mode() || is_low_memory_mode() || !surface_policy().os_window
+/// Deliberately reads **only** the two run-time flags. The profile's own budget is
+/// applied by the policy table, not here: folding `!os_window` into this predicate
+/// made `embedded` behave as if a caller had requested low-memory mode, so
+/// `recommended_buffer_size()` could never return the full size on any non-desktop
+/// profile — the caller's flag stopped meaning "reduce it further" and started
+/// meaning "is this embedded", which is a question the table already answers.
+fn caller_requested_reduction() -> bool {
+    is_embedded_mode() || is_low_memory_mode()
 }
 
 /// Get recommended buffer size for current mode
 pub fn recommended_buffer_size() -> Size {
-    if budget_is_reduced() {
+    let full = surface_policy();
+    if caller_requested_reduction() {
         Size::new(800, 600)
     } else {
-        Size::new(1920, 1080)
+        Size::new(full.recommended_window.0, full.recommended_window.1)
     }
 }
 
@@ -127,13 +131,46 @@ mod tests {
         assert!(!is_low_memory_mode());
     }
 
+    /// The buffer size must follow the profile's policy, not a desktop constant.
+    ///
+    /// The old assertion hard-coded `1920` for the un-reduced case, which is only
+    /// correct on a device profile: `embedded` and `mini` budget for smaller
+    /// surfaces, so the test passed on desktop and failed everywhere else. It now
+    /// compares against the policy row the running profile actually selects, which
+    /// is the fact the function is supposed to express.
     #[test]
     fn test_buffer_size() {
+        use crate::platform::profile::surface_policy;
+
         set_low_memory_mode(true);
-        let low_mem_size = recommended_buffer_size();
-        assert_eq!(low_mem_size.width, 800);
+        assert_eq!(recommended_buffer_size().width, 800, "a reduced request wins");
         set_low_memory_mode(false);
-        let normal_size = recommended_buffer_size();
-        assert_eq!(normal_size.width, 1920);
+
+        let policy = surface_policy();
+        let size = recommended_buffer_size();
+        assert_eq!(size.width, policy.recommended_window.0);
+        assert_eq!(size.height, policy.recommended_window.1);
+    }
+
+    /// A caller-requested reduction must go below the profile's own cap, and the
+    /// cap must still hold when no reduction was requested.
+    #[test]
+    fn budgets_follow_the_policy_and_can_be_narrowed() {
+        use crate::platform::profile::surface_policy;
+
+        let policy = surface_policy();
+        set_embedded_mode(false);
+        set_low_memory_mode(false);
+        assert_eq!(max_texture_size(), policy.max_texture);
+        assert_eq!(event_queue_size(), policy.event_queue);
+        assert_eq!(font_cache_size(), policy.font_cache_bytes);
+        assert_eq!(max_widgets(), policy.max_widgets);
+
+        set_low_memory_mode(true);
+        assert!(
+            font_cache_size() <= policy.font_cache_bytes,
+            "a caller request may only narrow the profile's budget",
+        );
+        set_low_memory_mode(false);
     }
 }

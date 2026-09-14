@@ -67,6 +67,15 @@ jobs:
           chmod +x tools/check_event_model_signal_first.sh
           ./tools/check_event_model_signal_first.sh
 
+      # BLUE15's central rule: one creation mechanism. Source-level, so it runs on
+      # any host — including runners that cannot compile the macOS/iOS/Android
+      # backends and would otherwise never notice a reintroduced control path.
+      - name: Run single-creation-mechanism gate
+        shell: bash
+        run: |
+          chmod +x tools/check_single_creation_mechanism.sh
+          ./tools/check_single_creation_mechanism.sh
+
   feature-completeness-matrix:
     name: Feature completeness matrix
     runs-on: ubuntu-latest
@@ -156,7 +165,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        profile: [default, full, embedded]
+        profile: [default, full, embedded, mini]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -362,16 +371,14 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      # 1. macOS AppKit: main-thread probe must create real NSWindow/NSMenu and
-      #    assert the live AppKit objects, for both backends.
+      # macOS AppKit verification. The two `apple_appkit_probe*` examples used to
+      # run here; they asserted the native *control* path (a live `NSButton` moving
+      # with `set_widget_geometry`), which the self-drawn architecture removed
+      # (BLUE15 #55/#56). They are deleted, so their steps are gone too rather than
+      # left to fail. The surviving static gate and the macOS lib tests below cover
+      # the host surface that does still exist.
       - name: Apple native static gate (FFI thread-safety + selector guards)
         run: bash tools/check_apple_thread_safety.sh
-
-      - name: AppKit probe (cocoa-legacy backend)
-        run: cargo run --example apple_appkit_probe --features desktop
-
-      - name: AppKit probe (objc2 backend)
-        run: cargo run --example apple_appkit_probe_objc2 --no-default-features --features "macos,serde,serde_json"
 
       # 2. macOS-lib regression with both Apple backends selected.
       - name: Cargo test (macos backend)

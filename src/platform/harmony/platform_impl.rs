@@ -190,9 +190,9 @@ impl Platform for HarmonyPlatform {
     fn inject_drop_event(&self, event: DropEvent) -> bool {
         self.state.inject_drop_event(event)
     }
-    /// The Harmony backend has no native-control surface any more, so this reports
+    /// The Harmony backend has no widget surface bound yet, so this reports
     /// `false` until an ArkUI Canvas bridge is bound.
-    fn supports_custom_widgets(&self) -> bool {
+    fn supports_surfaces(&self) -> bool {
         false
     }
 }

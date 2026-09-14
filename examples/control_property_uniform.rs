@@ -1,32 +1,37 @@
-//! Runtime proof that the unified native-control property API needs **one** code
-//! path on every OS.
+//! Runtime proof that the unified control property API needs **one** code path on
+//! every OS — and that it reports absence honestly for everything the host does not
+//! own.
 //!
 //! Nothing in this file branches on `target_os`, imports a platform crate, or
 //! calls a `cfg`-gated helper. Every property is set and read through the same
-//! `Platform` methods, and each backend maps them onto whatever its own native
-//! control exposes — reporting `false`/`None` when it has nothing to map to.
+//! `Platform` methods.
+//!
+//! # What changed under self-drawing
+//!
+//! This probe used to expect the property calls to reach real AppKit controls. The
+//! host creates no controls now (BLUE15 #55/#56), so the interesting output is the
+//! opposite: **every control property reports `false`/`None`, while the window
+//! properties keep working.** The window is the one primitive the host still owns.
+//!
+//! The property line that matters most is unchanged in spirit: a button has no
+//! numeric value, so the backend says so instead of silently accepting the write.
+//! That is a legitimate per-OS capability difference — the *call* is identical
+//! everywhere.
 //!
 //! Run with `cargo run --example control_property_uniform` (desktop).
 //!
-//! Expected output on macOS (real AppKit controls on the main thread):
+//! Expected output (values shown are the correct answers for a self-drawn host):
 //!
 //! ```text
 //! backend = cocoa
-//! slider  set value 42 -> true
-//! slider  value       -> Some(42.0)
-//! slider  range       -> Some((0.0, 200.0))
-//! spinbox set value 7 -> true
-//! combo   select idx 1 -> true
-//! combo   index       -> Some(1)
-//! checkbox set true   -> true
-//! checkbox checked    -> Some(true)
-//! button  set value   -> false (the control has no numeric value here)
-//! handle  checked     -> Some(true)
+//! slider  set value 42 -> false      (no host control to carry a value)
+//! slider  value        -> None
+//! checkbox set true    -> false
+//! checkbox checked     -> None
+//! button  set value    -> false      (a button has no numeric value anywhere)
+//! window  Maximized    on=true       (the window is real and does report state)
+//! window  set min 320x240 -> true
 //! ```
-//!
-//! The last property line is the point: a button has no numeric value, so the
-//! backend says so instead of silently accepting the write. That is a legitimate
-//! per-OS capability difference — the *call* is still identical everywhere.
 
 use rust_widgets::app::{App, CheckBoxHandle, WidgetHandle};
 use rust_widgets::core::{ObjectId, Orientation};

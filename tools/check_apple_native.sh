@@ -2,20 +2,36 @@
 # ============================================================================
 # check_apple_native.sh — Apple native verification gate (macOS only)
 # ============================================================================
-# Closes blue14 §二 A 类 #4 (iOS simulator view behaviour) and #5 (macOS AppKit
-# interaction) as a *continuously reproducible* gate rather than a one-off run.
+# BLUE15 status: the AppKit control probes this gate used to run are DELETED.
 #
-# Runs, in order:
-#   1. The main-thread AppKit probe with the cocoa-legacy backend (`desktop`).
-#   2. The main-thread AppKit probe with the objc2 backend (`macos`).
-#   3. The iOS Simulator integration app (build + boot + install + run).
+# What was retired, and why
+# -------------------------
+# The gate ran two `examples/apple_appkit_probe*.rs` probes that asserted the
+# *native control* path: that `Platform::create_button` produced a live
+# `NSButton` whose `.frame` moved with `set_widget_geometry`, that
+# `set_widget_text` reached the AppKit object, and so on.
 #
-# On a non-macOS host the gate exits 2 (explicitly unsupported) rather than
-# silently passing, so an accidental run on Linux CI cannot masquerade as
-# coverage.
+# Under the self-drawn architecture the host creates **no** controls (BLUE15
+# #55/#56): it supplies a window and a drawing surface. Every assertion those
+# probes made therefore describes machinery that no longer exists, which is why
+# the probes and this gate are retired rather than repaired. A gate whose subject
+# is gone must be removed, not kept green by weakening its assertions
+# (BLUE15 §2.8).
+#
+# What covers the same ground now
+# -------------------------------
+#   * static FFI thread-safety — `tools/check_apple_thread_safety.sh`, still run
+#     below because it inspects source rather than runtime objects.
+#   * the macOS window/event/IME/clipboard surface — `src/platform/macos/tests.rs`
+#     and `src/platform/contract_tests.rs`, which run in the normal test suite
+#     (`cargo test --no-default-features --features desktop`).
+#   * surface mounting and frame production — `widget::runtime` rendering tests.
+#
+# On a non-macOS host this exits 2 (explicitly unsupported) rather than silently
+# passing, so a Linux CI run cannot masquerade as Apple coverage.
 #
 # Environment overrides:
-#   SKIP_IOS_PROBE   set to 1 to run only the macOS AppKit probes
+#   SKIP_IOS_PROBE   set to 1 to skip the iOS Simulator integration probe
 #   SKIP_BUILD       forwarded to the iOS runner
 # ============================================================================
 
@@ -31,29 +47,18 @@ fi
 
 # The static guard check is host-independent; run it first so an omission is
 # reported before the (slower) runtime probes.
-echo "=== [0/3] Static FFI thread-safety gate ==="
+echo "=== [1/2] Static FFI thread-safety gate ==="
 bash "$ROOT_DIR/tools/check_apple_thread_safety.sh"
-
-echo ""
-echo "=== [1/3] AppKit probe — cocoa-legacy backend (--features desktop) ==="
-cargo run --quiet --example apple_appkit_probe --features desktop
-
-echo ""
-echo "=== [2/3] AppKit probe — objc2 backend (--features macos) ==="
-# `macos` alone does not enable the serde snapshot helpers the macOS objc2
-# backend compiles against, so the probe needs them explicitly.
-cargo run --quiet --example apple_appkit_probe_objc2 \
-  --no-default-features --features "macos,serde,serde_json"
 
 if [[ "${SKIP_IOS_PROBE:-0}" == "1" ]]; then
   echo ""
-  echo "=== [3/3] iOS Simulator probe skipped (SKIP_IOS_PROBE=1) ==="
-  echo "check_apple_native: macOS AppKit checks PASSED"
+  echo "=== [2/2] iOS Simulator probe skipped (SKIP_IOS_PROBE=1) ==="
+  echo "check_apple_native: Apple native checks PASSED"
   exit 0
 fi
 
 echo ""
-echo "=== [3/3] iOS Simulator integration probe ==="
+echo "=== [2/2] iOS Simulator integration probe ==="
 bash "$ROOT_DIR/tools/run_ios_testapp.sh"
 
 echo ""

@@ -368,9 +368,32 @@ where
     embedded_engine_shared().submit_task(label.into(), action)
 }
 
-/// Return embedded engine runtime stats for diagnostics and test assertions.
+/// Returns embedded engine runtime stats for diagnostics and test assertions.
 pub fn embedded_engine_stats() -> EmbeddedEngineStats {
     embedded_engine_shared().stats()
+}
+
+/// Serialises tests that mutate the process-wide embedded engine.
+///
+/// # Why this is public
+///
+/// The embedded engine is a process-wide singleton (one paint budget, one window
+/// registry), so any two tests that change it must not interleave — a test that sets
+/// the target FPS to 72 while another is asserting the same value fails at random.
+///
+/// The lock has to be **shared across modules**, and that is the whole point of this
+/// function: `src/render_engine/embedded.rs` and `src/bindings/binding_impl.rs` both
+/// drive the same singleton, and each used to take its own module-local `OnceLock`.
+/// Two locks over one resource exclude nothing, which is how
+/// `embedded_target_fps_clamps` came to fail depending on scheduling.
+///
+/// Callers must take it for the whole mutate-assert-restore span.
+#[cfg(test)]
+pub(crate) fn embedded_test_guard() -> crate::compat::MutexGuard<'static, ()> {
+    use std::sync::{Mutex, OnceLock};
+
+    static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+    GUARD.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[cfg(test)]
@@ -378,8 +401,7 @@ mod tests {
     use super::*;
 
     fn test_guard() -> crate::compat::MutexGuard<'static, ()> {
-        static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
-        GUARD.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        embedded_test_guard()
     }
 
     #[test]

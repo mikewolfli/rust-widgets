@@ -187,7 +187,7 @@ fn required_host_capabilities_remain_available() {
 
     // The host must answer whether it can carry a painting surface at all; that is
     // the capability the library actually depends on.
-    let _ = Platform::supports_custom_widgets(platform);
+    let _ = Platform::supports_surfaces(platform);
 }
 
 /// A window is not a control: window state must be refused for anything else.

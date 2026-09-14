@@ -12,7 +12,6 @@ Usage:
 import argparse
 import os
 import re
-import sys
 from typing import Dict, List, Tuple
 
 # Repository root, derived from this script's location (tools/).

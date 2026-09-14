@@ -1155,11 +1155,44 @@ Step 10 Phase F            上层与文档同步（含视觉基线重生）
 | **C-1 属性层重建** | ✅ 完成 | **100%** | **96 个 `impl WidgetProperties`**（全显式手写）；167 kind 全部可达；新增契约测试 |
 | **C 控件语义落地 + 两路径合并** | ✅ 完成 | **100%** | **166 个 `create_*` 均挂载真实控件**；`CustomControlState` 影子状态删除；路由恒为 `CustomRequired` |
 | B trait 去控件化 | ✅ 完成 | **100%** | `Platform` 必需方法 75 → **6**；控件方法改为诚实默认 |
-| **C' QA 门禁重写（§2.8）** | ✅ 完成 | **100%** | **12 个门禁全部实跑 PASS**（见下） |
-| **D 删除原生构造** | ✅ 完成 | **100%** | **全部 8 个后端**清零；`fn create_*` 606 → **76**（全部为 trait 声明）；`src/platform` 29550 → **22010** 行 |
+| **C' QA 门禁重写（§2.8）** | ✅ 完成 | **100%** | **14 个门禁全部实跑 PASS**（新增 `check_single_creation_mechanism.sh`，并注入假回归验证其能失败）|
+| **D 删除原生构造** | ✅ 完成 | **100%** | **全部 10 个后端**清零；`fn create_*` 606 → **76**（全部为 trait 声明）；`src/platform` 43151 → **22010** 行 |
 | **D-5 `portable` 后端** | ✅ 完成 | **100%** | `platform/portable/` 建立；R-3 帧缓冲复用落地并有测试；`mini` 由它承载 |
-| **E mini/embedded 整合** | ✅ 完成 | **100%** | `platform_facts()` 分支合一；门控字面量 0；`surface_policy` 语义已由 `profile.rs` 提供 |
-| **F 上层与文档** | ✅ 完成 | **100%** | 右键上下文菜单落地；能力矩阵重生（0 矛盾）；`platform_differences.md` 同步；废弃工具删除 |
+| **D-6 Cargo 依赖清理（原则 #63）** | ✅ 完成 | **100%** | `objc-foundation` 经 grep + `cargo tree -i` 双重取证后删除；`gtk`/`webkit2gtk`/`cocoa`/`objc`/`objc2-ui-kit` 经取证均仍在用，**保留并登记理由** |
+| **E mini/embedded 整合** | ✅ 完成 | **100%** | `surface_policy()` 单一策略表（三档穷举）；`embedded/flags.rs` 四个预算改读它；4 个不变式测试 |
+| **F 上层与文档（原则 #18/#52）** | ✅ 完成 | **100%** | 121 处去机制词重命名 + **crate root 兼容路径**；探针替换为 `control_creation_is_single_mechanism`；能力矩阵重生（0 矛盾）；CI 同步（+`mini` 档、-probe 步骤）|
+
+### 🎯 跨目标编译：从“不可验证”升为真实验证
+
+计划把 V8/V9 登记为“本机不可验证”。本轮实测这些 target **已安装**（`rustup target list --installed`），遂真跑，并**抓出 4 个静态检查看不见的真缺陷**：
+
+| 缺陷 | 发现方式 | 处置 |
+|---|---|---|
+| iOS `setAccessibilityLabel` 参数错误 | `--target aarch64-apple-ios-sim` 报 `E0599`（macOS 宿主上却通过：两个 objc2 crate 签名不同）| 补 `use objc2_ui_kit::NSObjectUIAccessibility`；签名需 `MainThreadMarker` |
+| `create_ui_window` 死代码 | 交叉编译报 `never used` | iOS `create_window` 从未实例化 `UIWindow`——**与自身模块文档相矛盾**（原则 #18）。已接线 |
+| `WasmHandleKind` 42 变体仅用 1 个 | 交叉编译 + grep | 收敛为 `Window` |
+| `WasmPlatform::kind_of` 无生产调用者 | 交叉编译报 `never used` | 删除；测试改用公开属性 API |
+
+```text
+$ cargo check --target aarch64-apple-ios-sim   --features "ios,ios-uikit-ffi"   Finished（0 warning）
+$ cargo check --target aarch64-apple-ios       --features "ios,ios-uikit-ffi"   Finished（0 warning）
+$ cargo check --target wasm32-unknown-unknown  --features wasm                  Finished（0 warning）
+$ cargo check --target x86_64-pc-windows-gnu   --features windows               Finished（10 warning，均先前存在）
+$ cargo check --target x86_64-unknown-linux-gnu --features linux-gtk            需 cross sysroot，**未验证**
+```
+
+### 本轮修掉的真缺陷汇总（原则 #2 冰山法则）
+
+| 缺陷 | 取证 | 处置 |
+|---|---|---|
+| **Cargo feature 别名方向反了** | `--features macos-legacy` 与 `--features cocoa-legacy` **两者都编译不过** | `macos-legacy = ["cocoa-legacy"]`；`cocoa-legacy` 携带依赖；连带统一三处 `cfg` 不一致 |
+| **macOS surface resize 不重绘**（BLUE14 F-5 复发） | 重写后的 Apple 门禁 `[B]` 报出 | `setFrame:` → `setFrame:display:` |
+| **cross-module 共享单例无共享锁** | `embedded_target_fps_clamps` 随机失败；**HEAD 基线也失败**（git stash 对比） | 新增 `pub(crate) embedded_test_guard()`，两处改用它；8 次连跑稳定 |
+| `embedded::flags` 把 `!os_window` 拌进“调用方要求降级” | `test_buffer_size` 在 `embedded` 下必失败 | 拆分为 `caller_requested_reduction()`；预算由策略表给 |
+| 属性派发 fall-through 过宽 | `geometry` 只读判定被旧表推翻 | 仅 `UnsupportedOnWidget` 才委托旧路径 |
+| `dispatcher.rs` 的 `get_control_backend` 4 个定义同时存在 | `E0428` | 收敛为 1 |
+| `Menu` 默认可见 | 弹出的菜单无法创建为关闭态 | `Menu::new` 置为隐藏；7 个上下文菜单测试 |
+| 两个门禁在**正确代码上必然失败** | `orderOut:` 全仓从未存在（`git log -S` 取证）；`[D]` 阀值来自已删 setter | 按实情重定判据，并写明取证过程 |
 
 ### C' QA 门禁本轮实跑结果（12/12 PASS）
 

@@ -175,21 +175,21 @@ fn capabilities_are_explicit_and_honest() {
     assert!(caps.typed_widget_trigger, "typed trigger events are supported");
 }
 
-/// The self-drawn contract must stay honest before the OpenHarmony SDK lands.
+/// The surface contract must stay honest before the OpenHarmony SDK lands.
 ///
-/// `mount_custom_widget` has no ArkUI Canvas mapping yet, so the backend must keep
-/// reporting `false`. A host that checks `supports_custom_widgets()` then refuses to
+/// `mount_surface` has no ArkUI Canvas mapping yet, so the backend must keep
+/// reporting `false`. A host that checks `supports_surfaces()` then refuses to
 /// build a UI it cannot display, instead of opening an empty window.
 #[test]
-fn custom_widget_support_is_refused_until_the_arkui_bridge_exists() {
+fn widget_surface_support_is_refused_until_the_arkui_bridge_exists() {
     let backend = HarmonyPlatform::new();
     assert!(
-        !backend.supports_custom_widgets(),
-        "HarmonyOS cannot display self-drawn widgets until mount_custom_widget is \
+        !backend.supports_surfaces(),
+        "HarmonyOS has no surface for library-painted widgets until mount_surface is \
          implemented against an ArkUI Canvas"
     );
     // The trait defaults must also refuse, rather than silently succeeding.
-    assert!(!backend.mount_custom_widget(1, 2, crate::core::Rect::new(0, 0, 10, 10)));
-    assert!(!backend.repaint_custom_widget(2));
-    assert!(!backend.unmount_custom_widget(2));
+    assert!(!backend.mount_surface(1, 2, crate::core::Rect::new(0, 0, 10, 10)));
+    assert!(!backend.invalidate_surface(2));
+    assert!(!backend.unmount_surface(2));
 }

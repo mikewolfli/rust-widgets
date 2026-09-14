@@ -8,50 +8,24 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::AtomicBool;
 
 /// Handle kinds for WASM widgets.
+///
+/// # Why this has one variant
+///
+/// It used to enumerate every `WidgetKind` the DOM backend could build an element
+/// for, because the host owned a control per kind. The library paints every
+/// `WidgetKind` now, so the only thing this backend still allocates a handle for is
+/// the **window** it paints into (BLUE15 #55/#56).
+///
+/// Unlike the mobile backends, this one has no menu variants: the browser gives the
+/// host a real menu surface only through DOM elements the library owns, so there is
+/// no host-side menu model to track. The enum is kept rather than inlined into
+/// `BackendState<u64>` because the state type is generic over it, and collapsing it
+/// would make the wasm backend's state shape differ from every other backend for no
+/// gain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum WasmHandleKind {
+    /// Top-level browser window / document.
     Window,
-    Button,
-    CheckBox,
-    LineEdit,
-    Label,
-    RadioButton,
-    Slider,
-    ProgressBar,
-    ComboBox,
-    ListBox,
-    Panel,
-    MenuBar,
-    Menu,
-    MenuItem,
-    ToolBar,
-    StatusBar,
-    MessageBox,
-    FileDialog,
-    ColorDialog,
-    FontDialog,
-    SpinBox,
-    ListView,
-    ScrollArea,
-    GroupBox,
-    Frame,
-    TabWidget,
-    Splitter,
-    ToggleButton,
-    Calendar,
-    ScrollBar,
-    DoubleSpinBox,
-    FontComboBox,
-    ContextMenu,
-    PopupWindow,
-    Dialog,
-    InputDialog,
-    ProgressDialog,
-    DirectoryDialog,
-    DatePicker,
-    TimePicker,
-    DateTimePicker,
-    ActivityIndicator,
 }
 
 /// WASM platform runtime lifecycle state.
@@ -112,11 +86,6 @@ impl WasmPlatform {
         h: u32,
     ) -> u64 {
         self.state.create_widget(kind, text, x, y, w, h)
-    }
-
-    /// Return the handle kind of an existing widget, if any.
-    pub(crate) fn kind_of(&self, id: u64) -> Option<WasmHandleKind> {
-        self.state.kind_of(id)
     }
 }
 

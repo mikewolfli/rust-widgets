@@ -528,8 +528,10 @@ required-features = ["desktop"]
 name = "macos_window_state_async_probe"
 required-features = ["desktop"]
 
-# Verifies every macOS `create_*` registers a handle; needs the `app` module and
-# a real backend, so it is gated like the other desktop probes.
+# Runtime proof that the host creates no controls and one creation mechanism
+# exists. Needs the `app` module and a real backend, so it is gated like the other
+# desktop probes. Replaces `macos_created_controls_are_usable`, whose subject (the
+# native control path) no longer exists.
 [[example]]
-name = "macos_created_controls_are_usable"
+name = "control_creation_is_single_mechanism"
 required-features = ["desktop"]

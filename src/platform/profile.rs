@@ -218,6 +218,7 @@ pub const fn route_name() -> &'static str {
 /// # Fields
 ///
 /// * `os_window` — does an OS own a window this build paints into?
+/// * `recommended_window` — default window size, in logical pixels.
 /// * `max_widgets` — upper bound on simultaneously mounted controls.
 /// * `max_texture` — largest square texture the surface may allocate, in pixels.
 /// * `font_cache_bytes` — glyph atlas budget.
@@ -226,6 +227,8 @@ pub const fn route_name() -> &'static str {
 pub struct SurfacePolicy {
     /// Whether an OS owns a window this build paints into.
     pub os_window: bool,
+    /// Default window size, in logical pixels.
+    pub recommended_window: (u32, u32),
     /// Upper bound on simultaneously mounted controls.
     pub max_widgets: usize,
     /// Largest square texture the surface may allocate, in pixels.
@@ -249,6 +252,7 @@ pub const fn surface_policy() -> SurfacePolicy {
     match profile_class() {
         ProfileClass::Device => SurfacePolicy {
             os_window: true,
+            recommended_window: (1920, 1080),
             max_widgets: 4096,
             max_texture: 4096,
             font_cache_bytes: 2 * 1024 * 1024,
@@ -256,6 +260,7 @@ pub const fn surface_policy() -> SurfacePolicy {
         },
         ProfileClass::Surface => SurfacePolicy {
             os_window: false,
+            recommended_window: (1024, 768),
             max_widgets: 512,
             max_texture: 2048,
             font_cache_bytes: 1024 * 1024,
@@ -263,6 +268,7 @@ pub const fn surface_policy() -> SurfacePolicy {
         },
         ProfileClass::Minimal => SurfacePolicy {
             os_window: false,
+            recommended_window: (800, 600),
             max_widgets: 64,
             max_texture: 1024,
             font_cache_bytes: 256 * 1024,
@@ -412,5 +418,94 @@ mod tests {
     #[test]
     fn route_name_follows_the_runtime_question() {
         assert_eq!(route_name(), if has_os_runtime() { "native-platform" } else { "surface-only" });
+    }
+
+    /// The policy table's `os_window` must agree with the runtime question.
+    ///
+    /// These are two descriptions of one fact. If they diverged, a build could
+    /// report "no OS runtime" while budgeting for a window (or the reverse), and the
+    /// budget would mislead every caller that sizes itself from it.
+    #[test]
+    fn policy_os_window_matches_the_runtime_question() {
+        assert_eq!(
+            surface_policy().os_window,
+            has_os_runtime(),
+            "surface_policy().os_window and has_os_runtime() describe the same fact",
+        );
+    }
+
+    /// A restrained profile must not budget *more* than a fuller one.
+    ///
+    /// This is the property that makes the table worth having: the four budgets
+    /// have to move together as the profile shrinks. A row edited in isolation
+    /// (say, `Minimal` given a 4096 texture) would silently overshoot the device's
+    /// memory and break the exact thing the profile exists to guarantee.
+    #[test]
+    fn each_budget_is_monotonic_as_the_profile_shrinks() {
+        // The declared rows, loosest first. Kept as data rather than three
+        // hand-written comparisons so the ordering itself is asserted.
+        let rows = [
+            SurfacePolicy {
+                os_window: true,
+                recommended_window: (1920, 1080),
+                max_widgets: 4096,
+                max_texture: 4096,
+                font_cache_bytes: 2 * 1024 * 1024,
+                event_queue: 256,
+            },
+            SurfacePolicy {
+                os_window: false,
+                recommended_window: (1024, 768),
+                max_widgets: 512,
+                max_texture: 2048,
+                font_cache_bytes: 1024 * 1024,
+                event_queue: 128,
+            },
+            SurfacePolicy {
+                os_window: false,
+                recommended_window: (800, 600),
+                max_widgets: 64,
+                max_texture: 1024,
+                font_cache_bytes: 256 * 1024,
+                event_queue: 64,
+            },
+        ];
+
+        for pair in rows.windows(2) {
+            let (looser, tighter) = (&pair[0], &pair[1]);
+            assert!(
+                tighter.max_widgets <= looser.max_widgets
+                    && tighter.max_texture <= looser.max_texture
+                    && tighter.font_cache_bytes <= looser.font_cache_bytes
+                    && tighter.event_queue <= looser.event_queue,
+                "a restrained profile must not budget more than a fuller one: \
+                 {looser:?} then {tighter:?}",
+            );
+        }
+    }
+
+    /// The live table must match the row its own profile selects.
+    ///
+    /// The literals above are the specification; this asserts the implementation
+    /// actually serves whichever row applies to the build under test.
+    #[test]
+    fn the_served_policy_is_one_of_the_declared_rows() {
+        let policy = surface_policy();
+        let declared = [
+            (4096usize, 4096u32, 2 * 1024 * 1024, 256usize, true),
+            (512, 2048, 1024 * 1024, 128, false),
+            (64, 1024, 256 * 1024, 64, false),
+        ];
+        let tuple = (
+            policy.max_widgets,
+            policy.max_texture,
+            policy.font_cache_bytes,
+            policy.event_queue,
+            policy.os_window,
+        );
+        assert!(
+            declared.contains(&tuple),
+            "surface_policy() returned {tuple:?}, which is not one of the declared rows"
+        );
     }
 }

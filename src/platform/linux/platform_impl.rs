@@ -142,9 +142,9 @@ impl Platform for LinuxPlatform {
     ///
     /// Gated on the same profile conditions as `canvas.rs`: `mini`/`embedded`
     /// have no widget registry, so the trait defaults apply and
-    /// `supports_custom_widgets()` honestly reports `false`.
+    /// `supports_surfaces()` honestly reports `false`.
     #[cfg(widgets_unstripped)]
-    fn mount_custom_widget(
+    fn mount_surface(
         &self,
         parent: crate::core::ObjectId,
         id: crate::core::ObjectId,
@@ -154,24 +154,24 @@ impl Platform for LinuxPlatform {
     }
 
     #[cfg(widgets_unstripped)]
-    fn resize_custom_widget(&self, id: crate::core::ObjectId, rect: crate::core::Rect) -> bool {
+    fn resize_surface(&self, id: crate::core::ObjectId, rect: crate::core::Rect) -> bool {
         super::canvas::resize_canvas(self, id, rect)
     }
 
     #[cfg(widgets_unstripped)]
-    fn unmount_custom_widget(&self, id: crate::core::ObjectId) -> bool {
+    fn unmount_surface(&self, id: crate::core::ObjectId) -> bool {
         super::canvas::unmount_canvas(self, id)
     }
 
-    /// `true` only when the self-drawn surface exists for this profile.
+    /// `true` only when the widget surface exists for this profile.
     #[cfg(widgets_unstripped)]
-    fn supports_custom_widgets(&self) -> bool {
+    fn supports_surfaces(&self) -> bool {
         true
     }
 
     /// Queue a redraw on the canvas's `DrawingArea`.
     #[cfg(widgets_unstripped)]
-    fn repaint_custom_widget(&self, id: crate::core::ObjectId) -> bool {
+    fn invalidate_surface(&self, id: crate::core::ObjectId) -> bool {
         super::canvas::repaint_canvas(self, id)
     }
     fn init(&self) {

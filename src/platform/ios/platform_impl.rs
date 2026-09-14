@@ -160,11 +160,33 @@ impl Platform for IosMobilePlatform {
 
     // ─── Window ───
 
-    /// Record the host window. The library paints its contents, so no UIKit view
-    /// is instantiated here; the drawing surface is mounted separately via
+    /// Creates the host window and records it.
+    ///
+    /// The window is the one OS object this backend creates. Under self-drawing the
+    /// *controls* are the library's job (BLUE15 #55/#56), but a window is not: iOS
+    /// requires a real `UIWindow` to have a place to draw into at all, which is why
+    /// `native::create_ui_window` exists.
+    ///
+    /// Calling it is what makes the FFI helper live rather than orphaned. It is
+    /// gated on the real iOS target, because the helper is compiled only there; the
+    /// backend's state machine still runs on every host so its tests stay
+    /// executable, and that is why the call is inside a `cfg` rather than around it.
+    /// The UIKit handle is deliberately **not** stored: no control mutator needs it,
+    /// and the library paints through the surface attached via
     /// `MobilePlatformExtension::attach_to_native_view`.
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
-        self.insert_widget(IosHandleKind::Window, title, x, y, width, height)
+        let id = self.insert_widget(IosHandleKind::Window, title, x, y, width, height);
+
+        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            // The window must exist for the surface to have a superview. Dropping the
+            // `Retained<UIWindow>` is correct: UIKit owns it from
+            // `makeKeyAndVisible()`, and leaking the Rust handle would keep a
+            // reference past the app's lifetime.
+            let _window = super::native::create_ui_window(mtm, title, x, y, width, height);
+        }
+
+        id
     }
 
     fn set_widget_text(&self, widget_id: u64, text: &str) {

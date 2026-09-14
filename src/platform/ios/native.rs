@@ -34,7 +34,7 @@
 use objc2::MainThreadMarker;
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::NSString;
-use objc2_ui_kit::{UIColor, UIViewController, UIWindow};
+use objc2_ui_kit::{NSObjectUIAccessibility, UIColor, UIViewController, UIWindow};
 
 // ─── Geometry helpers ───
 
@@ -68,6 +68,11 @@ pub(crate) fn create_ui_window(
     window.makeKeyAndVisible();
     // The window has no OS title chrome on iOS; record the name as the
     // accessibility label so it stays observable to assistive technology.
+    //
+    // `setAccessibilityLabel` comes from the `NSObjectUIAccessibility` trait and
+    // takes the `MainThreadMarker` as well as the label, so the trait must be in
+    // scope for the method to resolve. The marker is passed through rather than
+    // re-derived: this function already proved main-thread context by taking one.
     window.setAccessibilityLabel(Some(&NSString::from_str(title)), mtm);
     window
 }

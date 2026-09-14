@@ -507,62 +507,60 @@ pub fn create_scroll_area(
 ) -> crate::core::ObjectId {
     backend_for_kind(widget::WidgetKind::ScrollArea).create_scroll_area(parent, x, y, width, height)
 }
-/// Mounts a custom-painted widget into a window.
+/// Mounts a widget onto a surface supplied by the host.
 ///
-/// "Custom-painted" means the widget renders itself through
-/// [`widget::Draw`] rather than mapping onto an existing OS control, so no
-/// `create_*` function applies. Which surface hosts it — a child window, a
-/// drawing area, a view — is decided inside `src/platform/` and never named
-/// here; callers only need to know whether the backend can display it, which
-/// [`supports_custom_widgets`] answers.
+/// The host platform supplies a window and a drawing surface; the library paints
+/// the widget through [`widget::Draw`]. Which surface hosts it — a child window,
+/// a drawing area, a view — is decided inside `src/platform/` and never named
+/// here; callers only need to know whether the backend can host widgets, which
+/// [`supports_surfaces`] answers.
 ///
 /// `id` must already be registered in [`widget::runtime`]. Prefer the
-/// higher-level [`app::WindowHandle::mount_custom_widget`], which performs the
+/// higher-level [`app::WindowHandle::mount_surface`], which performs the
 /// registration for you and reports failures as a `Result`.
 ///
-/// Returns `false` when the backend cannot host custom-painted widgets, or when
-/// it refuses this particular mount. Backends that cannot display them log why.
+/// Returns `false` when the backend has no surface to offer, or when it refuses
+/// this particular mount. Backends that cannot host widgets log why.
 #[cfg(not(alloc_frugal))]
-pub fn mount_custom_widget(
+pub fn mount_surface(
     parent: crate::core::ObjectId,
     id: crate::core::ObjectId,
     rect: crate::core::Rect,
 ) -> bool {
-    platform::get_platform().mount_custom_widget(parent, id, rect)
+    platform::get_platform().mount_surface(parent, id, rect)
 }
 
-/// Moves and resizes a mounted custom-painted widget.
+/// Moves and resizes a mounted surface.
 #[cfg(not(alloc_frugal))]
-pub fn resize_custom_widget(id: crate::core::ObjectId, rect: crate::core::Rect) -> bool {
-    platform::get_platform().resize_custom_widget(id, rect)
+pub fn resize_surface(id: crate::core::ObjectId, rect: crate::core::Rect) -> bool {
+    platform::get_platform().resize_surface(id, rect)
 }
 
-/// Unmounts a custom-painted widget from its window.
+/// Unmounts a surface from its window.
 #[cfg(not(alloc_frugal))]
-pub fn unmount_custom_widget(id: crate::core::ObjectId) -> bool {
-    platform::get_platform().unmount_custom_widget(id)
+pub fn unmount_surface(id: crate::core::ObjectId) -> bool {
+    platform::get_platform().unmount_surface(id)
 }
 
-/// Marks a mounted custom-painted widget as needing a repaint.
+/// Marks a mounted surface as needing a repaint.
 ///
-/// Returns `false` when the id is not a custom-painted widget mounted on the
-/// active backend.
+/// Returns `false` when the id is not a surface mounted on the active backend.
 #[cfg(not(alloc_frugal))]
-pub fn request_custom_repaint(id: crate::core::ObjectId) -> bool {
-    platform::get_platform().repaint_custom_widget(id)
+pub fn invalidate_surface(id: crate::core::ObjectId) -> bool {
+    platform::get_platform().invalidate_surface(id)
 }
 
-/// Returns `true` when the active backend can display custom-painted widgets.
+/// Returns `true` when the active backend can host library-painted widgets.
 #[cfg(not(alloc_frugal))]
-pub fn supports_custom_widgets() -> bool {
-    platform::get_platform().supports_custom_widgets()
+pub fn supports_surfaces() -> bool {
+    platform::get_platform().supports_surfaces()
 }
 
 /// Mounts a widget object on the platform's surface, or reports why it cannot.
 ///
 /// This is the **single implementation** of the register → mount → roll back on
-/// failure sequence, used by both [`create_widget_of_kind`] (for kinds with no
-/// platform control) and [`app::WindowHandle::mount_custom_widget`]. Keeping one
+/// failure sequence, used by both [`create_widget_of_kind`] and
+/// [`app::WindowHandle::mount_surface`]. Keeping one
 /// copy is what stops the two paths from disagreeing about ownership: on any
 /// failure the widget is unregistered, so the registry never holds a widget the
 /// backend is not showing.
@@ -573,20 +571,20 @@ fn mount_widget_object(
     parent: crate::core::ObjectId,
     widget: Box<dyn widget::Widget>,
     rect: crate::core::Rect,
-) -> Result<crate::core::ObjectId, widget::runtime::CustomWidgetMountError> {
-    use widget::runtime::CustomWidgetMountError;
+) -> Result<crate::core::ObjectId, widget::runtime::SurfaceMountError> {
+    use widget::runtime::SurfaceMountError;
 
     // Register first: the backend looks the widget up by id on every repaint.
-    let id = widget::runtime::register(widget).ok_or(CustomWidgetMountError::NoRegistryOnThread)?;
+    let id = widget::runtime::register(widget).ok_or(SurfaceMountError::NoRegistryOnThread)?;
     widget::runtime::set_geometry(id, rect);
 
-    if !platform::get_platform().mount_custom_widget(parent, id, rect) {
+    if !platform::get_platform().mount_surface(parent, id, rect) {
         // Do not leave a widget stranded when the backend refused to show it.
         widget::runtime::unregister(id);
-        if !supports_custom_widgets() {
-            return Err(CustomWidgetMountError::UnsupportedByBackend(backend_name()));
+        if !supports_surfaces() {
+            return Err(SurfaceMountError::UnsupportedByBackend(backend_name()));
         }
-        return Err(CustomWidgetMountError::RejectedByBackend(backend_name()));
+        return Err(SurfaceMountError::RejectedByBackend(backend_name()));
     }
     Ok(id)
 }
@@ -706,7 +704,7 @@ fn kind_name(kind: widget::WidgetKind) -> alloc::string::String {
 
 /// Stub for mini mode (no platform runtime, no windows).
 #[cfg(alloc_frugal)]
-pub fn mount_custom_widget(
+pub fn mount_surface(
     _parent: crate::core::ObjectId,
     _id: crate::core::ObjectId,
     _rect: crate::core::Rect,
@@ -716,25 +714,25 @@ pub fn mount_custom_widget(
 
 /// Stub for mini mode.
 #[cfg(alloc_frugal)]
-pub fn resize_custom_widget(_id: crate::core::ObjectId, _rect: crate::core::Rect) -> bool {
+pub fn resize_surface(_id: crate::core::ObjectId, _rect: crate::core::Rect) -> bool {
     false
 }
 
 /// Stub for mini mode.
 #[cfg(alloc_frugal)]
-pub fn unmount_custom_widget(_id: crate::core::ObjectId) -> bool {
+pub fn unmount_surface(_id: crate::core::ObjectId) -> bool {
     false
 }
 
 /// Stub for mini mode.
 #[cfg(alloc_frugal)]
-pub fn request_custom_repaint(_id: crate::core::ObjectId) -> bool {
+pub fn invalidate_surface(_id: crate::core::ObjectId) -> bool {
     false
 }
 
 /// Stub for mini mode.
 #[cfg(alloc_frugal)]
-pub fn supports_custom_widgets() -> bool {
+pub fn supports_surfaces() -> bool {
     false
 }
 
@@ -1284,3 +1282,101 @@ pub use platform::{
     NativeCapabilityContract, PlatformCapabilities, RuntimeGuiMode, WidgetTriggerEvent,
     WidgetTriggerKind, WindowStateFlag,
 };
+
+// ═══════════════════════════════════════════════════════
+// Deprecated aliases kept for API compatibility (principle #21)
+// ═══════════════════════════════════════════════════════
+
+/// Deprecated spellings of the surface API.
+///
+/// These names said "custom", which described a rendering mechanism — "painted
+/// by the library rather than mapped onto an OS control". That distinction no
+/// longer exists: the host platform supplies only a window and a drawing surface
+/// and the library paints every widget, so the mechanism vocabulary has no
+/// referent. Use the `*_surface` names instead.
+///
+/// The forwards are re-exported at the crate root below, so an existing
+/// `rust_widgets::mount_custom_widget(...)` call keeps compiling and only gains a
+/// deprecation warning — the caller is told the name changed rather than being
+/// broken by it (principle #21).
+#[allow(deprecated)]
+pub mod deprecated {
+    /// Deprecated alias of [`crate::mount_surface`].
+    #[deprecated(
+        note = "renamed to `mount_surface`; 'custom' named a mechanism that no longer exists"
+    )]
+    pub fn mount_custom_widget(
+        parent: crate::core::ObjectId,
+        id: crate::core::ObjectId,
+        rect: crate::core::Rect,
+    ) -> bool {
+        crate::mount_surface(parent, id, rect)
+    }
+
+    /// Deprecated alias of [`crate::resize_surface`].
+    #[deprecated(
+        note = "renamed to `resize_surface`; 'custom' named a mechanism that no longer exists"
+    )]
+    pub fn resize_custom_widget(id: crate::core::ObjectId, rect: crate::core::Rect) -> bool {
+        crate::resize_surface(id, rect)
+    }
+
+    /// Deprecated alias of [`crate::unmount_surface`].
+    #[deprecated(
+        note = "renamed to `unmount_surface`; 'custom' named a mechanism that no longer exists"
+    )]
+    pub fn unmount_custom_widget(id: crate::core::ObjectId) -> bool {
+        crate::unmount_surface(id)
+    }
+
+    /// Deprecated alias of [`crate::invalidate_surface`].
+    #[deprecated(
+        note = "renamed to `invalidate_surface`; 'custom' named a mechanism that no longer exists"
+    )]
+    pub fn request_custom_repaint(id: crate::core::ObjectId) -> bool {
+        crate::invalidate_surface(id)
+    }
+
+    /// Deprecated alias of [`crate::supports_surfaces`].
+    #[deprecated(
+        note = "renamed to `supports_surfaces`; 'custom' named a mechanism that no longer exists"
+    )]
+    pub fn supports_custom_widgets() -> bool {
+        crate::supports_surfaces()
+    }
+}
+
+// Old crate-root paths keep resolving, so a rename is a warning rather than a
+// break. Exported here rather than relying on callers reaching into `deprecated`.
+#[allow(deprecated)]
+pub use deprecated::{
+    mount_custom_widget, request_custom_repaint, resize_custom_widget, supports_custom_widgets,
+    unmount_custom_widget,
+};
+
+#[cfg(test)]
+mod compat_path_tests {
+    /// The old crate-root spellings must keep resolving after the rename.
+    ///
+    /// The rename is a *deprecation*, not a break (principle #21): existing callers
+    /// must still compile. Referring to the functions here fails the build if a
+    /// re-export is ever dropped, which is otherwise invisible because nothing else
+    /// in the crate uses the old names.
+    #[test]
+    #[allow(deprecated)]
+    fn old_surface_names_still_resolve_at_the_crate_root() {
+        let _: fn(crate::core::ObjectId, crate::core::ObjectId, crate::core::Rect) -> bool =
+            crate::mount_custom_widget;
+        let _: fn(crate::core::ObjectId, crate::core::Rect) -> bool = crate::resize_custom_widget;
+        let _: fn(crate::core::ObjectId) -> bool = crate::unmount_custom_widget;
+        let _: fn(crate::core::ObjectId) -> bool = crate::request_custom_repaint;
+        let _: fn() -> bool = crate::supports_custom_widgets;
+    }
+
+    /// The deprecated forwards must reach the same function, not a stale copy.
+    #[test]
+    #[allow(deprecated)]
+    fn deprecated_aliases_delegate_to_the_surface_api() {
+        assert_eq!(crate::supports_custom_widgets(), crate::supports_surfaces());
+    }
+}

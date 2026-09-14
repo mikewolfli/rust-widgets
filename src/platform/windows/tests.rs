@@ -84,17 +84,17 @@ mod tests {
     /// Self-drawn widgets are hosted by `windows/canvas.rs`, so the backend must
     /// advertise the surface and refuse to mount an unregistered widget id.
     #[test]
-    fn custom_widget_surface_is_advertised_and_validates_ids() {
+    fn widget_surface_is_advertised_and_validates_ids() {
         use crate::platform::Platform;
 
         let platform = WindowsPlatform::new();
         platform.init();
-        assert!(platform.supports_custom_widgets());
+        assert!(platform.supports_surfaces());
 
         // A widget id that was never registered in `widget::runtime` must be
         // refused rather than producing an empty canvas.
-        assert!(!platform.mount_custom_widget(1, 4242, crate::core::Rect::new(0, 0, 10, 10)));
-        assert!(!platform.repaint_custom_widget(4242));
-        assert!(!platform.unmount_custom_widget(4242));
+        assert!(!platform.mount_surface(1, 4242, crate::core::Rect::new(0, 0, 10, 10)));
+        assert!(!platform.invalidate_surface(4242));
+        assert!(!platform.unmount_surface(4242));
     }
 }

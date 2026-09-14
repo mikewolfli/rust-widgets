@@ -68,30 +68,36 @@ pub type ClickCallback = Rc<RefCell<dyn FnMut()>>;
 /// Boxed callback invoked when a widget value changes.
 pub type ValueChangedCallback = Rc<RefCell<dyn FnMut(String)>>;
 
-// ═══════════════════════════════════════════════════════
-// Custom-painted widget mounting
-// ═══════════════════════════════════════════════════
+// ══════════════════════════════════════════════════
+// Widget surface mounting
+// ══════════════════════════════════════════════════
 
-/// Why a custom-painted widget could not be mounted into a window.
+/// Why a widget could not be mounted onto a host surface.
 ///
-/// Re-exported from [`crate::widget::runtime::CustomWidgetMountError`] — the layer
+/// Re-exported from [`crate::widget::runtime::SurfaceMountError`] — the layer
 /// that owns widget registration also owns the reasons registration or mounting
 /// can fail, so there is one definition shared by the handle API and the
 /// crate-level creation API (principle #54).
-pub use crate::widget::runtime::CustomWidgetMountError;
+pub use crate::widget::runtime::SurfaceMountError;
 
-/// Handle to a custom-painted widget mounted in a window.
+/// Deprecated alias of [`SurfaceMountError`].
+pub use crate::widget::runtime::SurfaceMountError as CustomWidgetMountError;
+
+/// Handle to a widget mounted on a window surface.
 ///
 /// Keeps the widget's registry id so the caller can move or unmount it. Dropping
 /// the handle is **not** enough to remove the widget: the window still owns it,
 /// because the surface outlives any single Rust value. Call
-/// [`CustomWidgetHandle::unmount`] for that; `Drop` only detaches this handle.
+/// [`SurfaceHandle::unmount`] for that; `Drop` only detaches this handle.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CustomWidgetHandle {
+pub struct SurfaceHandle {
     id: ObjectId,
 }
 
-impl CustomWidgetHandle {
+/// Deprecated alias of [`SurfaceHandle`].
+pub type CustomWidgetHandle = SurfaceHandle;
+
+impl SurfaceHandle {
     /// Wraps a registry id.
     pub fn from_raw(id: ObjectId) -> Self {
         Self { id }
@@ -111,14 +117,14 @@ impl CustomWidgetHandle {
     ///
     /// Returns `false` when the widget is no longer mounted.
     pub fn set_geometry(&self, rect: Rect) -> bool {
-        crate::resize_custom_widget(self.id, rect)
+        crate::resize_surface(self.id, rect)
     }
 
     /// Removes the widget from its window and drops it.
     ///
     /// Returns `false` when it was already unmounted.
     pub fn unmount(&self) -> bool {
-        let removed = crate::unmount_custom_widget(self.id);
+        let removed = crate::unmount_surface(self.id);
         crate::widget::runtime::unregister(self.id);
         removed
     }
@@ -127,7 +133,7 @@ impl CustomWidgetHandle {
     ///
     /// # Why this exists
     ///
-    /// A custom-painted widget owns its own interaction model, so a menu item or
+    /// A library-painted widget owns its own interaction model, so a menu item or
     /// tool-bar button cannot drive it through the platform event queue — there is
     /// no OS control to send a command to. This is the generic bridge: the caller
     /// decides what to do with the widget, and this method guarantees the change
@@ -146,7 +152,7 @@ impl CustomWidgetHandle {
     /// let win = app.new_window("Editor", 0, 0, 800, 600);
     /// let editor = win
     ///     .mount_widget_by_name("code_editor", Rect::new(0, 0, 800, 600), "")
-    ///     .expect("backend supports custom-painted widgets");
+    ///     .expect("backend can mount widget surfaces");
     ///
     /// // Downcast to the concrete widget and drive it directly.
     /// editor.update(|widget| {
@@ -173,7 +179,7 @@ impl CustomWidgetHandle {
     }
 }
 
-impl WidgetHandle for CustomWidgetHandle {
+impl WidgetHandle for SurfaceHandle {
     fn raw_id(&self) -> ObjectId {
         self.id
     }
@@ -182,7 +188,7 @@ impl WidgetHandle for CustomWidgetHandle {
         Self { id }
     }
 
-    /// Custom-painted widgets route input into themselves.
+    /// Library-painted widgets route input into themselves.
     ///
     /// A `CodeEditor` handles its own clicks, keys and IME commits through
     /// `EventHandler`; there is no separate platform control to attach a
@@ -191,17 +197,17 @@ impl WidgetHandle for CustomWidgetHandle {
     /// editor: `text_changed`, `cursor_moved`, `selection_changed`).
     fn on_click<F: FnMut() + 'static>(&self, _f: F) {
         log::debug!(
-            "CustomWidgetHandle::on_click ignored for id={}: custom-painted widgets emit their \
+            "SurfaceHandle::on_click ignored for id={}: the widget emits its \
              own signals rather than a platform click callback",
             self.id
         );
     }
 
-    /// See [`CustomWidgetHandle::on_click`]; the same reasoning applies.
+    /// See [`SurfaceHandle::on_click`]; the same reasoning applies.
     fn on_value_changed<F: FnMut(String) + 'static>(&self, _f: F) {
         log::debug!(
-            "CustomWidgetHandle::on_value_changed ignored for id={}: custom-painted widgets \
-             emit their own signals",
+            "SurfaceHandle::on_value_changed ignored for id={}: the widget \
+             emits its own signals",
             self.id
         );
     }
@@ -690,13 +696,12 @@ impl WindowHandle {
         ProgressBarHandle::from_raw(crate::create_progress_bar(self.id, x, y, w, h))
     }
 
-    /// Mount a **custom-painted** widget into this window.
+    /// Mount a widget onto a surface in this window.
     ///
     /// # What this is for
     ///
-    /// Widgets that paint themselves through `Draw` (`CodeEditor`, `ColorPicker`,
-    /// `GanttWidget`, `TerminalView`, …) have no OS control to map onto, so the
-    /// `new_*` factory methods above cannot host them. This method hands the
+    /// Widgets paint themselves through `Draw` (`CodeEditor`, `ColorPicker`,
+    /// `GanttWidget`, `TerminalView`, …). This method hands the
     /// widget to a surface the backend provides that repaints it whenever the
     /// window is invalidated, and forwards pointer/keyboard input back into the
     /// widget.
@@ -705,7 +710,7 @@ impl WindowHandle {
     ///
     /// Which surface that is (a child window, a drawing area, a view) is decided
     /// inside `src/platform/` and is deliberately **not** part of this contract.
-    /// The same call works on every backend; when one cannot host such a widget it
+    /// The same call works on every backend; when one cannot host a surface it
     /// says so through `Err`, rather than the caller pre-checking an OS.
     ///
     /// # Ownership
@@ -716,8 +721,8 @@ impl WindowHandle {
     /// # Returns
     ///
     /// `Ok(handle)` when the backend mounted the widget, `Err(reason)` when it
-    /// could not — a backend that cannot host custom-painted widgets (see
-    /// `Platform::supports_custom_widgets`), an off-UI-thread call, or an unknown
+    /// could not — a backend with no surface to offer (see
+    /// `Platform::supports_surfaces`), an off-UI-thread call, or an unknown
     /// parent. Callers must surface the error rather than showing a blank window.
     ///
     /// ```no_run
@@ -730,26 +735,26 @@ impl WindowHandle {
     /// let win = app.new_window("Editor", 0, 0, 900, 600);
     /// let editor = CodeEditor::with_config(Rect::new(0, 0, 900, 600), CodeEditorConfig::new())
     ///     .expect("valid config");
-    /// win.mount_custom_widget(Box::new(editor), Rect::new(0, 0, 900, 600))
-    ///     .expect("backend must support custom-painted widgets");
+    /// win.mount_surface(Box::new(editor), Rect::new(0, 0, 900, 600))
+    ///     .expect("backend must be able to mount widget surfaces");
     /// win.show();
     /// app.run();
     /// ```
-    pub fn mount_custom_widget(
+    pub fn mount_surface(
         &self,
         widget: Box<dyn crate::widget::Widget>,
         rect: Rect,
-    ) -> Result<CustomWidgetHandle, CustomWidgetMountError> {
+    ) -> Result<SurfaceHandle, SurfaceMountError> {
         // One implementation of register → mount → roll back, shared with
         // `create_widget_of_kind`, so the two creation paths cannot disagree about
         // ownership or error reporting.
         let id = crate::mount_widget_object(self.id, widget, rect)?;
-        Ok(CustomWidgetHandle { id })
+        Ok(SurfaceHandle { id })
     }
 
-    /// Mount a custom-painted widget, creating it from the widget factory by name.
+    /// Mount a widget, creating it from the widget factory by name.
     ///
-    /// Convenience wrapper over [`WindowHandle::mount_custom_widget`] for callers
+    /// Convenience wrapper over [`WindowHandle::mount_surface`] for callers
     /// that already address widgets by their capability name (`"code_editor"`,
     /// `"color_picker"`, …).
     pub fn mount_widget_by_name(
@@ -757,11 +762,23 @@ impl WindowHandle {
         name: &str,
         rect: Rect,
         text: &str,
-    ) -> Result<CustomWidgetHandle, CustomWidgetMountError> {
+    ) -> Result<SurfaceHandle, SurfaceMountError> {
         let factory = crate::widget::WidgetFactory::new_with_defaults();
         let widget =
-            factory.create(name, rect, text).ok_or(CustomWidgetMountError::UnknownWidgetName)?;
-        self.mount_custom_widget(widget, rect)
+            factory.create(name, rect, text).ok_or(SurfaceMountError::UnknownWidgetName)?;
+        self.mount_surface(widget, rect)
+    }
+
+    /// Deprecated alias of [`WindowHandle::mount_surface`].
+    #[deprecated(
+        note = "renamed to `mount_surface`; 'custom' named a mechanism that no longer exists"
+    )]
+    pub fn mount_custom_widget(
+        &self,
+        widget: Box<dyn crate::widget::Widget>,
+        rect: Rect,
+    ) -> Result<SurfaceHandle, SurfaceMountError> {
+        self.mount_surface(widget, rect)
     }
 
     pub fn new_panel(&self, x: i32, y: i32, w: u32, h: u32) -> PanelHandle {
