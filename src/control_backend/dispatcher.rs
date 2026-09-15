@@ -266,7 +266,7 @@ pub fn get_control_backend_for_widget(_kind: WidgetKind) -> &'static dyn Control
 ///
 /// `controls-custom` is the backend that *is* the painting mechanism, so a build
 /// without it has no control mechanism at all. Such a build (it is not part of any
-/// shipped profile) gets [`NoControlBackend`], whose members report absence — the
+/// shipped profile) gets `NoControlBackend`, whose members report absence — the
 /// same rule as everywhere else: an unimplemented capability says so rather than
 /// answering with a value that would look live.
 pub fn get_control_backend() -> &'static dyn ControlBackend {

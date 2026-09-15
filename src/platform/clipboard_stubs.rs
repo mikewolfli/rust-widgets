@@ -141,7 +141,8 @@ pub mod windows {
     use winapi::um::winbase::{GlobalLock, GlobalSize, GlobalUnlock, GHND};
     use winapi::um::winuser::CF_UNICODETEXT;
     use winapi::um::winuser::{
-        CloseClipboard, GetClipboardData, OpenClipboard, RegisterClipboardFormatA, SetClipboardData,
+        CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, RegisterClipboardFormatA,
+        SetClipboardData,
     };
 
     pub struct WindowsClipboard;
@@ -241,6 +242,13 @@ pub mod windows {
                 if OpenClipboard(std::ptr::null_mut()) == FALSE {
                     return false;
                 }
+
+                // Win32 requires the clipboard to be emptied between `OpenClipboard`
+                // and `SetClipboardData`. Without this the new data does not replace
+                // what the previous owner left behind, so the result depends on the
+                // clipboard's prior contents — and a stale `CF_HTML` entry keeps
+                // winning over the text we are about to publish.
+                EmptyClipboard();
 
                 let mut success = true;
 

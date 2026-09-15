@@ -245,7 +245,7 @@ impl AdapterInfo {
     /// on the OpenGL ES / software fallback, and warn accordingly. The mapping is
     /// derived from the `backend` string because `AdapterInfo` is a plain data
     /// type that also exists without the `gpu-wgpu` feature; the string values
-    /// come from `format!("{:?}", wgpu::Backend)` in [`Self::from_wgpu`].
+    /// come from `format!("{:?}", wgpu::Backend)` in `Self::from_wgpu`.
     ///
     /// Gated on `gpu`: the tier vocabulary lives in the `backend_ladder` module,
     /// which is itself only compiled when `wgpu` is available.

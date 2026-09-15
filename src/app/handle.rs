@@ -284,7 +284,7 @@ pub trait WidgetHandle: Sized {
     /// Returns `true` when the backend wrote it to a real native control or an
     /// authoritative state model; `false` when this backend's control has no
     /// numeric value. Callers branch on the result at runtime if they care — they
-    /// never branch on the OS. See [`crate::Platform::set_widget_value`].
+    /// never branch on the OS. See [`crate::platform::Platform::set_widget_value`].
     fn set_value(&self, value: f64) -> bool {
         crate::platform::get_platform().set_widget_value(self.raw_id(), value)
     }
@@ -1219,7 +1219,7 @@ impl SliderHandle {
     /// Set the current slider value (clamped to min/max range).
     ///
     /// The value is written both to the in-process mirror and to the native
-    /// control through [`crate::Platform::set_widget_value`], so the change is
+    /// control through [`crate::platform::Platform::set_widget_value`], so the change is
     /// visible on screen and not just to `value()`. On a backend without a
     /// numeric value for sliders the mirror is still updated, because it is the
     /// authoritative copy for the self-drawn path.
@@ -1259,7 +1259,7 @@ impl SliderHandle {
     /// Set the slider step increment.
     ///
     /// Mirrored into the in-process state *and* pushed to the native control
-    /// through [`crate::Platform::set_widget_step`].
+    /// through [`crate::platform::Platform::set_widget_step`].
     pub fn set_step(&self, step: i32) {
         SLIDER_STATES.with(|map| {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).step = step;
@@ -1310,7 +1310,7 @@ impl ProgressBarHandle {
     /// Set the current progress value (clamped to min/max).
     ///
     /// Mirrored into the in-process state *and* pushed to the native control
-    /// through [`crate::Platform::set_widget_value`], so the bar actually moves.
+    /// through [`crate::platform::Platform::set_widget_value`], so the bar actually moves.
     pub fn set_value(&self, value: u32) {
         PROGRESS_BAR_STATES.with(|map| {
             let mut map = map.borrow_mut();
@@ -1329,7 +1329,7 @@ impl ProgressBarHandle {
     /// Set the minimum value.
     ///
     /// Mirrored into the in-process state *and* pushed to the native control
-    /// through [`crate::Platform::set_widget_range`].
+    /// through [`crate::platform::Platform::set_widget_range`].
     pub fn set_min(&self, min: u32) {
         let range = PROGRESS_BAR_STATES.with(|map| {
             let mut map = map.borrow_mut();
@@ -1348,7 +1348,7 @@ impl ProgressBarHandle {
     /// Set the maximum value.
     ///
     /// Mirrored into the in-process state *and* pushed to the native control
-    /// through [`crate::Platform::set_widget_range`].
+    /// through [`crate::platform::Platform::set_widget_range`].
     pub fn set_max(&self, max: u32) {
         let range = PROGRESS_BAR_STATES.with(|map| {
             let mut map = map.borrow_mut();
@@ -1367,7 +1367,7 @@ impl ProgressBarHandle {
     /// Set whether the progress bar is in indeterminate mode.
     ///
     /// Mirrored into the in-process state *and* pushed to the native control
-    /// through [`crate::Platform::set_widget_indeterminate`], so a native bar
+    /// through [`crate::platform::Platform::set_widget_indeterminate`], so a native bar
     /// animates instead of showing a fixed fraction.
     pub fn set_indeterminate(&self, indeterminate: bool) {
         PROGRESS_BAR_STATES.with(|map| {
@@ -1412,7 +1412,7 @@ impl CheckBoxHandle {
     /// Set the check-box to checked or unchecked.
     ///
     /// Mirrored into the in-process state *and* pushed to the native control
-    /// through [`crate::Platform::set_widget_checked`], so the box really moves.
+    /// through [`crate::platform::Platform::set_widget_checked`], so the box really moves.
     ///
     /// This always lands on a definite state, tri-state mode or not, so
     /// [`CheckBoxHandle::check_state`] and the native control cannot disagree.
@@ -1452,7 +1452,7 @@ impl CheckBoxHandle {
     /// Enable/disable tri-state mode.
     ///
     /// Mirrored into the in-process state *and* pushed to the native control
-    /// through [`crate::Platform::set_widget_tristate`] (`setAllowsMixedState:` on
+    /// through [`crate::platform::Platform::set_widget_tristate`] (`setAllowsMixedState:` on
     /// macOS, `BS_3STATE`/`BS_AUTO3STATE` on Windows, `set_inconsistent` on GTK),
     /// so all three desktops actually gain a third state.
     ///
@@ -1475,6 +1475,21 @@ impl CheckBoxHandle {
             crate::platform::get_platform().set_widget_checked(self.raw_id(), false);
         }
         crate::platform::get_platform().set_widget_tristate(self.raw_id(), tristate);
+    }
+
+    /// Return whether tri-state mode is on for this check-box.
+    ///
+    /// The answer comes from the same in-process mirror [`Self::set_tristate`]
+    /// writes and [`Self::check_state`] reads, so the two cannot disagree. It
+    /// deliberately does **not** ask [`crate::platform::Platform::is_widget_tristate`]: after
+    /// BLUE15 the host no longer owns control state, so every real desktop backend
+    /// answers the platform-trait default (`None`) and a flag the handle already
+    /// knows would read back as "unknown".
+    pub fn is_tristate(&self) -> Option<bool> {
+        Some(
+            CHECKBOX_STATES
+                .with(|map| map.borrow().get(&self.raw_id()).map(|s| s.tristate).unwrap_or(false)),
+        )
     }
 
     /// Return the current check state, including the tri-state mixed value.
@@ -1510,7 +1525,7 @@ impl RadioButtonHandle {
     /// Select this radio button and deselect all others in the same group.
     ///
     /// Both the selection *and* the de-selection of siblings are pushed to the
-    /// native controls through [`crate::Platform::set_widget_checked`], so the
+    /// native controls through [`crate::platform::Platform::set_widget_checked`], so the
     /// group is actually mutually exclusive on screen rather than only in the
     /// in-process mirror.
     pub fn select(&self) {
@@ -1547,7 +1562,7 @@ impl RadioButtonHandle {
     /// Set the group name for this radio button.
     ///
     /// Radio buttons sharing a group are mutually exclusive. Pushed to the native
-    /// control through [`crate::Platform::set_widget_group`] — GTK links the
+    /// control through [`crate::platform::Platform::set_widget_group`] — GTK links the
     /// buttons, Win32 sets `WS_GROUP`, and AppKit relies on adjacency — while the
     /// actual clearing of siblings is done by [`RadioButtonHandle::select`].
     pub fn set_group(&self, group: &str) {
@@ -1597,7 +1612,7 @@ impl LineEditHandle {
     /// Set the placeholder text shown when the field is empty.
     ///
     /// Mirrored into the in-process state *and* pushed to the native control
-    /// through [`crate::Platform::set_widget_placeholder`] (`EM_SETCUEBANNER` on
+    /// through [`crate::platform::Platform::set_widget_placeholder`] (`EM_SETCUEBANNER` on
     /// Windows, `set_placeholder_text` on GTK). AppKit's `NSTextView` has no
     /// placeholder concept, so on macOS the platform call reports `false` and only
     /// the mirror changes — a genuine per-OS difference, not a dropped write.
@@ -1612,7 +1627,7 @@ impl LineEditHandle {
     /// Set whether the line-edit is read-only.
     ///
     /// Mirrored into the in-process state *and* pushed to the native control
-    /// through [`crate::Platform::set_widget_read_only`], so the native field
+    /// through [`crate::platform::Platform::set_widget_read_only`], so the native field
     /// actually stops accepting input. On a backend whose text control is not an
     /// entry, the platform call reports `false` and only the mirror changes —
     /// that is a legitimate per-OS difference, not a dropped write.
@@ -1627,7 +1642,7 @@ impl LineEditHandle {
     /// Set the maximum number of characters allowed.
     ///
     /// Mirrored into the in-process state *and* pushed to the native control
-    /// through [`crate::Platform::set_widget_max_length`]. Not every OS text
+    /// through [`crate::platform::Platform::set_widget_max_length`]. Not every OS text
     /// control has a settable limit (AppKit's `NSTextField` does not), so the
     /// platform call may report `false`; the mirror still updates for the
     /// self-drawn path and for callers that enforce the limit themselves.
@@ -1646,7 +1661,7 @@ impl LineEditHandle {
     /// Set the echo mode (Normal / Password / NoEcho).
     ///
     /// Mirrored into the in-process state *and* pushed to the native control
-    /// through [`crate::Platform::set_widget_echo_mode`] (`EM_SETPASSWORDCHAR` on
+    /// through [`crate::platform::Platform::set_widget_echo_mode`] (`EM_SETPASSWORDCHAR` on
     /// Windows, `set_visibility` on GTK). AppKit picks the text class instead, so
     /// macOS reports `false` here; and `NoEcho` has no equivalent on any toolkit,
     /// so it is refused rather than silently treated as `Password`.
@@ -1704,7 +1719,7 @@ impl LineEditHandle {
 
     /// Select all text in the line-edit.
     ///
-    /// Pushed to the native control through [`crate::Platform::set_widget_selection`]
+    /// Pushed to the native control through [`crate::platform::Platform::set_widget_selection`]
     /// as the full range, so the OS selection matches what the mirror reports.
     pub fn select_all(&self) {
         LINE_EDIT_STATES.with(|map| {
@@ -1722,7 +1737,7 @@ impl LineEditHandle {
     /// Set the selection range (start..end).
     ///
     /// Mirrored into the in-process state *and* pushed to the native control
-    /// through [`crate::Platform::set_widget_selection`].
+    /// through [`crate::platform::Platform::set_widget_selection`].
     pub fn set_selection(&self, start: u32, end: u32) {
         LINE_EDIT_STATES.with(|map| {
             let mut map = map.borrow_mut();
@@ -1756,7 +1771,7 @@ impl ScrollAreaHandle {
     /// Set the scroll offset.
     ///
     /// Mirrored into the in-process state *and* pushed to the native container
-    /// through [`crate::Platform::set_widget_scroll_position`] (`SetScrollPos` on
+    /// through [`crate::platform::Platform::set_widget_scroll_position`] (`SetScrollPos` on
     /// Windows, the GTK adjustments, the AppKit clip view).
     pub fn set_scroll_position(&self, x: i32, y: i32) {
         SCROLL_AREA_STATES.with(|map| {
@@ -1899,7 +1914,7 @@ impl SpinBoxHandle {
     /// Set the spin-box value (clamped to range).
     ///
     /// Mirrored into the in-process state *and* pushed to the native control
-    /// through [`crate::Platform::set_widget_value`], so the number the user sees
+    /// through [`crate::platform::Platform::set_widget_value`], so the number the user sees
     /// matches `value()`.
     pub fn set_value(&self, value: i32) {
         SPINBOX_STATES.with(|map| {
@@ -1961,7 +1976,7 @@ impl SpinBoxHandle {
     /// Set the spin-box step increment.
     ///
     /// Mirrored into the in-process state *and* pushed to the native control
-    /// through [`crate::Platform::set_widget_step`].
+    /// through [`crate::platform::Platform::set_widget_step`].
     pub fn set_step(&self, step: i32) {
         SPINBOX_STATES.with(|map| {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).step = step;
@@ -2135,7 +2150,7 @@ impl WindowHandle {
 
     /// Set the window icon from a file path.
     ///
-    /// Pushed to the OS through [`crate::Platform::set_window_icon`] (AppKit
+    /// Pushed to the OS through [`crate::platform::Platform::set_window_icon`] (AppKit
     /// `setRepresentation:`, Win32 `WM_SETICON`, GTK `set_icon_from_file`) as well
     /// as into the in-process mirror. Returns `false` when the backend could not
     /// load the file, so a bad path is visible instead of silently ignored.
@@ -2149,7 +2164,7 @@ impl WindowHandle {
 
     /// Set the minimum window size.
     ///
-    /// Pushed to the OS through [`crate::Platform::set_window_min_size`]
+    /// Pushed to the OS through [`crate::platform::Platform::set_window_min_size`]
     /// (`setContentMinSize:` on macOS, the `WM_GETMINMAXINFO` handler on Windows,
     /// `set_geometry_hints` on GTK) as well as into the in-process mirror.
     pub fn set_min_size(&self, w: u32, h: u32) -> bool {
@@ -2174,7 +2189,7 @@ impl WindowHandle {
 
     /// Maximize or restore the window.
     ///
-    /// Pushed to the OS through [`crate::Platform::set_window_state`]
+    /// Pushed to the OS through [`crate::platform::Platform::set_window_state`]
     /// (`zoom:` on macOS, `ShowWindow(SW_MAXIMIZE)` on Windows, `maximize()` on
     /// GTK) as well as into the in-process mirror. `is_maximized` reports what
     /// the OS window actually is when a native window exists.
@@ -2199,7 +2214,7 @@ impl WindowHandle {
 
     /// Minimize or restore the window.
     ///
-    /// Pushed to the OS through [`crate::Platform::set_window_state`]
+    /// Pushed to the OS through [`crate::platform::Platform::set_window_state`]
     /// (`miniaturize:`/`deminiaturize:` on macOS, `SW_MINIMIZE`/`SW_RESTORE` on
     /// Windows, `iconify()`/`deiconify()` on GTK).
     pub fn set_minimized(&self, minimized: bool) {
@@ -2223,7 +2238,7 @@ impl WindowHandle {
 
     /// Set fullscreen mode.
     ///
-    /// Pushed to the OS through [`crate::Platform::set_window_state`]
+    /// Pushed to the OS through [`crate::platform::Platform::set_window_state`]
     /// (`toggleFullScreen:` on macOS, frame-style manipulation on Windows,
     /// `fullscreen()`/`unfullscreen()` on GTK).
     pub fn set_fullscreen(&self, fullscreen: bool) {
@@ -2247,7 +2262,7 @@ impl WindowHandle {
 
     /// Set whether the window is resizable.
     ///
-    /// Pushed to the OS through [`crate::Platform::set_window_state`], which
+    /// Pushed to the OS through [`crate::platform::Platform::set_window_state`], which
     /// toggles `NSWindowStyleMaskResizable` on macOS, `WS_THICKFRAME` on
     /// Windows, and `set_resizable` on GTK.
     pub fn set_resizable(&self, resizable: bool) {
@@ -2271,7 +2286,7 @@ impl WindowHandle {
 
     /// Set whether the window has window decorations (title bar, borders).
     ///
-    /// Pushed to the OS through [`crate::Platform::set_window_state`], which
+    /// Pushed to the OS through [`crate::platform::Platform::set_window_state`], which
     /// toggles `NSWindowStyleMaskTitled` on macOS, `WS_CAPTION` on Windows, and
     /// `set_decorated` on GTK.
     pub fn set_decorated(&self, decorated: bool) {

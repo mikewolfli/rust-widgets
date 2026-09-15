@@ -126,7 +126,7 @@ impl AppConfig {
 /// });
 ///
 /// app.init();
-/// // … create widgets …
+/// // ... create widgets ...
 /// app.run();
 /// ```
 pub struct App {

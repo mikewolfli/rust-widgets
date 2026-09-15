@@ -279,7 +279,9 @@ pub trait Platform: Send + Sync {
     /// Wayland, HarmonyOS and Android-style backends classify as `Desktop` (or a
     /// mobile analogue) yet do not honour a native menu, so each must override and
     /// say so. A backend that forgets inherits `true`, which is a silent
-    /// over-claim — see [`capability_matrix_probe`], which makes that visible.
+    /// over-claim — see [`default_capabilities_for`], which spells out what an
+    /// untouched backend would report, and the capability-matrix gate, which
+    /// compares that against what each backend actually claims.
     fn capabilities(&self) -> PlatformCapabilities {
         let desktop = matches!(self.family(), PlatformFamily::Desktop);
         PlatformCapabilities {

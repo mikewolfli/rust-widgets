@@ -296,6 +296,7 @@ SYMBOL_SEMANTICS = """
 > *原语路径*静默替换为其它原语的真实降级情形。
 """
 
+
 def _snake_to_widget_row(fn_name: str) -> str:
     """Convert a `create_*` method name to the matrix's Widget row name.
 
@@ -497,13 +498,14 @@ DEGRADATION_NOTES = (
 )
 
 
-
 def generate_matrix() -> str:
     """Generate the full markdown document."""
     lines = []
     lines.append("# Platform Capability Matrix — R6")
     lines.append("")
-    lines.append("> **Auto-generated** by `tools/generate_platform_capability_matrix.py`")
+    lines.append(
+        "> **Auto-generated** by `tools/generate_platform_capability_matrix.py`"
+    )
     lines.append(
         "> **Legend:** ✅ Primitive-mapped · 🟦 Custom-painted (functional) · 🔶 Limited · "
         "⬜ Placeholder · ➖ N/A"
@@ -538,7 +540,9 @@ def generate_matrix() -> str:
     lines.append("")
     lines.append("---")
     lines.append("")
-    lines.append(f"Total widgets: {len(WIDGETS)} (matches {len(WIDGETS)} WidgetKind variants)")
+    lines.append(
+        f"Total widgets: {len(WIDGETS)} (matches {len(WIDGETS)} WidgetKind variants)"
+    )
     lines.append("")
     lines.append("---")
     lines.append("")
@@ -564,7 +568,7 @@ def main():
     output = generate_matrix()
 
     if args.output:
-        with open(args.output, "w") as f:
+        with open(args.output, "w", encoding="utf-8") as f:
             f.write(output)
         print(f"Matrix written to {args.output}")
     else:

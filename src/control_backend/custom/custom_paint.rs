@@ -10,7 +10,7 @@ use crate::control_backend::types::CustomControlState;
 ///
 /// It holds no per-widget state of its own: control state belongs to the widget
 /// object, reached through [`crate::widget::runtime`]. What remains in
-/// [`CustomControlState`] is host policy that a widget cannot express (see its
+/// `CustomControlState` is host policy that a widget cannot express (see its
 /// docs).
 pub struct CustomPaintControlBackend {
     pub(crate) state: Mutex<CustomControlState>,

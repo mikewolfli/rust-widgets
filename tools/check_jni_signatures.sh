@@ -21,19 +21,20 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+. "$ROOT_DIR/tools/lib_python.sh"
 
 QA_DIR="target/qa"
 mkdir -p "$QA_DIR"
 
 echo "[1/3] Generic Java binding (io.github.rustwidgets.RustWidgets)"
-python3 tools/check_jni_signatures.py \
+"$PYTHON" tools/check_jni_signatures.py \
   --java bindings/java/RustWidgets.java \
   --java-class io.github.rustwidgets.RustWidgets \
   --rust src/bindings/java_jni.rs \
   --report "$QA_DIR/jni_binding_map.json"
 
 echo "[2/3] Android native-view binding (rust_widgets.RustWidgets)"
-python3 tools/check_jni_signatures.py \
+"$PYTHON" tools/check_jni_signatures.py \
   --java bindings/java/RustWidgetsAndroid.java \
   --java-class rust_widgets.RustWidgets \
   --rust src/platform/android_jni.rs \
@@ -47,13 +48,13 @@ for SO in target/*-linux-android/debug/librust_widgets.so; do
   [[ -f "$SO" ]] || continue
   SO_FOUND=1
   echo "  -- $SO"
-  python3 tools/check_jni_signatures.py \
+  "$PYTHON" tools/check_jni_signatures.py \
     --java bindings/java/RustWidgetsAndroid.java \
     --java-class rust_widgets.RustWidgets \
     --rust src/platform/android_jni.rs \
     --symbols "$SO" \
     --report "$QA_DIR/jni_android_view_map.$(basename "$(dirname "$(dirname "$SO")")").json"
-  python3 tools/check_jni_signatures.py \
+  "$PYTHON" tools/check_jni_signatures.py \
     --java bindings/java/RustWidgets.java \
     --java-class io.github.rustwidgets.RustWidgets \
     --rust src/bindings/java_jni.rs \

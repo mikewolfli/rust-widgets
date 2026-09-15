@@ -279,7 +279,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
     /// The observable consequence, and it is deliberate: **a re-entrant emit does
     /// not deliver to the slot(s) already on the stack.** It delivers to every other
     /// slot, and to slots connected after the outer pass took its snapshot.
-    /// [`a_re_entrant_emit_skips_the_slot_still_on_the_stack`] pins this.
+    /// `a_re_entrant_emit_skips_the_slot_still_on_the_stack` pins this.
     pub fn emit(&self, value: T) {
         let arc_value = Arc::new(value);
 

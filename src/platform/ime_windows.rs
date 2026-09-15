@@ -510,10 +510,21 @@ mod tests {
     }
 
     #[test]
-    fn test_tsf_available_initially_false_in_test() {
-        // In test builds without the `windows` cfg active, TSF should
-        // show as unavailable.
+    fn test_tsf_flag_matches_the_created_manager() {
+        // TSF availability is a property of the *host*, not of the test build: a
+        // machine with the Text Services Framework installed reports `true`, one
+        // without it reports `false`. Asserting a fixed value would encode one
+        // machine's configuration. What must hold everywhere is that the recorded
+        // flag agrees with the manager the constructor kept, and that the bridge
+        // starts with no composition in flight.
         let bridge = WindowsImeBridge::new();
-        assert!(!*bridge.tsf_available.lock().unwrap());
+        let available = *bridge.tsf_available.lock().unwrap();
+        let has_manager = bridge.tsf_manager.lock().unwrap().is_some();
+        assert_eq!(
+            available, has_manager,
+            "the TSF availability flag must mirror whether a thread manager was created"
+        );
+        assert!(!bridge.is_active());
+        assert!(!bridge.has_marked_text());
     }
 }

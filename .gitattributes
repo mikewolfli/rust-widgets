@@ -1,0 +1,24 @@
+# Keep the visual-regression baselines as LF text.
+#
+# `tests/snapshot_tests.rs` compares rendered SVG against these files. Git's
+# default Windows behaviour (`core.autocrlf=true`) would materialise them as CRLF
+# on checkout, so the comparison would fail on every Windows clone for a reason
+# unrelated to rendering. Pinning the attribute keeps the committed form and the
+# working tree in agreement; the test also folds CRLF so an editor rewrite cannot
+# break it either.
+snapshots/*.svg text eol=lf
+
+# Shell and Python tooling runs on every supported host, and both care about line
+# endings: a CRLF shebang (`#!/usr/bin/env bash\r`) is not a shebang, and Python's
+# tokenizer is no friendlier. `core.autocrlf=true` (the Windows default) would
+# rewrite them on checkout, so pin them.
+*.sh text eol=lf
+*.py text eol=lf
+
+# Rust sources, manifests and docs are LF in the index. Declared explicitly so a
+# Windows checkout materialises them the same way: without this, `core.autocrlf`
+# makes every file whose line endings were ever rewritten show up as modified in
+# `git status` even when `git diff` is empty.
+*.rs text eol=lf
+*.toml text eol=lf
+*.md text eol=lf

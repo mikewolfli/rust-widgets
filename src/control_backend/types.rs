@@ -49,6 +49,8 @@ pub enum ControlRoutePreference {
 ///   technology; a control's own name is derived from its properties.
 /// - the two trigger queues — pending events produced by the backend's input
 ///   handling and consumed by [`crate::ControlBackend::poll_widget_trigger_event`].
+/// - `menu_entries` — the identity of a menu row, which is an in-memory entry
+///   rather than a widget and therefore has no id of its own.
 #[derive(Default)]
 pub(crate) struct CustomControlState {
     /// Host policy: does this control accept composition input?
@@ -60,6 +62,41 @@ pub(crate) struct CustomControlState {
     pub(crate) menu_trigger_queue: VecDeque<ObjectId>,
     /// Widget activations awaiting delivery.
     pub(crate) widget_trigger_queue: VecDeque<WidgetTriggerEvent>,
+    /// Which menu row an id names, as `(menu widget id, item index)`.
+    ///
+    /// A menu entry is a row inside a [`crate::widget::menu_toolbar`] menu, not a
+    /// widget, so `menu_add_item` cannot hand back an id from the widget registry.
+    /// This map is the authority on which ids are menu entries: an id it does not
+    /// contain is never treated as one.
+    #[cfg(full_widgets)]
+    pub(crate) menu_entries: crate::compat::HashMap<ObjectId, (ObjectId, usize)>,
+    /// Next menu-entry id to hand out; see [`FIRST_MENU_ENTRY_ID`].
+    #[cfg(full_widgets)]
+    pub(crate) next_menu_entry_id: ObjectId,
+}
+
+/// First id handed out by [`CustomControlState::next_menu_entry_id`].
+///
+/// Menu entries cannot take ids from `widget::runtime` (they are not widgets) and
+/// must not collide with the ids that registry hands out, or an unrelated widget
+/// would dispatch a menu action. Starting high keeps the two spaces disjoint, and
+/// `menu_entries` remains the authority on what an id means.
+#[cfg(full_widgets)]
+pub(crate) const FIRST_MENU_ENTRY_ID: ObjectId = 1 << 48;
+
+/// The id to use for the next menu entry, initialising the counter on first use.
+///
+/// Separate from the struct so `Default` stays derivable: nothing else needs a
+/// starting value, and a hand-written `Default` would have to be kept in step with
+/// every future field.
+#[cfg(full_widgets)]
+pub(crate) fn allocate_menu_entry_id(state: &mut CustomControlState) -> ObjectId {
+    if state.next_menu_entry_id == 0 {
+        state.next_menu_entry_id = FIRST_MENU_ENTRY_ID;
+    }
+    let id = state.next_menu_entry_id;
+    state.next_menu_entry_id += 1;
+    id
 }
 
 /// Unit tests for the remaining backend-owned state.

@@ -14,7 +14,7 @@
     not(any(feature = "mini", feature = "embedded"))
 ))]
 
-use rust_widgets::app::{App, CheckState, WidgetHandle};
+use rust_widgets::app::{App, CheckState};
 
 /// A two-state check-box must track `set_checked` in both directions.
 #[test]

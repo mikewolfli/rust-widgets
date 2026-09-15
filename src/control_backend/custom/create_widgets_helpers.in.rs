@@ -1,6 +1,27 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
+/// Runs `f` against the live widget at `widget_id` when it is a `T`.
+///
+/// List and combo-box item operations are *actions*, not state writes, so they
+/// cannot travel through the property contract and need the concrete control. The
+/// downcast is the capability layer's own helper — the same one the property hooks
+/// use — so this adds no second type table (rule #67).
+///
+/// Returns `None` when the id addresses nothing or addresses a different kind,
+/// which is what lets each caller report "this control has no items" instead of a
+/// silent `true`.
+#[cfg(not(alloc_frugal))]
+fn with_typed_widget<T, R>(widget_id: ObjectId, f: impl FnOnce(&mut T) -> R) -> Option<R>
+where
+    T: crate::widget::Widget + 'static,
+{
+    crate::widget::runtime::with_widget_mut(widget_id, |widget| {
+        crate::widget::capability::widget_as_mut::<T>(widget).map(f)
+    })
+    .flatten()
+}
+
 macro_rules! impl_helpers {
     () => {
         fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
@@ -9,6 +30,20 @@ macro_rules! impl_helpers {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .widget_trigger_queue
                 .pop_front()
+        }
+
+        /// Pops the next triggered widget id.
+        ///
+        /// Shares one queue with `poll_widget_trigger_event` — they are two views
+        /// of the same event stream — so both consume an event when they answer,
+        /// exactly as the platform backends do.
+        fn poll_widget_triggered(&self) -> Option<ObjectId> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .widget_trigger_queue
+                .pop_front()
+                .map(|event| event.widget_id)
         }
         fn inject_widget_trigger_event(
             &self,
@@ -132,6 +167,183 @@ macro_rules! impl_helpers {
             {
                 let _ = widget_id;
                 false
+            }
+        }
+
+        /// Shows the control; the id-addressed spelling of `set_widget_visible`.
+        fn show_widget(&self, widget_id: ObjectId) {
+            self.set_widget_visible(widget_id, true);
+        }
+
+        /// Hides the control.
+        fn hide_widget(&self, widget_id: ObjectId) {
+            self.set_widget_visible(widget_id, false);
+        }
+
+        /// Reads the control's rectangle from the widget registry.
+        ///
+        /// The widget owns its geometry — the backend writes it into
+        /// `widget::runtime` whenever it moves one — so the answer comes from there
+        /// rather than from a backend-side copy that could disagree.
+        fn get_widget_geometry(&self, widget_id: ObjectId) -> Option<(i32, i32, u32, u32)> {
+            #[cfg(not(alloc_frugal))]
+            {
+                return crate::widget::runtime::geometry_of(widget_id)
+                    .map(|rect| (rect.x, rect.y, rect.width, rect.height));
+            }
+            #[cfg(alloc_frugal)]
+            {
+                let _ = widget_id;
+                None
+            }
+        }
+
+        /// Appends an item to a combo box, repainting it.
+        fn combo_box_add_item(&self, widget_id: ObjectId, text: &str) -> bool {
+            #[cfg(not(alloc_frugal))]
+            {
+                let added =
+                    with_typed_widget::<crate::widget::input_widgets::combobox::ComboBox, _>(
+                        widget_id,
+                        |combo| combo.add_item(text.to_string()),
+                    )
+                    .is_some();
+                if added {
+                    crate::widget::runtime::request_repaint(widget_id);
+                }
+                return added;
+            }
+            #[cfg(alloc_frugal)]
+            {
+                let _ = (widget_id, text);
+                false
+            }
+        }
+
+        /// Removes every item from a combo box.
+        fn combo_box_clear_items(&self, widget_id: ObjectId) -> bool {
+            #[cfg(not(alloc_frugal))]
+            {
+                let cleared = with_typed_widget::<
+                    crate::widget::input_widgets::combobox::ComboBox,
+                    _,
+                >(widget_id, |combo| combo.clear())
+                .is_some();
+                if cleared {
+                    crate::widget::runtime::request_repaint(widget_id);
+                }
+                return cleared;
+            }
+            #[cfg(alloc_frugal)]
+            {
+                let _ = widget_id;
+                false
+            }
+        }
+
+        /// Appends an item to a list box, repainting it.
+        fn list_box_add_item(&self, widget_id: ObjectId, text: &str) -> bool {
+            #[cfg(not(alloc_frugal))]
+            {
+                let added = with_typed_widget::<crate::widget::input_widgets::listbox::ListBox, _>(
+                    widget_id,
+                    |list| list.add_item(text.to_string()),
+                )
+                .is_some();
+                if added {
+                    crate::widget::runtime::request_repaint(widget_id);
+                }
+                return added;
+            }
+            #[cfg(alloc_frugal)]
+            {
+                let _ = (widget_id, text);
+                false
+            }
+        }
+
+        /// Removes one item from a list box by index.
+        fn list_box_remove_item(&self, widget_id: ObjectId, index: usize) -> bool {
+            #[cfg(not(alloc_frugal))]
+            {
+                let removed =
+                    with_typed_widget::<crate::widget::input_widgets::listbox::ListBox, _>(
+                        widget_id,
+                        |list| {
+                            if index < list.count() {
+                                list.remove_item(index);
+                                true
+                            } else {
+                                false
+                            }
+                        },
+                    )
+                    .unwrap_or(false);
+                if removed {
+                    crate::widget::runtime::request_repaint(widget_id);
+                }
+                return removed;
+            }
+            #[cfg(alloc_frugal)]
+            {
+                let _ = (widget_id, index);
+                false
+            }
+        }
+
+        /// Removes every item from a list box.
+        fn list_box_clear_items(&self, widget_id: ObjectId) -> bool {
+            #[cfg(not(alloc_frugal))]
+            {
+                let cleared =
+                    with_typed_widget::<crate::widget::input_widgets::listbox::ListBox, _>(
+                        widget_id,
+                        |list| list.clear(),
+                    )
+                    .is_some();
+                if cleared {
+                    crate::widget::runtime::request_repaint(widget_id);
+                }
+                return cleared;
+            }
+            #[cfg(alloc_frugal)]
+            {
+                let _ = widget_id;
+                false
+            }
+        }
+
+        /// Reads one list-box item's text, straight off the control.
+        fn list_box_item_text(&self, widget_id: ObjectId, index: usize) -> Option<String> {
+            #[cfg(not(alloc_frugal))]
+            {
+                return with_typed_widget::<crate::widget::input_widgets::listbox::ListBox, _>(
+                    widget_id,
+                    |list| list.items().get(index).cloned(),
+                )
+                .flatten();
+            }
+            #[cfg(alloc_frugal)]
+            {
+                let _ = (widget_id, index);
+                None
+            }
+        }
+
+        /// Reads one combo-box item's text, straight off the control.
+        fn combo_box_item_text(&self, widget_id: ObjectId, index: usize) -> Option<String> {
+            #[cfg(not(alloc_frugal))]
+            {
+                return with_typed_widget::<crate::widget::input_widgets::combobox::ComboBox, _>(
+                    widget_id,
+                    |combo| combo.items().get(index).cloned(),
+                )
+                .flatten();
+            }
+            #[cfg(alloc_frugal)]
+            {
+                let _ = (widget_id, index);
+                None
             }
         }
 

@@ -742,10 +742,8 @@ impl EventHandler for GridTableWidget {
                 }
             }
 
-            Event::MouseRelease { pos: _, button: _ } => {
-                if self.resizing_column.is_some() {
-                    self.resizing_column = None;
-                }
+            Event::MouseRelease { pos: _, button: _ } if self.resizing_column.is_some() => {
+                self.resizing_column = None;
             }
 
             Event::Wheel { delta, modifiers: _ } => {

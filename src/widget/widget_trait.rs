@@ -195,11 +195,11 @@ pub trait Widget: EventHandler + Any {
         self.base().dpi_scale()
     }
 
-    /// Returns this widget as a [`Draw`] implementor, when it paints itself.
+    /// Returns this widget as a [`crate::widget::draw::Draw`] implementor, when it paints itself.
     ///
     /// # Why this exists
     ///
-    /// [`Widget`] does not require [`Draw`], because many widgets delegate to a
+    /// [`Widget`] does not require [`crate::widget::draw::Draw`], because many widgets delegate to a
     /// real OS control. But the rendering pipeline holds widgets as
     /// `&mut dyn Widget` and still needs to ask "can *you* paint yourself?".
     /// Without this bridge the only way to reach `Draw::draw` was a concrete
@@ -209,20 +209,24 @@ pub trait Widget: EventHandler + Any {
     ///
     /// # Contract
     ///
-    /// Return `Some(self)` from every widget that implements [`Draw`]. The
+    /// Return `Some(self)` from every widget that implements [`crate::widget::draw::Draw`]. The
     /// default returns `None`, which is the honest answer for OS-backed widgets
     /// and keeps existing implementors compiling unchanged.
     ///
+    /// The example uses `Button` because it is part of the widget set that every
+    /// profile compiles: a doctest naming a `full_widgets`-only control would fail
+    /// to compile under `mini`/`embedded`, and a doc example that only holds on one
+    /// profile is a liability (see the profile alias in `build.rs`).
+    ///
     /// ```
     /// use rust_widgets::core::Rect;
-    /// use rust_widgets::render::RenderContext;
-    /// use rust_widgets::widget::special_widgets::code_editor::CodeEditor;
+    /// use rust_widgets::widget::base_widgets::button::Button;
     /// use rust_widgets::widget::{Draw, Widget};
     ///
-    /// let mut editor = CodeEditor::new(Rect::new(0, 0, 100, 50));
-    /// assert!(editor.as_draw_mut().is_some());
+    /// let mut button = Button::new("OK".to_string(), Rect::new(0, 0, 80, 24));
+    /// assert!(button.as_draw_mut().is_some());
     ///
-    /// let widget: &mut dyn Widget = &mut editor;
+    /// let widget: &mut dyn Widget = &mut button;
     /// assert!(widget.as_draw_mut().is_some());
     /// ```
     fn as_draw_mut(&mut self) -> Option<&mut dyn crate::widget::Draw> {

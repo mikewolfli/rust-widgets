@@ -337,8 +337,13 @@ mod tests {
         let mut lc = AppLifecycle::new();
         lc.transition(AppLifecycleState::Foreground);
 
-        // Add some background time.
+        // Add some background time. The state semantics are deterministic, but
+        // `total_background_duration` is measured from `Instant` deltas, so two
+        // back-to-back transitions can land in the same clock tick and record zero
+        // — which is what made this assertion scheduler-dependent. Sleeping is the
+        // same convention `test_background_duration_accumulates` uses.
         lc.transition(AppLifecycleState::Background);
+        std::thread::sleep(Duration::from_millis(5));
         lc.transition(AppLifecycleState::Foreground);
 
         let json = lc.serialize_state().expect("serialize_state should succeed");

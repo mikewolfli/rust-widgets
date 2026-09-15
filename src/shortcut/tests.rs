@@ -148,6 +148,12 @@ fn current_style_matches_host() {
 
 /// A `KeyPress` carrying the Meta/Command bit must match a `Primary` shortcut.
 /// This is the link that makes typing Cmd+Z on macOS hit `Shortcut::primary`.
+///
+/// The Meta bit is the *macOS* primary accelerator. Under the desktop conventions
+/// the primary accelerator is Control instead, and the lookup lifts a Control
+/// press into `PRIMARY` to reach the same binding. The style is read at runtime
+/// (principle #68: no `cfg(target_os)` outside `src/platform/`), so the expected
+/// mapping is asserted per style rather than assuming one host's convention.
 #[test]
 fn command_modifier_bit_matches_primary_shortcut() {
     let mut manager = ShortcutManager::new();
@@ -164,15 +170,26 @@ fn command_modifier_bit_matches_primary_shortcut() {
     assert!(command.contains(Modifiers::CTRL));
     assert_eq!(command, Modifiers::PRIMARY | Modifiers::CTRL);
 
-    assert!(manager.handle_event(&Event::KeyPress { key: 90, modifiers: 0b1000 }));
-    // Shift+Command must not fire the unshifted command.
+    // Shift+Command must not fire the unshifted command. This holds under both
+    // conventions: the extra SHIFT bit survives normalisation either way.
     assert!(!manager.handle_event(&Event::KeyPress { key: 90, modifiers: 0b1001 }));
 
-    // A physical-Control key event maps to CTRL, not PRIMARY: the two are
-    // distinct modifiers, so a `Shortcut::ctrl` command must match the event
-    // while a `Shortcut::primary` command must not.
+    match PlatformShortcutStyle::current() {
+        // macOS: the Meta/Command bit *is* the primary accelerator.
+        PlatformShortcutStyle::Mac => {
+            assert!(manager.handle_event(&Event::KeyPress { key: 90, modifiers: 0b1000 }));
+        }
+        // Windows/Linux: Control is the primary accelerator, so a Control press is
+        // lifted into PRIMARY and matches, while a bare Meta press is not this
+        // platform's primary accelerator and must not fire the binding.
+        PlatformShortcutStyle::Desktop => {
+            assert!(manager.handle_event(&Event::KeyPress { key: 90, modifiers: 0b0010 }));
+            assert!(!manager.handle_event(&Event::KeyPress { key: 90, modifiers: 0b1000 }));
+        }
+    }
+
+    // A physical-Control key event always matches a `Shortcut::ctrl` binding.
     let mut control_manager = ShortcutManager::new();
     control_manager.register("physical", Shortcut::ctrl(Key::Z), "Control only");
     assert!(control_manager.handle_event(&Event::KeyPress { key: 90, modifiers: 0b0010 }));
-    assert!(!manager.handle_event(&Event::KeyPress { key: 90, modifiers: 0b0010 }));
 }

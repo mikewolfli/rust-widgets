@@ -417,10 +417,8 @@ impl EventHandler for Menu {
             // A context menu is dismissed by a press anywhere outside it, whichever
             // button was used. Restricting this to the secondary button left the menu
             // open after the most common dismissal gesture, a left-click elsewhere.
-            Event::MousePress { pos, .. } => {
-                if !self.contains_point(*pos) {
-                    self.hide();
-                }
+            Event::MousePress { pos, .. } if !self.contains_point(*pos) => {
+                self.hide();
             }
             #[cfg(feature = "touch")]
             Event::Tap { pos } => {

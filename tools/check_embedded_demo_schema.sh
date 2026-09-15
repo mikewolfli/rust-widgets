@@ -3,8 +3,9 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+. "$ROOT_DIR/tools/lib_python.sh"
 
-python3 - <<'PY'
+"$PYTHON" - <<'PY'
 import re
 import sys
 from pathlib import Path

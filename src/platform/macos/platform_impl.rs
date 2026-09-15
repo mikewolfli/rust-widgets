@@ -68,7 +68,7 @@ impl Platform for MacOSPlatform {
         PlatformFamily::Desktop
     }
 
-    /// Reads `MemTotal` from `/proc/meminfo` via [`os_probes`].
+    /// Reads `MemTotal` from `/proc/meminfo` via [`crate::platform::os_probes`].
     fn total_memory_mb(&self) -> Option<u64> {
         crate::platform::os_probes::total_memory_mb()
     }
@@ -88,7 +88,7 @@ impl Platform for MacOSPlatform {
         crate::platform::os_probes::process_cpu_utilization()
     }
 
-    /// Submits the job to the unix print spooler via [`os_probes`].
+    /// Submits the job to the unix print spooler via [`crate::platform::os_probes`].
     fn spawn_print_job(&self, job_file: &std::path::Path) -> Result<(), String> {
         crate::platform::os_probes::spawn_print_job(job_file)
     }

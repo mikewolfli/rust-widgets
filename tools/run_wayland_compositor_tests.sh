@@ -30,7 +30,7 @@
 #   - with a compositor   → the backend must bind real globals
 #   - without a compositor → the backend must fall back to state-only
 #
-# Requirements: python3, cargo, and the dav1d prerequisites for any feature set
+# Requirements: "$PYTHON", cargo, and the dav1d prerequisites for any feature set
 # that pulls in `image` (see docs/plans/blue14.md §五).
 #
 # Environment overrides:
@@ -48,6 +48,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+. "$ROOT_DIR/tools/lib_python.sh"
 
 WESTON_SOCKET="${WESTON_SOCKET:-wayland-test}"
 WESTON_SRC="${WESTON_SRC:-/tmp/weston-debs}"
@@ -122,7 +123,7 @@ stage_rootless() {
     [[ -e "$f" ]] && cp -Lf "$f" "$MODDIR/"
   done
 
-  python3 - "$PREFIX/usr/lib/x86_64-linux-gnu/libweston-13.so.0.0.0" \
+  "$PYTHON" - "$PREFIX/usr/lib/x86_64-linux-gnu/libweston-13.so.0.0.0" \
             "$PREFIX/usr/lib/x86_64-linux-gnu/weston/libexec_weston.so.0.0.0" \
             "$MODDIR" \
             "/usr/lib/x86_64-linux-gnu/libweston-13" \

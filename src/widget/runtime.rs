@@ -17,7 +17,7 @@
 //! keyed by [`ObjectId`]; a backend supplies the surface it paints widgets into
 //! and, when a repaint is wanted, calls [`with_widget_mut`] and paints a
 //! frame. **Which surface that is is a backend detail** — see
-//! [`crate::Platform::mount_surface`].
+//! [`crate::platform::Platform::mount_surface`].
 //!
 //! # Threading
 //!

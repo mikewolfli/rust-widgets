@@ -27,6 +27,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+. "$ROOT_DIR/tools/lib_python.sh"
 
 SDK_ROOT="${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}"
 NDK_ROOT="${ANDROID_NDK_HOME:-$(ls -d "$SDK_ROOT"/ndk/* 2>/dev/null | sort -V | tail -1)}"
@@ -103,7 +104,7 @@ echo "[5/5] Adding classes.dex + native lib, then aligning"
 cp "$LIB_SO" "$OUT_DIR/lib/$ANDROID_ABI/librust_widgets.so"
 # aapt2 cannot take DEX as input, so insert classes.dex and lib/ into the
 # archive after linking (this is what the AGP packaging step does).
-python3 - "$OUT_DIR/app-unsigned.apk" "$OUT_DIR/dex" "$OUT_DIR/lib" <<'PY'
+"$PYTHON" - "$OUT_DIR/app-unsigned.apk" "$OUT_DIR/dex" "$OUT_DIR/lib" <<'PY'
 import os, sys, zipfile
 apk, dexdir, libdir = sys.argv[1], sys.argv[2], sys.argv[3]
 with zipfile.ZipFile(apk, "a", zipfile.ZIP_DEFLATED) as z:

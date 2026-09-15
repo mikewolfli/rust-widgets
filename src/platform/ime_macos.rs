@@ -5,7 +5,7 @@
 //!
 //! Provides a state-tracking IME bridge that correctly manages marked text
 //! (preedit) composition with UTF-16-range-aware positions, as required by
-//! the [`NSTextInputClient`] protocol.
+//! the `NSTextInputClient` protocol.
 //!
 //! When the `objc2-macos` feature is enabled, native `NSTextInputContext`
 //! calls are made to synchronize platform IME state. Without the feature,

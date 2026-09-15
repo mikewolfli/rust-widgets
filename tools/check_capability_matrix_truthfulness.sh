@@ -12,10 +12,11 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+. "$ROOT_DIR/tools/lib_python.sh"
 
 MATRIX_FILE="docs/plans/platform_capability_matrix.md"
 
-python3 tools/generate_platform_capability_matrix.py --output "$MATRIX_FILE"
-python3 tools/check_capability_matrix_truthfulness.py
+"$PYTHON" tools/generate_platform_capability_matrix.py --output "$MATRIX_FILE"
+"$PYTHON" tools/check_capability_matrix_truthfulness.py
 
 echo "✅ capability matrix regenerated and truthfulness-checked: $MATRIX_FILE"

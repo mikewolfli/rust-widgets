@@ -7,10 +7,7 @@ use crate::core::{ObjectId, PlatformFamily};
 use crate::platform::accessibility::AccessibilityBridge;
 use crate::platform::clipboard::RichClipboardBackend;
 use crate::platform::ime::ImeBridge;
-use crate::platform::{
-    EmbeddedCapabilityContract, NativeCapabilityContract, Platform, PlatformCapabilities,
-    WindowStateFlag,
-};
+use crate::platform::{Platform, PlatformCapabilities, WindowStateFlag};
 
 use crate::platform::windows::notify;
 use crate::platform::windows::types::*;
@@ -374,6 +371,25 @@ impl Platform for WindowsPlatform {
     fn family(&self) -> PlatformFamily {
         PlatformFamily::Desktop
     }
+
+    /// The host's native window handle for a widget.
+    ///
+    /// `WindowsPlatform` already keeps this mapping for its own use —
+    /// `mount_surface` resolves a parent window through it — but the mapping was
+    /// reachable only as an *inherent* method, so the trait method kept its `None`
+    /// default and the public `native_handle()` accessor reported "no native
+    /// object" for windows that plainly had one.
+    fn get_native_handle(&self, widget: ObjectId) -> Option<usize> {
+        #[cfg(target_os = "windows")]
+        {
+            WindowsPlatform::get_native_handle(self, widget).map(|hwnd| hwnd as usize)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = widget;
+            None
+        }
+    }
     fn capabilities(&self) -> PlatformCapabilities {
         PlatformCapabilities {
             dpi_scaling: true,
@@ -382,12 +398,6 @@ impl Platform for WindowsPlatform {
             native_menu: true,
             typed_widget_trigger: true,
         }
-    }
-    fn native_capability_contract(&self) -> Option<NativeCapabilityContract> {
-        Some(NativeCapabilityContract::from_platform_caps(self.capabilities()))
-    }
-    fn embedded_capability_contract(&self) -> Option<EmbeddedCapabilityContract> {
-        None
     }
     fn dpi_scale_factor(&self) -> f32 {
         #[cfg(target_os = "windows")]
@@ -441,16 +451,8 @@ impl Platform for WindowsPlatform {
                         self.runtime_running.store(false, Ordering::SeqCst);
                         break;
                     }
-                    // Accelerators must be offered to every window that has an
-                    // HACCEL table before normal dispatch: TranslateAcceleratorW
-                    // turns a matching key press into the item's WM_COMMAND, and
-                    // returns 0 for everything else so the message falls through
-                    // to TranslateMessage/DispatchMessageW unchanged.
-                    let translated = self.try_translate_accelerator(&msg);
-                    if !translated {
-                        TranslateMessage(&msg);
-                        DispatchMessageW(&msg);
-                    }
+                    TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
                 }
                 if self.runtime_running.load(Ordering::SeqCst) {
                     thread::sleep(Duration::from_millis(10));
@@ -471,39 +473,21 @@ impl Platform for WindowsPlatform {
     /// Release every registry entry the backend holds for `widget_id`.
     ///
     /// Beyond the authoritative `BackendState` record, the Win32 backend keeps
-    /// per-widget entries in three side tables: the native handle map (`handles`),
-    /// the accelerator/owner bookkeeping (`menu_owner_window`) and the
-    /// native-dialog metadata (`dialog_data`). All of them must be purged,
-    /// otherwise a UI rebuilt in a create/destroy loop would leak one entry per
-    /// discarded widget. Every lock is scoped to its own statement so no two
+    /// per-widget entries in the native handle map (`handles`). All of them must be
+    /// purged, otherwise a UI rebuilt in a create/destroy loop would leak one entry
+    /// per discarded widget. Every lock is scoped to its own statement so no two
     /// guards are ever held at the same time.
     ///
     /// Only the library's own bookkeeping is released here: no Win32 message is
     /// sent and no window is destroyed — the process-wide HWND may still be owned
     /// elsewhere, so `DestroyWindow` is deliberately not called.
-    ///
-    /// A window's accelerator table is released with it, otherwise each
-    /// create/destroy cycle would leak an `HACCEL`.
     fn destroy_widget(&self, widget_id: ObjectId) -> bool {
         #[cfg(target_os = "windows")]
         {
-            crate::platform::windows::accel::release_accelerator_table(widget_id);
             if let Ok(mut handles) = self.menu_state.handles.lock() {
                 handles.remove(&widget_id);
             } else {
                 log::error!("[rust_widgets][windows] destroy_widget: handles mutex poisoned");
-            }
-            if let Ok(mut owners) = self.menu_state.menu_owner_window.lock() {
-                owners.remove(&widget_id);
-            } else {
-                log::error!(
-                    "[rust_widgets][windows] destroy_widget: menu_owner_window mutex poisoned"
-                );
-            }
-            if let Ok(mut data) = self.dialog_data.lock() {
-                data.remove(&widget_id);
-            } else {
-                log::error!("[rust_widgets][windows] destroy_widget: dialog_data mutex poisoned");
             }
         }
 
@@ -723,43 +707,5 @@ impl Platform for WindowsPlatform {
     #[cfg(target_os = "windows")]
     fn accessibility_bridge(&self) -> Option<&dyn AccessibilityBridge> {
         Some(&self.a11y_bridge)
-    }
-}
-
-#[cfg(target_os = "windows")]
-impl WindowsPlatform {
-    /// Offers a message to the accelerator table of the currently active window.
-    ///
-    /// Returns `true` when an accelerator matched, in which case the message has
-    /// been consumed and Win32 has posted the item's `WM_COMMAND` instead.
-    ///
-    /// This is an inherent method rather than a `Platform` trait method: it is
-    /// called only from [`Platform::run`]'s message pump, and putting it on the
-    /// trait would invite other backends to implement a concept that does not
-    /// exist on them.
-    ///
-    /// Only the active window is consulted. Accelerators belong to the focused
-    /// window, so a background window must not swallow a chord typed into the
-    /// foreground one.
-    pub(crate) fn try_translate_accelerator(&self, msg: &winapi::um::winuser::MSG) -> bool {
-        use winapi::um::winuser::{GetActiveWindow, TranslateAcceleratorW};
-        // SAFETY: GetActiveWindow is a side-effect-free query; it returns a live
-        // HWND for this thread or null.
-        let active = unsafe { GetActiveWindow() };
-        if active.is_null() {
-            return false;
-        }
-        let Some(window_id) = self.widget_id_by_native_handle(active) else {
-            return false;
-        };
-        let Some(table) = crate::platform::windows::accel::accel_table_for(window_id) else {
-            return false;
-        };
-        // SAFETY: `active` is a live window for this process, `table` is an
-        // HACCEL created by `accel::install_accelerator`, and `msg` is the message
-        // being dispatched. TranslateAcceleratorW only reads it and posts
-        // WM_COMMAND, so `msg` does not need to outlive the call.
-        let translated = unsafe { TranslateAcceleratorW(active, table, msg as *const _ as *mut _) };
-        translated != 0
     }
 }

@@ -20,9 +20,10 @@
 //!
 //! It contributes only what no other layer can supply for itself:
 //!
-//! * an in-memory `Platform` implementation, reached through [`Self::instance`];
+//! * an in-memory `Platform` implementation, reached through
+//!   [`crate::platform::portable::instance`];
 //! * a frame-buffer *row* copy helper for hosts that have a surface but no
-//!   graphics API ([`copy_rows`]).
+//!   graphics API ([`crate::platform::portable::copy_rows`]).
 //!
 //! It deliberately does **not** carry per-control assets. An image, font or icon
 //! loader here would be a second registry beside [`crate::widget::runtime`], and

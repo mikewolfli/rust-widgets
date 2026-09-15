@@ -44,7 +44,7 @@ use crate::core::Rect;
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::widget_trait::Widget;
 
-/// The properties every control has through its [`BaseWidget`].
+/// The properties every control has through its [`crate::widget::BaseWidget`].
 ///
 /// Exposed as a constant so a control's `property_names()` can concatenate rather
 /// than retype them, and so tests and schema generation read one list.
@@ -129,7 +129,7 @@ pub fn geometry_to_value(geometry: Rect) -> CapabilityValue {
 /// # Where the name list comes from
 ///
 /// `property_names()` names the properties directly, through the
-/// [`property_names_of`] macro, and appends [`BASE_PROPERTY_NAMES`] for the shared
+/// [`crate::property_names_of`] macro, and appends [`BASE_PROPERTY_NAMES`] for the shared
 /// four.
 ///
 /// # Why not derive them from the schema table
@@ -189,7 +189,7 @@ pub trait WidgetProperties {
     /// make a control look as if `enabled` did not exist.
     ///
     /// Controls therefore return `property_names_of!["own", .., BASE_PROPERTY_NAMES..]`
-    /// — see [`property_names_of`] for the const-compatible way to compose the two.
+    /// — see [`crate::property_names_of`] for the const-compatible way to compose the two.
     fn property_names(&self) -> &'static [&'static str];
 }
 

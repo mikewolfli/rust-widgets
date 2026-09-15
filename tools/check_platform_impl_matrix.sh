@@ -13,8 +13,9 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+. "$ROOT_DIR/tools/lib_python.sh"
 
-python3 tools/platform_impl_scan.py \
+"$PYTHON" tools/platform_impl_scan.py \
   --output target/qa/platform_impl_matrix.md \
   --fail-on-unclassifiable
 

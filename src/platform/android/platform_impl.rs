@@ -47,7 +47,7 @@ impl Platform for AndroidPlatform {
         PlatformFamily::Mobile
     }
 
-    /// Reads `MemTotal` from `/proc/meminfo` via [`os_probes`].
+    /// Reads `MemTotal` from `/proc/meminfo` via [`crate::platform::os_probes`].
     fn total_memory_mb(&self) -> Option<u64> {
         crate::platform::os_probes::total_memory_mb()
     }

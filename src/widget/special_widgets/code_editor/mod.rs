@@ -35,19 +35,21 @@
 //! # Module layout
 //!
 //! The implementation is split into focused submodules; this file only declares
-//! them and re-exports their public interface (principle.md #8).
+//! them and re-exports their public interface (principle.md #8). The submodules
+//! are private, so their names are written as code spans rather than intra-doc
+//! links (a link to a private item is a rustdoc error).
 //!
 //! | Module | Responsibility |
 //! |--------|----------------|
-//! | [`types`] | Positions, cursor, markers, tokens, palette, config, find/completion/menu state |
-//! | [`syntax`] | Built-in lexer, [`LanguageId`], [`SyntaxHighlighter`] plugin seam |
-//! | [`buffer`] | Line-indexed document model, tabs, folds, splice primitive |
-//! | [`multicursor`] | Multiple carets: add/merge, occurrence selection, edit projection |
-//! | [`pairs`] | Auto-pairing, bracket/quote skip-over and smart backspace |
-//! | [`editor`] | The [`CodeEditor`] widget: state, commands, history |
-//! | [`input`] | Keyboard/IME/pointer/wheel translation layer |
-//! | [`render`] | Geometry metrics and the `Draw` implementation |
-//! | [`tests`] | Behavioural test-suite |
+//! | `types` | Positions, cursor, markers, tokens, palette, config, find/completion/menu state |
+//! | `syntax` | Built-in lexer, [`LanguageId`], [`SyntaxHighlighter`] plugin seam |
+//! | `buffer` | Line-indexed document model, tabs, folds, splice primitive |
+//! | `multicursor` | Multiple carets: add/merge, occurrence selection, edit projection |
+//! | `pairs` | Auto-pairing, bracket/quote skip-over and smart backspace |
+//! | `editor` | The [`CodeEditor`] widget: state, commands, history |
+//! | `input` | Keyboard/IME/pointer/wheel translation layer |
+//! | `render` | Geometry metrics and the `Draw` implementation |
+//! | `tests` | Behavioural test-suite |
 //!
 //! # Rust design notes (principle.md #28..#34)
 //!

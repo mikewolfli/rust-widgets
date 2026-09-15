@@ -42,11 +42,21 @@ fn main() {
     }
     println!("window               -> id={window} (the host's one primitive)");
 
-    // The window must be findable through the property API: that is the capability
-    // the original probe guarded, and it still has to hold.
-    let probe_text = "position:absolute";
-    platform.set_widget_text(window, probe_text);
-    let window_readback = platform.get_widget_text(window);
+    // A window the *library* creates must be addressable through the library's own
+    // accessors — that is the capability the original probe guarded (`every macOS
+    // create_* registered a handle so the property API could find it`), and it still
+    // has to hold. It is asked through `lib.rs` rather than through the `Platform`
+    // trait now: the host no longer owns controls, so the trait's control members
+    // are honest defaults that report absence, and asserting a round-trip through
+    // them would be asserting the architecture this refactor removed.
+    let library_window = rust_widgets::create_window("Library window", 40, 40, 400, 300);
+    if library_window == 0 {
+        eprintln!("FAIL: the library could not create a window widget");
+        std::process::exit(1);
+    }
+    let probe_text = "Singleton Window";
+    rust_widgets::set_widget_text(library_window, probe_text);
+    let window_readback = rust_widgets::get_widget_text(library_window);
     if window_readback != probe_text {
         eprintln!("FAIL: window text did not round-trip (got {window_readback:?})");
         std::process::exit(1);

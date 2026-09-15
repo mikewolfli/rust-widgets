@@ -737,21 +737,18 @@ pub fn supports_surfaces() -> bool {
 
 /// Show a widget by its object id.
 ///
-/// This is a convenience wrapper around `platform::get_platform().show_widget()`.
+/// Routed through the control backend, which is the one mechanism that owns the
+/// control (BLUE15 #55): the platform supplies the surface, not the control.
 #[cfg(not(alloc_frugal))]
 pub fn show_widget(widget_id: crate::core::ObjectId) {
-    platform::get_platform().show_widget(widget_id);
+    control_backend::get_control_backend().set_widget_visible(widget_id, true);
 }
 /// Hide a widget by its object id.
-///
-/// This is a convenience wrapper around `platform::get_platform().hide_widget()`.
 #[cfg(not(alloc_frugal))]
 pub fn hide_widget(widget_id: crate::core::ObjectId) {
-    platform::get_platform().hide_widget(widget_id);
+    control_backend::get_control_backend().set_widget_visible(widget_id, false);
 }
 /// Set geometry of a widget.
-///
-/// This is a convenience wrapper around `platform::get_platform().set_widget_geometry()`.
 #[cfg(not(alloc_frugal))]
 pub fn set_widget_geometry(
     widget_id: crate::core::ObjectId,
@@ -760,148 +757,180 @@ pub fn set_widget_geometry(
     width: u32,
     height: u32,
 ) {
-    platform::get_platform().set_widget_geometry(widget_id, x, y, width, height);
+    control_backend::get_control_backend().set_widget_geometry(widget_id, x, y, width, height);
+}
+/// Read a widget's rectangle, or `None` when the id addresses nothing.
+#[cfg(not(alloc_frugal))]
+pub fn widget_geometry(widget_id: crate::core::ObjectId) -> Option<(i32, i32, u32, u32)> {
+    control_backend::get_control_backend().get_widget_geometry(widget_id)
 }
 /// Set text of a widget.
-///
-/// This is a convenience wrapper around `platform::get_platform().set_widget_text()`.
 #[cfg(not(alloc_frugal))]
 pub fn set_widget_text(widget_id: crate::core::ObjectId, text: &str) {
-    platform::get_platform().set_widget_text(widget_id, text);
+    control_backend::get_control_backend().set_widget_text(widget_id, text);
 }
 /// Get text of a widget.
-///
-/// This is a convenience wrapper around `platform::get_platform().get_widget_text()`.
 #[cfg(not(alloc_frugal))]
 pub fn get_widget_text(widget_id: crate::core::ObjectId) -> String {
-    platform::get_platform().get_widget_text(widget_id)
+    control_backend::get_control_backend().get_widget_text(widget_id)
 }
 /// Set enabled state of a widget.
-///
-/// This is a convenience wrapper around `platform::get_platform().set_widget_enabled()`.
 #[cfg(not(alloc_frugal))]
 pub fn set_widget_enabled(widget_id: crate::core::ObjectId, enabled: bool) {
-    platform::get_platform().set_widget_enabled(widget_id, enabled);
+    control_backend::get_control_backend().set_widget_enabled(widget_id, enabled);
 }
 /// Check if a widget is enabled.
-///
-/// This is a convenience wrapper around `platform::get_platform().is_widget_enabled()`.
 #[cfg(not(alloc_frugal))]
 pub fn is_widget_enabled(widget_id: crate::core::ObjectId) -> bool {
-    platform::get_platform().is_widget_enabled(widget_id)
+    control_backend::get_control_backend().is_widget_enabled(widget_id)
 }
 /// Set visibility of a widget.
-///
-/// This is a convenience wrapper around `platform::get_platform().set_widget_visible()`.
 #[cfg(not(alloc_frugal))]
 pub fn set_widget_visible(widget_id: crate::core::ObjectId, visible: bool) {
-    platform::get_platform().set_widget_visible(widget_id, visible);
+    control_backend::get_control_backend().set_widget_visible(widget_id, visible);
 }
 /// Check if a widget is visible.
-///
-/// This is a convenience wrapper around `platform::get_platform().is_widget_visible()`.
 #[cfg(not(alloc_frugal))]
 pub fn is_widget_visible(widget_id: crate::core::ObjectId) -> bool {
-    platform::get_platform().is_widget_visible(widget_id)
+    control_backend::get_control_backend().is_widget_visible(widget_id)
 }
 
 /// Set a widget's primary numeric value (slider, progress bar, spin box, ...).
 ///
-/// Returns `false` when this backend's control has no numeric value, so callers
-/// never mistake "unsupported" for "set to 0".
+/// Returns `false` when the widget exposes no numeric value, so callers never
+/// mistake "unsupported" for "set to 0".
 #[cfg(not(alloc_frugal))]
 pub fn set_widget_value(widget_id: crate::core::ObjectId, value: f64) -> bool {
-    platform::get_platform().set_widget_value(widget_id, value)
+    widget::capability::widget_access::write_number(widget_id, &["value"], value)
 }
 
 /// Read a widget's primary numeric value.
 #[cfg(not(alloc_frugal))]
 pub fn widget_value(widget_id: crate::core::ObjectId) -> Option<f64> {
-    platform::get_platform().widget_value(widget_id)
+    widget::capability::widget_access::read_number(widget_id, &["value"])
 }
 
 /// Set a widget's `(min, max)` range.
 #[cfg(not(alloc_frugal))]
 pub fn set_widget_range(widget_id: crate::core::ObjectId, min: f64, max: f64) -> bool {
-    platform::get_platform().set_widget_range(widget_id, min, max)
+    let names: &[&str] = &["minimum", "min", "min_value"];
+    let max_names: &[&str] = &["maximum", "max", "max_value"];
+    widget::capability::widget_access::write_number(widget_id, names, min)
+        && widget::capability::widget_access::write_number(widget_id, max_names, max)
 }
 
 /// Read a widget's `(min, max)` range.
 #[cfg(not(alloc_frugal))]
 pub fn widget_range(widget_id: crate::core::ObjectId) -> Option<(f64, f64)> {
-    platform::get_platform().widget_range(widget_id)
+    let min = widget::capability::widget_access::read_number(
+        widget_id,
+        &["minimum", "min", "min_value"],
+    )?;
+    let max = widget::capability::widget_access::read_number(
+        widget_id,
+        &["maximum", "max", "max_value"],
+    )?;
+    Some((min, max))
 }
 
 /// Set a widget's selection index (combo box, list box, tab widget).
+///
+/// `None` clears the selection, which is what these controls store as `Null` —
+/// distinct from selecting index 0.
 #[cfg(not(alloc_frugal))]
 pub fn set_widget_selected_index(widget_id: crate::core::ObjectId, index: Option<usize>) -> bool {
-    platform::get_platform().set_widget_selected_index(widget_id, index)
+    let names: &[&str] = &["selected_index", "current_index", "current_row", "active_index"];
+    let value = match index {
+        Some(index) => crate::widget::capability::CapabilityValue::UInt(index as u64),
+        None => crate::widget::capability::CapabilityValue::Null,
+    };
+    widget::capability::widget_access::write_first(widget_id, names, &value)
 }
 
 /// Read a widget's selection index.
 #[cfg(not(alloc_frugal))]
 pub fn widget_selected_index(widget_id: crate::core::ObjectId) -> Option<usize> {
-    platform::get_platform().widget_selected_index(widget_id)
+    widget::capability::widget_access::read_index(
+        widget_id,
+        &["selected_index", "current_index", "current_row", "active_index"],
+    )
 }
 
 /// Set a widget's checked state (check box, radio button, toggle button).
 #[cfg(not(alloc_frugal))]
 pub fn set_widget_checked(widget_id: crate::core::ObjectId, checked: bool) -> bool {
-    platform::get_platform().set_widget_checked(widget_id, checked)
+    widget::capability::widget_access::write_first(
+        widget_id,
+        &["checked"],
+        &crate::widget::capability::CapabilityValue::Bool(checked),
+    )
 }
 
 /// Read a widget's checked state, or `None` when it is not checkable.
 #[cfg(not(alloc_frugal))]
 pub fn is_widget_checked(widget_id: crate::core::ObjectId) -> Option<bool> {
-    platform::get_platform().is_widget_checked(widget_id)
+    widget::capability::widget_access::read_flag(widget_id, &["checked"])
 }
 
 /// Set a widget's increment step (slider, spin box, scroll bar).
 #[cfg(not(alloc_frugal))]
 pub fn set_widget_step(widget_id: crate::core::ObjectId, step: f64) -> bool {
-    platform::get_platform().set_widget_step(widget_id, step)
+    widget::capability::widget_access::write_number(widget_id, &["single_step", "step"], step)
 }
 
 /// Read a widget's increment step.
 #[cfg(not(alloc_frugal))]
 pub fn widget_step(widget_id: crate::core::ObjectId) -> Option<f64> {
-    platform::get_platform().widget_step(widget_id)
+    widget::capability::widget_access::read_number(widget_id, &["single_step", "step"])
 }
 
 /// Set a progress-style widget's indeterminate (busy) state.
 #[cfg(not(alloc_frugal))]
 pub fn set_widget_indeterminate(widget_id: crate::core::ObjectId, indeterminate: bool) -> bool {
-    platform::get_platform().set_widget_indeterminate(widget_id, indeterminate)
+    widget::capability::widget_access::write_first(
+        widget_id,
+        &["indeterminate"],
+        &crate::widget::capability::CapabilityValue::Bool(indeterminate),
+    )
 }
 
 /// Read a progress-style widget's indeterminate state.
 #[cfg(not(alloc_frugal))]
 pub fn is_widget_indeterminate(widget_id: crate::core::ObjectId) -> Option<bool> {
-    platform::get_platform().is_widget_indeterminate(widget_id)
+    widget::capability::widget_access::read_flag(widget_id, &["indeterminate"])
 }
 
 /// Set a text-entry widget's read-only state.
 #[cfg(not(alloc_frugal))]
 pub fn set_widget_read_only(widget_id: crate::core::ObjectId, read_only: bool) -> bool {
-    platform::get_platform().set_widget_read_only(widget_id, read_only)
+    widget::capability::widget_access::write_first(
+        widget_id,
+        &["read_only"],
+        &crate::widget::capability::CapabilityValue::Bool(read_only),
+    )
 }
 
 /// Read a text-entry widget's read-only state.
 #[cfg(not(alloc_frugal))]
 pub fn is_widget_read_only(widget_id: crate::core::ObjectId) -> Option<bool> {
-    platform::get_platform().is_widget_read_only(widget_id)
+    widget::capability::widget_access::read_flag(widget_id, &["read_only"])
 }
 
 /// Set a text-entry widget's maximum accepted length.
 #[cfg(not(alloc_frugal))]
 pub fn set_widget_max_length(widget_id: crate::core::ObjectId, max_length: u32) -> bool {
-    platform::get_platform().set_widget_max_length(widget_id, max_length)
+    widget::capability::widget_access::write_first(
+        widget_id,
+        &["max_length"],
+        &crate::widget::capability::CapabilityValue::UInt(max_length as u64),
+    )
 }
 
 /// Read a text-entry widget's maximum accepted length.
 #[cfg(not(alloc_frugal))]
 pub fn widget_max_length(widget_id: crate::core::ObjectId) -> Option<u32> {
-    platform::get_platform().widget_max_length(widget_id)
+    widget::capability::widget_access::read_index(widget_id, &["max_length"])
+        .and_then(|v| u32::try_from(v).ok())
 }
 
 /// Apply or clear a window state (maximised, minimised, full-screen, ...).
@@ -951,39 +980,82 @@ pub fn window_icon(widget_id: crate::core::ObjectId) -> Option<String> {
 }
 
 /// Set a text entry's selection range as `(start, end)` character offsets.
+///
+/// # Current support
+///
+/// No control publishes a selection range as a property (the text controls track
+/// it internally and expose `cursor_position`), so this reports `false` rather
+/// than pretending the range was applied. Routing it through the property
+/// contract means publishing the property on the text controls is the only change
+/// needed to make it work.
 #[cfg(not(alloc_frugal))]
 pub fn set_widget_selection(widget_id: crate::core::ObjectId, start: u32, end: u32) -> bool {
-    platform::get_platform().set_widget_selection(widget_id, start, end)
+    let names: &[&str] = &["selection"];
+    // The pair travels as the historical "start,end" spelling used by the text
+    // controls' own setter, so a control that publishes `selection` parses one
+    // string rather than needing two properties kept in step.
+    widget::capability::widget_access::write_first(
+        widget_id,
+        names,
+        &crate::widget::capability::CapabilityValue::String(format!("{start},{end}")),
+    )
 }
 
 /// Read a text entry's selection range, or `None` when nothing is selected.
 #[cfg(not(alloc_frugal))]
 pub fn widget_selection(widget_id: crate::core::ObjectId) -> Option<(u32, u32)> {
-    platform::get_platform().widget_selection(widget_id)
+    let raw = widget::capability::widget_access::read_text(widget_id, &["selection"])?;
+    let (start, end) = raw.split_once(',')?;
+    Some((start.trim().parse().ok()?, end.trim().parse().ok()?))
 }
 
 /// Set a text entry's placeholder (cue) text.
 #[cfg(not(alloc_frugal))]
 pub fn set_widget_placeholder(widget_id: crate::core::ObjectId, text: &str) -> bool {
-    platform::get_platform().set_widget_placeholder(widget_id, text)
+    widget::capability::widget_access::write_first(
+        widget_id,
+        &["placeholder_text", "placeholder"],
+        &crate::widget::capability::CapabilityValue::String(text.to_string()),
+    )
 }
 
 /// Read a text entry's placeholder text.
 #[cfg(not(alloc_frugal))]
 pub fn widget_placeholder(widget_id: crate::core::ObjectId) -> Option<String> {
-    platform::get_platform().widget_placeholder(widget_id)
+    widget::capability::widget_access::read_text(widget_id, &["placeholder_text", "placeholder"])
 }
 
 /// Set a text entry's echo mode.
+///
+/// # Current support
+///
+/// No control publishes an echo property yet, so this reports `false` on every
+/// widget rather than pretending the mode was applied. It is routed through the
+/// property contract — the place a control would express it — so that adding the
+/// property to the text controls is the only change needed to make it work.
 #[cfg(not(alloc_frugal))]
 pub fn set_widget_echo_mode(widget_id: crate::core::ObjectId, mode: platform::EchoMode) -> bool {
-    platform::get_platform().set_widget_echo_mode(widget_id, mode)
+    let token = match mode {
+        platform::EchoMode::Normal => "normal",
+        platform::EchoMode::Password => "password",
+        platform::EchoMode::NoEcho => "no_echo",
+    };
+    widget::capability::widget_access::write_first(
+        widget_id,
+        &["echo_mode"],
+        &crate::widget::capability::CapabilityValue::String(token.to_string()),
+    )
 }
 
 /// Read a text entry's echo mode.
 #[cfg(not(alloc_frugal))]
 pub fn widget_echo_mode(widget_id: crate::core::ObjectId) -> Option<platform::EchoMode> {
-    platform::get_platform().widget_echo_mode(widget_id)
+    match widget::capability::widget_access::read_text(widget_id, &["echo_mode"])?.as_str() {
+        "normal" => Some(platform::EchoMode::Normal),
+        "password" => Some(platform::EchoMode::Password),
+        "no_echo" => Some(platform::EchoMode::NoEcho),
+        _ => None,
+    }
 }
 
 /// Apply a slider's creation-time orientation.
@@ -992,119 +1064,160 @@ pub fn set_slider_orientation(
     widget_id: crate::core::ObjectId,
     orientation: crate::core::Orientation,
 ) -> bool {
-    platform::get_platform().set_slider_orientation(widget_id, orientation)
+    widget::capability::widget_access::write_first(
+        widget_id,
+        &["orientation"],
+        &crate::widget::capability::CapabilityValue::String(
+            widget::capability::orientation_to_str(orientation).to_string(),
+        ),
+    )
 }
 
 /// Read a slider's orientation.
 #[cfg(not(alloc_frugal))]
 pub fn slider_orientation(widget_id: crate::core::ObjectId) -> Option<crate::core::Orientation> {
-    platform::get_platform().slider_orientation(widget_id)
+    let token = widget::capability::widget_access::read_text(widget_id, &["orientation"])?;
+    widget::capability::expect_orientation(crate::widget::capability::CapabilityValue::String(
+        token,
+    ))
+    .ok()
 }
 
 /// Set a checkable control's tri-state mode.
 #[cfg(not(alloc_frugal))]
 pub fn set_widget_tristate(widget_id: crate::core::ObjectId, enabled: bool) -> bool {
-    platform::get_platform().set_widget_tristate(widget_id, enabled)
+    widget::capability::widget_access::write_first(
+        widget_id,
+        &["tristate_enabled"],
+        &crate::widget::capability::CapabilityValue::Bool(enabled),
+    )
 }
 
 /// Read a checkable control's tri-state mode.
 #[cfg(not(alloc_frugal))]
 pub fn is_widget_tristate(widget_id: crate::core::ObjectId) -> Option<bool> {
-    platform::get_platform().is_widget_tristate(widget_id)
+    widget::capability::widget_access::read_flag(widget_id, &["tristate_enabled"])
 }
 
 /// Put a radio button into a named mutually-exclusive group.
+///
+/// An empty group clears the membership, which these controls store as `Null`.
 #[cfg(not(alloc_frugal))]
 pub fn set_widget_group(widget_id: crate::core::ObjectId, group: &str) -> bool {
-    platform::get_platform().set_widget_group(widget_id, group)
+    let value = if group.is_empty() {
+        crate::widget::capability::CapabilityValue::Null
+    } else {
+        crate::widget::capability::CapabilityValue::String(group.to_string())
+    };
+    widget::capability::widget_access::write_first(widget_id, &["group_id", "group"], &value)
 }
 
 /// Read a radio button's group name.
 #[cfg(not(alloc_frugal))]
 pub fn widget_group(widget_id: crate::core::ObjectId) -> Option<String> {
-    platform::get_platform().widget_group(widget_id)
+    widget::capability::widget_access::read_text(widget_id, &["group_id", "group"])
 }
 
 /// Set a scrollable container's scroll offset.
 #[cfg(not(alloc_frugal))]
 pub fn set_widget_scroll_position(widget_id: crate::core::ObjectId, x: i32, y: i32) -> bool {
-    platform::get_platform().set_widget_scroll_position(widget_id, x, y)
+    let x_ok = widget::capability::widget_access::write_number(
+        widget_id,
+        &["scroll_position_x"],
+        x as f64,
+    );
+    let y_ok = widget::capability::widget_access::write_number(
+        widget_id,
+        &["scroll_position_y"],
+        y as f64,
+    );
+    x_ok && y_ok
 }
 
 /// Read a scrollable container's scroll offset.
 #[cfg(not(alloc_frugal))]
 pub fn widget_scroll_position(widget_id: crate::core::ObjectId) -> Option<(i32, i32)> {
-    platform::get_platform().widget_scroll_position(widget_id)
+    let x = widget::capability::widget_access::read_number(widget_id, &["scroll_position_x"])?;
+    let y = widget::capability::widget_access::read_number(widget_id, &["scroll_position_y"])?;
+    Some((x as i32, y as i32))
 }
 // ComboBox operations
 #[cfg(not(alloc_frugal))]
 pub fn combo_box_add_item(combo_box: crate::core::ObjectId, text: &str) -> bool {
-    platform::get_platform().combo_box_add_item(combo_box, text)
+    control_backend::get_control_backend().combo_box_add_item(combo_box, text)
 }
 #[cfg(not(alloc_frugal))]
 pub fn combo_box_clear_items(combo_box: crate::core::ObjectId) -> bool {
-    platform::get_platform().combo_box_clear_items(combo_box)
+    control_backend::get_control_backend().combo_box_clear_items(combo_box)
 }
 #[cfg(not(alloc_frugal))]
 pub fn combo_box_set_current_index(combo_box: crate::core::ObjectId, index: usize) -> bool {
-    platform::get_platform().combo_box_set_current_index(combo_box, index)
+    widget::capability::widget_access::write_first(
+        combo_box,
+        &["current_index"],
+        &crate::widget::capability::CapabilityValue::UInt(index as u64),
+    )
 }
 #[cfg(not(alloc_frugal))]
 pub fn combo_box_current_index(combo_box: crate::core::ObjectId) -> Option<usize> {
-    platform::get_platform().combo_box_current_index(combo_box)
+    widget::capability::widget_access::read_index(combo_box, &["current_index"])
 }
 #[cfg(not(alloc_frugal))]
 pub fn combo_box_item_count(combo_box: crate::core::ObjectId) -> usize {
-    platform::get_platform().combo_box_item_count(combo_box)
+    widget::capability::widget_access::read_index(combo_box, &["item_count"]).unwrap_or(0)
 }
 #[cfg(not(alloc_frugal))]
 pub fn combo_box_item_text(combo_box: crate::core::ObjectId, index: usize) -> Option<String> {
-    platform::get_platform().combo_box_item_text(combo_box, index)
+    control_backend::get_control_backend().combo_box_item_text(combo_box, index)
 }
 // ListBox operations
 #[cfg(not(alloc_frugal))]
 pub fn list_box_add_item(list_box: crate::core::ObjectId, text: &str) -> bool {
-    platform::get_platform().list_box_add_item(list_box, text)
+    control_backend::get_control_backend().list_box_add_item(list_box, text)
 }
 #[cfg(not(alloc_frugal))]
 pub fn list_box_remove_item(list_box: crate::core::ObjectId, index: usize) -> bool {
-    platform::get_platform().list_box_remove_item(list_box, index)
+    control_backend::get_control_backend().list_box_remove_item(list_box, index)
 }
 #[cfg(not(alloc_frugal))]
 pub fn list_box_clear_items(list_box: crate::core::ObjectId) -> bool {
-    platform::get_platform().list_box_clear_items(list_box)
+    control_backend::get_control_backend().list_box_clear_items(list_box)
 }
 #[cfg(not(alloc_frugal))]
 pub fn list_box_set_current_index(list_box: crate::core::ObjectId, index: usize) -> bool {
-    platform::get_platform().list_box_set_current_index(list_box, index)
+    widget::capability::widget_access::write_first(
+        list_box,
+        &["current_row", "current_index"],
+        &crate::widget::capability::CapabilityValue::UInt(index as u64),
+    )
 }
 #[cfg(not(alloc_frugal))]
 pub fn list_box_current_index(list_box: crate::core::ObjectId) -> Option<usize> {
-    platform::get_platform().list_box_current_index(list_box)
+    widget::capability::widget_access::read_index(list_box, &["current_row", "current_index"])
 }
 #[cfg(not(alloc_frugal))]
 pub fn list_box_item_count(list_box: crate::core::ObjectId) -> usize {
-    platform::get_platform().list_box_item_count(list_box)
+    widget::capability::widget_access::read_index(list_box, &["item_count"]).unwrap_or(0)
 }
 #[cfg(not(alloc_frugal))]
 pub fn list_box_item_text(list_box: crate::core::ObjectId, index: usize) -> Option<String> {
-    platform::get_platform().list_box_item_text(list_box, index)
+    control_backend::get_control_backend().list_box_item_text(list_box, index)
 }
 // Event polling
 #[cfg(not(alloc_frugal))]
 pub fn poll_widget_triggered() -> Option<crate::core::ObjectId> {
-    platform::get_platform().poll_widget_triggered()
+    control_backend::get_control_backend().poll_widget_triggered()
 }
 #[cfg(not(alloc_frugal))]
 pub fn poll_widget_trigger_event() -> Option<WidgetTriggerEvent> {
-    platform::get_platform().poll_widget_trigger_event()
+    control_backend::get_control_backend().poll_widget_trigger_event()
 }
 #[cfg(not(alloc_frugal))]
 pub fn inject_widget_trigger_event(
     widget_id: crate::core::ObjectId,
     kind: WidgetTriggerKind,
 ) -> bool {
-    platform::get_platform().inject_widget_trigger_event(widget_id, kind)
+    control_backend::get_control_backend().inject_widget_trigger_event(widget_id, kind)
 }
 // Clipboard
 #[cfg(not(alloc_frugal))]
@@ -1148,7 +1261,7 @@ pub fn attach_menu_bar_to_window(
     window: crate::core::ObjectId,
     menu_bar: crate::core::ObjectId,
 ) -> bool {
-    platform::get_platform().attach_menu_bar_to_window(window, menu_bar)
+    control_backend::get_control_backend().attach_menu_bar_to_window(window, menu_bar)
 }
 #[cfg(not(alloc_frugal))]
 pub fn menu_add_item(
@@ -1156,7 +1269,7 @@ pub fn menu_add_item(
     text: &str,
     shortcut: Option<&str>,
 ) -> crate::core::ObjectId {
-    platform::get_platform().menu_add_item(parent_menu, text, shortcut)
+    control_backend::get_control_backend().menu_add_item(parent_menu, text, shortcut)
 }
 /// Renders a shortcut the way the current operating system writes it.
 ///
@@ -1184,16 +1297,15 @@ pub fn format_shortcut(shortcut: &crate::shortcut::Shortcut) -> String {
 }
 #[cfg(not(alloc_frugal))]
 pub fn poll_menu_triggered() -> Option<crate::core::ObjectId> {
-    platform::get_platform().poll_menu_triggered()
+    control_backend::get_control_backend().poll_menu_triggered()
 }
 /// Returns the accelerator text bound to a menu item, if any.
 ///
-/// Lets a host verify that a shortcut was genuinely registered with the platform
-/// (and not merely drawn into a label). Returns `None` for a non-menu-item id or
-/// an item created without a shortcut.
+/// Read from the menu item's own `shortcut` property, so the answer describes the
+/// item the library drew rather than a host-side copy that could drift.
 #[cfg(not(alloc_frugal))]
 pub fn menu_item_shortcut(menu_item: crate::core::ObjectId) -> Option<String> {
-    platform::get_platform().menu_item_shortcut(menu_item)
+    control_backend::get_control_backend().menu_item_shortcut(menu_item)
 }
 /// Returns the backend's native handle for a widget, when it has one.
 ///
@@ -1211,7 +1323,7 @@ pub fn native_handle(widget: crate::core::ObjectId) -> Option<usize> {
 }
 #[cfg(not(alloc_frugal))]
 pub fn inject_menu_trigger(menu_item_id: crate::core::ObjectId) -> bool {
-    platform::get_platform().inject_menu_trigger(menu_item_id)
+    control_backend::get_control_backend().inject_menu_trigger(menu_item_id)
 }
 // ToolBar and StatusBar
 #[cfg(not(alloc_frugal))]
@@ -1251,11 +1363,11 @@ pub fn inject_drop_event(event: DropEvent) -> bool {
 // IME and Accessibility
 #[cfg(not(alloc_frugal))]
 pub fn set_widget_ime_enabled(widget_id: crate::core::ObjectId, enabled: bool) -> bool {
-    platform::get_platform().set_widget_ime_enabled(widget_id, enabled)
+    control_backend::get_control_backend().set_widget_ime_enabled(widget_id, enabled)
 }
 #[cfg(not(alloc_frugal))]
 pub fn is_widget_ime_enabled(widget_id: crate::core::ObjectId) -> bool {
-    platform::get_platform().is_widget_ime_enabled(widget_id)
+    control_backend::get_control_backend().is_widget_ime_enabled(widget_id)
 }
 /// Returns the platform's IME bridge, if available.
 #[cfg(not(alloc_frugal))]
@@ -1264,11 +1376,11 @@ pub fn platform_ime_bridge() -> Option<&'static dyn crate::platform::ime::ImeBri
 }
 #[cfg(not(alloc_frugal))]
 pub fn set_widget_accessibility_name(widget_id: crate::core::ObjectId, name: &str) -> bool {
-    platform::get_platform().set_widget_accessibility_name(widget_id, name)
+    control_backend::get_control_backend().set_widget_accessibility_name(widget_id, name)
 }
 #[cfg(not(alloc_frugal))]
 pub fn get_widget_accessibility_name(widget_id: crate::core::ObjectId) -> String {
-    platform::get_platform().get_widget_accessibility_name(widget_id)
+    control_backend::get_control_backend().get_widget_accessibility_name(widget_id)
 }
 // Re-exports from platform module for convenience
 #[cfg(not(alloc_frugal))]

@@ -105,7 +105,6 @@ STATE_FIRST_OS = {"linux"}
 OS_SOURCES: Dict[str, List[str]] = {
     "windows": [
         "src/platform/windows/platform_impl.rs",
-        "src/platform/windows/helpers.rs",
     ],
     "linux": [
         "src/platform/linux/platform_impl.rs",
@@ -207,7 +206,7 @@ def extract_method_bodies(source: str, regex=fn_re) -> Dict[str, str]:
             elif source[j] == "}":
                 brace_count -= 1
             j += 1
-        methods[method] = source[m.start():j]
+        methods[method] = source[m.start() : j]
         i = j
     return methods
 
@@ -237,7 +236,9 @@ def _collect_chain(
     return snippets, _seen
 
 
-def classify_method(method: str, bodies: Dict[str, str], os_key: str) -> Tuple[str, str]:
+def classify_method(
+    method: str, bodies: Dict[str, str], os_key: str
+) -> Tuple[str, str]:
     if method not in bodies:
         return MISSING, "method not defined by this OS backend"
 
@@ -264,7 +265,10 @@ def classify_method(method: str, bodies: Dict[str, str], os_key: str) -> Tuple[s
                 return STATE_BACKED, note + "; native path exists under feature"
             return STATE_BACKED, "logical state insert only"
         if has_native:
-            return NATIVE, f"native signal `{next(t for t in OS_NATIVE_TOKENS[os_key] if t in joined)}`"
+            return (
+                NATIVE,
+                f"native signal `{next(t for t in OS_NATIVE_TOKENS[os_key] if t in joined)}`",
+            )
         return UNCLASSIFIABLE, "code present but no native/state signal recognized"
 
     if has_native:
@@ -306,7 +310,9 @@ def scan_os(os_key: str, files: List[str], canonical: Set[str]) -> OsBackend:
     )
 
 
-def render(backends: List[OsBackend], output: Optional[pathlib.Path]) -> Tuple[str, int]:
+def render(
+    backends: List[OsBackend], output: Optional[pathlib.Path]
+) -> Tuple[str, int]:
     now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     lines: List[str] = []
     lines.append("# Per-OS platform_impl implementation-grade matrix")
@@ -332,7 +338,9 @@ def render(backends: List[OsBackend], output: Optional[pathlib.Path]) -> Tuple[s
         summary_counts[b.key] = counts
 
     lines.append("## Per-OS summary")
-    lines.append("| OS backend | Native | StateBacked | Placeholder | Missing* | Unclassifiable |")
+    lines.append(
+        "| OS backend | Native | StateBacked | Placeholder | Missing* | Unclassifiable |"
+    )
     lines.append("|---|---|---|---|---|---|")
     for b in backends:
         c = summary_counts[b.key]
@@ -371,7 +379,9 @@ def render(backends: List[OsBackend], output: Optional[pathlib.Path]) -> Tuple[s
             if grade == UNCLASSIFIABLE:
                 unclass.append(f"{b.key}:{method} ({b.details.get(method, '')})")
     if unclass:
-        lines.append("The following implemented methods have no recognized native/state signal:")
+        lines.append(
+            "The following implemented methods have no recognized native/state signal:"
+        )
         for u in sorted(unclass):
             lines.append(f"- {u}")
         lines.append("")
@@ -428,7 +438,10 @@ def main() -> int:
     backends = [scan_os(key, files, canonical) for key, files in OS_SOURCES.items()]
     _, unclass_count = render(backends, pathlib.Path(args.output))
     if args.fail_on_unclassifiable and unclass_count:
-        print(f"error: {unclass_count} unclassifiable implemented create methods", file=sys.stderr)
+        print(
+            f"error: {unclass_count} unclassifiable implemented create methods",
+            file=sys.stderr,
+        )
         return 1
     return 0
 

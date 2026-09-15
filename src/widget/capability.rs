@@ -201,7 +201,7 @@ pub(crate) fn kind_canonical_name(kind: crate::widget::WidgetKind) -> alloc::str
 /// registers the target type once, so a lookup by the alias finds nothing and the
 /// control would refuse to be created.
 ///
-/// [`alias_target`] resolves those variants, which is why this returns a `&str`
+/// `alias_factory_name` resolves those variants, which is why this returns a `&str`
 /// rather than `Option`: every kind has a constructor, either directly or through
 /// the variant's own spelling, with the alias table applied, so a build without the
 /// capability registry can still name every kind's constructor.
@@ -209,7 +209,7 @@ pub(crate) fn kind_canonical_name(kind: crate::widget::WidgetKind) -> alloc::str
 pub fn factory_name_for_kind(kind: crate::widget::WidgetKind) -> &'static str {
     #[cfg(not(full_widgets))]
     {
-        return factory_name_for_kind_without_registry(kind);
+        factory_name_for_kind_without_registry(kind)
     }
     #[cfg(full_widgets)]
     {
@@ -336,6 +336,9 @@ pub(crate) use properties::*;
 
 #[cfg(widgets_unstripped)]
 pub mod access;
+
+/// By-id control-state access for the crate-root wrappers (crate-internal).
+pub(crate) mod widget_access;
 #[cfg(widgets_unstripped)]
 pub use access::*;
 

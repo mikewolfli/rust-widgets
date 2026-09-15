@@ -3,8 +3,6 @@
 
 //! Windows platform backend implementation.
 
-mod dialogs;
-pub mod helpers;
 mod notify;
 mod platform_impl;
 pub mod types;
@@ -16,11 +14,6 @@ pub mod types;
 #[cfg(all(target_os = "windows", widgets_unstripped))]
 pub(crate) mod canvas;
 
-/// Win32 menu accelerator (`HACCEL`) tables.
-#[cfg(target_os = "windows")]
-pub(crate) mod accel;
-
-pub use crate::platform::windows::helpers::*;
 pub use crate::platform::windows::types::*;
 
 #[cfg(test)]

@@ -606,31 +606,27 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
         let seg_data = &data[pos + 4..pos + seg_len];
 
         match marker {
-            0xC0..=0xC2 => {
+            0xC0..=0xC2 if seg_data.len() >= 6 => {
                 // SOF0/SOF1/SOF2
-                if seg_data.len() >= 6 {
-                    let precision = seg_data[0];
-                    if precision != 8 {
-                        return Err(format!(
-                            "JPEG precision {precision} not supported (only 8-bit)"
-                        ));
+                let precision = seg_data[0];
+                if precision != 8 {
+                    return Err(format!("JPEG precision {precision} not supported (only 8-bit)"));
+                }
+                height = u16::from_be_bytes([seg_data[1], seg_data[2]]) as u32;
+                width = u16::from_be_bytes([seg_data[3], seg_data[4]]) as u32;
+                let _num_components = seg_data[5];
+                let mut off = 6;
+                for _ in 0.._num_components {
+                    if off + 3 > seg_data.len() {
+                        break;
                     }
-                    height = u16::from_be_bytes([seg_data[1], seg_data[2]]) as u32;
-                    width = u16::from_be_bytes([seg_data[3], seg_data[4]]) as u32;
-                    let _num_components = seg_data[5];
-                    let mut off = 6;
-                    for _ in 0.._num_components {
-                        if off + 3 > seg_data.len() {
-                            break;
-                        }
-                        components.push(JpegComponent {
-                            _id: seg_data[off],
-                            h_sampling: (seg_data[off + 1] >> 4) & 0x0F,
-                            v_sampling: seg_data[off + 1] & 0x0F,
-                            quant_table: seg_data[off + 2],
-                        });
-                        off += 3;
-                    }
+                    components.push(JpegComponent {
+                        _id: seg_data[off],
+                        h_sampling: (seg_data[off + 1] >> 4) & 0x0F,
+                        v_sampling: seg_data[off + 1] & 0x0F,
+                        quant_table: seg_data[off + 2],
+                    });
+                    off += 3;
                 }
             }
             0xDB => {

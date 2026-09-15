@@ -8,7 +8,7 @@
 //! here needs a real `WindowsPlatform` and therefore only compiles on Windows.
 
 #[cfg(target_os = "windows")]
-mod tests {
+mod windows_backend {
     use crate::platform::windows::{
         notify::{control_notify_kind_for_widget, enqueue_control_notify_event},
         types::{WindowsHandleKind, WindowsPlatform},
@@ -81,15 +81,25 @@ mod tests {
         );
     }
 
-    /// Self-drawn widgets are hosted by `windows/canvas.rs`, so the backend must
-    /// advertise the surface and refuse to mount an unregistered widget id.
+    /// Self-drawn widgets are hosted by `windows/canvas.rs`, so a profile that
+    /// carries the self-drawn widget set must advertise the surface and refuse to
+    /// mount an unregistered widget id.
+    ///
+    /// A stripped profile (`mini` / `embedded`) has no `widget::runtime` to host,
+    /// so the honest answer there is `false` rather than an over-claim — see
+    /// principle #37. The expectation comes from the single profile gate
+    /// (principle #58) instead of assuming the desktop profile.
     #[test]
     fn widget_surface_is_advertised_and_validates_ids() {
         use crate::platform::Platform;
 
         let platform = WindowsPlatform::new();
         platform.init();
-        assert!(platform.supports_surfaces());
+        assert_eq!(
+            platform.supports_surfaces(),
+            crate::platform::profile::widgets_unstripped(),
+            "surface support must track whether this profile has a self-drawn widget runtime"
+        );
 
         // A widget id that was never registered in `widget::runtime` must be
         // refused rather than producing an empty canvas.

@@ -10,9 +10,24 @@
 //!
 //! Visual regression is host-oriented (byte-identical SVG + snapshot file
 //! I/O); wasm targets run the logical suite instead.
+//!
+//! # Line endings
+//!
+//! The baselines are committed as LF text, but git materialises them as CRLF on
+//! a host with `core.autocrlf=true` (the Windows default). A raw byte comparison
+//! would then fail on every Windows checkout for a reason that has nothing to do
+//! with rendering. Only `\r\n` is folded to `\n`: the SVG content itself is still
+//! compared byte-for-byte, so a real rendering change is still caught.
+//! `.gitattributes` pins the baselines to LF so the committed form cannot drift.
 
 use rust_widgets::core::Rect;
 use rust_widgets::widget::{Button, Label, Switch};
+
+/// Folds CRLF to LF so the comparison tests the SVG, not the checkout's
+/// line-ending policy.
+fn normalise_line_endings(text: &str) -> String {
+    text.replace("\r\n", "\n")
+}
 
 /// Render a widget to SVG and compare against stored snapshot.
 fn assert_widget_snapshot<W: rust_widgets::widget::Draw + rust_widgets::widget::Widget>(
@@ -29,7 +44,8 @@ fn assert_widget_snapshot<W: rust_widgets::widget::Draw + rust_widgets::widget::
 
     if let Ok(expected) = std::fs::read_to_string(&snapshot_path) {
         assert_eq!(
-            svg, expected,
+            normalise_line_endings(&svg),
+            normalise_line_endings(&expected),
             "Snapshot mismatch for {}. Run with UPDATE_SNAPSHOTS=1 to update.",
             name
         );

@@ -134,6 +134,13 @@ pub trait ControlBackend: Send + Sync {
     fn combo_box_clear_items(&self, _widget_id: ObjectId) -> bool {
         false
     }
+    /// Read a combo box item's text by index.
+    ///
+    /// Default: the backend keeps no items, so there is nothing to read. A
+    /// backend that owns a control answers from it rather than from a copy.
+    fn combo_box_item_text(&self, _widget_id: ObjectId, _index: usize) -> Option<String> {
+        None
+    }
     /// Create list box control.
     fn create_list_box(
         &self,
@@ -154,6 +161,16 @@ pub trait ControlBackend: Send + Sync {
     /// Clear all items from list box.
     fn list_box_clear_items(&self, _widget_id: ObjectId) -> bool {
         false
+    }
+    /// Read a list box item's text by index.
+    fn list_box_item_text(&self, _widget_id: ObjectId, _index: usize) -> Option<String> {
+        None
+    }
+    /// Read the accelerator text bound to a menu entry.
+    ///
+    /// Default: the backend keeps no menu entries, so there is nothing to read.
+    fn menu_item_shortcut(&self, _menu_item: ObjectId) -> Option<String> {
+        None
     }
     /// Create panel control.
     fn create_panel(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId;

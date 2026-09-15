@@ -314,30 +314,26 @@ impl crate::event::EventHandler for RichEdit {
             crate::event::Event::KeyPress { key, modifiers } => {
                 let cursor = self.selection.map_or(0, |(start, _)| start);
                 match *key {
-                    8 => {
+                    8 if cursor > 0 => {
                         // Backspace — delete char before cursor
-                        if cursor > 0 {
-                            let boundary = floor_char_boundary(&self.text, cursor - 1);
-                            let mut next = self.text.clone();
-                            next.drain(boundary..cursor);
-                            let new_cursor = boundary;
-                            self.set_text(next);
-                            self.selection = Some((new_cursor, new_cursor));
-                            self.cursor_position_changed.emit(new_cursor);
-                        }
+                        let boundary = floor_char_boundary(&self.text, cursor - 1);
+                        let mut next = self.text.clone();
+                        next.drain(boundary..cursor);
+                        let new_cursor = boundary;
+                        self.set_text(next);
+                        self.selection = Some((new_cursor, new_cursor));
+                        self.cursor_position_changed.emit(new_cursor);
                     }
-                    127 => {
+                    127 if cursor < self.text.len() => {
                         // Delete — delete char after cursor
-                        if cursor < self.text.len() {
-                            let end = floor_char_boundary(&self.text, cursor + 1);
-                            // Ensure we advance at least one char
-                            let end = if end == cursor { cursor + 1 } else { end };
-                            let mut next = self.text.clone();
-                            next.drain(cursor..end.min(self.text.len()));
-                            self.set_text(next);
-                            self.selection = Some((cursor, cursor));
-                            self.cursor_position_changed.emit(cursor);
-                        }
+                        let end = floor_char_boundary(&self.text, cursor + 1);
+                        // Ensure we advance at least one char
+                        let end = if end == cursor { cursor + 1 } else { end };
+                        let mut next = self.text.clone();
+                        next.drain(cursor..end.min(self.text.len()));
+                        self.set_text(next);
+                        self.selection = Some((cursor, cursor));
+                        self.cursor_position_changed.emit(cursor);
                     }
                     13 => {
                         // Enter — insert newline at cursor
@@ -349,21 +345,17 @@ impl crate::event::EventHandler for RichEdit {
                         self.text_changed.emit(self.text.clone());
                         self.cursor_position_changed.emit(new_cursor);
                     }
-                    37 if *modifiers == 0 => {
+                    37 if *modifiers == 0 && cursor > 0 => {
                         // Left arrow — move cursor left by one char
-                        if cursor > 0 {
-                            let boundary = floor_char_boundary(&self.text, cursor - 1);
-                            self.selection = Some((boundary, boundary));
-                            self.cursor_position_changed.emit(boundary);
-                        }
+                        let boundary = floor_char_boundary(&self.text, cursor - 1);
+                        self.selection = Some((boundary, boundary));
+                        self.cursor_position_changed.emit(boundary);
                     }
-                    39 if *modifiers == 0 => {
+                    39 if *modifiers == 0 && cursor < self.text.len() => {
                         // Right arrow — move cursor right by one char
-                        if cursor < self.text.len() {
-                            let next = floor_char_boundary(&self.text, cursor + 1);
-                            self.selection = Some((next, next));
-                            self.cursor_position_changed.emit(next);
-                        }
+                        let next = floor_char_boundary(&self.text, cursor + 1);
+                        self.selection = Some((next, next));
+                        self.cursor_position_changed.emit(next);
                     }
                     36 if *modifiers == 0 => {
                         // Home — move to beginning of current line

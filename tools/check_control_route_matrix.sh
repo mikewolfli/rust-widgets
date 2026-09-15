@@ -3,8 +3,9 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+. "$ROOT_DIR/tools/lib_python.sh"
 
-python3 tools/generate_control_route_matrix.py \
+"$PYTHON" tools/generate_control_route_matrix.py \
   --kind src/widget/kind.rs \
   --routing src/control_backend/routing.rs \
   --trait src/control_backend/trait_def/trait_def.rs \

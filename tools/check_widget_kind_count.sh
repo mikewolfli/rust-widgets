@@ -19,6 +19,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+. "$ROOT_DIR/tools/lib_python.sh"
 
 KIND_FILE="src/widget/kind.rs"
 if [[ ! -f "$KIND_FILE" ]]; then
@@ -26,9 +27,9 @@ if [[ ! -f "$KIND_FILE" ]]; then
   exit 2
 fi
 
-ACTUAL="$(python3 -c '
+ACTUAL="$("$PYTHON" -c '
 import re, sys
-src = open("src/widget/kind.rs").read()
+src = open("src/widget/kind.rs", encoding="utf-8").read()
 m = re.search(r"pub enum WidgetKind \{(.*?)\n\}", src, re.S)
 if not m:
     print("could not locate the WidgetKind enum", file=sys.stderr)

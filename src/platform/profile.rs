@@ -26,7 +26,7 @@
 //! Everything else asks a semantic question here:
 //!
 //! ```ignore
-//! if crate::platform::profile::has_os_runtime() { … }
+//! if crate::platform::profile::has_os_runtime() { /* … */ }
 //! ```
 //!
 //! `mini` and `embedded` remain the *input* — they are Cargo features and cannot

@@ -3,13 +3,14 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+. "$ROOT_DIR/tools/lib_python.sh"
 
 TMP_BEFORE="$(mktemp)"
 trap 'rm -f "$TMP_BEFORE"' EXIT
 
 echo "[1/4] Regenerate C header snapshot"
 cp examples/rust_widgets.generated.h "$TMP_BEFORE"
-python3 tools/generate_c_header.py
+"$PYTHON" tools/generate_c_header.py
 
 echo "[2/4] Check generated header consistency"
 if ! cmp -s "$TMP_BEFORE" examples/rust_widgets.generated.h; then

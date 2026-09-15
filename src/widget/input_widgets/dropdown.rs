@@ -245,17 +245,13 @@ impl EventHandler for Dropdown {
                 }
 
                 match *key {
-                    38 => {
+                    38 if self.selected_index > 0 => {
                         // Up arrow — previous item
-                        if self.selected_index > 0 {
-                            self.set_selected_index(self.selected_index - 1);
-                        }
+                        self.set_selected_index(self.selected_index - 1);
                     }
-                    40 => {
+                    40 if self.selected_index + 1 < self.items.len() => {
                         // Down arrow — next item
-                        if self.selected_index + 1 < self.items.len() {
-                            self.set_selected_index(self.selected_index + 1);
-                        }
+                        self.set_selected_index(self.selected_index + 1);
                     }
                     13 => {
                         // Enter — commit selection, collapse
