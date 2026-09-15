@@ -261,11 +261,25 @@ impl<T: Clone + Send + 'static> Signal<T> {
     /// the callback is restored. Once-slots are removed unconditionally after
     /// invocation. Callbacks may safely call `connect`, `disconnect`,
     /// `disconnect_all`, `block`, `unblock`, or `emit` on **the same Signal**
-    /// without deadlocking. Self-disconnect from within a callback is now
-    /// correctly honored and does not get undone by a stale re-insertion.
+    /// without deadlocking. Self-disconnect from within a callback is honored
+    /// and does not get undone by a stale re-insertion.
     ///
     /// Slots are invoked in priority order (High → Normal → Low).
     /// Blocked slots are skipped entirely.
+    ///
+    /// # Re-entrancy
+    ///
+    /// A slot that emits the **same** signal re-enters this function. The
+    /// re-entrant pass deliberately skips any slot whose callback is currently
+    /// executing: the outer pass owns that callback (it was `take`n out of the
+    /// map), so there is nothing to call. This makes recursive emission
+    /// terminate rather than recurse without bound — a slot that emits the signal
+    /// it is handling would otherwise loop forever.
+    ///
+    /// The observable consequence, and it is deliberate: **a re-entrant emit does
+    /// not deliver to the slot(s) already on the stack.** It delivers to every other
+    /// slot, and to slots connected after the outer pass took its snapshot.
+    /// [`a_re_entrant_emit_skips_the_slot_still_on_the_stack`] pins this.
     pub fn emit(&self, value: T) {
         let arc_value = Arc::new(value);
 
@@ -342,5 +356,396 @@ impl<T: Clone + Send + 'static> Signal<T> {
 impl<T: Clone + Send + 'static> Default for Signal<T> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Characterisation tests for [`Signal::emit`].
+///
+/// # Why these exist
+///
+/// `emit` is the hot path every one of the crate's ~184 `emit()` call sites goes
+/// through, and it carries a subtle invariant: a callback is temporarily *taken*
+/// out of the slot map while it runs (so the lock can be released), while its
+/// handle stays in the map (so a callback that disconnects itself can be found).
+/// That two-piece state is what makes re-entrant `connect` / `disconnect` / `emit`
+/// safe.
+///
+/// It had **no tests**. The module's other tests covered priorities, blocking and
+/// scopes, but nothing pinned what happens when a callback mutates the signal it is
+/// being called from — which is the only reason the take/restore dance exists. An
+/// optimisation of this loop could therefore have silently changed that behaviour
+/// with every existing test still green.
+///
+/// These tests pin the *current, documented* behaviour. They are deliberately
+/// characterisation tests: if one fails after a change to `emit`, the change altered
+/// observable semantics, and that must be a deliberate decision rather than a
+/// side effect.
+#[cfg(test)]
+mod emit_behaviour_tests {
+    use super::*;
+    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    /// Records the order in which slots ran, so ordering assertions read clearly.
+    #[derive(Default)]
+    struct Trace {
+        entries: Mutex<alloc::vec::Vec<&'static str>>,
+    }
+
+    impl Trace {
+        fn push(&self, label: &'static str) {
+            self.entries.lock().unwrap().push(label);
+        }
+
+        fn snapshot(&self) -> alloc::vec::Vec<&'static str> {
+            self.entries.lock().unwrap().clone()
+        }
+    }
+
+    /// A callback that disconnects itself must not be invoked again, must not
+    /// panic, and must not be resurrected by the restore step.
+    ///
+    /// This is the invariant the take/restore design exists for: the handle stays in
+    /// the map during the call precisely so the callback's own `disconnect` finds it.
+    /// A naive "snapshot the callbacks and call them" loop would re-insert the
+    /// callback afterwards and silently undo the disconnect.
+    ///
+    /// The handle has to be shared through an atomic, because it does not exist until
+    /// `connect` returns — yet the closure passed to `connect` has to be able to name
+    /// it. That ordering constraint is why this pattern is written out in full rather
+    /// than hidden behind a helper.
+    #[test]
+    fn a_slot_may_disconnect_itself_from_inside_its_callback() {
+        use core::sync::atomic::AtomicU64;
+
+        let signal = Signal::<u32>::new();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let shared_handle = Arc::new(AtomicU64::new(0));
+
+        let calls_self = Arc::clone(&calls);
+        let signal_for_self = signal.clone();
+        let handle_slot = Arc::clone(&shared_handle);
+        let handle = signal.connect(move |_| {
+            calls_self.fetch_add(1, Ordering::SeqCst);
+            let own = ConnectionHandle(handle_slot.load(Ordering::SeqCst));
+            assert!(
+                signal_for_self.disconnect(own),
+                "a callback must be able to find and remove its own handle"
+            );
+        });
+        shared_handle.store(handle.0, Ordering::SeqCst);
+
+        signal.emit(1);
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "the slot must run exactly once");
+        assert!(
+            !signal.is_connected(handle),
+            "self-disconnect must survive the restore step, not be undone by it"
+        );
+
+        // A second emit must not reach the disconnected slot.
+        signal.emit(2);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "a self-disconnected slot must not be called by the next emit"
+        );
+    }
+
+    /// A callback that disconnects a *later* slot must prevent that slot from running
+    /// in the same emit pass — the snapshot is taken once, but membership is re-checked
+    /// per slot before the call.
+    #[test]
+    fn a_slot_may_disconnect_a_later_slot_in_the_same_pass() {
+        let signal = Signal::<u32>::new();
+        let trace = Arc::new(Trace::default());
+
+        let target = {
+            let trace = Arc::clone(&trace);
+            signal.connect(move |_| trace.push("target"))
+        };
+
+        let signal_for_cutter = signal.clone();
+        let trace_first = Arc::clone(&trace);
+        signal.connect_with_priority(
+            move |_| {
+                trace_first.push("cutter");
+                signal_for_cutter.disconnect(target);
+            },
+            Priority::High,
+        );
+
+        signal.emit(1);
+
+        assert_eq!(
+            trace.snapshot(),
+            alloc::vec!["cutter"],
+            "the disconnected slot must be skipped in the same pass"
+        );
+    }
+
+    /// A callback that connects a *new* slot must not cause that slot to run in the
+    /// current pass: the handle list is snapshot before any callback runs.
+    ///
+    /// The newly connected slot runs on the *next* pass — but which position it holds
+    /// is not asserted, because the slot map is a `HashMap` and its iteration order is
+    /// unspecified. Asserting order here would make the test flake on a hash seed
+    /// rather than catch a real regression.
+    #[test]
+    fn connecting_inside_a_callback_does_not_run_in_the_same_pass() {
+        let signal = Signal::<u32>::new();
+        let trace = Arc::new(Trace::default());
+
+        let signal_for_adder = signal.clone();
+        let trace_adder = Arc::clone(&trace);
+        signal.connect(move |_| {
+            trace_adder.push("adder");
+            let trace_late = Arc::clone(&trace_adder);
+            signal_for_adder.connect(move |_| trace_late.push("late"));
+        });
+
+        signal.emit(1);
+        assert_eq!(
+            trace.snapshot(),
+            alloc::vec!["adder"],
+            "a slot connected during emit must wait for the next emit"
+        );
+
+        trace.entries.lock().unwrap().clear();
+        signal.emit(2);
+        let mut order = trace.snapshot();
+        order.sort_unstable();
+        assert_eq!(
+            order,
+            alloc::vec!["adder", "late"],
+            "both the original and the newly connected slot must run on the next emit"
+        );
+        // Two passes ran the adder, so it connected two new slots; plus itself = 3.
+        // This is expected accumulation, not a leak: a slot that connects a slot on
+        // every emit really does grow the signal.
+        assert_eq!(signal.slot_count(), 3);
+    }
+
+    /// A re-entrant `emit` on the same signal must not deadlock, and must skip the slot
+    /// that is still on the stack.
+    ///
+    /// # What this pins
+    ///
+    /// The outer pass *takes* the running callback out of the slot map (that is what
+    /// lets it call the callback without holding the lock). A nested emit therefore
+    /// finds no callback for that handle and skips it. This is what makes recursion
+    /// terminate: without it, a slot that emits the signal it is handling would loop
+    /// forever.
+    ///
+    /// The test asserts both halves: the nested pass ran at all (so the skip is not
+    /// just "nothing happened"), and it ran a *different* slot while excluding the one
+    /// on the stack.
+    #[test]
+    fn a_re_entrant_emit_skips_the_slot_still_on_the_stack() {
+        let signal = Signal::<u32>::new();
+        let trace = Arc::new(Trace::default());
+        let nested_seen = Arc::new(AtomicUsize::new(0));
+
+        // A second slot, at a lower priority, so the recursive slot runs first.
+        {
+            let trace = Arc::clone(&trace);
+            let nested = Arc::clone(&nested_seen);
+            signal.connect_with_priority(
+                move |_| {
+                    trace.push("observer");
+                    nested.fetch_add(1, Ordering::SeqCst);
+                },
+                Priority::Low,
+            );
+        }
+
+        let signal_for_reentry = signal.clone();
+        let trace_recur = Arc::clone(&trace);
+        let depth = Arc::new(AtomicUsize::new(0));
+        let depth_inner = Arc::clone(&depth);
+        signal.connect_with_priority(
+            move |_| {
+                trace_recur.push("recur");
+                if depth_inner.fetch_add(1, Ordering::SeqCst) == 0 {
+                    // Re-enter once. The re-entrant pass must skip *this* slot (it is on
+                    // the stack) and must therefore reach the observer without looping.
+                    signal_for_reentry.emit(0);
+                }
+            },
+            Priority::High,
+        );
+
+        signal.emit(1);
+
+        let order = trace.snapshot();
+        assert_eq!(
+            order.iter().filter(|l| **l == "recur").count(),
+            1,
+            "the recursive slot must run once, not twice: {order:?}"
+        );
+        assert!(
+            order.iter().filter(|l| **l == "observer").count() >= 2,
+            "the re-entrant pass must still reach the other slot: {order:?}"
+        );
+        assert_eq!(
+            nested_seen.load(Ordering::SeqCst),
+            2,
+            "the observer must have been called by both the outer and the nested pass"
+        );
+    }
+
+    /// A `once` slot runs on the first emit and is gone afterwards.
+    #[test]
+    fn a_once_slot_runs_once_and_is_removed() {
+        let signal = Signal::<u32>::new();
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        let calls_once = Arc::clone(&calls);
+        let handle = signal.connect_once(move |_| {
+            calls_once.fetch_add(1, Ordering::SeqCst);
+        });
+
+        signal.emit(1);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(!signal.is_connected(handle), "a once slot must be removed after it runs");
+
+        signal.emit(2);
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "a once slot must not run twice");
+    }
+
+    /// Blocked slots are skipped, and unblocking restores them.
+    #[test]
+    fn a_blocked_slot_is_skipped_and_unblocking_restores_it() {
+        let signal = Signal::<u32>::new();
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        let calls_inner = Arc::clone(&calls);
+        let handle = signal.connect(move |_| {
+            calls_inner.fetch_add(1, Ordering::SeqCst);
+        });
+
+        assert!(signal.block(handle));
+        signal.emit(1);
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "a blocked slot must not run");
+        assert!(signal.is_connected(handle), "blocking must not disconnect");
+
+        assert!(signal.unblock(handle));
+        signal.emit(2);
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "an unblocked slot must run again");
+    }
+
+    /// Slots run in priority order, and equal priorities preserve a stable order.
+    ///
+    /// A `HashMap` has no iteration order, so this is what the `sort_by_key` in
+    /// `emit` actually buys: without it the order across a multi-slot signal would be
+    /// arbitrary and this test would flake rather than fail honestly.
+    #[test]
+    fn slots_run_in_priority_order() {
+        let signal = Signal::<u32>::new();
+        let trace = Arc::new(Trace::default());
+
+        for (label, priority) in [
+            ("low", Priority::Low),
+            ("normal", Priority::Normal),
+            ("high", Priority::High),
+            ("normal2", Priority::Normal),
+        ] {
+            let trace = Arc::clone(&trace);
+            signal.connect_with_priority(move |_| trace.push(label), priority);
+        }
+
+        signal.emit(1);
+        let order = trace.snapshot();
+
+        assert_eq!(order.first(), Some(&"high"), "High must run first");
+        assert_eq!(order.last(), Some(&"low"), "Low must run last");
+        assert_eq!(order.len(), 4, "every non-blocked slot must run exactly once, got {order:?}");
+    }
+
+    /// Changing a connection's priority mid-emit must not corrupt the pass: the
+    /// snapshot's order is fixed when emit starts.
+    #[test]
+    fn set_priority_inside_a_callback_does_not_reorder_the_current_pass() {
+        let signal = Signal::<u32>::new();
+        let trace = Arc::new(Trace::default());
+
+        let later = {
+            let trace = Arc::clone(&trace);
+            signal.connect_with_priority(move |_| trace.push("later"), Priority::Low)
+        };
+
+        let signal_for_bump = signal.clone();
+        let trace_first = Arc::clone(&trace);
+        signal.connect_with_priority(
+            move |_| {
+                trace_first.push("first");
+                // Promote the low-priority slot to High. The current pass already
+                // snapshotted the order, so this must not move it ahead of us.
+                signal_for_bump.set_priority(later, Priority::High);
+            },
+            Priority::High,
+        );
+
+        signal.emit(1);
+        assert_eq!(
+            trace.snapshot(),
+            alloc::vec!["first", "later"],
+            "the pass order is fixed at snapshot time"
+        );
+    }
+
+    /// `disconnect_all` from inside a callback must stop the remaining slots.
+    #[test]
+    fn disconnect_all_inside_a_callback_stops_the_rest_of_the_pass() {
+        let signal = Signal::<u32>::new();
+        let trace = Arc::new(Trace::default());
+
+        {
+            let trace = Arc::clone(&trace);
+            signal.connect_with_priority(move |_| trace.push("second"), Priority::Normal);
+        }
+
+        let signal_for_clear = signal.clone();
+        let trace_first = Arc::clone(&trace);
+        signal.connect_with_priority(
+            move |_| {
+                trace_first.push("first");
+                signal_for_clear.disconnect_all();
+            },
+            Priority::High,
+        );
+
+        signal.emit(1);
+        assert_eq!(
+            trace.snapshot(),
+            alloc::vec!["first"],
+            "slots after disconnect_all must be skipped"
+        );
+        assert_eq!(signal.slot_count(), 0u64 as usize, "no slots must remain");
+    }
+
+    /// Dropping a `ConnectionScope` disconnects the connections registered through it,
+    /// including one whose callback is currently running.
+    #[test]
+    fn a_scoped_connection_is_dropped_with_its_scope() {
+        let signal = Signal::<u32>::new();
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        {
+            let scope = ConnectionScope::new();
+            let calls_inner = Arc::clone(&calls);
+            signal.connect_scoped(&scope, move |_| {
+                calls_inner.fetch_add(1, Ordering::SeqCst);
+            });
+            signal.emit(1);
+            assert_eq!(calls.load(Ordering::SeqCst), 1, "the scoped slot must run while alive");
+        }
+
+        signal.emit(2);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "the scoped slot must be gone once its scope drops"
+        );
     }
 }

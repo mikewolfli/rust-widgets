@@ -30,8 +30,27 @@ impl CustomSignalHub {
     }
 
     /// Emits a named signal when present.
+    ///
+    /// # Why the signal is cloned out of the map before emitting
+    ///
+    /// The hub's `Mutex` is not re-entrant. A slot is allowed to call back into the
+    /// hub — most naturally to emit another (or the same) named signal — so holding
+    /// the map lock across `signal.emit()` deadlocks: the nested call blocks on the
+    /// lock this frame still holds, and nothing can release it.
+    ///
+    /// Cloning the `GenericSignal` (an `Arc` bump, not a deep copy) and dropping the
+    /// guard before emitting keeps the lock held only for the lookup. The slot then
+    /// runs with no hub lock held, exactly as `Signal::emit` runs its slots with no
+    /// signal lock held.
+    ///
+    /// A missing name stays a no-op rather than an error, so an emit that races a
+    /// `remove` from another thread simply does nothing.
     pub fn emit(&self, name: &str) {
-        if let Some(signal) = self.signals.lock().unwrap_or_else(|e| e.into_inner()).get(name) {
+        let signal = {
+            let signals = self.signals.lock().unwrap_or_else(|e| e.into_inner());
+            signals.get(name).cloned()
+        };
+        if let Some(signal) = signal {
             signal.emit();
         }
     }
@@ -216,3 +235,51 @@ impl CustomSignalHub {
 }
 
 crate::impl_default_via_new!(CustomSignalHub);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    /// The hub is a thin name→signal table, so it must inherit `Signal`'s
+    /// re-entrancy rule: a slot that emits its own signal re-enters the hub, and
+    /// the re-entrant pass must skip the slot still on the stack.
+    ///
+    /// This is worth a test of its own because the hub adds a second lock (the
+    /// `signals` map) on top of the signal's own. If either lock were held across
+    /// the callback, this would deadlock rather than merely mis-count.
+    #[test]
+    fn a_re_entrant_hub_emit_does_not_deadlock() {
+        // Every hub method takes `&self`, so `Arc` is enough to share it with the
+        // callback — the hub is deliberately not `Clone` (a clone would duplicate
+        // the signal table rather than share it).
+        let hub = Arc::new(CustomSignalHub::new());
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        let hub_for_reentry = Arc::clone(&hub);
+        let calls_outer = Arc::clone(&calls);
+        hub.connect("changed", move || {
+            calls_outer.fetch_add(1, Ordering::SeqCst);
+            // Re-enter the hub for the same signal, once.
+            if calls_outer.load(Ordering::SeqCst) == 1 {
+                hub_for_reentry.emit("changed");
+            }
+        });
+
+        hub.emit("changed");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "the re-entrant emit must skip the slot already on the stack, so it runs once"
+        );
+    }
+
+    /// An emit for a name with no registered signal must be a no-op, not a panic.
+    #[test]
+    fn emitting_an_unknown_name_is_a_no_op() {
+        let hub = CustomSignalHub::new();
+        hub.emit("nobody-listens");
+        assert!(!hub.contains("nobody-listens"));
+    }
+}
