@@ -160,6 +160,21 @@ jobs:
           chmod +x tools/check_perf.sh
           ./tools/check_perf.sh
 
+      # Widget state lives in thread-local registries, so a lock on that path is
+      # overhead without a purpose and risks a single-threaded deadlock. The gate
+      # asserts that structurally (a grep of the production regions of src/widget/),
+      # which is checkable in a way that "lock contention was profiled once" is not.
+      # Its own self-test runs first: the matcher is Python embedded in a shell script,
+      # and a bug in it does not raise — it reports PASS on code it never read. That
+      # happened three times before the self-test existed, each caught only by reverse
+      # injection.
+      - name: Locking audit gate
+        shell: bash
+        run: |
+          chmod +x tools/check_locking.sh
+          python3 tools/test_check_locking.py
+          ./tools/check_locking.sh
+
       - name: Check MSRV
         run: cargo check --rust-version
 

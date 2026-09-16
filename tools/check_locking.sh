@@ -197,11 +197,19 @@ def depth_delta(line: str, block: list[object]) -> int:
 
 
 def raw_string_opener(line: str) -> str | None:
-    """Returns the terminator of a raw string opened on `line` and not closed on it."""
-    match = re.search(r"r(#*)\"", line)
-    if match is None:
+    """Returns the terminator of a raw string opened on `line` and not closed on it.
+
+    The `r` must be a token of its own, not the tail of another word or a key in a JSON
+    fixture: a bare `r(#*)\"` search matched the `"r":1` entry inside a raw string and
+    overwrote the real terminator, corrupting the brace walk from there on. Requiring a
+    non-identifier character before the `r` excludes that. The search is skipped
+    entirely while inside a raw string, because a fixture is data, not code.
+    """
+    match = re.search(r"(^|[^A-Za-z0-9_])[rb]?(#+)?\"", line)
+    if match is None or "r" not in match.group(0):
         return None
-    terminator = '"' + match.group(1)
+    hashes = match.group(2) or ""
+    terminator = '"' + hashes
     return None if terminator in line[match.end() :] else terminator
 
 

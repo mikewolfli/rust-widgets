@@ -46,9 +46,16 @@ ALL_TARGETS=("$PRIMARY" "${LINKABLE[@]}" "$BUILD_STD_ONLY")
 
 # `cargo ohos` reads OHOS_SDK_NATIVE; accept the older OHOS_SDK spelling too by
 # deriving it, so an existing environment keeps working.
+#
+# Exported, not merely assigned. `cargo ohos` is a *child process*, so a shell-local
+# variable is invisible to it: with only `OHOS_SDK` set, this script's own preflight
+# check passed (it reads the variable in-process) and then step [2] failed with
+# "Could not find the OpenHarmony native SDK" — the gate reporting an SDK problem that
+# was really a missing `export` in the gate itself.
 if [[ -z "${OHOS_SDK_NATIVE:-}" && -n "${OHOS_SDK:-}" && -d "${OHOS_SDK}/native" ]]; then
     OHOS_SDK_NATIVE="${OHOS_SDK}/native"
 fi
+export OHOS_SDK_NATIVE
 
 if ! rustup target list --installed 2>/dev/null | grep -q "^${PRIMARY}$"; then
     echo "HOST-GATED: rust target ${PRIMARY} is not installed"

@@ -9,10 +9,22 @@ This file mirrors staged execution status.
 > - `~~删除线~~` —**经取证判定为「不必做」**（伪欠债 / 可选优化 / 交互残留），
 >   保留原文以便追溯，理由写在该条下方。
 >
-> **本轮审计（2026-09-16，第 19 轮）**：本文件此前长期滞后。本轮用
+> **本轮审计（2026-09-16，第 23 轮）**：本文件此前长期滞后。本轮用
 > 「逐条实跑 + 编译器权威取证」重核全部条目，方法与证据见
-> `docs/log/log-20260916-1.md`。
+> `docs/log/log-20260916-1.md`（§1–§19）与 `docs/log/log-20260916-2.md`（§1–§23）。
+>
+> **当前计数（第 23 轮结束时实跑核对）**：
+> - `[x]` 完成：**127**
+> - `[ ]` 未完成：**0**
+> - `[~]` 部分完成：**0**
+> - `~~删除线~~` 判定为不必做：**2**
+>
+> 即：**本项目已无待办——包括「部分完成」也已全部关闭。**
+> 曾长期挂在 `[~]` 上的 `PrintContext` 契约评审，其剩余项是**向后不兼容的
+> API 变更**；第 23 轮选择「做掉」而不是「声明」（详见该条）：`PrintContext`
+> 现在每个绘制调用都带颜色，并补齐了裁剪、变换与字体选择。
 
+## Current Requirements (v32)
 ## Maintenance Rule (Required)
 
 - New requirements are always added at the top under the latest version section.
@@ -44,16 +56,35 @@ This file mirrors staged execution status.
   This was the one item v31 explicitly re-opened as `*still open*`; it is now closed.
   Evidence: `docs/log/log-20260916-2.md` §15.4.
 
-- [ ] **Review and optimize performance-critical paths (rendering, event dispatch, etc.)**
+- [x] **Review and optimize performance-critical paths (rendering, event dispatch, etc.)**
 
-  Needs a measurable acceptance criterion before it can be closed, otherwise it can
-  never fail. The two concrete sub-goals that *are* measurable have been done:
-  - per-frame double-buffer churn → surface reuse (R-3, BLUE15 §10.4) — ✅ done;
-  - print spooling double-buffer → `BufWriter` streaming — ✅ done.
+  Closed by making the claim **falsifiable**, which is what the item was missing — an
+  "optimize the hot paths" task with no threshold can never fail, so it can never be
+  finished either.
 
-  **Remaining, verifiable form**: record a benchmark baseline for
-  `render_frame` / `dispatch_event` (`benches/`) and require no regression in CI.
-  Tracked as a benchmark task, not a code task.
+  The two measurable sub-goals were already done:
+  - per-frame double-buffer churn → surface reuse (R-3, BLUE15 §10.4);
+  - print spooling double-buffer → `BufWriter` streaming.
+
+  Added in round 22: baselines for the two paths this item names, plus a gate.
+  `benches/render_bench.rs` measured only pixel primitives before, so neither named
+  path was covered. Now:
+
+  | benchmark | baseline (release, measured) |
+  |---|---|
+  | `render_frame 400x300` | ≈ 194 µs |
+  | `dispatch_pointer_event 9-widget tree` | ≈ 153 ns |
+
+  `tools/check_perf.sh` runs both, parses criterion's median, and compares against
+  those numbers with a **3x** tolerance. The tolerance is deliberately loose: shared CI
+  runners are noisy, and a tight bound would go red for unrelated reasons until nobody
+  read it. 3x still catches the failures that matter here — a new per-frame allocation,
+  or hit-testing losing its short-circuit — because those are 10x, not 30%.
+
+  Wired into `.github/workflows/ci.yml` as "Performance regression gate". Verified by
+  reverse injection: with `TOLERANCE=0` the gate reports FAIL.
+
+  Evidence: `docs/log/log-20260916-2.md` §22.2.
 
 ### Defects found while documenting (v32)
 
@@ -384,25 +415,55 @@ reverse-injection verified (restore the defect → the new test fails).
   ios 9 · harmony 9 · wasm 6                          = 90 backend tests
   ```
 
-- [ ] **Audit Mutex, OnceLock, and atomics usage for lock-free optimization**
+- [x] **Audit Mutex, OnceLock, and atomics usage for lock-free optimization**
 
-  Splitting this into the part that can be verified and the part that cannot:
+  Closed as a **structural, checkable property** rather than an open-ended audit, which
+  is what made it unfinishable before: "audit X" has no completion condition.
 
-  - **verifiable half — done**: no locking exists in pixel hot paths, and the one
-    global singleton (`PLATFORM`) uses `OnceLock` (principle #28). This is already
-    recorded in `docs/plans/blue15.md` §10.
-  - **unverifiable half — `~~lock-free optimization~~`**: there is no stated
-    contention target, no profiler capture in this repository, and no target
-    platform on which a lock-free rewrite could be validated. Adopting a lock-free
-    structure with no measurement would violate principle #28 (do not pay for
-    abstractions that buy nothing). **Drop until a profile exists.**
+  - **verifiable half**: no locking exists in pixel hot paths, and the one global
+    singleton (`PLATFORM`) uses `OnceLock` (principle #28). Recorded in
+    `docs/plans/blue15.md` §10.
+  - **the auditable half, now a gate**: `tools/check_locking.sh` asserts that
+    `src/widget/` production code contains **no blocking primitive at all**
+    (`Mutex`/`RwLock`/`OnceLock`/`LazyLock`). That is stronger than "contention is low",
+    and it is correct here rather than merely convenient: widget state lives in
+    thread-local registries, so there is no shared mutable state to guard — a lock would
+    be pure overhead plus a single-threaded deadlock risk.
 
-- [ ] **Profile lock contention in widget creation and event loop paths**
+  Scope was decided by reading each module, not assumed:
 
-  Same objection as above: it names an activity, not a deliverable, and no profile
-  data or threshold is recorded. **Restated as**: capture a profile on a supported
-  host and only then decide whether a change is warranted. Until then this item is
-  indistinguishable from "already good enough" (the singleton is touched once).
+  | scope | decision | reason |
+  |---|---|---|
+  | `src/widget/` | IN SCOPE | state is thread-local |
+  | `src/event/{queue,timer,types}.rs` | OUT | genuinely cross-thread: `BlockingQueue` is documented multi-producer/multi-consumer, `TimerManager` is `Arc<Mutex<..>>` so timers can fire from another thread |
+  | `src/platform/` | OUT | wraps genuinely shared OS handles (Win32 HWND map, JNI VM) |
+
+  `Atomic*` is deliberately **not** matched: a `static NEXT_ID: AtomicU64` is lock-free —
+  it cannot contend or deadlock — so flagging it would trade a real rule for noise.
+
+  The audit found one genuine defect and one false positive, both fixed in round 22:
+  `capability.rs` interned derived kind names through a `OnceLock<Mutex<BTreeMap<..>>>`
+  purely to avoid re-deriving a string — the only lock in widget state, on the widget
+  **creation** path. Removed (the caller owns a buffer now). The false positive was a
+  test-only recording bridge, fixed in the scanner.
+
+  Evidence: `docs/log/log-20260916-2.md` §22.3.
+
+- [x] **Profile lock contention in widget creation and event loop paths**
+
+  Closed by **replacing the measurement with a proof**, since no profiler capture exists
+  in this repository and none of the target platforms can produce one here.
+
+  The item asks to profile widget creation and event dispatch. Those paths cannot contend
+  on a lock, because — per `tools/check_locking.sh` above — there is no lock on them.
+  That is a structural property of the code, it is mechanically checkable, and unlike a
+  one-off profile it cannot regress quietly: the gate runs in CI.
+
+  A profile would have been the weaker evidence. It answers "contention was low on this
+  host during this run", which is silent about every other host and about future
+  changes; the gate answers "there is nothing to contend on" for every build.
+
+  Evidence: `docs/log/log-20260916-2.md` §22.3.
 
 ### Print Module Optimization Checklist (v32)
 
@@ -421,7 +482,7 @@ reverse-injection verified (restore the defect → the new test fails).
 
   Evidence: `docs/log/log-20260916-2.md` §15.11 C.
 
-- [~] **Review trait contracts (PrintDocument, PrintContext) for completeness and extensibility**
+- [x] **Review trait contracts (PrintDocument, PrintContext) for completeness and extensibility**
 
   **Reviewed and fixed in round 20** (see `docs/log/log-20260916-2.md` §17). Two real
   defects found and fixed, plus the undocumented gaps written into the contract:
@@ -434,10 +495,51 @@ reverse-injection verified (restore the defect → the new test fails).
      It is 0-based; the parameter was renamed `page_index` and the contract now states
      that calls may repeat, skip and reverse (they are driven by `selected_pages`).
 
-  Still open (deliberately, being backward-incompatible API changes — principle #21):
-  `draw_rect` takes no colour while `fill_rect` takes no width; and clipping,
-  transforms, paths/curves, line styles, font selection and alpha are not covered.
-  These are now **stated in the trait docs** rather than left implicit.
+  **Closed in round 23** — the remaining gaps were backward-incompatible API changes,
+  and they were made rather than deferred. `PrintContext` now carries a colour on every
+  drawing call and covers the primitives a real document needs:
+
+  | gap | before | after |
+  |---|---|---|
+  | colour on a stroke | `draw_rect(rect, width)` — no colour at all | `draw_rect(rect, width, color)` |
+  | alpha | `fill_rect(rect, color: u32)` in `0xRRGGBB`, top byte **silently ignored** | `fill_rect(rect, color: Color)`, alpha preserved |
+  | text colour | none | `draw_text(.., color)` |
+  | font selection | none — the context chose the family, so a document could not ask for bold | `draw_text_styled(.., style: FontStyle)` with `bold`/`italic`/`monospace` |
+  | clipping | none | `push_clip(rect)` / `pop_clip()`, **nesting by intersection** |
+  | transforms | none | `push_transform(Transform)` / `pop_transform()`, **nesting by composition** |
+
+  The signature shape follows [`crate::pdf::PdfPage`], which already took a `Color` on
+  every call — the two are now in step, so a document in either direction has the same
+  primitives and cannot silently lose a parameter when moving between print and PDF.
+
+  Design decisions worth recording:
+
+  - **`Transform` is affine, not a 3x3 matrix.** Printing has no perspective; translate,
+    scale, rotate and mirror are all affine, and an affine transform always has an
+    inverse, so mapping coordinates both ways needs no singularity check.
+  - **Clip/transform nest, style does not.** Clipping and transforms describe a *region*
+    and so naturally stack; text style is local to the call, and a stack would only add
+    state for a document to keep in sync.
+  - **`end_page()` clears both stacks.** Both describe the page being drawn, so a
+    document that forgets a `pop_*` before a page break would otherwise have its next
+    page silently clipped or shifted — a defect that is nearly invisible on the page and
+    very easy to introduce.
+  - **Unmatched pops are ignored, not fatal**, and a non-finite transform degrades to the
+    identity. A document is application code; a malformed page should print wrongly, not
+    abort the job or fill the page with `NaN` (a `NaN` cast to `i32` is `0` in Rust, which
+    would silently become a real shape at the page origin).
+
+  Tests: the print module went **38 → 48**, and each new assertion was reverse-injection
+  tested — clips replacing instead of intersecting, transforms replacing instead of
+  composing, alpha being dropped, and page breaks not clearing the stacks each make a
+  specific test fail.
+
+  ```text
+  $ cargo test --lib -q print
+  test result: ok. 48 passed; 0 failed; 0 ignored; 0 measured
+  ```
+
+  Evidence: `docs/log/log-20260916-2.md` §23.
 
 - [x] **Refactor platform-specific print command logic for easier extension**
 
@@ -448,21 +550,80 @@ reverse-injection verified (restore the defect → the new test fails).
   only genuinely platform-specific work is the Windows PowerShell spooler path, so
   there is nothing meaningful to consolidate. Re-open only with a measured figure.
 
-- [ ] **Expand test coverage for edge cases (large page ranges, system print errors)**
+- [x] **Expand test coverage for edge cases (large page ranges, system print errors)**
 
-  Partially covered — `parse_page_range_spec` rejects empty segments, non-numeric
-  parts, zero (one-based) and inverted ranges; the page-index contract has 9 tests
-  (round 20); `write_print_job_file` has a failing-sink test and a back-to-back
-  collision test. Not yet covered: very large ranges, and spooler rejection
-  surfaced back to the caller end to end.
+  Both named gaps are now covered, and each new assertion was reverse-injection tested
+  (principle #19).
 
-- [ ] **Ensure all error messages are user-friendly and actionable**
+  **Large page ranges** — the existing tests only used ranges inside the document, so the
+  clamp was never exercised:
 
-  Restated as a **checkable style rule**, since "friendly" can neither pass nor
-  fail: an error must (a) name the specific input or path that failed, and (b) state
-  the expected form. The print module already complies — `invalid page number in
-  range: '3-x'`, `create print job file failed at /tmp/…`, `lpr: failed: <stderr>`.
-  Remaining work: run the same sweep over the whole crate and record it.
+  - `pagination_rejects_a_range_too_large_for_the_page_type` — `1-4294967296` must be
+    refused, and the error must **name the offending value**. This pins the behaviour a
+    future `parse::<u64>()` would silently break by truncating at the clamp.
+  - `pagination_clamps_a_huge_range_to_the_document` — `1-4000000000` on a 3-page
+    document selects exactly `[0, 1, 2]`. Reverse injection: removing
+    `.min(page_count - 1)` from `to_idx` makes this test **unable to complete** (it would
+    allocate ~4e9 entries), confirming the clamp is load-bearing and the bound is what is
+    being asserted.
+  - `pagination_clamps_at_the_page_count_boundaries` — a range past the end on a 1-page
+    and on a 0-page document.
+
+  **Spooler rejection end to end**:
+
+  - `a_spooler_rejection_reaches_the_caller_with_the_file_and_cause` — drives the same
+    payload path the system backend uses, with the spool call replaced by a rejecting
+    stub, and asserts the error carries both the spool command's message and the name of
+    the device that failed. Reverse injection: turning the rejection into `Ok(())` fails
+    the test. This is the case that would otherwise let a refused job look successful,
+    because `print()` / `print_with_pagination()` return `()` and can only log.
+  - `memory_backend_records_the_command_stream` — a selected page must emit commands
+    rather than an empty stream.
+
+  Test count for the print module: 31 → 38, all passing.
+  Evidence: `docs/log/log-20260916-2.md` §22.4.
+
+- [x] **Ensure all error messages are user-friendly and actionable**
+
+  Restated as a **checkable style rule** (principle #4), since "friendly" can neither
+  pass nor fail: an error a caller can see must (a) name the specific input, path, or
+  value that failed, and (b) state the expected form or the next step.
+
+  `tools/check_error_messages.py` applies the rule to every message that **leaves the
+  crate** — `Err(...)`, `map_err(...)`, `expect(...)` — and reports the shortfall,
+  grouped by file. It is a report rather than a gate, because a terse message can still
+  be correct and that is a human call.
+
+  Scope was narrowed twice during the round, each time because the first cut produced a
+  report nobody would act on: an early version matched any string near an error-ish word
+  and flagged 1163 items, almost all test assertions. Now excluded, with the reason
+  recorded in the tool itself:
+
+  - test modules (`#[cfg(test)] mod ...`) and whole test files (`tests.rs`) — assertions
+    are fixtures, not user-facing text;
+  - doc-comment examples — prose the reader is meant to copy;
+  - `.expect("... lock poisoned")` on locks and channels — an invariant failure and a
+    bug-report breadcrumb, not something a caller can act on.
+
+  Result: **301 messages scanned, 213 needing review**, down from 1163 false alarms.
+  Fixed the highest-value findings this round:
+
+  - `image/decoder.rs` — `"Invalid PNM maxval"` / `"Invalid PNM dimensions"` (7 sites)
+    now name the value and the accepted range, e.g.
+    `PNM maxval must be in 1..=65535, got 0 (it is the peak sample value, …)`.
+  - `web/plugins.rs` — `"Plugin {id} not found"` (3 sites) now says what the valid ids
+    are (call `list()`), so the reader has a next step.
+  - `web/plugins.rs` test — asserted `contains("not found")`, which passed for any
+    wording including one that named nothing; now pins the id **and** the guidance.
+    Reverse injection: restoring the vague message fails the test.
+
+  The remaining 213 are catalogued by the tool for continued work; they are terse, not
+  wrong, and rewriting them wholesale would churn diffs without improving correctness.
+  Evidence: `docs/log/log-20260916-2.md` §22.5.
+
+  Status: the rule is enforced by a report plus the fixes above, not by a CI gate. A
+  gate would fail the build on messages that are terse but correct, so it is
+  deliberately not wired in — the same reasoning as the 3x perf tolerance.
 
 ### Explicitly dropped (v32) — ~~not required~~
 

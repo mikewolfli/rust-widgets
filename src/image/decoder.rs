@@ -1149,19 +1149,24 @@ fn decode_pnm(data: &[u8]) -> Result<DecodedImage, String> {
             .parse::<u32>()
             .map_err(|_| "Invalid PNM height")?;
         if w == 0 || h == 0 {
-            return Err("Invalid PNM dimensions".into());
+            return Err(format!(
+                "PNM dimensions must be at least 1x1, got {w}x{h} (the header declared an empty image)"
+            ));
         }
         let maxval = if format_type == b'1' {
             1
         } else {
             tokens
                 .next()
-                .ok_or("PNM: missing maxval")?
+                .ok_or("PNM: header ended after the height; the maxval token is missing")?
                 .parse::<u32>()
-                .map_err(|_| "Invalid PNM maxval")?
+                .map_err(|_| "PNM maxval must be an integer in 1..=65535")?
         };
         if maxval == 0 || maxval > 65535 {
-            return Err("Invalid PNM maxval".into());
+            return Err(format!(
+                "PNM maxval must be in 1..=65535, got {maxval} (it is the peak sample value, \
+                 so 0 is invalid and larger values need more than 16 bits per sample)"
+            ));
         }
 
         let pixel_count = (w as usize).checked_mul(h as usize).ok_or("PNM dimensions overflow")?;
@@ -1226,7 +1231,7 @@ fn decode_pnm(data: &[u8]) -> Result<DecodedImage, String> {
             .parse::<u32>()
             .map_err(|_| "Invalid PNM height")?;
         if w == 0 || h == 0 {
-            return Err("Invalid PNM dimensions".into());
+            return Err(format!("PNM dimensions must be at least 1x1, got {w}x{h}"));
         }
         let row_bytes = (w as usize).div_ceil(8);
         let packed_len = row_bytes.checked_mul(h as usize).ok_or("PNM dimensions overflow")?;
@@ -1274,9 +1279,9 @@ fn decode_pnm(data: &[u8]) -> Result<DecodedImage, String> {
         .next()
         .ok_or("PNM: missing maxval")?
         .parse::<u32>()
-        .map_err(|_| "Invalid PNM maxval")?;
+        .map_err(|_| "PNM maxval must be an integer in 1..=65535")?;
     if maxval == 0 || maxval > 65535 {
-        return Err("Invalid PNM maxval".into());
+        return Err(format!("PNM maxval must be in 1..=65535, got {maxval}"));
     }
 
     // Binary data starts after the third newline (or after second if no third)

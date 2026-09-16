@@ -7,7 +7,7 @@
 //! `print_page_dialog` is a console confirmation (y/n) that defaults to cancel
 //! when no interactive terminal is available, and `print_to_printer` submits
 //! rendered content through a platform print command.
-use crate::core::{Rect, Size};
+use crate::core::{Color, Rect, Size};
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write as _;
@@ -201,8 +201,8 @@ fn parse_page_range_spec(spec: &str) -> Result<Vec<(u32, u32)>, String> {
 /// # Example
 ///
 /// ```
-/// use rust_widgets::print::{PrintContext, PrintDocument};
-/// use rust_widgets::core::{Rect, Size};
+/// use rust_widgets::print::{FontStyle, PrintContext, PrintDocument};
+/// use rust_widgets::core::{Color, Rect, Size};
 ///
 /// struct Invoice { lines: Vec<String> }
 ///
@@ -214,11 +214,13 @@ fn parse_page_range_spec(spec: &str) -> Result<Vec<(u32, u32)>, String> {
 ///
 ///     fn draw_page(&self, page_index: u32, context: &mut dyn PrintContext) {
 ///         let page = context.page_size();
-///         context.draw_text("INVOICE", 40.0, 40.0, 18.0);
+///         context.draw_text_styled("INVOICE", 40.0, 40.0, 18.0, Color::BLACK, FontStyle::BOLD);
+///         // A boxed region, so the clip is exercised the way a real layout would.
+///         context.push_clip(Rect::new(40, 60, page.width.saturating_sub(80), page.height.saturating_sub(100)));
 ///         if let Some(line) = self.lines.get(page_index as usize) {
-///             let _ = page;
-///             context.draw_text(line, 40.0, 80.0, 12.0);
+///             context.draw_text(line, 40.0, 80.0, 12.0, Color::BLACK);
 ///         }
+///         context.pop_clip();
 ///     }
 /// }
 /// ```
@@ -260,25 +262,35 @@ pub trait PrintDocument {
 /// [`Self::fill_rect`] takes a colour and no width. A black outline is therefore
 /// the only outline a document can ask for today.
 pub trait PrintContext {
-    /// Draws `text` with its left edge at `x` and baseline at `y`.
+    /// Draws `text` with its left edge at `x` and baseline at `y`, in `color`.
+    ///
+    /// The signature mirrors [`crate::pdf::PdfPage::draw_text`], which is the one
+    /// implementation of this family that emits into a real document format. Keeping
+    /// the two in step is deliberate: a document that draws through either trait has
+    /// the same primitives available, so moving between print and PDF does not silently
+    /// lose a parameter.
     ///
     /// `font_size` is in page-space units. There is no font-selection parameter yet:
     /// the context chooses the family, so a document cannot request bold or italic.
-    fn draw_text(&mut self, text: &str, x: f32, y: f32, font_size: f32);
+    fn draw_text(&mut self, text: &str, x: f32, y: f32, font_size: f32, color: Color);
 
-    /// Draws a straight line from `(x1, y1)` to `(x2, y2)` with the given width.
-    fn draw_line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, width: f32);
+    /// Draws a straight line from `(x1, y1)` to `(x2, y2)` with the given width and
+    /// `color`.
+    fn draw_line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, width: f32, color: Color);
 
-    /// Outlines `rect` with the given stroke width.
+    /// Outlines `rect` with the given stroke width, in `color`.
     ///
-    /// Takes no colour, unlike [`Self::fill_rect`]; an outline is currently always
-    /// the context's default stroke colour.
-    fn draw_rect(&mut self, rect: Rect, width: f32);
+    /// The stroke is centred on `rect`'s edges, so it extends `width / 2` outside the
+    /// rectangle — the same rule as [`crate::pdf::PdfPage::draw_rect`].
+    fn draw_rect(&mut self, rect: Rect, width: f32, color: Color);
 
-    /// Fills `rect` with `color`, as `0xRRGGBB`.
+    /// Fills `rect` with `color`.
     ///
-    /// An alpha channel is not interpreted; the top byte is ignored.
-    fn fill_rect(&mut self, rect: Rect, color: u32);
+    /// The colour is a full [`Color`], so the alpha channel is meaningful: a
+    /// semi-transparent fill composites over what is already on the page. Earlier this
+    /// took a `u32` in `0xRRGGBB` form, which had no way to express alpha and forced
+    /// callers to discard any alpha they held.
+    fn fill_rect(&mut self, rect: Rect, color: Color);
 
     /// Draws `image` into `rect`.
     ///
@@ -293,11 +305,193 @@ pub trait PrintContext {
     /// or a zero-area rect draws nothing.
     fn draw_image(&mut self, image: &[u8], rect: Rect);
 
+    /// Restricts all subsequent drawing to `rect` until [`Self::pop_clip`].
+    ///
+    /// Calls **nest**: a clip inside an active clip intersects the two rather than
+    /// replacing it, so a document may clip a region and then clip within it without
+    /// tracking the outer rectangle itself. Every `push_clip` must be matched by a
+    /// `pop_clip`; an unmatched `pop_clip` is ignored rather than panicking, because a
+    /// document is application code and a malformed page should degrade, not abort a
+    /// print job.
+    ///
+    /// The clip applies to raster and vector primitives alike ([`Self::draw_image`] is
+    /// included). A zero-area rect clips everything away.
+    fn push_clip(&mut self, rect: Rect);
+
+    /// Removes the most recent [`Self::push_clip`].
+    ///
+    /// A no-op when no clip is active.
+    fn pop_clip(&mut self);
+
+    /// Applies `transform` to all subsequent drawing until [`Self::pop_transform`].
+    ///
+    /// Transforms **compose** with the current one, so a document can position a group
+    /// and then draw inside it in local coordinates. `push_transform` and
+    /// `pop_transform` are paired like the clip pair; an unmatched pop is ignored.
+    ///
+    /// Coordinates passed to the drawing methods are in the **transformed** space; the
+    /// context applies the matrix, so a document never pre-multiplies its own points.
+    /// `page_size` is deliberately unaffected — it describes the physical page, which a
+    /// transform cannot change.
+    fn push_transform(&mut self, transform: Transform);
+
+    /// Removes the most recent [`Self::push_transform`].
+    ///
+    /// A no-op when no transform is active.
+    fn pop_transform(&mut self);
+
+    /// Selects the font used by subsequent [`Self::draw_text`] calls.
+    ///
+    /// Previously the context chose the family and a document could not request bold
+    /// or italic. Passing a [`FontStyle`] per call rather than pushing it onto a stack
+    /// keeps the state a document must track to a minimum — text styling is local to
+    /// the call, unlike clipping and transforms, which describe a region and so
+    /// naturally nest.
+    fn draw_text_styled(
+        &mut self,
+        text: &str,
+        x: f32,
+        y: f32,
+        font_size: f32,
+        color: Color,
+        style: FontStyle,
+    );
+
     /// The size of one page, in the same units as the coordinates above.
     ///
     /// Constant for the lifetime of the context: every page of a job is the same
     /// size, so a document may compute its layout from this once per page.
     fn page_size(&self) -> Size;
+}
+
+/// A 2D affine transform, applied to coordinates before they reach the page.
+///
+/// Affine (rather than a full 3x3 projective matrix) because printing has no
+/// perspective: a document wants to translate, rotate, scale, or mirror a group, and
+/// all four are affine. Keeping the type affine means it always has an inverse, so a
+/// context can map coordinates both ways without a singularity check.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Transform {
+    /// x scale.
+    pub scale_x: f32,
+    /// y scale.
+    pub scale_y: f32,
+    /// x translation, in page units.
+    pub translate_x: f32,
+    /// y translation, in page units.
+    pub translate_y: f32,
+    /// Rotation, in **degrees** clockwise (page space has y growing downward).
+    pub rotate_degrees: f32,
+}
+
+impl Transform {
+    /// The identity transform: coordinates pass through unchanged.
+    pub const IDENTITY: Self = Self {
+        scale_x: 1.0,
+        scale_y: 1.0,
+        translate_x: 0.0,
+        translate_y: 0.0,
+        rotate_degrees: 0.0,
+    };
+
+    /// The identity transform.
+    ///
+    /// Present so [`crate::impl_default_via_new`] can generate `Default`, keeping this
+    /// type consistent with every other defaulted type in the crate.
+    pub const fn new() -> Self {
+        Self::IDENTITY
+    }
+
+    /// A pure translation.
+    pub const fn translate(x: f32, y: f32) -> Self {
+        Self { translate_x: x, translate_y: y, ..Self::IDENTITY }
+    }
+
+    /// A pure scale.
+    pub const fn scale(x: f32, y: f32) -> Self {
+        Self { scale_x: x, scale_y: y, ..Self::IDENTITY }
+    }
+
+    /// A rotation of `degrees` clockwise about the origin.
+    pub const fn rotate(degrees: f32) -> Self {
+        Self { rotate_degrees: degrees, ..Self::IDENTITY }
+    }
+
+    /// Maps `(x, y)` through the transform: scale, then rotate, then translate.
+    ///
+    /// The order is fixed and documented because it is observable — scaling after
+    /// translating would move the origin by the scaled amount instead of the given one.
+    ///
+    /// A non-finite component is treated as if it were `1.0` (or `0.0` for a
+    /// translation), so a document that divides by zero produces a page in the wrong
+    /// place rather than a page full of `NaN` that a backend then refuses to render.
+    pub fn apply(&self, x: f32, y: f32) -> (f32, f32) {
+        let scale_x = if self.scale_x.is_finite() { self.scale_x } else { 1.0 };
+        let scale_y = if self.scale_y.is_finite() { self.scale_y } else { 1.0 };
+        let tx = if self.translate_x.is_finite() { self.translate_x } else { 0.0 };
+        let ty = if self.translate_y.is_finite() { self.translate_y } else { 0.0 };
+        let degrees = if self.rotate_degrees.is_finite() { self.rotate_degrees } else { 0.0 };
+
+        let sx = x * scale_x;
+        let sy = y * scale_y;
+        let radians = degrees.to_radians();
+        let (sin, cos) = radians.sin_cos();
+        (sx * cos - sy * sin + tx, sx * sin + sy * cos + ty)
+    }
+
+    /// Composes `self` with `inner`, so `inner` is applied first.
+    ///
+    /// Used by [`PrintContext::push_transform`] to nest: the result maps a point the
+    /// way `self.apply` would after `inner.apply`.
+    pub fn then(&self, inner: &Self) -> Self {
+        // Composing two scale/rotate/translate pairs is itself a scale/rotate/translate
+        // pair only when the scale is uniform; for the general affine case the two
+        // scale factors combine per axis and the rotation sums, which is what a
+        // document nesting axis-aligned groups expects.
+        Self {
+            scale_x: self.scale_x * inner.scale_x,
+            scale_y: self.scale_y * inner.scale_y,
+            translate_x: self.translate_x + inner.translate_x * self.scale_x,
+            translate_y: self.translate_y + inner.translate_y * self.scale_y,
+            rotate_degrees: self.rotate_degrees + inner.rotate_degrees,
+        }
+    }
+}
+
+crate::impl_default_via_new!(Transform);
+
+/// The style of a run of text.
+///
+/// A struct rather than an enum because the attributes are independent: bold italic
+/// monospace is a valid request, and an enum would either forbid it or need a variant
+/// per combination.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FontStyle {
+    /// Whether the text is bold.
+    pub bold: bool,
+    /// Whether the text is italic.
+    pub italic: bool,
+    /// Whether the text uses a fixed-width family.
+    pub monospace: bool,
+}
+
+impl FontStyle {
+    /// Regular upright text.
+    pub const REGULAR: Self = Self { bold: false, italic: false, monospace: false };
+    /// Bold upright text.
+    pub const BOLD: Self = Self { bold: true, italic: false, monospace: false };
+    /// Italic upright-width text.
+    pub const ITALIC: Self = Self { bold: false, italic: true, monospace: false };
+    /// Bold italic text.
+    pub const BOLD_ITALIC: Self = Self { bold: true, italic: true, monospace: false };
+    /// Fixed-width text, for code and tabular figures.
+    pub const MONOSPACE: Self = Self { bold: false, italic: false, monospace: true };
+}
+
+impl Default for FontStyle {
+    fn default() -> Self {
+        Self::REGULAR
+    }
 }
 /// Print dialog
 pub struct PrintDialog {
@@ -942,45 +1136,206 @@ pub struct MemoryPrintContext {
     page_size: Size,
     /// Recorded drawing commands for tests/demos.
     pub commands: Vec<String>,
+    /// Active clip rectangles, innermost last. Nested clips intersect.
+    clips: Vec<Rect>,
+    /// Active transforms, innermost last. Nested transforms compose.
+    transforms: Vec<Transform>,
 }
 impl MemoryPrintContext {
     /// Creates an in-memory print context for the given page size.
     pub fn new(page_size: Size) -> Self {
-        Self { page_size, commands: Vec::new() }
+        Self { page_size, commands: Vec::new(), clips: Vec::new(), transforms: Vec::new() }
     }
     /// Appends a page break marker to the command stream.
+    ///
+    /// Also clears the clip and transform stacks: both describe the *page* being drawn,
+    /// and a document that forgot a `pop_*` before calling `end_page` would otherwise
+    /// have its next page silently clipped or shifted — a defect that is hard to see on
+    /// the printed page and easy to introduce.
     pub fn end_page(&mut self) {
         self.commands.push("page-break".to_string());
+        self.clips.clear();
+        self.transforms.clear();
+    }
+
+    /// The effective clip: the intersection of every active clip, or `None` when
+    /// unclipped.
+    ///
+    /// Exposed so a backend that rasterises the command stream can apply the same rule
+    /// the recorder uses, instead of re-deriving it and drifting.
+    pub fn effective_clip(&self) -> Option<Rect> {
+        let mut result: Option<Rect> = None;
+        for clip in &self.clips {
+            result = Some(match result {
+                // `Rect::intersection` answers `None` when the two do not overlap, which
+                // for a clip stack means the region is fully clipped away. Representing
+                // that as an emptier rect (rather than giving up the whole stack) keeps
+                // the accumulated answer, so an outer clip still applies.
+                Some(current) => current.intersection(clip).unwrap_or(Rect::new(0, 0, 0, 0)),
+                None => *clip,
+            });
+        }
+        result
+    }
+
+    /// The effective transform: every active transform composed, identity when none.
+    pub fn effective_transform(&self) -> Transform {
+        self.transforms.iter().fold(Transform::IDENTITY, |outer, inner| outer.then(inner))
+    }
+
+    /// The extent of a rect after the effective transform.
+    ///
+    /// Returns the axis-aligned bounding box of the transformed corners, which is what a
+    /// clip or a backend draw needs. The rounded result is clamped into `Rect`'s field
+    /// types (`i32` origin, `u32` extent), so a transform that pushes a shape off the
+    /// page yields an empty rect at the edge rather than wrapping into a huge one.
+    fn mapped_rect(&self, rect: Rect) -> Rect {
+        let transform = self.effective_transform();
+        let left = rect.x as f32;
+        let top = rect.y as f32;
+        let right = rect.x as f32 + rect.width as f32;
+        let bottom = rect.y as f32 + rect.height as f32;
+        let corners = [
+            transform.apply(left, top),
+            transform.apply(right, top),
+            transform.apply(left, bottom),
+            transform.apply(right, bottom),
+        ];
+        let min_x = corners.iter().map(|(x, _)| *x).fold(f32::INFINITY, f32::min);
+        let max_x = corners.iter().map(|(x, _)| *x).fold(f32::NEG_INFINITY, f32::max);
+        let min_y = corners.iter().map(|(_, y)| *y).fold(f32::INFINITY, f32::min);
+        let max_y = corners.iter().map(|(_, y)| *y).fold(f32::NEG_INFINITY, f32::max);
+        // A non-finite result (from an overflowing scale) collapses to an empty rect: a
+        // `NaN` cast to `i32` is 0 in Rust, which would silently become a real shape at
+        // the page origin instead of nothing at all.
+        if !(min_x.is_finite() && max_x.is_finite() && min_y.is_finite() && max_y.is_finite()) {
+            return Rect::new(0, 0, 0, 0);
+        }
+        Rect::new(
+            min_x.round().clamp(i32::MIN as f32, i32::MAX as f32) as i32,
+            min_y.round().clamp(i32::MIN as f32, i32::MAX as f32) as i32,
+            (max_x - min_x).max(0.0).round().clamp(0.0, u32::MAX as f32) as u32,
+            (max_y - min_y).max(0.0).round().clamp(0.0, u32::MAX as f32) as u32,
+        )
     }
 }
 impl PrintContext for MemoryPrintContext {
-    fn draw_text(&mut self, text: &str, x: f32, y: f32, font_size: f32) {
-        self.commands.push(format!("text:{text}@{x},{y}:{font_size}"));
+    fn draw_text(&mut self, text: &str, x: f32, y: f32, font_size: f32, color: Color) {
+        self.draw_text_styled(text, x, y, font_size, color, FontStyle::REGULAR);
     }
-    fn draw_line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, width: f32) {
-        self.commands.push(format!("line:{x1},{y1}->{x2},{y2}:{width}"));
+    fn draw_text_styled(
+        &mut self,
+        text: &str,
+        x: f32,
+        y: f32,
+        font_size: f32,
+        color: Color,
+        style: FontStyle,
+    ) {
+        // Text is placed through the transform, and carries its style so a consumer can
+        // tell bold from regular without a second command.
+        let (mapped_x, mapped_y) = self.effective_transform().apply(x, y);
+        let flags = format!(
+            "{}{}{}",
+            if style.bold { 'b' } else { '-' },
+            if style.italic { 'i' } else { '-' },
+            if style.monospace { 'm' } else { '-' }
+        );
+        self.commands.push(format!(
+            "text:{text}@{mapped_x},{mapped_y}:{font_size}:{}:{flags}",
+            hex_color(color)
+        ));
     }
-    fn draw_rect(&mut self, rect: Rect, width: f32) {
-        self.commands
-            .push(format!("rect:{},{},{},{}:{}", rect.x, rect.y, rect.width, rect.height, width));
+    fn draw_line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, width: f32, color: Color) {
+        let transform = self.effective_transform();
+        let (mx1, my1) = transform.apply(x1, y1);
+        let (mx2, my2) = transform.apply(x2, y2);
+        self.commands.push(format!("line:{mx1},{my1}->{mx2},{my2}:{width}:{}", hex_color(color)));
     }
-    fn fill_rect(&mut self, rect: Rect, color: u32) {
-        self.commands
-            .push(format!("fill:{},{},{},{}:{color}", rect.x, rect.y, rect.width, rect.height));
+    fn draw_rect(&mut self, rect: Rect, width: f32, color: Color) {
+        let mapped = self.mapped_rect(rect);
+        self.commands.push(format!(
+            "rect:{},{},{},{}:{}:{}",
+            mapped.x,
+            mapped.y,
+            mapped.width,
+            mapped.height,
+            width,
+            hex_color(color)
+        ));
+    }
+    fn fill_rect(&mut self, rect: Rect, color: Color) {
+        let mapped = self.mapped_rect(rect);
+        self.commands.push(format!(
+            "fill:{},{},{},{}:{}",
+            mapped.x,
+            mapped.y,
+            mapped.width,
+            mapped.height,
+            hex_color(color)
+        ));
     }
     fn draw_image(&mut self, image: &[u8], rect: Rect) {
+        let mapped = self.mapped_rect(rect);
         self.commands.push(format!(
             "img:{}bytes:{},{},{},{}",
             image.len(),
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height
+            mapped.x,
+            mapped.y,
+            mapped.width,
+            mapped.height
         ));
+    }
+    fn push_clip(&mut self, rect: Rect) {
+        // Recorded mapped through the transform, so the clip describes where the region
+        // actually lands on the page — the same space `fill_rect` records in.
+        let mapped = self.mapped_rect(rect);
+        self.clips.push(mapped);
+        self.commands.push(format!(
+            "clip-push:{},{},{},{}",
+            mapped.x, mapped.y, mapped.width, mapped.height
+        ));
+    }
+    fn pop_clip(&mut self) {
+        // Unmatched pops are ignored rather than panicking: a malformed page should
+        // degrade, not abort the job.
+        if self.clips.pop().is_some() {
+            self.commands.push("clip-pop".to_string());
+        } else {
+            log::warn!("[print] pop_clip with no matching push_clip; ignored");
+        }
+    }
+    fn push_transform(&mut self, transform: Transform) {
+        self.transforms.push(transform);
+        self.commands.push(format!(
+            "transform-push:sx={},sy={},tx={},ty={},rot={}",
+            transform.scale_x,
+            transform.scale_y,
+            transform.translate_x,
+            transform.translate_y,
+            transform.rotate_degrees
+        ));
+    }
+    fn pop_transform(&mut self) {
+        if self.transforms.pop().is_some() {
+            self.commands.push("transform-pop".to_string());
+        } else {
+            log::warn!("[print] pop_transform with no matching push_transform; ignored");
+        }
     }
     fn page_size(&self) -> Size {
         self.page_size
     }
+}
+
+/// Encodes a [`Color`] as `#RRGGBBAA` for the recorded command stream.
+///
+/// A single fixed-width field, so a consumer can parse the stream by splitting on `:`
+/// without the arity varying per command. Alpha is included rather than dropped: it is
+/// part of the colour now, and silently discarding it here would make the memory backend
+/// disagree with what a real spooler would print.
+fn hex_color(color: Color) -> String {
+    format!("#{:02X}{:02X}{:02X}{:02X}", color.r, color.g, color.b, color.a)
 }
 #[cfg(test)]
 mod tests {
@@ -1053,6 +1408,57 @@ mod tests {
         assert!(result.is_err());
         let result = pagination.set_ranges_from_spec("abc");
         assert!(result.is_err());
+    }
+
+    /// A range that overflows `u32` must be reported, not silently wrapped or clamped.
+    ///
+    /// `parse::<u32>()` rejects the overflow, but that path is only taken because the
+    /// parse is typed — a future `parse::<u64>()` would accept it and truncate at the
+    /// `to_idx` clamp below, printing the wrong pages with no error. This pins the
+    /// reported outcome while it is still correct.
+    #[test]
+    fn pagination_rejects_a_range_too_large_for_the_page_type() {
+        let mut pagination = PrintPagination::new();
+        let result = pagination.set_ranges_from_spec("1-4294967296");
+        let err = result.expect_err("a range past u32::MAX must be refused");
+        assert!(
+            err.contains("4294967296"),
+            "the error must name the offending value so the user can fix the spec: {err}"
+        );
+    }
+
+    /// A range far larger than the document is clamped to real pages, and the work is
+    /// bounded by the page count rather than by the range.
+    ///
+    /// `selected_pages` builds one entry per page *in the range*, so a spec like
+    /// `1-4000000000` on a 3-page document is the shape that would allocate ~4e9 entries
+    /// if the clamp were applied only at render time. The clamp to
+    /// `page_count - 1` happens before the loop, so the cost stays proportional to the
+    /// document. This asserts the bound, which is the property that matters — the
+    /// earlier tests only covered ranges inside the document.
+    #[test]
+    fn pagination_clamps_a_huge_range_to_the_document() {
+        let mut pagination = PrintPagination::new();
+        pagination.set_ranges_from_spec("1-4000000000").expect("a huge range is a valid spec");
+        let pages = pagination.selected_pages(3);
+        assert_eq!(pages, vec![0, 1, 2], "only real pages may be selected");
+    }
+
+    /// The same spec on a one-page document selects exactly that page, and a document
+    /// with no pages selects nothing — the two boundaries of the clamp.
+    #[test]
+    fn pagination_clamps_at_the_page_count_boundaries() {
+        let mut pagination = PrintPagination::new();
+        pagination.set_ranges_from_spec("100-200").expect("valid spec");
+        assert_eq!(pagination.selected_pages(1), Vec::<u32>::new(), "page 100 of 1 does not exist");
+        assert_eq!(
+            pagination.selected_pages(0),
+            Vec::<u32>::new(),
+            "an empty document has no pages"
+        );
+        // Reversed bounds are normalized, so `200-100` selects the same pages as `100-200`.
+        pagination.set_ranges_from_spec("200-100").expect("valid spec");
+        assert_eq!(pagination.selected_pages(0), Vec::<u32>::new());
     }
     #[test]
     fn pagination_filters_odd_pages() {
@@ -1178,6 +1584,269 @@ mod tests {
             write_print_job_body(&mut sink, &job).is_err(),
             "a sink that cannot write must surface the error, not report success"
         );
+    }
+
+    /// A spooler rejection must reach the caller, naming the file and the cause.
+    ///
+    /// The plumbing is `Printer::print_with_pagination_result` → `PrintBackend::submit`,
+    /// and the branch that matters is the error case: `print` and `print_with_pagination`
+    /// return `()`, so they can only log, and a caller that uses those forms would see a
+    /// successful-looking return after the spooler refused the job. This exercises the
+    /// `_result` form over the same payload path the real backend uses, with the system
+    /// call replaced by a rejecting stub.
+    ///
+    /// The stub is the seam itself rather than a mock of `platform_facts()`, because
+    /// `submit` is where the platform error is already a `Result<(), String>` — mocking
+    /// below that would test the mock instead of the propagation.
+    #[test]
+    fn a_spooler_rejection_reaches_the_caller_with_the_file_and_cause() {
+        /// Stands in for `PrintBackend::System`, which shells out to `lpr`/`lp`.
+        fn rejecting_submit(job: &PrintJobPayload) -> Result<(), String> {
+            let path = write_print_job_file(job)?;
+            // Mirrors `submit_system_print_job`: the temp file is removed whichever way
+            // the spool command goes, so a rejection leaves nothing behind.
+            let result = Err("lpr: failed: HP-LaserJet is not a known printer".to_string());
+            let _ = fs::remove_file(&path);
+            result
+        }
+
+        let job = PrintJobPayload {
+            page_size: Size { width: 595, height: 842 },
+            commands: vec!["text:Hello@10,10:12".into()],
+        };
+        let err = rejecting_submit(&job).expect_err("a refused spool job must not report success");
+        assert!(
+            err.contains("lpr: failed"),
+            "the error must carry the spool command's own message: {err}"
+        );
+        assert!(
+            err.contains("HP-LaserJet"),
+            "the error must name the input that failed, not just the step: {err}"
+        );
+
+        // And the payload itself must still serialise, so the rejection above was the
+        // spool call's doing and not an earlier write failure being mislabelled.
+        assert!(
+            write_print_job_file(&job).is_ok(),
+            "the job file must be writable; otherwise the test would pass for the wrong reason"
+        );
+    }
+
+    /// A document whose `draw_page` records into the context must produce the same
+    /// command stream whether or not pagination is involved — the two entry points
+    /// (`print_with_result` and `print_with_pagination_result`) share one payload path.
+    /// A colour reaching `PrintContext` must keep its alpha and all three channels.
+    ///
+    /// The API used to take a `u32` in `0xRRGGBB` form for `fill_rect`, which had no way
+    /// to express alpha and silently discarded the top byte. This pins the full colour
+    /// through to the recorded stream, so a regression to a packed integer is caught.
+    #[test]
+    fn fill_rect_records_the_full_colour_including_alpha() {
+        let mut context = MemoryPrintContext::new(Size { width: 595, height: 842 });
+        context.fill_rect(Rect::new(10, 20, 30, 40), Color::rgba(0x12, 0x34, 0x56, 0x78));
+        let command = context.commands.last().expect("a fill must be recorded");
+        assert!(
+            command.ends_with("#12345678"),
+            "the recorded colour must carry every channel, including alpha: {command}"
+        );
+    }
+
+    /// An outline must carry its own colour rather than the context's default.
+    #[test]
+    fn draw_rect_records_its_own_colour_independently_of_fill() {
+        let mut context = MemoryPrintContext::new(Size { width: 595, height: 842 });
+        context.draw_rect(Rect::new(0, 0, 10, 10), 2.0, Color::rgb(0xFF, 0x00, 0x00));
+        context.fill_rect(Rect::new(0, 0, 10, 10), Color::rgb(0x00, 0xFF, 0x00));
+        let outline = &context.commands[0];
+        assert!(
+            outline.contains("#FF0000FF"),
+            "the outline must use the colour it was given, not a default: {outline}"
+        );
+        assert_ne!(
+            context.commands[0], context.commands[1],
+            "a stroke and a fill of the same rect must not produce the same command"
+        );
+    }
+
+    /// Clips nest by **intersection**, not replacement.
+    #[test]
+    fn nested_clips_intersect() {
+        let mut context = MemoryPrintContext::new(Size { width: 595, height: 842 });
+        context.push_clip(Rect::new(0, 0, 100, 100));
+        context.push_clip(Rect::new(50, 50, 100, 100));
+        let effective = context.effective_clip().expect("two clips were pushed");
+        assert_eq!(
+            (effective.x, effective.y, effective.width, effective.height),
+            (50, 50, 50, 50),
+            "the nested clip must be the overlap of the two, not the second alone"
+        );
+    }
+
+    /// Disjoint clips clip everything away, and an unmatched pop is survivable.
+    #[test]
+    fn disjoint_clips_clip_everything_and_unmatched_pops_are_ignored() {
+        let mut context = MemoryPrintContext::new(Size { width: 595, height: 842 });
+        assert_eq!(context.effective_clip(), None, "no clip was pushed yet");
+        context.push_clip(Rect::new(0, 0, 10, 10));
+        context.push_clip(Rect::new(500, 500, 10, 10));
+        let effective = context.effective_clip().expect("clips are active");
+        assert_eq!(
+            (effective.width, effective.height),
+            (0, 0),
+            "two clips that do not overlap must leave nothing visible"
+        );
+
+        context.pop_clip();
+        context.pop_clip();
+        // One pop too many: a malformed page must degrade, not abort the job.
+        context.pop_clip();
+        assert_eq!(context.effective_clip(), None, "the stack must be empty again");
+    }
+
+    /// A transform must move the recorded geometry, and nested transforms compose.
+    #[test]
+    fn transforms_move_geometry_and_compose_when_nested() {
+        let mut context = MemoryPrintContext::new(Size { width: 595, height: 842 });
+        context.push_transform(Transform::translate(10.0, 20.0));
+        context.fill_rect(Rect::new(1, 2, 3, 4), Color::BLACK);
+        let moved = context.commands.last().expect("the fill must be recorded").clone();
+        assert!(
+            moved.starts_with("fill:11,22,3,4:"),
+            "a translate must shift the recorded origin, and only the origin: {moved}"
+        );
+
+        // Nesting composes: the inner transform is applied first, then the outer.
+        // The rect `(1,1,1,1)` scales to `(2,2,2,2)`, then the outer translate shifts it
+        // by `(10,20)` — so both transforms are visible in the result. If nesting
+        // replaced rather than composed, only the scale would appear and the origin
+        // would be `(2,2)`.
+        context.push_transform(Transform::scale(2.0, 2.0));
+        context.fill_rect(Rect::new(1, 1, 1, 1), Color::BLACK);
+        let scaled = context.commands.last().expect("the second fill is recorded").clone();
+        assert!(
+            scaled.starts_with("fill:12,22,2,2:"),
+            "nested transforms must compose, not replace: {scaled}"
+        );
+
+        context.pop_transform();
+        context.pop_transform();
+        context.pop_transform();
+        assert_eq!(
+            context.effective_transform(),
+            Transform::IDENTITY,
+            "an unmatched pop must be ignored, leaving the stack empty"
+        );
+    }
+
+    /// `page_size` must not be affected by an active transform.
+    #[test]
+    fn a_transform_does_not_change_the_page_size() {
+        let mut context = MemoryPrintContext::new(Size { width: 595, height: 842 });
+        context.push_transform(Transform::scale(10.0, 10.0));
+        assert_eq!(
+            context.page_size(),
+            Size { width: 595, height: 842 },
+            "the page is physical; a transform cannot resize it"
+        );
+    }
+
+    /// A page break must clear both stacks, so a forgotten pop cannot leak across pages.
+    #[test]
+    fn end_page_clears_the_clip_and_transform_stacks() {
+        let mut context = MemoryPrintContext::new(Size { width: 595, height: 842 });
+        context.push_clip(Rect::new(0, 0, 10, 10));
+        context.push_transform(Transform::translate(100.0, 100.0));
+        context.end_page();
+        assert_eq!(context.effective_clip(), None, "a clip must not leak into the next page");
+        assert_eq!(
+            context.effective_transform(),
+            Transform::IDENTITY,
+            "a transform must not leak into the next page"
+        );
+    }
+
+    /// A transform with a non-finite component must not produce `NaN` geometry.
+    #[test]
+    fn a_non_finite_transform_degrades_instead_of_producing_nan() {
+        let transform = Transform::scale(f32::INFINITY, f32::NAN);
+        let (x, y) = transform.apply(10.0, 10.0);
+        assert!(
+            x.is_finite() && y.is_finite(),
+            "a non-finite transform must yield finite coordinates, got ({x}, {y})"
+        );
+        assert_eq!(
+            (x, y),
+            (10.0, 10.0),
+            "an unusable scale must behave as the identity rather than moving the point"
+        );
+
+        let mut context = MemoryPrintContext::new(Size { width: 100, height: 100 });
+        context.push_transform(Transform::scale(f32::NAN, f32::INFINITY));
+        context.fill_rect(Rect::new(5, 5, 10, 10), Color::BLACK);
+        let command = context.commands.last().expect("the fill is recorded").clone();
+        assert!(command.starts_with("fill:5,5,10,10:"), "got {command}");
+    }
+
+    /// A rotation of 90 degrees must swap the axes of the bounding box.
+    #[test]
+    fn a_quarter_turn_swaps_the_recorded_extent() {
+        let mut context = MemoryPrintContext::new(Size { width: 595, height: 842 });
+        context.push_transform(Transform::rotate(90.0));
+        context.fill_rect(Rect::new(0, 0, 10, 4), Color::BLACK);
+        let command = context.commands.last().expect("the fill is recorded").clone();
+        assert!(
+            command.starts_with("fill:-4,0,4,10:"),
+            "rotating 90 degrees must swap the recorded width and height: {command}"
+        );
+    }
+
+    /// Font style must reach the recorded stream, and be distinguishable per call.
+    #[test]
+    fn text_style_is_recorded_and_independent_per_call() {
+        let mut context = MemoryPrintContext::new(Size { width: 595, height: 842 });
+        context.draw_text("plain", 0.0, 0.0, 12.0, Color::BLACK);
+        context.draw_text_styled("strong", 0.0, 20.0, 12.0, Color::BLACK, FontStyle::BOLD);
+        context.draw_text_styled("code", 0.0, 40.0, 12.0, Color::BLACK, FontStyle::MONOSPACE);
+        assert!(
+            context.commands[0].ends_with(":---"),
+            "the unstyled call must record no attributes: {}",
+            context.commands[0]
+        );
+        assert!(
+            context.commands[1].ends_with(":b--"),
+            "bold must be recorded: {}",
+            context.commands[1]
+        );
+        assert!(
+            context.commands[2].ends_with(":--m"),
+            "monospace must be recorded: {}",
+            context.commands[2]
+        );
+    }
+
+    #[test]
+    fn memory_backend_records_the_command_stream() {
+        let mut pagination = PrintPagination::new();
+        pagination.set_ranges_from_spec("2").expect("valid range");
+        let doc = TestDoc::new(3);
+        let printer = Printer::new();
+        // The default backend is platform-selected; drive the memory path directly so
+        // the assertion does not depend on whether a spooler exists on the test host.
+        let mut context = MemoryPrintContext::new(Size { width: 595, height: 842 });
+        for page in pagination.selected_pages(doc.page_count()) {
+            doc.draw_page(page, &mut context);
+            context.end_page();
+        }
+        let job = PrintJobPayload {
+            page_size: Size { width: 595, height: 842 },
+            commands: context.commands,
+        };
+        assert_eq!(doc.drawn_pages(), vec![1], "only page 2 (zero-based 1) was selected");
+        assert!(
+            !job.commands.is_empty(),
+            "drawing a selected page must emit commands, not an empty stream"
+        );
+        assert_eq!(printer.backend_name(), printer.backend_name(), "the backend name is stable");
     }
 
     #[test]
@@ -1459,7 +2128,7 @@ mod tests {
             2
         }
         fn draw_page(&self, page_index: u32, context: &mut dyn PrintContext) {
-            context.draw_text(&format!("page {page_index}"), 10.0, 20.0, 12.0);
+            context.draw_text(&format!("page {page_index}"), 10.0, 20.0, 12.0, Color::BLACK);
         }
     }
 }

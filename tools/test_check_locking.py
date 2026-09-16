@@ -147,15 +147,31 @@ stripped_two = strip_test_modules(SAMPLE_TWO_ITEMS)
 expect("strips a multi-item gated group", "Widget" in stripped_two, False)
 expect("keeps the unconditional item", "after" in stripped_two, True)
 
-# ── Real files: the gate must keep every production line after a test module ──
-# Verified against the tree rather than a fixture, so a new module layout that
-# defeats the matcher is caught here.
+# ── Structural: the matcher's verdict on the real tree ────────────────────────
+# Verified against every file rather than a fixture, so a new module layout that
+# defeats the matcher is caught here. The two properties are independent of the
+# matcher's own logic; see `tools/lib_check_locking.py` for what each covers.
+sys.path.insert(0, str(ROOT / "tools"))
+import lib_check_locking  # noqa: E402  (path set up above)
+
+for problem in lib_check_locking.structural_problems(ROOT, namespace):
+    failures.append(problem)
+
+# ── Real files: the gate must report every lock it is supposed to ─────────────
+# Confirmed by reverse injection: a `Mutex` added to production code after a test
+# module is reported. Before the matcher was fixed it was silently ignored. The prose
+# filter is applied too, so a `Mutex` named in a comment is not mistaken for a lock —
+# the same rule the gate itself uses.
 PRODUCTION_LOCK_PATTERN = re.compile(r"\b(?:Mutex|RwLock|OnceLock|LazyLock)\b")
+PROSE_MARKERS = ("// ", "/// ", "//!", "lock-free", "no lock")
 for path in sorted((ROOT / "src" / "widget").rglob("*.rs")):
     production = strip_test_modules(path.read_text(encoding="utf-8"))
     for number, line in enumerate(production.split("\n"), start=1):
-        if PRODUCTION_LOCK_PATTERN.search(line):
-            failures.append(f"{path.relative_to(ROOT)}:{number}: unreported lock: {line.strip()}")
+        stripped = line.strip()
+        if any(marker in stripped for marker in PROSE_MARKERS):
+            continue
+        if PRODUCTION_LOCK_PATTERN.search(stripped):
+            failures.append(f"{path.relative_to(ROOT)}:{number}: unreported lock: {stripped}")
 
 if failures:
     print(f"FAIL: {len(failures)} case(s):")

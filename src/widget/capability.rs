@@ -363,11 +363,6 @@ fn canonical_name_for_kind(kind: crate::widget::WidgetKind) -> &'static str {
     }
 }
 
-/// Interns a kind's canonical name for the registry-free lookup.
-///
-/// # Why this writes into a caller-owned buffer
-///
-
 // ── Profile-specific parts ──────────────────────────────────────────────────
 //
 // Everything below describes the *factory* and the legacy centralised access

@@ -210,7 +210,9 @@ impl PluginManager {
             self.allowed_permissions.remove(&id);
             Ok(())
         } else {
-            Err(PluginError::new(format!("Plugin {id} not found")))
+            Err(PluginError::new(format!(
+                "no plugin with id {id} is installed; call list() to see the installed ids"
+            )))
         }
     }
     /// Moves the plugin into [`PluginState::Enabled`], calling `Plugin::on_enable`
@@ -233,7 +235,9 @@ impl PluginManager {
                 )))
             }
         } else {
-            Err(PluginError::new(format!("Plugin {id} not found")))
+            Err(PluginError::new(format!(
+                "no plugin with id {id} is installed; call list() to see the installed ids"
+            )))
         }
     }
     /// Moves the plugin into [`PluginState::Disabled`], running `Plugin::on_disable`
@@ -254,7 +258,9 @@ impl PluginManager {
                 )))
             }
         } else {
-            Err(PluginError::new(format!("Plugin {id} not found")))
+            Err(PluginError::new(format!(
+                "no plugin with id {id} is installed; call list() to see the installed ids"
+            )))
         }
     }
     /// Records that `permission` is allowed for the plugin, but only if the plugin
@@ -408,8 +414,21 @@ mod tests {
     fn test_plugin_manager_unregister_nonexistent() {
         let mut mgr = PluginManager::new();
         let result = mgr.unregister(999);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().message.contains("not found"));
+        let err = result.expect_err("unregistering an unknown id must be refused");
+        // Asserts the two parts the message must carry, not one incidental phrase: the
+        // id that failed, and what the caller can do next. The earlier assertion was
+        // `contains("not found")`, which passed for any wording and let the message be
+        // rewritten without notice — including into one that named nothing.
+        assert!(
+            err.message.contains("999"),
+            "the error must name the id that was not found: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("installed"),
+            "the error must say what the valid ids are: {}",
+            err.message
+        );
     }
 
     #[test]
