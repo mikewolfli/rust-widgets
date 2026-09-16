@@ -62,7 +62,11 @@ impl GestureRecognizer for SwipeGesture {
                 }
 
                 let dt = now_ms.saturating_sub(start_time);
-                let velocity = if dt > 0 { total_dist / dt as f32 } else { 0.0 };
+                // `Event::Swipe::velocity` is documented in logical pixels per
+                // **second**, so scale the per-millisecond ratio. Emitting px/ms here
+                // made this recogniser disagree with `FlingGesture` by 1000x on a
+                // field both of them populate.
+                let velocity = if dt > 0 { total_dist / dt as f32 * 1000.0 } else { 0.0 };
 
                 if velocity >= SWIPE_MIN_VELOCITY {
                     let result = Event::Swipe { start, end: *pos, velocity };
@@ -163,7 +167,9 @@ impl GestureRecognizer for TwoFingerSwipeGesture {
                         let dist = ((dx * dx + dy * dy) as f32).sqrt();
                         let elapsed =
                             now_ms.saturating_sub(self.start_time.unwrap_or(now_ms)).max(1) as f32;
-                        let velocity = dist / elapsed;
+                        // Logical pixels per second, matching `Event::TwoFingerSwipe`'s
+                        // documented unit and the other swipe recognisers.
+                        let velocity = dist / elapsed * 1000.0;
                         if dist >= super::SWIPE_MIN_DISTANCE
                             && velocity >= super::SWIPE_MIN_VELOCITY
                         {
@@ -201,8 +207,15 @@ crate::impl_default_via_new!(TwoFingerSwipeGesture);
 // FlingGesture
 // ────────────────────────────────────────────
 
-const FLING_MIN_VELOCITY: f32 = 0.3;
+/// Minimum speed (px/s) for a flick to be recognised as a fling.
+///
+/// Same unit as [`SWIPE_MIN_VELOCITY`](super::SWIPE_MIN_VELOCITY) and the public
+/// event fields: logical pixels per second. It is lower than the swipe threshold
+/// because a fling is allowed to cover a shorter distance.
+const FLING_MIN_VELOCITY: f32 = 300.0;
+/// Minimum travel (px) for a fling, which is shorter than a swipe's requirement.
 const FLING_MIN_DISTANCE: f32 = 15.0;
+/// Length of the trailing sample window (ms) used to estimate fling velocity.
 const VELOCITY_WINDOW_MS: u64 = 100;
 
 /// Velocity-based fling/flick recognizer.
@@ -210,7 +223,7 @@ const VELOCITY_WINDOW_MS: u64 = 100;
 /// Detects a short, fast finger flick intended to trigger inertial
 /// scrolling. Unlike [`SwipeGesture`] which requires a minimum
 /// distance of 30px, `FlingGesture` can detect shorter motions
-/// if they are fast enough (velocity > `FLING_MIN_VELOCITY` px/ms).
+/// if they are fast enough (velocity > `FLING_MIN_VELOCITY`, in px/s).
 ///
 /// Uses a sliding-window velocity estimate (last ~100ms of movement)
 /// to distinguish flicks from slow pans.
@@ -244,6 +257,9 @@ impl FlingGesture {
         let dt = last.1.saturating_sub(first.1).max(1) as f32;
         let dx = (last.0.x - first.0.x) as f32;
         let dy = (last.0.y - first.0.y) as f32;
+        // `Event::Fling::velocity` is documented as logical pixels per **second**,
+        // so the per-millisecond ratio is scaled by 1000. Keep this in step with the
+        // `Swipe` variants, which convert the same way.
         Some(Point::new((dx / dt * 1000.0) as i32, (dy / dt * 1000.0) as i32))
     }
 }
@@ -282,7 +298,7 @@ impl GestureRecognizer for FlingGesture {
                     0.0
                 };
                 self.reset();
-                if total_distance >= FLING_MIN_DISTANCE || speed >= FLING_MIN_VELOCITY * 1000.0 {
+                if total_distance >= FLING_MIN_DISTANCE || speed >= FLING_MIN_VELOCITY {
                     Some(Event::Fling {
                         pos: *pos,
                         velocity: velocity.unwrap_or(Point::new(0, 0)),

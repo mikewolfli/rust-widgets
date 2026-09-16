@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 //! Embedded system optimizations and support.
+//!
+//! This module is compiled only for the bare-surface profiles (`embedded` and
+//! `mini`), so nothing here is reachable from a default desktop build.
 pub mod config;
 pub mod dpi;
 pub mod flags;

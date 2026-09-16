@@ -251,19 +251,6 @@ where
     }
 }
 
-/// Convert an `RwResult<T>` into an `ErrorId` (i32) for C callers.
-///
-/// Logs the error via `log::error!` for debugging.
-///
-/// This is the last step of an `extern "C"` function: it maps `Ok(())` to
-/// [`ErrorId::SUCCESS`] and, on failure, logs the full `Display` form of the
-/// error at error level before returning its numeric id. The error value is
-/// consumed and no detail survives past this boundary — anything a C caller
-/// needs must be in `message` and logged here.
-///
-/// Note that the success value is not representable: the parameter is
-/// `RwResult<()>`, so a function that must return both a status code and a
-/// value needs a separate out-parameter.
 // ---------------------------------------------------------------------------
 // FFI safety — c_try! macro and helpers
 // ---------------------------------------------------------------------------

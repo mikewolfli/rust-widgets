@@ -5,7 +5,7 @@
 //!
 //! Backends hold widget **ids**, not `&dyn Widget`, so [`read_widget_property_by_id`]
 //! and [`write_widget_property_by_id`] are the entry points they use. Resolving the
-//! id through [`crate::widget::runtime`] means the answer always describes the live
+//! id through `crate::widget::runtime` means the answer always describes the live
 //! control rather than a copy (BLUE15 §10.3).
 //!
 //! # History
@@ -54,7 +54,7 @@ use crate::widget::WidgetKind;
 ///
 /// The id-level counterpart to [`read_widget_property_by_name`]. Backends hold
 /// widget **ids**, not `&dyn Widget`, so they need this shape; resolving the id
-/// through [`crate::widget::runtime`] also means the answer always describes the
+/// through `crate::widget::runtime` also means the answer always describes the
 /// live control rather than a copy (BLUE15 §10.3).
 ///
 /// Returns [`CapabilityAccessError::UnknownWidget`] when the id addresses nothing.

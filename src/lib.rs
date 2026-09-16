@@ -5,9 +5,11 @@
 
 // BLUE11 R9.6: Unsafe code audit — unsafe is required for platform FFI
 // Note: Removed `#![allow(unsafe_code)]` — default is allow, no-op.
-// BLUE11 R4.7: Documentation completeness
-// Note: Missing docs warnings silenced to reduce noise. Docs added for public API items.
-#![warn(missing_docs)]
+// `missing_docs` is denied rather than allowed: every public item in every profile
+// is documented, and this lint is what keeps it that way. It is enforced on the
+// `desktop`, `embedded`, `mini` and `--all-features` builds alike, and CI's clippy
+// job runs with `-D warnings`, so a new undocumented public item fails the build.
+#![deny(missing_docs)]
 // BLUE11: Clippy lints enabled for quality enforcement.
 // Individual allows are placed next to their specific violations.
 #![cfg_attr(test, allow(clippy::needless_pass_by_value, clippy::unwrap_used))]
@@ -119,6 +121,18 @@ pub use widget::*;
 // `crate::widget::chart_widgets`, because they are two layers of one feature.
 // The engine is reachable as `rust_widgets::widget::chart_widgets::charts`
 // (and `::types`/`::layout`/`::svg`/`::adapter`).
+/// Translates a message key — the no-`i18n` fallback spelling.
+///
+/// This macro exists so that code which calls `tr!` still compiles when the `i18n`
+/// feature is off. It performs **no translation**: it logs a warning naming the key
+/// and returns the key itself. That makes a missing translation loud during
+/// development instead of quietly rendering an empty string, but it also means the
+/// returned text is a message *key*, not user-facing copy — a build without `i18n`
+/// must not be shipped as a localized one.
+///
+/// Accepts the same three arities as the real macro (`$key`, `$key, $count`, and
+/// `$key, $context, $count`) so call sites need no `cfg` of their own; the plural
+/// and context arguments are ignored here.
 #[cfg(not(feature = "i18n"))]
 #[macro_export]
 macro_rules! tr {
@@ -514,8 +528,8 @@ pub fn create_scroll_area(
 /// here; callers only need to know whether the backend can host widgets, which
 /// [`supports_surfaces`] answers.
 ///
-/// `id` must already be registered in [`widget::runtime`]. Prefer the
-/// higher-level [`app::WindowHandle::mount_surface`], which performs the
+/// `id` must already be registered in `widget::runtime`. Prefer the
+/// higher-level `app::WindowHandle::mount_surface`, which performs the
 /// registration for you and reports failures as a `Result`.
 ///
 /// Returns `false` when the backend has no surface to offer, or when it refuses
@@ -1433,7 +1447,7 @@ pub fn inject_menu_trigger(menu_item_id: crate::core::ObjectId) -> bool {
 // ToolBar and StatusBar
 /// Creates a tool bar strip as a child of `parent`.
 ///
-/// The returned id can be wrapped in a [`app::ToolBarHandle`] for the
+/// The returned id can be wrapped in an `app::ToolBarHandle` for the
 /// typed operations (adding actions, changing orientation).
 #[cfg(not(alloc_frugal))]
 pub fn create_tool_bar(

@@ -3,18 +3,17 @@
 
 /// A scalar value stored in reflective object metadata.
 ///
-/// # Not the same as [`crate::widget::view_widgets::properties_panel::PropertyValue`]
+/// # Not the same as `widget::view_widgets::properties_panel::PropertyValue`
 ///
 /// Both are called `PropertyValue` but model different things, so they are kept
 /// separate (principle #49):
 ///
 /// * this one — the four **scalar** kinds an object property can hold, with no
 ///   presentation semantics;
-/// * [`properties_panel::PropertyValue`][panel] — how a property is **edited and
+/// * `properties_panel::PropertyValue` — how a property is **edited and
 ///   drawn** in a panel (`Color`, `Choice { options }`, …), which is a UI concern
 ///   and meaningless in object metadata.
 ///
-/// [panel]: crate::widget::view_widgets::properties_panel::PropertyValue
 #[derive(Debug, Clone, PartialEq)]
 pub enum PropertyValue {
     /// Boolean scalar value.

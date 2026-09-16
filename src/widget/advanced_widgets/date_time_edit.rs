@@ -260,20 +260,34 @@ impl DateTimeEdit {
     }
     /// Sets the inclusive lower bound for accepted values.
     ///
-    /// The current value is **not** re-validated against the new bound, so the
-    /// widget can be left holding a value below its own minimum.
+    /// The current value is clamped up into the new range, so the widget never holds
+    /// a value below its own minimum — which would make every later
+    /// [`DateTimeEdit::set_datetime`] call fail silently.
     pub fn set_minimum_datetime(&mut self, dt: DateTime) {
         self.minimum = dt;
+        self.clamp_to_range();
         self.base.request_redraw();
     }
     /// Sets the inclusive upper bound for accepted values.
     ///
-    /// Like [`DateTimeEdit::set_minimum_datetime`], the current value is not
-    /// re-checked against the new bound, so lowering it can leave an
-    /// out-of-range value in place.
+    /// The current value is clamped down into the new range, like
+    /// [`DateTimeEdit::set_minimum_datetime`] clamps up.
     pub fn set_maximum_datetime(&mut self, dt: DateTime) {
         self.maximum = dt;
+        self.clamp_to_range();
         self.base.request_redraw();
+    }
+    /// Moves the current value inside `minimum..=maximum` if it fell outside.
+    ///
+    /// Called by both bound setters so "the value is within the range" holds after
+    /// any sequence of calls. An inverted range resolves to `minimum`, which keeps
+    /// the widget usable instead of wedged at a value no write can replace.
+    fn clamp_to_range(&mut self) {
+        if self.datetime < self.minimum {
+            self.datetime = self.minimum;
+        } else if self.datetime > self.maximum {
+            self.datetime = if self.minimum > self.maximum { self.minimum } else { self.maximum };
+        }
     }
     /// Stores the display-format pattern.
     ///

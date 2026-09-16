@@ -57,7 +57,19 @@ pub struct PrivacySettings {
     ///
     /// Matched by exact equality in [`PrivacySettings::should_block_tracking_type`].
     pub block_tracking_types: HashSet<TrackingType>,
-    /// Domains explicitly permitted, checked by exact string match.
+    /// Domains granted an explicit exemption from the block-list.
+    ///
+    /// This set does **not** restrict anything on its own: the policy is
+    /// default-allow, so a domain absent from both lists is already allowed. What
+    /// membership here does is override [`Self::blocked_domains`] — it is the
+    /// "trusted again" list. The two sets are kept disjoint by
+    /// [`Self::allow_domain`] / [`Self::block_domain`].
+    ///
+    /// If you want a policy where *only* listed domains are permitted, invert the
+    /// check at the call site: `settings.blocked_domains.is_empty() &&
+    /// !settings.allowed_domains.contains(domain)`. The type deliberately does not
+    /// offer both polarities, because a single tri-state ("exempt / blocked /
+    /// unlisted") cannot be read two ways without ambiguity.
     pub allowed_domains: HashSet<String>,
     /// Domains explicitly refused, checked by exact string match.
     ///
@@ -142,16 +154,19 @@ impl PrivacySettings {
     }
     /// Reports whether `domain` may be used.
     ///
-    /// Only the block-list can refuse a domain — an unknown domain is allowed,
-    /// because trusting everything except explicit exclusions is the intended
-    /// default. Note that the comparison is an exact string match, so neither
-    /// subdomains nor a `www.` prefix are covered by an entry.
+    /// The policy is **default-allow**: a domain is refused only when it is in
+    /// [`Self::blocked_domains`]. Membership of [`Self::allowed_domains`] is an
+    /// exemption, needed only for a domain that would otherwise be blocked, so the
+    /// two sets are checked in that order and an unknown domain is allowed.
+    ///
+    /// The comparison is an exact string match, so an entry for `example.com` does
+    /// **not** cover `www.example.com` or `sub.example.com`; callers that need
+    /// subdomain coverage must add each host or match before calling.
     pub fn is_domain_allowed(&self, domain: &str) -> bool {
         if self.blocked_domains.contains(domain) {
+            // The lists are kept disjoint, so an allowed entry cannot also be
+            // blocked; this order only documents which side wins if that ever breaks.
             return false;
-        }
-        if self.allowed_domains.contains(domain) {
-            return true;
         }
         true
     }
@@ -160,6 +175,48 @@ impl PrivacySettings {
         self.block_tracking_types.contains(&tracking_type)
     }
 }
+/// Reports whether a cookie stored for `cookie_domain` applies to a request for
+/// `request_domain`.
+///
+/// This is the **single** domain rule for the jar: `cookies_for_domain` and
+/// `clear_for_domain` both delegate here, so they cannot drift apart (they used to
+/// use a suffix test and a raw string prefix respectively, and disagreed about
+/// `example.com.evil`).
+///
+/// The rule is the cookie-standard one, applied to a plain string pair:
+///
+/// - an **exact** host match always applies;
+/// - otherwise the cookie applies when its domain is a **parent** of the request
+///   host, i.e. the request ends with `.` + cookie domain. The leading dot is what
+///   makes this a label-boundary test: `notexample.com` does **not** end with
+///   `.example.com`, so it is correctly excluded, whereas a bare `ends_with`
+///   would have matched it.
+///
+/// A cookie stored for a *subdomain* therefore does **not** apply to its parent —
+/// that direction is not how cookies work. Callers that want a host and its
+/// subdomains treated as one should query per host.
+///
+/// Matching is ASCII-case-insensitive, because host names are.
+fn domain_matches(request_domain: &str, cookie_domain: &str) -> bool {
+    if request_domain.eq_ignore_ascii_case(cookie_domain) {
+        return true;
+    }
+    // A cookie for `example.com` covers `a.example.com`: the request must end with
+    // `.example.com`, and the shortened request must still be non-empty (so a cookie
+    // for `.example.com` — an empty leading label — cannot match everything).
+    let request = request_domain.as_bytes();
+    let cookie = cookie_domain.as_bytes();
+    // Need room for at least one label plus the separating dot, so an empty cookie
+    // domain (which would make `split_at` the whole string) cannot match everything.
+    if request.len() <= cookie.len() + 1 {
+        return false;
+    }
+    let split = request.len() - cookie.len();
+    let (head, tail) = request.split_at(split);
+    // `head` ends at the boundary, so the character just before it must be the dot.
+    head.ends_with(b".") && tail.eq_ignore_ascii_case(cookie)
+}
+
 #[derive(Debug, Clone)]
 /// A single HTTP cookie as held by [`CookieJar`].
 ///
@@ -290,25 +347,35 @@ impl CookieJar {
     pub fn clear_expired(&mut self) {
         self.cookies.retain(|_, cookie| !cookie.is_expired());
     }
-    /// Discards every cookie whose `domain:name` key starts with `domain`.
+    /// Discards every cookie belonging to `domain` or to one of its subdomains.
     ///
-    /// This is a key **prefix** match, so it also removes cookies of any domain
-    /// that merely starts with the same text (passing `example.com` would also
-    /// drop an `example.com.evil` cookie). Cookie subdomains are *not* removed by
-    /// their parent's name, since the stored domains differ.
+    /// Uses the same domain rule as [`CookieJar::cookies_for_domain`] — see
+    /// `domain_matches` — so the two never disagree about what "cookies for this
+    /// domain" means.
+    ///
+    /// This previously matched a raw **key prefix**, which deleted an unrelated
+    /// lookalike's cookies as collateral: `clear_for_domain("example.com")` also
+    /// removed the cookie stored for `example.com.evil`, a domain an attacker can
+    /// register. Matching on the cookie's own `domain` field (with a label
+    /// boundary) removes exactly the intended set.
     pub fn clear_for_domain(&mut self, domain: &str) {
-        self.cookies.retain(|key, _| !key.starts_with(domain));
+        self.cookies.retain(|_, cookie| !domain_matches(domain, &cookie.domain));
     }
-    /// Returns the unexpired cookies associated with `domain`.
+    /// Returns the unexpired cookies that apply to `domain`.
     ///
-    /// Both directions of the suffix relation are accepted — the requested
-    /// `domain` may extend the cookie's domain or the cookie's domain may extend
-    /// `domain` — so a parent domain sees its subdomains' cookies and vice versa.
+    /// Applies the same rule as [`CookieJar::clear_for_domain`] — see
+    /// `domain_matches`: a cookie is returned when it was stored for `domain`
+    /// itself or for a parent of it. A cookie stored for a *subdomain* is **not**
+    /// returned to a parent query, which the previous bidirectional suffix test did
+    /// do: querying `example.com` pulled in a `sub.example.com` cookie and, worse,
+    /// querying `example.com` also matched a cookie for the unrelated domain `ple.com`
+    /// because the comparison had no label boundary.
+    ///
     /// Ordering is the map's, which is unspecified.
     pub fn cookies_for_domain(&self, domain: &str) -> Vec<&Cookie> {
         self.cookies
             .values()
-            .filter(|c| domain.ends_with(&c.domain) || c.domain.ends_with(domain))
+            .filter(|c| domain_matches(domain, &c.domain))
             .filter(|c| !c.is_expired())
             .collect()
     }
@@ -553,6 +620,43 @@ mod tests {
         assert!(!settings.is_domain_allowed("trusted.com"));
     }
 
+    /// The allow-list is an **exemption**, not a restriction.
+    ///
+    /// This is the contract that was ambiguous: `allowed_domains` was documented as
+    /// "Domains explicitly permitted", which reads as an allow-list that restricts
+    /// everything else. It does not — the policy is default-allow, and membership
+    /// only overrides an entry in `blocked_domains`. Pinned here so a future change
+    /// to the polarity is a deliberate one that has to update this test.
+    #[test]
+    fn allowed_domains_is_an_exemption_not_a_restriction() {
+        let mut settings = PrivacySettings::new();
+        settings.allow_domain("trusted.com".to_string());
+
+        assert!(
+            settings.is_domain_allowed("never-listed.com"),
+            "an unlisted domain must stay allowed: the list is an exemption list, \
+             not a whitelist"
+        );
+        assert!(settings.is_domain_allowed("trusted.com"), "the exemption itself is allowed");
+    }
+
+    /// Matching is exact: an entry does not cover its subdomains.
+    ///
+    /// Documented on `is_domain_allowed`, and worth pinning because the opposite
+    /// assumption (suffix matching) is the common one and would silently widen a
+    /// block-list.
+    #[test]
+    fn domain_matching_is_exact_and_does_not_cover_subdomains() {
+        let mut settings = PrivacySettings::new();
+        settings.block_domain("example.com".to_string());
+
+        assert!(!settings.is_domain_allowed("example.com"));
+        assert!(
+            settings.is_domain_allowed("sub.example.com"),
+            "an exact-match block must not cover subdomains"
+        );
+    }
+
     #[test]
     fn test_privacy_settings_default_implemented() {
         let settings = PrivacySettings::default();
@@ -683,13 +787,128 @@ mod tests {
         assert!(jar.get("other.com", "b").is_some());
     }
 
+    /// A cookie applies to its own host and to that host's subdomains.
+    ///
+    /// This test previously asserted the **bidirectional** rule (a parent query also
+    /// returned a subdomain's cookie). Per the cookie standard the relation is
+    /// one-way: a cookie set for `example.com` is sent to `api.example.com`, but a
+    /// cookie set for `api.example.com` is not sent to `example.com`. The old rule
+    /// also had no label boundary, so a query for `example.com` matched the unrelated
+    /// domain `ple.com`.
     #[test]
     fn test_cookie_jar_cookies_for_domain() {
         let mut jar = CookieJar::new();
         jar.add(Cookie::new("a".to_string(), "1".to_string(), "example.com".to_string()));
         jar.add(Cookie::new("b".to_string(), "2".to_string(), "api.example.com".to_string()));
-        let cookies = jar.cookies_for_domain("example.com");
-        assert_eq!(cookies.len(), 2);
+
+        // A query for the parent gets only the parent's own cookie.
+        let names: Vec<&str> =
+            jar.cookies_for_domain("example.com").iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["a"], "a subdomain's cookie must not be sent to its parent");
+
+        // A query for the subdomain gets both: its own and its parent's.
+        let mut names: Vec<String> =
+            jar.cookies_for_domain("api.example.com").iter().map(|c| c.name.clone()).collect();
+        names.sort();
+        assert_eq!(names, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    /// A domain must match on a **label boundary**, not on raw text.
+    ///
+    /// The regression guard for the suffix/prefix bugs: `notexample.com` and
+    /// `example.com.evil` are unrelated to `example.com`, but a bare `ends_with` or
+    /// `starts_with` treats them as related — one leaking cookies across domains, the
+    /// other deleting a lookalike's cookies.
+    #[test]
+    fn domain_matching_respects_label_boundaries() {
+        let mut jar = CookieJar::new();
+        jar.add(Cookie::new("keep".to_string(), "1".to_string(), "example.com".to_string()));
+        jar.add(Cookie::new("suffix".to_string(), "2".to_string(), "notexample.com".to_string()));
+        jar.add(Cookie::new(
+            "lookalike".to_string(),
+            "3".to_string(),
+            "example.com.evil".to_string(),
+        ));
+
+        let mut names: Vec<String> =
+            jar.cookies_for_domain("example.com").iter().map(|c| c.name.clone()).collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["keep".to_string()],
+            "`notexample.com` and `example.com.evil` must not be treated as belonging to \
+             example.com — the match needs a label boundary"
+        );
+
+        // Clearing the domain must remove exactly the same set it would return.
+        jar.clear_for_domain("example.com");
+        assert!(jar.get("example.com", "keep").is_none(), "its own cookie is cleared");
+        assert!(
+            jar.get("notexample.com", "suffix").is_some(),
+            "an unrelated domain's cookie must survive — the old code deleted it"
+        );
+        assert!(
+            jar.get("example.com.evil", "lookalike").is_some(),
+            "a lookalike's cookie must survive: clearing example.com is not clearing "
+        );
+    }
+
+    /// Host matching is ASCII-case-insensitive, because host names are.
+    #[test]
+    fn domain_matching_is_case_insensitive() {
+        let mut jar = CookieJar::new();
+        jar.add(Cookie::new("a".to_string(), "1".to_string(), "Example.COM".to_string()));
+        assert_eq!(jar.cookies_for_domain("example.com").len(), 1);
+        assert_eq!(jar.cookies_for_domain("api.example.com").len(), 1);
+    }
+
+    /// An empty cookie domain must not match every host.
+    #[test]
+    fn an_empty_cookie_domain_matches_nothing_but_itself() {
+        assert!(!domain_matches("example.com", ""));
+        assert!(domain_matches("", ""));
+    }
+
+    /// Clearing must remove exactly the cookies that a query would return.
+    ///
+    /// The two methods used different notions of "for this domain" (a raw key
+    /// prefix vs a bidirectional suffix), so they could disagree. They now share one
+    /// rule, and this asserts the correspondence directly.
+    #[test]
+    fn clear_and_query_agree_on_which_cookies_belong_to_a_domain() {
+        for domain in ["example.com", "api.example.com", "notexample.com", "example.com.evil"] {
+            let mut jar = CookieJar::new();
+            jar.add(Cookie::new("a".to_string(), "1".to_string(), "example.com".to_string()));
+            jar.add(Cookie::new("b".to_string(), "2".to_string(), "api.example.com".to_string()));
+            jar.add(Cookie::new("c".to_string(), "3".to_string(), "notexample.com".to_string()));
+            jar.add(Cookie::new("d".to_string(), "4".to_string(), "example.com.evil".to_string()));
+
+            let mut matched: Vec<String> = jar
+                .cookies_for_domain(domain)
+                .iter()
+                .map(|c| format!("{}:{}", c.domain, c.name))
+                .collect();
+            matched.sort();
+
+            jar.clear_for_domain(domain);
+            let mut remaining: Vec<String> = jar.all_cookies().keys().cloned().collect();
+            remaining.sort();
+
+            let before: Vec<String> =
+                ["example.com:a", "api.example.com:b", "notexample.com:c", "example.com.evil:d"]
+                    .iter()
+                    .map(|s| s.to_string())
+                    .filter(|key| !matched.contains(key))
+                    .collect();
+            let mut before = before;
+            before.sort();
+
+            assert_eq!(
+                remaining, before,
+                "for query {domain:?}, clear_for_domain must remove exactly what \
+                 cookies_for_domain returned"
+            );
+        }
     }
 
     #[test]

@@ -39,7 +39,7 @@ impl ColorMatcher for Color {
 /// Rect matcher
 ///
 /// A testing-only view of [`Rect`] that mirrors the geometry predicates with
-/// test-friendly names. Unlike [`crate::core::geometry::Rect::contains_point`],
+/// test-friendly names. Unlike [`Rect::contains_point`](crate::core::Rect::contains_point),
 /// these helpers compute edges with plain `i32` addition and so can overflow on
 /// extreme rectangles; they are intended for ordinary fixture values.
 pub trait RectMatcher {
@@ -52,7 +52,7 @@ pub trait RectMatcher {
     /// Returns `true` when the rectangles share at least one pixel.
     ///
     /// Edges that merely touch do **not** count as intersecting, so this agrees
-    /// with [`crate::core::geometry::Rect::intersects`].
+    /// with [`Rect::intersects`](crate::core::Rect::intersects).
     fn intersects(&self, other: &Rect) -> bool;
     /// Returns `true` when width and height equal `size`'s exactly. The origin
     /// is not compared.

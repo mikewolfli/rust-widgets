@@ -145,6 +145,11 @@ pub mod windows {
         SetClipboardData,
     };
 
+    /// Pure-text clipboard backend for Windows, backed by the real Win32
+    /// clipboard API (`OpenClipboard`/`SetClipboardData`).
+    ///
+    /// Only compiled on Windows targets: the `use` block above imports the Win32
+    /// symbols unconditionally, so this type cannot exist elsewhere.
     pub struct WindowsClipboard;
 
     impl WindowsClipboard {

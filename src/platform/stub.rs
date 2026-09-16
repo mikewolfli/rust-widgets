@@ -78,7 +78,7 @@ impl StubPlatform {
     /// Adopts `widget_id` as a live widget of this host.
     ///
     /// Called by the drawing bridge when a self-drawn widget is mounted: the id
-    /// originates in [`crate::widget::runtime`], which owns the widget, so the
+    /// originates in `widget::runtime`, which owns the widget, so the
     /// host state records it rather than allocating its own. Without this the
     /// host would have no record for a widget it is already painting, and
     /// `get_widget_text` / `is_widget_visible` would answer for an unknown id.

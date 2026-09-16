@@ -214,7 +214,7 @@ pub trait BatchRenderer {
     ///
     /// The recorded commands are retained for later
     /// [`BatchRenderer::replay`]; nothing is drawn here. Recording after this
-    /// call fails with [`BatchError::NoActiveBatch`]. Calling it with no open
+    /// call fails with `BatchError::NoActiveBatch`. Calling it with no open
     /// batch is a no-op.
     fn end_batch(&mut self);
 
@@ -225,7 +225,7 @@ pub trait BatchRenderer {
     ///
     /// # Errors
     ///
-    /// Returns [`BatchError::NoActiveBatch`] when there is no open batch, i.e.
+    /// Returns `BatchError::NoActiveBatch` when there is no open batch, i.e.
     /// [`BatchRenderer::begin_batch`] was not called or
     /// [`BatchRenderer::end_batch`] has already closed it.
     fn record(&mut self, cmd: BatchCommand) -> Result<(), BatchError>;
@@ -500,7 +500,7 @@ impl BatchState {
 }
 
 impl BatchRenderer for SoftwarePaintBackend {
-    /// Opens a new batch in this backend's [`BatchState`].
+    /// Opens a new batch in this backend's batch state.
     fn begin_batch(&mut self) -> BatchId {
         self.batch_state.begin_batch()
     }
@@ -514,7 +514,7 @@ impl BatchRenderer for SoftwarePaintBackend {
     ///
     /// # Errors
     ///
-    /// Returns [`BatchError::NoActiveBatch`] when no batch is open.
+    /// Returns `BatchError::NoActiveBatch` when no batch is open.
     fn record(&mut self, cmd: BatchCommand) -> Result<(), BatchError> {
         self.batch_state.record(cmd)
     }

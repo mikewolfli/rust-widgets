@@ -23,7 +23,7 @@
 //!   (`wl_surface` → `xdg_surface` → `xdg_toplevel`) and the connection-wide
 //!   session it keeps alive for event dispatch.
 //! - The runtime lifecycle (`init`/`run`/`quit`), the fd-based event loop and
-//!   [`create_event_loop_pump`].
+//!   `create_event_loop_pump`.
 //! - Global discovery and scale handling: `wl_compositor`, `xdg_wm_base` and the
 //!   `wl_output` scale event that feeds `dpi_scale_factor()`.
 //! - The protocol dispatch implementations the compositor requires (registry
@@ -294,7 +294,7 @@ impl Platform for WaylandPlatform {
         id
     }
 
-    /// Creates a dropdown [`WaylandHandleKind::Menu`] node under `parent`.
+    /// Creates a dropdown `WaylandHandleKind::Menu` node under `parent`.
     ///
     /// `parent` may be a menu bar (a top-level menu) or another menu (a submenu),
     /// which is what makes arbitrarily nested menus expressible. The child link is

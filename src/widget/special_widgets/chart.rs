@@ -22,7 +22,7 @@ use crate::{impl_widget_property_hooks, property_names_of};
 ///
 /// * [`crate::widget::display_widgets::mini_chart::ChartType`] — `MiniChart`'s
 ///   two styles (`Line`, `Bar`), since a mini chart has no pie or scatter form;
-/// * [`crate::widget::chart_widgets::types::ChartType`] — the drawing engine's
+/// * `crate::widget::chart_widgets::types::ChartType` — the drawing engine's
 ///   set, which adds `Area`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ChartType {

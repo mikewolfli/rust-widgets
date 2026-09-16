@@ -330,7 +330,7 @@ impl Default for BufferPool {
 /// A pool of reusable, empty `String`s with pre-reserved capacity.
 ///
 /// A fixed-size style pool: only strings whose capacity is at least
-/// [`Self::default_capacity`] are retained, which keeps reallocation out of the
+/// the pool's default capacity are retained, which keeps reallocation out of the
 /// steady state. Acquired strings are always empty. Not thread-safe.
 pub struct StringPool {
     strings: Vec<String>,

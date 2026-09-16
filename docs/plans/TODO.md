@@ -55,6 +55,111 @@ This file mirrors staged execution status.
   `render_frame` / `dispatch_event` (`benches/`) and require no regression in CI.
   Tracked as a benchmark task, not a code task.
 
+### Defects found while documenting (v32)
+
+Documenting all 3090 public items required reading every module, which surfaced
+code defects that no test covers. They are listed here rather than fixed silently,
+so each can be triaged on its own; every one is documented as-is in the rustdoc
+(no doc claims behaviour the code does not have).
+
+**Round 22 fixed six of them** — see `docs/log/log-20260916-2.md` §20. Each fix was
+reverse-injection verified (restore the defect → the new test fails).
+
+- [x] **Privacy allow-list** — resolved as a **documentation** defect, not a missing
+  feature. The policy is default-allow with a deny-list, so `allowed_domains` is an
+  *exemption* list; only its doc disagreed (it read as a whitelist). Rewrote the
+  contract and added two tests pinning exemption-not-restriction and exact-match
+  (no subdomain coverage).
+
+- [x] **Gesture velocity unit mismatch** — `Event::Swipe` / `TwoFingerSwipe` /
+  `Fling` are all documented as **px/s**, but the two swipe recognisers emitted
+  px/ms while `FlingGesture` emitted px/s, a 1000x disagreement on a shared field.
+  Fixed the two offenders and converted the `*_MIN_VELOCITY` constants; added
+  `every_recogniser_reports_velocity_in_pixels_per_second` (nothing previously
+  exercised `FlingGesture` at all).
+
+- [x] **wgpu rasteriser clip is a no-op** — `PushClip`/`PopClip` were accepted and
+  ignored, so callers got pixels outside the region they asked for. Implemented a
+  real clip stack (nested clips intersect; a command's own `clip` field composes
+  with it; an unbalanced `PopClip` warns instead of aborting the frame). 6 tests.
+
+- [x] **Range setters left the value out of range** — `date_edit` / `time_edit` /
+  `date_time_edit`: lowering a bound left an out-of-range value in place, after
+  which every subsequent write was silently refused — the widget was stuck at a
+  value it reported as invalid. Added `clamp_to_range` to each setter (4 sites).
+  The two `time_edit` tests that pinned the old behaviour were rewritten.
+
+- [x] **`mini`: `dequeue_blocking` promised to block but did not** — the method was
+  compiled in every profile but `mini`'s `recv` is a poll. Gated it to
+  `#[cfg(not(alloc_frugal))]` so the compiler, not the doc, constrains which
+  profiles may use it. No behaviour change under `mini` (its loop already used
+  `dequeue`).
+
+- [x] **`JsError` line/column were actually an offset** — call sites passed a byte
+  offset as the `line` argument, so `Display` rendered `at line 0, column 24`.
+  Added `JsError::at_offset(message, source, offset)`, which converts an offset to
+  a real 1-based line and column (floors inside a multi-byte character, clamps past
+  the end, never panics), and converted all 10 call sites.
+
+- [x] **Cookie domain matching is inconsistent between two methods**
+
+  **Was a real security defect.** Three methods each had their own idea of "this
+  domain": `clear_for_domain` matched a raw **key prefix** (so clearing
+  `example.com` also deleted an attacker-registerable `example.com.evil`'s cookie),
+  `cookies_for_domain` used a **bidirectional suffix** test with no label boundary
+  (so a query for `example.com` matched a `ple.com` cookie), and `get`/`remove`
+  required an exact key. All now delegate to one `domain_matches` helper that applies
+  the cookie-standard rule (exact, or `request` ends with `.` + cookie domain — the
+  dot is the label boundary). 5 tests, including one asserting that
+  `clear_for_domain` removes exactly the set `cookies_for_domain` returns.
+
+- [x] **`web_engine.rs`: `evaluate_javascript` ignores `is_javascript_enabled`**
+
+  **Was a real security defect**: the flag was stored and never read, so a host that
+  disabled scripting still executed whatever script it was handed. The policy check
+  now runs before the engine is even created. Reverse-injection proof: removing the
+  check makes a disabled view return `"2"` for `1 + 1` — the script really ran.
+
+- [x] ~~**`web_engine.rs`: `reload()` emits `loading_started` but never `finishing`**~~
+
+  **Retracted — the report was wrong.** Probing showed `reload()` follows exactly the
+  same lifecycle as `set_url`: it marks a load pending, and the `load_timer_id()`
+  timer completes it. My claim came from reading only `reload()` and not noticing the
+  timer. The real defect was the **doc**, which never said how the load finished and
+  so read as a stuck state. Doc rewritten; `reload_runs_the_normal_load_lifecycle`
+  added to pin the lifecycle.
+
+- [x] ~~**`widget/base.rs`: `handle_event` never emits `clicked` / `changed`**~~
+
+  **Retracted — this is deliberate layering.** Verified: **17 widgets emit `clicked`
+  and 12 emit `changed` themselves**, and they must — whether a release is a click
+  depends on the widget's own gesture (`Button` needs a press *and* a release while
+  armed; `CheckBox` toggles; `Slider` changes value on drag). If `BaseWidget` emitted
+  them unconditionally, every one of those controls would double-emit. The base
+  routes only the primitive signals. Contract now documented, with
+  `base_does_not_emit_semantic_signals` pinning it so the split cannot drift.
+
+- [x] **`error/mod.rs`: declarations sat between a doc comment and its function**
+
+  `to_error_id`'s doc block was separated from it by `pub mod ffi;` and a `pub use`,
+  so rustdoc attached the doc to the **module** and left the function undocumented
+  (silent under `allow`, an error under `deny`). The declarations now precede the doc,
+  and the function has a single, correctly-placed doc comment.
+
+> **Both retractions are the same mistake**: judging a function without reading its
+> collaborators — `reload()` without its timer, `BaseWidget` without the 17 widgets
+> that do emit the signal. Eight such judgements across rounds 20–22, **four wrong**.
+> The rule this productised: before claiming "X does not do Y", prove nothing else
+> does Y.
+
+- ~~**`render/backend/batch.rs`: 5 of 19 commands are no-ops**~~
+
+  **Retracted — the report was wrong.** Re-verified: `batch.rs` *does* translate
+  `PushClip`/`PopClip` into real `RenderCommand`s, and the software backend
+  (`paint.rs`) implements `BoxShadow` including its blur kernel. The only real
+  no-ops were in the wgpu backend's CPU fallback, which is the entry now fixed
+  above.
+
 ### Documentation and Comments
 
 - [x] **Ensure all core modules have up-to-date design and usage documentation**
@@ -72,29 +177,18 @@ This file mirrors staged execution status.
 
 - [x] **Add/complete API documentation for all public modules and functions**
 
-  **The API documentation is `cookbook/`, not rustdoc** — corrected in round 21 after
-  the maintainer pointed this out. The cookbook is the user-facing reference
-  (mdBook, 3 languages × 20 chapters; `api-reference.md` alone is ~3100 lines).
+  **Both documentation layers are now complete and gated.**
 
-  It was verified against `src/` for the first time and **had real drift: 13 declared
-  APIs did not exist**, identically in all three language editions:
+  | layer | scope | gate |
+  |---|---|---|
+  | `cookbook/` (mdBook, 3 languages) | user-facing reference | `tools/check_cookbook.sh` |
+  | rustdoc | every public item (3090 of them) | `#![deny(missing_docs)]` + `tools/check_docs.sh` |
 
-  | cookbook said | actually is |
-  |---|---|
-  | `trait EngineTrait` (`&mut self`, `Result`, `submit_frame`) | `trait RenderEngine: Send + Sync` (`&self`, infallible) |
-  | `NativeEngine` / `EmbeddedEngine` | `NativeRenderEngine` / `EmbeddedRenderEngine` |
-  | `crate::chart::{charts,svg,types}` + `ChartSvgRenderer` | **no top-level `chart` module**; it is `widget::chart_widgets` |
-  | `TimerManager::{add,remove}_timer`, `process_timers` | `start_timer`, `stop_timer`, `pump` |
-  | `EventLoop::add_timer` / `remove_timer` | not `EventLoop` methods — `TimerManager` owns timers |
-  | `FocusManager::{next_widget,prev_widget,register_tab_order}` | `focus_next`, `focus_previous`, `set_focus_order` |
-  | `PointerCaptureManager::{capture,release,captured_widget,is_captured_by}` | `set_capture`, `release_capture`, `capturing_widget`, `has_capture` |
-  | `PlatformClipboard`, `PoolAllocator`, `WebPlugin`, `CssEngine`, `CssWatcher`, `VirtualKeyboardController` | `RichClipboardBackend`, `ObjectPool`/`SharedPool`, `Plugin`, `CssParser`, `AssetWatcher`, `Keyboard` |
-
-  All corrected in all three books, and **the surrounding prose was corrected too**
-  (it repeated the same false claims, e.g. "the `chart` module provides the
-  foundation for data visualization"). New gate: `tools/check_cookbook.sh` step
-  [1/2] fails if any declared name is missing from `src/`. Evidence:
-  `docs/log/log-20260916-2.md` §18.
+  The cookbook is what the maintainer pointed to as "the API documentation": it
+  was verified against `src/` for the first time and **13 declared APIs did not
+  exist**, identically in all three language editions (details in the entry above).
+  The rustdoc pass documented 3090 items. Evidence:
+  `docs/log/log-20260916-2.md` §18 (cookbook) and §19 (rustdoc).
 
 - [x] **Standardize and improve inline code comments**
 
@@ -107,22 +201,29 @@ This file mirrors staged execution status.
   tools/check_cookbook.sh [2/2]  → all three books build with no warnings
   ```
 
-- [ ] **Add/complete rustdoc comments for all public items**
+- [x] **Add/complete rustdoc comments for all public items**
 
-  **This is rustdoc, not the user-facing API documentation** — that lives in
-  `cookbook/` and is tracked (and now gated) separately, see the entry above. The
-  distinction matters because these two debts are not equivalent:
+  **Done, and enforced by the compiler.** `src/lib.rs` carried
+  `#![allow(missing_docs)]`, which hid **3090 undocumented public items across 163
+  files**. All are now documented and the attribute is `#![deny(missing_docs)]`, so
+  a new undocumented item fails the build.
 
-  | | rustdoc | cookbook |
-  |---|---|---|
-  | checked by | **the compiler** (`missing_docs`) | nothing, until round 21 |
-  | failure mode | loud (build/warning) | **silent — docs teach non-existent APIs** |
+  The count went `3090 → 0` on desktop, and the other profiles went
+  `embedded 143 → 0`, `mini 13 → 0`, `all-features 256 → 0`. Reverse-injection
+  proof that the guard holds:
 
-  Measured count: **3186 items** (`--features desktop`) via
-  `#![warn(missing_docs)]`; `src/lib.rs:10` still carries `#![allow(missing_docs)]`.
-  Because the compiler reports it continuously, this cannot rot silently, which is
-  why it ranks below the cookbook work. Re-open as a batch job with the compiler as
-  the gate, not with a scanner.
+  ```text
+  # adding `pub struct UndocumentedProbeItem;`
+  error: missing documentation for a struct
+  error: could not compile `rust_widgets` (lib) due to 1 previous error
+  ```
+
+  Documenting the code surfaced **26 intra-doc link defects** that had never been
+  checked: 9 pointed at items that do not exist (e.g. `ConnectionScope::scoped` —
+  the real API is `Signal::connect_scoped(owner, slot)`), 11 at `pub(crate)` items,
+  and 6 at items that only exist with every feature on (so `embedded`/`mini` docs
+  could not build at all). All fixed and gated. Evidence:
+  `docs/log/log-20260916-2.md` §19.
 
 ### Dependency and Build Management
 

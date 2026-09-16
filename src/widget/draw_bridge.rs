@@ -5,7 +5,7 @@
 //!
 //! # Why this module exists
 //!
-//! [`crate::widget::runtime::render_frame`] holds widgets as `&mut dyn Widget` and
+//! `crate::widget::runtime::render_frame` holds widgets as `&mut dyn Widget` and
 //! needs to reach [`Draw::draw`]. `Widget` deliberately does not *require* `Draw`
 //! (a widget may paint nothing and lay out children instead), so `Widget` exposes
 //! `as_draw_mut() -> Option<&mut dyn Draw>`, defaulting to `None`.
@@ -27,7 +27,7 @@
 //! The override therefore has to be emitted **where the concrete type is visible**:
 //! inside the widget's own `impl Widget` block. [`crate::impl_draw_bridge!`] emits
 //! exactly that one method. It is a *generated* line rather than a remembered one,
-//! and the coverage test in [`crate::widget::runtime`] fails by name if a painting
+//! and the coverage test in `crate::widget::runtime` fails by name if a painting
 //! widget is missing it — so the silent-blank failure cannot ship.
 //!
 //! The macro is zero-cost (principle #28): it expands to the same `Some(self)` the
@@ -61,7 +61,7 @@ use crate::widget::widget_trait::Widget;
 /// its own impl — and the macro makes the intent (`this type paints itself`)
 /// explicit and uniform, instead of a line each author must remember to copy.
 ///
-/// The coverage test in [`crate::widget::runtime`] fails by name when a painting
+/// The coverage test in `crate::widget::runtime` fails by name when a painting
 /// widget lacks this call, which is what the previous hand-written approach had no
 /// way to detect: it had silently fallen to 6 of 168.
 #[macro_export]

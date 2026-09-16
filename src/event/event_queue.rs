@@ -61,6 +61,20 @@ impl EventQueue {
         }
     }
     /// Dequeues the next event, blocking if none available.
+    ///
+    /// # Blocking is only available where threads are
+    ///
+    /// Under the `mini` (alloc-frugal) profile there is no second thread to wake a
+    /// waiter, so this **cannot** block: the queue's `recv` is a poll that returns
+    /// `Err` at once. The method is therefore not compiled there — callers use
+    /// [`EventQueue::dequeue`], which is what the `mini` event loop already does.
+    ///
+    /// This used to be compiled unconditionally and called the profile's `recv`,
+    /// which made it a silent `try_recv` under `mini` — a method documented as
+    /// blocking that returned immediately. Gating it is the honest expression of the
+    /// capability: the compiler now enforces which profiles may use it, instead of
+    /// the doc asking the reader to remember.
+    #[cfg(not(alloc_frugal))]
     pub fn dequeue_blocking(&self) -> Option<(ObjectId, Event, EventPriority)> {
         match self.receiver.recv() {
             Ok(envelope) => Some((envelope.target, envelope.event, envelope.priority)),
@@ -124,6 +138,12 @@ mod tests {
         assert!(q.dequeue().is_none());
     }
 
+    /// `dequeue_blocking` only exists where threads do, so this test does too.
+    ///
+    /// Under `mini` there is no waiter to wake and the method is not compiled; the
+    /// `mini` event loop drains with `dequeue` instead. Gating the test alongside the
+    /// method keeps the two from drifting apart.
+    #[cfg(not(alloc_frugal))]
     #[test]
     fn test_event_queue_dequeue_blocking() {
         let q = EventQueue::new();
@@ -133,6 +153,15 @@ mod tests {
         let (target, _evt, _) = q.dequeue_blocking().unwrap();
         assert_eq!(target, 42);
         assert!(matches!(_evt, Event::Quit));
+    }
+
+    /// The non-blocking dequeue is the one every profile has.
+    #[test]
+    fn test_event_queue_dequeue_returns_posted_event() {
+        let q = EventQueue::new();
+        q.sender().post(7, Event::Quit).unwrap();
+        let (target, _evt, _) = q.dequeue().expect("a posted event must be dequeued");
+        assert_eq!(target, 7);
     }
 
     #[test]

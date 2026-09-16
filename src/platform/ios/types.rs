@@ -32,7 +32,7 @@ use std::sync::Mutex;
 /// **window** and the **menu data model** (iOS ships no native menu bar, so the
 /// menu tree is in-process bookkeeping the caller drives through
 /// `inject_menu_trigger`). Everything else a `create_*` used to record here is
-/// state the widget already holds, reached through [`crate::widget::runtime`].
+/// state the widget already holds, reached through `crate::widget::runtime`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(all(feature = "serde", widgets_unstripped), derive(Serialize, Deserialize))]
 pub(crate) enum IosHandleKind {

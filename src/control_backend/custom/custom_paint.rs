@@ -9,7 +9,7 @@ use crate::control_backend::types::CustomControlState;
 /// Backend that paints every control on a surface it owns.
 ///
 /// It holds no per-widget state of its own: control state belongs to the widget
-/// object, reached through [`crate::widget::runtime`]. What remains in
+/// object, reached through `widget::runtime`. What remains in
 /// `CustomControlState` is host policy that a widget cannot express (see its
 /// docs).
 pub struct CustomPaintControlBackend {

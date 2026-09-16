@@ -279,34 +279,44 @@ impl TimeEdit {
     }
     /// Sets the inclusive lower bound for accepted times.
     ///
-    /// The current time is **not** re-validated against the new bound, so the
-    /// widget can be left holding a time below its own minimum.
+    /// The current time is clamped up into the new range, so the widget never holds
+    /// a value below its own minimum — which would make every later
+    /// [`TimeEdit::set_time`] call fail silently.
     pub fn set_minimum_time(&mut self, time: Time) {
         self.minimum = time;
+        self.clamp_to_range();
         self.base.request_redraw();
     }
     /// Sets the inclusive upper bound for accepted times.
     ///
-    /// Like [`TimeEdit::set_minimum_time`], the current time is not re-checked
-    /// against the new bound, so lowering it can leave an out-of-range value in
-    /// place.
+    /// The current time is clamped down into the new range, like
+    /// [`TimeEdit::set_minimum_time`] clamps up.
     pub fn set_maximum_time(&mut self, time: Time) {
         self.maximum = time;
+        self.clamp_to_range();
         self.base.request_redraw();
     }
-    /// Sets both minimum and maximum times in one call.
-    /// This is a convenience writer; query bounds via `minimum_time()` and `maximum_time()`.
     /// Sets both ends of the accepted range in one call.
     ///
-    /// The bounds are stored as given; `min` is not required to be less than or
-    /// equal to `max`, and the current time is not re-validated, so an inverted
-    /// or narrowed range silently makes every subsequent [`TimeEdit::set_time`]
-    /// fail. This is a convenience writer; query the bounds via
-    /// [`TimeEdit::minimum_time`] and [`TimeEdit::maximum_time`].
+    /// The current time is clamped into the new range. If `min > max` (caller error)
+    /// the minimum wins, so the widget stays pinned at a bound it would accept rather
+    /// than being wedged at a value no write can replace.
     pub fn set_time_range(&mut self, min: Time, max: Time) {
         self.minimum = min;
         self.maximum = max;
+        self.clamp_to_range();
         self.base.request_redraw();
+    }
+    /// Moves the current time inside `minimum..=maximum` if it fell outside.
+    ///
+    /// Called by every bound setter so "the value is within the range" holds after
+    /// any sequence of calls. An inverted range resolves to `minimum`.
+    fn clamp_to_range(&mut self) {
+        if self.time < self.minimum {
+            self.time = self.minimum;
+        } else if self.time > self.maximum {
+            self.time = if self.minimum > self.maximum { self.minimum } else { self.maximum };
+        }
     }
     /// Stores the display-format pattern.
     ///
@@ -609,34 +619,71 @@ mod tests {
         assert_eq!(editor.time(), t);
     }
 
+    /// A write below the minimum is rejected, and the value stays where it was.
+    ///
+    /// Note the order: the value is brought into range *first*, then the bound is
+    /// touched. Setting the minimum pulls the value up to meet it (see
+    /// `time_edit_bound_setters_keep_the_value_in_range`), so the test must not
+    /// assert the pre-clamp value survives — that was the old behaviour, and it left
+    /// the widget holding a time below its own minimum.
     #[test]
     fn time_edit_set_time_clamps_to_minimum() {
         let mut editor = TimeEdit::new(Rect::new(0, 0, 200, 30));
-        let before_min = Time::new(0, 0, 0, 0); // same as default min, should still work
-        editor.set_time(before_min);
-        assert_eq!(editor.time(), Time::new(0, 0, 0, 0));
-
-        // Set minimum to something higher, then try to set below it
         editor.set_minimum_time(Time::new(10, 0, 0, 0));
-        let earlier = Time::new(5, 0, 0, 0);
-        editor.set_time(earlier);
-        // Should not change because 5:00 < 10:00
-        assert_eq!(editor.time(), Time::new(0, 0, 0, 0));
+        assert_eq!(editor.time(), Time::new(10, 0, 0, 0), "setting the minimum clamps up to it");
+
+        // A write below the minimum is refused; the value does not move.
+        editor.set_time(Time::new(5, 0, 0, 0));
+        assert_eq!(editor.time(), Time::new(10, 0, 0, 0), "5:00 < 10:00, so the write is refused");
+
+        // A write at or above the minimum is accepted.
+        editor.set_time(Time::new(11, 0, 0, 0));
+        assert_eq!(editor.time(), Time::new(11, 0, 0, 0));
     }
 
+    /// A write above the maximum is rejected, and the value stays where it was.
+    ///
+    /// Same ordering note as the minimum case: first bring the value *into* the new
+    /// range, then narrow it. Here the value is raised to 12:00 while the range is
+    /// still the default, and only then is the maximum lowered — that is what makes
+    /// the clamp observable.
     #[test]
     fn time_edit_set_time_clamps_to_maximum() {
         let mut editor = TimeEdit::new(Rect::new(0, 0, 200, 30));
-        let after_max = Time::new(23, 59, 59, 999); // same as default max, should work
-        editor.set_time(after_max);
-        assert_eq!(editor.time(), after_max);
+        editor.set_time(Time::new(12, 0, 0, 0));
+        assert_eq!(editor.time(), Time::new(12, 0, 0, 0));
 
-        // Set maximum to something lower, then try to set above it
-        editor.set_maximum_time(Time::new(12, 0, 0, 0));
-        let later = Time::new(18, 0, 0, 0);
-        editor.set_time(later);
-        // Should not change because 18:00 > 12:00
-        assert_eq!(editor.time(), Time::new(23, 59, 59, 999));
+        editor.set_maximum_time(Time::new(9, 0, 0, 0));
+        assert_eq!(editor.time(), Time::new(9, 0, 0, 0), "lowering the maximum clamps down to it");
+
+        // A write above the maximum is refused; the value does not move.
+        editor.set_time(Time::new(18, 0, 0, 0));
+        assert_eq!(editor.time(), Time::new(9, 0, 0, 0), "18:00 > 09:00, so the write is refused");
+
+        // A write at or below the maximum is accepted.
+        editor.set_time(Time::new(6, 0, 0, 0));
+        assert_eq!(editor.time(), Time::new(6, 0, 0, 0));
+    }
+
+    /// Changing a bound must leave the value inside the range.
+    ///
+    /// The invariant the setters now maintain, and the reason the two tests above
+    /// were reordered: a widget holding a time outside its own bounds would refuse
+    /// every subsequent write, silently and permanently.
+    #[test]
+    fn time_edit_bound_setters_keep_the_value_in_range() {
+        let mut editor = TimeEdit::new(Rect::new(0, 0, 200, 30));
+        editor.set_time(Time::new(12, 0, 0, 0));
+
+        editor.set_minimum_time(Time::new(15, 0, 0, 0));
+        assert_eq!(editor.time(), Time::new(15, 0, 0, 0), "raised minimum pulls the value up");
+
+        editor.set_maximum_time(Time::new(9, 0, 0, 0));
+        assert_eq!(
+            editor.time(),
+            Time::new(15, 0, 0, 0),
+            "with min > max the minimum wins, so the editor is never wedged"
+        );
     }
 
     #[test]

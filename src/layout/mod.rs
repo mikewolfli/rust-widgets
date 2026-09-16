@@ -28,7 +28,7 @@ pub mod inspector;
 /// Adjusts a rect to avoid the on-screen software keyboard.
 pub mod keyboard_aware;
 /// Divisible panes with draggable handles; see
-/// [`crate::widget::Splitter`] for the widget front end.
+/// `crate::widget::Splitter` for the widget front end.
 pub mod splitter;
 /// Shows one child at a time, filling the whole rect.
 pub mod stack;

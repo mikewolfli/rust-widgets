@@ -117,7 +117,7 @@ impl LottieAnimated {
 /// straight to [`Color::from_f32`], which is what performs any scaling.
 ///
 /// Animation is **not** honoured: the value is sampled once at parse time (see
-/// [`LottieColor::from_json`]), so a colour keyframe track animates nothing.
+/// `LottieColor::from_json()`), so a colour keyframe track animates nothing.
 #[derive(Debug, Clone)]
 pub struct LottieColor {
     /// Red, normalised to `0.0 ..= 1.0`.

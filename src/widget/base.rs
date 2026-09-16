@@ -214,9 +214,7 @@ impl BaseWidget {
     /// Sets the enabled flag, which controls whether the widget accepts input.
     ///
     /// This type only stores the flag; concrete widgets are expected to check
-    /// [`Self::is_enabled`] in their own event handling, as [`MessageBox`] does.
-    ///
-    /// [`MessageBox`]: crate::widget::MessageBox
+    /// [`Self::is_enabled`] in their own event handling, as `MessageBox` does.
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
     }
@@ -383,6 +381,28 @@ impl BaseWidget {
 /// `Event::Click` and `Event::Changed` do *not* emit `clicked` or `changed`, and
 /// `mouse_pressed` is not maintained.
 impl EventHandler for BaseWidget {
+    /// Routes the *primitive* input events to this widget's base signals.
+    ///
+    /// # What this does and does not emit
+    ///
+    /// This is deliberately limited to signals whose meaning is fixed for every
+    /// widget: pointer movement, press and release, key press and release, and focus
+    /// changes. It emits [`BaseWidget::hover`], [`BaseWidget::mouse_down`],
+    /// [`BaseWidget::mouse_up`], [`BaseWidget::key_down`], [`BaseWidget::key_up`],
+    /// [`BaseWidget::focus_gained`] and [`BaseWidget::focus_lost`].
+    ///
+    /// It does **not** emit the *semantic* signals — [`BaseWidget::clicked`] or
+    /// [`BaseWidget::changed`] — and that is intentional, not an omission. Whether a
+    /// click happened depends on the widget: a `Button` needs a press *and* a release
+    /// while still armed, a `CheckBox` toggles, a `Slider` changes its value on drag.
+    /// Only the widget knows its own gesture, so each one emits these itself (17
+    /// widgets emit `clicked`, 12 emit `changed`); see
+    /// `base_widgets::button::Button::handle_event` for the pattern.
+    ///
+    /// Consequently, a widget that never emits `clicked` is not broken — it either
+    /// has no click concept (`Label`, `Panel`) or drives a different signal
+    /// (`Slider::value_changed`). Callers should read the concrete widget's own
+    /// signals rather than expecting the base to supply one.
     fn handle_event(&mut self, event: &Event) {
         // Default event routing: delegate to typed signals
         match event {
@@ -451,6 +471,63 @@ mod tests {
         assert!(!bw.is_mouse_pressed());
         assert!(bw.tooltip().is_empty());
         assert!((bw.dpi_scale() - 1.0).abs() < 0.01);
+    }
+
+    /// The base routes primitive input to its signals.
+    ///
+    /// Pins the half of the contract that *is* the base's responsibility, so the
+    /// documented split between primitive and semantic signals has a test behind it.
+    #[test]
+    fn base_routes_primitive_input_events_to_its_signals() {
+        use std::sync::{Arc, Mutex};
+
+        let mut bw = make_base();
+        let hovers = Arc::new(Mutex::new(Vec::new()));
+        let hovers_slot = Arc::clone(&hovers);
+        bw.hover.connect(move |p| hovers_slot.lock().expect("lock").push(*p));
+
+        let downs = Arc::new(Mutex::new(0usize));
+        let downs_slot = Arc::clone(&downs);
+        bw.mouse_down.connect(move |_| *downs_slot.lock().expect("lock") += 1);
+
+        bw.handle_event(&Event::MouseMove { pos: Point::new(3, 4) });
+        bw.handle_event(&Event::MousePress { pos: Point::new(3, 4), button: 1 });
+
+        assert_eq!(*hovers.lock().expect("lock"), vec![Point::new(3, 4)], "hover is routed");
+        assert_eq!(*downs.lock().expect("lock"), 1, "mouse_down is routed");
+    }
+
+    /// The base must **not** invent a `clicked` signal.
+    ///
+    /// Whether a pointer release is a click depends on the widget's own gesture, so
+    /// each widget emits it itself (17 do, 12 emit `changed`). If the base ever
+    /// started emitting `clicked` unconditionally, every widget would double-emit —
+    /// once from here and once from its own handler — so this asserts the absence.
+    #[test]
+    fn base_does_not_emit_semantic_signals() {
+        use std::sync::{Arc, Mutex};
+
+        let mut bw = make_base();
+        let clicks = Arc::new(Mutex::new(0usize));
+        let clicks_slot = Arc::clone(&clicks);
+        bw.clicked.connect(move || *clicks_slot.lock().expect("lock") += 1);
+
+        let changes = Arc::new(Mutex::new(0usize));
+        let changes_slot = Arc::clone(&changes);
+        bw.changed.connect(move || *changes_slot.lock().expect("lock") += 1);
+
+        // A complete press/release pair, which is what a Button would turn into a
+        // click in its own handler.
+        bw.handle_event(&Event::MousePress { pos: Point::new(1, 1), button: 1 });
+        bw.handle_event(&Event::MouseRelease { pos: Point::new(1, 1), button: 1 });
+
+        assert_eq!(
+            *clicks.lock().expect("lock"),
+            0,
+            "the base must leave `clicked` to the widget: emitting here would \
+             double-emit for every control that also emits it"
+        );
+        assert_eq!(*changes.lock().expect("lock"), 0, "`changed` is likewise the widget's to emit");
     }
 
     #[test]

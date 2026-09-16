@@ -97,9 +97,9 @@ impl Shortcut {
     /// Returns a string representation of the shortcut.
     ///
     /// This is the **canonical, platform-independent** form: `PRIMARY` renders as
-    /// `Primary`. Use [`crate::platform::Platform::format_shortcut`] (or
-    /// [`crate::format_shortcut`]) to get the text a user should see on the
-    /// current OS — `⌘⇧Z` on macOS, `Ctrl+Shift+Z` on Windows and Linux.
+    /// `Primary`. Use `Platform::format_shortcut` (or the crate-level
+    /// `format_shortcut`) to get the text a user should see on the current OS —
+    /// `⌘⇧Z` on macOS, `Ctrl+Shift+Z` on Windows and Linux.
     pub fn format_shortcut(&self) -> String {
         use std::fmt::Write;
         let mut result = String::new();
@@ -670,7 +670,7 @@ impl std::ops::BitOrAssign for Modifiers {
 }
 /// A shortcut binding registered in the global shortcut system.
 ///
-/// # Not the same as [`crate::widget::input_widgets::shortcut_editor::ShortcutEntry`]
+/// # Not the same as `crate::widget::input_widgets::shortcut_editor::ShortcutEntry`
 ///
 /// Both are called `ShortcutEntry` but model different things (principle #49):
 ///
@@ -801,7 +801,7 @@ impl PlatformShortcutStyle {
 
 /// Renders a shortcut using `style`'s notation.
 ///
-/// Prefer [`crate::format_shortcut`], which picks the style of the host OS; this
+/// Prefer `crate::format_shortcut`, which picks the style of the host OS; this
 /// entry point exists so callers (and tests) can render the *other* platforms'
 /// notation explicitly.
 pub fn format_shortcut_for_platform(shortcut: &Shortcut, style: PlatformShortcutStyle) -> String {

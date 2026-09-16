@@ -26,7 +26,7 @@
 //!   graphics API ([`crate::platform::portable::copy_rows`]).
 //!
 //! It deliberately does **not** carry per-control assets. An image, font or icon
-//! loader here would be a second registry beside [`crate::widget::runtime`], and
+//! loader here would be a second registry beside `crate::widget::runtime`, and
 //! the duplication of that registry is precisely what BLUE15 §10.3 removed.
 
 pub mod surface;

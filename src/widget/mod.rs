@@ -8,7 +8,7 @@
 //! The module is organised in three layers on top of the core types:
 //!
 //! 1. **Widget models** — the control types re-exported at the bottom of this
-//!    file ([`Button`], [`Slider`], [`MenuBar`], ...). Each is a plain Rust
+//!    file ([`Button`], [`Slider`], `MenuBar`, ...). Each is a plain Rust
 //!    struct holding its own state and a [`BaseWidget`]. They implement
 //!    [`Widget`] by delegating the shared fields to the base, and describe
 //!    themselves for accessibility through [`Widget::accessible_role`].
@@ -18,7 +18,7 @@
 //!    [`Widget::properties_dyn`]), and the factory that constructs controls by
 //!    kind. This is what lets generic tooling (property editors, serialisers,
 //!    FFI bindings) manipulate a widget without knowing its concrete type.
-//! 3. **Runtime** ([`runtime`]) — the owner of the live widget tree. It holds
+//! 3. **Runtime** (`runtime`) — the owner of the live widget tree. It holds
 //!    widgets behind `dyn Widget`, delivers events, and resolves
 //!    [`ObjectId`](crate::core::ObjectId)s back to widgets. Only compiled when
 //!    widgets are not stripped.

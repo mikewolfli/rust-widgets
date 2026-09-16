@@ -137,7 +137,7 @@ pub const fn engine_class() -> EngineClass {
 ///
 /// Equivalent to `stripped_widgets` being off *and* a device profile being on.
 /// Callers use this to decide whether to talk to a real backend
-/// ([`crate::platform::get_platform`]) or to the surface-only fallback.
+/// (`platform::get_platform`) or to the surface-only fallback.
 pub const fn has_os_runtime() -> bool {
     matches!(engine_class(), EngineClass::OsHosted(_))
 }

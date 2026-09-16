@@ -313,30 +313,48 @@ impl DateEdit {
     /// itself is not validated either.
     pub fn set_minimum_date(&mut self, date: Date) {
         self.minimum = date;
+        // Re-clamp the current value into the new range. Without this the widget could
+        // hold a date below its own minimum, after which every `set_date` call silently
+        // failed the range check — the value was stuck and the failure was invisible.
+        self.clamp_to_range();
         self.base.request_redraw();
     }
     /// Sets the inclusive upper bound for accepted dates.
     ///
-    /// Like [`DateEdit::set_minimum_date`], the current date is not re-checked
-    /// against the new bound, so lowering it can leave an out-of-range value in
-    /// place.
+    /// The current date is clamped into the new range, so lowering the maximum moves
+    /// a now-out-of-range value down to the boundary rather than leaving the widget
+    /// holding a date it would itself reject.
     pub fn set_maximum_date(&mut self, date: Date) {
         self.maximum = date;
+        self.clamp_to_range();
         self.base.request_redraw();
     }
-    /// Sets both minimum and maximum dates in one call.
-    /// This is a convenience writer; query bounds via `minimum_date()` and `maximum_date()`.
     /// Sets both ends of the accepted range in one call.
     ///
-    /// The bounds are stored as given; `min` is not required to be less than or
-    /// equal to `max`, and the current date is not re-validated, so an inverted
-    /// or narrowed range silently makes every subsequent [`DateEdit::set_date`]
-    /// fail. This is a convenience writer; query the bounds via
-    /// [`DateEdit::minimum_date`] and [`DateEdit::maximum_date`].
+    /// The current date is clamped into the new range. `min` is not required to be
+    /// less than or equal to `max`; if the two are inverted the minimum wins, so a
+    /// caller that swaps its arguments gets a working widget pinned at `min` rather
+    /// than one where every subsequent [`DateEdit::set_date`] silently fails.
     pub fn set_date_range(&mut self, min: Date, max: Date) {
         self.minimum = min;
         self.maximum = max;
+        self.clamp_to_range();
         self.base.request_redraw();
+    }
+    /// Moves the current date inside `minimum..=maximum` if it fell outside.
+    ///
+    /// Called by every bound setter so the invariant "the value is within the range"
+    /// holds after any sequence of calls. When the range is inverted the minimum is
+    /// treated as authoritative, which keeps this total (it always terminates with a
+    /// value that `set_date` would accept).
+    fn clamp_to_range(&mut self) {
+        if self.date < self.minimum {
+            self.date = self.minimum;
+        } else if self.date > self.maximum {
+            // Only reachable when `minimum <= maximum`; an inverted range was already
+            // resolved to `minimum` by the branch above or by the comparison failing.
+            self.date = if self.minimum > self.maximum { self.minimum } else { self.maximum };
+        }
     }
     /// Stores the display-format pattern.
     ///
@@ -854,5 +872,70 @@ mod tests {
         let a = DateEdit::new(Rect::new(0, 0, 200, 30));
         let b = DateEdit::new(Rect::new(0, 0, 200, 30));
         assert_ne!(a.id(), b.id());
+    }
+
+    /// Lowering the maximum must pull the current date down into the new range.
+    ///
+    /// The bug this pins: the bound setters stored the new bounds without re-checking
+    /// the value, so the widget could hold a date outside its own range — after which
+    /// every `set_date` call failed the range check silently and the widget was stuck
+    /// at a value it reported as invalid.
+    #[test]
+    fn lowering_the_maximum_clamps_the_current_date() {
+        let mut edit = DateEdit::new(Rect::new(0, 0, 200, 30));
+        edit.set_date_range(Date::new(2024, 1, 1), Date::new(2024, 12, 31));
+        edit.set_date(Date::new(2024, 6, 15));
+
+        edit.set_maximum_date(Date::new(2024, 3, 31));
+
+        assert_eq!(
+            edit.date(),
+            Date::new(2024, 3, 31),
+            "the value must be clamped to the new maximum rather than left out of range"
+        );
+        edit.set_date(Date::new(2024, 2, 1));
+    }
+
+    /// Raising the minimum must pull the current date up into the new range.
+    #[test]
+    fn raising_the_minimum_clamps_the_current_date() {
+        let mut edit = DateEdit::new(Rect::new(0, 0, 200, 30));
+        edit.set_date_range(Date::new(2024, 1, 1), Date::new(2024, 12, 31));
+        edit.set_date(Date::new(2024, 6, 15));
+
+        edit.set_minimum_date(Date::new(2024, 9, 1));
+
+        assert_eq!(edit.date(), Date::new(2024, 9, 1), "clamped up to the new minimum");
+        edit.set_date(Date::new(2024, 10, 1));
+    }
+
+    /// An inverted range must not wedge the editor.
+    ///
+    /// `min > max` is caller error, but it must not leave a value that no write can
+    /// replace; the minimum wins so the widget stays usable and pinned at a bound it
+    /// would itself accept.
+    #[test]
+    fn an_inverted_range_pins_to_the_minimum_and_stays_usable() {
+        let mut edit = DateEdit::new(Rect::new(0, 0, 200, 30));
+        edit.set_date_range(Date::new(2024, 1, 1), Date::new(2024, 12, 31));
+        edit.set_date(Date::new(2024, 6, 15));
+
+        edit.set_date_range(Date::new(2024, 10, 1), Date::new(2024, 3, 1));
+
+        assert_eq!(edit.date(), Date::new(2024, 10, 1), "the minimum is authoritative");
+        edit.set_date(Date::new(2024, 10, 1));
+    }
+
+    /// Bounds that already contain the value must leave it alone.
+    #[test]
+    fn setting_a_range_that_contains_the_value_does_not_move_it() {
+        let mut edit = DateEdit::new(Rect::new(0, 0, 200, 30));
+        edit.set_date_range(Date::new(2024, 1, 1), Date::new(2024, 12, 31));
+        edit.set_date(Date::new(2024, 6, 15));
+
+        edit.set_minimum_date(Date::new(2024, 2, 1));
+        edit.set_maximum_date(Date::new(2024, 11, 1));
+
+        assert_eq!(edit.date(), Date::new(2024, 6, 15), "an in-range value must not be nudged");
     }
 }

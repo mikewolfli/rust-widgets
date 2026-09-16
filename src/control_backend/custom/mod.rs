@@ -55,7 +55,7 @@ impl CustomPaintControlBackend {
     /// This is the single creation path for every `create_*` method on this backend
     /// (BLUE15 rules #55/#65): the object comes from `WidgetFactory`, which is the
     /// only component that knows every kind's constructor, and it is handed to
-    /// [`crate::widget::runtime`], which owns it from then on.
+    /// `crate::widget::runtime`, which owns it from then on.
     ///
     /// Before this existed, `create_*` recorded geometry and a few strings into six
     /// shadow maps and produced an id that addressed **no widget object at all** —

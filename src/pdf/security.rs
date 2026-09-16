@@ -14,10 +14,14 @@
 //! # Content-level encryption tooling (`pdf-encryption` feature)
 //!
 //! With the `pdf-encryption` feature the module additionally provides real
-//! AES-128-CBC primitives ([`PdfEncryption`], [`encrypt_pdf`]) that encrypt
+//! AES-128-CBC primitives (`PdfEncryption`, `encrypt_pdf`) that encrypt
 //! arbitrary byte content with a password-derived key. These are content-level
 //! helpers, not a substitute for a standards-compliant PDF encryption
 //! dictionary pipeline.
+//!
+//! Those two items are named without documentation links on purpose: they are
+//! `#[cfg(feature = "pdf-encryption")]`-gated, so under any other feature set the
+//! links would dangle and this module's docs would fail to build.
 
 use crate::pdf::types::*;
 

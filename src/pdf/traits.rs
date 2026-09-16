@@ -6,8 +6,8 @@
 //! # Coordinate system and units
 //!
 //! All geometry is in **PDF points**, where one point is 1/72 inch, and page
-//! sizes are given as [`Size`] in the same unit (so a US Letter page is
-//! `612 x 792`).
+//! sizes are given as [`Size`](crate::core::Size) in the same unit (so a US Letter
+//! page is `612 x 792`).
 //!
 //! The y axis of the **public API** follows the rest of the crate: the origin is
 //! the **top-left** of the page and y grows downwards. Implementations are

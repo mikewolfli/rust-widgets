@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 /// The platform-neutral state a backend keeps for one widget handle.
 ///
 /// `K` is the backend's own handle-kind discriminator; the record itself is
-/// written by the shared accessors in [`crate::platform::stub`] and by any OS
+/// written by the shared accessors in the stub backend and by any OS
 /// adapter, so the accessors read back what they were told to set rather than
 /// querying an OS control. Optional fields follow the convention described on
 /// each: `None` means "this control has no such concept here", never "zero".
@@ -347,7 +347,7 @@ where
     /// Insert one widget record under a **caller-chosen** id.
     ///
     /// Used by self-drawn mounts: the id originates in
-    /// [`crate::widget::runtime`], which owns the widget, so the backend state
+    /// `widget::runtime`, which owns the widget, so the backend state
     /// has to adopt it rather than allocate its own. Also advances the internal
     /// allocator past `id` so a later `create_widget` cannot collide with it.
     pub fn register_widget_with_id(

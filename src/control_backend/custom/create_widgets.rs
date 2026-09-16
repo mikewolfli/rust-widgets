@@ -55,7 +55,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
     /// Drops every piece of host state this backend keeps for `widget_id`.
     ///
     /// The widget object itself is released through
-    /// [`crate::widget::runtime::unregister`], which owns it; what remains here is
+    /// `widget::runtime::unregister`, which owns it; what remains here is
     /// the IME policy and accessible-name override, which no widget holds.
     fn destroy_widget(&self, widget_id: ObjectId) -> bool {
         // `widget::runtime` is compiled out of the alloc-frugal profile, which

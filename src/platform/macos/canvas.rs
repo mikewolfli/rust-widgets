@@ -4,7 +4,7 @@
 //! Native surface for **self-drawn** widgets on macOS.
 //!
 //! Registers an `NSView` subclass (`RustWidgetsCanvasView`) whose `drawRect:`
-//! pulls one RGBA frame out of [`crate::widget::runtime`] and blits it into the
+//! pulls one RGBA frame out of `crate::widget::runtime` and blits it into the
 //! view's CoreGraphics context. That is the entire contract: the widget owns its
 //! pixels, this view owns the window region they land in.
 //!

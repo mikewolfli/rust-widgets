@@ -22,10 +22,10 @@ pub struct TestConfig {
     pub timeout: Duration,
     /// Directory image baselines are stored in, conventionally relative to the
     /// crate root. Defaults to `"tests/snapshots"`, matching
-    /// [`SnapshotManager::default`].
+    /// `SnapshotManager::default()`.
     pub snapshot_dir: String,
     /// Allowed image difference, in percent of differing pixels. Defaults to
-    /// `0.01`, matching [`SnapshotManager::new`].
+    /// `0.01`, matching `SnapshotManager::new()`.
     pub tolerance: f32,
 }
 

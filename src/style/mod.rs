@@ -6,15 +6,18 @@
 //! The style pipeline is layered so that a widget's appearance can be resolved
 //! without any single source having to know about all the others:
 //!
-//! 1. [`primitives`] — the value types (colour, padding, margin, font) that the
-//!    rest of the system is built from. No resolution logic.
-//! 2. [`theme`] and [`theme_state`] — the base appearance: global theme
-//!    defaults, per-class overrides, and per-widget state variants.
-//! 3. [`selector`], [`css`], and [`stylesheet`] — declarative matching. A
-//!    selector decides *whether* a rule applies to a widget, and CSS text is
-//!    parsed into those rules.
-//! 4. [`gradient`] and [`animation`] / [`animation_group`] — appearance values
-//!    that vary over position and time rather than being constants.
+//! 1. [`primitives`](crate::style::primitives) — the value types (colour, padding,
+//!    margin, font) that the rest of the system is built from. No resolution logic.
+//! 2. [`theme`](crate::style::theme) and [`theme_state`](crate::style::theme_state)
+//!    — the base appearance: global theme defaults, per-class overrides, and
+//!    per-widget state variants.
+//! 3. [`selector`](crate::style::selector), [`css`](crate::style::css), and
+//!    [`stylesheet`](crate::style::stylesheet) — declarative matching. A selector
+//!    decides *whether* a rule applies to a widget, and CSS text is parsed into
+//!    those rules.
+//! 4. [`gradient`](crate::style::gradient) and [`animation`](crate::style::animation)
+//!    / [`animation_group`](crate::style::animation_group) — appearance values that
+//!    vary over position and time rather than being constants.
 //!
 //! Inheritance runs theme → per-class overrides → per-widget state, each level
 //! falling through to the next when unset; see the chain note below.

@@ -385,7 +385,7 @@ pub trait Platform: Send + Sync {
     /// `mount_surface` is that surface.
     ///
     /// The caller registers the widget first
-    /// ([`crate::widget::runtime::register`]) and passes the resulting id here
+    /// (`widget::runtime::register`) and passes the resulting id here
     /// together with the parent window and the desired rectangle. The backend
     /// must not take ownership of the widget: it lives in the registry for as
     /// long as the mount exists.
@@ -418,7 +418,7 @@ pub trait Platform: Send + Sync {
     /// Unmounts a surface and releases it.
     ///
     /// The widget stays in the process-wide registry; the caller decides when to
-    /// drop it via [`crate::widget::runtime::unregister`].
+    /// drop it via `widget::runtime::unregister`.
     ///
     /// Returns `false` when `id` is not mounted on this backend.
     fn unmount_surface(&self, _id: ObjectId) -> bool {
@@ -451,7 +451,7 @@ pub trait Platform: Send + Sync {
     /// widget nested inside it. Only the backend knows where its surface sits in the
     /// window, so only the backend can turn a surface-local position into the
     /// coordinate space the widget tree uses (which, in this library, is absolute —
-    /// see [`crate::widget::runtime::widget_at`]).
+    /// see `widget::runtime::widget_at`).
     ///
     /// The default implementation resolves the point against the widget tree rooted
     /// at `root` and delivers there, which is correct for any backend whose surface

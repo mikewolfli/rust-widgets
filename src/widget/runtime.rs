@@ -5,7 +5,7 @@
 //!
 //! # Why this exists
 //!
-//! [`crate::widget::WidgetFactory`] can build a `Box<dyn Widget>` for any kind —
+//! `widget::WidgetFactory` can build a `Box<dyn Widget>` for any kind —
 //! `CodeEditor`, `ColorPicker`, `GanttWidget`, … — but until this module existed
 //! there was no path from such a box to pixels inside a real window. The platform
 //! layer only knew how to create OS controls (an OS button, a text field, a

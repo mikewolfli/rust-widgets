@@ -6,7 +6,7 @@
 //! Hosts each mounted widget in a [`gtk::DrawingArea`] placed inside the
 //! window's existing `gtk::Fixed` content container, so a self-drawn editor can
 //! sit next to native-control rows in the same window. The area's `draw` signal
-//! pulls one RGBA frame out of [`crate::widget::runtime`] and blits it with
+//! pulls one RGBA frame out of `crate::widget::runtime` and blits it with
 //! cairo.
 //!
 //! See `docs/plans/custom-paint_mounting.md`.

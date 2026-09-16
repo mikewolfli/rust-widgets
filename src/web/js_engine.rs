@@ -134,12 +134,10 @@ pub struct JsError {
     /// Optional captured call stack, or `None` when none was recorded. Error
     /// constructors in this module never populate it.
     pub stack: Option<String>,
-    /// 1-based source line, or `None` if unknown. At least one producer in this
-    /// module reports position using the *character offset* while labelling it as
-    /// a line, so do not assume strict 1-based line semantics.
+    /// 1-based source line, or `None` if unknown.
     pub line: Option<u32>,
-    /// Column, or `None` if unknown. Only meaningful alongside [`Self::line`];
-    /// [`std::fmt::Display`] prints both or neither.
+    /// 1-based column within [`Self::line`], or `None` if unknown. Only meaningful
+    /// alongside [`Self::line`]; [`std::fmt::Display`] prints both or neither.
     pub column: Option<u32>,
 }
 impl JsError {
@@ -150,6 +148,37 @@ impl JsError {
     /// Creates an error carrying a source position, both values 1-based by
     /// convention. The stack remains unset.
     pub fn with_location(message: String, line: u32, column: u32) -> Self {
+        Self { message, stack: None, line: Some(line), column: Some(column) }
+    }
+
+    /// Creates an error from a **byte offset** into `source`.
+    ///
+    /// The parser knows where it stopped as an offset into the script, not as a
+    /// line and column, so this converts one into the other. Use this rather than
+    /// [`Self::with_location`] for anything derived from an offset: passing the
+    /// offset as the `line` argument (which the interpreter used to do) printed
+    /// nonsense such as `at line 0, column 24`, because the two fields meant
+    /// different things.
+    ///
+    /// The offset is interpreted as a byte index, which is what the parser tracks.
+    /// A position inside a multi-byte character is floored to the start of that
+    /// character rather than panicking, and an offset past the end of `source`
+    /// clamps to the final line.
+    pub fn at_offset(message: String, source: &str, offset: usize) -> Self {
+        // Floor to a character boundary: slicing a UTF-8 string mid-character would
+        // panic, and an error path must never panic on malformed input.
+        let mut end = offset.min(source.len());
+        while end > 0 && !source.is_char_boundary(end) {
+            end -= 1;
+        }
+        let prefix = &source[..end];
+
+        let line = prefix.bytes().filter(|b| *b == b'\n').count() as u32 + 1;
+        // Column within the line, 1-based. `rfind` over the already-sliced prefix
+        // avoids a second pass over the whole script.
+        let line_start = prefix.rfind('\n').map(|index| index + 1).unwrap_or(0);
+        let column = prefix[line_start..].chars().count() as u32 + 1;
+
         Self { message, stack: None, line: Some(line), column: Some(column) }
     }
 }
@@ -405,10 +434,10 @@ impl SimpleJsEngine {
             let after_name = rest[name_end..].trim();
             if after_name.starts_with('(') {
                 let paren_end = after_name.find(')').ok_or_else(|| {
-                    JsError::with_location(
+                    JsError::at_offset(
                         "Unclosed parameter list in function definition".to_string(),
-                        0,
-                        stmt.len() as u32,
+                        stmt,
+                        stmt.len(),
                     )
                 })?;
                 let params_str = &after_name[1..paren_end];
@@ -420,11 +449,7 @@ impl SimpleJsEngine {
                 let after_params = after_name[paren_end + 1..].trim();
                 if after_params.starts_with('{') {
                     let close = after_params.rfind('}').ok_or_else(|| {
-                        JsError::with_location(
-                            "Unclosed function body".to_string(),
-                            0,
-                            stmt.len() as u32,
-                        )
+                        JsError::at_offset("Unclosed function body".to_string(), stmt, stmt.len())
                     })?;
                     let body = after_params[1..close].to_string();
                     let func = JsValue::FunctionDef { name: name.to_string(), params, body };
@@ -432,23 +457,19 @@ impl SimpleJsEngine {
                     return Ok(func);
                 }
             }
-            return Err(JsError::with_location(
+            return Err(JsError::at_offset(
                 "Invalid function syntax".to_string(),
-                0,
-                stmt.len() as u32,
+                stmt,
+                stmt.len(),
             ));
         }
         // --- if / else ---
         if stmt.starts_with("if ") || stmt.starts_with("if(") {
             let cond_start = stmt.find('(').ok_or_else(|| {
-                JsError::with_location("Expected '(' after 'if'".to_string(), 0, stmt.len() as u32)
+                JsError::at_offset("Expected '(' after 'if'".to_string(), stmt, stmt.len())
             })?;
             let cond_end = stmt[cond_start..].find(')').ok_or_else(|| {
-                JsError::with_location(
-                    "Unclosed condition in 'if'".to_string(),
-                    0,
-                    stmt.len() as u32,
-                )
+                JsError::at_offset("Unclosed condition in 'if'".to_string(), stmt, stmt.len())
             })?;
             let condition = stmt[cond_start + 1..cond_start + cond_end].trim();
             let cond_val = self.evaluate(condition, context)?;
@@ -479,10 +500,10 @@ impl SimpleJsEngine {
         // --- for loop ---
         if stmt.starts_with("for ") || stmt.starts_with("for(") {
             let paren_start = stmt.find('(').ok_or_else(|| {
-                JsError::with_location("Expected '(' after 'for'".to_string(), 0, stmt.len() as u32)
+                JsError::at_offset("Expected '(' after 'for'".to_string(), stmt, stmt.len())
             })?;
             let paren_end = stmt[paren_start..].find(')').ok_or_else(|| {
-                JsError::with_location("Unclosed 'for' condition".to_string(), 0, stmt.len() as u32)
+                JsError::at_offset("Unclosed 'for' condition".to_string(), stmt, stmt.len())
             })?;
             let header = stmt[paren_start + 1..paren_start + paren_end].trim();
             let after_header = stmt[paren_start + paren_end + 1..].trim();
@@ -494,10 +515,10 @@ impl SimpleJsEngine {
                     (header[..s1].trim(), header[s1 + 1..s2].trim(), header[s2 + 1..].trim())
                 }
                 _ => {
-                    return Err(JsError::with_location(
+                    return Err(JsError::at_offset(
                         "Invalid 'for' loop syntax".to_string(),
-                        0,
-                        stmt.len() as u32,
+                        stmt,
+                        stmt.len(),
                     ))
                 }
             };
@@ -582,18 +603,10 @@ impl JsEngine for SimpleJsEngine {
             || script.starts_with("console.debug(")
         {
             let start = script.find('(').ok_or_else(|| {
-                JsError::with_location(
-                    "Missing '(' in console call".to_string(),
-                    0,
-                    script.len() as u32,
-                )
+                JsError::at_offset("Missing '(' in console call".to_string(), script, script.len())
             })? + 1;
             let end = script.rfind(')').ok_or_else(|| {
-                JsError::with_location(
-                    "Missing ')' in console call".to_string(),
-                    0,
-                    script.len() as u32,
-                )
+                JsError::at_offset("Missing ')' in console call".to_string(), script, script.len())
             })?;
             let content = &script[start..end];
             let value = self.parse_value(content);
@@ -964,5 +977,61 @@ mod boa_tests {
         engine.set_global("x", JsValue::Number(99.0));
         let result = engine.evaluate("x * 2").unwrap();
         assert_eq!(result, JsValue::Number(198.0));
+    }
+
+    /// A byte offset must be reported as a real line and column.
+    ///
+    /// The parser tracks positions as offsets. Passing one as the `line` argument
+    /// (which the interpreter used to do) produced messages like
+    /// `at line 0, column 24` — wrong in both fields, and impossible to act on.
+    #[test]
+    fn at_offset_converts_an_offset_into_line_and_column() {
+        let source = "first\nsecond\nthird";
+
+        // Offset 0 is the very start.
+        let error = JsError::at_offset("boom".to_string(), source, 0);
+        assert_eq!((error.line, error.column), (Some(1), Some(1)));
+
+        // Offset 6 is just past the first newline: line 2, column 1 ('s').
+        let error = JsError::at_offset("boom".to_string(), source, 6);
+        assert_eq!((error.line, error.column), (Some(2), Some(1)));
+
+        // Offset 7 is 1 character into line 2, so column 2 ('e').
+        let error = JsError::at_offset("boom".to_string(), source, 7);
+        assert_eq!((error.line, error.column), (Some(2), Some(2)));
+
+        // Offset 10 is 4 characters into line 2, so column 5 ('n').
+        let error = JsError::at_offset("boom".to_string(), source, 10);
+        assert_eq!((error.line, error.column), (Some(2), Some(5)));
+
+        // Past the end clamps to the final line rather than panicking.
+        let error = JsError::at_offset("boom".to_string(), source, 9999);
+        assert_eq!(error.line, Some(3), "an out-of-range offset clamps to the last line");
+    }
+
+    /// The conversion must not panic on an offset inside a multi-byte character.
+    ///
+    /// The parser's offsets are byte indices, so a script containing non-ASCII text
+    /// can produce an offset that is not a character boundary. Slicing there would
+    /// panic; an error path must never panic on malformed input.
+    #[test]
+    fn at_offset_does_not_panic_inside_a_multibyte_character() {
+        // `é` is two bytes, so offset 1 lands in the middle of it.
+        let source = "é";
+        let error = JsError::at_offset("boom".to_string(), source, 1);
+        assert_eq!(error.line, Some(1), "the offset floors to the character start");
+        assert_eq!(error.column, Some(1));
+    }
+
+    /// The rendered message must name a line and column, not a column alone.
+    #[test]
+    fn display_reports_both_line_and_column() {
+        let error = JsError::at_offset("boom".to_string(), "a\nb", 2);
+        let rendered = error.to_string();
+        assert!(rendered.contains("at line 2"), "expected a real line number in {rendered:?}");
+        assert!(
+            !rendered.contains("line 0"),
+            "a zero line means the offset leaked in: {rendered:?}"
+        );
     }
 }

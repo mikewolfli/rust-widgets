@@ -38,7 +38,7 @@ pub struct ChartSeries {
 /// Two same-named enums exist in the control layer and are deliberately kept
 /// separate (principle #49):
 ///
-/// * [`crate::widget::special_widgets::chart::ChartType`] — `ChartWidget`'s four
+/// * `crate::widget::special_widgets::chart::ChartType` — `ChartWidget`'s four
 ///   runtime-switchable styles;
 /// * [`crate::widget::display_widgets::mini_chart::ChartType`] — `MiniChart`'s two
 ///   styles.

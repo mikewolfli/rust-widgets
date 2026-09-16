@@ -419,14 +419,13 @@ pub trait Widget: EventHandler + Any {
     fn set_margin(&mut self, margin: Margin) {
         self.base_mut().style_mut().margin = margin;
     }
-    /// Returns connection scope used to auto-disconnect slots when widget drops.
     /// Returns the connection scope whose lifetime is tied to this widget.
     ///
     /// Slots connected through this scope are disconnected automatically when
     /// the widget is dropped, which is the recommended way to avoid callbacks
-    /// firing into freed state. Scope it with
-    /// [`ConnectionScope::scoped`](crate::signal::ConnectionScope::scoped)
-    /// rather than connecting with a bare signal handle.
+    /// firing into freed state. Pass it as the `owner` to
+    /// [`Signal::connect_scoped`](crate::signal::Signal::connect_scoped) rather
+    /// than connecting with a bare signal handle.
     fn connection_scope(&self) -> &ConnectionScope {
         self.base().connection_scope()
     }
@@ -546,7 +545,7 @@ pub trait Widget: EventHandler + Any {
     ///
     /// Focusable controls are the ones a user can reach by pressing Tab, and the
     /// ones that receive key events. The registry asks each widget as it mounts
-    /// (see [`crate::widget::runtime::register`]), so a control declares this itself
+    /// (see `crate::widget::runtime::register`), so a control declares this itself
     /// rather than being looked up in a kind table — a third-party widget the
     /// library has never heard of joins the tab order by answering `true`.
     ///

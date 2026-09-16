@@ -29,6 +29,7 @@ pub struct WindowsAccessibilityBridge {
 }
 
 impl WindowsAccessibilityBridge {
+    /// Creates an empty bridge: no accessible names and no bound handles.
     pub fn new() -> Self {
         Self { names: Mutex::new(HashMap::new()), native_handles: Mutex::new(HashMap::new()) }
     }

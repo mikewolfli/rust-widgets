@@ -41,7 +41,7 @@ pub enum ControlRoutePreference {
 /// return an id with no widget behind it (BLUE15 §10.3).
 ///
 /// Control state now lives in the widget, reached through
-/// [`crate::widget::runtime`]. What remains here is only what a widget cannot hold:
+/// `crate::widget::runtime`. What remains here is only what a widget cannot hold:
 ///
 /// - `ime_enabled` — describes how the *host* routes composition events to a
 ///   control, which is a backend policy rather than a control property.

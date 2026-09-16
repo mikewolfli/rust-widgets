@@ -20,8 +20,15 @@ use super::{
 pub(crate) const DOUBLE_TAP_TIMEOUT_MS: u64 = 400;
 /// Minimum hold duration (ms) for long-press detection.
 pub(crate) const LONG_PRESS_MIN_MS: u64 = 500;
-/// Minimum swipe velocity (px/ms) to activate swipe gesture.
-pub(crate) const SWIPE_MIN_VELOCITY: f32 = 0.5;
+/// Minimum swipe velocity to activate a swipe gesture.
+///
+/// **The unit everywhere is logical pixels per second**, matching the public
+/// contract documented on `Event::Swipe` / `Event::TwoFingerSwipe` / `Event::Fling`.
+/// Timestamps arrive in milliseconds, so each recogniser converts its px/ms ratio
+/// by 1000. That conversion is the one thing to keep in step: it was previously
+/// applied by `FlingGesture` only, leaving the two swipe recognisers reporting
+/// px/ms for a field documented as px/s.
+pub(crate) const SWIPE_MIN_VELOCITY: f32 = 500.0;
 /// Maximum finger movement (px) to still consider the touch "stationary".
 pub(crate) const MAX_STATIONARY_DISTANCE: f32 = 15.0;
 /// Maximum finger movement (px) during a long-press hold.
@@ -139,5 +146,70 @@ mod tests {
         let mut engine = GestureEngine::new();
         engine.reset_all();
         assert_eq!(engine.recognizers.len(), 11);
+    }
+
+    /// Every recogniser must report velocity in the **same** unit: px/s.
+    ///
+    /// This is the regression guard for a real defect, found while documenting:
+    /// `Event::Swipe::velocity` / `TwoFingerSwipe::velocity` / `Fling::velocity` are
+    /// all documented as *logical pixels per second*, but `SwipeGesture` and
+    /// `TwoFingerSwipeGesture` emitted px/ms while `FlingGesture` emitted px/s — a
+    /// 1000x disagreement between two recognisers populating the same field. No test
+    /// exercised those paths, so nothing caught it.
+    ///
+    /// Both recognisers are fed the same physical motion (100 px in 100 ms = 1000
+    /// px/s) and must agree.
+    #[test]
+    fn every_recogniser_reports_velocity_in_pixels_per_second() {
+        const START: i32 = 0;
+        const END: i32 = 100; // 100 px
+        const ELAPSED_MS: u64 = 100; // over 100 ms -> 1000 px/s
+        const TOUCH: u64 = 1;
+        // Generous band: the point is to catch a wrong *scale*, not to pin rounding.
+        const EXPECTED: std::ops::RangeInclusive<f32> = 900.0..=1100.0;
+
+        // Single-finger swipe.
+        let mut swipe = SwipeGesture::new();
+        assert!(swipe
+            .process(&Event::TouchBegin { pos: Point::new(START, START), touch_id: TOUCH }, 0)
+            .is_none());
+        let swipe_event = swipe
+            .process(&Event::TouchEnd { pos: Point::new(END, START), touch_id: TOUCH }, ELAPSED_MS);
+        let swipe_velocity = match swipe_event {
+            Some(Event::Swipe { velocity, .. }) => velocity,
+            other => panic!("expected Event::Swipe over 100px in 100ms, got {other:?}"),
+        };
+
+        // Fling over the same physical motion.
+        let mut fling = FlingGesture::new();
+        assert!(fling
+            .process(&Event::TouchBegin { pos: Point::new(START, START), touch_id: TOUCH }, 0)
+            .is_none());
+        for step in 1..=4u64 {
+            fling.process(
+                &Event::TouchMove {
+                    pos: Point::new(START + (step as i32) * (END - START) / 4, START),
+                    touch_id: TOUCH,
+                },
+                ELAPSED_MS / 4 * step,
+            );
+        }
+        let fling_event = fling
+            .process(&Event::TouchEnd { pos: Point::new(END, START), touch_id: TOUCH }, ELAPSED_MS);
+        let fling_velocity = match fling_event {
+            Some(Event::Fling { velocity, .. }) => velocity,
+            other => panic!("expected Event::Fling over 100px in 100ms, got {other:?}"),
+        };
+
+        // 100 px in 100 ms is 1000 px/s. A value near 1 means the px/ms ratio was
+        // emitted unscaled — the defect this test exists for.
+        for (name, velocity) in [("swipe", swipe_velocity), ("fling", fling_velocity.x as f32)] {
+            assert!(
+                EXPECTED.contains(&velocity),
+                "{name} velocity must be ~1000 px/s for 100px in 100ms, got {velocity}. \
+                 A value near 1 means px/ms leaked through, which contradicts the \
+                 unit documented on Event::Swipe / Event::Fling"
+            );
+        }
     }
 }

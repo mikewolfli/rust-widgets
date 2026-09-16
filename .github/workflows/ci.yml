@@ -91,6 +91,17 @@ jobs:
           chmod +x tools/check_cookbook.sh
           ./tools/check_cookbook.sh
 
+      # `missing_docs` is denied crate-wide and intra-doc links are checked under
+      # `-D warnings`. Broken links are invisible in normal builds (rustdoc renders
+      # them as plain text), so they need their own gate — it already caught links
+      # to a removed module, to items compiled out of `mini`, and to private
+      # constants.
+      - name: Run documentation gate
+        shell: bash
+        run: |
+          chmod +x tools/check_docs.sh
+          ./tools/check_docs.sh
+
   feature-completeness-matrix:
     name: Feature completeness matrix
     runs-on: ubuntu-latest
@@ -136,6 +147,18 @@ jobs:
 
       - name: Cargo bench compile check
         run: cargo bench --no-run
+
+      # Benchmarks that nobody compares against anything cannot fail, so "the hot
+      # paths are still fast" stays an opinion. This runs the two paths TODO.md names
+      # as performance-critical and checks them against a recorded baseline (3x
+      # tolerance, because shared CI runners are noisy). It catches the class of
+      # regression that matters here — a new per-frame allocation or a lost
+      # short-circuit — which shows up as 10x or worse, not 30%.
+      - name: Performance regression gate
+        shell: bash
+        run: |
+          chmod +x tools/check_perf.sh
+          ./tools/check_perf.sh
 
       - name: Check MSRV
         run: cargo check --rust-version

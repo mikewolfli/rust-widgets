@@ -455,11 +455,20 @@ impl WebEngineView {
             self.base.request_redraw();
         }
     }
-    /// Re-emits the start of a load for the current URL without fetching
-    /// anything. No-op when the URL is empty.
+    /// Restarts the load for the current URL without fetching anything.
+    ///
+    /// Emits [`WebEngineView::loading_started`] again and marks a load pending, so
+    /// `is_loading()` becomes `true`. It is completed the same way any other load is:
+    /// the timer returned by [`WebEngineView::load_timer_id`] must be delivered, which
+    /// emits [`WebEngineView::loading_finished`] and clears the flag. Call
+    /// [`WebEngineView::stop`] to finish early.
+    ///
+    /// Nothing is fetched either way — this widget models the load lifecycle rather
+    /// than performing network I/O.
+    ///
+    /// No-op when the URL is empty, because there is nothing to reload.
     pub fn reload(&mut self) {
         if !self.url.is_empty() {
-            // Re-emits the load lifecycle without re-fetching (no network).
             self.begin_loading();
         }
     }
@@ -470,11 +479,25 @@ impl WebEngineView {
     }
     /// Evaluates `script` and returns its result rendered as a string.
     ///
-    /// With the `js-engine` feature this runs in a real embedded engine, created
-    /// lazily on first use, and returns the engine's error text on failure.
-    /// Without that feature it always returns `Err`; either way the
-    /// `is_javascript_enabled` flag is not consulted.
+    /// **Refused while JavaScript is disabled.** When
+    /// [`WebEngineView::is_javascript_enabled`] is `false` this returns an `Err`
+    /// without touching the engine, so the flag is enforced rather than advisory.
+    /// Previously the flag was stored and never consulted, which meant a host that
+    /// turned scripting off still executed any script it was handed — a security
+    /// setting that silently did nothing.
+    ///
+    /// With the `js-engine` feature the script runs in a real embedded engine, created
+    /// lazily on first use, and the engine's error text is returned on failure.
+    /// Without that feature it always returns `Err`.
     pub fn evaluate_javascript(&mut self, script: &str) -> Result<String, String> {
+        if !self.javascript_enabled {
+            // Return before the engine is even created: a disabled page must not
+            // have script of any kind evaluated for it.
+            return Err("JavaScript is disabled for this view; call set_javascript_enabled(true) \
+                 to permit evaluation"
+                .to_string());
+        }
+
         #[cfg(feature = "js-engine")]
         {
             let engine = self.js_engine.get_or_insert_with(crate::web::BoaJsEngine::new);
@@ -486,8 +509,12 @@ impl WebEngineView {
             Err("JavaScript evaluation requires the `js-engine` feature".to_string())
         }
     }
-    /// Records whether JavaScript evaluation is permitted. This is a state flag
-    /// only; `evaluate_javascript` does not enforce it.
+    /// Sets whether JavaScript may be evaluated for this view.
+    ///
+    /// Enforced by [`WebEngineView::evaluate_javascript`], which refuses to run
+    /// anything while this is `false`. Defaults to `true` at construction. It gates
+    /// only this widget's own evaluation entry point; it is not a substitute for a
+    /// sandbox in whatever engine the host may run elsewhere.
     pub fn set_javascript_enabled(&mut self, enabled: bool) {
         self.javascript_enabled = enabled;
     }
@@ -704,6 +731,76 @@ mod tests {
 
         wv.stop();
         assert!(!wv.is_loading());
+    }
+
+    /// Script evaluation must be refused while the flag is off.
+    ///
+    /// The defect this pins: `set_javascript_enabled(false)` stored a flag that
+    /// `evaluate_javascript` never read, so a host that turned scripting off still
+    /// executed whatever script it was handed — a security setting that silently did
+    /// nothing. The assertion is on the refusal, which holds with or without the
+    /// `js-engine` feature, so the test is meaningful in every build.
+    #[test]
+    fn evaluate_javascript_is_refused_while_disabled() {
+        let mut wv = WebEngineView::new(Rect::new(0, 0, 300, 200));
+        assert!(wv.is_javascript_enabled(), "scripting is on by default");
+
+        wv.set_javascript_enabled(false);
+        let error =
+            wv.evaluate_javascript("1 + 1").expect_err("a disabled view must not evaluate script");
+        assert!(error.contains("disabled"), "the refusal must say why, got: {error:?}");
+
+        // Re-enabling restores evaluation. With `js-engine` on it actually returns a
+        // result; without it the failure must be the missing-feature one, never the
+        // policy check — hence the two branches rather than an assumption.
+        wv.set_javascript_enabled(true);
+        match wv.evaluate_javascript("1 + 1") {
+            Ok(value) => assert_eq!(value, "2", "the script must actually run once enabled"),
+            Err(error) => assert!(
+                error.contains("js-engine"),
+                "without the feature the failure must name it, got: {error:?}"
+            ),
+        }
+    }
+
+    /// The engine must not even be created while scripting is disabled.
+    ///
+    /// `evaluate_javascript` returns before `get_or_insert_with`, so a disabled view
+    /// never allocates an engine. Checked through behaviour rather than by reaching
+    /// into the field: with the flag off, a script that would trap the engine is
+    /// still refused by policy.
+    #[test]
+    fn a_disabled_view_refuses_script_before_looking_at_it() {
+        let mut wv = WebEngineView::new(Rect::new(0, 0, 300, 200));
+        wv.set_javascript_enabled(false);
+
+        // Malformed script: if the policy check were reached *after* evaluation, the
+        // error would be a parse error instead of the policy refusal.
+        let error = wv.evaluate_javascript("this is not valid javascript(((").expect_err("refused");
+        assert!(error.contains("disabled"), "the policy check must run first, got: {error:?}");
+    }
+
+    /// `reload()` must go through the normal load lifecycle, not wedge the widget.
+    ///
+    /// It marks a load pending, so `is_loading()` is true until the load timer (or
+    /// `stop`) completes it — the same contract `set_url` follows. The doc previously
+    /// implied the load was never finished, which read as a stuck state.
+    #[test]
+    fn reload_runs_the_normal_load_lifecycle() {
+        let mut wv = WebEngineView::new(Rect::new(0, 0, 300, 200));
+
+        // Nothing to reload before a URL exists.
+        wv.reload();
+        assert!(!wv.is_loading(), "reload with no URL is a no-op");
+
+        wv.set_url("https://example.com/".to_string());
+        wv.handle_event(&Event::timer(WebEngineView::load_timer_id()));
+        assert!(!wv.is_loading());
+
+        wv.reload();
+        assert!(wv.is_loading(), "reload starts a load again");
+        wv.handle_event(&Event::timer(WebEngineView::load_timer_id()));
+        assert!(!wv.is_loading(), "the load timer completes a reloaded page");
     }
 
     #[test]

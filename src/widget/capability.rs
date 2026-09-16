@@ -167,26 +167,52 @@ pub use access::{read_widget_property_by_id, write_widget_property_by_id};
 /// `tool_button`).
 #[cfg(widgets_unstripped)]
 pub(crate) fn kind_canonical_name(kind: crate::widget::WidgetKind) -> alloc::string::String {
-    let debug = alloc::format!("{kind:?}");
-    let mut snake = alloc::string::String::with_capacity(debug.len() + 4);
-    for (index, ch) in debug.chars().enumerate() {
+    let mut name = alloc::string::String::new();
+    kind_canonical_name_into(kind, &mut name);
+    name
+}
+
+/// Appends the canonical `snake_case` name of `kind` to `out`, without allocating.
+///
+/// The allocation-free half of [`kind_canonical_name`], for callers that already own a
+/// buffer (which is all of them — the name is used transiently). Reusing one buffer
+/// across lookups removed the mutex that used to guard an intern map here; see
+/// [`canonical_name_for_kind`] for the history.
+///
+/// Compiled wherever a caller exists. `mini` compiles the capability layer out
+/// entirely, and `embedded` names its kinds from the static table in
+/// [`canonical_name_for_kind`] — it registers no aliases, so it never needs to derive a
+/// spelling at runtime.
+#[cfg(all(not(alloc_frugal), not(embedded_surface)))]
+pub(crate) fn kind_canonical_name_into(
+    kind: crate::widget::WidgetKind,
+    out: &mut alloc::string::String,
+) {
+    use core::fmt::Write as _;
+    // `Debug` for a fieldless enum writes the variant name with no allocation; the
+    // snake_case conversion is then done in place, one character at a time.
+    let start = out.len();
+    let _ = write!(out, "{kind:?}");
+
+    // Lowercase the segment just written, inserting `_` before an inner capital.
+    // A run of capitals (`QRCode`) stays one word, so only a capital preceded by a
+    // lowercase letter or digit starts a new word.
+    let segment = out[start..].to_ascii_lowercase();
+    let original: alloc::string::String = out[start..].into();
+    out.truncate(start);
+    for (index, ch) in original.chars().enumerate() {
         if ch.is_ascii_uppercase() {
-            // A run of capitals (`QRCode`) is emitted as one word, so only a
-            // capital that follows a lowercase letter or digit starts a new one.
-            let starts_word = index > 0
-                && !debug
-                    .chars()
-                    .nth(index - 1)
-                    .is_some_and(|previous| previous.is_ascii_uppercase());
-            if starts_word {
-                snake.push('_');
+            let previous_is_upper = index > 0
+                && original.chars().nth(index - 1).is_some_and(|p| p.is_ascii_uppercase());
+            if index > 0 && !previous_is_upper {
+                out.push('_');
             }
-            snake.push(ch.to_ascii_lowercase());
-        } else {
-            snake.push(ch);
+        }
+        // Take the already-lowercased character from the parallel string.
+        if let Some(lower) = segment.chars().nth(index) {
+            out.push(lower);
         }
     }
-    snake
 }
 
 /// The `WidgetFactory` name under which `kind` is registered.
@@ -264,14 +290,25 @@ fn alias_factory_name(kind: crate::widget::WidgetKind) -> &'static str {
 /// constructor.
 #[cfg(all(widgets_unstripped, not(full_widgets)))]
 fn factory_name_for_kind_without_registry(kind: crate::widget::WidgetKind) -> &'static str {
-    let name = kind_canonical_name(kind);
-    if let Some(alias) = alias_for_name(&name) {
+    use core::fmt::Write as _;
+
+    // Build the name in a stack buffer and look it up immediately. The name is not
+    // retained, so nothing is interned and no lock is taken — see
+    // `intern_kind_name` below for why that matters.
+    let mut buffer = alloc::string::String::new();
+    kind_canonical_name_into(kind, &mut buffer);
+
+    // The alias table is a `match`, so it resolves to a `&'static str` with no
+    // allocation and no synchronisation.
+    if let Some(alias) = alias_for_name(&buffer) {
         return alias;
     }
-    // `kind_canonical_name` allocates, so the result is interned before it escapes
-    // as a `&'static str`; the set of widget kinds is closed, so this grows to a
-    // fixed size and then stops.
-    intern_kind_name(name)
+    // No alias: the canonical name must itself be a known factory name. Reaching
+    // here means the caller asked for a kind whose variant name differs from its
+    // registered name without an alias entry — a missing alias, not a reason to
+    // borrow one from another kind. The name is returned from a small static table so
+    // the caller still gets a `&'static str` without leaking.
+    canonical_name_for_kind(kind)
 }
 
 /// The alias table keyed by canonical name, for the registry-free path.
@@ -291,25 +328,45 @@ fn alias_for_name(name: &str) -> Option<&'static str> {
     })
 }
 
-/// Interns a kind's canonical name for the registry-free lookup.
+/// The canonical factory name of a kind whose variant spelling already matches it.
+///
+/// The fallback for the registry-free path when [`alias_for_name`] has no entry. Its
+/// matched set is exactly the kinds whose `Debug` spelling and factory name agree;
+/// everything else is covered by the alias table above.
+///
+/// Returns `""` for an unmatched kind, which the constructor lookup reads as "not
+/// available in this profile" — the same answer it gives for a kind the `embedded`
+/// widget set does not ship. Inventing a name here would let the factory build a
+/// control the profile does not have.
 #[cfg(all(widgets_unstripped, not(full_widgets)))]
-fn intern_kind_name(name: alloc::string::String) -> &'static str {
-    use crate::compat::Mutex;
-
-    static NAMES: crate::compat::OnceLock<
-        Mutex<alloc::collections::BTreeMap<alloc::string::String, &'static str>>,
-    > = crate::compat::OnceLock::new();
-    let names = NAMES.get_or_init(|| Mutex::new(alloc::collections::BTreeMap::new()));
-    let mut names = names.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(existing) = names.get(&name) {
-        return existing;
+fn canonical_name_for_kind(kind: crate::widget::WidgetKind) -> &'static str {
+    match kind {
+        crate::widget::WidgetKind::Button => "button",
+        crate::widget::WidgetKind::Label => "label",
+        crate::widget::WidgetKind::CheckBox => "check_box",
+        crate::widget::WidgetKind::RadioButton => "radio_button",
+        crate::widget::WidgetKind::LineEdit => "line_edit",
+        crate::widget::WidgetKind::Slider => "slider",
+        crate::widget::WidgetKind::ProgressBar => "progress_bar",
+        crate::widget::WidgetKind::ComboBox => "combo_box",
+        crate::widget::WidgetKind::ListBox => "list_box",
+        crate::widget::WidgetKind::Panel => "panel",
+        crate::widget::WidgetKind::GroupBox => "group_box",
+        crate::widget::WidgetKind::ScrollArea => "scroll_area",
+        crate::widget::WidgetKind::ScrollBar => "scroll_bar",
+        crate::widget::WidgetKind::Splitter => "splitter",
+        crate::widget::WidgetKind::TabWidget => "tab_widget",
+        crate::widget::WidgetKind::StatusBar => "status_bar",
+        crate::widget::WidgetKind::ToolBar => "tool_bar",
+        crate::widget::WidgetKind::MenuBar => "menu_bar",
+        _ => "",
     }
-    // Leaking is deliberate and bounded: the key set is the closed set of widget
-    // kinds, so at most one allocation per kind is ever leaked.
-    let leaked: &'static str = alloc::boxed::Box::leak(name.clone().into_boxed_str());
-    names.insert(name, leaked);
-    leaked
 }
+
+/// Interns a kind's canonical name for the registry-free lookup.
+///
+/// # Why this writes into a caller-owned buffer
+///
 
 // ── Profile-specific parts ──────────────────────────────────────────────────
 //

@@ -333,7 +333,7 @@ pub struct CupertinoAlertDialog {
     /// Cancel button text (e.g. "Cancel"). Empty = no cancel.
     cancel_text: String,
     /// Emitted with no payload when the user confirms the dialog. Read
-    /// [`CupertinoAlertDialog::confirm_text`] to know which action was shown.
+    /// `CupertinoAlertDialog::confirm_text()` to know which action was shown.
     pub confirmed: GenericSignal,
     /// Emitted with no payload when the user cancels. A dialog constructed with
     /// an empty `cancel_text` still declares this signal but has no cancel
@@ -849,7 +849,7 @@ pub struct MaterialNavigationRail {
     selected_index: usize,
     /// Emitted with the newly selected index whenever the selection changes.
     /// One-based ordering is not implied; indices are positions in
-    /// [`MaterialNavigationRail::items`].
+    /// `MaterialNavigationRail::items()`.
     pub selected_changed: Signal1<usize>,
 }
 

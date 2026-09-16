@@ -128,10 +128,22 @@ fn lparam_is_null(lparam: isize) -> bool {
 }
 #[cfg(target_os = "windows")]
 impl WindowsPlatform {
+    /// Encodes `s` as a NUL-terminated UTF-16 buffer.
+    ///
+    /// This is the form every Win32 `*W` entry point expects (`CreateWindowExW`,
+    /// `SetWindowTextW`, `MessageBoxW`, …). `String`/`&str` cannot be passed
+    /// directly because Win32 wide strings are neither length-prefixed nor
+    /// guarantee-terminated by Rust.
     pub fn to_wide(s: &str) -> Vec<u16> {
         use std::os::windows::ffi::OsStrExt;
         std::ffi::OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
     }
+    /// Returns the native window handle recorded for `id`, if any.
+    ///
+    /// Only ids that were bound via [`Self::bind_native_handle`] are present; a
+    /// widget id that the library created without a host window has no handle and
+    /// yields `None`. A poisoned handle map is logged and treated as `None` rather
+    /// than panicking.
     pub fn get_native_handle(&self, id: u64) -> Option<HWND> {
         #[cfg(target_os = "windows")]
         {
@@ -150,6 +162,12 @@ impl WindowsPlatform {
             None
         }
     }
+    /// Records `hwnd` as the native window for `id`.
+    ///
+    /// Also registers the handle with the accessibility bridge, so UIAutomation
+    /// notifications can be raised against the real window. Binding an id twice
+    /// replaces the previous handle. A poisoned map is ignored: the handle is
+    /// dropped rather than panicking inside a message-pump callback.
     pub fn bind_native_handle(&self, id: u64, hwnd: HWND) {
         #[cfg(target_os = "windows")]
         {
@@ -179,6 +197,12 @@ impl WindowsPlatform {
             map.insert(command_id, widget_id);
         }
     }
+    /// Returns the widget id whose native handle is `hwnd`.
+    ///
+    /// The reverse of [`Self::get_native_handle`], used to map a `WM_COMMAND`
+    /// notification back to the library widget that owns it. Linear in the number
+    /// of bound handles. `None` when no widget owns that handle, or when the handle
+    /// map is poisoned (logged, not panicked).
     #[cfg(target_os = "windows")]
     pub fn widget_id_by_native_handle(&self, hwnd: HWND) -> Option<u64> {
         match self.menu_state.handles.lock() {
@@ -196,6 +220,7 @@ impl WindowsPlatform {
 }
 /// Extension trait for downcasting `dyn Platform` to concrete platform types.
 pub trait PlatformDowncast {
+    /// Downcasts to `T`, returning `None` when the backend is a different type.
     fn downcast_ref<T: 'static>(&self) -> Option<&T>;
 }
 impl PlatformDowncast for dyn Platform {
@@ -216,9 +241,13 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 /// Windows platform backend struct definition
 pub struct WindowsPlatform {
+    /// Host-side widget/surface state shared with every backend.
     pub state: BackendState<WindowsHandleKind>,
+    /// Whether [`Platform::init`] has run.
     pub runtime_initialized: AtomicBool,
+    /// Whether the run loop is currently active.
     pub runtime_running: AtomicBool,
+    /// Menu and command-routing state (Win32 only).
     #[cfg(target_os = "windows")]
     pub menu_state: Win32MenuState,
     // Removed handle_state: Win32HandleState, as Win32HandleState is not defined in state.rs
@@ -262,6 +291,7 @@ impl Win32MenuState {
 #[cfg(target_os = "windows")]
 // Extension trait for native Win32 Slider (Trackbar) integration
 impl WindowsPlatform {
+    /// Creates a backend with no windows, no menus and no bound handles.
     pub fn new() -> Self {
         WindowsPlatform {
             state: BackendState::new(),
