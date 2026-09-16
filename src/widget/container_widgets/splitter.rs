@@ -33,7 +33,11 @@ struct DragState {
 pub struct Splitter {
     base: BaseWidget,
     layout: SplitterLayout,
+    /// Emitted after a pane ratio changes, with the full ratio vector in pane
+    /// order. Ratios are relative weights, not pixels.
     pub pane_layout_changed: Signal1<Vec<f32>>,
+    /// Emitted when the splitter is switched between horizontal and vertical,
+    /// with the new orientation.
     pub orientation_changed: Signal1<Orientation>,
     registry: Option<Rc<RefCell<SimpleRegistry>>>,
     drag_state: Option<DragState>,

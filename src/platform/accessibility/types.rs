@@ -12,6 +12,9 @@ use crate::widget::WidgetKind;
 /// macOS, UIA control types on Windows, AT-SPI roles on Linux).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum A11yRole {
+    /// Role could not be determined, or the widget has no meaningful
+    /// accessibility role. This is the default and the fallback used by the
+    /// [`WidgetKind`] conversions for unmapped kinds.
     #[default]
     Unknown,
     /// Push button.
@@ -324,39 +327,79 @@ pub trait A11yProvider: Send + Sync {
 ///
 /// This is the older role enum kept for backward compatibility. New code
 /// should prefer [`A11yRole`] for a more comprehensive set of roles.
+///
+/// Because it is the coarser of the two, several [`A11yRole`] variants collapse
+/// onto the same entry here; see the [`From<A11yRole>`](AccessibleRole::from)
+/// implementation for the exact mapping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AccessibleRole {
+    /// Push button, including toggle-style buttons and switches.
     Button,
+    /// Check box, binary or tri-state.
     CheckBox,
+    /// Dropdown selection control.
     ComboBox,
+    /// Dialog or modal overlay; also covers alerts.
     Dialog,
+    /// Generic grouping container.
     Group,
+    /// Image or graphic.
     Image,
+    /// Static text label.
     Label,
+    /// Hyperlink.
     Link,
-    List,
+    /// List control; its rows are [`AccessibleRole::ListItem`].
     ListItem,
-    Menu,
+    /// One row of a [`AccessibleRole::List`].
+    List,
+    /// Pop-up menu.
     MenuBar,
+    /// Menu bar.
+    Menu,
+    /// One entry of a [`AccessibleRole::Menu`].
     MenuItem,
+    /// Progress indicator, determinate or indeterminate.
     ProgressBar,
+    /// Radio button.
     RadioButton,
+    /// Scroll bar.
     ScrollBar,
+    /// Range slider.
     Slider,
+    /// Numeric stepper.
     SpinButton,
+    /// Draggable splitter between panes.
     Splitter,
+    /// Non-editable text; also covers headings and paragraphs.
     StaticText,
-    Tab,
+    /// Tab control; its pages are [`AccessibleRole::TabGroup`].
     TabGroup,
+    /// Tab bar grouping a set of pages.
+    Tab,
+    /// Table, i.e. a grid of rows and columns.
     Table,
+    /// Editable text field.
     TextField,
+    /// Tool bar.
     ToolBar,
-    Tree,
+    /// Tree control; its nodes are [`AccessibleRole::TreeItem`].
     TreeItem,
+    /// One node of a [`AccessibleRole::Tree`].
+    Tree,
+    /// Top-level window.
     Window,
+    /// Role could not be determined.
     Unknown,
 }
 
+/// Collapses the richer [`A11yRole`] onto this legacy enum.
+///
+/// Several distinct roles share a target because this enum has no equivalent:
+/// `Label`, `Heading`, and `Paragraph` all become
+/// [`AccessibleRole::StaticText`]; `Alert` becomes [`AccessibleRole::Dialog`];
+/// `Switch` becomes [`AccessibleRole::Button`]; and `StatusBar` and `ToolTip`
+/// become [`AccessibleRole::Group`].
 impl From<A11yRole> for AccessibleRole {
     fn from(role: A11yRole) -> Self {
         match role {

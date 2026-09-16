@@ -19,6 +19,8 @@ pub mod windows;
 #[cfg(target_os = "linux")]
 pub mod linux;
 
+/// Platform-neutral accessibility node/role/state types shared by the
+/// per-OS bridges and the higher-level `A11yProvider` tree.
 pub mod types;
 
 pub use types::*;

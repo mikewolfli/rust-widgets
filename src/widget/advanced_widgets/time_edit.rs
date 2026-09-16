@@ -2,6 +2,26 @@
 // SPDX-License-Identifier: MIT
 
 //! Time editor widget.
+//!
+//! [`TimeEdit`] stores a wall-clock time as a [`Time`] value. It has no
+//! time-zone or date component: it represents a local time of day.
+//!
+//! # Conventions
+//!
+//! * The hour is **24-hour**, `0`-`23` (`0` is midnight). There is no AM/PM
+//!   handling and no 12-hour mode.
+//! * The minute and second range over `0`-`59` and the millisecond over
+//!   `0`-`999`.
+//! * Unlike [`crate::widget::advanced_widgets::date_edit::Date`], a [`Time`]
+//!   **cannot** hold an invalid value: [`Time::new`] and the setters clamp
+//!   every field into range, so [`Time::is_valid`] always returns `true` for a
+//!   value obtained through the public API.
+//! * The widget's range is **inclusive at both ends**: a time equal to
+//!   [`TimeEdit::minimum_time`] or [`TimeEdit::maximum_time`] is accepted, and
+//!   [`TimeEdit::set_time`] rejects out-of-range input silently rather than
+//!   clamping it.
+//! * Times are ordered chronologically, hour then minute then second then
+//!   millisecond.
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -63,6 +83,13 @@ impl UndoCommand for TimeEditCommand {
     }
 }
 /// Time value (hour, minute, second, millisecond).
+///
+/// All four fields are stored already clamped to their valid ranges, so any
+/// instance built through the public API is a valid time of day; see
+/// [`Time::is_valid`].
+///
+/// `Ord` follows chronological order within a single day: hour, then minute,
+/// then second, then millisecond.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Time {
     hour: u8,   // 0-23
@@ -71,6 +98,12 @@ pub struct Time {
     msec: u16,  // 0-999
 }
 impl Time {
+    /// Creates a time of day, clamping each component into its valid range.
+    ///
+    /// `hour` is 24-hour (`0` = midnight) and is clamped to `0..=23`; `minute`
+    /// and `second` are clamped to `0..=59`, and `msec` to `0..=999`. Clamping is
+    /// deliberate rather than an error, so out-of-range input is silently
+    /// reduced to the nearest boundary (e.g. `25` hours becomes `23`).
     pub fn new(hour: u8, minute: u8, second: u8, msec: u16) -> Self {
         Self {
             hour: hour.min(23),
@@ -79,56 +112,105 @@ impl Time {
             msec: msec.min(999),
         }
     }
+    /// Returns the hour in 24-hour form (`0` = midnight).
     pub fn hour(&self) -> u8 {
         self.hour
     }
+    /// Returns the minute of the hour (`0`-`59`).
     pub fn minute(&self) -> u8 {
         self.minute
     }
+    /// Returns the second of the minute (`0`-`59`).
+    ///
+    /// The value is a whole second; sub-second precision is not represented.
     pub fn second(&self) -> u8 {
         self.second
     }
+    /// Returns the millisecond component (`0`-`999`).
     pub fn msec(&self) -> u16 {
         self.msec
     }
+    /// Sets the hour, clamped to `0..=23`.
     pub fn set_hour(&mut self, hour: u8) {
         self.hour = hour.min(23);
     }
+    /// Sets the minute, clamped to `0..=59`.
     pub fn set_minute(&mut self, minute: u8) {
         self.minute = minute.min(59);
     }
+    /// Sets the second, clamped to `0..=59`. Milliseconds are unaffected.
     pub fn set_second(&mut self, second: u8) {
         self.second = second.min(59);
     }
+    /// Sets the millisecond component, clamped to `0..=999`.
     pub fn set_msec(&mut self, msec: u16) {
         self.msec = msec.min(999);
     }
+    /// Returns `true` when every component is within its valid range.
+    ///
+    /// Because [`Time::new`] and the setters clamp, this is always `true` for a
+    /// value built through the public API; it exists to document and enforce the
+    /// invariant for values that might be constructed internally.
     pub fn is_valid(&self) -> bool {
         self.hour <= 23 && self.minute <= 59 && self.second <= 59 && self.msec <= 999
     }
+    /// Returns the time of day as milliseconds elapsed since midnight.
+    ///
+    /// The result ranges from `0` (for `00:00:00.000`) to `86_399_999`.
+    /// Useful for sorting or for position-on-a-day calculations.
     pub fn to_msecs_since_midnight(&self) -> u32 {
         (self.hour as u32 * 3600 + self.minute as u32 * 60 + self.second as u32) * 1000
             + self.msec as u32
     }
 }
+/// Formats the time as `HH:MM:SS`.
+///
+/// The hour, minute, and second are each zero-padded to two digits. The
+/// millisecond component is **not** included, so this round-trips through
+/// [`crate::widget::capability::coercion::expect_time`] only when the time has
+/// zero milliseconds; a non-zero `msec` is lost by the round-trip.
 impl std::fmt::Display for Time {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:02}:{:02}:{:02}", self.hour, self.minute, self.second)
     }
 }
 /// Time editor widget.
+///
+/// Shows a time of day and allows it to be changed a second at a time (see
+/// [`TimeEdit::step_up`] / [`TimeEdit::step_down`]), programmatically via
+/// [`TimeEdit::set_time`], or through the keyboard (Up/Down step, Ctrl+Z/Ctrl+Y
+/// undo and redo).
+///
+/// The accepted range defaults to `00:00:00.000 ..= 23:59:59.999` and is
+/// inclusive at both ends. Stepping is second-based, so the millisecond
+/// component is only reachable through [`TimeEdit::set_time`].
+///
+/// # Display format
+///
+/// [`TimeEdit::display_format`] holds a format pattern string that is exposed
+/// as a property, but the widget's own `draw` always uses the fixed `HH:MM:SS`
+/// spelling. The pattern is stored and round-tripped, not yet applied when
+/// painting.
 pub struct TimeEdit {
     base: BaseWidget,
     time: Time,
     minimum: Time,
     maximum: Time,
     display_format: String,
+    /// Emitted with the new time after every accepted change, including changes
+    /// produced by [`TimeEdit::undo`] and [`TimeEdit::redo`]. Not emitted when a
+    /// change is rejected or when the time is already the requested value.
     pub time_changed: Signal1<Time>,
     undo_stack: UndoStack,
     history_target: Rc<RefCell<Time>>,
     restoring_history: bool,
 }
 impl TimeEdit {
+    /// Creates a time editor occupying `geometry`.
+    ///
+    /// The initial time is midnight (`00:00:00.000`), the accepted range is
+    /// `00:00:00.000 ..= 23:59:59.999` (inclusive), and the display format is
+    /// `"HH:mm:ss"`.
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::TimePicker, geometry, "TimeEdit"),
@@ -142,18 +224,43 @@ impl TimeEdit {
             restoring_history: false,
         }
     }
+    /// Returns the current time.
     pub fn time(&self) -> Time {
         self.time
     }
+    /// Returns the inclusive lower bound accepted by [`TimeEdit::set_time`].
+    ///
+    /// Defaults to midnight, `00:00:00.000`.
     pub fn minimum_time(&self) -> Time {
         self.minimum
     }
+    /// Returns the inclusive upper bound accepted by [`TimeEdit::set_time`].
+    ///
+    /// Defaults to `23:59:59.999`.
     pub fn maximum_time(&self) -> Time {
         self.maximum
     }
+    /// Returns the stored display-format pattern.
+    ///
+    /// This is a plain string; it is currently stored and round-tripped but not
+    /// interpreted when the widget paints (painting always uses `HH:MM:SS`).
     pub fn display_format(&self) -> &str {
         &self.display_format
     }
+    /// Sets the current time, subject to validity and the accepted range.
+    ///
+    /// The assignment happens only when `time` satifies [`Time::is_valid`],
+    /// falls within `minimum ..= maximum` (both inclusive), and differs from the
+    /// current time; otherwise the call is a no-op and the previous time is
+    /// kept. Out-of-range input is therefore **rejected, not clamped**. Since
+    /// [`Time::new`] already clamps its inputs, the main way to be rejected is
+    /// the range check.
+    ///
+    /// # Side effects
+    ///
+    /// On a successful change, an undo entry is pushed (unless this call comes
+    /// from [`TimeEdit::undo`] / [`TimeEdit::redo`]), `time_changed` is emitted
+    /// with the new time, and a redraw is requested.
     pub fn set_time(&mut self, time: Time) {
         if time.is_valid() && time >= self.minimum && time <= self.maximum && self.time != time {
             let before = self.time;
@@ -170,25 +277,52 @@ impl TimeEdit {
             self.base.request_redraw();
         }
     }
+    /// Sets the inclusive lower bound for accepted times.
+    ///
+    /// The current time is **not** re-validated against the new bound, so the
+    /// widget can be left holding a time below its own minimum.
     pub fn set_minimum_time(&mut self, time: Time) {
         self.minimum = time;
         self.base.request_redraw();
     }
+    /// Sets the inclusive upper bound for accepted times.
+    ///
+    /// Like [`TimeEdit::set_minimum_time`], the current time is not re-checked
+    /// against the new bound, so lowering it can leave an out-of-range value in
+    /// place.
     pub fn set_maximum_time(&mut self, time: Time) {
         self.maximum = time;
         self.base.request_redraw();
     }
     /// Sets both minimum and maximum times in one call.
     /// This is a convenience writer; query bounds via `minimum_time()` and `maximum_time()`.
+    /// Sets both ends of the accepted range in one call.
+    ///
+    /// The bounds are stored as given; `min` is not required to be less than or
+    /// equal to `max`, and the current time is not re-validated, so an inverted
+    /// or narrowed range silently makes every subsequent [`TimeEdit::set_time`]
+    /// fail. This is a convenience writer; query the bounds via
+    /// [`TimeEdit::minimum_time`] and [`TimeEdit::maximum_time`].
     pub fn set_time_range(&mut self, min: Time, max: Time) {
         self.minimum = min;
         self.maximum = max;
         self.base.request_redraw();
     }
+    /// Stores the display-format pattern.
+    ///
+    /// The string is kept verbatim; no validation is performed. See
+    /// [`TimeEdit::display_format`] for the current limits on its use.
     pub fn set_display_format(&mut self, fmt: String) {
         self.display_format = fmt;
         self.base.request_redraw();
     }
+    /// Advances the time by one second, carrying into minutes and hours.
+    ///
+    /// The millisecond component is left unchanged. The hour **does not wrap**:
+    /// from `23:59:59` the carry resets the minute and second to `0` but leaves
+    /// the hour at `23`, and the resulting time passes through
+    /// [`TimeEdit::set_time`], so a value beyond [`TimeEdit::maximum_time`] is
+    /// rejected and the time stays put. A successful step is undoable.
     pub fn step_up(&mut self) {
         let mut t = self.time;
         let new_sec = t.second() + 1;
@@ -208,6 +342,15 @@ impl TimeEdit {
         }
         self.set_time(t);
     }
+    /// Moves the time back by one second, borrowing from minutes and hours.
+    ///
+    /// The millisecond component is left unchanged — unlike [`TimeEdit::step_up`]
+    /// this does not go through the setters for seconds, so a time with a
+    /// non-zero `msec` decrements the whole second but keeps trailing
+    /// milliseconds. The hour does **not** wrap: at `00:00:00` the minute and
+    /// second are set to `59` while the hour stays `0`. The change is applied
+    /// through [`TimeEdit::set_time`], so a result outside the accepted range is
+    /// rejected and leaves the time unchanged. A successful step is undoable.
     pub fn step_down(&mut self) {
         let mut t = self.time;
         if t.second() > 0 {
@@ -225,6 +368,11 @@ impl TimeEdit {
         }
         self.set_time(t);
     }
+    /// Reverts the most recent time change.
+    ///
+    /// Returns `true` if a change was undone, `false` when the undo stack is
+    /// empty. Undoing emits `time_changed` with the restored time and requests a
+    /// redraw, but does not push a new undo entry.
     pub fn undo(&mut self) -> bool {
         if self.undo_stack.undo().is_err() {
             return false;
@@ -232,6 +380,11 @@ impl TimeEdit {
         self.restore_history_time();
         true
     }
+    /// Re-applies the most recently undone time change.
+    ///
+    /// Returns `true` if a change was redone, `false` when there is nothing to
+    /// redo. Like [`TimeEdit::undo`], it emits `time_changed` and requests a
+    /// redraw without recording a new undo entry.
     pub fn redo(&mut self) -> bool {
         if self.undo_stack.redo().is_err() {
             return false;
@@ -239,9 +392,11 @@ impl TimeEdit {
         self.restore_history_time();
         true
     }
+    /// Returns `true` when there is at least one time change to undo.
     pub fn can_undo(&self) -> bool {
         self.undo_stack.can_undo()
     }
+    /// Returns `true` when there is at least one undone time change to redo.
     pub fn can_redo(&self) -> bool {
         self.undo_stack.can_redo()
     }

@@ -23,27 +23,49 @@ impl FlowChild {
 /// Direction of child arrangement in a flow layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FlowDirection {
+    /// Children are laid out left to right; wrapping starts a new row below.
     #[default]
     Horizontal,
+    /// Children are laid out top to bottom; wrapping starts a new column to
+    /// the right.
     Vertical,
 }
 /// Alignment strategy for items within each flow line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FlowAlignment {
+    /// Items are packed against the start edge, honouring [`FlowLayoutConfig::spacing`].
     #[default]
     Start,
+    /// Items are grouped in the middle of the content box. The offset is
+    /// computed from the *total* item extent including spacing, applied
+    /// identically on both axes.
     Center,
+    /// Items are packed against the far edge of the content box.
     End,
+    /// Free space is distributed *between* items, leaving no space at either
+    /// end. With a single item this is a no-op, and if the items overflow the
+    /// spacing becomes negative.
     SpaceBetween,
+    /// Free space is placed before, between, and after items. Unlike
+    /// [`FlowAlignment::SpaceBetween`] this also applies with a single item.
     SpaceAround,
 }
 /// Configuration for a flow layout: direction, alignment, spacing, padding, and wrapping.
 #[derive(Debug, Clone, Copy)]
 pub struct FlowLayoutConfig {
+    /// Axis along which children are arranged.
     pub direction: FlowDirection,
+    /// How items are positioned within each line after the flow pass.
     pub alignment: FlowAlignment,
+    /// Gap in logical pixels between adjacent items, and between wrapped lines.
+    /// May be negative. Defaults to `8`.
     pub spacing: i32,
+    /// Inset in logical pixels applied on **all four** sides of the available
+    /// rectangle before children are placed, and included in
+    /// [`FlowLayout::preferred_size`]. Defaults to `8`.
     pub padding: i32,
+    /// When `true`, items that would cross the far edge of the content box
+    /// start a new line (or column) instead of overflowing. Defaults to `false`.
     pub wrap: bool,
 }
 impl Default for FlowLayoutConfig {
@@ -74,17 +96,31 @@ impl fmt::Debug for FlowLayout {
     }
 }
 impl FlowLayout {
+    /// Creates an empty layout with the default configuration (horizontal,
+    /// start-aligned, spacing 8, padding 8, wrapping off).
     pub fn new() -> Self {
         Self { config: FlowLayoutConfig::default(), children: Vec::new() }
     }
+    /// Creates an empty layout with the supplied configuration.
     pub fn with_config(config: FlowLayoutConfig) -> Self {
         Self { config, children: Vec::new() }
     }
+    /// Appends a widget, taking ownership of it.
+    ///
+    /// The widget's current [`Widget::size_hint`] is captured as its default
+    /// size and re-read from the widget on every layout pass, so later changes
+    /// to the hint are picked up. Children are laid out in insertion order.
     pub fn add_child(&mut self, child: Box<dyn Widget>) {
         let widget_id = child.id();
         let default_size = child.size_hint();
         self.children.push(FlowChild { widget_id, widget: Some(child), default_size });
     }
+    /// Removes the child at `index` and returns it, or returns `None` when the
+    /// index is out of range.
+    ///
+    /// Returns `None` for children that were registered by id only through
+    /// [`Layout::add_widget`], because there is no owned widget to hand back.
+    /// The entry is removed from the layout either way.
     pub fn remove_child(&mut self, index: usize) -> Option<Box<dyn Widget>> {
         if index < self.children.len() {
             self.children.remove(index).widget
@@ -93,18 +129,34 @@ impl FlowLayout {
         }
     }
     /// Override the default size hint for a child added via `add_widget` (no widget ref).
+    /// Override the default size hint for a child added via `add_widget` (no widget ref).
+    ///
+    /// The override only affects that default: a child holding a live widget
+    /// still reports the widget's own `size_hint`, so this call has no effect
+    /// on children added with [`FlowLayout::add_child`]. It is a no-op when no
+    /// child has the given id.
     pub fn set_child_size(&mut self, widget_id: ObjectId, size: Size) {
         if let Some(child) = self.children.iter_mut().find(|c| c.widget_id == widget_id) {
             child.default_size = size;
         }
     }
 
+    /// Removes every child, returning no ownership (owned widgets are dropped).
     pub fn clear_children(&mut self) {
         self.children.clear();
     }
+    /// Returns the number of children currently registered.
     pub fn child_count(&self) -> usize {
         self.children.len()
     }
+    /// Computes a rectangle for each child, in the order the children were
+    /// added.
+    ///
+    /// `available_rect` is the layout's own area in parent-relative logical
+    /// pixels; the returned rectangles use the same coordinate space, already
+    /// inset by [`FlowLayoutConfig::padding`]. A child whose size hint exceeds
+    /// the remaining space is still placed at the next slot and is allowed to
+    /// overflow when `wrap` is off.
     pub fn layout(&self, available_rect: Rect) -> Vec<Rect> {
         let content_rect = Rect::new(
             available_rect.x + self.config.padding,
@@ -262,6 +314,13 @@ impl FlowLayout {
             }
         }
     }
+    /// Returns the size the layout would like for its children, including
+    /// [`FlowLayoutConfig::padding`] on both sides.
+    ///
+    /// This ignores `wrap` entirely even though [`FlowLayout::layout`] honours
+    /// it, so a wrapping layout reports the size needed to keep everything on
+    /// one line rather than the wrapped footprint. Gaps are counted between
+    /// children only, never around them.
     pub fn preferred_size(&self) -> Size {
         let mut width = 0u32;
         let mut height = 0u32;

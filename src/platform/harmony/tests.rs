@@ -175,21 +175,54 @@ fn capabilities_are_explicit_and_honest() {
     assert!(caps.typed_widget_trigger, "typed trigger events are supported");
 }
 
-/// The surface contract must stay honest before the OpenHarmony SDK lands.
+/// The surface contract: the backend hosts library-painted widgets and reports it.
 ///
-/// `mount_surface` has no ArkUI Canvas mapping yet, so the backend must keep
-/// reporting `false`. A host that checks `supports_surfaces()` then refuses to
-/// build a UI it cannot display, instead of opening an empty window.
+/// This test used to assert the *opposite* (`supports_surfaces()` was `false` because
+/// `mount_surface` was unimplemented). The surface is now a record plus a repaint
+/// queue the ArkTS host drains, so the contract is the one below — and each step is
+/// asserted, so a regression to "claims support but does nothing" is caught rather
+/// than passing on the strength of a boolean.
 #[test]
-fn widget_surface_support_is_refused_until_the_arkui_bridge_exists() {
+fn widget_surfaces_are_advertised_and_round_trip() {
     let backend = HarmonyPlatform::new();
     assert!(
-        !backend.supports_surfaces(),
-        "HarmonyOS has no surface for library-painted widgets until mount_surface is \
-         implemented against an ArkUI Canvas"
+        backend.supports_surfaces(),
+        "the backend records surfaces and queues repaints, so it can host widgets"
     );
-    // The trait defaults must also refuse, rather than silently succeeding.
-    assert!(!backend.mount_surface(1, 2, crate::core::Rect::new(0, 0, 10, 10)));
-    assert!(!backend.invalidate_surface(2));
-    assert!(!backend.unmount_surface(2));
+
+    let window = backend.create_window("w", 0, 0, 640, 480);
+    let rect = crate::core::Rect::new(0, 0, 100, 40);
+    assert!(backend.mount_surface(window, window, rect));
+    assert_eq!(backend.state.surface_rect(window), Some(rect));
+    assert_eq!(backend.state.mounted_surface_count(), 1);
+
+    // Invalidating queues exactly one repaint, which the host then drains.
+    assert!(backend.invalidate_surface(window));
+    assert!(backend.invalidate_surface(window), "a second invalidate still reports the mount");
+    assert_eq!(backend.state.pending_repaint_count(), 1, "repaints are coalesced");
+    assert_eq!(backend.state.take_pending_repaint(), Some(window));
+    assert_eq!(backend.state.pending_repaint_count(), 0);
+
+    // Resizing moves the recorded rect.
+    let moved = crate::core::Rect::new(10, 10, 200, 80);
+    assert!(backend.resize_surface(window, moved));
+    assert_eq!(backend.state.surface_rect(window), Some(moved));
+
+    // Unmounting forgets it, and a stale repaint request cannot survive the unmount.
+    assert!(backend.invalidate_surface(window));
+    assert!(backend.unmount_surface(window));
+    assert_eq!(backend.state.surface_rect(window), None);
+    assert_eq!(backend.state.pending_repaint_count(), 0, "a gone widget must not be repainted");
+    assert!(!backend.unmount_surface(window), "unmounting twice must report no-op");
+}
+
+/// A surface for a widget the backend never made must be refused, not silently
+/// recorded: a frame nobody can produce is not a display.
+#[test]
+fn mounting_a_surface_for_an_unknown_widget_is_refused() {
+    let backend = HarmonyPlatform::new();
+    assert!(!backend.mount_surface(1, 9_999, crate::core::Rect::new(0, 0, 10, 10)));
+    assert!(!backend.invalidate_surface(9_999));
+    assert!(!backend.resize_surface(9_999, crate::core::Rect::new(0, 0, 10, 10)));
+    assert_eq!(backend.state.mounted_surface_count(), 0);
 }

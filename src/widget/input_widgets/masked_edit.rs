@@ -159,6 +159,11 @@ impl MaskedEdit {
         &self.display_text
     }
 
+    /// Steps back one edit and returns `true`, or `false` when there is nothing to
+    /// undo.
+    ///
+    /// The restored value is re-applied through the mask, so it is validated and
+    /// re-rendered like freshly typed input rather than pasted in verbatim.
     pub fn undo(&mut self) -> bool {
         if self.undo_stack.undo().is_err() {
             return false;
@@ -166,6 +171,8 @@ impl MaskedEdit {
         self.restore_history_text();
         true
     }
+    /// Steps forward one undone edit and returns `true`, or `false` when there is
+    /// nothing to redo. Behaviour matches [`MaskedEdit::undo`].
     pub fn redo(&mut self) -> bool {
         if self.undo_stack.redo().is_err() {
             return false;
@@ -173,9 +180,11 @@ impl MaskedEdit {
         self.restore_history_text();
         true
     }
+    /// Returns `true` if [`MaskedEdit::undo`] would change the value.
     pub fn can_undo(&self) -> bool {
         self.undo_stack.can_undo()
     }
+    /// Returns `true` if [`MaskedEdit::redo`] would change the value.
     pub fn can_redo(&self) -> bool {
         self.undo_stack.can_redo()
     }

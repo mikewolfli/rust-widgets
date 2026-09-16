@@ -96,6 +96,13 @@ fn canvas_view_class() -> *const Class {
             decl.add_method(sel!(mouseDown:), mouse_down as extern "C" fn(&Object, Sel, id));
             decl.add_method(sel!(mouseUp:), mouse_up as extern "C" fn(&Object, Sel, id));
             decl.add_method(sel!(mouseDragged:), mouse_dragged as extern "C" fn(&Object, Sel, id));
+            // Hover: AppKit calls these through the tracking area installed in
+            // `updateTrackingAreas`, which is how a control learns the pointer left.
+            decl.add_method(sel!(mouseExited:), mouse_exited as extern "C" fn(&Object, Sel, id));
+            decl.add_method(
+                sel!(updateTrackingAreas),
+                update_tracking_areas as extern "C" fn(&Object, Sel),
+            );
             decl.add_method(sel!(keyDown:), key_down as extern "C" fn(&Object, Sel, id));
             decl.add_method(
                 sel!(acceptsFirstResponder),
@@ -123,6 +130,79 @@ extern "C" fn accepts_first_responder(_this: &Object, _cmd: Sel) -> cocoa::base:
     YES
 }
 
+/// `-mouseExited:` clears the hover target.
+///
+/// AppKit delivers this through a tracking area (installed in `updateTrackingAreas`),
+/// and it is the one case the coordinate-based hover transition cannot observe: the
+/// pointer is outside the view, so a previously hovered control would stay
+/// highlighted. Repainting is requested so the cleared state becomes visible.
+extern "C" fn mouse_exited(this: &Object, _cmd: Sel, _event: id) {
+    let outcome = std::panic::catch_unwind(|| {
+        // SAFETY: `this` is the live canvas view.
+        unsafe {
+            let view = this as *const Object as id;
+            crate::widget::runtime::clear_hover(Point::new(0, 0));
+            let _: () = msg_send![view, setNeedsDisplay: YES];
+        }
+    });
+    if outcome.is_err() {
+        log::error!("[macos] canvas: panic while handling mouseExited:");
+    }
+}
+
+/// Installs the tracking area that makes `-mouseExited:` fire.
+///
+/// AppKit rebuilds tracking areas whenever the view's geometry changes, so the areas
+/// are replaced rather than appended — appending on every call would leak an area per
+/// resize. `NSTrackingActiveInKeyWindow` is used so hover follows the same rule as
+/// clicks (an inactive window does not highlight controls under the pointer).
+unsafe fn install_tracking_area(view: id) {
+    let existing: id = msg_send![view, trackingAreas];
+    if existing != nil {
+        let count: usize = msg_send![existing, count];
+        for _ in 0..count {
+            let area: id = msg_send![existing, objectAtIndex: 0usize];
+            if area != nil {
+                let _: () = msg_send![view, removeTrackingArea: area];
+            }
+        }
+    }
+    let bounds: NSRect = msg_send![view, bounds];
+    let area: id = msg_send![class!(NSTrackingArea), alloc];
+    let area: id = msg_send![area,
+        initWithRect: bounds
+        options: TRACKING_ACTIVE_IN_KEY_WINDOW | TRACKING_MOUSE_ENTERED | TRACKING_MOUSE_EXITED | TRACKING_IN_VISIBLE_RECT
+        owner: view
+        userInfo: std::ptr::null::<Object>()];
+    if area != nil {
+        let _: () = msg_send![view, addTrackingArea: area];
+        let _: () = msg_send![area, release];
+    }
+}
+
+/// `NSTrackingArea` option: report enter/exit while the window is key.
+const TRACKING_ACTIVE_IN_KEY_WINDOW: usize = 0x0040;
+/// `NSTrackingArea` option: send `-mouseEntered:`.
+const TRACKING_MOUSE_ENTERED: usize = 0x0001;
+/// `NSTrackingArea` option: send `-mouseExited:`.
+const TRACKING_MOUSE_EXITED: usize = 0x0002;
+/// `NSTrackingArea` option: track within the view's visible rect.
+const TRACKING_IN_VISIBLE_RECT: usize = 0x0080;
+
+/// `-updateTrackingAreas` reinstalls the tracking area after a geometry change.
+extern "C" fn update_tracking_areas(this: &Object, _cmd: Sel) {
+    let outcome = std::panic::catch_unwind(|| {
+        // SAFETY: `this` is the live canvas view.
+        unsafe {
+            let view = this as *const Object as id;
+            install_tracking_area(view);
+        }
+    });
+    if outcome.is_err() {
+        log::error!("[macos] canvas: panic while updating tracking areas");
+    }
+}
+
 /// Converts an AppKit event's window location into canvas-local coordinates.
 ///
 /// `locationInWindow` is bottom-up; the canvas is flipped, so the conversion has
@@ -133,6 +213,17 @@ unsafe fn event_local_point(view: id, event: id) -> Option<Point> {
     }
     let window_point: NSPoint = msg_send![event, locationInWindow];
     Some(local_point(view, window_point))
+}
+
+/// Returns the canvas view's origin within its parent.
+///
+/// AppKit reports pointer positions in view-local space, but widget geometry in this
+/// library is absolute, so the origin is added back before hit-testing. `frame` is
+/// read live rather than cached because AppKit is free to move the view (auto layout,
+/// a resize) without telling this module.
+unsafe fn view_origin(view: id) -> Point {
+    let frame: NSRect = msg_send![view, frame];
+    Point::new(frame.origin.x as i32, frame.origin.y as i32)
 }
 
 /// Reads the modifier bitfield out of an AppKit event using the shared mapping.
@@ -157,6 +248,9 @@ enum MousePhase {
 }
 
 /// Translates an AppKit mouse event into a widget [`Event`] and delivers it.
+///
+/// Routing goes through the platform's hit test so a click on a widget nested inside
+/// the mounted one reaches that widget, rather than always reaching the surface owner.
 fn forward_mouse(this: &Object, event: id, phase: MousePhase) {
     let outcome = std::panic::catch_unwind(|| {
         // SAFETY: `this` is the live canvas view; `event` is an NSEvent AppKit
@@ -164,15 +258,30 @@ fn forward_mouse(this: &Object, event: id, phase: MousePhase) {
         unsafe {
             let view = this as *const Object as id;
             let Some(widget_id) = widget_id_of(view) else { return };
-            let Some(position) = event_local_point(view, event) else { return };
+            let Some(local) = event_local_point(view, event) else { return };
+            let origin = view_origin(view);
+            let position = Point::new(origin.x + local.x, origin.y + local.y);
             let translated = match phase {
                 MousePhase::Press => Event::MousePress { pos: position, button: 1 },
                 MousePhase::Release => Event::MouseRelease { pos: position, button: 1 },
                 MousePhase::Drag => Event::MouseMove { pos: position },
             };
-            if !crate::widget::runtime::dispatch_event(widget_id, &translated) {
+            let delivered = crate::platform::platform_facts().route_pointer_event(
+                widget_id,
+                &translated,
+                position,
+            );
+            if !delivered {
                 log::debug!("[macos] canvas: mouse event dropped, id={widget_id} is not mounted");
                 return;
+            }
+            if matches!(phase, MousePhase::Press) {
+                // A click can move focus to a nested control; take the keyboard so
+                // subsequent keys are delivered to this view.
+                let window: id = msg_send![view, window];
+                if window != nil {
+                    let _: () = msg_send![window, makeFirstResponder: view];
+                }
             }
             // The widget's state changed, so ask AppKit to repaint it.
             let _: () = msg_send![view, setNeedsDisplay: YES];
@@ -188,6 +297,9 @@ fn forward_mouse(this: &Object, event: id, phase: MousePhase) {
 /// Non-printing keys go through as [`Event::KeyPress`]; printable characters are
 /// delivered as [`Event::TextInput`] so the widget's text path (including its
 /// auto-pairing and IME handling) is the one that runs.
+///
+/// Tab is consumed here to move focus: it is not a printable character, so forwarding
+/// it to the widget would be a no-op and the user could never leave the first control.
 extern "C" fn key_down(this: &Object, _cmd: Sel, event: id) {
     let outcome = std::panic::catch_unwind(|| {
         // SAFETY: `this` is the live canvas view; `event` is the NSEvent AppKit
@@ -196,13 +308,23 @@ extern "C" fn key_down(this: &Object, _cmd: Sel, event: id) {
             let view = this as *const Object as id;
             let Some(widget_id) = widget_id_of(view) else { return };
             let (key, modifiers) = super::types::translate_key_event(event);
+            // AppKit reports Tab as keycode 48 with no printable characters. The
+            // widget-layer modifier bit for Shift is 1 (see `Modifiers::from_event_bits`).
+            const WIDGET_SHIFT: u32 = 1;
+            if key == KEY_TAB {
+                crate::widget::runtime::focus_next(modifiers & WIDGET_SHIFT == 0);
+                let _: () = msg_send![view, setNeedsDisplay: YES];
+                return;
+            }
             let translated = if let Some(text) = printable_characters(event) {
                 Event::TextInput { text }
             } else {
                 Event::KeyPress { key, modifiers }
             };
-            if !crate::widget::runtime::dispatch_event(widget_id, &translated) {
-                log::debug!("[macos] canvas: key event dropped, id={widget_id} is not mounted");
+            // Keys follow focus: with nothing focused, the surface owner keeps them.
+            let target = crate::widget::runtime::focused_widget().unwrap_or(widget_id);
+            if !crate::widget::runtime::dispatch_event(target, &translated) {
+                log::debug!("[macos] canvas: key event dropped, id={target} is not mounted");
                 return;
             }
             let _: () = msg_send![view, setNeedsDisplay: YES];
@@ -212,6 +334,9 @@ extern "C" fn key_down(this: &Object, _cmd: Sel, event: id) {
         log::error!("[macos] canvas: panic while forwarding a key event");
     }
 }
+
+/// AppKit virtual key code for Tab (not a character code).
+const KEY_TAB: u32 = 48;
 
 /// Returns the printable characters of a key event, when it produced any.
 ///
@@ -531,3 +656,5 @@ mod tests {
         assert!(view_for(0xABCD).is_none());
     }
 }
+
+// probe

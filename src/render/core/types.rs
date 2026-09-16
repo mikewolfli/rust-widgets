@@ -3,6 +3,10 @@
 
 //! Core rendering data types for text and geometry.
 
+/// Measured dimensions of a laid-out text run, in logical pixels.
+///
+/// Every field is a whole number of pixels rounded by the measuring backend,
+/// so `ascent + descent` may differ from `height` by a rounding remainder.
 pub struct TextMetrics {
     /// Measured text width in logical pixels.
     pub width: u32,

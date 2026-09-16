@@ -445,15 +445,34 @@ impl PerformanceTrapDetector {
     }
 }
 /// Performance trap types
+///
+/// Conditions the performance monitor has recognised as worth reporting. Each
+/// variant is a diagnosis, not a measurement: the monitor decides the threshold,
+/// so the same raw metric can appear or not depending on configuration.
 #[derive(Debug, Clone)]
 pub enum PerformanceTrap {
-    /// Sustained low frame rate
-    LowFrameRate { current_fps: f32, threshold: f32 },
-    /// Memory pressure
-    MemoryPressure { utilization: f32 },
-    /// CPU overload (for CPU rendering)
-    CpuOverload { utilization: f32 },
-    /// Browser forcing integrated GPU
+    /// Sustained low frame rate.
+    LowFrameRate {
+        /// The measured frame rate, in frames per second.
+        current_fps: f32,
+        /// The rate below which the trap fires, in frames per second. Carried
+        /// alongside the measurement so a report is self-explanatory.
+        threshold: f32,
+    },
+    /// Memory pressure.
+    MemoryPressure {
+        /// Fraction of the memory budget in use, `0.0 ..= 1.0`.
+        utilization: f32,
+    },
+    /// CPU overload (for CPU rendering).
+    CpuOverload {
+        /// Fraction of CPU capacity in use, `0.0 ..= 1.0`.
+        utilization: f32,
+    },
+    /// Browser forcing integrated GPU.
+    ///
+    /// Has no payload: the condition is a fact about the environment rather than
+    /// a measurement, and carries no actionable magnitude.
     BrowserForcedIntegratedGpu,
 }
 impl PerformanceTrap {

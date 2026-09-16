@@ -257,6 +257,10 @@ impl ShortcutEditor {
         &mut self.shortcuts
     }
 
+    /// Reverts the most recent shortcut-table change.
+    ///
+    /// Returns `false` and changes nothing when there is nothing to undo;
+    /// otherwise restores the previous [`ShortcutEntry`] list.
     pub fn undo(&mut self) -> bool {
         if self.undo_stack.undo().is_err() {
             return false;
@@ -265,6 +269,9 @@ impl ShortcutEditor {
         true
     }
 
+    /// Reapplies the most recently undone shortcut-table change.
+    ///
+    /// Returns `false` and changes nothing when there is nothing to redo.
     pub fn redo(&mut self) -> bool {
         if self.undo_stack.redo().is_err() {
             return false;
@@ -273,10 +280,12 @@ impl ShortcutEditor {
         true
     }
 
+    /// Returns whether there is a shortcut-table change to undo.
     pub fn can_undo(&self) -> bool {
         self.undo_stack.can_undo()
     }
 
+    /// Returns whether there is an undone shortcut-table change to reapply.
     pub fn can_redo(&self) -> bool {
         self.undo_stack.can_redo()
     }

@@ -20,6 +20,9 @@ pub struct StackedWidget {
     base: BaseWidget,
     widgets: Vec<ObjectId>,
     current_index: usize,
+    /// Emitted with the new visible index when the selected child changes.
+    /// Not emitted for inactive children, and not emitted when the same index is
+    /// re-applied; it is not emitted when the widget list is mutated.
     pub current_changed: Signal1<usize>,
     /// Optional shared registry for child widget forwarding.
     registry: Option<Rc<RefCell<SimpleRegistry>>>,

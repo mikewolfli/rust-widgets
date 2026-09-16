@@ -130,6 +130,8 @@ use crate::widget::view_widgets::virtual_table::VirtualTable;
 #[cfg(full_widgets)]
 use crate::widget::web_widgets::web_view::WebView;
 
+/// Shared capability value and error types (`CapabilityValue`,
+/// `CapabilityAccessError`, …) exchanged through the property contract below.
 pub mod types;
 pub use types::*;
 
@@ -324,11 +326,15 @@ fn intern_kind_name(name: alloc::string::String) -> &'static str {
 pub mod coercion;
 pub use coercion::*;
 
+/// By-id widget construction entry points used by the crate-root `create_*`
+/// wrappers. Requires the full widget set.
 #[cfg(full_widgets)]
 pub mod constructors;
 #[cfg(full_widgets)]
 pub use constructors::*;
 
+/// The centralised per-kind property table and the capability descriptors built
+/// from it. Requires the full widget set.
 #[cfg(full_widgets)]
 pub mod properties;
 #[cfg(full_widgets)]

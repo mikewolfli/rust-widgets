@@ -26,7 +26,13 @@ pub struct TabWidget {
     tab_shape: TabShape,
     closable: bool,
     movable: bool,
+    /// Emitted with the new index when the selected tab changes; not emitted
+    /// when the same index is re-applied.
     pub current_changed: Signal1<usize>,
+    /// Emitted when the user requests that the tab at this absolute index be
+    /// closed. The `closable` flag only gates hit-testing of the close button;
+    /// this widget does not remove the tab itself — the host must handle the
+    /// request and call `remove_tab`, so the index is still valid when emitted.
     pub tab_close_requested: Signal1<usize>,
     /// Optional shared registry for child widget forwarding.
     registry: Option<Rc<RefCell<SimpleRegistry>>>,

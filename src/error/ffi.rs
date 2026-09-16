@@ -79,6 +79,8 @@ pub fn clear_last_ffi_error() {
 
 /// Trait for C‑ABI‑safe types that provide a safe fallback value.
 pub trait CAbiSafe {
+    /// Returns the value `c_try!` yields when the wrapped body panics: zero for
+    /// numeric types, `false` for `bool`, and null for pointers.
     fn c_abi_fallback() -> Self;
 }
 

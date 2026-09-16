@@ -385,6 +385,10 @@ impl RibbonBar {
         self.groups.get_mut(tab_index)?.get_mut(group_index)?.items_mut().get_mut(item_index)
     }
 
+    /// Returns the item at `(tab_index, group_index, item_index)` without
+    /// mutating the ribbon, or `None` when any of the three indices is out of
+    /// range — the group and item are addressed by index, not id, so the
+    /// indices are only meaningful for the current layout.
     pub fn item_ref(
         &self,
         tab_index: usize,

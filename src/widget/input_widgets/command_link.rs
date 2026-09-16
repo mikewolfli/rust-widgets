@@ -12,17 +12,31 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// Command link widget for command link buttons.
+///
+/// A two-line button: a title line plus a secondary description, typically used
+/// to present a small set of mutually exclusive options (for example in a
+/// wizard). The widget renders both strings but does not draw the usual arrow
+/// glyph itself.
+///
 pub struct CommandLink {
     base: BaseWidget,
     text: String,
     description: String,
     is_hovered: bool,
     /// Emitted when command link is clicked.
+    ///
+    /// Fires from [`CommandLink::click`] and from a completed primary-button
+    /// click, but only while enabled. Carries no payload.
     pub clicked: GenericSignal,
-    /// Emitted when command link is hovered.
+    /// Emitted with the new hover flag when the pointer enters or leaves the
+    /// widget. Not emitted when the pointer moves within the widget.
     pub hovered: Signal1<bool>,
 }
 impl CommandLink {
+    /// Creates an enabled command link whose title is `"Command"` and whose
+    /// description is empty, with no hover state.
+    ///
+    /// `geometry` is in parent-relative logical pixels.
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::CommandLink, geometry, "CommandLink"),
@@ -33,27 +47,43 @@ impl CommandLink {
             hovered: Signal1::new(),
         }
     }
+    /// Returns the title line.
     pub fn text(&self) -> &str {
         &self.text
     }
+    /// Returns the secondary description line; empty when none was set.
     pub fn description(&self) -> &str {
         &self.description
     }
+    /// Returns whether this widget accepts input.
+    ///
+    /// Shadows the inherited [`Widget::is_enabled`] with an identical result;
+    /// both read the same base flag.
     pub fn is_enabled(&self) -> bool {
         self.base.is_enabled()
     }
+    /// Replaces the title line and requests a redraw. The description is
+    /// unaffected.
     pub fn set_text(&mut self, text: String) {
         self.text = text;
         self.base.request_redraw();
     }
+    /// Replaces the description line and requests a redraw. An empty string
+    /// removes the second line.
     pub fn set_description(&mut self, description: String) {
         self.description = description;
         self.base.request_redraw();
     }
+    /// Enables or disables the widget and requests a redraw. A disabled link is
+    /// still drawn but ignores clicks and does not report hover.
     pub fn set_enabled(&mut self, enabled: bool) {
         self.base.set_enabled(enabled);
         self.base.request_redraw();
     }
+    /// Emits `clicked` if the widget is enabled; a no-op otherwise.
+    ///
+    /// Takes `&self` because the click carries no state: unlike a button, there
+    /// is no pressed state to update.
     pub fn click(&self) {
         if self.base.is_enabled() {
             self.clicked.emit();

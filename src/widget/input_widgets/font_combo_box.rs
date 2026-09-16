@@ -12,6 +12,14 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// Font combo box widget for font selection.
+///
+/// Holds a list of font family names and an index into it. The index uses `-1`
+/// as an explicit "nothing selected" sentinel, which is why selection is an
+/// `i32` rather than a `usize`.
+///
+/// The widget does not enumerate installed fonts: the caller populates the list
+/// with [`FontComboBox::add_font`].
+///
 pub struct FontComboBox {
     base: BaseWidget,
     current_font: Font,
@@ -20,20 +28,31 @@ pub struct FontComboBox {
     editable: bool,
     max_visible_items: i32,
     expanded: bool,
-    /// Emitted when the current font changes.
+    /// Emitted with the new font whenever [`FontComboBox::set_current_font`]
+    /// actually changes it — including as a side effect of changing the index.
     pub current_font_changed: Signal1<Font>,
-    /// Emitted when the current index changes.
+    /// Emitted with the new index (possibly `-1`) whenever
+    /// [`FontComboBox::set_current_index`] actually changes it.
     pub current_index_changed: Signal1<i32>,
-    /// Emitted when the combo box is activated.
+    /// Emitted with the index that was activated by the user. Currently only
+    /// fired from the mouse-release path, with the same index that was just
+    /// passed to `set_current_index`.
     pub activated: Signal1<i32>,
-    /// Emitted when the text is edited (if editable).
+    /// Declared for an editable text path, but never emitted: the widget has no
+    /// text-entry handling. See [`FontComboBox::set_editable`].
     pub text_edited: Signal1<String>,
-    /// Emitted when the popup is shown.
+    /// Emitted when the popup list is opened.
     pub popup_shown: GenericSignal,
-    /// Emitted when the popup is hidden.
+    /// Emitted when the popup list is closed.
     pub popup_hidden: GenericSignal,
 }
 impl FontComboBox {
+    /// Creates an empty, non-editable combo box with no selection
+    /// ([`FontComboBox::current_index`] `-1`), the default font, and a maximum
+    /// of 10 visible popup items (the popup starts closed).
+    ///
+    /// `geometry` is in parent-relative logical pixels; the size hint is
+    /// 200x28.
     pub fn new(geometry: Rect) -> Self {
         let default_font = Font::default();
         Self {
@@ -52,24 +71,42 @@ impl FontComboBox {
             popup_hidden: GenericSignal::new(),
         }
     }
+    /// Returns the font family and size currently in effect. This is a
+    /// [`Font`] value, which carries the size; note that selecting an index
+    /// keeps the size but resets the bold/italic flags to `false`.
     pub fn current_font(&self) -> &Font {
         &self.current_font
     }
+    /// Returns the list of selectable family names, in display order.
     pub fn fonts(&self) -> &[String] {
         &self.fonts
     }
+    /// Returns the selected index, or `-1` when nothing is selected.
     pub fn current_index(&self) -> i32 {
         self.current_index
     }
+    /// Returns whether the combo box is marked editable. Defaults to `false`.
+    ///
+    /// This flag is stored and exposed but not yet honoured: there is no text
+    /// input handling, and `text_edited` is never emitted.
     pub fn is_editable(&self) -> bool {
         self.editable
     }
+    /// Returns how many popup entries are shown before the list is truncated.
+    /// Always at least `1`; defaults to `10`.
     pub fn max_visible_items(&self) -> i32 {
         self.max_visible_items
     }
+    /// Returns the number of fonts in the list; equivalent to `fonts().len()`
+    /// narrowed to `i32`.
     pub fn count(&self) -> i32 {
         self.fonts.len() as i32
     }
+    /// Replaces the effective font.
+    ///
+    /// A no-op when the value is unchanged: no signal, no redraw. This does
+    /// **not** update [`FontComboBox::current_index`], so the index and the font
+    /// can disagree until the index is set. Emits `current_font_changed`.
     pub fn set_current_font(&mut self, font: Font) {
         if self.current_font != font {
             self.current_font = font.clone();
@@ -77,6 +114,14 @@ impl FontComboBox {
             self.base.request_redraw();
         }
     }
+    /// Selects an entry, clamped to `-1 ..= count()-1`.
+    ///
+    /// A no-op when the clamped index is unchanged. Otherwise emits
+    /// `current_index_changed`, and for a non-negative index also derives the
+    /// font from the selected name — **keeping the current point size but
+    /// clearing the bold and italic flags** — which may in turn emit
+    /// `current_font_changed`. Index `-1`, or an empty list (where the clamp is
+    /// also `-1`), leaves the font untouched.
     pub fn set_current_index(&mut self, index: i32) {
         let clamped = index.clamp(-1, self.fonts.len() as i32 - 1);
         if self.current_index != clamped {
@@ -92,17 +137,33 @@ impl FontComboBox {
             self.base.request_redraw();
         }
     }
+    /// Sets the editable flag. See [`FontComboBox::is_editable`] — it currently
+    /// has no behavioural effect beyond being reported. Requests a redraw.
     pub fn set_editable(&mut self, editable: bool) {
         self.editable = editable;
         self.base.request_redraw();
     }
+    /// Sets how many popup entries are shown, floored at `1` so the popup is
+    /// never zero-height. Does not request a redraw (unlike the other setters),
+    /// so an already-open popup may not repaint until the next redraw.
     pub fn set_max_visible_items(&mut self, max_items: i32) {
         self.max_visible_items = max_items.max(1);
     }
+    /// Appends a family name to the end of the list and requests a redraw.
+    ///
+    /// Duplicates are not filtered: adding the same name twice yields two
+    /// identical, independently selectable entries.
     pub fn add_font(&mut self, font_name: String) {
         self.fonts.push(font_name);
         self.base.request_redraw();
     }
+    /// Removes the font at `index`; out-of-range indices are ignored.
+    ///
+    /// If the removed entry was selected, the selection is cleared to `-1`;
+    /// otherwise an index after the removal point is shifted down by one so it
+    /// keeps referring to the same entry. Note that only the raw index field is
+    /// adjusted in that case — `current_index_changed` is **not** emitted —
+    /// though the selection still points at the same font.
     pub fn remove_font(&mut self, index: i32) {
         if index >= 0 && index < self.fonts.len() as i32 {
             self.fonts.remove(index as usize);
@@ -114,21 +175,33 @@ impl FontComboBox {
             self.base.request_redraw();
         }
     }
+    /// Empties the font list and clears the selection via
+    /// [`FontComboBox::set_current_index`], so `current_index_changed` fires if
+    /// an entry had been selected.
     pub fn clear(&mut self) {
         self.fonts.clear();
         self.set_current_index(-1);
         self.base.request_redraw();
     }
+    /// Opens the popup list, emits `popup_shown`, and requests a redraw.
+    ///
+    /// Not idempotent: calling it while already open emits again. The widget
+    /// does not close the popup on outside clicks.
     pub fn show_popup(&mut self) {
         self.expanded = true;
         self.popup_shown.emit();
         self.base.request_redraw();
     }
+    /// Closes the popup list, emits `popup_hidden`, and requests a redraw.
+    /// As with [`FontComboBox::show_popup`], calling it while already closed
+    /// still emits.
     pub fn hide_popup(&mut self) {
         self.expanded = false;
         self.popup_hidden.emit();
         self.base.request_redraw();
     }
+    /// Returns the family name of the selected entry, or an empty string when
+    /// nothing is selected ([`FontComboBox::current_index`] `-1`).
     pub fn current_text(&self) -> String {
         if self.current_index >= 0 && self.current_index < self.fonts.len() as i32 {
             self.fonts[self.current_index as usize].clone()

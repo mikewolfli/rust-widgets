@@ -10,19 +10,38 @@ use crate::signal::Signal1;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 /// Diff line state.
+///
+/// Classifies how the two sides relate for one compared line. Which variant a
+/// line receives is decided by the diff algorithm, not by this type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffKind {
+    /// The line is present and identical on both sides.
     Equal,
+    /// The line exists only on the right-hand side.
     Added,
+    /// The line exists only on the left-hand side.
     Removed,
+    /// The line exists on both sides but its content differs.
     Changed,
 }
 
 /// One compared line entry.
+///
+/// `left` and `right` are the two sides of the same row; they are `None` when
+/// that side has no line at this position, which is what distinguishes
+/// [`DiffKind::Added`] (left is `None`) from [`DiffKind::Removed`] (right is
+/// `None`). Nothing enforces that invariant, so a hand-built entry can express
+/// combinations the diff algorithm never produces, such as `Changed` with one
+/// side `None`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffLine {
+    /// Content shown in the left column, or `None` for a line that only exists
+    /// on the right.
     pub left: Option<String>,
+    /// Content shown in the right column, or `None` for a line that only exists
+    /// on the left.
     pub right: Option<String>,
+    /// How the two sides relate; see [`DiffKind`].
     pub kind: DiffKind,
 }
 

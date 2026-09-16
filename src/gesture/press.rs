@@ -22,6 +22,7 @@ pub struct LongPressGesture {
 }
 
 impl LongPressGesture {
+    /// Creates a recognizer that is idle and has not fired.
     pub fn new() -> Self {
         Self { start_pos: None, start_time: None, touch_id: None, fired: false }
     }
@@ -112,6 +113,7 @@ pub struct PanGesture {
 }
 
 impl PanGesture {
+    /// Creates a recognizer that is not tracking any touch.
     pub fn new() -> Self {
         Self { active: false, touch_id: None, last_pos: None }
     }
@@ -182,6 +184,8 @@ pub struct LongPressDragGesture {
 }
 
 impl LongPressDragGesture {
+    /// Creates a recognizer that is idle: no held touch, no long press fired,
+    /// and not dragging.
     pub fn new() -> Self {
         Self {
             start_pos: None,

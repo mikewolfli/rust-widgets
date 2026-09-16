@@ -20,8 +20,16 @@ pub struct ComboBox {
     current_index: Option<usize>,
     editable: bool,
     max_visible_items: usize,
+    /// Emitted with the new index after `current_index` changes, including when
+    /// it is cleared to `None`. An out-of-range index is ignored (and emits
+    /// nothing); re-applying the same value emits nothing.
     pub current_index_changed: Signal1<Option<usize>>,
+    /// Emitted with the text of the new item after `current_index` changes; the
+    /// empty string is emitted when the index is cleared.
     pub current_text_changed: Signal1<String>,
+    /// Emitted after `current_index_changed` when the user activates an item
+    /// (click, or keyboard confirm) with the activated item's index. Not emitted
+    /// by programmatic `set_current_index`.
     pub activated: Signal1<usize>,
 }
 impl ComboBox {

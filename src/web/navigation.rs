@@ -7,8 +7,14 @@ const MAX_HISTORY_SIZE: usize = 100;
 /// An entry in the navigation history (session-based back/forward).
 #[derive(Debug, Clone)]
 pub struct NavigationEntry {
+    /// The address that was navigated to.
     pub url: String,
+    /// The document title as known at navigation time, or `"Blank Page"` for the
+    /// [`Default`] entry.
     pub title: String,
+    /// When the entry was recorded. This type never reads or fills it in, so the
+    /// unit is whatever the caller chooses (epoch seconds and milliseconds are
+    /// both in use); `0` means "unset" and is what [`Default`] produces.
     pub timestamp: u64,
 }
 impl Default for NavigationEntry {
@@ -29,9 +35,25 @@ impl Default for NavigationHistory {
     }
 }
 impl NavigationHistory {
+    /// Creates an empty history holding at most `max_size` entries.
+    ///
+    /// `max_size` is a hard cap on retained entries; there is no clamping of the
+    /// argument, so a value of `0` produces a history that discards every entry
+    /// as soon as it is pushed. [`NavigationHistory::default`] uses 100.
     pub fn new(max_size: usize) -> Self {
         Self { entries: VecDeque::with_capacity(max_size), current_index: None, max_size }
     }
+    /// Records a visit and makes it the current entry.
+    ///
+    /// # What it does to the history
+    ///
+    /// * Any entries *after* the current one are discarded first — the usual
+    ///   "browsing forward then following a new link" truncation.
+    /// * The oldest entry is evicted when the history is at `max_size`; the
+    ///   cursor moves with it so it keeps pointing at the same entry.
+    /// * The new entry becomes current, so [`NavigationHistory::can_go_forward`]
+    ///   is `false` afterwards and [`NavigationHistory::can_go_back`] is `true`
+    ///   unless this is the only entry.
     pub fn push(&mut self, entry: NavigationEntry) {
         if let Some(idx) = self.current_index {
             if idx < self.entries.len() - 1 {
@@ -47,15 +69,27 @@ impl NavigationHistory {
         self.entries.push_back(entry);
         self.current_index = Some(self.entries.len().saturating_sub(1));
     }
+    /// The entry the cursor is on, or `None` when the history is empty (or has
+    /// been cleared).
     pub fn current(&self) -> Option<&NavigationEntry> {
         self.current_index.and_then(|idx| self.entries.get(idx))
     }
+    /// Whether there is an entry behind the current one.
     pub fn can_go_back(&self) -> bool {
         self.current_index.is_some_and(|idx| idx > 0)
     }
+    /// Whether there is an entry ahead of the current one — that is, whether a
+    /// previous [`NavigationHistory::go_back`] left somewhere to return to.
+    /// Always `false` on an empty history.
     pub fn can_go_forward(&self) -> bool {
         self.current_index.is_some_and(|idx| idx < self.entries.len() - 1)
     }
+    /// Steps the cursor one entry towards the oldest, returning the entry now
+    /// current, or `None` (and no movement) when [`NavigationHistory::can_go_back`]
+    /// is `false`.
+    ///
+    /// This only moves the cursor: nothing is removed, so a later
+    /// [`NavigationHistory::go_forward`] returns to where it left.
     pub fn go_back(&mut self) -> Option<&NavigationEntry> {
         if self.can_go_back() {
             if let Some(ref mut idx) = self.current_index {
@@ -66,6 +100,11 @@ impl NavigationHistory {
             None
         }
     }
+    /// Steps the cursor one entry towards the newest, returning the entry now
+    /// current, or `None` when [`NavigationHistory::can_go_forward`] is `false`.
+    ///
+    /// The forward entries it walks over survive, so the cursor can be moved
+    /// back again. Note that [`NavigationHistory::push`] is what discards them.
     pub fn go_forward(&mut self) -> Option<&NavigationEntry> {
         if self.can_go_forward() {
             if let Some(ref mut idx) = self.current_index {
@@ -76,16 +115,29 @@ impl NavigationHistory {
             None
         }
     }
+    /// All recorded entries, oldest first.
+    ///
+    /// Returns only the first contiguous slice of the backing deque. The deque is
+    /// only split when a push wraps around inside it, so this is normally the
+    /// whole history, but after a wrapped push the oldest entries become
+    /// unreachable through this method. [`NavigationHistory::len`] reports the
+    /// true count, so it can exceed `entries().len()`.
     pub fn entries(&self) -> &[NavigationEntry] {
         self.entries.as_slices().0
     }
+    /// Discards every entry and resets the cursor, leaving
+    /// [`NavigationHistory::can_go_back`] and
+    /// [`NavigationHistory::can_go_forward`] both `false`.
     pub fn clear(&mut self) {
         self.entries.clear();
         self.current_index = None;
     }
+    /// How many entries are currently held, capped by the `max_size` passed to
+    /// [`NavigationHistory::new`].
     pub fn len(&self) -> usize {
         self.entries.len()
     }
+    /// Whether no entries are held.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -93,22 +145,39 @@ impl NavigationHistory {
 /// Load state of a web page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoadStatus {
+    /// No navigation has been started yet.
     NotStarted,
+    /// A navigation is in flight; the bytes are not ready to display.
     Loading,
+    /// The navigation finished and the document is available.
     Loaded,
+    /// The navigation was attempted and did not complete.
     Failed,
 }
 /// A web resource with url, mime type and raw data.
 #[derive(Debug, Clone)]
 pub struct WebResource {
+    /// The address the resource was retrieved from, used as its identity when
+    /// cached or resolved.
     pub url: String,
+    /// The resource's MIME type, e.g. `"text/html"`. The requestor decides
+    /// whether it can handle the resource from this alone.
     pub mime_type: String,
+    /// The resource body, verbatim and still encoded as declared by
+    /// `mime_type` — this type performs no decoding or charset conversion.
     pub data: Vec<u8>,
 }
 impl WebResource {
+    /// Builds a resource from its three parts, taking ownership of all of them.
+    /// Nothing is validated: `mime_type` is stored exactly as given, and `data`
+    /// is not checked against it.
     pub fn new(url: String, mime_type: String, data: Vec<u8>) -> Self {
         Self { url, mime_type, data }
     }
+    /// Builds a `text/plain` resource from `text`, encoded as UTF-8 bytes.
+    ///
+    /// Use this for text the caller already holds rather than to fetch `url`;
+    /// no I/O happens here.
     pub fn from_text(url: &str, text: &str) -> Self {
         Self {
             url: url.to_string(),
@@ -116,6 +185,9 @@ impl WebResource {
             data: text.as_bytes().to_vec(),
         }
     }
+    /// Builds a `text/html` resource from `html`, encoded as UTF-8 bytes.
+    ///
+    /// Nothing is parsed or sanitised — the markup is stored as written.
     pub fn from_html(url: &str, html: &str) -> Self {
         Self {
             url: url.to_string(),
@@ -127,14 +199,32 @@ impl WebResource {
 /// Configurable web engine preferences.
 #[derive(Debug, Clone)]
 pub struct WebSettings {
+    /// Whether page scripts may run. When `false`,
+    /// `WebViewCore::evaluate_javascript` fails with a `"JavaScript is disabled"`
+    /// error rather than silently returning nothing.
     pub javascript_enabled: bool,
+    /// Whether browser plugins are permitted to load. Off by default.
     pub plugins_enabled: bool,
+    /// Whether this session avoids persisting cookies and history. Off by
+    /// default a normal browsing session; turning it on is what callers do to
+    /// enter a private session.
     pub private_browsing: bool,
+    /// Whether images are fetched and painted. On by default.
     pub images_enabled: bool,
+    /// Whether cookies are stored and sent. On by default.
     pub cookies_enabled: bool,
+    /// Whether WebGL canvases are permitted. On by default.
     pub webgl_enabled: bool,
+    /// Whether developer tooling (inspector, console bridge) is exposed. Off by
+    /// default; it is not needed by end users and should not be left on for a
+    /// shipped application without a reason.
     pub developer_extras_enabled: bool,
+    /// The `User-Agent` header sent with requests. Defaults to
+    /// `"RustWidgets/0.1"`, so it intentionally does not impersonate a browser
+    /// unless the caller replaces it.
     pub user_agent: String,
+    /// The charset assumed when a response does not declare one. Defaults to
+    /// `"UTF-8"`.
     pub default_encoding: String,
 }
 impl Default for WebSettings {
@@ -155,10 +245,18 @@ impl Default for WebSettings {
 /// Security preferences for web content.
 #[derive(Debug, Clone)]
 pub struct SecuritySettings {
+    /// Whether content served over plain `http://` is permitted at all. `false`
+    /// by default.
     pub allow_insecure_content: bool,
+    /// Whether an `https://` page may pull in `http://` sub-resources
+    /// ("mixed content"). `false` by default.
     pub allow_mixed_content: bool,
+    /// Whether script-opened windows are suppressed. `true` by default — an
+    /// unexpected popup is treated as hostile until the caller opts in.
     pub block_popups: bool,
+    /// Whether cross-site tracking is blocked. `true` by default.
     pub block_tracking: bool,
+    /// Whether known-malware URLs are blocked. `true` by default.
     pub block_malware: bool,
 }
 impl Default for SecuritySettings {

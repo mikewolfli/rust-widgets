@@ -16,11 +16,30 @@ pub enum ClipboardContent {
     /// Plain UTF-8 text.
     Text(String),
     /// HTML content with optional plain-text fallback.
-    Html { html: String, plain: String },
+    Html {
+        /// The HTML markup itself.
+        html: String,
+        /// Plain-text rendering of `html`, offered to consumers that cannot
+        /// handle markup. Not derived from `html`; the caller keeps the two in
+        /// sync.
+        plain: String,
+    },
     /// Rich Text Format content.
+    ///
+    /// Raw RTF bytes, including the `{\rtf1` header. Stored as bytes rather than
+    /// a `String` because the format is byte-oriented and not guaranteed UTF-8.
     Rtf(Vec<u8>),
     /// RGBA image data.
-    Image { width: u32, height: u32, data: Vec<u8> },
+    Image {
+        /// Image width in pixels.
+        width: u32,
+        /// Image height in pixels.
+        height: u32,
+        /// Row-major pixel data, 4 bytes per pixel in R, G, B, A order. Expected
+        /// to be `width * height * 4` bytes long; the length is not validated
+        /// here, so a mismatched buffer is stored as given.
+        data: Vec<u8>,
+    },
     /// List of file URLs.
     #[cfg(not(alloc_frugal))]
     Files(Vec<PathBuf>),
@@ -91,6 +110,7 @@ pub struct MockClipboard {
 }
 
 impl MockClipboard {
+    /// Creates an empty mock clipboard. Equivalent to [`MockClipboard::default`].
     pub fn new() -> Self {
         Self::default()
     }

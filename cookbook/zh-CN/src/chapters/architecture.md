@@ -481,7 +481,7 @@ pub struct ConnectionHandle(pub u64);
 pub struct ConnectionScope;
 ```
 
-### Signal<T> API
+### `Signal<T>` API
 
 ```rust
 impl<T: Clone + Send + 'static> Signal<T> {

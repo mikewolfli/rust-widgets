@@ -7,12 +7,20 @@ use crate::compat::HashMap;
 use crate::compat::Mutex;
 use crate::core::ObjectId;
 use crate::core::Orientation;
+use crate::core::Rect;
 use alloc::collections::VecDeque;
 use core::hash::Hash;
 use core::sync::atomic::{AtomicU64, Ordering};
 /// Generic widget state record owned by backend state model.
 #[cfg(all(feature = "serde", widgets_unstripped))]
 use serde::{Deserialize, Serialize};
+/// The platform-neutral state a backend keeps for one widget handle.
+///
+/// `K` is the backend's own handle-kind discriminator; the record itself is
+/// written by the shared accessors in [`crate::platform::stub`] and by any OS
+/// adapter, so the accessors read back what they were told to set rather than
+/// querying an OS control. Optional fields follow the convention described on
+/// each: `None` means "this control has no such concept here", never "zero".
 #[derive(Clone, Debug)]
 #[cfg_attr(all(feature = "serde", widgets_unstripped), derive(Serialize, Deserialize))]
 pub struct WidgetRecord<K> {
@@ -162,6 +170,13 @@ impl Default for WindowStateRecord {
         Self::new_window()
     }
 }
+/// Converts a [`Rect`] to the four primitives the surface map stores.
+///
+/// See `BackendState::surfaces` for why the rect is not stored as a `Rect`.
+fn rect_to_tuple(rect: Rect) -> (i32, i32, u32, u32) {
+    (rect.x, rect.y, rect.width, rect.height)
+}
+
 /// Thread-safe state model split from native handle adapters.
 #[cfg_attr(all(feature = "serde", widgets_unstripped), derive(Serialize, Deserialize))]
 pub struct BackendState<K> {
@@ -171,6 +186,21 @@ pub struct BackendState<K> {
     widget_events: Mutex<VecDeque<WidgetTriggerEvent>>,
     clipboard_text: Mutex<String>,
     drop_events: Mutex<VecDeque<DropEvent>>,
+    /// Widgets this host is displaying, with the rect each surface covers.
+    ///
+    /// A state-only backend has no native object per control (every `WidgetKind` is
+    /// painted by the library), so "is it displayed?" is exactly this map. The host
+    /// still owns the pixels and pulls them via `widget::runtime::render_frame`.
+    ///
+    /// Stored as primitives rather than [`Rect`] because this struct is serialized by
+    /// the iOS/Android backends, and `Rect` deliberately carries no serde derive
+    /// (widening `core`'s feature surface for one field is not worth it).
+    surfaces: Mutex<HashMap<ObjectId, (i32, i32, u32, u32)>>,
+    /// Widgets whose pixels changed since the host last asked.
+    ///
+    /// A queue rather than a flag set: the host drains it in order, and coalescing on
+    /// insert keeps a burst of invalidations from producing a burst of repaints.
+    pending_repaints: Mutex<VecDeque<ObjectId>>,
 }
 impl<K> Default for BackendState<K>
 where
@@ -207,7 +237,97 @@ where
             widget_events: Mutex::new(VecDeque::new()),
             clipboard_text: Mutex::new(String::new()),
             drop_events: Mutex::new(VecDeque::new()),
+            surfaces: Mutex::new(HashMap::new()),
+            pending_repaints: Mutex::new(VecDeque::new()),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Widget surfaces
+    // -----------------------------------------------------------------------
+
+    /// Records that `id` is displayed on a host surface covering `rect`.
+    ///
+    /// The host owns the pixels; this records only *which* widgets the host agreed
+    /// to display and where. `mount_surface` returns this, and
+    /// [`BackendState::invalidate_surface_record`] queues a repaint the host drains
+    /// through [`BackendState::take_pending_repaint`].
+    ///
+    /// Refuses an unknown `id`: a surface for a widget that does not exist could only
+    /// produce a frame nobody reads, so reporting `false` is the honest answer.
+    pub fn mount_surface_record(&self, id: ObjectId, rect: Rect) -> bool {
+        if !self.contains_widget(id) {
+            return false;
+        }
+        let mut surfaces = self.surfaces.lock().unwrap_or_else(|e| e.into_inner());
+        surfaces.insert(id, rect_to_tuple(rect));
+        true
+    }
+
+    /// Forgets the surface for `id`. Returns whether one was recorded.
+    pub fn unmount_surface_record(&self, id: ObjectId) -> bool {
+        let removed = self.surfaces.lock().unwrap_or_else(|e| e.into_inner()).remove(&id).is_some();
+        if removed {
+            // A repaint request for a widget that is gone would make the host ask for
+            // a frame that can never be produced.
+            self.pending_repaints
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .retain(|&pending| pending != id);
+        }
+        removed
+    }
+
+    /// Updates the rect of a mounted surface. Returns whether `id` was mounted.
+    pub fn resize_surface_record(&self, id: ObjectId, rect: Rect) -> bool {
+        let mut surfaces = self.surfaces.lock().unwrap_or_else(|e| e.into_inner());
+        match surfaces.get_mut(&id) {
+            Some(existing) => {
+                *existing = rect_to_tuple(rect);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Returns the rect of a mounted surface, or `None` when `id` is not mounted.
+    pub fn surface_rect(&self, id: ObjectId) -> Option<Rect> {
+        self.surfaces
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&id)
+            .map(|&(x, y, width, height)| Rect::new(x, y, width, height))
+    }
+
+    /// Queues a repaint for `id` and reports whether it was mounted.
+    ///
+    /// The queue is drained by the host, which is the only party that can put the
+    /// pixels on screen. Coalesced: a widget already awaiting a repaint is not queued
+    /// again, so a burst of invalidations in one frame produces one repaint.
+    pub fn invalidate_surface_record(&self, id: ObjectId) -> bool {
+        if self.surface_rect(id).is_none() {
+            return false;
+        }
+        let mut pending = self.pending_repaints.lock().unwrap_or_else(|e| e.into_inner());
+        if !pending.contains(&id) {
+            pending.push_back(id);
+        }
+        true
+    }
+
+    /// Removes and returns the next widget awaiting a repaint.
+    pub fn take_pending_repaint(&self) -> Option<ObjectId> {
+        self.pending_repaints.lock().unwrap_or_else(|e| e.into_inner()).pop_front()
+    }
+
+    /// Returns how many widgets are awaiting a repaint.
+    pub fn pending_repaint_count(&self) -> usize {
+        self.pending_repaints.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+
+    /// Returns how many surfaces this host is displaying.
+    pub fn mounted_surface_count(&self) -> usize {
+        self.surfaces.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
     /// Insert one widget record and return allocated logical id.
     pub fn create_widget(

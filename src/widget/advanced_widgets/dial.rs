@@ -13,6 +13,12 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// Dial (rotary knob) widget.
+///
+/// Holds an integer value in an inclusive `minimum ..= maximum` range and
+/// renders it as a needle on a circle. The widget has no drag handling of its
+/// own: it changes value in response to keyboard events and to explicit
+/// [`Dial::set_value`] calls from the caller.
+///
 pub struct Dial {
     base: BaseWidget,
     minimum: i32,
@@ -23,12 +29,26 @@ pub struct Dial {
     notches_visible: bool,
     notch_target: f64,
     wrapping: bool,
+    /// Emitted with the new value whenever [`Dial::set_value`] actually changes
+    /// it. Redundant sets do not fire it.
     pub value_changed: Signal1<i32>,
+    /// Declared for parity with [`Slider`](crate::widget::Slider), but never
+    /// emitted: the dial has no positional input path to drive it. Connect to
+    /// `value_changed` instead.
     pub slider_moved: Signal1<i32>,
+    /// Emitted when the primary mouse button is pressed while the dial is
+    /// enabled. Purely a notification — the press does not change the value.
     pub slider_pressed: GenericSignal,
+    /// Emitted when the primary mouse button is released while the dial is
+    /// enabled. Like `slider_pressed`, it does not change the value.
     pub slider_released: GenericSignal,
 }
 impl Dial {
+    /// Creates a dial ranging over `0 ..= 99` with value `0`, a single step of
+    /// `1`, a page step of `10`, notches hidden, wrapping off, and a notch
+    /// target of `3.7`.
+    ///
+    /// `geometry` is in parent-relative logical pixels; the size hint is 64x64.
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::Dial, geometry, "Dial"),
@@ -46,41 +66,71 @@ impl Dial {
             slider_released: GenericSignal::new(),
         }
     }
+    /// Returns the inclusive lower bound. Defaults to `0`.
     pub fn minimum(&self) -> i32 {
         self.minimum
     }
+    /// Returns the inclusive upper bound. Defaults to `99`.
     pub fn maximum(&self) -> i32 {
         self.maximum
     }
+    /// Returns the current value, always inside the configured range (modulo
+    /// wrapping, which is still range-mapped).
     pub fn value(&self) -> i32 {
         self.value
     }
+    /// Returns the increment applied by one arrow-key press (in value units).
+    /// Always at least `1`; defaults to `1`.
     pub fn single_step(&self) -> i32 {
         self.single_step
     }
+    /// Returns the increment applied by Page Up / Page Down (in value units).
+    /// Always at least `1`; defaults to `10`.
     pub fn page_step(&self) -> i32 {
         self.page_step
     }
+    /// Returns whether notches are drawn. Defaults to `false`.
+    ///
+    /// Note that [`Dial::draw`] currently paints only the body and needle, so
+    /// this flag has no visible effect yet.
     pub fn notches_visible(&self) -> bool {
         self.notches_visible
     }
+    /// Returns the notch target angle, in **degrees**, used by the notch
+    /// geometry. Defaults to `3.7`.
+    ///
+    /// The value is stored verbatim and currently not consumed by rendering.
     pub fn notch_target(&self) -> f64 {
         self.notch_target
     }
+    /// Returns whether the value wraps around the range instead of clamping.
+    /// Defaults to `false`.
     pub fn wrapping(&self) -> bool {
         self.wrapping
     }
+    /// Sets the lower bound and re-applies it to the current value through
+    /// [`Dial::set_value`], so the value will be clamped or wrapped into the
+    /// new range and `value_changed` may fire.
+    ///
+    /// `min` above the current `maximum` leaves an inverted range in which the
+    /// clamp saturates unpredictably; use [`Dial::set_range`] instead, which
+    /// keeps `maximum >= minimum`.
     pub fn set_minimum(&mut self, min: i32) {
         self.minimum = min;
         self.set_value(self.value);
         self.base.request_redraw();
     }
+    /// Sets the upper bound and re-applies it to the current value through
+    /// [`Dial::set_value`]. See [`Dial::set_minimum`] for range caveats.
     pub fn set_maximum(&mut self, max: i32) {
         self.maximum = max;
         self.set_value(self.value);
         self.base.request_redraw();
     }
-    /// Sets both minimum and maximum in one call.
+    /// Sets both minimum and maximum in one call, raising `maximum` to `min`
+    /// if it is lower, so the range is never inverted. The current value is
+    /// then re-applied through [`Dial::set_value`].
+    ///
     /// This is a convenience writer; query bounds via `minimum()` and `maximum()`.
     pub fn set_range(&mut self, min: i32, max: i32) {
         self.minimum = min;
@@ -88,6 +138,12 @@ impl Dial {
         self.set_value(self.value);
         self.base.request_redraw();
     }
+    /// Sets the value, clamping into `minimum ..= maximum` — or wrapping
+    /// modulo the range when [`Dial::wrapping`] is on, in which case the value
+    /// is mapped back into the range rather than rejected.
+    ///
+    /// A no-op when the resulting value equals the current one: no signal and
+    /// no redraw.
     pub fn set_value(&mut self, value: i32) {
         let clamped = if self.wrapping {
             let range = self.maximum - self.minimum + 1;
@@ -105,22 +161,36 @@ impl Dial {
             self.base.request_redraw();
         }
     }
+    /// Sets the arrow-key increment, floored at `1` so the value can always
+    /// move. Requests a redraw.
     pub fn set_single_step(&mut self, step: i32) {
         self.single_step = step.max(1);
         self.base.request_redraw();
     }
+    /// Sets the Page Up / Page Down increment, floored at `1`. Requests a
+    /// redraw.
     pub fn set_page_step(&mut self, step: i32) {
         self.page_step = step.max(1);
         self.base.request_redraw();
     }
+    /// Toggles notch rendering. See [`Dial::notches_visible`] — currently has
+    /// no visual effect. Requests a redraw.
     pub fn set_notches_visible(&mut self, visible: bool) {
         self.notches_visible = visible;
         self.base.request_redraw();
     }
+    /// Sets the notch target in degrees, stored verbatim. See
+    /// [`Dial::notch_target`]. Requests a redraw.
     pub fn set_notch_target(&mut self, target: f64) {
         self.notch_target = target;
         self.base.request_redraw();
     }
+    /// Enables or disables wrap-around behaviour.
+    ///
+    /// Takes effect on the *next* call to [`Dial::set_value`]; the current
+    /// value is not re-mapped. Turning wrapping off therefore leaves a value
+    /// that was produced by wrapping in place, which is fine because wrapped
+    /// values are always inside the range. Requests a redraw.
     pub fn set_wrapping(&mut self, wrapping: bool) {
         self.wrapping = wrapping;
         self.base.request_redraw();

@@ -2,15 +2,20 @@
 // SPDX-License-Identifier: MIT
 
 //! Input widgets: text editors, combo boxes, spin boxes, etc.
+
 #[cfg(widgets_unstripped)]
 pub mod auto_complete_edit;
+/// Editable and non-editable drop-down item selector.
 pub mod combobox;
 #[cfg(widgets_unstripped)]
+/// Hyperlink-styled button that opens a URL or runs a command.
 pub mod command_link;
+/// Base type for drop-down popups shared by the combo-box family.
 pub mod dropdown;
 #[cfg(widgets_unstripped)]
 pub mod editable_combo_box;
 #[cfg(widgets_unstripped)]
+/// Combo box whose items are font families, with a live preview.
 pub mod font_combo_box;
 #[cfg(widgets_unstripped)]
 pub mod ime_preedit;

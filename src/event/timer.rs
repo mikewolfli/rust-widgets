@@ -37,10 +37,13 @@ pub struct TimerManager {
     state: Arc<Mutex<TimerState>>,
     #[cfg(not(alloc_frugal))]
     thread_handle: Option<thread::JoinHandle<()>>,
-    /// Mini stub handle.
+    /// Field kept in `mini` so the shared method bodies compile unchanged.
+    ///
+    /// `mini` has no timer thread — the caller drives `pump`, so there is no handle to
+    /// join. This mirrors the threaded field rather than forking every method, which is
+    /// the same profile-parity pattern `EventLoop` uses.
     #[cfg(alloc_frugal)]
     #[cfg_attr(alloc_frugal, allow(dead_code))]
-    // kept to mirror the non-mini API
     thread_handle: Option<()>,
     /// Sender used by the mini `pump` to post due timer events.
     #[cfg(alloc_frugal)]
@@ -102,7 +105,11 @@ impl TimerManager {
         Self { state, thread_handle: Some(thread_handle) }
     }
 
-    /// Create a timer manager (mini stub — single-threaded, no background thread).
+    /// Creates a timer manager for `mini`, which has no background thread.
+    ///
+    /// Timers fire when the caller drives `pump`, so this stores the sender that
+    /// `pump` posts through instead of spawning. Single-threaded by design: `mini`
+    /// carries no `Send`/`Sync` requirement on the queue.
     #[cfg(alloc_frugal)]
     pub fn new(sender: EventSender) -> Self {
         let state = Arc::new(Mutex::new(TimerState { timers: HashMap::new(), running: true }));
@@ -216,14 +223,31 @@ impl Drop for TimerManager {
 }
 
 /// Idle task that runs when the event loop has no higher-priority events (BLUE11 R8.5).
+///
+/// Priority is expressed as a cooldown rather than a queue: the event loop ticks
+/// the task every frame with [`IdleTask::tick`], and the callback actually runs
+/// only once `threshold_frames` frames have elapsed since it last ran. A large
+/// threshold therefore means "only when things are quiet".
 pub struct IdleTask {
+    /// Caller-assigned identifier. The task machinery never rewrites it, so it
+    /// stays whatever `new` was given; it is the only stable way to refer to a
+    /// task across ticks.
     pub id: u64,
+    /// The work to perform. Called from the event loop with no arguments; it
+    /// cannot report failure, so a task that fails must log internally.
+    /// Boxed and `Send` because the manager owns tasks across threads.
     pub callback: Box<dyn FnMut() + Send>,
+    /// Minimum number of frames between runs. `0` means the callback runs on
+    /// every tick, which defeats the point of an idle task but is permitted.
     pub threshold_frames: u32,
-    frames_since_run: u32,
+    /// Frames elapsed since the last run. Managed by [`IdleTask::tick`]; public
+    /// for inspection, but writing it changes when the next run happens.
+    pub frames_since_run: u32,
 }
 
 impl IdleTask {
+    /// Creates a task that has not yet run, so its first run happens after
+    /// `threshold_frames` ticks rather than on the first one.
     pub fn new<F>(id: u64, threshold_frames: u32, callback: F) -> Self
     where
         F: FnMut() + Send + 'static,

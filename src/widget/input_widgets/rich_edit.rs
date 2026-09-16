@@ -17,14 +17,32 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 /// Rich text/code editor baseline widget contract.
+///
+/// Holds a plain `String` plus a byte-offset selection and a set of change
+/// signals. Despite the name it stores no styling or markup: it is a text
+/// buffer with editor signalling, and "rich" refers to the role it fills (the
+/// editing surface that richer tooling builds on) rather than to its contents.
+///
+/// Offsets in the selection and cursor signals are **byte** indices into the
+/// UTF-8 text, not character indices, so they are not guaranteed to land on
+/// character boundaries unless the writer keeps them there.
+///
 pub struct RichEdit {
     base: BaseWidget,
     text: String,
     selection: Option<(usize, usize)>,
     read_only: bool,
+    /// Emitted with the full new text on every accepted change. Carries the
+    /// whole document, not a delta.
     pub text_changed: Signal1<String>,
+    /// Emitted with the new selection as byte offsets `(start, end)`, or `None`
+    /// when the selection is cleared.
     pub selection_changed: Signal1<Option<(usize, usize)>>,
+    /// Emitted with the new flag from [`RichEdit::set_read_only`].
     pub read_only_changed: Signal1<bool>,
+    /// Emitted with the new cursor byte offset whenever the text is replaced.
+    /// Note the name does not match the payload: it reports an offset, not a
+    /// position struct.
     pub cursor_position_changed: Signal1<usize>,
     undo_stack: UndoStack,
     history_target: Rc<RefCell<String>>,
@@ -52,6 +70,15 @@ impl RichEdit {
         &self.text
     }
     /// Replaces editor text and resets selection/cursor to end.
+    ///
+    /// Ignored entirely — no change, no signals — when the editor is read-only
+    /// or when `text` equals the current content. Otherwise the previous content
+    /// is pushed onto the undo stack (unless an undo/redo is being replayed),
+    /// the selection is cleared, and `text_changed` then `cursor_position_changed`
+    /// fire, followed by a redraw request.
+    ///
+    /// The cursor is reported as `text.len()`, a byte offset at the end of the
+    /// document.
     pub fn set_text(&mut self, text: String) {
         if self.read_only || self.text == text {
             return;
@@ -73,6 +100,12 @@ impl RichEdit {
         self.base.request_redraw();
     }
 
+    /// Steps back one text change and returns `true`, or `false` when there is
+    /// nothing to undo.
+    ///
+    /// Replaying history emits `text_changed` but does not consult the read-only
+    /// flag, so an undo can alter the text of a read-only editor. No undo entry
+    /// is created for the replay.
     pub fn undo(&mut self) -> bool {
         if self.undo_stack.undo().is_err() {
             return false;
@@ -81,6 +114,9 @@ impl RichEdit {
         true
     }
 
+    /// Steps forward one undone change and returns `true`, or `false` when there
+    /// is nothing to redo. Signal behaviour matches [`RichEdit::undo`], including
+    /// the ignored read-only flag.
     pub fn redo(&mut self) -> bool {
         if self.undo_stack.redo().is_err() {
             return false;
@@ -89,9 +125,11 @@ impl RichEdit {
         true
     }
 
+    /// Returns `true` if [`RichEdit::undo`] would change the text.
     pub fn can_undo(&self) -> bool {
         self.undo_stack.can_undo()
     }
+    /// Returns `true` if [`RichEdit::redo`] would change the text.
     pub fn can_redo(&self) -> bool {
         self.undo_stack.can_redo()
     }

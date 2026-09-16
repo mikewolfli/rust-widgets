@@ -1,7 +1,6 @@
 [book]
 authors = ["rust-widgets contributors"]
 language = "zh-CN"
-multilingual = false
 src = "src"
 title = "rust-widgets 使用手册"
 

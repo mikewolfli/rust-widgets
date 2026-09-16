@@ -138,7 +138,7 @@ pub fn inject_widget_trigger_event(id: ObjectId, kind: u32) -> bool;
 ```rust
 pub fn set_clipboard_text(text: &str);
 pub fn get_clipboard_text() -> String;
-pub fn platform_clipboard() -> PlatformClipboard;
+pub fn platform_clipboard() -> Option<&'static dyn crate::platform::clipboard::RichClipboardBackend>;
 ```
 
 ### 選單/工具列
@@ -1014,8 +1014,8 @@ impl EventLoop {
     pub fn run(&mut self) -> !;
     pub fn quit(&self);
     pub fn post_event(&self, event: Event);
-    pub fn add_timer(&mut self, interval_ms: u64, id: u32);
-    pub fn remove_timer(&mut self, id: u32);
+    // Timers are not an `EventLoop` method: `TimerManager` owns them and posts
+    // ticks into the loop's queue. See the Timer section below.
 }
 ```
 
@@ -1048,9 +1048,14 @@ impl FocusManager {
     pub fn focused_widget(&self) -> Option<ObjectId>;
     pub fn set_focus(&mut self, id: ObjectId) -> bool;
     pub fn clear_focus(&mut self);
-    pub fn next_widget(&mut self) -> Option<ObjectId>;
-    pub fn prev_widget(&mut self) -> Option<ObjectId>;
-    pub fn register_tab_order(&mut self, ids: &[ObjectId]);
+    pub fn focus_next(&mut self) -> Option<ObjectId>;
+    pub fn focus_previous(&mut self) -> Option<ObjectId>;
+    /// Replaces the focus traversal order wholesale.
+    pub fn set_focus_order(&mut self, ids: Vec<ObjectId>);
+    pub fn register_focusable(&mut self, id: ObjectId);
+    pub fn unregister_focusable(&mut self, id: ObjectId);
+    pub fn focusable_widgets(&self) -> &[ObjectId];
+    pub fn set_traversal_strategy(&mut self, strategy: FocusTraversalStrategy);
     pub fn set_a11y_callback(&mut self, callback: Box<dyn FnMut(ObjectId)>);
 }
 ```
@@ -1062,10 +1067,15 @@ pub struct PointerCaptureManager { /* ... */ }
 
 impl PointerCaptureManager {
     pub fn new() -> Self;
-    pub fn capture(&mut self, widget_id: ObjectId);
-    pub fn release(&mut self);
-    pub fn captured_widget(&self) -> Option<ObjectId>;
-    pub fn is_captured_by(&self, widget_id: ObjectId) -> bool;
+    /// Captures the pointer for `widget_id`. `false` when another widget already
+    /// holds the capture -- capture is exclusive.
+    pub fn set_capture(&mut self, widget_id: ObjectId) -> bool;
+    /// Releases the capture. `false` if nothing was captured.
+    pub fn release_capture(&mut self) -> bool;
+    /// The widget holding the capture, if any.
+    pub fn capturing_widget(&self) -> Option<ObjectId>;
+    /// Whether `widget_id` is the current captor.
+    pub fn has_capture(&self, widget_id: ObjectId) -> bool;
 }
 ```
 
@@ -1075,11 +1085,20 @@ impl PointerCaptureManager {
 pub struct TimerManager { /* ... */ }
 
 impl TimerManager {
-    pub fn new() -> Self;
-    pub fn add_timer(&mut self, interval_ms: u64) -> u32;
-    pub fn remove_timer(&mut self, id: u32);
-    pub fn process_timers(&mut self, now_ms: u64) -> Vec<u32>;
-    pub fn clear(&mut self);
+    /// Takes the sender the timer callbacks are delivered through: the manager
+    /// does not own a loop, it posts into one.
+    pub fn new(sender: EventSender) -> Self;
+    /// Starts a timer on `target`; the tick is delivered as an event.
+    pub fn start_timer(&self, target: ObjectId, interval: Duration, id: u32, repeat: bool) -> bool;
+    /// Stops one timer on `target`. `false` if no such timer was running.
+    pub fn stop_timer(&self, target: ObjectId, id: u32) -> bool;
+    /// Stops every timer belonging to `target`; returns how many were stopped.
+    pub fn stop_timers_for_target(&self, target: ObjectId) -> usize;
+    /// Stops every timer on every target.
+    pub fn clear(&self);
+    /// Delivers ticks for all timers whose deadline has passed. Call once per
+    /// loop iteration.
+    pub fn pump(&self);
 }
 ```
 
@@ -1338,44 +1357,53 @@ pub struct ProjectionLayoutHelper { /* ... */ }
 ## 渲染引擎 (`render_engine`)
 
 ```rust
-pub trait EngineTrait {
+// The trait is `RenderEngine` (src/render_engine/engine_trait.rs). It borrows
+// `&self`, not `&mut self`, and takes no `Result`: engine lifecycle is
+// infallible by design, so there is nothing for a caller to handle.
+pub trait RenderEngine: Send + Sync {
     fn name(&self) -> &'static str;
-    fn init(&mut self) -> Result<(), RwError>;
-    fn run(&mut self) -> Result<(), RwError>;
-    fn quit(&mut self);
-    fn submit_frame(&mut self, surface: &mut SoftwareSurface);
-    fn is_running(&self) -> bool;
+    fn profile(&self) -> RuntimeProfile;
+    fn init(&self);
+    fn run(&self);
+    fn quit(&self);
+    fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64;
+    fn create_button(
+        &self, parent: u64, text: &str, x: i32, y: i32, width: u32, height: u32,
+    ) -> u64;
 }
 ```
 
 ### 原生引擎
 
 ```rust
-pub struct NativeEngine { /* ... */ }
-impl NativeEngine {
-    pub fn new() -> Self;
+pub struct NativeRenderEngine;
+
+impl NativeRenderEngine {
+    pub const fn new() -> Self;
 }
-impl EngineTrait for NativeEngine { /* ... */ }
+impl RenderEngine for NativeRenderEngine { /* ... */ }
 ```
 
 ### 嵌入式引擎
 
 ```rust
-pub struct EmbeddedEngine { /* ... */ }
-impl EmbeddedEngine {
-    pub fn new() -> Self;
-    pub fn init(&mut self) -> bool;
-    pub fn task_count(&self) -> u64;
-    pub fn submit_noop(&self, label: &str) -> u64;
-    pub fn frame_count(&self) -> u64;
-    pub fn button_count(&self) -> u64;
-    pub fn window_count(&self) -> u64;
-    pub fn target_fps(&self) -> u32;
-    pub fn set_target_fps(&mut self, fps: u32) -> u32;
-    pub fn is_running(&self) -> bool;
-    pub fn is_initialized(&self) -> bool;
+pub struct EmbeddedRenderEngine;
+
+impl EmbeddedRenderEngine {
+    pub const fn new() -> Self;
 }
-impl EngineTrait for EmbeddedEngine { /* ... */ }
+impl RenderEngine for EmbeddedRenderEngine { /* ... */ }
+
+// The engine itself is a thin façade: the counters and the frame loop live in the
+// process-wide embedded runtime (`render_engine::embedded`), which is what the
+// engine methods delegate to. Task submission is a free function, not a method:
+// `submit_embedded_task(label, callback)`.
+
+/// Builds the engine for the compile-time profile.
+///
+/// `NativeRenderEngine` when an OS host exists, `EmbeddedRenderEngine` otherwise
+/// (and always under the alloc-frugal `mini` profile).
+pub fn default_render_engine() -> Box<dyn RenderEngine>;
 ```
 
 ---
@@ -1450,12 +1478,12 @@ pub enum ReducedMotionPreference { NoPreference, ReduceMotion }
 
 ```rust
 // CSS 屬性解析
-pub struct CssEngine { /* ... */ }
+pub struct CssParser { /* ... */ }
 pub struct Selector { /* ... */ }
 
 // 熱重載 CSS 監視器
-pub struct CssWatcher { /* ... */ }
-impl CssWatcher {
+pub struct AssetWatcher (crate::asset::watcher) { /* ... */ }
+impl AssetWatcher (crate::asset::watcher) {
     pub fn watch(path: &str) -> Result<Self, ()>;
     pub fn poll_changed(&mut self) -> bool;
 }
@@ -1614,8 +1642,8 @@ pub trait ImeBridge {
 ### 虛擬鍵盤
 
 ```rust
-pub struct VirtualKeyboardController { /* ... */ }
-impl VirtualKeyboardController {
+pub struct Keyboard (widget::input_widgets::keyboard) { /* ... */ }
+impl Keyboard (widget::input_widgets::keyboard) {
     pub fn show(&mut self);
     pub fn hide(&mut self);
     pub fn is_visible(&self) -> bool;
@@ -1626,8 +1654,8 @@ impl VirtualKeyboardController {
 ### 剪貼簿（平台）
 
 ```rust
-pub struct PlatformClipboard { /* ... */ }
-impl PlatformClipboard {
+pub struct Option<&'static dyn crate::platform::clipboard::RichClipboardBackend> { /* ... */ }
+impl Option<&'static dyn crate::platform::clipboard::RichClipboardBackend> {
     pub fn set(&mut self, content: ClipboardContent);
     pub fn get(&self) -> Option<ClipboardContent>;
     pub fn clear(&mut self);
@@ -2095,17 +2123,17 @@ impl GestureEngine {
 
 ### 圖表型別
 
-`chart` 模組提供了資料視覺化的基礎：
+Data visualization lives under `widget::chart_widgets`. The chart *engine* (layout, axes, ticks, SVG context) and the chart *widgets* are two layers of one feature, so they share a module:
 
 ```rust
-pub struct ChartLayout { /* ... */ }
-pub struct ChartSvgRenderer { /* ... */ }
-
+// The engine and the chart widgets both live under `widget::chart_widgets`:
+// they are two layers of one feature, and there is no top-level `chart` module.
+pub struct ChartLayout { /* ... */ }          // widget::chart_widgets::layout
+pub struct SvgChartContext { /* ... */ }      // widget::chart_widgets::svg
+pub struct MemoryChartContext { /* ... */ }   // widget::chart_widgets::svg
+pub trait Chart { /* ... */ }                 // widget::chart_widgets::types
+pub trait ChartContext { /* ... */ }          // widget::chart_widgets::types
 // 子模組：charts, layout, svg, types
-
-pub use crate::chart::charts::*;
-pub use crate::chart::svg::*;
-pub use crate::chart::types::*;
 ```
 
 圖表資料型別包含軸設定、數列定義、圖例以及用於折線圖、長條圖、圓餅圖和散佈圖的資料點結構。
@@ -2184,8 +2212,8 @@ pub use print_impl::*;
 ### 池分配器
 
 ```rust
-pub struct PoolAllocator { /* ... */ }
-impl PoolAllocator {
+pub struct ObjectPool<T> / SharedPool<T> / PoolManager { /* ... */ }
+impl ObjectPool<T> / SharedPool<T> / PoolManager {
     pub fn new() -> Self;
     pub fn allocate(&mut self, size: usize) -> Option<*mut u8>;
     pub fn deallocate(&mut self, ptr: *mut u8, size: usize);
@@ -2557,7 +2585,7 @@ pub struct SecuritySettings {
 ### 外掛程式
 
 ```rust
-pub trait WebPlugin: Send + Sync {
+pub trait Plugin: Send + Sync {
     fn name(&self) -> &str;
     fn version(&self) -> &str;
     fn on_load(&mut self) -> Result<(), String>;
@@ -2567,9 +2595,9 @@ pub trait WebPlugin: Send + Sync {
 pub struct PluginManager { /* ... */ }
 impl PluginManager {
     pub fn new() -> Self;
-    pub fn register(&mut self, plugin: Box<dyn WebPlugin>) -> Result<u32, String>;
+    pub fn register(&mut self, plugin: Box<dyn Plugin>) -> Result<u32, String>;
     pub fn unregister(&mut self, id: u32) -> bool;
-    pub fn list(&self) -> Vec<&dyn WebPlugin>;
+    pub fn list(&self) -> Vec<&dyn Plugin>;
     pub fn clear(&mut self);
 }
 
@@ -2687,7 +2715,7 @@ impl UndoStack {
 ```rust
 pub fn set_clipboard_text(text: &str);
 pub fn get_clipboard_text() -> String;
-pub fn platform_clipboard() -> PlatformClipboard;
+pub fn platform_clipboard() -> Option<&'static dyn crate::platform::clipboard::RichClipboardBackend>;
 ```
 
 ---

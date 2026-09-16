@@ -42,16 +42,29 @@ pub trait Widget: EventHandler + Any {
     fn kind(&self) -> WidgetKind {
         self.base().kind()
     }
+    /// Returns the widget's rectangle, in parent-relative logical coordinates.
+    ///
+    /// The origin is inclusive and the far edge exclusive, matching
+    /// [`Rect::contains_point`]. Coordinates are logical (device-independent)
+    /// pixels — divide physical pixels by [`Widget::dpi_scale`] before
+    /// comparing the two.
     fn geometry(&self) -> Rect {
         self.base().geometry()
     }
+    /// Replaces the widget's geometry (origin and size) in a single call.
+    ///
+    /// Containers call this during layout. Setting geometry does not by itself
+    /// request a redraw; call [`Widget::request_redraw`] if the change must be
+    /// presented immediately.
     fn set_geometry(&mut self, geometry: Rect) {
         self.base_mut().set_geometry(geometry);
     }
+    /// Deprecated alias for [`Widget::geometry`].
     #[deprecated(since = "0.1.0", note = "Use `geometry()` instead.")]
     fn rect(&self) -> Rect {
         self.geometry()
     }
+    /// Deprecated alias for [`Widget::set_geometry`].
     #[deprecated(since = "0.1.0", note = "Use `set_geometry()` instead.")]
     fn set_rect(&mut self, rect: Rect) {
         self.set_geometry(rect);
@@ -88,18 +101,35 @@ pub trait Widget: EventHandler + Any {
     fn set_max_size(&mut self, max_size: Option<Size>) {
         self.base_mut().set_max_size(max_size);
     }
+    /// Returns the parent's object id, or `None` for a root widget.
+    ///
+    /// This is bookkeeping only: the parent stores a list of child ids in
+    /// [`Widget::children`], and the two are kept in sync by
+    /// [`Widget::add_child`] / [`Widget::remove_child`].
     fn parent(&self) -> Option<ObjectId> {
         self.base().parent()
     }
+    /// Records which widget owns this one, or `None` to detach it. The child
+    /// list on the parent is not updated — use [`Widget::add_child`] for that.
     fn set_parent(&mut self, parent: Option<ObjectId>) {
         self.base_mut().set_parent(parent);
     }
+    /// Adds a child id to this widget's child list.
+    ///
+    /// Ids are stored, not widgets: the child is not moved, resized, or
+    /// re-parented by this call. Duplicate ids are allowed by the base
+    /// implementation, so callers must avoid adding the same child twice.
     fn add_child(&mut self, child: ObjectId) {
         self.base_mut().add_child(child);
     }
+    /// Removes a child id from this widget's child list.
+    ///
+    /// No-op if the id is not present, so removing an already-removed child is
+    /// safe.
     fn remove_child(&mut self, child: ObjectId) {
         self.base_mut().remove_child(child);
     }
+    /// Returns the ids of this widget's direct children, in insertion order.
     fn children(&self) -> &[ObjectId] {
         self.base().children()
     }
@@ -111,9 +141,13 @@ pub trait Widget: EventHandler + Any {
     fn hide(&mut self) {
         self.base_mut().hide();
     }
+    /// Returns `true` if the widget is currently shown (see [`Widget::show`]).
     fn is_visible(&self) -> bool {
         self.base().is_visible()
     }
+    /// Sets visibility, equivalent to [`Widget::show`] or [`Widget::hide`].
+    /// Hidden widgets are skipped during painting and hit testing; visibility
+    /// is independent of enabled state.
     fn set_visible(&mut self, visible: bool) {
         if visible {
             self.show();
@@ -121,15 +155,23 @@ pub trait Widget: EventHandler + Any {
             self.hide();
         }
     }
+    /// Enables or disables the widget.
+    ///
+    /// Disabling does not hide the widget: it stays painted but is skipped
+    /// when events are delivered, and focusable controls remain in the tab
+    /// order (see [`Widget::is_focusable`]).
     fn set_enabled(&mut self, enabled: bool) {
         self.base_mut().set_enabled(enabled);
     }
+    /// Returns `true` if the widget accepts input (enabled), `false` if not.
     fn is_enabled(&self) -> bool {
         self.base().is_enabled()
     }
+    /// Sets the hover tooltip text for this widget; an empty string clears it.
     fn set_tooltip(&mut self, tooltip: String) {
         self.base_mut().set_tooltip(crate::compat::mini_string_from(tooltip));
     }
+    /// Returns the current tooltip text, or `""` when none was set.
     fn tooltip(&self) -> &str {
         self.base().tooltip()
     }
@@ -191,6 +233,11 @@ pub trait Widget: EventHandler + Any {
             format!("{:?} ({})", self.accessible_role(), state_flags.join(", "))
         }
     }
+    /// Returns the device pixel ratio applied to this widget.
+    ///
+    /// `1.0` is the 96-DPI baseline; `2.0` on a HiDPI display. Logical
+    /// coordinates (geometry, hit testing) are scaled by this when rasterised,
+    /// so callers should not pre-multiply their own sizes by it.
     fn dpi_scale(&self) -> f32 {
         self.base().dpi_scale()
     }
@@ -265,15 +312,26 @@ pub trait Widget: EventHandler + Any {
     ) -> Option<&mut dyn crate::widget::capability::properties_trait::WidgetProperties> {
         None
     }
+    /// Overrides the device pixel ratio for this widget.
+    ///
+    /// Non-positive or non-finite values are rejected by the base
+    /// implementation, which keeps the previous scale rather than producing
+    /// degenerate geometry.
     fn set_dpi_scale(&mut self, scale: f32) {
         self.base_mut().set_dpi_scale(scale);
     }
+    /// Treats `key` as a translation-key lookup for the tooltip instead of
+    /// literal text, so the displayed tooltip follows the active locale.
     fn set_translated_tooltip(&mut self, key: &str) {
         self.base_mut().set_translated_tooltip(key);
     }
+    /// Returns the full style record (colors, borders, padding, margin, font)
+    /// backing all the style shorthand accessors on this trait.
     fn style(&self) -> &WidgetStyle {
         self.base().style()
     }
+    /// Replaces the whole style record at once, overwriting every style field.
+    /// Prefer the individual shorthand setters when only one property changes.
     fn set_style(&mut self, style: WidgetStyle) {
         self.base_mut().set_style(style);
     }
@@ -302,14 +360,20 @@ pub trait Widget: EventHandler + Any {
         self.base_mut().style_mut().font = font;
     }
     /// Returns optional border color shorthand.
+    /// Returns the border colour, or `None` when the widget draws no border
+    /// (the theme default is then used by the renderer).
     fn border_color(&self) -> Option<Color> {
         self.style().border_color
     }
-    /// Returns border width shorthand.
+    /// Returns the border stroke width in logical pixels, or `None` for the
+    /// theme default. A width of `0` is distinct from `None`: it means a
+    /// border that is explicitly drawn with no thickness.
     fn border_width(&self) -> Option<u32> {
         self.style().border_width
     }
-    /// Returns border radius shorthand.
+    /// Returns the corner rounding radius in logical pixels, or `None` for the
+    /// theme default. The value is clamped by the renderer to half the shorter
+    /// side of the widget's rectangle.
     fn border_radius(&self) -> Option<u32> {
         self.style().border_radius
     }
@@ -326,6 +390,12 @@ pub trait Widget: EventHandler + Any {
         self.base_mut().style_mut().border_radius = Some(radius);
     }
     /// Sets border shorthand in one call.
+    /// Sets the border colour, width, and radius in one style update.
+    ///
+    /// `width` and `radius` are logical pixels; passing `None` for `color`
+    /// clears the explicit border colour and falls back to the theme. Use
+    /// `0` for a borderless widget rather than `None` if you want to override
+    /// the theme explicitly.
     fn set_border(&mut self, color: Option<Color>, width: u32, radius: u32) {
         let mut style = self.style().clone();
         style.border_color = color;
@@ -350,10 +420,21 @@ pub trait Widget: EventHandler + Any {
         self.base_mut().style_mut().margin = margin;
     }
     /// Returns connection scope used to auto-disconnect slots when widget drops.
+    /// Returns the connection scope whose lifetime is tied to this widget.
+    ///
+    /// Slots connected through this scope are disconnected automatically when
+    /// the widget is dropped, which is the recommended way to avoid callbacks
+    /// firing into freed state. Scope it with
+    /// [`ConnectionScope::scoped`](crate::signal::ConnectionScope::scoped)
+    /// rather than connecting with a bare signal handle.
     fn connection_scope(&self) -> &ConnectionScope {
         self.base().connection_scope()
     }
     /// Optional clicked signal (legacy API compatibility).
+    ///
+    /// The signal is present on every widget but is only emitted by widgets
+    /// that are clickable; a widget that never emits it is normal, not a bug.
+    /// Prefer the typed interaction signals below for new code.
     fn clicked_signal(&self) -> &GenericSignal {
         &self.base().clicked
     }
@@ -365,38 +446,63 @@ pub trait Widget: EventHandler + Any {
         &self.base().changed
     }
     /// Emits on hover/move interactions while pointer is over widget.
+    ///
+    /// The payload is the pointer position in parent-relative coordinates.
     fn hover_signal(&self) -> &Signal1<Point> {
         self.base().hover_signal()
     }
     /// Emits on mouse/pointer press interactions.
+    ///
+    /// Payload is `(position_in_parent_coordinates, pointer_button)`; button
+    /// numbering is backend-defined, with `0` as the primary button everywhere.
     fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
         self.base().mouse_down_signal()
     }
-    /// Emits on mouse/pointer release interactions.
+    /// Emits on mouse/pointer release interactions, with the same
+    /// `(position, button)` payload as [`Widget::mouse_down_signal`].
     fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
         self.base().mouse_up_signal()
     }
     /// Emits on keyboard press interactions.
+    ///
+    /// Payload is `(key_code, modifiers)`. Modifier bit assignments are
+    /// backend-defined, not fixed by this crate.
     fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
         self.base().key_down_signal()
     }
-    /// Emits on keyboard release interactions.
+    /// Emits on keyboard release interactions, with the same
+    /// `(key_code, modifiers)` payload as [`Widget::key_down_signal`].
     fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
         self.base().key_up_signal()
     }
     /// Emits when logical focus is gained.
+    ///
+    /// Focus is granted by the runtime's focus router; a widget cannot emit
+    /// this for itself.
     fn focus_gained_signal(&self) -> &GenericSignal {
         self.base().focus_gained_signal()
     }
     /// Emits when logical focus is lost.
+    ///
+    /// Carries no payload: the losing widget is the receiver, and the gaining
+    /// widget announces itself through its own `focus_gained_signal`.
     fn focus_lost_signal(&self) -> &GenericSignal {
         self.base().focus_lost_signal()
     }
     /// Emits when redraw is requested.
+    /// Returns the redraw-request signal used by [`Widget::request_redraw`].
+    ///
+    /// Emitted when the widget needs to be repainted. It carries no payload:
+    /// the receiving runtime re-queries all widget state, so emitting it more
+    /// often than strictly necessary is safe but wasteful.
     fn redraw_requested_signal(&self) -> &GenericSignal {
         self.base().redraw_requested_signal()
     }
-    /// Emits when layout pass is requested.
+    /// Returns the layout-request signal used by [`Widget::request_layout`].
+    ///
+    /// Emitted when the widget's preferred size may have changed and a layout
+    /// pass is required. A layout request implies the widget will also need a
+    /// redraw, but the two signals are delivered independently.
     fn layout_requested_signal(&self) -> &GenericSignal {
         self.base().layout_requested_signal()
     }
@@ -434,6 +540,23 @@ pub trait Widget: EventHandler + Any {
     /// easily tappable on touch devices.
     fn contains_point(&self, point: Point) -> bool {
         self.base().contains_point_with_touch_expansion(point)
+    }
+
+    /// Whether keyboard focus can be given to this widget.
+    ///
+    /// Focusable controls are the ones a user can reach by pressing Tab, and the
+    /// ones that receive key events. The registry asks each widget as it mounts
+    /// (see [`crate::widget::runtime::register`]), so a control declares this itself
+    /// rather than being looked up in a kind table — a third-party widget the
+    /// library has never heard of joins the tab order by answering `true`.
+    ///
+    /// The default is `false`: a control that has not thought about focus should not
+    /// silently swallow the Tab key. Enabled state is *not* consulted here — a
+    /// disabled-but-focusable control must stay in the tab order so a user can move
+    /// past it (the router skips disabled controls when delivering, not when
+    /// ordering).
+    fn is_focusable(&self) -> bool {
+        false
     }
 }
 

@@ -96,18 +96,33 @@ fn to_c_string_or_empty(s: impl Into<String>) -> *const c_char {
     }
 }
 #[no_mangle]
+/// Initializes the widget toolkit's global subsystems.
+///
+/// C ABI entry point for [`crate::init`]. Call this before creating any window or
+/// widget. Returns nothing and cannot report failure; if initialization panics,
+/// the panic is contained and the state is simply left uninitialized.
 pub extern "C" fn rw_init() {
     c_try_void!({
         crate::init();
     })
 }
 #[no_mangle]
+/// Runs the platform main event loop.
+///
+/// C ABI entry point for [`crate::run`]. Blocks until the loop exits (typically
+/// when a quit is requested), so call it from the thread that owns the UI.
+/// Returns nothing and cannot report failure.
 pub extern "C" fn rw_run() {
     c_try_void!({
         crate::run();
     })
 }
 #[no_mangle]
+/// Requests that the platform event loop shut down.
+///
+/// C ABI entry point for [`crate::quit`]. The request is asynchronous: the loop
+/// stops on its next iteration, so control may not return to the caller's next
+/// statement until the loop actually drains. Returns nothing and cannot fail.
 pub extern "C" fn rw_quit() {
     c_try_void!({
         crate::quit();
@@ -126,6 +141,11 @@ pub extern "C" fn rw_destroy_widget(widget_id: u64) -> CBool {
     c_try!({ get_control_backend().destroy_widget(widget_id) })
 }
 #[no_mangle]
+/// Creates a top-level window at a framework-assigned identity.
+///
+/// `title` may be null, in which case the title is empty. Returns the new
+/// window's id, or `0` on failure. `x`/`y` are the position and `width`/`height`
+/// the size, in logical pixels.
 pub extern "C" fn rw_create_window(
     title: *const c_char,
     x: c_int,
@@ -136,6 +156,11 @@ pub extern "C" fn rw_create_window(
     c_try!({ get_control_backend().create_window(&c_str_or_default(title), x, y, width, height) })
 }
 #[no_mangle]
+/// Creates a push button as a child of `parent`.
+///
+/// `text` is the button label and may be null, which yields an empty label.
+/// Returns the new widget's id, or `0` if `parent` is unknown or the backend
+/// refuses the request.
 pub extern "C" fn rw_create_button(
     parent: u64,
     text: *const c_char,
@@ -149,6 +174,9 @@ pub extern "C" fn rw_create_button(
     })
 }
 #[no_mangle]
+/// Creates a checkbox as a child of `parent`, initially unchecked and labelled
+/// `text` (null gives an empty label). Returns the new widget's id, or `0` on
+/// failure.
 pub extern "C" fn rw_create_checkbox(
     parent: u64,
     text: *const c_char,
@@ -162,6 +190,9 @@ pub extern "C" fn rw_create_checkbox(
     })
 }
 #[no_mangle]
+/// Creates a single-line text field as a child of `parent`, pre-filled with
+/// `text` (null gives an empty field). Returns the new widget's id, or `0` on
+/// failure.
 pub extern "C" fn rw_create_line_edit(
     parent: u64,
     text: *const c_char,
@@ -175,6 +206,10 @@ pub extern "C" fn rw_create_line_edit(
     })
 }
 #[no_mangle]
+/// Creates a non-interactive text label as a child of `parent`.
+///
+/// `text` may be null, which yields an empty label. Returns the new widget's id,
+/// or `0` on failure.
 pub extern "C" fn rw_create_label(
     parent: u64,
     text: *const c_char,
@@ -188,6 +223,11 @@ pub extern "C" fn rw_create_label(
     })
 }
 #[no_mangle]
+/// Creates a radio button as a child of `parent`, labelled `text` (null gives an
+/// empty label).
+///
+/// Grouping against sibling radio buttons is the backend's concern; this call
+/// only creates the control. Returns the new widget's id, or `0` on failure.
 pub extern "C" fn rw_create_radio_button(
     parent: u64,
     text: *const c_char,
@@ -208,6 +248,10 @@ pub extern "C" fn rw_create_radio_button(
     })
 }
 #[no_mangle]
+/// Creates a horizontal value slider as a child of `parent`.
+///
+/// Returns the new widget's id, or `0` on failure. The range and initial value
+/// come from the backend's defaults; use the platform API to change them.
 pub extern "C" fn rw_create_slider(
     parent: u64,
     x: c_int,
@@ -218,6 +262,9 @@ pub extern "C" fn rw_create_slider(
     c_try!({ get_control_backend().create_slider(parent, x, y, width, height) })
 }
 #[no_mangle]
+/// Creates a progress bar as a child of `parent`.
+///
+/// Returns the new widget's id, or `0` on failure.
 pub extern "C" fn rw_create_progress_bar(
     parent: u64,
     x: c_int,
@@ -228,6 +275,10 @@ pub extern "C" fn rw_create_progress_bar(
     c_try!({ get_control_backend().create_progress_bar(parent, x, y, width, height) })
 }
 #[no_mangle]
+/// Creates a drop-down combo box as a child of `parent`, with no items.
+///
+/// Add entries with `rw_combo_box_add_item`. Returns the new widget's id, or `0`
+/// on failure.
 pub extern "C" fn rw_create_combo_box(
     parent: u64,
     x: c_int,
@@ -238,6 +289,10 @@ pub extern "C" fn rw_create_combo_box(
     c_try!({ get_control_backend().create_combo_box(parent, x, y, width, height) })
 }
 #[no_mangle]
+/// Creates a list box as a child of `parent`, with no items.
+///
+/// Add entries with `rw_list_box_add_item`. Returns the new widget's id, or `0`
+/// on failure.
 pub extern "C" fn rw_create_list_box(
     parent: u64,
     x: c_int,
@@ -248,6 +303,10 @@ pub extern "C" fn rw_create_list_box(
     c_try!({ get_control_backend().create_list_box(parent, x, y, width, height) })
 }
 #[no_mangle]
+/// Creates an empty container panel as a child of `parent`.
+///
+/// Panels hold other controls but have no presentation of their own. Returns the
+/// new widget's id, or `0` on failure.
 pub extern "C" fn rw_create_panel(
     parent: u64,
     x: c_int,
@@ -258,6 +317,11 @@ pub extern "C" fn rw_create_panel(
     c_try!({ get_control_backend().create_panel(parent, x, y, width, height) })
 }
 #[no_mangle]
+/// Creates a message box, a transient dialog rather than a persistent child.
+///
+/// `title` and `text` may each be null, which supplies an empty string for that
+/// part. The `x`/`y`/`width`/`height` geometry is a hint that the window manager
+/// may override. Returns the new widget's id, or `0` on failure.
 pub extern "C" fn rw_create_message_box(
     parent: u64,
     title: *const c_char,
@@ -280,6 +344,10 @@ pub extern "C" fn rw_create_message_box(
     })
 }
 #[no_mangle]
+/// Creates a file chooser dialog, scoped to `parent` if that id is valid.
+///
+/// `title` may be null for an empty caption. Returns the dialog's id, or `0` on
+/// failure. Showing it and reading back the chosen path are separate calls.
 pub extern "C" fn rw_create_file_dialog(
     parent: u64,
     title: *const c_char,
@@ -300,6 +368,10 @@ pub extern "C" fn rw_create_file_dialog(
     })
 }
 #[no_mangle]
+/// Creates a colour chooser dialog, scoped to `parent` if that id is valid.
+///
+/// `title` may be null for an empty caption. Returns the dialog's id, or `0` on
+/// failure.
 pub extern "C" fn rw_create_color_dialog(
     parent: u64,
     title: *const c_char,
@@ -320,6 +392,10 @@ pub extern "C" fn rw_create_color_dialog(
     })
 }
 #[no_mangle]
+/// Creates a font chooser dialog, scoped to `parent` if that id is valid.
+///
+/// `title` may be null for an empty caption. Returns the dialog's id, or `0` on
+/// failure.
 pub extern "C" fn rw_create_font_dialog(
     parent: u64,
     title: *const c_char,
@@ -340,6 +416,10 @@ pub extern "C" fn rw_create_font_dialog(
     })
 }
 #[no_mangle]
+/// Creates a numeric spin box as a child of `parent`.
+///
+/// Returns the new widget's id, or `0` on failure. The range, step and initial
+/// value come from the backend's defaults.
 pub extern "C" fn rw_create_spin_box(
     parent: u64,
     x: c_int,
@@ -350,6 +430,10 @@ pub extern "C" fn rw_create_spin_box(
     c_try!({ get_control_backend().create_spin_box(parent, x, y, width, height) })
 }
 #[no_mangle]
+/// Creates a list view as a child of `parent`, with no rows.
+///
+/// A list view is the multi-column counterpart of `rw_create_list_box`. Returns
+/// the new widget's id, or `0` on failure.
 pub extern "C" fn rw_create_list_view(
     parent: u64,
     x: c_int,
@@ -360,6 +444,10 @@ pub extern "C" fn rw_create_list_view(
     c_try!({ get_control_backend().create_list_view(parent, x, y, width, height) })
 }
 #[no_mangle]
+/// Creates a scrollable container as a child of `parent`.
+///
+/// Child widgets are clipped to the container and reachable through its
+/// scrollbars. Returns the new widget's id, or `0` on failure.
 pub extern "C" fn rw_create_scroll_area(
     parent: u64,
     x: c_int,
@@ -370,6 +458,11 @@ pub extern "C" fn rw_create_scroll_area(
     c_try!({ get_control_backend().create_scroll_area(parent, x, y, width, height) })
 }
 #[no_mangle]
+/// Moves and resizes a widget in one call.
+///
+/// `x`/`y` are the new position and `width`/`height` the new size, in logical
+/// pixels. An unknown `widget_id` is ignored. Returns nothing; there is no way
+/// for the caller to learn whether the geometry was applied.
 pub extern "C" fn rw_set_widget_geometry(
     widget_id: u64,
     x: c_int,
@@ -420,20 +513,31 @@ pub unsafe extern "C" fn rw_get_widget_geometry(
     })
 }
 #[no_mangle]
+/// Appends `text` (null gives an empty string) as a new last item.
+///
+/// Returns `true` when the item was added.
 pub extern "C" fn rw_combo_box_add_item(combo_box: u64, text: *const c_char) -> CBool {
     c_try!({ get_control_backend().combo_box_add_item(combo_box, &c_str_or_default(text)) })
 }
 #[no_mangle]
+/// Removes every item, leaving the combo box empty and with no selection.
+///
+/// Returns `true` on success.
 pub extern "C" fn rw_combo_box_clear_items(combo_box: u64) -> CBool {
     c_try!({ get_control_backend().combo_box_clear_items(combo_box) })
 }
 #[no_mangle]
+/// Selects the item at `index`, which is zero-based.
+///
+/// Returns `false` if the index is out of range or the widget is unknown.
 pub extern "C" fn rw_combo_box_set_current_index(combo_box: u64, index: c_uint) -> CBool {
     c_try!({
         crate::platform::get_platform().combo_box_set_current_index(combo_box, index as usize)
     })
 }
 #[no_mangle]
+/// The index of the selected item, zero-based, or `-1` when nothing is selected
+/// or the widget is unknown.
 pub extern "C" fn rw_combo_box_current_index(combo_box: u64) -> c_int {
     c_try!({
         match crate::platform::get_platform().combo_box_current_index(combo_box) {
@@ -443,10 +547,16 @@ pub extern "C" fn rw_combo_box_current_index(combo_box: u64) -> c_int {
     })
 }
 #[no_mangle]
+/// The number of items currently in the combo box; `0` if it is unknown.
 pub extern "C" fn rw_combo_box_item_count(combo_box: u64) -> c_uint {
     c_try!({ crate::platform::get_platform().combo_box_item_count(combo_box) as c_uint })
 }
 #[no_mangle]
+/// The text of the item at zero-based `index`.
+///
+/// An out-of-range index or an unknown widget yields an empty string rather than
+/// an error. The result is a freshly allocated C string and must be released
+/// with `rw_free_string`.
 pub extern "C" fn rw_combo_box_item_text(combo_box: u64, index: c_uint) -> *const c_char {
     c_try!({
         let text = crate::platform::get_platform().combo_box_item_text(combo_box, index as usize);
@@ -454,22 +564,36 @@ pub extern "C" fn rw_combo_box_item_text(combo_box: u64, index: c_uint) -> *cons
     })
 }
 #[no_mangle]
+/// Appends `text` (null gives an empty string) as a new last item.
+///
+/// Returns `true` when the item was added.
 pub extern "C" fn rw_list_box_add_item(list_box: u64, text: *const c_char) -> CBool {
     c_try!({ get_control_backend().list_box_add_item(list_box, &c_str_or_default(text)) })
 }
 #[no_mangle]
+/// Removes the item at zero-based `index`, shifting later items up.
+///
+/// Returns `false` if the index is out of range or the widget is unknown.
 pub extern "C" fn rw_list_box_remove_item(list_box: u64, index: c_uint) -> CBool {
     c_try!({ get_control_backend().list_box_remove_item(list_box, index as usize) })
 }
 #[no_mangle]
+/// Removes every item, leaving the list box empty and with no selection.
+///
+/// Returns `true` on success.
 pub extern "C" fn rw_list_box_clear_items(list_box: u64) -> CBool {
     c_try!({ get_control_backend().list_box_clear_items(list_box) })
 }
 #[no_mangle]
+/// Selects the item at zero-based `index`.
+///
+/// Returns `false` if the index is out of range or the widget is unknown.
 pub extern "C" fn rw_list_box_set_current_index(list_box: u64, index: c_uint) -> CBool {
     c_try!({ crate::platform::get_platform().list_box_set_current_index(list_box, index as usize) })
 }
 #[no_mangle]
+/// The index of the selected item, zero-based, or `-1` when nothing is selected
+/// or the widget is unknown.
 pub extern "C" fn rw_list_box_current_index(list_box: u64) -> c_int {
     c_try!({
         match crate::platform::get_platform().list_box_current_index(list_box) {
@@ -479,10 +603,16 @@ pub extern "C" fn rw_list_box_current_index(list_box: u64) -> c_int {
     })
 }
 #[no_mangle]
+/// The number of items currently in the list box; `0` if it is unknown.
 pub extern "C" fn rw_list_box_item_count(list_box: u64) -> c_uint {
     c_try!({ crate::platform::get_platform().list_box_item_count(list_box) as c_uint })
 }
 #[no_mangle]
+/// The text of the item at zero-based `index`.
+///
+/// An out-of-range index or an unknown widget yields an empty string rather than
+/// an error. The result is a freshly allocated C string and must be released
+/// with `rw_free_string`.
 pub extern "C" fn rw_list_box_item_text(list_box: u64, index: c_uint) -> *const c_char {
     c_try!({
         let text = crate::platform::get_platform().list_box_item_text(list_box, index as usize);
@@ -490,10 +620,17 @@ pub extern "C" fn rw_list_box_item_text(list_box: u64, index: c_uint) -> *const 
     })
 }
 #[no_mangle]
+/// Replaces the system clipboard contents with `text` (null clears it).
+///
+/// Returns `true` when the clipboard accepted the text.
 pub extern "C" fn rw_set_clipboard_text(text: *const c_char) -> CBool {
     c_try!({ get_control_backend().set_clipboard_text(&c_str_or_default(text)) })
 }
 #[no_mangle]
+/// The current system clipboard text, or an empty string when unreadable.
+///
+/// The result is a freshly allocated C string and must be released with
+/// `rw_free_string`; it is never null.
 pub extern "C" fn rw_get_clipboard_text() -> *const c_char {
     c_try!({
         let text = get_control_backend().get_clipboard_text();
@@ -571,6 +708,10 @@ pub unsafe extern "C" fn rw_poll_drop_event(
     })
 }
 #[no_mangle]
+/// Creates a menu bar as a child of `parent`.
+///
+/// Attach it to a window with `rw_attach_menu_bar_to_window`. Returns the new
+/// widget's id, or `0` on failure.
 pub extern "C" fn rw_create_menu_bar(
     parent: u64,
     x: c_int,
@@ -581,6 +722,10 @@ pub extern "C" fn rw_create_menu_bar(
     c_try!({ get_control_backend().create_menu_bar(parent, x, y, width, height) })
 }
 #[no_mangle]
+/// Creates a top-level menu labelled `text` (null gives an empty label).
+///
+/// A menu is normally a child of a menu bar created by `rw_create_menu_bar`.
+/// Returns the new widget's id, or `0` on failure.
 pub extern "C" fn rw_create_menu(
     parent: u64,
     text: *const c_char,
@@ -594,10 +739,18 @@ pub extern "C" fn rw_create_menu(
     })
 }
 #[no_mangle]
+/// Installs `menu_bar` as the menu bar of `window`.
+///
+/// Both ids must refer to existing widgets. Returns `true` on success.
 pub extern "C" fn rw_attach_menu_bar_to_window(window: u64, menu_bar: u64) -> CBool {
     c_try!({ get_control_backend().attach_menu_bar_to_window(window, menu_bar) })
 }
 #[no_mangle]
+/// Adds a menu item to `parent_menu`.
+///
+/// `text` is the label (null gives an empty label). `shortcut` may be null, which
+/// creates the item with no accelerator; a non-null value is parsed as a shortcut
+/// description such as `"Ctrl+S"`. Returns the new item's id, or `0` on failure.
 pub extern "C" fn rw_menu_add_item(
     parent_menu: u64,
     text: *const c_char,
@@ -614,10 +767,20 @@ pub extern "C" fn rw_menu_add_item(
     })
 }
 #[no_mangle]
+/// Takes the next queued menu item activation, if any.
+///
+/// Returns the id of the activated item, or `0` when the queue is empty. `0` is
+/// therefore unambiguous as "nothing pending", since no real menu item is
+/// assigned that id.
 pub extern "C" fn rw_poll_menu_triggered() -> u64 {
     c_try!({ get_control_backend().poll_menu_triggered().unwrap_or(0) })
 }
 #[no_mangle]
+/// Takes the next queued widget activation, if any.
+///
+/// Returns the id of the activated widget, or `0` when the queue is empty. This
+/// variant discards the trigger kind; use `rw_poll_widget_trigger_event` when the
+/// caller needs to distinguish a click from a value change.
 pub extern "C" fn rw_poll_widget_triggered() -> u64 {
     c_try!({ get_control_backend().poll_widget_triggered().unwrap_or(0) })
 }
@@ -767,6 +930,9 @@ pub extern "C" fn rw_harmony_on_node_widget_event(node_handle: u64, kind_code: c
     })
 }
 #[no_mangle]
+/// Creates a tool bar as a child of `parent`.
+///
+/// Returns the new widget's id, or `0` on failure.
 pub extern "C" fn rw_create_tool_bar(
     parent: u64,
     x: c_int,
@@ -777,6 +943,10 @@ pub extern "C" fn rw_create_tool_bar(
     c_try!({ get_control_backend().create_tool_bar(parent, x, y, width, height) })
 }
 #[no_mangle]
+/// Creates a status bar as a child of `parent`, showing `text` (null gives an
+/// empty message).
+///
+/// Returns the new widget's id, or `0` on failure.
 pub extern "C" fn rw_create_status_bar(
     parent: u64,
     text: *const c_char,
@@ -797,24 +967,42 @@ pub extern "C" fn rw_create_status_bar(
     })
 }
 #[no_mangle]
+/// Reveals a previously hidden widget.
+///
+/// An unknown `widget_id` is ignored. Returns nothing; query the new state with
+/// `rw_is_widget_visible` if the caller needs confirmation.
 pub extern "C" fn rw_show_widget(widget_id: u64) {
     c_try_void!({
         get_control_backend().show_widget(widget_id);
     })
 }
 #[no_mangle]
+/// Conceals a widget without destroying it.
+///
+/// Unlike [`rw_destroy_widget`], the widget keeps its state, geometry and
+/// registrations, so showing it again restores exactly what it was. An unknown
+/// `widget_id` is ignored.
 pub extern "C" fn rw_hide_widget(widget_id: u64) {
     c_try_void!({
         get_control_backend().hide_widget(widget_id);
     })
 }
 #[no_mangle]
+/// Replaces the widget's text content with `text` (null clears it).
+///
+/// Applies to the label/caption of any widget that has one; an unknown
+/// `widget_id` is ignored.
 pub extern "C" fn rw_set_widget_text(widget_id: u64, text: *const c_char) {
     c_try_void!({
         get_control_backend().set_widget_text(widget_id, &c_str_or_default(text));
     })
 }
 #[no_mangle]
+/// The widget's current text content.
+///
+/// An unknown `widget_id` yields an empty string rather than an error. The result
+/// is a freshly allocated C string and must be released with `rw_free_string`;
+/// it is never null.
 pub extern "C" fn rw_get_widget_text(widget_id: u64) -> *const c_char {
     c_try!({
         let text = get_control_backend().get_widget_text(widget_id);
@@ -822,34 +1010,58 @@ pub extern "C" fn rw_get_widget_text(widget_id: u64) -> *const c_char {
     })
 }
 #[no_mangle]
+/// Enables or disables user interaction with the widget.
+///
+/// A disabled control stays visible but is greyed out and ignores input. An
+/// unknown `widget_id` is ignored.
 pub extern "C" fn rw_set_widget_enabled(widget_id: u64, enabled: CBool) {
     c_try_void!({
         get_control_backend().set_widget_enabled(widget_id, enabled);
     })
 }
 #[no_mangle]
+/// Reports whether the widget accepts user interaction; `false` for an unknown
+/// widget.
 pub extern "C" fn rw_is_widget_enabled(widget_id: u64) -> CBool {
     c_try!({ get_control_backend().is_widget_enabled(widget_id) })
 }
 #[no_mangle]
+/// Sets whether the widget is drawn.
+///
+/// This is the flag counterpart of `rw_show_widget` / `rw_hide_widget` and
+/// behaves identically; an unknown `widget_id` is ignored.
 pub extern "C" fn rw_set_widget_visible(widget_id: u64, visible: CBool) {
     c_try_void!({
         get_control_backend().set_widget_visible(widget_id, visible);
     })
 }
 #[no_mangle]
+/// Reports whether the widget is currently drawn; `false` for an unknown widget
+/// or one that has been hidden.
 pub extern "C" fn rw_is_widget_visible(widget_id: u64) -> CBool {
     c_try!({ get_control_backend().is_widget_visible(widget_id) })
 }
 #[no_mangle]
+/// Enables or disables IME (input method) handling for the widget.
+///
+/// Relevant to text-entry widgets, where it controls whether composed input such
+/// as CJK candidate selection is routed to the control. Returns `true` when the
+/// platform applied the change; `false` if the capability is unsupported or the
+/// widget is unknown.
 pub extern "C" fn rw_set_widget_ime_enabled(widget_id: u64, enabled: CBool) -> CBool {
     c_try!({ crate::platform::get_platform().set_widget_ime_enabled(widget_id, enabled) })
 }
 #[no_mangle]
+/// Reports whether IME handling is enabled for the widget; `false` when the
+/// capability is unsupported or the widget is unknown.
 pub extern "C" fn rw_is_widget_ime_enabled(widget_id: u64) -> CBool {
     c_try!({ crate::platform::get_platform().is_widget_ime_enabled(widget_id) })
 }
 #[no_mangle]
+/// Sets the name screen readers announce for the widget.
+///
+/// `name` may be null, which clears the accessible name. Returns `true` when the
+/// platform applied the change, `false` if the capability is unsupported.
 pub extern "C" fn rw_set_widget_accessibility_name(widget_id: u64, name: *const c_char) -> CBool {
     c_try!({
         crate::platform::get_platform()
@@ -857,6 +1069,11 @@ pub extern "C" fn rw_set_widget_accessibility_name(widget_id: u64, name: *const 
     })
 }
 #[no_mangle]
+/// The accessibility name previously set for the widget, or an empty string if
+/// none is set or the capability is unsupported.
+///
+/// The result is a freshly allocated C string and must be released with
+/// `rw_free_string`.
 pub extern "C" fn rw_get_widget_accessibility_name(widget_id: u64) -> *const c_char {
     c_try!({
         let name = crate::platform::get_platform().get_widget_accessibility_name(widget_id);
@@ -864,10 +1081,27 @@ pub extern "C" fn rw_get_widget_accessibility_name(widget_id: u64) -> *const c_c
     })
 }
 #[no_mangle]
+/// The name of the control backend currently serving widget creation, such as
+/// `"native"` or `"custom"`.
+///
+/// Useful for diagnostics, since behaviour differs between backends. The result
+/// is a freshly allocated C string and must be released with `rw_free_string`.
 pub extern "C" fn rw_backend_name() -> *const c_char {
     c_try!({ to_c_string_or_empty(get_control_backend().backend_name()) })
 }
 #[no_mangle]
+/// The platform's supported-capability bitmask, negotiated at compile time.
+///
+/// Bit layout:
+/// - bit0: DPI scaling
+/// - bit1: IME
+/// - bit2: accessibility
+/// - bit3: native menu bar
+/// - bit4: typed widget trigger events
+///
+/// This reflects the platform's *general* capabilities; use
+/// [`rw_platform_capability_contract`] for the contract of a specific runtime
+/// profile.
 pub extern "C" fn rw_platform_capabilities() -> c_uint {
     c_try!({
         let caps = crate::platform::capabilities();
@@ -891,10 +1125,19 @@ pub extern "C" fn rw_platform_capabilities() -> c_uint {
     })
 }
 #[no_mangle]
+/// The factor that converts logical pixels to physical device pixels.
+///
+/// `1.0` means no scaling. Returns nothing about failure: a platform without DPI
+/// support reports `1.0`.
 pub extern "C" fn rw_platform_dpi_scale_factor() -> c_float {
     c_try!({ crate::platform::dpi_scale_factor() })
 }
 #[no_mangle]
+/// Sets the software renderer's anti-aliasing quality, in samples per axis.
+///
+/// The value is clamped to `1..=8`, and the clamped value actually in effect is
+/// returned — the caller does not need a follow-up read to learn the outcome.
+/// The setting is process-wide and applies to canvases created afterwards.
 pub extern "C" fn rw_set_render_aa_samples_per_axis(samples: c_uint) -> c_uint {
     c_try!({
         let config =
@@ -904,46 +1147,78 @@ pub extern "C" fn rw_set_render_aa_samples_per_axis(samples: c_uint) -> c_uint {
     })
 }
 #[no_mangle]
+/// The software renderer's current anti-aliasing quality, in samples per axis.
+///
+/// Always within `1..=8`.
 pub extern "C" fn rw_get_render_aa_samples_per_axis() -> c_uint {
     c_try!({ crate::render::default_software_render_config().aa_samples_per_axis as c_uint })
 }
 #[no_mangle]
+/// Sets the embedded render engine's target frame rate, in hertz (frames per
+/// second).
+///
+/// The value is clamped to `1..=240`, and the clamped value actually in effect is
+/// returned.
 pub extern "C" fn rw_set_embedded_target_fps(fps: c_uint) -> c_uint {
     c_try!({ crate::render_engine::set_embedded_target_fps(fps) as c_uint })
 }
 #[no_mangle]
+/// The embedded render engine's current target frame rate, in hertz.
+///
+/// Always within `1..=240`.
 pub extern "C" fn rw_get_embedded_target_fps() -> c_uint {
     c_try!({ crate::render_engine::embedded_target_fps() as c_uint })
 }
 #[no_mangle]
+/// Queues a no-op task on the embedded render engine and returns its task id.
+///
+/// `label` may be null for an empty label; if it is non-null it is copied, so the
+/// caller keeps ownership of the original. The task body does nothing — this
+/// exists so native hosts can exercise the scheduling path from C.
 pub extern "C" fn rw_submit_embedded_noop_task(label: *const c_char) -> u64 {
     c_try!({ crate::render_engine::submit_embedded_task(c_str_or_default(label), |_| {}) })
 }
 #[no_mangle]
+/// Reports whether the embedded render engine has been initialized.
 pub extern "C" fn rw_embedded_engine_is_initialized() -> CBool {
     c_try!({ crate::render_engine::embedded_engine_stats().initialized })
 }
 #[no_mangle]
+/// Reports whether the embedded render engine's loop is currently running.
 pub extern "C" fn rw_embedded_engine_is_running() -> CBool {
     c_try!({ crate::render_engine::embedded_engine_stats().running })
 }
 #[no_mangle]
+/// The number of frames the embedded render engine has rendered since start.
 pub extern "C" fn rw_embedded_engine_frame_count() -> u64 {
     c_try!({ crate::render_engine::embedded_engine_stats().frame_count })
 }
 #[no_mangle]
+/// The number of tasks queued on the embedded render engine but not yet run.
 pub extern "C" fn rw_embedded_engine_pending_task_count() -> u64 {
     c_try!({ crate::render_engine::embedded_engine_stats().pending_task_count as u64 })
 }
 #[no_mangle]
+/// The number of windows the embedded render engine is tracking.
 pub extern "C" fn rw_embedded_engine_window_count() -> u64 {
     c_try!({ crate::render_engine::embedded_engine_stats().window_count as u64 })
 }
 #[no_mangle]
+/// The number of buttons the embedded render engine is tracking.
 pub extern "C" fn rw_embedded_engine_button_count() -> u64 {
     c_try!({ crate::render_engine::embedded_engine_stats().button_count as u64 })
 }
 #[no_mangle]
+/// The capability contract negotiated for a runtime profile, as a bitmask.
+///
+/// `profile_code` is `1` for the embedded profile and any other value for the
+/// full profile — note that an unrecognised code therefore silently means
+/// "full" rather than being rejected.
+///
+/// Bit meanings are not shared between the two contract kinds. For native
+/// contracts: bit0 is always set, bit1 DPI scaling, bit2 IME, bit3 accessibility,
+/// bit4 native menu, bit5 typed widget triggers. For embedded contracts: bit0 is
+/// never set, bit1 fixed DPI, bit2 low-memory mode, bit3 typed widget triggers.
 pub extern "C" fn rw_platform_capability_contract(profile_code: c_uint) -> c_uint {
     c_try!({
         let profile = if profile_code == 1 {
@@ -956,6 +1231,11 @@ pub extern "C" fn rw_platform_capability_contract(profile_code: c_uint) -> c_uin
     })
 }
 #[no_mangle]
+/// The mobile backend's name, or an empty string when the `mobile-api` feature is
+/// not compiled in.
+///
+/// The result is a freshly allocated C string and must be released with
+/// `rw_free_string`.
 pub extern "C" fn rw_mobile_backend_name() -> *const c_char {
     c_try!({
         #[cfg(feature = "mobile-api")]
@@ -970,6 +1250,11 @@ pub extern "C" fn rw_mobile_backend_name() -> *const c_char {
     })
 }
 #[no_mangle]
+/// Binds the widget layer to an existing native view.
+///
+/// `native_handle` is the platform's own identifier for the view being taken
+/// over, interpreted by the mobile backend. Returns `true` when the view was
+/// attached; always `false` when the `mobile-api` feature is not compiled in.
 pub extern "C" fn rw_mobile_attach_native_view(native_handle: u64) -> CBool {
     c_try!({
         #[cfg(feature = "mobile-api")]

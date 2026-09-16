@@ -11,6 +11,26 @@ use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 
 /// Shared widget state and signals used by concrete controls.
+///
+/// Every widget in the crate embeds one of these and exposes it through
+/// [`crate::widget::Widget::base`] / `base_mut`, so this is the set of
+/// capabilities every control inherits:
+///
+/// * identity — [`Self::id`] and [`Self::kind`]
+/// * geometry — [`Self::geometry`] plus optional [`Self::min_size`] and
+///   [`Self::max_size`] hints, which the widget itself never enforces
+/// * a parent/child tree of [`ObjectId`]s — a *declaration* of nesting, not
+///   ownership; nothing here keeps the referenced widgets alive and nothing
+///   updates the links when a widget is destroyed
+/// * visibility and enablement flags, which this type only stores and reports
+///   — [`Self::handle_event`] does not consult them
+/// * tooltip text, DPI scale factor, and a [`WidgetStyle`]
+/// * the standard signals listed below, emitted by [`Self::handle_event`]
+///
+/// Construct with [`Self::new`]. The only invariants this type keeps are that the
+/// DPI scale is at least `0.1`, that an id is unique per instance, and that
+/// [`Self::remove_child`] removes all occurrences of the given id; everything
+/// else is plain state the owner is responsible for keeping consistent.
 pub struct BaseWidget {
     pub(crate) object: Object,
     pub(crate) kind: WidgetKind,
@@ -53,6 +73,12 @@ pub struct BaseWidget {
 }
 impl BaseWidget {
     /// Create base widget state and core signals.
+    ///
+    /// Starts visible and enabled, with no parent or children, an empty tooltip,
+    /// DPI scale `1.0` (i.e. unscaled pixels), a default [`WidgetStyle`], and all
+    /// signals unconnected. The widget's [`ObjectId`] is freshly allocated, as is
+    /// the object name `class_name`, which is used for debugging and object
+    /// lookup rather than for behaviour.
     pub fn new(kind: WidgetKind, geometry: Rect, class_name: &'static str) -> Self {
         Self {
             object: Object::new(class_name),
@@ -83,39 +109,73 @@ impl BaseWidget {
         }
     }
     // -- Base accessors --
+    /// The widget's unique identifier, shared with its backing [`Object`].
     pub fn id(&self) -> ObjectId {
         self.object.id()
     }
+    /// The kind of control this widget is; fixed at construction.
     pub fn kind(&self) -> WidgetKind {
         self.kind
     }
+    /// The widget's rectangle in parent-relative coordinates, in logical pixels.
+    ///
+    /// This is the raw stored value: `min_size`/`max_size` are hints the widget
+    /// does not apply to it, and no clipping against the parent is performed.
     pub fn geometry(&self) -> Rect {
         self.geometry
     }
+    /// Replaces the widget's rectangle.
+    ///
+    /// Purely stores the value — no clamping against `min_size`/`max_size`, and
+    /// no redraw or layout is requested, so callers that need one must ask for it
+    /// via [`Self::request_redraw`].
     pub fn set_geometry(&mut self, geometry: Rect) {
         self.geometry = geometry;
     }
+    /// The minimum size hint, or `None` when unset. Advisory only.
     pub fn min_size(&self) -> Option<Size> {
         self.min_size
     }
+    /// The maximum size hint, or `None` when unset. Advisory only.
     pub fn max_size(&self) -> Option<Size> {
         self.max_size
     }
+    /// Sets the minimum size hint; `None` clears it. Not enforced by this type,
+    /// and not validated against the maximum.
     pub fn set_min_size(&mut self, min_size: Option<Size>) {
         self.min_size = min_size;
     }
+    /// Sets the maximum size hint; `None` clears it. Not enforced here, and not
+    /// validated against the minimum.
     pub fn set_max_size(&mut self, max_size: Option<Size>) {
         self.max_size = max_size;
     }
+    /// The parent's id, or `None` for a root widget. Stored as-is.
     pub fn parent(&self) -> Option<ObjectId> {
         self.parent
     }
+    /// Sets the parent id; `None` detaches the widget.
+    ///
+    /// This does *not* update the old or new parent's child list, so the two
+    /// directions must be kept in sync by the caller.
     pub fn set_parent(&mut self, parent: Option<ObjectId>) {
         self.parent = parent;
     }
+    /// The ids of this widget's children, in insertion order.
+    ///
+    /// The list can contain ids of widgets that no longer exist; this type never
+    /// validates or reclaims entries.
     pub fn children(&self) -> &[ObjectId] {
         &self.children
     }
+    /// Appends `child` to the child list, without touching the child's own parent
+    /// link.
+    ///
+    /// Duplicates are *not* rejected, so adding the same id twice requires two
+    /// removals to undo. Under the `alloc_frugal` build the list is a fixed
+    /// capacity-64 array and an add beyond capacity is silently dropped (the
+    /// failing `push` result is discarded); on desktop builds the list grows
+    /// without bound.
     pub fn add_child(&mut self, child: ObjectId) {
         #[cfg(alloc_frugal)]
         {
@@ -127,36 +187,67 @@ impl BaseWidget {
             self.children.push(child);
         }
     }
+    /// Removes every occurrence of `child` from the child list, keeping the
+    /// relative order of the rest.
+    ///
+    /// Only edits this list: the removed child's parent link is left pointing
+    /// back here. Does nothing if `child` is not present.
     pub fn remove_child(&mut self, child: ObjectId) {
         self.children.retain(|&id| id != child);
     }
+    /// Makes the widget visible by setting its visibility flag.
+    ///
+    /// Does not request a redraw, and does not touch the visibility of any child.
     pub fn show(&mut self) {
         self.visible = true;
     }
+    /// Hides the widget by clearing its visibility flag.
+    ///
+    /// Does not request a redraw.
     pub fn hide(&mut self) {
         self.visible = false;
     }
+    /// Whether the visibility flag is set. True unless [`Self::hide`] was called.
     pub fn is_visible(&self) -> bool {
         self.visible
     }
+    /// Sets the enabled flag, which controls whether the widget accepts input.
+    ///
+    /// This type only stores the flag; concrete widgets are expected to check
+    /// [`Self::is_enabled`] in their own event handling, as [`MessageBox`] does.
+    ///
+    /// [`MessageBox`]: crate::widget::MessageBox
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
     }
+    /// Whether the widget is enabled. True unless [`Self::set_enabled`] cleared it.
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }
+    /// Replaces the tooltip text with an already-localised string.
     pub fn set_tooltip(&mut self, tooltip: crate::compat::MiniString) {
         self.tooltip = tooltip;
     }
+    /// The current tooltip text; an empty string when none was set.
     pub fn tooltip(&self) -> &str {
         &self.tooltip
     }
+    /// The device-pixel-ratio scale factor, never below `0.1`. Defaults to `1.0`.
     pub fn dpi_scale(&self) -> f32 {
         self.dpi_scale
     }
+    /// Sets the DPI scale factor, clamping values below `0.1` up to `0.1` so a
+    /// degenerate scale cannot reach layout maths. `NaN` is *not* handled: NaN
+    /// comparisons are false, so a NaN argument is stored as-is.
     pub fn set_dpi_scale(&mut self, scale: f32) {
         self.dpi_scale = scale.max(0.1);
     }
+    /// Sets the tooltip by looking up a translation `key`.
+    ///
+    /// Under the `desktop` feature the key is resolved through the i18n catalogue;
+    /// without it (or for an unknown key) the key itself is used verbatim, which is
+    /// convenient for debugging but must not be relied on to deliver real
+    /// translations in mini builds.
     pub fn set_translated_tooltip(&mut self, key: &str) {
         #[cfg(feature = "desktop")]
         {
@@ -167,9 +258,13 @@ impl BaseWidget {
             self.tooltip = crate::compat::into_mini(key);
         }
     }
+    /// Borrows the widget's visual style (colours, padding, touch target, etc.).
     pub fn style(&self) -> &WidgetStyle {
         &self.style
     }
+    /// Mutably borrows the widget's visual style, for in-place adjustment.
+    ///
+    /// A change made through this reference does not by itself trigger a redraw.
     pub fn style_mut(&mut self) -> &mut WidgetStyle {
         &mut self.style
     }
@@ -186,52 +281,107 @@ impl BaseWidget {
         };
         rect.contains_point(point)
     }
+    /// Replaces the entire style with `style`.
+    ///
+    /// Unlike [`Self::style_mut`] this overwrites every field, discarding any
+    /// previous customisations. No redraw is requested.
     pub fn set_style(&mut self, style: WidgetStyle) {
         self.style = style;
     }
+    /// The scope that owns this widget's signal connections; dropping it
+    /// disconnects them.
+    ///
+    /// Used to tie connection lifetime to the widget, so a widget that outlives
+    /// its handlers does not keep them alive.
     pub fn connection_scope(&self) -> &ConnectionScope {
         &self.connection_scope
     }
+    /// The hover signal, emitted with the pointer position. Same signal as the
+    /// public `hover` field, exposed by reference.
     pub fn hover_signal(&self) -> &Signal1<Point> {
         &self.hover
     }
+    /// The pointer-down signal, emitted with the position and the raw button
+    /// number. Same signal as the public `mouse_down` field.
     pub fn mouse_down_signal(&self) -> &Signal1<(Point, u32)> {
         &self.mouse_down
     }
+    /// The pointer-up signal, emitted with the position and the raw button
+    /// number. Same signal as the public `mouse_up` field.
     pub fn mouse_up_signal(&self) -> &Signal1<(Point, u32)> {
         &self.mouse_up
     }
+    /// The key-press signal, emitted with the platform key code and the modifier
+    /// bitmask. Same signal as the public `key_down` field.
     pub fn key_down_signal(&self) -> &Signal1<(u32, u32)> {
         &self.key_down
     }
+    /// The key-release signal, emitted with the platform key code and the modifier
+    /// bitmask. Same signal as the public `key_up` field.
     pub fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
         &self.key_up
     }
+    /// The focus-gained signal. Same signal as the public `focus_gained` field.
     pub fn focus_gained_signal(&self) -> &GenericSignal {
         &self.focus_gained
     }
+    /// The focus-lost signal. Same signal as the public `focus_lost` field.
     pub fn focus_lost_signal(&self) -> &GenericSignal {
         &self.focus_lost
     }
+    /// The redraw-requested signal, emitted by [`Self::request_redraw`].
     pub fn redraw_requested_signal(&self) -> &GenericSignal {
         &self.redraw_requested
     }
+    /// The layout-requested signal, emitted by [`Self::request_layout`].
     pub fn layout_requested_signal(&self) -> &GenericSignal {
         &self.layout_requested
     }
+    /// Whether a pointer button is currently held on this widget.
+    ///
+    /// Tracked only if something calls [`Self::set_mouse_pressed`]; the default
+    /// routing in [`Self::handle_event`] does not maintain it.
     pub fn is_mouse_pressed(&self) -> bool {
         self.mouse_pressed
     }
+    /// Records whether a pointer button is held on this widget.
+    ///
+    /// Pure bookkeeping; it does not emit `mouse_down`/`mouse_up` nor request a
+    /// redraw.
     pub fn set_mouse_pressed(&mut self, pressed: bool) {
         self.mouse_pressed = pressed;
     }
+    /// Asks the host to repaint this widget by emitting the redraw signal.
+    ///
+    /// Takes `&self`, so it can be called from shared references. If nothing is
+    /// connected to the signal the request is simply dropped — this does not queue
+    /// a redraw by itself.
     pub fn request_redraw(&self) {
         self.redraw_requested.emit();
     }
+    /// Asks the host to re-run layout for this widget by emitting the layout
+    /// signal.
+    ///
+    /// Like [`Self::request_redraw`], it is only a request: with no listener the
+    /// emit has no effect.
     pub fn request_layout(&self) {
         self.layout_requested.emit();
     }
 }
+/// Default event routing for every widget: forward each recognised input event to
+/// the matching typed signal.
+///
+/// [`Event::MouseMove`] and [`Event::PointerMove`] emit `hover`;
+/// `MousePress`/`MouseDown`/`PointerPress` emit `mouse_down`, and their release
+/// counterparts emit `mouse_up`; `KeyPress`/`KeyDown` emit `key_down` and
+/// `KeyRelease`/`KeyUp` emit `key_up`; `FocusGained`/`FocusLost` emit their
+/// signals. Every other event is ignored.
+///
+/// This routing is unconditional: hit-testing, visibility and the enabled flag are
+/// not consulted here, so an implementor that wants those checks must impose them
+/// before or after delegating. Note that only bare events are handled —
+/// `Event::Click` and `Event::Changed` do *not* emit `clicked` or `changed`, and
+/// `mouse_pressed` is not maintained.
 impl EventHandler for BaseWidget {
     fn handle_event(&mut self, event: &Event) {
         // Default event routing: delegate to typed signals

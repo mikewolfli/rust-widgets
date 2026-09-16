@@ -62,122 +62,172 @@ pub struct WebEngineView {
     js_engine: Option<crate::web::BoaJsEngine>,
 }
 // Newtype structs for render pipeline symbol imports, wrapping WebEngineView.
+/// Newtype wrapper exposing [`WebEngineView`] under the render pipeline's
+/// "page" symbol name. Behaves identically to the wrapped view.
 pub struct WebEnginePage(pub WebEngineView);
 impl WebEnginePage {
+    /// Wraps a fresh view occupying `geometry` (in logical pixels).
     pub fn new(geometry: Rect) -> Self {
         Self(WebEngineView::new(geometry))
     }
+    /// Borrows the wrapped view.
     pub fn inner(&self) -> &WebEngineView {
         &self.0
     }
+    /// Mutably borrows the wrapped view.
     pub fn inner_mut(&mut self) -> &mut WebEngineView {
         &mut self.0
     }
 }
+/// Newtype wrapper exposing [`WebEngineView`] under the render pipeline's
+/// "engine" symbol name. Behaves identically to the wrapped view.
 pub struct WebEngine(pub WebEngineView);
 impl WebEngine {
+    /// Wraps a fresh view occupying `geometry` (in logical pixels).
     pub fn new(geometry: Rect) -> Self {
         Self(WebEngineView::new(geometry))
     }
+    /// Borrows the wrapped view.
     pub fn inner(&self) -> &WebEngineView {
         &self.0
     }
+    /// Mutably borrows the wrapped view.
     pub fn inner_mut(&mut self) -> &mut WebEngineView {
         &mut self.0
     }
 }
+/// Newtype wrapper exposing [`WebEngineView`] under the render pipeline's
+/// "settings" symbol name. Behaves identically to the wrapped view.
 pub struct WebEngineSettings(pub WebEngineView);
 impl WebEngineSettings {
+    /// Wraps a fresh view occupying `geometry` (in logical pixels).
     pub fn new(geometry: Rect) -> Self {
         Self(WebEngineView::new(geometry))
     }
+    /// Borrows the wrapped view.
     pub fn inner(&self) -> &WebEngineView {
         &self.0
     }
+    /// Mutably borrows the wrapped view.
     pub fn inner_mut(&mut self) -> &mut WebEngineView {
         &mut self.0
     }
 }
+/// Newtype wrapper exposing [`WebEngineView`] under the render pipeline's
+/// "download item" symbol name. Behaves identically to the wrapped view.
 pub struct WebEngineDownloadItem(pub WebEngineView);
 impl WebEngineDownloadItem {
+    /// Wraps a fresh view occupying `geometry` (in logical pixels).
     pub fn new(geometry: Rect) -> Self {
         Self(WebEngineView::new(geometry))
     }
+    /// Borrows the wrapped view.
     pub fn inner(&self) -> &WebEngineView {
         &self.0
     }
+    /// Mutably borrows the wrapped view.
     pub fn inner_mut(&mut self) -> &mut WebEngineView {
         &mut self.0
     }
 }
+/// Newtype wrapper exposing [`WebEngineView`] under the render pipeline's
+/// "cookie store" symbol name. Behaves identically to the wrapped view.
 pub struct WebEngineCookieStore(pub WebEngineView);
 impl WebEngineCookieStore {
+    /// Wraps a fresh view occupying `geometry` (in logical pixels).
     pub fn new(geometry: Rect) -> Self {
         Self(WebEngineView::new(geometry))
     }
+    /// Borrows the wrapped view.
     pub fn inner(&self) -> &WebEngineView {
         &self.0
     }
+    /// Mutably borrows the wrapped view.
     pub fn inner_mut(&mut self) -> &mut WebEngineView {
         &mut self.0
     }
 }
+/// Newtype wrapper exposing [`WebEngineView`] under the render pipeline's
+/// "web channel" symbol name. Behaves identically to the wrapped view.
 pub struct WebEngineWebChannel(pub WebEngineView);
 impl WebEngineWebChannel {
+    /// Wraps a fresh view occupying `geometry` (in logical pixels).
     pub fn new(geometry: Rect) -> Self {
         Self(WebEngineView::new(geometry))
     }
+    /// Borrows the wrapped view.
     pub fn inner(&self) -> &WebEngineView {
         &self.0
     }
+    /// Mutably borrows the wrapped view.
     pub fn inner_mut(&mut self) -> &mut WebEngineView {
         &mut self.0
     }
 }
+/// Newtype wrapper exposing [`WebEngineView`] under the render pipeline's
+/// "find text result" symbol name. Behaves identically to the wrapped view.
 pub struct WebEngineFindTextResult(pub WebEngineView);
 impl WebEngineFindTextResult {
+    /// Wraps a fresh view occupying `geometry` (in logical pixels).
     pub fn new(geometry: Rect) -> Self {
         Self(WebEngineView::new(geometry))
     }
+    /// Borrows the wrapped view.
     pub fn inner(&self) -> &WebEngineView {
         &self.0
     }
+    /// Mutably borrows the wrapped view.
     pub fn inner_mut(&mut self) -> &mut WebEngineView {
         &mut self.0
     }
 }
+/// Newtype wrapper exposing [`WebEngineView`] under the render pipeline's
+/// "notification" symbol name. Behaves identically to the wrapped view.
 pub struct WebEngineNotification(pub WebEngineView);
 impl WebEngineNotification {
+    /// Wraps a fresh view occupying `geometry` (in logical pixels).
     pub fn new(geometry: Rect) -> Self {
         Self(WebEngineView::new(geometry))
     }
+    /// Borrows the wrapped view.
     pub fn inner(&self) -> &WebEngineView {
         &self.0
     }
+    /// Mutably borrows the wrapped view.
     pub fn inner_mut(&mut self) -> &mut WebEngineView {
         &mut self.0
     }
 }
+/// Newtype wrapper exposing [`WebEngineView`] under the render pipeline's
+/// "script dialog" symbol name. Behaves identically to the wrapped view.
 pub struct WebEngineScriptDialog(pub WebEngineView);
 impl WebEngineScriptDialog {
+    /// Wraps a fresh view occupying `geometry` (in logical pixels).
     pub fn new(geometry: Rect) -> Self {
         Self(WebEngineView::new(geometry))
     }
+    /// Borrows the wrapped view.
     pub fn inner(&self) -> &WebEngineView {
         &self.0
     }
+    /// Mutably borrows the wrapped view.
     pub fn inner_mut(&mut self) -> &mut WebEngineView {
         &mut self.0
     }
 }
+/// Newtype wrapper exposing [`WebEngineView`] under the render pipeline's
+/// "context menu request" symbol name. Behaves identically to the wrapped view.
 pub struct WebEngineContextMenuRequest(pub WebEngineView);
 impl WebEngineContextMenuRequest {
+    /// Wraps a fresh view occupying `geometry` (in logical pixels).
     pub fn new(geometry: Rect) -> Self {
         Self(WebEngineView::new(geometry))
     }
+    /// Borrows the wrapped view.
     pub fn inner(&self) -> &WebEngineView {
         &self.0
     }
+    /// Mutably borrows the wrapped view.
     pub fn inner_mut(&mut self) -> &mut WebEngineView {
         &mut self.0
     }
@@ -231,6 +281,9 @@ impl_web_engine_wrapper_traits!(
 impl WebEngineView {
     const LOAD_TIMER_ID: u32 = 1;
 
+    /// Creates a view with empty URL, title and HTML source, not loading, with
+    /// JavaScript enabled and plugins, private browsing and navigation history
+    /// all off.
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::WebEngineView, geometry, "WebEngineView"),
@@ -259,15 +312,21 @@ impl WebEngineView {
             js_engine: None,
         }
     }
+    /// Returns the current URL, or an empty string when nothing has been loaded.
     pub fn url(&self) -> &str {
         &self.url
     }
+    /// Returns whether a load is in progress. Because a load completes only when
+    /// the load timer tick arrives, this can remain `true` until then.
     pub fn is_loading(&self) -> bool {
         self.loading
     }
+    /// Returns the page title, or an empty string when none has been set.
     pub fn title(&self) -> &str {
         &self.title
     }
+    /// Sets the page title, emitting [`WebEngineView::title_changed`] and
+    /// requesting a redraw only when the value actually differs.
     pub fn set_title(&mut self, title: String) {
         if self.title != title {
             self.title = title.clone();
@@ -275,22 +334,31 @@ impl WebEngineView {
             self.base.request_redraw();
         }
     }
+    /// Returns whether going back is currently available. The flag reflects the
+    /// simulated navigation state, not a real history stack.
     pub fn can_go_back(&self) -> bool {
         self.can_go_back
     }
+    /// Returns whether going forward is currently available.
     pub fn can_go_forward(&self) -> bool {
         self.can_go_forward
     }
+    /// Returns whether JavaScript evaluation is permitted for this view.
     pub fn is_javascript_enabled(&self) -> bool {
         self.javascript_enabled
     }
+    /// Returns whether plugin content is enabled for this view.
     pub fn is_plugins_enabled(&self) -> bool {
         self.plugins_enabled
     }
+    /// Returns whether the view is in private browsing mode.
     pub fn is_private_browsing(&self) -> bool {
         self.private_browsing
     }
 
+    /// Returns the timer id the widget registers to complete a pending load;
+    /// callers driving the event loop treat that timer's tick as the signal to
+    /// finish loading.
     pub fn load_timer_id() -> u32 {
         Self::LOAD_TIMER_ID
     }
@@ -311,6 +379,9 @@ impl WebEngineView {
         }
     }
 
+    /// Replaces the URL and starts a simulated load, emitting
+    /// [`WebEngineView::url_changed`] then [`WebEngineView::loading_started`] and
+    /// refreshing the navigation flags. Does nothing if `url` is already current.
     pub fn set_url(&mut self, url: String) {
         if self.url != url {
             self.url = url.clone();
@@ -320,6 +391,10 @@ impl WebEngineView {
             self.base.request_redraw();
         }
     }
+    /// "Loads" the supplied HTML synchronously: stores the source for
+    /// [`WebEngineView::html_source`], sets the URL to `data:text/html` and the
+    /// title to `HTML Content`, then emits the load, title, URL and navigation
+    /// signals in that order. No DOM is built and none of the HTML is rendered.
     pub fn load_html(&mut self, html: &str) {
         // Navigation and loading state are simulated (no DOM layout), but the
         // HTML source is retained so script evaluation and introspection work.
@@ -337,6 +412,11 @@ impl WebEngineView {
     pub fn html_source(&self) -> &str {
         &self.html_content
     }
+    /// Loads an in-memory payload, storing `data` decoded as lossy UTF-8, then
+    /// setting the URL to `base_url` and the title to `Data Content`.
+    ///
+    /// The MIME type and encoding arguments are currently ignored because no
+    /// decoding or layout is performed. Emits the same signals as `load_html`.
     pub fn load_data(&mut self, data: &[u8], _mime_type: &str, _encoding: &str, base_url: &str) {
         // Data payloads are retained for introspection; no binary media decode
         // or layout happens in this simulated view.
@@ -350,6 +430,9 @@ impl WebEngineView {
         self.update_navigation_state();
         self.base.request_redraw();
     }
+    /// Models a back navigation by flipping the availability flags: `can_go_back`
+    /// becomes false and `can_go_forward` true. No history is kept and the URL is
+    /// left unchanged. No-op when going back is unavailable.
     pub fn go_back(&mut self) {
         if self.can_go_back {
             // Navigation state is modeled, not a real page history: toggling
@@ -360,6 +443,9 @@ impl WebEngineView {
             self.base.request_redraw();
         }
     }
+    /// Models a forward navigation with the same flag flip as `go_back` in
+    /// reverse: `can_go_forward` becomes false and `can_go_back` true. No-op when
+    /// going forward is unavailable.
     pub fn go_forward(&mut self) {
         if self.can_go_forward {
             // See `go_back` — modeled navigation state only.
@@ -369,15 +455,25 @@ impl WebEngineView {
             self.base.request_redraw();
         }
     }
+    /// Re-emits the start of a load for the current URL without fetching
+    /// anything. No-op when the URL is empty.
     pub fn reload(&mut self) {
         if !self.url.is_empty() {
             // Re-emits the load lifecycle without re-fetching (no network).
             self.begin_loading();
         }
     }
+    /// Completes the load in progress, emitting [`WebEngineView::loading_finished`].
+    /// No-op when nothing is loading.
     pub fn stop(&mut self) {
         self.finish_loading();
     }
+    /// Evaluates `script` and returns its result rendered as a string.
+    ///
+    /// With the `js-engine` feature this runs in a real embedded engine, created
+    /// lazily on first use, and returns the engine's error text on failure.
+    /// Without that feature it always returns `Err`; either way the
+    /// `is_javascript_enabled` flag is not consulted.
     pub fn evaluate_javascript(&mut self, script: &str) -> Result<String, String> {
         #[cfg(feature = "js-engine")]
         {
@@ -390,12 +486,18 @@ impl WebEngineView {
             Err("JavaScript evaluation requires the `js-engine` feature".to_string())
         }
     }
+    /// Records whether JavaScript evaluation is permitted. This is a state flag
+    /// only; `evaluate_javascript` does not enforce it.
     pub fn set_javascript_enabled(&mut self, enabled: bool) {
         self.javascript_enabled = enabled;
     }
+    /// Records whether plugin content is permitted. This is a state flag only and
+    /// gates no rendering.
     pub fn set_plugins_enabled(&mut self, enabled: bool) {
         self.plugins_enabled = enabled;
     }
+    /// Records whether private browsing is in effect. This is a state flag only;
+    /// no history or cookie state is cleared when it is set.
     pub fn set_private_browsing(&mut self, enabled: bool) {
         self.private_browsing = enabled;
     }

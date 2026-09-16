@@ -96,8 +96,12 @@ pub type Result<T, E = CoreError> = std::result::Result<T, E>;
 /// Version information for compatibility checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Version {
+    /// Major version; incremented for incompatible API changes. Callers must
+    /// not mix major versions — see [`Version::is_compatible_with`].
     pub major: u16,
+    /// Minor version; incremented for backwards-compatible additions.
     pub minor: u16,
+    /// Patch version; incremented for backwards-compatible fixes.
     pub patch: u16,
 }
 impl Version {
@@ -123,6 +127,11 @@ impl Version {
                 << 8)
             | (if self.patch > u8::MAX as u16 { u8::MAX as u16 } else { self.patch }) as u32
     }
+    /// Returns `true` if both versions share a major component.
+    ///
+    /// Compatibility is major-only in both directions: `1.0.0` and `1.5.0` are
+    /// compatible, `1.0.0` and `2.0.0` are not. Minor and patch are ignored, so
+    /// this does not tell you whether `other` is newer or older.
     pub fn is_compatible_with(&self, other: &Self) -> bool {
         self.major == other.major
     }
@@ -172,12 +181,26 @@ impl Display for Version {
 ///   do** (IME, accessibility bridge, native menus, typed trigger events).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlatformCapabilities {
+    /// Whether a GPU (any accelerated rasteriser) is present. Gates the
+    /// hardware-accelerated render backends; a `false` value means software
+    /// rasterisation only.
     pub has_gpu: bool,
+    /// Whether the primary input device supports touch. Drives touch target
+    /// sizing (see [`crate::core::geometry::Rect::expand_to_touch_target`]).
     pub has_touch: bool,
+    /// Whether a physical or on-screen keyboard is available; a `false` value
+    /// means text-entry widgets cannot be focused usefully.
     pub has_keyboard: bool,
+    /// Whether a pointing device (mouse, trackpad, or stylus with hover) is
+    /// available for hover and fine-grained hit testing.
     pub has_mouse: bool,
+    /// Primary screen width in physical pixels (not logical/device-independent
+    /// units); see `dpi_scale` for the conversion factor.
     pub screen_width: u32,
+    /// Primary screen height in physical pixels (not logical units).
     pub screen_height: u32,
+    /// Ratio of physical pixels to logical pixels (1.0 = 96 DPI baseline,
+    /// 2.0 = HiDPI). Multiply logical sizes by this to obtain physical pixels.
     pub dpi_scale: f32,
 }
 impl PlatformCapabilities {
@@ -229,9 +252,17 @@ impl PlatformCapabilities {
 /// Configuration for core initialization.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CoreConfig {
+    /// Feature set to enable at runtime. [`RuntimeProfile::Embedded`] skips the
+    /// optional advanced modules that a constrained device cannot afford.
     pub profile: RuntimeProfile,
+    /// Which platform family the runtime is being initialised for; selects the
+    /// default backend implementations when none are injected.
     pub platform: PlatformFamily,
+    /// Probed hardware facts for this host. Must agree with `platform`, but is
+    /// not validated — callers are responsible for consistency.
     pub capabilities: PlatformCapabilities,
+    /// Core library version the caller was compiled against, used for the
+    /// major-only compatibility check in [`Version::is_compatible_with`].
     pub version: Version,
 }
 impl CoreConfig {

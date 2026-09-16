@@ -511,6 +511,11 @@ pub fn detect_browser_forced_integrated_gpu() -> bool {
     // This is a heuristic detection
     true // Assume forced integrated in browser
 }
+/// Always returns `false` on non-wasm32 targets: no browser is involved, so
+/// there is nothing forcing an integrated adapter.
+///
+/// See the `wasm32` definition above for why the check keys off the target
+/// architecture rather than the operating system.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn detect_browser_forced_integrated_gpu() -> bool {
     false // Not in browser

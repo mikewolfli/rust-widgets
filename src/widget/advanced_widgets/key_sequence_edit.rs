@@ -56,6 +56,14 @@ impl UndoCommand for KeySequenceCommand {
     }
 }
 /// Represents a key sequence (modifier + key name).
+///
+/// A sequence is a single chord, not a multi-step sequence: one modifier
+/// bitmask plus one key. Used by [`KeySequenceEdit`] to describe a shortcut.
+///
+/// The `key_name` is a display-only, non-localised English rendering of
+/// `key_code` ("Ctrl+S", "F5"); it is never parsed back into a code and is not
+/// validated against it, so the two can disagree if a caller sets them
+/// independently.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeySequence {
     modifiers: u32, // Bit flags: 0x01=Ctrl, 0x02=Alt, 0x04=Shift, 0x08=Meta
@@ -63,33 +71,64 @@ pub struct KeySequence {
     key_name: String,
 }
 impl KeySequence {
+    /// Creates a fully specified sequence.
+    ///
+    /// `modifiers` is a bitmask: `0x01` Ctrl, `0x02` Alt, `0x04` Shift, `0x08`
+    /// Meta; other bits are ignored by [`KeySequence::to_display_string`].
+    /// `key_code` is the backend virtual-key code, `0` meaning "no key".
+    /// `key_name` is the display text, passed through verbatim.
     pub fn new(modifiers: u32, key_code: u32, key_name: impl Into<String>) -> Self {
         Self { modifiers, key_code, key_name: key_name.into() }
     }
+    /// Returns a sequence with no modifiers, key code `0`, and no key name.
+    ///
+    /// All-zero is the sentinel for "unset": see [`KeySequence::is_empty`].
     pub fn empty() -> Self {
         Self { modifiers: 0, key_code: 0, key_name: String::new() }
     }
+    /// Returns the modifier bitmask (`0x01` Ctrl, `0x02` Alt, `0x04` Shift,
+    /// `0x08` Meta).
     pub fn modifiers(&self) -> u32 {
         self.modifiers
     }
+    /// Returns the backend virtual-key code, or `0` when no key is set.
     pub fn key_code(&self) -> u32 {
         self.key_code
     }
+    /// Returns the display name of the key (for example `"S"`, `"F5"`,
+    /// `"Space"`). Empty when no key is set.
     pub fn key_name(&self) -> &str {
         &self.key_name
     }
+    /// Replaces the modifier bitmask; see [`KeySequence::modifiers`] for the bit
+    /// assignments. Does not update `key_name`.
     pub fn set_modifiers(&mut self, modifiers: u32) {
         self.modifiers = modifiers;
     }
+    /// Replaces the virtual-key code. Does not update `key_name`, so the
+    /// displayed text can disagree with the stored code until the name is set
+    /// too.
     pub fn set_key_code(&mut self, key_code: u32) {
         self.key_code = key_code;
     }
+    /// Replaces the display name of the key.
     pub fn set_key_name(&mut self, key_name: impl Into<String>) {
         self.key_name = key_name.into();
     }
+    /// Returns `true` when `key_code` is `0`, i.e. no key has been captured.
+    ///
+    /// Cleared sequences are the widget's "unset shortcut" state; the widget
+    /// shows placeholder text for them.
     pub fn is_empty(&self) -> bool {
         self.key_code == 0
     }
+    /// Renders the sequence for display, joining recognised modifiers and the
+    /// key name with `+` (for example `"Ctrl+Shift+S"`).
+    ///
+    /// Modifier order is fixed as Ctrl, Shift, Alt, Meta — it does not follow
+    /// the `modifiers` bit order or platform convention. Unrecognised modifier
+    /// bits are silently dropped, and an empty `key_name` yields only the
+    /// modifier prefix (or an empty string when there are none).
     pub fn to_display_string(&self) -> String {
         let mut parts = Vec::new();
         if self.modifiers & 0x01 != 0 {
@@ -116,17 +155,37 @@ impl std::fmt::Display for KeySequence {
     }
 }
 /// Key sequence editor widget.
+///
+/// Clicking the widget starts recording; the next key press (with its
+/// modifiers) becomes the sequence and ends recording. Recording can also be
+/// driven programmatically with [`KeySequenceEdit::start_recording`].
+///
+/// Edits made through [`KeySequenceEdit::set_key_sequence`] — including those
+/// from recording — are pushed onto an internal undo stack, so `undo` / `redo`
+/// (and Ctrl+Z / Ctrl+Y) step through the edit history.
+///
 pub struct KeySequenceEdit {
     base: BaseWidget,
     key_sequence: KeySequence,
     recording: bool,
+    /// Emitted once each time recording stops, whether the sequence changed or
+    /// not (including when recording was cancelled with Escape, which emits
+    /// nothing else). Carries no payload.
     pub editing_finished: GenericSignal,
+    /// Emitted with the new sequence whenever it changes: from user recording,
+    /// from [`KeySequenceEdit::set_key_sequence`], and from undo/redo replayed
+    /// history. Not emitted by [`KeySequenceEdit::set_key_sequence`] when the
+    /// incoming sequence equals the current one.
     pub key_sequence_changed: Signal1<KeySequence>,
     undo_stack: UndoStack,
     history_target: Rc<RefCell<KeySequence>>,
     restoring_history: bool,
 }
 impl KeySequenceEdit {
+    /// Creates an editor with no sequence set and recording stopped.
+    ///
+    /// `geometry` is in parent-relative logical pixels; the size hint is
+    /// 150x28.
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::LineEdit, geometry, "KeySequenceEdit"),
@@ -139,12 +198,23 @@ impl KeySequenceEdit {
             restoring_history: false,
         }
     }
+    /// Returns the current sequence; compare with [`KeySequence::is_empty`] to
+    /// distinguish "unset" from "set".
     pub fn key_sequence(&self) -> &KeySequence {
         &self.key_sequence
     }
+    /// Returns whether the widget is currently capturing the next key press.
     pub fn is_recording(&self) -> bool {
         self.recording
     }
+    /// Replaces the sequence and requests a redraw.
+    ///
+    /// Setting a value equal to the current one is a no-op: no undo entry, no
+    /// signal, and no redraw. Otherwise the previous value is pushed onto the
+    /// undo stack and `key_sequence_changed` is emitted with `seq`.
+    ///
+    /// This does **not** stop an in-progress recording; recording continues and
+    /// the next captured key press will overwrite this value.
     pub fn set_key_sequence(&mut self, seq: KeySequence) {
         if self.key_sequence == seq {
             return;
@@ -162,18 +232,36 @@ impl KeySequenceEdit {
         self.key_sequence_changed.emit(seq);
         self.base.request_redraw();
     }
+    /// Clears the sequence, as if [`KeySequence::empty`] had been set.
+    ///
+    /// Goes through [`KeySequenceEdit::set_key_sequence`], so it is undoable
+    /// and is a no-op when the sequence is already empty.
     pub fn clear(&mut self) {
         self.set_key_sequence(KeySequence::empty());
     }
+    /// Begins capturing the next key press. Idempotent, and does not emit
+    /// anything. If no `Event::FocusLost` or key press follows, recording
+    /// stays on indefinitely.
     pub fn start_recording(&mut self) {
         self.recording = true;
     }
+    /// Ends recording.
+    ///
+    /// Emits `editing_finished` only if recording was actually on, so calling
+    /// this twice emits once — unless [`KeySequenceEdit::start_recording`] ran
+    /// in between.
     pub fn stop_recording(&mut self) {
         if self.recording {
             self.recording = false;
             self.editing_finished.emit();
         }
     }
+    /// Steps back one edit and returns `true`, or returns `false` when there is
+    /// nothing to undo.
+    ///
+    /// Emits `key_sequence_changed` with the restored sequence, but **not**
+    /// `editing_finished`, even though the restored value may differ from what
+    /// the user last confirmed.
     pub fn undo(&mut self) -> bool {
         if self.undo_stack.undo().is_err() {
             return false;
@@ -181,6 +269,9 @@ impl KeySequenceEdit {
         self.restore_history_sequence();
         true
     }
+    /// Steps forward one undone edit and returns `true`, or returns `false`
+    /// when there is nothing to redo. Signals behave as in
+    /// [`KeySequenceEdit::undo`].
     pub fn redo(&mut self) -> bool {
         if self.undo_stack.redo().is_err() {
             return false;
@@ -188,9 +279,11 @@ impl KeySequenceEdit {
         self.restore_history_sequence();
         true
     }
+    /// Returns `true` if [`KeySequenceEdit::undo`] would change the sequence.
     pub fn can_undo(&self) -> bool {
         self.undo_stack.can_undo()
     }
+    /// Returns `true` if [`KeySequenceEdit::redo`] would change the sequence.
     pub fn can_redo(&self) -> bool {
         self.undo_stack.can_redo()
     }

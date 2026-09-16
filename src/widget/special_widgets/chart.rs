@@ -26,10 +26,15 @@ use crate::{impl_widget_property_hooks, property_names_of};
 ///   set, which adds `Area`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ChartType {
+    /// Vertical bars, one per data point; the default.
     #[default]
     Bar,
+    /// Polyline connecting the data points in order.
     Line,
+    /// Pie/donut wedges whose angles are proportional to each point's share of
+    /// the total; negative or zero-sum data draws nothing.
     Pie,
+    /// Unconnected markers, one per data point.
     Scatter,
 }
 

@@ -1163,7 +1163,7 @@ Step 10 Phase F            上层与文档同步（含视觉基线重生）
 | **F 上层与文档（原则 #18/#52）** | ✅ 完成 | **100%** | 121 处去机制词重命名 + **crate root 兼容路径**；探针替换为 `control_creation_is_single_mechanism`；能力矩阵重生（0 矛盾）；CI 同步（+`mini` 档、-probe 步骤）|
 | **G 精炼收尾（第七轮）** | ✅ 完成 | **100%** | 净 **−1339 行**；删除 13 个文件；5 类跨文件重复消除（`/proc` 探针 296 行、日期工具×3、`floor_char_boundary`×6、`Default`×117、能力契约类型）；新增 3 个共享模块；**9 条文档路径门禁测试** |
 | **H 版本与发布物（第七轮）** | ✅ 完成 | **100%** | 版本 `1.1.3` → **`2.0.0`**（4 处落点）；README/README.zh-CN/CHANGELOG×2/MIGRATION_GUIDE/cookbook×2 全部同步，含**自绘声明**与**OS 支持矩阵** |
-| **I HarmonyOS 交叉目标（第 18 轮）** | ✅ 完成 | **100%** | SDK 就位后首跑即发现 **ohos target 完全不可构建**：`target_os = "ohos"` 永不匹配 → 改 `target_env`；新增 `is_openharmony_target()` 单一判据 + 2 条回归测试；新增 CI job `harmony-cross-check`（4 步，逐条本机实跑）|
+| **I HarmonyOS 交叉目标（第 18 轮）** | ✅ 完成 | **100%** | SDK 就位后首跑即发现 **ohos target 完全不可构建**：`target_os = "ohos"` 永不匹配 → 改 `target_env`；新增 `is_openharmony_target()` 单一判据 + 2 条回归测试（已验证能失败）；新增 CI job `harmony-cross-check`。**四个鸿蒙目标全部取证**：`aarch64`/`armv7`/`x86_64` ✅ 构建通过；`loongarch64` ❌ 不可构建，根因经四层取证确定在 **Tier 3 无预编译 std + SDK 无该架构 libc**，非本 crate 缺陷，已由门禁**正向钉住**|
 
 ### 第 18 轮补充：HarmonyOS 交叉目标从「不可验证」到「真实验证」
 
@@ -1429,7 +1429,7 @@ check_visual_regression.sh                    PASS
 | V0-a | `实现 Draw 的类型数 == as_draw_mut 返回 Some 的类型数` | 168 == 168 | ✅ **167 == 166**（`WebViewEnhanced` 非 `Widget`，见 §2 C-0-4） |
 | V0-b | `every_draw_implementor_is_paintable_through_dyn_widget` | pass | ✅ `every_factory_widget_can_be_painted` pass |
 | V0-c | 每控件 `mount_surface` → `render_frame` 非 `None` 且含非透明像素 | 168/168 | ✅ `a_bridged_control_actually_paints` pass（代表性控件） |
-| V8/V9/V10/V11/V12 | 交叉编译 / doc / integration / 运行时 | — | ⬜ 本机不可验证或待后续阶段，**显式登记为未验证** |
+| V8/V9/V10/V11/V12 | 交叉编译 / doc / integration / 运行时 | — | ✅ 已在第 16–18 轮补齐：doc 0 error；integration 全绿；运行时探针 PASS；**跨目标** windows-msvc / wasm32 / android / **鸿蒙 aarch64·armv7·x86_64** 均 0 issue（`loongarch64` 不可构建，根因在 SDK，见第 18 轮 §13）|
 
 > **mini 测试**：`cargo test --no-default-features --features mini --lib -q` → **1398 passed; 0 failed**。
 

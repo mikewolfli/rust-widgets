@@ -157,83 +157,157 @@ pub enum Key {
     /// No key.
     None,
     /// Letter keys.
+    /// The `A` key.
     A,
+    /// The `B` key.
     B,
+    /// The `C` key.
     C,
+    /// The `D` key.
     D,
+    /// The `E` key.
     E,
+    /// The `F` key.
     F,
+    /// The `G` key.
     G,
+    /// The `H` key.
     H,
+    /// The `I` key.
     I,
+    /// The `J` key.
     J,
+    /// The `K` key.
     K,
+    /// The `L` key.
     L,
+    /// The `M` key.
     M,
+    /// The `N` key.
     N,
+    /// The `O` key.
     O,
+    /// The `P` key.
     P,
+    /// The `Q` key.
     Q,
+    /// The `R` key.
     R,
+    /// The `S` key.
     S,
+    /// The `T` key.
     T,
+    /// The `U` key.
     U,
+    /// The `V` key.
     V,
+    /// The `W` key.
     W,
+    /// The `X` key.
     X,
+    /// The `Y` key.
     Y,
+    /// The `Z` key.
     Z,
     /// Number keys (top row).
+    /// The `0` key on the top-row number row (not the numeric keypad).
     Num0,
+    /// The `1` key on the top-row number row.
     Num1,
+    /// The `2` key on the top-row number row.
     Num2,
+    /// The `3` key on the top-row number row.
     Num3,
+    /// The `4` key on the top-row number row.
     Num4,
+    /// The `5` key on the top-row number row.
     Num5,
+    /// The `6` key on the top-row number row.
     Num6,
+    /// The `7` key on the top-row number row.
     Num7,
+    /// The `8` key on the top-row number row.
     Num8,
+    /// The `9` key on the top-row number row.
     Num9,
     /// Function keys.
+    /// The `F1` function key.
     F1,
+    /// The `F2` function key.
     F2,
+    /// The `F3` function key.
     F3,
+    /// The `F4` function key.
     F4,
+    /// The `F5` function key.
     F5,
+    /// The `F6` function key.
     F6,
+    /// The `F7` function key.
     F7,
+    /// The `F8` function key.
     F8,
+    /// The `F9` function key.
     F9,
+    /// The `F10` function key.
     F10,
+    /// The `F11` function key.
     F11,
+    /// The `F12` function key.
     F12,
     /// Special keys.
+    /// The Escape key; formats as `Esc`.
     Escape,
+    /// The Tab key.
     Tab,
+    /// The Return/Enter key; key codes `10` (line feed) and `13` (carriage return) both map here.
     Enter,
+    /// The Space bar.
     Space,
+    /// The Backspace key; key code `8`.
     Backspace,
+    /// The forward Delete key; also accepts key code `127`, which is what most
+    /// terminals use to report Backspace.
     Delete,
+    /// The Insert key.
     Insert,
+    /// The Home key.
     Home,
+    /// The End key.
     End,
+    /// The Page Up key; formats as `PgUp`.
     PageUp,
+    /// The Page Down key; formats as `PgDn`.
     PageDown,
     /// Arrow keys.
+    /// The Left arrow key.
     Left,
+    /// The Right arrow key.
     Right,
+    /// The Up arrow key.
     Up,
+    /// The Down arrow key.
     Down,
     /// Other keys.
+    /// The `-`/`_` key.
     Minus,
+    /// The `=`/`+` key.
     Equals,
+    /// The `[`/`{` key.
     LeftBracket,
+    /// The `]`/`}` key.
     RightBracket,
+    /// The `;`/`:` key.
     Semicolon,
+    /// The `'`/`"` key.
     Quote,
+    /// The `,`/`<` key.
     Comma,
+    /// The `.`/`>` key.
     Period,
+    /// The `/`/`?` key.
     Slash,
+    /// The `\`/`|` key.
     Backslash,
 }
 impl Key {
@@ -485,10 +559,20 @@ impl std::fmt::Display for Key {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, PartialOrd, Ord)]
 pub struct Modifiers(u8);
 impl Modifiers {
+    /// No modifiers set. Also the value produced by [`Modifiers::empty`] and by `Default`.
     pub const NONE: Self = Self(0);
+    /// The physical Shift key.
     pub const SHIFT: Self = Self(1 << 0);
+    /// The physical Control key.
+    ///
+    /// This is Control on *every* platform, including macOS. For an accelerator
+    /// that should follow the host's convention use [`Modifiers::PRIMARY`]
+    /// instead; the two are deliberately separate bits so a backend can tell
+    /// them apart.
     pub const CTRL: Self = Self(1 << 1);
+    /// The physical Alt key (`Option` on macOS).
     pub const ALT: Self = Self(1 << 2);
+    /// The physical Meta key: `Command` on macOS, the Windows/Super key elsewhere.
     pub const META: Self = Self(1 << 3);
     /// The platform's **primary** accelerator modifier.
     ///

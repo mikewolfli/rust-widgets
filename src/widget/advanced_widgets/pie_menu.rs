@@ -30,6 +30,12 @@ pub struct PieMenuItem {
 }
 
 impl PieMenuItem {
+    /// Creates an enabled item with the given label, no icon text, and its
+    /// angles unset (`0.0` for both).
+    ///
+    /// The angles are placeholders until the item is inserted into a
+    /// [`PieMenu`], which recomputes them to divide the circle evenly among all
+    /// items.
     pub fn new(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
@@ -40,42 +46,64 @@ impl PieMenuItem {
         }
     }
 
+    /// Returns the item's label.
     pub fn text(&self) -> &str {
         &self.text
     }
 
+    /// Replaces the item's label. The slice angle is not affected, and no
+    /// redraw is requested.
     pub fn set_text(&mut self, text: impl Into<String>) {
         self.text = text.into();
     }
 
+    /// Returns the icon text, or an empty string when the item has no icon.
+    ///
+    /// This is a text stand-in for an icon, not image data.
     pub fn icon_text(&self) -> &str {
         &self.icon_text
     }
 
+    /// Replaces the icon text. An empty string means "no icon".
     pub fn set_icon_text(&mut self, icon: impl Into<String>) {
         self.icon_text = icon.into();
     }
 
+    /// Returns whether the item can be clicked. Defaults to `true`.
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }
 
+    /// Enables or disables the item. A disabled item is still drawn but is
+    /// skipped by hit testing, so hovering it clears the hover highlight rather
+    /// than selecting it.
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
     }
 
+    /// Returns the slice's start angle, in radians measured clockwise from the
+    /// positive x axis (see the module drawing code), with `0.0` at the right
+    /// of the menu centre.
+    ///
+    /// Managed by [`PieMenu`]; setting it directly is only meaningful for a
+    /// standalone item.
     pub fn angle_start(&self) -> f32 {
         self.angle_start
     }
 
+    /// Sets the slice's start angle in radians. Not validated, and the menu
+    /// overwrites it whenever the item list changes.
     pub fn set_angle_start(&mut self, angle: f32) {
         self.angle_start = angle;
     }
 
+    /// Returns the slice's exclusive end angle, in radians. The slice spans
+    /// `angle_start .. angle_end`.
     pub fn angle_end(&self) -> f32 {
         self.angle_end
     }
 
+    /// Sets the slice's exclusive end angle in radians. Not validated.
     pub fn set_angle_end(&mut self, angle: f32) {
         self.angle_end = angle;
     }
@@ -97,9 +125,20 @@ pub struct PieMenu {
     animation_progress: f32,
     hover_color: Color,
     text_color: Color,
+    /// Emitted with the index whose selection was applied. Fires from user
+    /// clicks and from [`PieMenu::set_current_index`] — so programmatic
+    /// selection is indistinguishable from a click, and a slot that reacts by
+    /// calling `set_current_index` again will recurse. A
+    /// [`PieMenu::set_current_index`] call with an out-of-range index emits
+    /// nothing.
     pub triggered: Signal1<usize>,
+    /// Emitted with the selected item's label, alongside `triggered`. Empty
+    /// labels produce an empty payload; duplicate labels are indistinguishable.
     pub triggered_text: Signal1<String>,
+    /// Emitted by [`PieMenu::show_at`], just before the menu becomes visible.
     pub about_to_show: GenericSignal,
+    /// Emitted by [`PieMenu::hide`], after the menu is hidden and the hover
+    /// highlight cleared.
     pub about_to_hide: GenericSignal,
 }
 
@@ -133,6 +172,10 @@ impl PieMenu {
     }
 
     /// Sets the current index with bounds checking.
+    ///
+    /// An out-of-range index is silently ignored. On success this emits
+    /// `triggered` and `triggered_text` and requests a redraw; the current
+    /// index is **not** updated for an item that is disabled.
     pub fn set_current_index(&mut self, idx: usize) {
         if idx < self.items.len() {
             self.current_index = idx;
@@ -149,7 +192,10 @@ impl PieMenu {
         self.add_item_with_icon(text, "")
     }
 
-    /// Adds a menu item with an icon text and returns its index.
+    /// Adds an item with a text icon and returns its index.
+    ///
+    /// Angles are recomputed so all items share the circle equally, which means
+    /// adding an item moves every existing slice.
     pub fn add_item_with_icon(
         &mut self,
         text: impl Into<String>,
@@ -163,14 +209,22 @@ impl PieMenu {
         idx
     }
 
-    /// Inserts a menu item at the given index.
+    /// Inserts an item at `index`, or appends when `index` is past the end.
+    ///
+    /// The new item has no icon text. Angles are recomputed for every item, and
+    /// [`PieMenu::current_index`] is not adjusted, so it can end up naming a
+    /// different item than before.
     pub fn insert_item(&mut self, index: usize, text: impl Into<String>) {
         let idx = index.min(self.items.len());
         self.items.insert(idx, PieMenuItem::new(text));
         self.recalculate_angles();
     }
 
-    /// Removes the menu item at `index`.
+    /// Removes the item at `index`; out-of-range indices are ignored.
+    ///
+    /// Angles are recomputed for the remaining items. [`PieMenu::current_index`]
+    /// and [`PieMenu::hovered_index`] are not adjusted, so they can be left
+    /// pointing past the end of the list.
     pub fn remove_item(&mut self, index: usize) {
         if index < self.items.len() {
             self.items.remove(index);
@@ -178,7 +232,10 @@ impl PieMenu {
         }
     }
 
-    /// Removes all menu items.
+    /// Removes all menu items and clears the hover highlight.
+    ///
+    /// [`PieMenu::current_index`] is left as-is even though it now names no
+    /// item.
     pub fn clear(&mut self) {
         self.items.clear();
         self.hovered_index = None;
@@ -194,7 +251,8 @@ impl PieMenu {
         &self.items
     }
 
-    /// Sets whether the item at `index` is enabled.
+    /// Enables or disables the item at `index`, ignoring out-of-range indices.
+    /// Disabling does not clear an existing hover highlight or redraw.
     pub fn set_item_enabled(&mut self, index: usize, enabled: bool) {
         if let Some(item) = self.items.get_mut(index) {
             item.set_enabled(enabled);
@@ -207,6 +265,10 @@ impl PieMenu {
     }
 
     /// Sets the outer radius of the menu.
+    ///
+    /// Values below `10.0` are raised to `10.0`. The inner radius is pulled
+    /// down if it would otherwise reach past 90% of the new outer radius, and
+    /// the widget geometry is recomputed to the enclosing square.
     pub fn set_radius(&mut self, radius: f32) {
         self.radius = radius.max(10.0);
         self.inner_radius = self.inner_radius.min(self.radius * 0.9);
@@ -219,6 +281,11 @@ impl PieMenu {
     }
 
     /// Sets the inner (donut hole) radius.
+    ///
+    /// Clamped into `2.0 ..= 0.95 * radius`; the widget geometry is recomputed.
+    /// A radius given as NaN clamps to `2.0` in practice only if it is
+    /// comparable — passing NaN leaves the previous value semantics undefined
+    /// by `f32::clamp` returning NaN; use finite values.
     pub fn set_inner_radius(&mut self, inner_radius: f32) {
         self.inner_radius = inner_radius.max(2.0).min(self.radius * 0.95);
         self.update_geometry();
@@ -229,7 +296,9 @@ impl PieMenu {
         self.center
     }
 
-    /// Sets the center point of the menu.
+    /// Sets the center point of the menu, in parent-relative logical pixels,
+    /// and recomputes the widget geometry so it is the square of side
+    /// `2 * radius` centred on that point.
     pub fn set_center(&mut self, center: Point) {
         self.center = center;
         self.update_geometry();
@@ -240,7 +309,11 @@ impl PieMenu {
         self.animation_progress
     }
 
-    /// Sets the animation progress, clamped to [0.0, 1.0].
+    /// Sets the animation progress, clamped to `0.0 ..= 1.0`.
+    ///
+    /// The value is a plain stored number: the widget never advances it itself
+    /// and does not request a redraw, so an animating caller must step it and
+    /// repaint. `1.0` (fully shown) is the initial value.
     pub fn set_animation_progress(&mut self, progress: f32) {
         self.animation_progress = progress.clamp(0.0, 1.0);
     }
@@ -250,7 +323,7 @@ impl PieMenu {
         self.hover_color
     }
 
-    /// Sets the hover highlight color.
+    /// Sets the hover highlight color. Does not request a redraw.
     pub fn set_hover_color(&mut self, color: Color) {
         self.hover_color = color;
     }
@@ -260,7 +333,7 @@ impl PieMenu {
         self.text_color
     }
 
-    /// Sets the text color for labels.
+    /// Sets the text color for labels. Does not request a redraw.
     pub fn set_text_color(&mut self, color: Color) {
         self.text_color = color;
     }
@@ -270,7 +343,10 @@ impl PieMenu {
         self.hovered_index
     }
 
-    /// Shows the menu at the given center position.
+    /// Shows the menu centred on `center` (parent-relative logical pixels).
+    ///
+    /// Clears the hover highlight, emits `about_to_show`, then makes the widget
+    /// visible. The radius and item list are unchanged.
     pub fn show_at(&mut self, center: Point) {
         self.center = center;
         self.update_geometry();
@@ -279,7 +355,10 @@ impl PieMenu {
         self.base.show();
     }
 
-    /// Hides the menu.
+    /// Hides the menu, clears the hover highlight, then emits `about_to_hide`.
+    ///
+    /// Note the ordering is the reverse of [`PieMenu::show_at`], which emits
+    /// before showing. Emits unconditionally, even when already hidden.
     pub fn hide(&mut self) {
         self.base.hide();
         self.hovered_index = None;

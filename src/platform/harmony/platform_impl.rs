@@ -1,6 +1,17 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
+//! `Platform` implementation for the HarmonyOS / OpenHarmony backend.
+//!
+//! The backend is state-driven: widget creation, geometry, text, visibility, menus,
+//! clipboard, drag/drop and IME metadata all live in
+//! [`crate::platform::state::BackendState`], and library-painted widgets are
+//! displayed through the surface methods (see `super::status.md`).
+//!
+//! The one fact worth knowing before editing anything here: OpenHarmony targets
+//! report `target_env = "ohos"` and `target_os = "linux"`, so backend selection keys
+//! off `target_env` — see [`crate::platform::profile::is_openharmony_target`].
+
 use super::super::{DropEvent, Platform};
 use super::types::*;
 use crate::core::PlatformFamily;
@@ -165,9 +176,38 @@ impl Platform for HarmonyPlatform {
     fn inject_widget_trigger_event(&self, widget_id: u64, kind: WidgetTriggerKind) -> bool {
         self.state.inject_widget_trigger_event(widget_id, kind)
     }
-    /// The Harmony backend has no widget surface bound yet, so this reports
-    /// `false` until an ArkUI Canvas bridge is bound.
+
+    /// Mounts a library-painted widget onto a surface this host will present.
+    ///
+    /// The backend keeps no native object per control (every `WidgetKind` is painted
+    /// by `src/widget/`), so the surface is a record plus a repaint queue: the ArkTS
+    /// side owns the pixels and pulls them with the render API, and this tells it
+    /// which widgets exist and when they went stale.
+    ///
+    /// Before this the backend inherited the trait default and reported `false`, so a
+    /// host that asked could not display anything even though nothing was missing but
+    /// the wiring.
+    fn mount_surface(&self, _parent: u64, id: u64, rect: crate::core::Rect) -> bool {
+        self.state.mount_surface_record(id, rect)
+    }
+
+    /// Updates the rect of a mounted surface. `false` when `id` is not mounted.
+    fn resize_surface(&self, id: u64, rect: crate::core::Rect) -> bool {
+        self.state.resize_surface_record(id, rect)
+    }
+
+    /// Releases a mounted surface.
+    fn unmount_surface(&self, id: u64) -> bool {
+        self.state.unmount_surface_record(id)
+    }
+
+    /// Queues a repaint for the host to pick up. `false` when `id` is not mounted.
+    fn invalidate_surface(&self, id: u64) -> bool {
+        self.state.invalidate_surface_record(id)
+    }
+
+    /// The backend displays library-painted widgets by handing the host their frames.
     fn supports_surfaces(&self) -> bool {
-        false
+        true
     }
 }

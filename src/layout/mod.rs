@@ -2,21 +2,40 @@
 // SPDX-License-Identifier: MIT
 
 //! Layout managers.
+/// Positions each child at explicit absolute coordinates, ignoring the parent
+/// rect apart from the origin it offsets from.
 pub mod absolute;
+/// Derives a child's missing dimension from a fixed width:height ratio.
 pub mod aspect_ratio;
+/// Single-axis linear layout with per-child stretch factors, spacing, and
+/// margins; also exposed as `HBox` / `VBox`.
 pub mod box_layout;
+/// Centers one child in the available rect.
 pub mod center;
+/// Min/max size limits and expansion weights attached to layout items.
 pub mod constraint;
+/// CSS-Flexbox-style layout combining direction, wrap, and flex factors.
 pub mod flex;
+/// Wraps children into rows or columns, moving to the next line when full.
 pub mod flow;
+/// Two-column label/field rows, with an optional alignment for the field
+/// column.
 pub mod form;
+/// Fixed grid layout addressed by `(row, column)` with optional spans.
 pub mod grid;
+/// Diagnostic tooling for inspecting the geometry a layout produced.
 pub mod inspector;
+/// Adjusts a rect to avoid the on-screen software keyboard.
 pub mod keyboard_aware;
+/// Divisible panes with draggable handles; see
+/// [`crate::widget::Splitter`] for the widget front end.
 pub mod splitter;
+/// Shows one child at a time, filling the whole rect.
 pub mod stack;
 pub mod types;
+/// Uniform grid where every cell has the same size.
 pub mod uniform_grid;
+/// Line-breaking layout for a sequence of fixed-size items.
 pub mod wrap;
 pub use crate::core::Orientation;
 pub use absolute::*;

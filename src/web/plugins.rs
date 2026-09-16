@@ -3,43 +3,88 @@
 
 use crate::compat::HashMap;
 use core::any::Any;
+/// Numeric handle identifying a plugin inside a [`PluginManager`].
+///
+/// Ids are assigned by [`PluginManager::register`], start at 1 and increase by one
+/// per registration; they are never reused within a manager instance, because
+/// `clear` intentionally leaves the counter untouched.
 pub type PluginId = u64;
 /// Handler type for content transformation plugins.
 pub type ContentHandler = Box<dyn Fn(&str) -> Option<String> + Send + Sync>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Lifecycle state of a registered plugin.
+///
+/// The states are not ordered numerically; the discriminants only exist to make
+/// the variants distinct. [`PluginManager`] only allows a plugin to be enabled
+/// from [`PluginState::Installed`] or [`PluginState::Disabled`].
 pub enum PluginState {
+    /// Known to the manager but not yet installed; the initial state of a freshly
+    /// constructed plugin, before `register` overwrites it.
     NotInstalled,
+    /// Registered successfully; `Plugin::on_load` has completed.
     Installed,
+    /// Installed and active; it participates in `broadcast` and accepts messages.
     Enabled,
+    /// Installed but inactive; messages sent to it are dropped.
     Disabled,
+    /// Refused or withdrawn by the host; the manager will not enable it.
     Blocked,
+    /// Failed or otherwise faulted.
     Error,
 }
 #[derive(Debug, Clone)]
+/// Descriptive metadata for a plugin.
 pub struct PluginInfo {
+    /// Manager-assigned handle; 0 until the plugin is registered.
     pub id: PluginId,
+    /// Display name of the plugin.
     pub name: String,
+    /// Version string, in whatever form the plugin author chose.
     pub version: String,
+    /// Human-readable summary of what the plugin does.
     pub description: String,
+    /// Name of the plugin author or vendor.
     pub author: String,
+    /// Project or documentation URL; `None` when the plugin does not publish one.
     pub homepage: Option<String>,
+    /// Permissions this plugin declares it needs. A permission can only be
+    /// granted through [`PluginManager::grant_permission`] if it appears here.
     pub permissions: Vec<PluginPermission>,
+    /// Current lifecycle state.
     pub state: PluginState,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// A capability a plugin can request from the host.
 pub enum PluginPermission {
+    /// Make network requests.
     NetworkAccess,
+    /// Read or write files on the host filesystem.
     FileSystemAccess,
+    /// Read or write the system clipboard.
     ClipboardAccess,
+    /// Post system notifications.
     Notifications,
+    /// Read the device's geographic location.
     Geolocation,
+    /// Access a camera device.
     Camera,
+    /// Access a microphone device.
     Microphone,
+    /// Persist plugin-local data.
     Storage,
+    /// Keep running while its host view is not in the foreground.
     BackgroundExecution,
+    /// Host-defined permission; the string is the host's own identifier. Because
+    /// hosts define the vocabulary, two `Custom` values only compare equal when
+    /// the strings match exactly.
     Custom(String),
 }
 impl PluginPermission {
+    /// Returns whether this permission is considered sensitive: filesystem
+    /// access, geolocation, camera, microphone, or background execution.
+    ///
+    /// Network, clipboard, notification, storage and custom permissions are not
+    /// covered and are treated as non-sensitive by this classification.
     pub fn is_sensitive(&self) -> bool {
         matches!(
             self,
@@ -51,32 +96,58 @@ impl PluginPermission {
         )
     }
 }
+/// Behaviour a plugin must implement to be managed by [`PluginManager`].
+///
+/// Implementors must be safe to share across threads (`Send + Sync`). All
+/// methods take `&mut self`, so the manager serialises access to a plugin; there
+/// is no internal concurrency requirement beyond `Send + Sync`.
 pub trait Plugin: Send + Sync {
+    /// Borrows the plugin's metadata, including its current state.
     fn info(&self) -> &PluginInfo;
+    /// Mutably borrows the plugin's metadata. The manager uses this to stamp the
+    /// assigned id and to update the state, so implementations should not rely
+    /// on `id` remaining zero after registration.
     fn info_mut(&mut self) -> &mut PluginInfo;
+    /// Called once by [`PluginManager::register`] before the plugin is stored.
+    /// Returning `Err` aborts registration, and the plugin is not retained.
     fn on_load(&mut self) -> Result<(), PluginError>;
     /// Called when the plugin is unloaded from the system.
     /// The default implementation is a no-op.
     /// Override to perform cleanup (closing files, releasing resources).
     fn on_unload(&mut self) {}
+    /// Called by [`PluginManager::enable`] before the plugin becomes enabled.
+    /// Returning `Err` aborts the transition and leaves the previous state intact.
     fn on_enable(&mut self) -> Result<(), PluginError>;
     /// Called when the plugin is disabled.
     /// The default implementation is a no-op.
     /// Override to handle disable logic (saving state, notifying subsystems).
     fn on_disable(&mut self) {}
+    /// Handles an incoming message and optionally returns a response.
+    ///
+    /// [`PluginManager::send_message`] and [`PluginManager::broadcast`] only call
+    /// this for enabled plugins, and both treat `None` as "no reply" rather than
+    /// as an error.
     fn handle_message(&mut self, message: &str) -> Option<String>;
+    /// Returns `self` as [`Any`] for downcasting to the concrete plugin type.
     fn as_any(&self) -> &dyn Any;
+    /// Returns `self` as mutable [`Any`] for downcasting to the concrete plugin type.
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 #[derive(Debug, Clone)]
+/// Error type used throughout the plugin API.
 pub struct PluginError {
+    /// Human-readable description of the failure.
     pub message: String,
+    /// Optional host-defined error code. Also rendered into `Display` output,
+    /// but only when present.
     pub code: Option<u32>,
 }
 impl PluginError {
+    /// Creates an error carrying only a message, with no error code.
     pub fn new(message: String) -> Self {
         Self { message, code: None }
     }
+    /// Creates an error carrying both a message and a host-defined code.
     pub fn with_code(message: String, code: u32) -> Self {
         Self { message, code: Some(code) }
     }
@@ -91,15 +162,31 @@ impl std::fmt::Display for PluginError {
     }
 }
 impl std::error::Error for PluginError {}
+/// Owns the registered plugins and the permissions granted to them.
+///
+/// Plugins and their permission lists are both keyed by [`PluginId`]. Granting a
+/// permission records it in the allowance list, which is deliberately independent
+/// of [`PluginInfo::permissions`]: the latter stays as the plugin declared it, so
+/// grants can be revoked back to that baseline. Plugin iteration order (used by
+/// `list`, `list_enabled` and `broadcast`) follows the backing hash map and is
+/// therefore unspecified.
 pub struct PluginManager {
     plugins: HashMap<PluginId, Box<dyn Plugin>>,
     next_id: PluginId,
     allowed_permissions: HashMap<PluginId, Vec<PluginPermission>>,
 }
 impl PluginManager {
+    /// Creates a manager with no plugins and no granted permissions.
+    /// The first plugin registered receives id 1.
     pub fn new() -> Self {
         Self { plugins: HashMap::new(), next_id: 1, allowed_permissions: HashMap::new() }
     }
+    /// Registers `plugin`, assigning it the next free id and setting its state to
+    /// [`PluginState::Installed`].
+    ///
+    /// `Plugin::on_load` runs before the plugin is stored: if it returns `Err`, the
+    /// plugin is not retained (the id is still consumed) and the error is
+    /// propagated unchanged.
     pub fn register(&mut self, mut plugin: Box<dyn Plugin>) -> Result<PluginId, PluginError> {
         let id = self.next_id;
         self.next_id += 1;
@@ -109,6 +196,11 @@ impl PluginManager {
         self.plugins.insert(id, plugin);
         Ok(id)
     }
+    /// Removes the plugin with `id` and drops its granted permissions.
+    ///
+    /// An enabled plugin first receives `Plugin::on_disable`, then every plugin,
+    /// enabled or not, receives `Plugin::on_unload`. Returns an error whose
+    /// message names the missing id when no such plugin is registered.
     pub fn unregister(&mut self, id: PluginId) -> Result<(), PluginError> {
         if let Some(mut plugin) = self.plugins.remove(&id) {
             if plugin.info().state == PluginState::Enabled {
@@ -121,6 +213,11 @@ impl PluginManager {
             Err(PluginError::new(format!("Plugin {id} not found")))
         }
     }
+    /// Moves the plugin into [`PluginState::Enabled`], calling `Plugin::on_enable`
+    /// first. Only valid from [`PluginState::Installed`] or [`PluginState::Disabled`].
+    ///
+    /// Propagates any error from `on_enable` without changing the state. An
+    /// unknown id, or a plugin in any other state, produces an error instead.
     pub fn enable(&mut self, id: PluginId) -> Result<(), PluginError> {
         if let Some(plugin) = self.plugins.get_mut(&id) {
             if plugin.info().state == PluginState::Disabled
@@ -139,6 +236,11 @@ impl PluginManager {
             Err(PluginError::new(format!("Plugin {id} not found")))
         }
     }
+    /// Moves the plugin into [`PluginState::Disabled`], running `Plugin::on_disable`
+    /// first. Only valid while the plugin is [`PluginState::Enabled`].
+    ///
+    /// `on_disable` cannot fail, so the only error cases are an unknown id or a
+    /// plugin that is not currently enabled.
     pub fn disable(&mut self, id: PluginId) -> Result<(), PluginError> {
         if let Some(plugin) = self.plugins.get_mut(&id) {
             if plugin.info().state == PluginState::Enabled {
@@ -155,6 +257,11 @@ impl PluginManager {
             Err(PluginError::new(format!("Plugin {id} not found")))
         }
     }
+    /// Records that `permission` is allowed for the plugin, but only if the plugin
+    /// both exists and declared that permission in [`PluginInfo::permissions`].
+    /// Returns `false` in every other case, so a `true` result means the grant took effect.
+    ///
+    /// Granting the same permission repeatedly appends duplicate entries.
     pub fn grant_permission(&mut self, id: PluginId, permission: PluginPermission) -> bool {
         if let Some(plugin) = self.plugins.get(&id) {
             if plugin.info().permissions.contains(&permission) {
@@ -167,26 +274,39 @@ impl PluginManager {
             false
         }
     }
+    /// Removes every recorded grant of `permission` for the plugin. Removing a
+    /// permission that was never granted, or naming an unknown plugin, is a no-op.
     pub fn revoke_permission(&mut self, id: PluginId, permission: &PluginPermission) {
         if let Some(perms) = self.allowed_permissions.get_mut(&id) {
             perms.retain(|p| p != permission);
         }
     }
+    /// Returns whether `permission` has been granted to the plugin. `false` for an
+    /// unknown plugin or one with no granted permissions.
     pub fn has_permission(&self, id: PluginId, permission: &PluginPermission) -> bool {
         self.allowed_permissions.get(&id).map(|perms| perms.contains(permission)).unwrap_or(false)
     }
+    /// Returns the plugin with `id`, or `None` if it is not registered.
     pub fn get(&self, id: PluginId) -> Option<&dyn Plugin> {
         self.plugins.get(&id).map(|p| p.as_ref())
     }
+    /// Runs `f` against the plugin with `id` and returns its result, or `None` if
+    /// no such plugin is registered.
+    ///
+    /// The plugin cannot be accessed after `f` returns, so this is the way to
+    /// downcast (`as_any_mut`) and call plugin-specific methods.
     pub fn with_plugin<F, R>(&mut self, id: PluginId, f: F) -> Option<R>
     where
         F: FnOnce(&mut dyn Plugin) -> R,
     {
         self.plugins.get_mut(&id).map(|p| f(p.as_mut()))
     }
+    /// Returns the metadata of every registered plugin in unspecified order.
     pub fn list(&self) -> Vec<&PluginInfo> {
         self.plugins.values().map(|p| p.info()).collect()
     }
+    /// Returns the metadata of the registered plugins that are currently enabled,
+    /// in unspecified order. Empty when nothing is enabled.
     pub fn list_enabled(&self) -> Vec<&PluginInfo> {
         self.plugins
             .values()
@@ -194,6 +314,11 @@ impl PluginManager {
             .map(|p| p.info())
             .collect()
     }
+    /// Delivers `message` to one plugin and returns its response.
+    ///
+    /// `None` means either that no plugin is registered under `id`, or that the
+    /// plugin is not [`PluginState::Enabled`], or that it returned `None` itself;
+    /// the three cases are not distinguishable from the return value.
     pub fn send_message(&mut self, id: PluginId, message: &str) -> Option<String> {
         if let Some(plugin) = self.plugins.get_mut(&id) {
             if plugin.info().state == PluginState::Enabled {
@@ -205,6 +330,10 @@ impl PluginManager {
             None
         }
     }
+    /// Delivers `message` to every enabled plugin and collects the replies.
+    ///
+    /// Only plugins that return `Some` contribute an entry, so the result may be
+    /// empty even when plugins are enabled, and its order is unspecified.
     pub fn broadcast(&mut self, message: &str) -> Vec<(PluginId, String)> {
         let mut results = Vec::new();
         for (&id, plugin) in &mut self.plugins {
@@ -216,6 +345,11 @@ impl PluginManager {
         }
         results
     }
+    /// Removes every plugin and drops all granted permissions.
+    ///
+    /// As in `unregister`, enabled plugins get `Plugin::on_disable` followed by
+    /// `Plugin::on_unload`. The id counter is not reset, so ids handed out before
+    /// a `clear` are never reused.
     pub fn clear(&mut self) {
         let plugins = core::mem::take(&mut self.plugins);
         for (_, mut plugin) in plugins {
@@ -514,11 +648,21 @@ mod tests {
         assert!(mgr.list().is_empty());
     }
 }
+/// A concrete [`Plugin`] that transforms content by MIME type.
+///
+/// Handlers are keyed by content type string, so registering a handler for a type
+/// that already has one replaces it.
 pub struct ContentPlugin {
     info: PluginInfo,
     content_handlers: HashMap<String, ContentHandler>,
 }
 impl ContentPlugin {
+    /// Creates a plugin named `name` at version `version`, with empty description
+    /// and author, no homepage, state [`PluginState::NotInstalled`] and id 0.
+    ///
+    /// The declared permissions are exactly `[PluginPermission::NetworkAccess]`;
+    /// no other permission can be granted until the set is extended via
+    /// `as_any_mut`.
     pub fn new(name: &str, version: &str) -> Self {
         Self {
             info: PluginInfo {
@@ -534,12 +678,17 @@ impl ContentPlugin {
             content_handlers: HashMap::new(),
         }
     }
+    /// Registers `handler` for `content_type`, replacing any handler already
+    /// registered for that content type.
     pub fn register_handler<F>(&mut self, content_type: &str, handler: F)
     where
         F: Fn(&str) -> Option<String> + Send + Sync + 'static,
     {
         self.content_handlers.insert(content_type.to_string(), Box::new(handler));
     }
+    /// Runs the handler registered for `content_type` against `content`, returning
+    /// whatever it produces. `None` when no handler is registered for that content
+    /// type, or when the handler itself returns `None`.
     pub fn process(&self, content_type: &str, content: &str) -> Option<String> {
         self.content_handlers.get(content_type).and_then(|handler| handler(content))
     }

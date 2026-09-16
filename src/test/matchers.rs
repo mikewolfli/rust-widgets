@@ -7,8 +7,19 @@ use crate::core::{Color, Rect, Size};
 use std::fmt::Debug;
 /// Color matcher
 pub trait ColorMatcher {
+    /// Returns `true` when every channel — including alpha — differs from
+    /// `other` by at most `tolerance`.
+    ///
+    /// The tolerance is applied per channel with `abs_diff`, so it is an
+    /// absolute value in `0 ..= 255` units, not a percentage. A tolerance of
+    /// `0` degenerates to exact equality.
     fn is_close_to(&self, other: Color, tolerance: u8) -> bool;
+    /// Returns `true` only for a fully opaque color (alpha exactly `255`).
     fn is_opaque(&self) -> bool;
+    /// Returns `true` only for a fully transparent color (alpha exactly `0`).
+    ///
+    /// Note that translucent colors (alpha between 1 and 254) are neither
+    /// opaque nor transparent by these two predicates.
     fn is_transparent(&self) -> bool;
 }
 impl ColorMatcher for Color {
@@ -26,11 +37,28 @@ impl ColorMatcher for Color {
     }
 }
 /// Rect matcher
+///
+/// A testing-only view of [`Rect`] that mirrors the geometry predicates with
+/// test-friendly names. Unlike [`crate::core::geometry::Rect::contains_point`],
+/// these helpers compute edges with plain `i32` addition and so can overflow on
+/// extreme rectangles; they are intended for ordinary fixture values.
 pub trait RectMatcher {
+    /// Returns `true` when `(x, y)` is inside the rectangle, using an inclusive
+    /// minimum edge and an exclusive maximum edge.
     fn contains_point(&self, x: i32, y: i32) -> bool;
+    /// Returns `true` when `other` is fully inside `self`; touching edges count
+    /// as contained.
     fn contains_rect(&self, other: &Rect) -> bool;
+    /// Returns `true` when the rectangles share at least one pixel.
+    ///
+    /// Edges that merely touch do **not** count as intersecting, so this agrees
+    /// with [`crate::core::geometry::Rect::intersects`].
     fn intersects(&self, other: &Rect) -> bool;
+    /// Returns `true` when width and height equal `size`'s exactly. The origin
+    /// is not compared.
     fn has_size(&self, size: Size) -> bool;
+    /// Returns `true` when the origin is exactly `(x, y)`. The extent is not
+    /// compared.
     fn is_at(&self, x: i32, y: i32) -> bool;
 }
 impl RectMatcher for Rect {
@@ -61,6 +89,10 @@ impl RectMatcher for Rect {
 }
 /// Numeric matcher with tolerance
 pub trait FloatMatcher {
+    /// Returns `true` when the absolute difference is at most `tolerance`.
+    ///
+    /// `tolerance` must be non-negative; a negative tolerance makes the
+    /// predicate always `false`. NaN never compares close to anything.
     fn is_close_to(&self, other: f32, tolerance: f32) -> bool;
 }
 impl FloatMatcher for f32 {
@@ -69,24 +101,37 @@ impl FloatMatcher for f32 {
     }
 }
 /// Generic assertion helpers
+///
+/// Each panics on failure with `message` prefixed to a description of the
+/// actual and expected values, so failures are identifiable at a glance.
+///
+/// Asserts that `a` and `b` differ by at most `tolerance`.
 pub fn assert_close(a: f32, b: f32, tolerance: f32, message: &str) {
     assert!(
         a.is_close_to(b, tolerance),
         "{message}: expected {a} to be close to {b} (tolerance {tolerance})"
     );
 }
+/// Asserts that two colors match within `tolerance` per channel, including
+/// alpha. See [`ColorMatcher::is_close_to`].
 pub fn assert_color_eq(a: Color, b: Color, tolerance: u8, message: &str) {
     assert!(
         a.is_close_to(b, tolerance),
         "{message}: expected {a:?} to be close to {b:?} (tolerance {tolerance})"
     );
 }
+/// Asserts that `container` fully contains `contained`. Touching edges are
+/// accepted.
 pub fn assert_rect_contains(container: Rect, contained: Rect, message: &str) {
     assert!(
         container.contains_rect(&contained),
         "{message}: {container:?} should contain {contained:?}"
     );
 }
+/// Asserts that no two rectangles in `rects` overlap, checking every pair.
+///
+/// This is O(n²), which is fine for the small fixtures it is meant for. An
+/// empty or single-element slice always passes.
 pub fn assert_no_overlap(rects: &[Rect], message: &str) {
     for i in 0..rects.len() {
         for j in (i + 1)..rects.len() {
@@ -103,6 +148,9 @@ pub fn assert_no_overlap(rects: &[Rect], message: &str) {
     }
 }
 /// Collection assertions
+///
+/// Asserts that `items` is in non-decreasing order according to its own
+/// [`Ord`] implementation. Empty and single-element slices pass.
 pub fn assert_sorted<T: Ord + Debug>(items: &[T], message: &str) {
     for i in 1..items.len() {
         assert!(
@@ -115,6 +163,11 @@ pub fn assert_sorted<T: Ord + Debug>(items: &[T], message: &str) {
         );
     }
 }
+/// Asserts that `items` contains no equal pair.
+///
+/// Equality is determined by sorting a clone, so `T: Ord` must be consistent
+/// with the caller's notion of equality **and** for values that are distinct
+/// under it; hashing or floating-point equality is not usable here.
 pub fn assert_unique<T: Ord + Debug + Clone>(items: &[T], message: &str) {
     let mut sorted = items.to_vec();
     sorted.sort();
@@ -129,9 +182,16 @@ pub fn assert_unique<T: Ord + Debug + Clone>(items: &[T], message: &str) {
     }
 }
 /// Size matcher
+///
+/// A testing-only view of [`Size`], mirroring the inherent helpers with
+/// test-oriented naming.
 pub trait SizeMatcher {
+    /// Returns width times height, with `u32` wrapping on overflow.
     fn area(&self) -> u32;
+    /// Returns `true` when either dimension is zero.
     fn is_empty(&self) -> bool;
+    /// Returns width divided by height, or `0.0` when the height is zero rather
+    /// than an infinity or NaN.
     fn aspect_ratio(&self) -> f32;
 }
 impl SizeMatcher for Size {

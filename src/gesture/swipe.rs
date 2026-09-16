@@ -23,6 +23,7 @@ pub struct SwipeGesture {
 }
 
 impl SwipeGesture {
+    /// Creates a recognizer with no touch in flight.
     pub fn new() -> Self {
         Self { start_pos: None, start_time: None, last_pos: None, last_time: None, touch_id: None }
     }
@@ -109,6 +110,7 @@ pub struct TwoFingerSwipeGesture {
 }
 
 impl TwoFingerSwipeGesture {
+    /// Creates a recognizer tracking no fingers and no centroid baseline.
     pub fn new() -> Self {
         Self { touches: Vec::new(), centroid_start: None, last_centroid: None, start_time: None }
     }
@@ -224,6 +226,7 @@ pub struct FlingGesture {
 }
 
 impl FlingGesture {
+    /// Creates a recognizer with no touch in flight and an empty sample window.
     pub fn new() -> Self {
         Self { start_pos: None, start_time: None, touch_id: None, samples: Vec::new() }
     }

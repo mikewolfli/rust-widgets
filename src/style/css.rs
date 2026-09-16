@@ -76,16 +76,31 @@ impl CssSelector {
 }
 
 /// A parsed CSS declaration: property name → raw value string.
+///
+/// The value is **not** interpreted here — it stays as written in the
+/// stylesheet, so the consumer of a declaration is responsible for parsing
+/// units and rejecting values it cannot apply.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CssDeclaration {
+    /// Property name exactly as written in the source, for example
+    /// `"background-color"`. Not normalised, so case variants are distinct keys.
     pub property: String,
+    /// Raw value text, for example `"#ff0000"` or `"12px"`. Unparsed and
+    /// untrimmed beyond what the tokeniser already removed.
     pub value: String,
 }
 
 /// A parsed CSS rule: selector text → declarations.
+///
+/// The selector is kept as text rather than a parsed selector type, so the rule
+/// remembers how it was written; matching happens elsewhere.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CssRule {
+    /// The selector as it appeared in the source, for example
+    /// `"Button.primary:hover"`.
     pub selector_text: String,
+    /// The rule's declarations, in source order. No deduplication is performed,
+    /// so a property written twice appears twice.
     pub declarations: Vec<CssDeclaration>,
 }
 
@@ -548,6 +563,17 @@ static DECL_COUNTER: AtomicU64 = AtomicU64::new(0);
 static DECLARATIONS: LazyLock<Mutex<HashMap<String, Vec<CssDeclaration>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// Stores a rule's declarations in the process-wide registry.
+///
+/// `rule_name` is only a **suffix** of the real key: each call prepends a fresh
+/// counter, so the same `rule_name` can be stored many times without overwriting
+/// previous entries. Combined with [`get_declarations`], which matches by suffix,
+/// this means lookups are additive — storing a rule under a name that is a
+/// suffix of another rule's name will make that lookup return both.
+///
+/// The registry is global and never evicted, so repeated parsing of the same
+/// stylesheet grows it without bound. A poisoned lock is recovered rather than
+/// propagated.
 pub fn store_declarations(rule_name: &str, decls: Vec<CssDeclaration>) {
     let key = format!("{}:{}", DECL_COUNTER.fetch_add(1, Ordering::Relaxed), rule_name);
     // SAFETY: If the lock is poisoned (a previous panic while held), we recover
@@ -555,6 +581,16 @@ pub fn store_declarations(rule_name: &str, decls: Vec<CssDeclaration>) {
     DECLARATIONS.lock().unwrap_or_else(|e| e.into_inner()).insert(key, decls);
 }
 
+/// Returns every stored declaration whose rule key ends with `rule_name`,
+/// concatenated in unspecified order.
+///
+/// Because the key is `"<counter>:<name>"` and matching is by suffix, a name
+/// that is a suffix of another stored name yields that other rule's declarations
+/// too. Returns `None` rather than an empty vector when nothing matches, so
+/// `None` is distinguishable from "matched but declared nothing". The returned
+/// vector is always non-empty.
+///
+/// A poisoned lock is recovered rather than propagated.
 pub fn get_declarations(rule_name: &str) -> Option<Vec<CssDeclaration>> {
     // SAFETY: Same poison recovery strategy — stale data is safe to read.
     let map = DECLARATIONS.lock().unwrap_or_else(|e| e.into_inner());

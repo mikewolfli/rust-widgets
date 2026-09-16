@@ -332,7 +332,12 @@ pub struct CupertinoAlertDialog {
     confirm_text: String,
     /// Cancel button text (e.g. "Cancel"). Empty = no cancel.
     cancel_text: String,
+    /// Emitted with no payload when the user confirms the dialog. Read
+    /// [`CupertinoAlertDialog::confirm_text`] to know which action was shown.
     pub confirmed: GenericSignal,
+    /// Emitted with no payload when the user cancels. A dialog constructed with
+    /// an empty `cancel_text` still declares this signal but has no cancel
+    /// affordance to emit it.
     pub cancelled: GenericSignal,
 }
 
@@ -604,11 +609,18 @@ impl EventHandler for CupertinoAlertDialog {
 // ── CupertinoSlider ───────────────────────────────────────────────────────────
 
 /// iOS-style slider (BLUE11 R10.21).
+///
+/// A range slider over a floating-point value. The range and value are plain
+/// `f32`s; nothing here requires `min <= max`, and the current value is not
+/// re-clamped when the bounds change.
 pub struct CupertinoSlider {
     base: BaseWidget,
     value: f32,
     min: f32,
     max: f32,
+    /// Emitted with the new value whenever it changes. The widget never emits
+    /// it on its own: there is no drag handling, so the caller drives the value
+    /// and the signal is the notification channel out.
     pub value_changed: Signal1<f32>,
 }
 
@@ -813,7 +825,9 @@ impl EventHandler for CupertinoSlider {
 /// A single item in a MaterialNavigationRail.
 #[derive(Clone)]
 pub struct RailItem {
+    /// Icon glyph or icon-name text. A text stand-in, not image data.
     pub icon: String,
+    /// Text label shown beneath (or beside) the icon.
     pub label: String,
 }
 
@@ -825,10 +839,17 @@ impl RailItem {
 }
 
 /// Material Design navigation rail for tablets (BLUE11 R10.22).
+///
+/// A vertically stacked set of destinations with one selected at a time. The
+/// selected index always names an item: it defaults to `0` even while the rail
+/// is empty, so it is out of range until the first item is added.
 pub struct MaterialNavigationRail {
     base: BaseWidget,
     items: Vec<RailItem>,
     selected_index: usize,
+    /// Emitted with the newly selected index whenever the selection changes.
+    /// One-based ordering is not implied; indices are positions in
+    /// [`MaterialNavigationRail::items`].
     pub selected_changed: Signal1<usize>,
 }
 

@@ -117,6 +117,10 @@ impl SearchBox {
         }
     }
 
+    /// Reverts the most recent edit in this search box.
+    ///
+    /// Returns `false` and changes nothing when there is nothing to undo;
+    /// otherwise emits `text_changed` with the restored text.
     pub fn undo(&mut self) -> bool {
         if self.undo_stack.undo().is_err() {
             return false;
@@ -125,6 +129,10 @@ impl SearchBox {
         true
     }
 
+    /// Reapplies the most recently undone edit.
+    ///
+    /// Returns `false` and changes nothing when there is nothing to redo;
+    /// otherwise emits `text_changed` with the restored text.
     pub fn redo(&mut self) -> bool {
         if self.undo_stack.redo().is_err() {
             return false;
@@ -133,9 +141,11 @@ impl SearchBox {
         true
     }
 
+    /// Returns whether there is an edit to undo.
     pub fn can_undo(&self) -> bool {
         self.undo_stack.can_undo()
     }
+    /// Returns whether there is an undone edit to reapply.
     pub fn can_redo(&self) -> bool {
         self.undo_stack.can_redo()
     }

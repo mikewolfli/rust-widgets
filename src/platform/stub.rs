@@ -41,6 +41,21 @@ pub(crate) enum StubHandleKind {
     Window,
 }
 
+/// The in-memory `Platform` implementation used for tests and demos.
+///
+/// This backend is an **honest fallback, not a fake**: it allocates windows and
+/// keeps widget state, but it deliberately implements no per-kind control
+/// creation. Every control method falls through to the `Platform` trait default
+/// and reports "unsupported" rather than pretending a control exists — there is
+/// no OS object to map onto, and inventing one would put a second, divergent copy
+/// of the library's own widget semantics behind a code path tests could not
+/// distinguish from a real backend (principle #37).
+///
+/// What it *does* provide: window allocation, the semantic window operations, the
+/// text/geometry/enabled/visible accessors (backed by [`BackendState`] for any id
+/// registered via [`StubPlatform::register_widget`]), and the event-queue and
+/// clipboard/drag-drop plumbing the tests drive. See the module header above for
+/// the full list and the reasoning.
 pub struct StubPlatform {
     backend: &'static str,
     family: PlatformFamily,

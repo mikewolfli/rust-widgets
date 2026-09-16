@@ -7,8 +7,11 @@ use crate::core::{Color, Font, Size};
 /// Whether the user prefers reduced motion (BLUE11 R7.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ReducedMotionPreference {
+    /// The user has expressed no preference; animations run normally.
     #[default]
     NoPreference,
+    /// The user asked the OS to reduce motion; callers should suppress or
+    /// shorten non-essential animation.
     ReduceMotion,
 }
 

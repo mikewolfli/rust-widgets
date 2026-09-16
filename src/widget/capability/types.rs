@@ -12,71 +12,161 @@ use crate::widget::Widget;
 use crate::widget::WidgetKind;
 
 /// Runtime property value returned by capability-based reflection APIs.
+///
+/// This is the dynamically-typed counterpart of [`PropertyValueKind`]: the kind
+/// says what a property *promises* to hold, and this holds it. Variants are kept
+/// distinct even where the underlying type could collapse — `Int` and `UInt` are
+/// separate, and both are separate from `Float` — so a written-back value keeps
+/// the exact type the property declared it would.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CapabilityValue {
+    /// A present but empty value: "no selection", "not set". Distinct from
+    /// [`CapabilityValue::Bool`]`(false)` and from an empty string.
     Null,
+    /// A boolean, for properties whose [`PropertyValueKind`] is
+    /// [`PropertyValueKind::Bool`].
     Bool(bool),
+    /// A signed integer, for properties declared as
+    /// [`PropertyValueKind::Int`].
     Int(i64),
+    /// An unsigned integer, for indices, counts and lengths — properties
+    /// declared as [`PropertyValueKind::UInt`]. Using the unsigned variant for a
+    /// count is what lets a caller rely on it never being negative.
     UInt(u64),
+    /// A floating-point number, for properties declared as
+    /// [`PropertyValueKind::Float`]. Used even for values that happen to be
+    /// whole numbers, so `1.0` and `1` are not interchangeable.
     Float(f64),
+    /// A string, for text properties and for enumerated values, which travel as
+    /// their token spelling (see [`PropertyValueKind::Enum`]).
     String(String),
 }
 
+/// Why a capability-based property read or write did not happen.
+///
+/// The distinction that matters to a caller is between *"you asked for something
+/// that does not exist"* and *"it exists but you cannot do that"*: the first
+/// means the caller should look elsewhere, the second that it should stop
+/// retrying.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapabilityAccessError {
+    /// The id does not address a known widget. Returned for a stale id as well
+    /// as for one that was never valid, so an id that used to work can start
+    /// producing this.
     UnknownWidget,
+    /// The widget exists but does not publish a property by that name. This is
+    /// the honest "no" for an unsupported property — never a silent success.
     UnknownProperty,
+    /// The property was found but is not writable. A read of the same name
+    /// still succeeds.
     ReadOnlyProperty,
+    /// The property exists but the supplied [`CapabilityValue`] is not of its
+    /// declared [`PropertyValueKind`]. No coercion is attempted, so a write must
+    /// use the variant the property declares.
     TypeMismatch,
+    /// The property is meaningful for other widget kinds but not this one. An
+    /// operation the widget's interaction model cannot honour is reported here
+    /// rather than being accepted and ignored.
     UnsupportedOnWidget,
 }
 
 /// Primitive property value kinds used by capability metadata.
+///
+/// These name the *declared* type of a property in [`PropertySchema`], which is
+/// what separates [`PropertyValueKind::Int`] from
+/// [`PropertyValueKind::UInt`] and [`PropertyValueKind::Enum`] from
+/// [`PropertyValueKind::String`] at the metadata level even though both pairs
+/// are carried by the same runtime variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PropertyValueKind {
+    /// Boolean-valued; carried as [`CapabilityValue::Bool`].
     Bool,
+    /// Signed-integer-valued; carried as [`CapabilityValue::Int`].
     Int,
+    /// Unsigned-integer-valued, for indices and counts; carried as
+    /// [`CapabilityValue::UInt`].
     UInt,
+    /// Floating-point-valued; carried as [`CapabilityValue::Float`].
     Float,
+    /// Free text; carried as [`CapabilityValue::String`].
     String,
+    /// One of a fixed set of choices. Carried as [`CapabilityValue::String`]
+    /// holding the choice's token spelling, so the value is the enum's name
+    /// rather than its ordinal; an unrecognised token is a parse failure, not a
+    /// different variant.
     Enum,
 }
 
 /// Metadata for one readable/writable property.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PropertySchema {
+    /// The property's name, as accepted by the property API. A widget may
+    /// publish several names for the same property (aliases), in which case each
+    /// has its own schema entry pointing at the same underlying value.
     pub name: &'static str,
+    /// The declared type of the value. A write of any other kind fails with
+    /// [`CapabilityAccessError::TypeMismatch`] rather than being coerced.
     pub value_kind: PropertyValueKind,
+    /// Whether the property can be read. `false` means a read answers
+    /// [`CapabilityAccessError::UnknownProperty`], exactly as an unresolvable
+    /// name would.
     pub readable: bool,
+    /// Whether the property can be written. `false` with `readable` true is a
+    /// read-only property, and a write answers
+    /// [`CapabilityAccessError::ReadOnlyProperty`].
     pub writable: bool,
 }
 
 /// Capability metadata for a widget kind.
 #[derive(Debug, Clone)]
 pub struct WidgetCapability {
+    /// The widget kind this metadata describes.
     pub kind: WidgetKind,
+    /// The kind's canonical name: the spelling the widget factory accepts, e.g.
+    /// `"code_editor"`.
     pub canonical_name: &'static str,
+    /// Alternative names the factory also accepts for this kind. Lookup is by
+    /// name, so aliases exist so callers do not have to know which spelling the
+    /// factory happened to register first.
     pub aliases: &'static [&'static str],
+    /// Every property this kind publishes, for discovery and for validating a
+    /// name before using it.
     pub properties: &'static [PropertySchema],
+    /// Names of the events the kind can emit, for wiring handlers by name.
     pub events: &'static [&'static str],
+    /// Names of the commands the kind accepts.
     pub commands: &'static [&'static str],
 }
 
 /// One property entry in exported capability manifest.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CapabilityPropertyManifest {
+    /// The property's name, type and accessibility, as published by the widget.
     pub schema: PropertySchema,
+    /// The value the property holds on a freshly created widget, before any
+    /// write. Captured so a consumer can tell an untouched property from one set
+    /// to its default explicitly.
     pub default_value: CapabilityValue,
 }
 
 /// Exportable snapshot for one widget capability.
+///
+/// The `&'static` slices of [`WidgetCapability`] become owned `Vec`s here, which
+/// is what makes a manifest suitable for serialising, sending across a boundary
+/// or storing beyond the lifetime of the capability table it came from.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WidgetCapabilityManifest {
+    /// The widget kind the snapshot describes.
     pub kind: WidgetKind,
+    /// The kind's canonical factory name.
     pub canonical_name: &'static str,
+    /// The kind's alternative factory names.
     pub aliases: Vec<&'static str>,
+    /// Every published property with its default value.
     pub properties: Vec<CapabilityPropertyManifest>,
+    /// Names of the events the kind can emit.
     pub events: Vec<&'static str>,
+    /// Names of the commands the kind accepts.
     pub commands: Vec<&'static str>,
 }
 

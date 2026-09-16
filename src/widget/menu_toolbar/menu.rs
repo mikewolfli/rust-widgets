@@ -24,6 +24,10 @@ pub struct MenuEntry {
     has_submenu: bool,
 }
 impl MenuEntry {
+    /// Creates a visible, enabled entry carrying `text`.
+    ///
+    /// The shortcut, submenu marker and check marks start unset, and the entry is
+    /// not a separator.
     pub fn new(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
@@ -35,11 +39,24 @@ impl MenuEntry {
             has_submenu: false,
         }
     }
+    /// Creates a separator entry: an empty-text entry marked
+    /// [`MenuEntry::is_separator`].
+    ///
+    /// A separator draws as a rule, is never the hovered entry, and is skipped
+    /// when a press is resolved to an action.
     pub fn separator() -> Self {
         let mut m = Self::new("");
         m.set_separator(true);
         m
     }
+    /// Sets the shortcut text and returns `self`, for chaining onto
+    /// [`MenuEntry::new`].
+    ///
+    /// The string is **display text**, shown right-aligned in the entry: it is
+    /// not parsed and not registered as an accelerator, so `"Ctrl+Shift+Z"` and
+    /// `"⌘⇧Z"` are equally valid and equally inert. Nothing here chooses a
+    /// notation for you; use `crate::format_shortcut` to render one that matches
+    /// the host, as `WindowHandle::new_menu_item_with_shortcut` does.
     pub fn with_shortcut(mut self, shortcut: impl Into<String>) -> Self {
         self.shortcut = shortcut.into();
         self
@@ -47,58 +64,94 @@ impl MenuEntry {
 
     // --- Accessors ---
 
+    /// The entry's visible label. Empty for a separator.
     pub fn text(&self) -> &str {
         &self.text
     }
 
+    /// Replaces the label. This is what is both drawn and, for an action, emitted
+    /// from `Menu::triggered` when the entry is chosen.
     pub fn set_text(&mut self, text: impl Into<String>) {
         self.text = text.into();
     }
 
+    /// The shortcut shown beside the entry, or `""` when none was set.
     pub fn shortcut(&self) -> &str {
         &self.shortcut
     }
 
+    /// Replaces the shortcut display text. See [`MenuEntry::with_shortcut`] for
+    /// what this string is and is not.
     pub fn set_shortcut(&mut self, shortcut: impl Into<String>) {
         self.shortcut = shortcut.into();
     }
 
+    /// Whether the entry shows a check mark and is meant to toggle.
+    ///
+    /// Purely a drawing and policy flag on this type: choosing the entry emits
+    /// the same signal either way, so the application is what flips
+    /// [`MenuEntry::set_checked`] in response.
     pub fn is_checkable(&self) -> bool {
         self.checkable
     }
 
+    /// Makes the entry checkable, or stops it being so. Turning it off leaves
+    /// the checked value as it is.
     pub fn set_checkable(&mut self, checkable: bool) {
         self.checkable = checkable;
     }
 
+    /// Whether the entry is currently marked as checked.
     pub fn is_checked(&self) -> bool {
         self.checked
     }
 
+    /// Sets the checked mark directly.
+    ///
+    /// Note that `Menu::set_item_checked` ignores this on a non-checkable entry,
+    /// whereas this method does not.
     pub fn set_checked(&mut self, checked: bool) {
         self.checked = checked;
     }
 
+    /// Whether the entry can be chosen. A disabled entry draws greyed out and is
+    /// not selectable — it is skipped when deciding what to hover and it emits
+    /// nothing when pressed.
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }
 
+    /// Enables or disables the entry. Disabling the entry currently under the
+    /// cursor does not move the highlight, which stays where it is until the
+    /// next pointer move.
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
     }
 
+    /// Whether this entry is a divider rather than a choice.
     pub fn is_separator(&self) -> bool {
         self.separator
     }
 
+    /// Marks the entry as a divider (`true`) or an ordinary entry (`false`).
+    ///
+    /// This only affects how the entry is treated, not what it holds — a
+    /// separator can still carry text and a shortcut, which are then simply not
+    /// drawn as an action row.
     pub fn set_separator(&mut self, separator: bool) {
         self.separator = separator;
     }
 
+    /// Whether the entry is drawn with a submenu indicator.
     pub fn has_submenu(&self) -> bool {
         self.has_submenu
     }
 
+    /// Shows or hides the submenu indicator.
+    ///
+    /// This type does not own any child menus, so the flag is purely visual: it
+    /// marks the entry as leading somewhere without providing the mechanism to
+    /// go there.
     pub fn set_has_submenu(&mut self, has: bool) {
         self.has_submenu = has;
     }
@@ -129,12 +182,27 @@ pub struct Menu {
     hovered_index: Option<usize>,
     /// Screen position the popup was opened at, for diagnostics and tests.
     invoker_position: Option<Point>,
+    /// Emitted with the text of the entry that was chosen.
+    ///
+    /// Fires once per successful press on an enabled, non-separator entry; the
+    /// menu hides immediately afterwards.
     pub triggered: Signal1<String>,
+    /// Emitted with the index of the entry that was chosen, alongside
+    /// [`Self::triggered`]. Use this when two entries share a label.
     pub triggered_index: Signal1<usize>,
+    /// Emitted just before the menu is shown, from [`Self::open_at`].
     pub about_to_show: GenericSignal,
+    /// Emitted just before the menu is hidden, from [`Self::hide`].
     pub about_to_hide: GenericSignal,
 }
 impl Menu {
+    /// Creates a menu titled `title`, initially **hidden**.
+    ///
+    /// A menu is a popup, so it does not paint until something opens it — call
+    /// [`Menu::open_at`] for a context menu, or let a menu bar open it as a
+    /// drop-down. This differs from most widgets, which start visible.
+    ///
+    /// The menu starts with no items.
     pub fn new(title: impl Into<String>, geometry: Rect) -> Self {
         let mut menu = Self {
             base: BaseWidget::new(WidgetKind::Menu, geometry, "Menu"),
@@ -209,30 +277,56 @@ impl Menu {
             && point.y >= rect.y
             && point.y < rect.y + self.popup_height() as i32
     }
+    /// The menu's title, drawn as its heading.
     pub fn title(&self) -> &str {
         &self.title
     }
+    /// Replaces the title, which the menu draws as its heading.
+    ///
+    /// This has nothing to do with the title a menu-bar entry shows — that comes
+    /// from the menu-bar API, not from this type.
     pub fn set_title(&mut self, title: String) {
         self.title = title;
         self.base.request_redraw();
     }
+    /// The entries, in draw order, including separators.
     pub fn items(&self) -> &[MenuEntry] {
         &self.items
     }
+    /// The index of the entry currently highlighted, if any.
+    ///
+    /// Set by pointer movement and by [`Menu::open_at`], which highlights the
+    /// first actionable entry. Never points at a separator when set by
+    /// `open_at`; a pointer move onto a separator clears it.
     pub fn hovered_index(&self) -> Option<usize> {
         self.hovered_index
     }
+    /// Appends a pre-built entry.
+    ///
+    /// No repaint is requested, so a visible menu does not redraw until
+    /// something else invalidates it.
     pub fn add_item(&mut self, item: MenuEntry) {
         self.items.push(item);
     }
+    /// Appends a separator entry.
     pub fn add_separator(&mut self) {
         self.items.push(MenuEntry::separator());
     }
+    /// Appends a plain action labeled `text` and returns its index.
+    ///
+    /// The returned index is the entry's position in [`Menu::items`], and is what
+    /// a later `triggered_index` carries. It is invalidated by any insertion or
+    /// removal before it.
     pub fn add_action(&mut self, text: impl Into<String>) -> usize {
         let idx = self.items.len();
         self.items.push(MenuEntry::new(text));
         idx
     }
+    /// Appends an action labeled `text` with `shortcut` shown beside it, and
+    /// returns its index.
+    ///
+    /// `shortcut` is display text, not a parsed accelerator — see
+    /// [`MenuEntry::with_shortcut`].
     pub fn add_action_with_shortcut(
         &mut self,
         text: impl Into<String>,
@@ -242,15 +336,25 @@ impl Menu {
         self.items.push(MenuEntry::new(text).with_shortcut(shortcut));
         idx
     }
+    /// Enables or disables the entry at `index`.
+    ///
+    /// An out-of-range index is ignored silently; read [`Menu::item_enabled`]
+    /// afterwards to confirm the change took effect.
     pub fn set_item_enabled(&mut self, index: usize, enabled: bool) {
         if let Some(item) = self.items.get_mut(index) {
             item.set_enabled(enabled);
         }
     }
     /// Returns enabled state for item at index.
+    ///
+    /// `None` when `index` is out of range.
     pub fn item_enabled(&self, index: usize) -> Option<bool> {
         self.items.get(index).map(|item| item.is_enabled())
     }
+    /// Sets the check mark of the entry at `index`.
+    ///
+    /// Does nothing, silently, when the index is out of range **or** when the
+    /// entry is not checkable — see [`MenuEntry::set_checkable`].
     pub fn set_item_checked(&mut self, index: usize, checked: bool) {
         if let Some(item) = self.items.get_mut(index) {
             if item.is_checkable() {
@@ -259,9 +363,15 @@ impl Menu {
         }
     }
     /// Returns checked state for item at index.
+    ///
+    /// `None` when `index` is out of range. A non-checkable entry reports its
+    /// stored flag rather than `None`, so this does not reveal whether the entry
+    /// is togglable.
     pub fn item_checked(&self, index: usize) -> Option<bool> {
         self.items.get(index).map(|item| item.is_checked())
     }
+    /// Removes every entry. The title and popup position are left alone, so a
+    /// visible owner of this menu is re-laid out as empty rather than closed.
     pub fn clear(&mut self) {
         self.items.clear();
     }

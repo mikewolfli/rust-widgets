@@ -22,6 +22,7 @@ pub struct TapGesture {
 }
 
 impl TapGesture {
+    /// Creates a recognizer that is not tracking a touch.
     pub fn new() -> Self {
         Self { start_pos: None, start_time: None, touch_id: None }
     }
@@ -90,6 +91,7 @@ pub struct DoubleTapGesture {
 }
 
 impl DoubleTapGesture {
+    /// Creates a recognizer that is not waiting for a second tap.
     pub fn new() -> Self {
         Self { first_tap_pos: None, first_tap_time: None, waiting_for_second: false }
     }
@@ -159,6 +161,8 @@ pub struct TwoFingerTapGesture {
 }
 
 impl TwoFingerTapGesture {
+    /// Creates a recognizer tracking no touches and with no recorded lift
+    /// positions.
     pub fn new() -> Self {
         Self { touches: Vec::new(), touch_ends: Vec::new() }
     }

@@ -1,7 +1,6 @@
 [book]
 authors = ["rust-widgets contributors"]
 language = "en"
-multilingual = false
 src = "src"
 title = "rust-widgets Cookbook"
 

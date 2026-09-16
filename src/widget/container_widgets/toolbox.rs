@@ -23,6 +23,8 @@ pub struct ToolBox {
     items: Vec<ToolBoxItem>,
     current_index: usize,
     orientation: Orientation,
+    /// Emitted with the new page index whenever the expanded page changes.
+    /// Collapsing the current page does emit; the page vector is unchanged.
     pub current_changed: Signal1<usize>,
     /// Optional shared registry for child widget forwarding.
     registry: Option<Rc<RefCell<SimpleRegistry>>>,

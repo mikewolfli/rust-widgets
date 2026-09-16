@@ -12,8 +12,11 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Notification severity level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotificationLevel {
+    /// Neutral informational notification.
     Info,
+    /// Non-fatal problem the user should be aware of.
     Warning,
+    /// Failure that needs attention.
     Error,
 }
 

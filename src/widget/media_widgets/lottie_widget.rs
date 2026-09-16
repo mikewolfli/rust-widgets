@@ -111,11 +111,23 @@ impl LottieAnimated {
 }
 
 /// A Lottie color property (rgba).
+///
+/// Channels are stored as `f64` because Lottie's JSON represents them as
+/// normalized floats in `0.0 ..= 1.0`, **not** as 0-255 bytes. They are passed
+/// straight to [`Color::from_f32`], which is what performs any scaling.
+///
+/// Animation is **not** honoured: the value is sampled once at parse time (see
+/// [`LottieColor::from_json`]), so a colour keyframe track animates nothing.
 #[derive(Debug, Clone)]
 pub struct LottieColor {
+    /// Red, normalised to `0.0 ..= 1.0`.
     pub r: f64,
+    /// Green, normalised to `0.0 ..= 1.0`.
     pub g: f64,
+    /// Blue, normalised to `0.0 ..= 1.0`.
     pub b: f64,
+    /// Alpha, normalised to `0.0 ..= 1.0`; defaults to `1.0` when the Lottie
+    /// source omits a fourth component.
     pub a: f64,
 }
 
@@ -159,32 +171,45 @@ pub struct LottieEllipseShape {
 /// A fill shape ("fl").
 #[derive(Debug, Clone)]
 pub struct LottieFill {
+    /// Fill colour, sampled at parse time only — see [`LottieColor`].
     pub color: LottieColor,
+    /// Opacity as a percentage in `0 ..= 100`, matching Lottie's encoding.
     pub opacity: LottieAnimated,
-    /// Fill rule: 0 = even-odd, 1 = non-zero (winding).
+    /// Fill rule: 0 = even-odd, 1 = non-zero (winding). Parsed but unused; the
+    /// renderer always fills with one rule.
     pub _fill_rule: u32,
 }
 
 /// A stroke shape ("st").
 #[derive(Debug, Clone)]
 pub struct LottieStroke {
+    /// Stroke colour, sampled at parse time only — see [`LottieColor`].
     pub color: LottieColor,
+    /// Opacity as a percentage in `0 ..= 100`.
     pub opacity: LottieAnimated,
+    /// Stroke width in composition units (not points or logical pixels).
     pub width: LottieAnimated,
-    /// Line cap style: 0 = butt, 1 = round, 2 = square.
+    /// Line cap style: 0 = butt, 1 = round, 2 = square. Parsed but unused.
     pub _line_cap: u32,
-    /// Line join style: 0 = miter, 1 = round, 2 = bevel.
+    /// Line join style: 0 = miter, 1 = round, 2 = bevel. Parsed but unused.
     pub _line_join: u32,
 }
 
 /// A shape within a layer.
 #[derive(Debug, Clone)]
 pub enum LottieShape {
+    /// A rectangle ("rc").
     Rectangle(LottieRectShape),
+    /// An ellipse ("el").
     Ellipse(LottieEllipseShape),
+    /// A solid fill ("fl") applied to preceding shapes.
     Fill(LottieFill),
+    /// A stroke ("st") applied to preceding shapes.
     Stroke(LottieStroke),
     /// "sh" (path) and "gs" (group) are not yet implemented.
+    ///
+    /// The inner string records the Lottie shape type that was skipped, so a
+    /// caller can report which constructs were dropped.
     Other(String),
 }
 

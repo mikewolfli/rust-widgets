@@ -130,14 +130,32 @@ impl AdaptiveRenderer {
     }
 }
 /// Performance metrics for adaptive rendering.
+///
+/// A snapshot of the controller's view of recent frame timing. Fields are plain
+/// public data: they are copied out of the controller and can be read or
+/// constructed freely, so mutating a clone has no effect on the controller.
 #[derive(Debug, Clone)]
 pub struct AdaptiveMetrics {
+    /// Quality level currently in force. Changes only when the controller
+    /// degrades or upgrades.
     pub current_quality: QualityLevel,
+    /// Most recent frames-per-second estimate, computed over the controller's
+    /// rolling window rather than from a single frame.
     pub current_fps: f32,
+    /// Mean frame time in **seconds** (not milliseconds), computed over the same
+    /// rolling window.
     pub average_frame_time: f32,
+    /// Frames per second the controller is trying to sustain; the denominator for
+    /// the frame budget.
     pub target_fps: f32,
+    /// Number of frames recorded since the controller was created. Feeds the
+    /// rolling window, so early values are less stable.
     pub frame_count: usize,
+    /// How many times quality has been lowered since creation. Monotonic within
+    /// a controller's lifetime.
     pub degrade_count: usize,
+    /// How many times quality has been raised since creation. Quality changes can
+    /// oscillate, so this is not simply the inverse of the frame count.
     pub upgrade_count: usize,
 }
 impl AdaptiveMetrics {

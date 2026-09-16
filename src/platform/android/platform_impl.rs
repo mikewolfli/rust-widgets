@@ -226,6 +226,35 @@ impl Platform for AndroidPlatform {
         self.state.inject_widget_trigger_event(widget_id, kind)
     }
 
+    /// Mounts a library-painted widget onto a surface this host will present.
+    ///
+    /// No native view is created per control (every `WidgetKind` is painted by
+    /// `src/widget/`), so the surface is a record plus a repaint queue: the Activity
+    /// owns the pixels and pulls them with the render API.
+    fn mount_surface(&self, _parent: u64, id: u64, rect: crate::core::Rect) -> bool {
+        self.state.mount_surface_record(id, rect)
+    }
+
+    /// Updates the rect of a mounted surface. `false` when `id` is not mounted.
+    fn resize_surface(&self, id: u64, rect: crate::core::Rect) -> bool {
+        self.state.resize_surface_record(id, rect)
+    }
+
+    /// Releases a mounted surface.
+    fn unmount_surface(&self, id: u64) -> bool {
+        self.state.unmount_surface_record(id)
+    }
+
+    /// Queues a repaint for the host to pick up. `false` when `id` is not mounted.
+    fn invalidate_surface(&self, id: u64) -> bool {
+        self.state.invalidate_surface_record(id)
+    }
+
+    /// The backend displays library-painted widgets by handing the host their frames.
+    fn supports_surfaces(&self) -> bool {
+        true
+    }
+
     // ─── Widget manipulation ─────────────────────────────────────────────
 
     fn show_widget(&self, widget_id: u64) {
@@ -445,5 +474,38 @@ mod tests {
 
         let with_shortcut = platform.menu_add_item(menu, "Save", Some("Ctrl+S"));
         assert_eq!(platform.get_widget_text(with_shortcut), "Save (Ctrl+S)");
+    }
+
+    /// The backend must host library-painted widgets, and each step must work:
+    /// a bare `true` from `supports_surfaces()` would be a claim, not a capability.
+    #[test]
+    fn android_hosts_widget_surfaces_and_queues_repaints() {
+        let platform = AndroidPlatform::new();
+        assert!(platform.supports_surfaces());
+
+        let window = platform.create_window("Window", 0, 0, 412, 915);
+        let rect = crate::core::Rect::new(0, 0, 120, 44);
+        assert!(platform.mount_surface(window, window, rect));
+        assert_eq!(platform.state.surface_rect(window), Some(rect));
+
+        assert!(platform.invalidate_surface(window));
+        assert_eq!(platform.state.take_pending_repaint(), Some(window));
+        assert_eq!(platform.state.pending_repaint_count(), 0);
+
+        let moved = crate::core::Rect::new(8, 8, 200, 80);
+        assert!(platform.resize_surface(window, moved));
+        assert_eq!(platform.state.surface_rect(window), Some(moved));
+
+        assert!(platform.unmount_surface(window));
+        assert_eq!(platform.state.surface_rect(window), None);
+    }
+
+    /// A surface for a widget this backend never made must be refused.
+    #[test]
+    fn android_refuses_a_surface_for_an_unknown_widget() {
+        let platform = AndroidPlatform::new();
+        assert!(!platform.mount_surface(1, 9_999, crate::core::Rect::new(0, 0, 10, 10)));
+        assert!(!platform.invalidate_surface(9_999));
+        assert_eq!(platform.state.mounted_surface_count(), 0);
     }
 }

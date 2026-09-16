@@ -32,12 +32,21 @@ pub enum Selector {
 /// (e.g., `:hover`, `:disabled`). Distinct from `theme_state::WidgetState`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PseudoState {
+    /// The widget's resting state, with no interaction modifiers active.
+    /// Selectors targeting `:normal` match only when no other state is set.
     Normal,
+    /// The pointer is over the widget.
     Hover,
+    /// The widget is being held down (or otherwise in an active press).
     Pressed,
+    /// The widget refuses input.
     Disabled,
+    /// The widget holds keyboard focus.
     Focused,
+    /// The widget is checked, in the sense of a toggle, checkbox, or radio
+    /// button.
     Checked,
+    /// The widget (or one of its items) is selected, as in a list or tab.
     Selected,
 }
 
@@ -53,6 +62,11 @@ pub struct StyleRule {
 }
 
 impl StyleRule {
+    /// Creates a rule and derives its specificity from `selector`.
+    ///
+    /// The specificity field is **computed here**, not supplied: changing
+    /// `selector` afterwards leaves `specificity` describing the old selector,
+    /// so mutate it through this constructor rather than in place.
     pub fn new(selector: Selector, name: impl Into<String>) -> Self {
         let name = name.into();
         let specificity = selector.specificity();
@@ -74,6 +88,11 @@ impl Selector {
     }
 
     /// Check if this selector matches a widget with the given properties.
+    ///
+    /// `class` and `id` are matched by exact string equality, not by CSS
+    /// substring or prefix rules, and a widget can carry at most one of each.
+    /// `state` must be `Some` for a [`Selector::State`] to match, so a caller
+    /// that passes `None` will see every state selector fail.
     pub fn matches(
         &self,
         kind: WidgetKind,
@@ -99,10 +118,18 @@ pub struct StyleSheet {
 }
 
 impl StyleSheet {
+    /// Creates a stylesheet with no rules.
     pub fn new() -> Self {
         Self { rules: Vec::new() }
     }
 
+    /// Adds a rule and keeps the list sorted by ascending specificity.
+    ///
+    /// Sorting ascending means later, more specific rules appear last, so a
+    /// consumer that applies rules in iteration order gets standard cascade
+    /// behaviour. The sort is stable, so rules of equal specificity keep their
+    /// insertion order. Adding a rule therefore costs a re-sort of the whole
+    /// list, which is fine for stylesheets built once at startup.
     pub fn add_rule(&mut self, rule: StyleRule) {
         self.rules.push(rule);
         self.rules.sort_by_key(|r| r.specificity);
@@ -119,6 +146,8 @@ impl StyleSheet {
         self.rules.iter().filter(|r| r.selector.matches(kind, class, id, state)).collect()
     }
 
+    /// Returns the stored rules in cascade order (ascending specificity;
+    /// insertion order within equal specificity).
     pub fn rules(&self) -> &[StyleRule] {
         &self.rules
     }

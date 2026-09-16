@@ -3,6 +3,7 @@
 
 //! Event loop implementation.
 use super::event_queue::{EventQueue, EventSender};
+use super::timer::IdleTask;
 use super::timer::TimerManager;
 use super::types::{Event, EventPriority};
 use crate::compat::Mutex;
@@ -64,10 +65,14 @@ pub struct EventLoop {
     /// Processing thread handle.
     #[cfg(not(alloc_frugal))]
     thread_handle: Option<thread::JoinHandle<()>>,
-    /// Processing thread handle (mini stub).
+    /// Field kept in `mini` so the shared method bodies compile unchanged.
+    ///
+    /// `mini` is single-threaded, so the loop runs on the caller's thread and there is
+    /// no handle to join. This is *not* a placeholder with no behaviour: the alternative
+    /// is two copies of every method, which is the drift this mirror prevents (see
+    /// `mini`'s `pump`-driven `TimerManager` for the same pattern).
     #[cfg(alloc_frugal)]
     #[cfg_attr(alloc_frugal, allow(dead_code))]
-    // kept to mirror the non-mini API
     thread_handle: Option<()>,
     /// Optional dispatch callback invoked for each event.
     dispatch_fn: Option<EventDispatchFn>,
@@ -79,6 +84,13 @@ pub struct EventLoop {
     /// Called on each loop iteration to dispatch pending native platform events
     /// (e.g., Wayland dispatch_pending). Replaces standalone platform dispatch loops.
     native_pump: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Deferred callbacks that run only when no frame-critical work is pending.
+    ///
+    /// Ticked in the loop's Idle phase, alongside Idle-priority events. Without this
+    /// the loop had an Idle phase that idle *tasks* could not reach —
+    /// [`IdleTask::tick`] documented itself as "called each frame by the event loop"
+    /// while nothing ever called it.
+    idle_tasks: Vec<IdleTask>,
 }
 
 impl EventLoop {
@@ -97,7 +109,45 @@ impl EventLoop {
             timer_manager,
             next_anim_frame_id: AtomicU64::new(1),
             native_pump: None,
+            idle_tasks: Vec::new(),
         }
+    }
+
+    /// Registers a deferred task that runs when the loop has no frame-critical work.
+    ///
+    /// The task runs only after `threshold_frames` loop iterations have passed, so it
+    /// is suited to background upkeep — cache trimming, statistics, prefetch — that
+    /// must not compete with input or animation. Tasks are ticked only while the loop
+    /// runs, and only within the same 5ms budget the Idle event phase uses.
+    ///
+    /// Must be called before [`EventLoop::start`]: the tasks move onto the loop
+    /// thread. Registering after `start` would be a silent no-op, so this returns
+    /// `false` in that case rather than accepting a task that will never run.
+    ///
+    /// Gated off `mini`, which never spawns the loop thread these run on — the same
+    /// reason `start` itself is. Offering it there would promise work that cannot run.
+    #[cfg(not(alloc_frugal))]
+    pub fn add_idle_task(&mut self, task: IdleTask) -> bool {
+        if *self.running.lock().unwrap_or_else(recover_lock) {
+            return false;
+        }
+        // Replacing a task with the same id keeps the registry keyed rather than
+        // letting a re-registration accumulate duplicates that all fire.
+        self.idle_tasks.retain(|existing| existing.id != task.id);
+        self.idle_tasks.push(task);
+        true
+    }
+
+    /// Removes the idle task with `id`. Returns whether one was registered.
+    pub fn remove_idle_task(&mut self, id: u64) -> bool {
+        let before = self.idle_tasks.len();
+        self.idle_tasks.retain(|task| task.id != id);
+        self.idle_tasks.len() != before
+    }
+
+    /// Returns how many idle tasks are registered.
+    pub fn idle_task_count(&self) -> usize {
+        self.idle_tasks.len()
     }
 
     /// Starts the event loop in a separate thread.
@@ -113,6 +163,10 @@ impl EventLoop {
         #[cfg(feature = "touch")]
         let mut gesture_engine = GestureEngine::new();
         let native_pump = self.native_pump.clone();
+        // Idle tasks run on the loop thread, so they move with it. `mem::take` leaves the
+        // field empty; a restart after `stop()` therefore begins with none, which is the
+        // honest state — the caller re-registers what it still wants.
+        let mut idle_tasks = core::mem::take(&mut self.idle_tasks);
         let handle = thread::spawn(move || {
             while *running.lock().unwrap_or_else(recover_lock) {
                 // Phase 0: Pump native platform events (e.g., Wayland dispatch)
@@ -237,6 +291,32 @@ impl EventLoop {
                     }
                 }
 
+                // Phase 1e: Tick deferred idle tasks, under the same 5ms budget as
+                // idle events so a task cannot starve frame-critical work either. A
+                // task runs only once its `threshold_frames` have elapsed, which is
+                // what makes it "idle" work rather than a per-frame callback.
+                if !idle_tasks.is_empty() {
+                    #[cfg(not(alloc_frugal))]
+                    let task_budget_start = std::time::Instant::now();
+                    for task in &mut idle_tasks {
+                        #[cfg(not(alloc_frugal))]
+                        if task_budget_start.elapsed().as_millis() >= 5 {
+                            break;
+                        }
+                        // A panicking task must not take the loop down with it: the
+                        // rest of the queue is still valid work.
+                        let outcome =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| task.tick()));
+                        match outcome {
+                            Ok(true) => had_work = true,
+                            Ok(false) => {}
+                            Err(e) => {
+                                log::error!("[event-loop] Idle task {} panicked: {e:?}", task.id)
+                            }
+                        }
+                    }
+                }
+
                 // Phase 2: If no events were dispatched, sleep briefly to avoid
                 // busy-waiting. The idle budget already consumed any idle work.
                 if !had_work {
@@ -289,7 +369,11 @@ impl EventLoop {
         }
     }
 
-    /// Stops the event loop (mini stub).
+    /// Stops the event loop.
+    ///
+    /// In `mini` there is no loop thread to stop, so this only clears the running flag;
+    /// the caller's `pump` loop observes it. Same name and signature as the threaded
+    /// version so call sites need no profile branch.
     #[cfg(alloc_frugal)]
     pub fn stop(&mut self) {
         *self.running.lock().unwrap_or_else(|p| p.into_inner()) = false;
@@ -387,7 +471,69 @@ mod tests {
     #[cfg(not(alloc_frugal))]
     use alloc::sync::Arc;
     #[cfg(not(alloc_frugal))]
-    use core::sync::atomic::{AtomicBool, Ordering};
+    use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    /// An idle task must actually run once the loop ticks enough frames.
+    ///
+    /// `IdleTask::tick` documented itself as "called each frame by the event loop"
+    /// while nothing called it: the loop had an Idle *event* phase but idle *tasks*
+    /// were unreachable. This drives the real loop and asserts the callback fires.
+    #[test]
+    #[cfg(not(alloc_frugal))]
+    fn registered_idle_task_runs_on_the_loop() {
+        let runs = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&runs);
+
+        let mut el = EventLoop::new();
+        assert!(el.add_idle_task(IdleTask::new(1, 2, move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        })));
+        assert_eq!(el.idle_task_count(), 1);
+
+        el.start();
+        // The loop sleeps 1ms per iteration when idle, so a threshold of 2 frames plus
+        // scheduling delay lands well inside this budget.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(600);
+        while runs.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        el.stop();
+
+        assert!(
+            runs.load(Ordering::SeqCst) > 0,
+            "a registered idle task must run; nothing was ticking it before"
+        );
+    }
+
+    /// Registering after the loop started must be refused, not silently accepted.
+    ///
+    /// Tasks move onto the loop thread at `start`, so a late registration could never
+    /// run — and accepting it would look like success while doing nothing.
+    #[test]
+    #[cfg(not(alloc_frugal))]
+    fn idle_task_registration_is_refused_once_running() {
+        let mut el = EventLoop::new();
+        el.start();
+        assert!(
+            !el.add_idle_task(IdleTask::new(7, 1, || {})),
+            "a task registered after start could never run, so it must be refused"
+        );
+        assert_eq!(el.idle_task_count(), 0);
+        el.stop();
+    }
+
+    /// Re-registering the same id replaces the task rather than queueing both.
+    #[test]
+    #[cfg(not(alloc_frugal))]
+    fn idle_task_ids_are_unique() {
+        let mut el = EventLoop::new();
+        assert!(el.add_idle_task(IdleTask::new(3, 1, || {})));
+        assert!(el.add_idle_task(IdleTask::new(3, 1, || {})));
+        assert_eq!(el.idle_task_count(), 1, "a duplicate id must replace, not accumulate");
+        assert!(el.remove_idle_task(3));
+        assert!(!el.remove_idle_task(3), "removing twice must report no-op");
+        assert_eq!(el.idle_task_count(), 0);
+    }
 
     #[test]
     fn test_event_queue_high_throughput() {

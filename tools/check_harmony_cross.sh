@@ -4,28 +4,35 @@
 #
 # HarmonyOS (OpenHarmony) cross-target gate.
 #
-# Verifies the single fact that is easy to get wrong and impossible to notice on
-# a host build: how the OpenHarmony targets identify themselves, and that the
-# backend selection follows it.
+# Verifies two things that are easy to get wrong and impossible to notice on a
+# host build:
+#   1. how the OpenHarmony targets identify themselves, and that the backend
+#      selection follows it;
+#   2. that they actually **link**, using the toolchain's own sysroot.
 #
-# `rustc --target <t> --print cfg` reports `target_os="linux"` and
-# `target_env="ohos"` for **every** `*-unknown-linux-ohos` target. A backend
+# On identification: `rustc --target <t> --print cfg` reports `target_os="linux"`
+# and `target_env="ohos"` for **every** `*-unknown-linux-ohos` target. A backend
 # selected with `cfg(target_os = "ohos")` therefore never matches. The historical
 # spelling did exactly that and made the target fail with `cannot find value
 # 'create_native_platform' in this scope` — not merely mis-selected, it did not
 # build at all.
 #
-# Requires the OpenHarmony SDK's native toolchain (clang + sysroot). Point
-# OHOS_SDK at the SDK host directory (the one containing `native/`). When the
-# SDK or a target is absent this gate reports HOST-GATED (exit 2) rather than
-# passing vacuously: a green result must mean the checks really ran.
+# On linking: `cargo check` does not link, and a plain `cargo build` with only
+# `CARGO_TARGET_*_LINKER` set compiles C dependencies against the *host* headers.
+# The SDK's sysroot must be supplied as explicit `--target`/`--sysroot` flags
+# plus `-D__MUSL__`; `cargo ohos` computes exactly that set, which is why this
+# gate drives it instead of hand-rolling the environment.
+#
+# Requires: the OpenHarmony SDK and `cargo-ohos`.
+# Set OHOS_SDK_NATIVE to the SDK's `native` directory (that is the variable
+# `cargo-ohos` itself reads). When the prerequisites are absent this gate reports
+# HOST-GATED (exit 2) rather than passing vacuously: a green result must mean the
+# checks really ran.
 #
 # Target coverage (all four triples rustc knows for OpenHarmony):
-#   aarch64 / armv7 / x86_64  — prebuilt rust-std + libc in the SDK sysroot
-#   loongarch64               — Tier 3: no prebuilt rust-std, needs -Zbuild-std,
-#                               and the SDK sysroot ships no loongarch64 libc,
-#                               so it CANNOT LINK with this SDK. Checked to the
-#                               link step, and the outcome asserted explicitly.
+#   aarch64 / armv7 / x86_64  — built AND linked, artifacts arch-verified
+#   loongarch64               — Tier 3 (no prebuilt rust-std) and the SDK ships
+#                               no libc for it, so it cannot build; asserted.
 
 set -euo pipefail
 
@@ -33,11 +40,15 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 PRIMARY="aarch64-unknown-linux-ohos"
-# Triples with prebuilt std shipped by rustup.
 LINKABLE=(armv7-unknown-linux-ohos x86_64-unknown-linux-ohos)
-# Triple whose std must be built from source and whose libc the SDK omits.
 BUILD_STD_ONLY="loongarch64-unknown-linux-ohos"
 ALL_TARGETS=("$PRIMARY" "${LINKABLE[@]}" "$BUILD_STD_ONLY")
+
+# `cargo ohos` reads OHOS_SDK_NATIVE; accept the older OHOS_SDK spelling too by
+# deriving it, so an existing environment keeps working.
+if [[ -z "${OHOS_SDK_NATIVE:-}" && -n "${OHOS_SDK:-}" && -d "${OHOS_SDK}/native" ]]; then
+    OHOS_SDK_NATIVE="${OHOS_SDK}/native"
+fi
 
 if ! rustup target list --installed 2>/dev/null | grep -q "^${PRIMARY}$"; then
     echo "HOST-GATED: rust target ${PRIMARY} is not installed"
@@ -45,29 +56,18 @@ if ! rustup target list --installed 2>/dev/null | grep -q "^${PRIMARY}$"; then
     exit 2
 fi
 
-if [[ -z "${OHOS_SDK:-}" || ! -d "${OHOS_SDK}/native/llvm/bin" ]]; then
-    echo "HOST-GATED: OHOS_SDK is unset or does not point at an OpenHarmony SDK"
-    echo "  expected a directory containing native/llvm/bin (got '${OHOS_SDK:-<unset>}')"
+if ! cargo ohos --version >/dev/null 2>&1; then
+    echo "HOST-GATED: cargo-ohos is not installed"
+    echo "  install with: cargo install cargo-ohos"
     exit 2
 fi
 
-if [[ ! -x "${OHOS_SDK}/native/llvm/bin/${PRIMARY}-clang" ]]; then
-    echo "HOST-GATED: no OpenHarmony clang for ${PRIMARY} in the SDK"
+if [[ -z "${OHOS_SDK_NATIVE:-}" || ! -d "${OHOS_SDK_NATIVE}/llvm/bin" ]]; then
+    echo "HOST-GATED: OHOS_SDK_NATIVE is unset or does not point at an OpenHarmony SDK"
+    echo "  expected the SDK's 'native' directory, containing llvm/bin"
+    echo "  (got '${OHOS_SDK_NATIVE:-<unset>}')"
     exit 2
 fi
-
-# Point cargo at the SDK's per-target clang wrapper for every triple under test.
-# The wrapper carries the sysroot, so `-lc` / `crti.o` resolve without extra flags.
-for triple in "${ALL_TARGETS[@]}"; do
-    cc="${OHOS_SDK}/native/llvm/bin/${triple}-clang"
-    upper="$(echo "$triple" | tr 'a-z-' 'A-Z_')"
-    underscored="$(echo "$triple" | tr '-' '_')"
-    if [[ -x "$cc" ]]; then
-        export "CARGO_TARGET_${upper}_LINKER=$cc"
-        export "CC_${underscored}=$cc"
-        export "AR_${underscored}=${OHOS_SDK}/native/llvm/bin/llvm-ar"
-    fi
-done
 
 fail=0
 note() { printf '  %s\n' "$*"; }
@@ -79,7 +79,7 @@ echo "[1/6] target-identification premise (all OpenHarmony triples)"
 for triple in "${ALL_TARGETS[@]}"; do
     cfg_out="$(rustc --target "$triple" --print cfg 2>/dev/null || true)"
     if [[ -z "$cfg_out" ]]; then
-        note "$triple: rustc cannot describe this target (no prebuilt std) — skipped"
+        note "$triple: rustc cannot describe this target — skipped"
         continue
     fi
     echo "$cfg_out" | grep -qx 'target_env="ohos"' ||
@@ -87,31 +87,67 @@ for triple in "${ALL_TARGETS[@]}"; do
     echo "$cfg_out" | grep -qx 'target_os="linux"' ||
         { echo "  FAIL $triple: target_os is not \"linux\""; fail=1; }
     note "$triple: target_env=ohos, target_os=linux  ✓"
+    # `cfg(target_os = "harmony")` is the spelling this gate exists to prevent; it
+    # never matches, so a `[target.'cfg(target_os="harmony")']` section in the
+    # manifest would be dead weight.
+    if echo "$cfg_out" | grep -qx 'target_os="harmony"'; then
+        echo "  FAIL $triple: target_os is suddenly 'harmony' — the manifest note is stale"
+        fail=1
+    fi
 done
 [[ $fail -eq 0 ]] || { echo "premise check failed"; exit 1; }
 
 # ---------------------------------------------------------------------------
-# [2]-[4] The targets rustup ships std for: the full recipe.
+# [2]-[4] The targets rustup ships std for: build, and then LINK.
 # ---------------------------------------------------------------------------
 for triple in "$PRIMARY" "${LINKABLE[@]}"; do
     if ! rustup target list --installed 2>/dev/null | grep -q "^${triple}$"; then
         echo "[skip] ${triple}: rust-std not installed (rustup target add ${triple})"
         continue
     fi
+    short="${triple%%-*}"
 
     # The backend is chosen from the target alone — no `harmony` feature. This is
     # what a real HarmonyOS application links against, so it is the case that must
     # work. A `target_os = "ohos"` spelling fails here with E0425/E0428.
     echo "[2/6] ${triple}: backend auto-selected from the target (no 'harmony' feature)"
-    cargo check --target "$triple" --no-default-features \
+    cargo ohos check -t "$short" --no-default-features \
         --features "desktop,touch,i18n,serde,serde_json"
 
     echo "[3/6] ${triple}: full feature contact surface"
-    cargo check --target "$triple" --no-default-features --all-targets \
+    cargo ohos check -t "$short" --no-default-features --all-targets \
         --features "desktop,harmony,touch,i18n,serde,serde_json,advanced-widgets,controls-custom,controls-native"
 
     echo "[4/6] ${triple}: stripped profile"
-    cargo check --target "$triple" --no-default-features --features embedded
+    cargo ohos check -t "$short" --no-default-features --features embedded
+
+    # `check` never links, so on its own it cannot catch a missing sysroot: the C
+    # dependencies in the graph (minimp3-sys, ...) only fail at link/build time.
+    # This step produces a real shared object and verifies its machine type, so a
+    # silently wrong toolchain cannot pass.
+    echo "[4b/6] ${triple}: build + verify the linked artifact is the right machine"
+    cargo ohos build -t "$short" --no-default-features \
+        --features "desktop,touch,i18n,serde,serde_json"
+
+    so="target/${triple}/debug/librust_widgets.so"
+    if [[ ! -f "$so" ]]; then
+        echo "  FAIL ${triple}: no shared object at ${so}"
+        fail=1
+        continue
+    fi
+    case "$triple" in
+        aarch64-*) want="AArch64" ;;
+        armv7-*)   want="ARM"     ;;
+        x86_64-*)  want="X86-64"  ;;
+        *)         want=""        ;;
+    esac
+    machine="$("${OHOS_SDK_NATIVE}/llvm/bin/llvm-readelf" -h "$so" | awk -F: '/Machine/ {print $2}' | xargs)"
+    if [[ "$machine" != *"$want"* ]]; then
+        echo "  FAIL ${triple}: artifact machine is '${machine}', expected '${want}'"
+        fail=1
+    else
+        note "$(basename "$so"): Machine=${machine}, $(du -h "$so" | cut -f1)  ✓"
+    fi
 done
 
 # ---------------------------------------------------------------------------
@@ -119,49 +155,43 @@ done
 #     redundant with the host clippy run.
 # ---------------------------------------------------------------------------
 echo "[5/6] clippy on ${PRIMARY} (deny warnings)"
-cargo clippy --target "$PRIMARY" --no-default-features \
+cargo ohos clippy -t aarch64 --no-default-features \
     --features "desktop,harmony" --all-targets -- -D warnings
 
 # ---------------------------------------------------------------------------
 # [6] loongarch64: Tier 3, so assert the *specific* expected outcome.
 #
-#     `--print cfg` cannot describe it and rustup has no std, so the only way to
-#     check it is `-Zbuild-std` on nightly. Its `cargo check` passes; its *link*
-#     cannot, because the SDK sysroot has no loongarch64 libc
-#     (`ld.lld: unable to find library -lc`, `cannot open crti.o`). That is an SDK
-#     packaging fact, not a defect in this crate — so the gate pins it rather than
-#     pretending either way.
+#     rustup ships no std for it (Tier 3 — "official builds are not available"),
+#     and the SDK sysroot ships no loongarch64 libc: its C headers are incomplete
+#     (`bits/alltypes.h` missing), so even a dependency's C compilation stops
+#     before Rust is reached. `cargo-ohos` documents the same limitation
+#     independently ("`loongarch64` is not supported in the latest SDK (CMake)").
+#
+#     The gate pins this rather than pretending either way, and flips its
+#     expectation if the SDK ever ships the libc.
 # ---------------------------------------------------------------------------
-echo "[6/6] ${BUILD_STD_ONLY}: Tier 3 target (no prebuilt std, no SDK libc)"
-if ! command -v rustup >/dev/null 2>&1; then
-    note "rustup unavailable — skipped"
+echo "[6/6] ${BUILD_STD_ONLY}: Tier 3 target (no prebuilt std, SDK libc incomplete)"
+LOONG_LIB_DIR="${OHOS_SDK_NATIVE}/sysroot/usr/lib/loongarch64-linux-ohos"
+if [[ ! -d "$LOONG_LIB_DIR" ]]; then
+    note "SDK has no ${LOONG_LIB_DIR} — cannot compile C, let alone link"
+    if rustc --target "$BUILD_STD_ONLY" --print cfg >/dev/null 2>&1; then
+        note "rustc knows the triple — Tier 3, so no prebuilt std ✓"
+    else
+        echo "  FAIL: rustc no longer recognises ${BUILD_STD_ONLY}"
+        fail=1
+    fi
+    if rustup target list --installed 2>/dev/null | grep -q "^${BUILD_STD_ONLY}$"; then
+        echo "  FAIL: rust-std is now installed for ${BUILD_STD_ONLY} — strengthen step [2] to cover it"
+        fail=1
+    else
+        note "rustup has no std for it (Tier 3: 'official builds are not available') ✓"
+    fi
 elif ! rustc +nightly -vV >/dev/null 2>&1; then
     note "nightly toolchain unavailable — skipped (needs -Zbuild-std)"
 elif [[ -z "$(rustup component list --installed --toolchain nightly 2>/dev/null | grep rust-src || true)" ]]; then
     note "nightly rust-src unavailable — skipped (rustup component add rust-src --toolchain nightly)"
-elif [[ ! -e "${OHOS_SDK}/native/sysroot/usr/lib/loongarch64-linux-ohos/libc.so" \
-        && ! -e "${OHOS_SDK}/native/sysroot/usr/lib/loongarch64-linux-ohos/crti.o" ]]; then
-    # The SDK has no loongarch64 libc, which is the reason the link below fails.
-    note "SDK sysroot has no loongarch64-linux-ohos libc — check-only, as expected"
-    echo "[6a/6] ${BUILD_STD_ONLY}: cargo check with -Zbuild-std"
-    RUSTC_BOOTSTRAP=1 cargo +nightly check --target "$BUILD_STD_ONLY" \
-        --no-default-features --features "desktop" -Zbuild-std=std,panic_abort
-    note "type-checks clean ✓ (link is impossible with this SDK — evidenced in the log)"
-
-    echo "[6b/6] ${BUILD_STD_ONLY}: confirm the failure is the SDK's libc, not our code"
-    if RUSTC_BOOTSTRAP=1 cargo +nightly build --target "$BUILD_STD_ONLY" \
-        --no-default-features --features "desktop" -Zbuild-std=std,panic_abort \
-        > /tmp/ohos_loong_link.log 2>&1; then
-        note "it linked after all — the SDK must have gained loongarch64 libc; update this gate"
-    elif grep -qE 'unable to find library -lc|cannot open crti\.o' /tmp/ohos_loong_link.log; then
-        note "link fails on the missing libc (crti.o / -lc), as documented ✓"
-    else
-        echo "  FAIL ${BUILD_STD_ONLY}: link failed for an unexpected reason"
-        grep -E "^error|ld\.lld" /tmp/ohos_loong_link.log | head -5
-        fail=1
-    fi
 else
-    note "SDK now ships loongarch64 libc — full build expected"
+    note "SDK now ships a loongarch64 lib dir — full build expected"
     RUSTC_BOOTSTRAP=1 cargo +nightly check --target "$BUILD_STD_ONLY" \
         --no-default-features --features "desktop" -Zbuild-std=std,panic_abort
 fi

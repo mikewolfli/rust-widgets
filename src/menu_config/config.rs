@@ -183,60 +183,100 @@ impl MenuConfig {
         self.user_overrides = UserOverrides::default();
         self.apply_hardware_defaults();
     }
+    /// Whether menu animations are enabled. Set by [`MenuConfig::new`] from the
+    /// detected performance level, or overridden by the user.
     pub fn animations_enabled(&self) -> bool {
         self.animations_enabled
     }
+    /// Whether transparent menu surfaces are enabled. Requires backend support;
+    /// the flag alone does not make a surface transparent.
     pub fn transparency_enabled(&self) -> bool {
         self.transparency_enabled
     }
+    /// Whether drop shadows are enabled.
     pub fn shadows_enabled(&self) -> bool {
         self.shadows_enabled
     }
+    /// Whether background blur is enabled. Blur is the most expensive of the
+    /// optional effects and is the first to be turned off when the detected
+    /// performance level drops.
     pub fn blur_enabled(&self) -> bool {
         self.blur_enabled
     }
+    /// Returns the animation speed multiplier: `1.0` is normal, lower is faster
+    /// (for example `0.5` doubles the apparent rate). Always within
+    /// `0.1 ..= 3.0`.
     pub fn animation_speed(&self) -> f32 {
         self.animation_speed
     }
+    /// Returns the number of menu items shown before the menu starts scrolling.
+    /// Always at least `5`.
     pub fn max_visible_items(&self) -> u32 {
         self.max_visible_items
     }
+    /// Returns whether hardware-accelerated rendering should be used. This is a
+    /// request; the render backend may still fall back to software.
     pub fn hardware_acceleration(&self) -> bool {
         self.hardware_acceleration
     }
+    /// Returns whether menu rendering results are cached across frames.
+    /// Disabled at the low performance level.
     pub fn caching_enabled(&self) -> bool {
         self.caching_enabled
     }
+    /// Returns the hardware facts probed when this configuration was created.
+    /// These are a snapshot and are not re-probed by any setter.
     pub fn hardware_caps(&self) -> &HardwareCapabilities {
         &self.hardware_caps
     }
+    /// Returns the explicit user overrides, or `None` per field where the user
+    /// has expressed no preference. These survive [`MenuConfig::reset_to_defaults`]
+    /// only until it clears them.
     pub fn user_overrides(&self) -> &UserOverrides {
         &self.user_overrides
     }
+    /// Enables or disables animations and records the choice as a user
+    /// override, so a later [`MenuConfig::apply_user_overrides`] keeps it.
     pub fn set_animations_enabled(&mut self, enabled: bool) {
         self.user_overrides.animations = Some(enabled);
         self.animations_enabled = enabled;
     }
+    /// Enables or disables transparency and records the choice as a user
+    /// override.
     pub fn set_transparency_enabled(&mut self, enabled: bool) {
         self.user_overrides.transparency = Some(enabled);
         self.transparency_enabled = enabled;
     }
+    /// Enables or disables shadows and records the choice as a user override.
     pub fn set_shadows_enabled(&mut self, enabled: bool) {
         self.user_overrides.shadows = Some(enabled);
         self.shadows_enabled = enabled;
     }
+    /// Enables or disables background blur and records the choice as a user
+    /// override.
     pub fn set_blur_enabled(&mut self, enabled: bool) {
         self.user_overrides.blur = Some(enabled);
         self.blur_enabled = enabled;
     }
+    /// Sets the animation speed multiplier, clamped to `0.1 ..= 3.0`.
+    ///
+    /// Both the stored override and the live value are clamped identically, so
+    /// out-of-range input is silently saturated rather than rejected. Records
+    /// the choice as a user override.
     pub fn set_animation_speed(&mut self, speed: f32) {
         self.user_overrides.animation_speed = Some(speed.clamp(0.1, 3.0));
         self.animation_speed = speed.clamp(0.1, 3.0);
     }
+    /// Sets how many items are shown before scrolling, floored at `5`.
+    ///
+    /// An input below `5` is raised rather than rejected. Records the choice as
+    /// a user override.
     pub fn set_max_visible_items(&mut self, max: u32) {
         self.user_overrides.max_visible_items = Some(max.max(5));
         self.max_visible_items = max.max(5);
     }
+    /// Requests (or suppresses) hardware acceleration and records the choice as
+    /// a user override.
     pub fn set_hardware_acceleration(&mut self, enabled: bool) {
         self.user_overrides.hardware_acceleration = Some(enabled);
         self.hardware_acceleration = enabled;

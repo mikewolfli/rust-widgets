@@ -24,8 +24,14 @@ pub struct DockWidget {
     allowed_areas: DockWidgetAreas,
     floating: bool,
     docked: bool,
+    /// Emitted after the dock area changes, with the new [`DockWidgetArea`].
+    /// Fires only on an actual transition, not when the same area is re-applied.
     pub dock_location_changed: Signal1<DockWidgetArea>,
+    /// Emitted when the enabled feature set changes, with the new
+    /// [`DockWidgetFeatures`] bitmap.
     pub features_changed: Signal1<DockWidgetFeatures>,
+    /// Emitted when the widget is floated or re-docked, with the new top-level
+    /// state (`true` = floating, `false` = docked).
     pub top_level_changed: Signal1<bool>,
     registry: Option<Rc<RefCell<SimpleRegistry>>>,
     /// Offset from mouse cursor to widget top-left, set when drag begins.

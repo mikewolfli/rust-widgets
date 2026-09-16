@@ -12,9 +12,14 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Toast severity level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToastLevel {
+    /// Neutral informational message.
     Info,
+    /// Positive outcome confirmation.
     Success,
+    /// Non-fatal problem the user may want to act on.
     Warning,
+    /// Failure the user must notice; hosts typically keep these on screen
+    /// longer than the other levels.
     Error,
 }
 

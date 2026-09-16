@@ -21,9 +21,17 @@ pub struct ScrollBar {
     single_step: i32,
     page_step: i32,
     orientation: Orientation,
+    /// Emitted with the new value when the scroll position changes, whether
+    /// from user input or a programmatic setter.
     pub value_changed: Signal1<i32>,
+    /// Emitted with the new value when the scroll *thumb* is dragged, as opposed
+    /// to any other way the value can change. Lets a consumer distinguish direct
+    /// manipulation from, say, a wheel scroll.
     pub slider_moved: Signal1<i32>,
+    /// Emitted when the thumb is pressed. Carries no payload.
     pub slider_pressed: GenericSignal,
+    /// Emitted when the thumb is released. Emitted even if the pointer left the
+    /// widget before releasing, since the widget tracks its own press state.
     pub slider_released: GenericSignal,
     mouse_pressed: bool,
 }

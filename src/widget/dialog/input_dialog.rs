@@ -15,11 +15,21 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Input dialog input mode.
+///
+/// The mode selects which of the dialog's parallel value slots the input field
+/// displays and edits; the other slots keep their values but are not shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode {
+    /// Free text, edited through [`InputDialog::text_value`].
     Text,
+    /// A whole number, clamped to the `int_min`/`int_max` range set by
+    /// [`InputDialog::get_int`] and stepped by `int_step`.
     Integer,
+    /// A real number, clamped to the `double_min`/`double_max` range and shown
+    /// rounded to `double_decimals` places.
     Double,
+    /// A choice from [`InputDialog::items`], navigated by
+    /// [`InputDialog::current_item`].
     Item,
 }
 /// Input dialog for simple user input.
@@ -41,13 +51,27 @@ pub struct InputDialog {
     double_max: f64,
     _double_step: f64,
     double_decimals: u8,
+    /// Emitted when the text value changes. Nothing in this widget emits it
+    /// yet — editing happens elsewhere and calls [`InputDialog::set_text_value`]
+    /// — so it is for a host that drives the field.
     pub text_value_changed: Signal1<String>,
+    /// Emitted when the integer value changes. Not emitted by this widget yet;
+    /// see [`InputDialog::text_value_changed`].
     pub int_value_changed: Signal1<i64>,
+    /// Emitted when the floating-point value changes. Not emitted by this widget
+    /// yet; see [`InputDialog::text_value_changed`].
     pub double_value_changed: Signal1<f64>,
+    /// Emitted by [`InputDialog::accept`].
     pub accepted: GenericSignal,
+    /// Emitted by [`InputDialog::reject`].
     pub rejected: GenericSignal,
 }
 impl InputDialog {
+    /// Creates a modal, empty dialog in [`InputMode::Text`].
+    ///
+    /// The title and label are empty, the item list is empty, and the numeric
+    /// ranges are left wide open (the full `i64`/`f64` ranges, step 1). Set what
+    /// you need afterwards, or use one of the configured constructors.
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::InputDialog, geometry, "InputDialog"),
@@ -74,6 +98,11 @@ impl InputDialog {
             rejected: GenericSignal::new(),
         }
     }
+    /// Creates a text-input dialog with its title, label and initial text
+    /// preset, in [`InputMode::Text`].
+    ///
+    /// `default` seeds [`InputDialog::text_value`]; it is not a placeholder — an
+    /// empty `default` means the field opens genuinely empty.
     pub fn get_text(
         geometry: Rect,
         title: impl Into<String>,
@@ -87,6 +116,14 @@ impl InputDialog {
         d.mode = InputMode::Text;
         d
     }
+    /// Creates a whole-number dialog preset to `value`, bounded by `min` and
+    /// `max`, in [`InputMode::Integer`].
+    ///
+    /// `value` is clamped into the inclusive range as the dialog is built, so a
+    /// request outside it is silently brought inside; read
+    /// [`InputDialog::int_value`] to see what was actually taken. `step` is stored
+    /// but nothing in this widget applies increments, so it does not affect the
+    /// value.
     pub fn get_int(
         geometry: Rect,
         title: impl Into<String>,
@@ -106,74 +143,128 @@ impl InputDialog {
         d.mode = InputMode::Integer;
         d
     }
+    /// The dialog's title, drawn in its header bar.
     pub fn title(&self) -> &str {
         &self.title
     }
+    /// The text drawn beside the input field to say what is being asked for.
     pub fn label_text(&self) -> &str {
         &self.label_text
     }
+    /// Which value the input field currently presents.
     pub fn mode(&self) -> InputMode {
         self.mode
     }
+    /// The free-text value. This is the value the caller cares about after an
+    /// [`InputMode::Text`] dialog is accepted; it exists in every mode but is
+    /// only displayed in `Text`.
     pub fn text_value(&self) -> &str {
         &self.text_value
     }
+    /// The whole-number value, clamped to the `int_min`/`int_max` range.
+    ///
+    /// Read this after an [`InputMode::Integer`] dialog is accepted. It holds a
+    /// meaningful value in every mode, but only the `Integer` mode displays it.
     pub fn int_value(&self) -> i64 {
         self.int_value
     }
+    /// The floating-point value, clamped to the `double_min`/`double_max` range.
+    ///
+    /// Stays `0.0` unless set: no constructor here seeds it, and it is only
+    /// displayed in [`InputMode::Double`].
     pub fn double_value(&self) -> f64 {
         self.double_value
     }
+    /// The index of the selected item, or `0` when there are no items.
+    ///
+    /// Always an index, never an optional — check [`InputDialog::items`] to tell
+    /// "nothing to choose from" from "the first item is chosen".
     pub fn current_item(&self) -> usize {
         self.current_item
     }
+    /// The choices offered in [`InputMode::Item`]. Empty unless
+    /// [`InputDialog::set_items`] was called.
     pub fn items(&self) -> &[String] {
         &self.items
     }
 
+    /// The selected item's text, or `None` when the list is empty or the index
+    /// no longer addresses an entry.
     pub fn current_item_text(&self) -> Option<&str> {
         self.items.get(self.current_item).map(|s| s.as_str())
     }
+    /// Sets the title and repaints.
     pub fn set_title(&mut self, t: impl Into<String>) {
         self.title = t.into();
         self.base.request_redraw();
     }
+    /// Sets the label drawn beside the input field and repaints.
     pub fn set_label_text(&mut self, t: impl Into<String>) {
         self.label_text = t.into();
         self.base.request_redraw();
     }
+    /// Switches which value the input field presents, and repaints.
+    ///
+    /// The other values are unaffected: switching away from a mode does not
+    /// clear what it held, so switching back shows it again.
     pub fn set_mode(&mut self, mode: InputMode) {
         self.mode = mode;
         self.base.request_redraw();
     }
+    /// Sets the free-text value and repaints. Overwrites rather than appends, so
+    /// it cannot be used for incremental typing; it emits no change signal.
     pub fn set_text_value(&mut self, v: impl Into<String>) {
         self.text_value = v.into();
         self.base.request_redraw();
     }
+    /// Replaces the item list and repaints.
+    ///
+    /// Resets the selection to index 0, so a previously chosen item is lost even
+    /// if it is still present in the new list.
     pub fn set_items(&mut self, items: Vec<String>) {
         self.items = items;
         self.current_item = 0;
         self.base.request_redraw();
     }
+    /// Sets the whole-number value, clamped into the current
+    /// `int_min`/`int_max` range, and repaints.
     pub fn set_int_value(&mut self, v: i64) {
         self.int_value = v.clamp(self.int_min, self.int_max);
         self.base.request_redraw();
     }
+    /// Sets the floating-point value, clamped into the current
+    /// `double_min`/`double_max` range, and repaints.
     pub fn set_double_value(&mut self, v: f64) {
         self.double_value = v.clamp(self.double_min, self.double_max);
         self.base.request_redraw();
     }
+    /// Whether the dialog blocks interaction with its owner while open.
+    ///
+    /// A stored flag, on by default: nothing here enforces modality, so the host
+    /// is what must act on it.
     pub fn is_modal(&self) -> bool {
         self.modal
     }
+    /// Sets the modality flag and repaints. See [`InputDialog::is_modal`].
     pub fn set_modal(&mut self, modal: bool) {
         self.modal = modal;
         self.base.request_redraw();
     }
+    /// Confirms the dialog: emits `accepted`, then hides it.
+    ///
+    /// Unlike the file dialog this does not emit the value: the caller reads
+    /// [`InputDialog::text_value`], [`InputDialog::int_value`],
+    /// [`InputDialog::double_value`] or [`InputDialog::current_item`] according
+    /// to [`InputDialog::mode`]. Pressing Enter (key code 13) on an enabled,
+    /// visible dialog does the same.
     pub fn accept(&mut self) {
         self.accepted.emit();
         self.hide();
     }
+    /// Cancels the dialog and hides it, emitting `rejected`.
+    ///
+    /// The values are **not** cleared, so a cancelled dialog still reports what
+    /// was in its fields. Pressing Escape (key code 27) has the same effect.
     pub fn reject(&mut self) {
         self.rejected.emit();
         self.hide();

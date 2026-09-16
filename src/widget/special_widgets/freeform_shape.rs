@@ -12,37 +12,111 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
+/// Which corner or edge of a speech bubble the tail sticks out of.
+///
+/// The eight variants are the four corners and the four edge midpoints; the tail
+/// is drawn outside the bubble's rectangle, so the shape's drawn extent is
+/// slightly larger than the widget's geometry.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BubbleTailDirection {
+    /// Tail out of the top-left corner.
     TopLeft,
+    /// Tail out of the top-right corner.
     TopRight,
+    /// Tail out of the bottom-left corner.
     BottomLeft,
+    /// Tail out of the bottom-right corner.
     BottomRight,
+    /// Tail out of the middle of the left edge.
     Left,
+    /// Tail out of the middle of the right edge.
     Right,
+    /// Tail out of the middle of the top edge.
     Top,
+    /// Tail out of the middle of the bottom edge.
     Bottom,
 }
 
+/// One step of a [`ShapePath::Custom`] path, in the coordinates of the widget's
+/// own rectangle: the origin is the widget's top-left corner, x grows right and
+/// y grows down, and lengths are **pixels** — there is no normalisation, so a
+/// path authored for one size does not scale with the widget.
+///
+/// Control points are absolute positions like the endpoints, not deltas, and
+/// consecutive segments are implicitly joined, so no segment needs to restate
+/// where the previous one ended.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PathSegment {
+    /// Starts a new subpath at this point, lifting the pen. Any subpath in
+    /// progress is closed off first and, once flattened, is treated as a separate
+    /// region for hit-testing — so a path that never revisits its start point
+    /// leaves that region open.
     MoveTo(Point),
+    /// Draws a straight line from the current point to `Point`.
     LineTo(Point),
+    /// Draws a cubic Bézier from the current point to the third point, using the
+    /// first two as its two control points. It is flattened into straight-line
+    /// segments before hit-testing, so a point tested against it is tested
+    /// against the approximation, not the true curve.
     CurveTo(Point, Point, Point),
+    /// Draws a quadratic Bézier from the current point to the second point, using
+    /// the first as its control point. Flattened like [`PathSegment::CurveTo`].
     QuadTo(Point, Point),
+    /// Joins the subpath back to its [`PathSegment::MoveTo`] point and makes that
+    /// point current again.
     Close,
 }
 
+/// The outline a [`FreeformShapeWidget`] paints and hit-tests against.
+///
+/// Every variant is described in the widget's own rectangle rather than in a
+/// fixed coordinate space, so the shape scales with the widget's geometry except
+/// for [`ShapePath::Custom`], whose points are literal pixels.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ShapePath {
+    /// A heart, fitted to the widget's rectangle and centred in it.
     Heart,
-    Star { points: u8, inner_radius: f32 },
+    /// A star with the given numbers of points.
+    Star {
+        /// How many points the star has. Raised to a minimum of 3, so a smaller
+        /// request (including 0) still draws — and hit-tests as — a triangle
+        /// rather than producing a degenerate shape.
+        points: u8,
+        /// The inner radius as a fraction of the outer radius; the smaller it is,
+        /// the spikier the star. Clamped into `0.05`..=`0.95`.
+        inner_radius: f32,
+    },
+    /// A closed polygon through `Vec<Point>`'s vertices, in order, in widget-local
+    /// **pixels**. Fewer than 3 vertices yields a shape that hit-tests as empty.
     Polygon(Vec<Point>),
-    RoundedRect { radius: u32 },
-    Bubble { tail_direction: BubbleTailDirection },
+    /// A rectangle with its corners rounded.
+    RoundedRect {
+        /// Corner radius in **pixels**. Reduced to fit — at most half the
+        /// widget's smaller dimension — so an oversized radius degrades to a
+        /// rectangle with the largest corners that fit instead of overflowing.
+        /// `0` gives square corners.
+        radius: u32,
+    },
+    /// A rounded speech bubble with a tapering tail.
+    Bubble {
+        /// Which corner or edge the tail leaves from.
+        tail_direction: BubbleTailDirection,
+    },
+    /// An arbitrary outline built from path segments. Unlike the other variants
+    /// this one does not scale with the widget's size.
     Custom(Vec<PathSegment>),
 }
 
+/// A non-rectangular, clickable shape.
+///
+/// Unlike an ordinary rectangular widget — which takes every pointer event
+/// inside its geometry — this widget hit-tests the pointer against the actual
+/// outline, so a press in the transparent corner *outside* a star falls through
+/// to whatever is behind it. [`FreeformShapeWidget::contains`] is that test.
+///
+/// The outline is described by [`ShapePath`] and is drawn with a solid fill plus
+/// an optional stroke; there is no image or texture. The shape scales with the
+/// widget's geometry except for [`ShapePath::Custom`].
 pub struct FreeformShapeWidget {
     base: BaseWidget,
     path: ShapePath,
@@ -51,12 +125,24 @@ pub struct FreeformShapeWidget {
     stroke_width: u32,
     hovered: bool,
     pressed: bool,
+    /// Emitted when the shape is clicked, i.e. pressed and released while the
+    /// pointer is still inside the outline.
     pub clicked: GenericSignal,
+    /// Emitted when the pointer enters or leaves the outline, with the new
+    /// state. Fires from a pointer move that crosses the outline, not on every
+    /// move.
     pub hovered_changed: Signal1<bool>,
+    /// Emitted when the primary button is pressed or released inside the
+    /// outline, with the new state. A press that begins outside the shape and
+    /// drags in never emits it.
     pub pressed_changed: Signal1<bool>,
 }
 
 impl FreeformShapeWidget {
+    /// Creates a shape in `geometry` with the given outline.
+    ///
+    /// Starts with a light blue fill, a darker blue two-pixel stroke, and neither
+    /// hovered nor pressed.
     pub fn new(geometry: Rect, path: ShapePath) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::FreeformShape, geometry, "FreeformShapeWidget"),
@@ -72,35 +158,62 @@ impl FreeformShapeWidget {
         }
     }
 
+    /// The outline this shape is drawn and hit-tested as.
     pub fn path(&self) -> &ShapePath {
         &self.path
     }
+    /// Replaces the outline and repaints. The previous shape's hover and press
+    /// state is kept as-is, so a shape swapped out from under the pointer may be
+    /// hovered while the pointer is somewhere else.
     pub fn set_path(&mut self, path: ShapePath) {
         self.path = path;
         self.base.request_redraw();
     }
+    /// The colour the shape's interior is painted in.
     pub fn fill_color(&self) -> Color {
         self.fill_color
     }
+    /// Sets the fill colour and repaints. The alpha channel is honoured, so a
+    /// translucent colour makes the shape see-through while still clickable.
     pub fn set_fill_color(&mut self, color: Color) {
         self.fill_color = color;
         self.base.request_redraw();
     }
+    /// The outline colour, or `None` when the shape is drawn with no outline.
     pub fn stroke_color(&self) -> Option<Color> {
         self.stroke_color
     }
+    /// Sets the outline colour, or removes the outline when given `None`, and
+    /// repaints.
     pub fn set_stroke_color(&mut self, color: Option<Color>) {
         self.stroke_color = color;
         self.base.request_redraw();
     }
+    /// The outline width in **pixels**. Meaningless while
+    /// [`Self::stroke_color`] is `None`.
     pub fn stroke_width(&self) -> u32 {
         self.stroke_width
     }
+    /// Sets the outline width in **pixels** and repaints.
+    ///
+    /// The value is stored as given and is **not** clamped: `0` draws no visible
+    /// outline, and a very large width draws a band much wider than the shape's
+    /// edges rather than being scaled down to fit.
     pub fn set_stroke_width(&mut self, width: u32) {
         self.stroke_width = width;
         self.base.request_redraw();
     }
 
+    /// Whether `point`, in screen coordinates, falls inside the drawn outline.
+    ///
+    /// This is the test the widget uses to decide whether a press reaches it, and
+    /// it is the reason the shape behaves as a non-rectangular target: a point
+    /// inside `geometry()` but outside the outline reports `false`.
+    ///
+    /// The outline is evaluated in fractional detail — Bézier segments are
+    /// flattened and curved variants are approximated — so a point exactly on or
+    /// very near the boundary may be reported either way. A widget with a zero
+    /// width or height contains nothing.
     pub fn contains(&self, point: Point) -> bool {
         let rect = self.base.geometry();
         if !rect.contains_point(point) {

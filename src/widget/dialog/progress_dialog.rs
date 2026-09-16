@@ -15,6 +15,13 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Progress dialog widget.
+/// Progress dialog widget.
+///
+/// A modal-style dialog that reports the progress of a long operation on an
+/// integer range and offers a single cancel affordance. It owns no timer: the
+/// caller drives it by calling [`ProgressDialog::set_value`], which is the only
+/// way the displayed progress changes.
+///
 pub struct ProgressDialog {
     base: BaseWidget,
     title: String,
@@ -27,9 +34,21 @@ pub struct ProgressDialog {
     auto_close: bool,
     auto_reset: bool,
     modal: bool,
+    /// Signal emitted when the user cancels, either by pressing Escape while
+    /// the dialog is enabled or by calling [`ProgressDialog::cancel`] directly.
+    ///
+    /// Carries no payload; the reason is not distinguishible from the signal
+    /// alone. Connect through [`Widget::connection_scope`] so the slot is
+    /// disconnected when the dialog is dropped.
     pub canceled: GenericSignal,
 }
 impl ProgressDialog {
+    /// Creates a dialog with an empty title and label, a range of `0..=100`, a
+    /// value of `0`, the translated "Cancel" button text, and `auto_close`,
+    /// `auto_reset`, and `modal` all `true`.
+    ///
+    /// `geometry` is in parent-relative logical pixels; the default size hint
+    /// is 350x120, which the caller is free to override.
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::ProgressDialog, geometry, "ProgressDialog"),
@@ -46,45 +65,70 @@ impl ProgressDialog {
             canceled: GenericSignal::new(),
         }
     }
+    /// Returns the dialog title, drawn in the title bar. Empty by default.
     pub fn title(&self) -> &str {
         &self.title
     }
+    /// Returns the label drawn above the progress bar. Empty by default.
     pub fn label_text(&self) -> &str {
         &self.label_text
     }
+    /// Returns the current value, always within `minimum() ..= maximum()`.
     pub fn value(&self) -> i32 {
         self.value
     }
+    /// Returns the lower bound of the progress range. Defaults to `0`.
     pub fn minimum(&self) -> i32 {
         self.minimum
     }
+    /// Returns the upper bound of the progress range. Defaults to `100`; this
+    /// is also the value at which `auto_close` hides the dialog.
     pub fn maximum(&self) -> i32 {
         self.maximum
     }
+    /// Returns `true` once the user (or [`ProgressDialog::cancel`]) has
+    /// cancelled. Cleared again by [`ProgressDialog::reset`].
     pub fn was_canceled(&self) -> bool {
         self.was_canceled
     }
+    /// Returns whether reaching the maximum hides the dialog automatically.
+    /// Defaults to `true`.
     pub fn auto_close(&self) -> bool {
         self.auto_close
     }
+    /// Returns whether cancellation resets the value back to the minimum.
+    /// Defaults to `true`.
     pub fn auto_reset(&self) -> bool {
         self.auto_reset
     }
+    /// Returns the cancel button caption. Defaults to the translated
+    /// `common.button.cancel` string.
     pub fn cancel_button_text(&self) -> &str {
         &self.cancel_button_text
     }
+    /// Sets the title bar text and requests a redraw.
     pub fn set_title(&mut self, t: impl Into<String>) {
         self.title = t.into();
         self.base.request_redraw();
     }
+    /// Sets the label shown above the progress bar and requests a redraw.
     pub fn set_label_text(&mut self, t: impl Into<String>) {
         self.label_text = t.into();
         self.base.request_redraw();
     }
+    /// Sets the lower bound of the progress range.
+    ///
+    /// The new bound is **not** applied to the current value, so the value can
+    /// temporarily sit outside the range until the next
+    /// [`ProgressDialog::set_value`] call clamps it. A `min` above `max` makes
+    /// [`ProgressDialog::progress_fraction`] report full progress.
     pub fn set_minimum(&mut self, min: i32) {
         self.minimum = min;
         self.base.request_redraw();
     }
+    /// Sets the upper bound of the progress range. As with
+    /// [`ProgressDialog::set_minimum`], the current value is not re-clamped
+    /// until the next `set_value`.
     pub fn set_maximum(&mut self, max: i32) {
         self.maximum = max;
         self.base.request_redraw();
@@ -96,25 +140,47 @@ impl ProgressDialog {
         self.maximum = max;
         self.base.request_redraw();
     }
+    /// Toggles automatic hiding at completion; requests a redraw. See
+    /// [`ProgressDialog::auto_close`].
     pub fn set_auto_close(&mut self, v: bool) {
         self.auto_close = v;
         self.base.request_redraw();
     }
+    /// Toggles automatic reset on restart; requests a redraw. See
+    /// [`ProgressDialog::auto_reset`].
+    ///
+    /// Note the flag is stored but not consulted anywhere in this type:
+    /// [`ProgressDialog::cancel`] never resets the value, and
+    /// [`ProgressDialog::reset`] is an explicit call. The intended consumer is a
+    /// caller coordinating restarts.
     pub fn set_auto_reset(&mut self, v: bool) {
         self.auto_reset = v;
         self.base.request_redraw();
     }
+    /// Sets the caption of the cancel button and requests a redraw.
     pub fn set_cancel_button_text(&mut self, t: impl Into<String>) {
         self.cancel_button_text = t.into();
         self.base.request_redraw();
     }
+    /// Returns whether the dialog is modal (blocks interaction with the widgets
+    /// behind it). Defaults to `true`.
+    ///
+    /// This is advisory: it records the caller's intent for the surrounding
+    /// runtime or dialog manager, which is what actually enforces modality.
     pub fn is_modal(&self) -> bool {
         self.modal
     }
+    /// Sets the modality intent. See [`ProgressDialog::is_modal`].
     pub fn set_modal(&mut self, modal: bool) {
         self.modal = modal;
         self.base.request_redraw();
     }
+    /// Moves the progress value, clamped into `minimum() ..= maximum()`.
+    ///
+    /// Side effects: when `auto_close` is set and the clamped value reaches the
+    /// maximum, the dialog hides itself. Hiding does not emit `canceled`. The
+    /// value is set before hiding, so [`ProgressDialog::value`] still reports
+    /// the maximum afterwards. A redraw is requested in all cases.
     pub fn set_value(&mut self, value: i32) {
         self.value = value.clamp(self.minimum, self.maximum);
         if self.auto_close && self.value >= self.maximum {
@@ -122,15 +188,30 @@ impl ProgressDialog {
         }
         self.base.request_redraw();
     }
+    /// Resets the value to the minimum and clears the cancelled flag.
+    ///
+    /// Does not show the dialog: combine with [`Widget::show`] when reusing a
+    /// hidden dialog. The `auto_reset` flag is not consulted here.
     pub fn reset(&mut self) {
         self.value = self.minimum;
         self.was_canceled = false;
     }
+    /// Marks the dialog as cancelled, emits `canceled`, and hides the dialog.
+    ///
+    /// The signal is emitted **before** the dialog is hidden, so a slot that
+    /// reads geometry still sees the visible state. Calling `cancel` twice
+    /// emits the signal twice.
     pub fn cancel(&mut self) {
         self.was_canceled = true;
         self.canceled.emit();
         self.hide();
     }
+    /// Returns progress as a fraction in `0.0..=1.0`, where `0.0` is the
+    /// minimum and `1.0` is the maximum.
+    ///
+    /// An empty or inverted range (`maximum <= minimum`) reports `1.0`
+    /// unconditionally, i.e. a single-valued range is treated as complete
+    /// rather than as division by zero.
     pub fn progress_fraction(&self) -> f32 {
         let range = self.maximum - self.minimum;
         if range <= 0 {
@@ -140,10 +221,13 @@ impl ProgressDialog {
     }
 }
 impl Widget for ProgressDialog {
+    /// Access to the shared base-widget state; all default trait behaviour
+    /// delegates through this.
     fn base(&self) -> &BaseWidget {
         &self.base
     }
 
+    /// Mutable access to the shared base-widget state.
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
     }

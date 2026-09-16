@@ -87,103 +87,316 @@ pub enum Event {
     /// Use the `focus_lost` signal on `BaseWidget` instead.
     FocusLost,
     /// Pointer moved inside active surface.
-    MouseMove { pos: Point },
+    ///
+    /// Sent for every hover motion; it does not imply a button is held. Use
+    /// [`Event::PointerMove`] when stylus pressure or tilt is needed.
+    MouseMove {
+        /// New pointer position, relative to the window origin (not the widget).
+        pos: Point,
+    },
     /// Pointer/button press.
-    MousePress { pos: Point, button: u32 },
+    ///
+    /// The press is not delivered to the widget under the pointer until the
+    /// backend has hit-tested it; `pos` is still window-relative.
+    MousePress {
+        /// Press position, relative to the window origin.
+        pos: Point,
+        /// Which button was pressed; see [`mouse_button`].
+        button: u32,
+    },
     /// Pointer double-click.
-    MouseDoubleClick { pos: Point, button: u32 },
+    ///
+    /// The press that starts the gesture is reported separately as
+    /// [`Event::MousePress`], so a handler that acts on both must guard against
+    /// firing twice.
+    MouseDoubleClick {
+        /// Click position, relative to the window origin.
+        pos: Point,
+        /// Which button was double-clicked; see [`mouse_button`].
+        button: u32,
+    },
     /// Pointer/button release.
-    MouseRelease { pos: Point, button: u32 },
+    ///
+    /// Every press is expected to be followed by a release, including presses
+    /// drained by [`Event::MouseLeave`], so handlers can rely on it to end a drag.
+    MouseRelease {
+        /// Release position, relative to the window origin.
+        pos: Point,
+        /// Which button was released; see [`mouse_button`].
+        button: u32,
+    },
     /// Pointer entered widget bounds.
-    MouseEnter { pos: Point },
+    MouseEnter {
+        /// Entry position, relative to the window origin.
+        pos: Point,
+    },
     /// Pointer left widget bounds.
-    MouseLeave { pos: Point },
+    MouseLeave {
+        /// Exit position, relative to the window origin.
+        pos: Point,
+    },
     /// Keyboard key press.
-    KeyPress { key: u32, modifiers: u32 },
+    KeyPress {
+        /// Key code in the framework's convention; see [`crate::shortcut::Key::from_key_code`].
+        key: u32,
+        /// Modifier bitmask in the framework's convention, where the Meta bit
+        /// means the primary accelerator; see
+        /// [`crate::shortcut::Modifiers::from_event_bits`].
+        modifiers: u32,
+    },
     /// Keyboard key release.
-    KeyRelease { key: u32, modifiers: u32 },
+    KeyRelease {
+        /// Key code, using the same convention as [`Event::KeyPress`].
+        key: u32,
+        /// Modifier bitmask, using the same convention as [`Event::KeyPress`].
+        modifiers: u32,
+    },
     /// Text committed by keyboard layout, IME, virtual keyboard, or paste-like input.
-    TextInput { text: String },
+    TextInput {
+        /// The committed text. Already filtered through the active keyboard
+        /// layout, so it is not derivable from a raw key code.
+        text: String,
+    },
     /// IME preedit/composition text changed without committing to the widget value.
-    ImePreedit { text: String, cursor: usize },
+    ImePreedit {
+        /// The composition string under construction.
+        text: String,
+        /// Byte offset of the insertion point within `text`, for anchoring the
+        /// candidate window.
+        cursor: usize,
+    },
     /// IME composition committed text to the widget value.
-    ImeCommit { text: String },
+    ImeCommit {
+        /// The final, committed text; the matching preedit must be discarded.
+        text: String,
+    },
     /// Repaint request.
     Paint,
     /// Resize notification.
-    Resize { size: Size },
+    Resize {
+        /// The new content size in logical pixels.
+        size: Size,
+    },
     /// Timer fired.
-    Timer { id: u32 },
+    Timer {
+        /// Identifier of the timer that fired, as passed when the timer was armed.
+        id: u32,
+    },
     /// Mouse wheel / scroll event.
-    Wheel { delta: Point, modifiers: u32 },
+    ///
+    /// The delta is in wheel notches rather than pixels, and its sign is the
+    /// reverse of the platform "scroll amount": a positive `delta.y` means the
+    /// content moves down (one notch toward the user). One notch is also the
+    /// conventional multiplier for a line scroll, `-delta.y` lines.
+    Wheel {
+        /// Scroll delta: `y` is vertical (positive = scroll down), `x` is
+        /// horizontal (positive = scroll right), both in wheel notches.
+        delta: Point,
+        /// Modifier bitmask, using the same convention as [`Event::KeyPress`].
+        modifiers: u32,
+    },
     /// Free-form custom event payload.
-    Custom { name: String, payload: Vec<u8> },
+    Custom {
+        /// The event name the sender and receiver agree on.
+        name: String,
+        /// Opaque payload; the framework does not interpret it.
+        payload: Vec<u8>,
+    },
     /// Screen orientation changed (portrait ↔ landscape).
-    OrientationChanged { orientation: ScreenOrientation },
+    OrientationChanged {
+        /// The orientation now in effect.
+        orientation: ScreenOrientation,
+    },
     /// Event loop shutdown signal.
     Quit,
     // ── Touch / Gesture events (gated behind `touch` feature) ──
     /// Finger touched surface (replaces MouseDown on touch devices).
     #[cfg(feature = "touch")]
-    TouchBegin { pos: Point, touch_id: TouchId },
+    TouchBegin {
+        /// Touch position, relative to the window origin.
+        pos: Point,
+        /// Identifies the finger for the whole contact, so multi-touch streams
+        /// can be separated.
+        touch_id: TouchId,
+    },
     /// Finger lifted from surface (replaces MouseUp on touch devices).
     #[cfg(feature = "touch")]
-    TouchEnd { pos: Point, touch_id: TouchId },
+    TouchEnd {
+        /// Touch position, relative to the window origin.
+        pos: Point,
+        /// The contact identifier reported by the matching [`Event::TouchBegin`].
+        touch_id: TouchId,
+    },
     /// Finger moved on surface (replaces MouseMove on touch devices).
     #[cfg(feature = "touch")]
-    TouchMove { pos: Point, touch_id: TouchId },
+    TouchMove {
+        /// Current touch position, relative to the window origin.
+        pos: Point,
+        /// The contact identifier reported by the matching [`Event::TouchBegin`].
+        touch_id: TouchId,
+    },
     /// Quick tap-and-release gesture (≈ click).
     #[cfg(feature = "touch")]
-    Tap { pos: Point },
+    Tap {
+        /// Tap position, relative to the window origin.
+        pos: Point,
+    },
     /// Two rapid taps in succession (≈ double-click).
     #[cfg(feature = "touch")]
-    DoubleTap { pos: Point },
+    DoubleTap {
+        /// Position of the second tap, relative to the window origin.
+        pos: Point,
+    },
     /// Finger held stationary ≥ 500ms.
     #[cfg(feature = "touch")]
-    LongPress { pos: Point },
+    LongPress {
+        /// Press position, relative to the window origin.
+        pos: Point,
+    },
     /// Rapid linear finger motion.
     #[cfg(feature = "touch")]
-    Swipe { start: Point, end: Point, velocity: f32 },
+    Swipe {
+        /// Where the swipe started, relative to the window origin.
+        start: Point,
+        /// Where the swipe ended, relative to the window origin.
+        end: Point,
+        /// Swipe speed, in logical pixels per second.
+        velocity: f32,
+    },
     /// Two-finger pinch (scale < 1 = zoom out, > 1 = zoom in).
     #[cfg(feature = "touch")]
-    Pinch { scale: f32 },
+    Pinch {
+        /// Size ratio against the initial finger separation: `1.0` means no
+        /// change, below `1.0` is a pinch in, above `1.0` a spread out.
+        scale: f32,
+    },
     /// Two-finger rotation in radians.
     #[cfg(feature = "touch")]
-    Rotate { angle: f32 },
+    Rotate {
+        /// Rotation since the gesture began, in radians; positive is clockwise
+        /// in screen space (y grows downward).
+        angle: f32,
+    },
     /// Finger drag with motion tracking.
     #[cfg(feature = "touch")]
-    Drag { pos: Point, touch_id: TouchId, delta: Point },
+    Drag {
+        /// Current finger position, relative to the window origin.
+        pos: Point,
+        /// The contact identifier reported by the matching [`Event::TouchBegin`].
+        touch_id: TouchId,
+        /// Movement since the previous drag event, in logical pixels. This is a
+        /// per-event step, not an offset from the gesture start.
+        delta: Point,
+    },
     /// Two-finger tap (≈ right-click equivalent on touchscreens).
     #[cfg(feature = "touch")]
-    TwoFingerTap { pos: Point },
+    TwoFingerTap {
+        /// Tap position, relative to the window origin.
+        pos: Point,
+    },
     /// Two-finger swipe (e.g., page navigation with two fingers).
     #[cfg(feature = "touch")]
-    TwoFingerSwipe { centroid_start: Point, centroid_end: Point, velocity: f32 },
+    TwoFingerSwipe {
+        /// Midpoint between the two fingers when the swipe started.
+        centroid_start: Point,
+        /// Midpoint between the two fingers when the swipe ended.
+        centroid_end: Point,
+        /// Swipe speed, in logical pixels per second.
+        velocity: f32,
+    },
     /// Velocity-based fling/flick with vector velocity (vx, vy).
     #[cfg(feature = "touch")]
-    Fling { pos: Point, velocity: Point, touch_id: TouchId },
+    Fling {
+        /// Position the fling originated from, relative to the window origin; it
+        /// does not track the pointer, as the finger has already left.
+        pos: Point,
+        /// Initial velocity as a vector in logical pixels per second: `x` is
+        /// horizontal, `y` vertical (positive `y` is downward).
+        velocity: Point,
+        /// The contact identifier reported by the matching [`Event::TouchBegin`].
+        touch_id: TouchId,
+    },
     // ── Holographic / 3D events (BLUE8 P4-5, gated behind `holographic` feature) ──
     /// 3D touch/gesture with depth information (holographic).
     #[cfg(feature = "holographic")]
-    HolographicTouch { pos: Point, depth: f32, touch_id: TouchId },
+    HolographicTouch {
+        /// Touch position projected onto the interaction plane.
+        pos: Point,
+        /// Distance along the Z axis in **centimetres**; positive is toward the
+        /// user.
+        depth: f32,
+        /// The contact identifier for the whole gesture.
+        touch_id: TouchId,
+    },
     // ── Pointer / Stylus events (BLUE11 R8.1) ──
     /// Pointer/stylus press with pressure and tilt.
-    PointerPress { pos: Point, button: u32, pressure: f32, tilt_x: f32, tilt_y: f32 },
+    PointerPress {
+        /// Press position, relative to the window origin.
+        pos: Point,
+        /// Which button or barrel switch was pressed; see [`mouse_button`].
+        button: u32,
+        /// Tip pressure in the normalized range `0.0..=1.0`, where `1.0` is the
+        /// device maximum. A mouse reports `0.5` on press.
+        pressure: f32,
+        /// Stylus tilt away from the surface normal about the X axis; `0.0` is
+        /// upright. The sign convention is device-specific.
+        tilt_x: f32,
+        /// Stylus tilt about the Y axis; `0.0` is upright. The sign convention is
+        /// device-specific.
+        tilt_y: f32,
+    },
     /// Pointer/stylus move with pressure and tilt.
-    PointerMove { pos: Point, pressure: f32, tilt_x: f32, tilt_y: f32 },
+    PointerMove {
+        /// Current position, relative to the window origin.
+        pos: Point,
+        /// Tip pressure in the normalized range `0.0..=1.0`; `0.0` while hovering
+        /// without contact.
+        pressure: f32,
+        /// Stylus tilt about the X axis; `0.0` is upright.
+        tilt_x: f32,
+        /// Stylus tilt about the Y axis; `0.0` is upright.
+        tilt_y: f32,
+    },
     /// Pointer/stylus release with pressure.
-    PointerRelease { pos: Point, button: u32, pressure: f32 },
+    PointerRelease {
+        /// Release position, relative to the window origin.
+        pos: Point,
+        /// Which button or barrel switch was released; see [`mouse_button`].
+        button: u32,
+        /// Tip pressure at the moment of release, in the normalized range
+        /// `0.0..=1.0`; `0.0` when the tip was already lifted away.
+        pressure: f32,
+    },
     // ── Gamepad Events (BLUE11 R8.3) ──
     /// Gamepad button press.
-    GamepadPress { button: u32 },
+    GamepadPress {
+        /// Device-specific button index, as reported by the platform's gamepad
+        /// API; there is no cross-platform button numbering here.
+        button: u32,
+    },
     /// Gamepad button release.
-    GamepadRelease { button: u32 },
+    GamepadRelease {
+        /// The index reported by the matching [`Event::GamepadPress`].
+        button: u32,
+    },
     /// Gamepad axis movement.
-    GamepadAxis { axis: u32, value: f32 },
+    GamepadAxis {
+        /// Device-specific axis index.
+        axis: u32,
+        /// Normalized axis position: `-1.0` to `1.0` for a stick, `0.0` to `1.0`
+        /// for a trigger, with `0.0` at rest in both cases.
+        value: f32,
+    },
     /// Gamepad connected.
-    GamepadConnected { id: u32 },
+    GamepadConnected {
+        /// Identifier assigned to the gamepad for the lifetime of the connection.
+        id: u32,
+    },
     /// Gamepad disconnected.
-    GamepadDisconnected { id: u32 },
+    GamepadDisconnected {
+        /// The identifier given by the matching [`Event::GamepadConnected`].
+        id: u32,
+    },
 }
 impl Event {
     /// Creates a mouse press event.
@@ -776,6 +989,11 @@ pub struct AsyncTask {
 }
 
 impl AsyncTask {
+    /// Boxes `f` as a task carrying `id`.
+    ///
+    /// `id` is chosen by the caller and is not checked for uniqueness; it is
+    /// carried so a scheduler can refer to the task, and `AsyncTask` itself never
+    /// reads it.
     pub fn new<F>(id: u64, f: F) -> Self
     where
         F: FnOnce() + Send + 'static,

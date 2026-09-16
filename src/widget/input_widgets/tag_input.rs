@@ -214,6 +214,10 @@ impl TagInput {
         self.base.request_redraw();
     }
 
+    /// Reverts the most recent tag/input-buffer change.
+    ///
+    /// Returns `false` and changes nothing when there is nothing to undo;
+    /// otherwise emits `tags_changed` if the tag list actually differs.
     pub fn undo(&mut self) -> bool {
         if self.undo_stack.undo().is_err() {
             return false;
@@ -222,6 +226,10 @@ impl TagInput {
         true
     }
 
+    /// Reapplies the most recently undone tag/input-buffer change.
+    ///
+    /// Returns `false` and changes nothing when there is nothing to redo;
+    /// otherwise emits `tags_changed` if the tag list actually differs.
     pub fn redo(&mut self) -> bool {
         if self.undo_stack.redo().is_err() {
             return false;
@@ -230,10 +238,12 @@ impl TagInput {
         true
     }
 
+    /// Returns whether there is a tag/input-buffer change to undo.
     pub fn can_undo(&self) -> bool {
         self.undo_stack.can_undo()
     }
 
+    /// Returns whether there is an undone tag/input-buffer change to reapply.
     pub fn can_redo(&self) -> bool {
         self.undo_stack.can_redo()
     }

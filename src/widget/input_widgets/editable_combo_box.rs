@@ -157,6 +157,13 @@ impl EditableComboBox {
         self.selected_index
     }
 
+    /// Steps back one text edit and returns `true`, or `false` when there is
+    /// nothing to undo.
+    ///
+    /// The restored text is applied through [`EditableComboBox::set_text`], so
+    /// it runs the full validation and signal path. It also clears the selection:
+    /// undoing a text change does not restore the previously selected item, and
+    /// `selected_index` becomes `None` even though the text may match an item.
     pub fn undo(&mut self) -> bool {
         if self.undo_stack.undo().is_err() {
             return false;
@@ -167,6 +174,9 @@ impl EditableComboBox {
         self.restoring_history = false;
         true
     }
+    /// Steps forward one undone edit and returns `true`, or `false` when there is
+    /// nothing to redo. Selection behaviour matches
+    /// [`EditableComboBox::undo`].
     pub fn redo(&mut self) -> bool {
         if self.undo_stack.redo().is_err() {
             return false;
@@ -177,9 +187,11 @@ impl EditableComboBox {
         self.restoring_history = false;
         true
     }
+    /// Returns `true` if [`EditableComboBox::undo`] would change the text.
     pub fn can_undo(&self) -> bool {
         self.undo_stack.can_undo()
     }
+    /// Returns `true` if [`EditableComboBox::redo`] would change the text.
     pub fn can_redo(&self) -> bool {
         self.undo_stack.can_redo()
     }

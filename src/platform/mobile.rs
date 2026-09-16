@@ -292,6 +292,36 @@ impl Platform for AndroidMobilePlatform {
         self.state.push_widget_event(WidgetTriggerEvent { widget_id, kind });
         true
     }
+
+    /// Mounts a library-painted widget onto a surface this host will present.
+    ///
+    /// The host owns the pixels (see [`Self::attach_to_native_view`]); this records
+    /// which widgets are being displayed and queues repaints for the host to drain.
+    /// Before this the mobile backend had no surface path at all, so a host that asked
+    /// could not display anything.
+    fn mount_surface(&self, _parent: ObjectId, id: ObjectId, rect: crate::core::Rect) -> bool {
+        self.state.mount_surface_record(id, rect)
+    }
+
+    /// Updates the rect of a mounted surface. `false` when `id` is not mounted.
+    fn resize_surface(&self, id: ObjectId, rect: crate::core::Rect) -> bool {
+        self.state.resize_surface_record(id, rect)
+    }
+
+    /// Releases a mounted surface.
+    fn unmount_surface(&self, id: ObjectId) -> bool {
+        self.state.unmount_surface_record(id)
+    }
+
+    /// Queues a repaint for the host to pick up. `false` when `id` is not mounted.
+    fn invalidate_surface(&self, id: ObjectId) -> bool {
+        self.state.invalidate_surface_record(id)
+    }
+
+    /// The backend displays library-painted widgets by handing the host their frames.
+    fn supports_surfaces(&self) -> bool {
+        true
+    }
 }
 impl MobilePlatformExtension for AndroidMobilePlatform {
     fn mobile_backend(&self) -> MobileBackend {
@@ -462,5 +492,42 @@ mod tests {
         assert!(!platform.attach_to_native_view(0));
         assert!(platform.attach_to_native_view(0x1234));
         assert_eq!(platform.attached_native_view(), Some(0x1234));
+    }
+
+    /// The mobile backend must host library-painted widgets: the attached native view
+    /// is the surface, and the host drains repaints from this queue.
+    #[test]
+    fn mobile_backend_hosts_widget_surfaces() {
+        let platform = AndroidMobilePlatform::new();
+        assert!(platform.supports_surfaces());
+
+        let window = platform.create_window("Window", 0, 0, 360, 780);
+        let rect = crate::core::Rect::new(0, 0, 100, 40);
+        assert!(platform.mount_surface(window, window, rect));
+        assert_eq!(platform.state.surface_rect(window), Some(rect));
+        assert_eq!(platform.state.mounted_surface_count(), 1);
+
+        // Coalesced: two invalidations in one frame produce one repaint.
+        assert!(platform.invalidate_surface(window));
+        assert!(platform.invalidate_surface(window));
+        assert_eq!(platform.state.pending_repaint_count(), 1);
+        assert_eq!(platform.state.take_pending_repaint(), Some(window));
+        assert_eq!(platform.state.pending_repaint_count(), 0);
+
+        // A gone widget cannot stay queued for a repaint nobody can produce.
+        assert!(platform.invalidate_surface(window));
+        assert!(platform.unmount_surface(window));
+        assert_eq!(platform.state.surface_rect(window), None);
+        assert_eq!(platform.state.pending_repaint_count(), 0);
+    }
+
+    /// A surface for a widget this backend never made must be refused.
+    #[test]
+    fn mobile_backend_refuses_a_surface_for_an_unknown_widget() {
+        let platform = AndroidMobilePlatform::new();
+        assert!(!platform.mount_surface(1, 9_999, crate::core::Rect::new(0, 0, 10, 10)));
+        assert!(!platform.invalidate_surface(9_999));
+        assert!(!platform.resize_surface(9_999, crate::core::Rect::new(0, 0, 10, 10)));
+        assert!(!platform.unmount_surface(9_999));
     }
 }

@@ -12,7 +12,9 @@ use super::{distance, GestureRecognizer};
 /// them changes significantly.
 #[derive(Debug, Clone)]
 pub struct PinchTouch {
+    /// Latest position of this touch in logical pixels, screen coordinates.
     pub pos: Point,
+    /// Identifier of the tracked touch, used to match move/end events to it.
     pub id: TouchId,
 }
 
@@ -27,6 +29,7 @@ pub struct PinchGesture {
 }
 
 impl PinchGesture {
+    /// Creates a recognizer with no tracked touches and no baseline distance.
     pub fn new() -> Self {
         Self { touches: Vec::with_capacity(2), initial_distance: None }
     }

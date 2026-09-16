@@ -2,6 +2,22 @@
 // SPDX-License-Identifier: MIT
 
 //! Date-time editor widget.
+//!
+//! [`DateTimeEdit`] combines the calendar date of
+//! [`Date`] with the wall-clock time of [`Time`].
+//!
+//! # Conventions
+//!
+//! * The calendar and clock conventions are exactly those of the two component
+//!   types: the month and day are **1-based**, the hour is **24-hour**
+//!   (`0` = midnight), and a whole second carries into the next minute, hour, or
+//!   day.
+//! * The widget's range is **inclusive at both ends**, and is compared as a
+//!   single [`DateTime`], so `minimum` and `maximum` each constrain the date and
+//!   the time together.
+//! * [`DateTimeEdit::set_datetime`] rejects an invalid or out-of-range value
+//!   silently rather than clamping it.
+//! * Ordering is by date first, then by time.
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -62,25 +78,62 @@ impl UndoCommand for DateTimeEditCommand {
     }
 }
 /// Combined date-time value.
+///
+/// This is a plain pair: the fields are public, so they can be replaced
+/// directly and no validation happens on assignment. Call [`DateTime::is_valid`]
+/// to check the combination, or use [`DateTimeEdit::set_datetime`], which does
+/// that check for you.
+///
+/// `Ord` compares the date first and the time only when the dates are equal, so
+/// the ordering is chronological.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DateTime {
+    /// Calendar part; see [`Date`] for the 1-based month/day convention.
     pub date: Date,
+    /// Time-of-day part; see [`Time`] for the 24-hour convention.
     pub time: Time,
 }
 impl DateTime {
+    /// Combines `date` and `time` without validating either.
     pub fn new(date: Date, time: Time) -> Self {
         Self { date, time }
     }
+    /// Returns `true` when both the date and the time are individually valid.
+    ///
+    /// Because [`Time`] clamps on construction, in practice this reduces to
+    /// [`Date::is_valid`].
     pub fn is_valid(&self) -> bool {
         self.date.is_valid() && self.time.is_valid()
     }
 }
+/// Formats the value as `"<date> <time>"`, i.e. `YYYY-MM-DD HH:MM:SS`.
+///
+/// The two components use their own `Display` implementations, so the fields
+/// are zero-padded and the millisecond component is omitted. This is the
+/// spelling [`crate::widget::capability::coercion::expect_datetime`] parses
+/// back, split on the first space; the round-trip loses any non-zero
+/// milliseconds, exactly as the components' own round-trips do.
 impl std::fmt::Display for DateTime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{} {}", self.date, self.time)
     }
 }
 /// Date-time editor widget.
+///
+/// Shows a combined date and time and allows them to be changed one second at a
+/// time (see [`DateTimeEdit::step_up`] / [`DateTimeEdit::step_down`]), one
+/// component at a time via [`DateTimeEdit::set_date`] / [`DateTimeEdit::set_time`],
+/// or through the keyboard (Up/Down step, Ctrl+Z/Ctrl+Y undo and redo).
+///
+/// The accepted range defaults to `1752-09-14 00:00:00.000 ..=
+/// 9999-12-31 23:59:59.999` and is inclusive at both ends.
+///
+/// # Display format
+///
+/// [`DateTimeEdit::display_format`] holds a format pattern string that is
+/// exposed as a property, but the widget's own `draw` always uses the fixed
+/// `YYYY-MM-DD HH:MM:SS` spelling. The pattern is stored and round-tripped, not
+/// yet applied when painting.
 pub struct DateTimeEdit {
     base: BaseWidget,
     datetime: DateTime,
@@ -88,12 +141,21 @@ pub struct DateTimeEdit {
     maximum: DateTime,
     display_format: String,
     calendar_popup: bool,
+    /// Emitted with the new value after every accepted change, including changes
+    /// produced by [`DateTimeEdit::undo`] and [`DateTimeEdit::redo`]. Not emitted
+    /// when a change is rejected or when the value is already the requested one.
     pub datetime_changed: Signal1<DateTime>,
     undo_stack: UndoStack,
     history_target: Rc<RefCell<DateTime>>,
     restoring_history: bool,
 }
 impl DateTimeEdit {
+    /// Creates a date-time editor occupying `geometry`.
+    ///
+    /// The initial value is midnight on [`Date::today`], the accepted range is
+    /// `1752-09-14 00:00:00.000 ..= 9999-12-31 23:59:59.999` (inclusive), the
+    /// display format is `"yyyy-MM-dd HH:mm:ss"`, and the calendar popup is
+    /// disabled.
     pub fn new(geometry: Rect) -> Self {
         let min_dt = DateTime::new(Date::new(1752, 9, 14), Time::new(0, 0, 0, 0));
         let max_dt = DateTime::new(Date::new(9999, 12, 31), Time::new(23, 59, 59, 999));
@@ -111,27 +173,59 @@ impl DateTimeEdit {
             restoring_history: false,
         }
     }
+    /// Returns the current combined value.
     pub fn datetime(&self) -> DateTime {
         self.datetime
     }
+    /// Returns the date part of the current value.
     pub fn date(&self) -> Date {
         self.datetime.date
     }
+    /// Returns the time part of the current value.
     pub fn time(&self) -> Time {
         self.datetime.time
     }
+    /// Returns the inclusive lower bound accepted by
+    /// [`DateTimeEdit::set_datetime`].
+    ///
+    /// Defaults to `1752-09-14 00:00:00.000`.
     pub fn minimum_datetime(&self) -> DateTime {
         self.minimum
     }
+    /// Returns the inclusive upper bound accepted by
+    /// [`DateTimeEdit::set_datetime`].
+    ///
+    /// Defaults to `9999-12-31 23:59:59.999`.
     pub fn maximum_datetime(&self) -> DateTime {
         self.maximum
     }
+    /// Returns the stored display-format pattern.
+    ///
+    /// This is a plain string; it is currently stored and round-tripped but not
+    /// interpreted when the widget paints (painting always uses
+    /// `YYYY-MM-DD HH:MM:SS`).
     pub fn display_format(&self) -> &str {
         &self.display_format
     }
+    /// Returns whether the calendar popup is enabled.
+    ///
+    /// Defaults to `false`. This is a stored flag; the widget's own `draw` does
+    /// not yet render a popup.
     pub fn calendar_popup(&self) -> bool {
         self.calendar_popup
     }
+    /// Sets the combined date-time, subject to validity and the accepted range.
+    ///
+    /// The assignment happens only when `dt` satisfies [`DateTime::is_valid`],
+    /// falls within `minimum ..= maximum` (both inclusive), and differs from the
+    /// current value; otherwise the call is a no-op and the previous value is
+    /// kept. Out-of-range input is therefore **rejected, not clamped**.
+    ///
+    /// # Side effects
+    ///
+    /// On a successful change, an undo entry is pushed (unless this call comes
+    /// from [`DateTimeEdit::undo`] / [`DateTimeEdit::redo`]), `datetime_changed`
+    /// is emitted with the new value, and a redraw is requested.
     pub fn set_datetime(&mut self, dt: DateTime) {
         if dt.is_valid() && dt >= self.minimum && dt <= self.maximum && self.datetime != dt {
             let before = self.datetime;
@@ -148,28 +242,61 @@ impl DateTimeEdit {
             self.base.request_redraw();
         }
     }
+    /// Replaces only the date, keeping the current time part.
+    ///
+    /// Delegates to [`DateTimeEdit::set_datetime`], so the combined value is
+    /// validated against the accepted range as a whole: a date that is in range
+    /// on its own may still be rejected when the retained time pushes the
+    /// combination outside `minimum ..= maximum`.
     pub fn set_date(&mut self, date: Date) {
         self.set_datetime(DateTime::new(date, self.datetime.time));
     }
+    /// Replaces only the time, keeping the current date part.
+    ///
+    /// Delegates to [`DateTimeEdit::set_datetime`] and is subject to the same
+    /// whole-value range check; see [`DateTimeEdit::set_date`].
     pub fn set_time(&mut self, time: Time) {
         self.set_datetime(DateTime::new(self.datetime.date, time));
     }
+    /// Sets the inclusive lower bound for accepted values.
+    ///
+    /// The current value is **not** re-validated against the new bound, so the
+    /// widget can be left holding a value below its own minimum.
     pub fn set_minimum_datetime(&mut self, dt: DateTime) {
         self.minimum = dt;
         self.base.request_redraw();
     }
+    /// Sets the inclusive upper bound for accepted values.
+    ///
+    /// Like [`DateTimeEdit::set_minimum_datetime`], the current value is not
+    /// re-checked against the new bound, so lowering it can leave an
+    /// out-of-range value in place.
     pub fn set_maximum_datetime(&mut self, dt: DateTime) {
         self.maximum = dt;
         self.base.request_redraw();
     }
+    /// Stores the display-format pattern.
+    ///
+    /// The string is kept verbatim; no validation is performed. See
+    /// [`DateTimeEdit::display_format`] for the current limits on its use.
     pub fn set_display_format(&mut self, fmt: String) {
         self.display_format = fmt;
         self.base.request_redraw();
     }
+    /// Enables or disables the calendar popup flag.
+    ///
+    /// Purely stored state; changing it only triggers a redraw.
     pub fn set_calendar_popup(&mut self, popup: bool) {
         self.calendar_popup = popup;
         self.base.request_redraw();
     }
+    /// Advances the value by one second, carrying into minutes, hours, and days.
+    ///
+    /// The millisecond component is preserved. The day carries into the next
+    /// month or year as needed, using the length of the month being left. The
+    /// result goes through [`DateTimeEdit::set_datetime`], so advancing beyond
+    /// [`DateTimeEdit::maximum_datetime`] is rejected and leaves the value
+    /// unchanged rather than wrapping around. A successful step is undoable.
     pub fn step_up(&mut self) {
         let mut t = self.datetime.time;
         let new_sec = t.second() + 1;
@@ -208,6 +335,15 @@ impl DateTimeEdit {
         }
         self.set_time(t);
     }
+    /// Moves the value back by one second, borrowing from minutes, hours, and
+    /// days.
+    ///
+    /// The millisecond component is preserved. The day borrows into the previous
+    /// month or year as needed, using the length of the month arrived at, so
+    /// `2024-03-01 00:00:00` steps back to `2024-02-29 23:59:59`. The change is
+    /// applied through [`DateTimeEdit::set_datetime`], so going below
+    /// [`DateTimeEdit::minimum_datetime`] is rejected and leaves the value
+    /// unchanged rather than wrapping around. A successful step is undoable.
     pub fn step_down(&mut self) {
         let mut t = self.datetime.time;
         if t.second() > 0 {
@@ -241,6 +377,11 @@ impl DateTimeEdit {
         }
         self.set_time(t);
     }
+    /// Reverts the most recent value change.
+    ///
+    /// Returns `true` if a change was undone, `false` when the undo stack is
+    /// empty. Undoing emits `datetime_changed` with the restored value and
+    /// requests a redraw, but does not push a new undo entry.
     pub fn undo(&mut self) -> bool {
         if self.undo_stack.undo().is_err() {
             return false;
@@ -248,6 +389,11 @@ impl DateTimeEdit {
         self.restore_history_datetime();
         true
     }
+    /// Re-applies the most recently undone value change.
+    ///
+    /// Returns `true` if a change was redone, `false` when there is nothing to
+    /// redo. Like [`DateTimeEdit::undo`], it emits `datetime_changed` and
+    /// requests a redraw without recording a new undo entry.
     pub fn redo(&mut self) -> bool {
         if self.undo_stack.redo().is_err() {
             return false;
@@ -255,9 +401,11 @@ impl DateTimeEdit {
         self.restore_history_datetime();
         true
     }
+    /// Returns `true` when there is at least one value change to undo.
     pub fn can_undo(&self) -> bool {
         self.undo_stack.can_undo()
     }
+    /// Returns `true` when there is at least one undone value change to redo.
     pub fn can_redo(&self) -> bool {
         self.undo_stack.can_redo()
     }

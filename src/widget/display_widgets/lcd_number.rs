@@ -37,6 +37,12 @@ pub enum SegmentStyle {
     Flat,
 }
 /// LCD number widget.
+///
+/// Displays a single floating-point or integer value in a segmented style, in
+/// one of four radices. The widget holds the number; the base-2/8/16 rendering
+/// truncates the value to an `i64`, so fractional parts are dropped — and, for
+/// values outside the `i64` range, the cast saturates rather than wrapping.
+///
 pub struct LCDNumber {
     base: BaseWidget,
     value: f64,
@@ -46,12 +52,22 @@ pub struct LCDNumber {
     small_decimal_point: bool,
     mode: LCDNumberMode,
     segment_style: SegmentStyle,
-    /// Emitted when the value changes.
+    /// Emitted with the new value whenever [`LCDNumber::set_value`] actually
+    /// changes it. Emits the *clamped* value, not the argument.
     pub value_changed: Signal1<f64>,
     /// Emitted when the display is overflowed.
+    ///
+    /// Note: nothing in this type ever emits it, and
+    /// [`LCDNumber::check_overflow`] cannot be `true` for a value set through
+    /// the public API. Treat it as declared-but-inert.
     pub overflow: GenericSignal,
 }
 impl LCDNumber {
+    /// Creates a decimal display showing `0.0`, with the range
+    /// `-999999.0 ..= 999999.0`, six digits, a normal-size decimal point, and
+    /// the filled segment style.
+    ///
+    /// `geometry` is in parent-relative logical pixels; the size hint is 80x30.
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::LCDNumber, geometry, "LCDNumber"),
@@ -66,27 +82,42 @@ impl LCDNumber {
             overflow: GenericSignal::new(),
         }
     }
+    /// Returns the displayed value, always inside `min_value ..= max_value`.
     pub fn value(&self) -> f64 {
         self.value
     }
+    /// Returns the lower display bound. Defaults to `-999999.0`.
     pub fn min_value(&self) -> f64 {
         self.min_value
     }
+    /// Returns the upper display bound. Defaults to `999999.0`.
     pub fn max_value(&self) -> f64 {
         self.max_value
     }
+    /// Returns the configured digit count, used to size the display. Always at
+    /// least `1`; defaults to `6`.
     pub fn num_digits(&self) -> i32 {
         self.num_digits
     }
+    /// Returns whether a reduced-size decimal point is used. Defaults to
+    /// `false`.
     pub fn is_small_decimal_point(&self) -> bool {
         self.small_decimal_point
     }
+    /// Returns the display radix. Defaults to [`LCDNumberMode::Dec`].
     pub fn mode(&self) -> LCDNumberMode {
         self.mode
     }
+    /// Returns the segment rendering style. Defaults to
+    /// [`SegmentStyle::Filled`].
     pub fn segment_style(&self) -> SegmentStyle {
         self.segment_style
     }
+    /// Sets the displayed value, clamped into `min_value ..= max_value`.
+    ///
+    /// A no-op when the clamped value is unchanged: no signal, no redraw.
+    /// Because of the clamp, [`LCDNumber::check_overflow`] can never be `true`
+    /// for a value set through this method.
     pub fn set_value(&mut self, value: f64) {
         let clamped = value.clamp(self.min_value, self.max_value);
         if self.value != clamped {
@@ -95,33 +126,63 @@ impl LCDNumber {
             self.base.request_redraw();
         }
     }
+    /// Sets the lower bound and re-applies it to the current value through
+    /// [`LCDNumber::set_value`], so the value is clamped into the new range.
+    ///
+    /// Setting `min` above `max` produces an inverted range; `f64::clamp`
+    /// panics in that case, so keep the bounds ordered (use
+    /// [`LCDNumber::set_max_value`] first when raising both).
     pub fn set_min_value(&mut self, min: f64) {
         self.min_value = min;
         self.set_value(self.value);
     }
+    /// Sets the upper bound and re-applies it to the current value through
+    /// [`LCDNumber::set_value`]. See [`LCDNumber::set_min_value`] for the
+    /// inverted-range caveat.
     pub fn set_max_value(&mut self, max: f64) {
         self.max_value = max;
         self.set_value(self.value);
     }
+    /// Sets the digit count, floored at `1` so the display is never zero-width.
+    /// Requests a redraw. The value itself is not re-clamped or truncated.
     pub fn set_num_digits(&mut self, digits: i32) {
         self.num_digits = digits.max(1);
         self.base.request_redraw();
     }
+    /// Chooses between a reduced-size and a normal-size decimal point.
+    /// Requests a redraw.
     pub fn set_small_decimal_point(&mut self, small: bool) {
         self.small_decimal_point = small;
         self.base.request_redraw();
     }
+    /// Sets the display radix. Requests a redraw. Changing the mode does not
+    /// change the stored value, only how it is rendered.
     pub fn set_mode(&mut self, mode: LCDNumberMode) {
         self.mode = mode;
         self.base.request_redraw();
     }
+    /// Sets the segment rendering style. Requests a redraw.
     pub fn set_segment_style(&mut self, style: SegmentStyle) {
         self.segment_style = style;
         self.base.request_redraw();
     }
+    /// Returns whether the value lies outside `min_value ..= max_value`.
+    ///
+    /// This is a comparison only. It never emits the `overflow` signal and is
+    /// not consulted by rendering — the display does not currently render an
+    /// overflow indication — so a caller wanting overflow notifications must
+    /// check this itself after calling the setter.
     pub fn check_overflow(&self) -> bool {
         self.value < self.min_value || self.value > self.max_value
     }
+    /// Renders the value as text for the current mode, without any size or
+    /// digit-count padding.
+    ///
+    /// [`LCDNumberMode::Dec`] uses the `Display` representation of the `f64`
+    /// (so very large or small magnitudes may appear in exponential notation),
+    /// and always includes a fractional part (for example `"3"` renders as
+    /// `"3"` but `3.5` as `"3.5"`). The other three modes truncate to `i64`
+    /// first, dropping any fraction.
     pub fn display_text(&self) -> String {
         match self.mode {
             LCDNumberMode::Hex => format!("{:X}", self.value as i64),

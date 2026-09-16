@@ -15,13 +15,21 @@ use crate::widget::Image;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// Button interaction state.
+///
+/// Derived from the enabled and pressed flags, never stored. Pressed and
+/// disabled are exclusive with disabled taking precedence, and hover is not
+/// represented at all — see [`Button::is_hovered`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ButtonState {
+    /// Enabled and not pressed.
     Normal,
+    /// Enabled and currently held down.
     Pressed,
+    /// Not enabled; reported even if the pressed flag was set.
     Disabled,
 }
 /// Button widget for clickable actions.
+///
 pub struct Button {
     base: BaseWidget,
     text: String,
@@ -31,8 +39,20 @@ pub struct Button {
     default_button: bool,
     focused: bool,
     hovered: bool,
+    /// Emitted on the rising edge of the pressed flag (button down).
+    ///
+    /// Suppressed entirely while the button is disabled, so a disabled button
+    /// emits no press or release. A repeated press without an intervening
+    /// release emits nothing.
     pub pressed_signal: GenericSignal,
+    /// Emitted on the falling edge of the pressed flag (button up).
+    ///
+    /// Like [`Button::pressed_signal`], suppressed while disabled — so disabling
+    /// a button that is currently held down leaves the press unreleased rather
+    /// than emitting a spurious release.
     pub released_signal: GenericSignal,
+    /// Emitted with the recomputed [`ButtonState`] whenever the pressed or
+    /// enabled flag changes. Not emitted when only the hover state changes.
     pub state_changed: Signal1<ButtonState>,
 }
 impl Button {
@@ -70,7 +90,21 @@ impl Button {
     pub fn is_pressed(&self) -> bool {
         self.pressed
     }
+    /// Returns whether the pointer is currently over this button.
+    ///
+    /// Hover is tracked from [`crate::event::Event::MouseEnter`] /
+    /// [`crate::event::Event::MouseLeave`], which the widget runtime synthesises as
+    /// the pointer moves between controls (no platform backend produces them).
+    /// Exposed so a host can style or test the hover state; `ButtonState` cannot
+    /// carry it because hover and pressed are independent.
+    pub fn is_hovered(&self) -> bool {
+        self.hovered
+    }
     /// Sets pressed state and emits transition signals when changed.
+    ///
+    /// Ignored entirely (no state change, no signals) while the button is
+    /// disabled. On a real change it emits `pressed_signal` or
+    /// `released_signal` followed by `state_changed`, and requests a redraw.
     pub fn set_pressed(&mut self, pressed: bool) {
         if !self.base.is_enabled() {
             return;
@@ -87,9 +121,14 @@ impl Button {
         self.state_changed.emit(self.state());
         self.base.request_redraw();
     }
+    /// Presses the button, via [`Button::set_pressed`] — so the signals and the
+    /// disabled check apply. Does not emit a click; the caller decides when a
+    /// press-and-release counts as an activation.
     pub fn press(&mut self) {
         self.set_pressed(true);
     }
+    /// Releases the button, via [`Button::set_pressed`]. A release without a
+    /// preceding press is a no-op because the flag is already clear.
     pub fn release(&mut self) {
         self.set_pressed(false);
     }

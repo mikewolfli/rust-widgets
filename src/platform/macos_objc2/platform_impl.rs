@@ -1,6 +1,16 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
+//! `Platform` implementation for the macOS `objc2` preview backend.
+//!
+//! Selected by the `macos` feature; the `cocoa-legacy` backend is the alternative
+//! (`src/platform/macos/`). Both are state-driven here — the same
+//! [`crate::platform::state::BackendState`] contract — with the AppKit-specific work
+//! confined to the `native` sub-module.
+//!
+//! AppKit, like GTK, must be driven from the process main thread, so the surface
+//! methods refuse rather than building a view off it.
+
 use super::types::{MacOSObjc2Platform, MacObjc2HandleKind};
 use crate::core::ObjectId;
 use crate::core::PlatformFamily;

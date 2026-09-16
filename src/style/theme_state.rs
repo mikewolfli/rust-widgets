@@ -9,36 +9,80 @@ use core::cell::RefCell;
 /// Callback type for theme mode change notifications.
 pub type ModeChangedCallback = Rc<RefCell<Vec<Box<dyn FnMut(ThemeMode)>>>>;
 
+/// The interaction state a widget is painted in.
+///
+/// States are used as lookup keys into a [`StatefulTheme`], so a widget reports
+/// whichever single state best describes it right now; the values are not
+/// mutually exclusive in reality (a widget can be both focused and hovered) and
+/// the caller decides which one wins.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, PartialOrd, Ord)]
 pub enum WidgetState {
+    /// Resting state with no interaction. The default, and the fallback state of
+    /// a [`StatefulTheme`] that does not define this key itself.
     #[default]
     Normal,
+    /// Pointer is hovering over the widget.
     Hover,
+    /// Widget is being held down by a pointer or key.
     Pressed,
+    /// Widget holds keyboard focus.
     Focused,
+    /// Widget is non-interactive; hover/press feedback is usually suppressed.
     Disabled,
+    /// A toggle-like widget is in its checked/on state.
     Checked,
+    /// The widget is one of the currently selected items in a collection.
     Selected,
+    /// The widget or window is the active/foreground one.
     Active,
+    /// The widget or window is present but not active (e.g. a background window).
     Inactive,
+    /// The widget is displaying a validation error.
     Error,
+    /// The widget is displaying a non-fatal warning.
     Warning,
+    /// The widget is confirming a completed action.
     Success,
 }
+/// The complete visual description of one widget in one [`WidgetState`].
+///
+/// Every field is a plain value; a `StateTheme` never refers to a parent theme,
+/// so overlaying one over another must be done by the caller.
 #[derive(Debug, Clone)]
 pub struct StateTheme {
+    /// Fill colour painted behind the widget.
     pub background_color: Color,
+    /// Fill colour for content drawn inside the widget, used where the widget
+    /// does not have a more specific colour (e.g. tracks and wells).
     pub foreground_color: Color,
+    /// Outline colour; only meaningful when [`Self::border_width`] is non-zero.
     pub border_color: Color,
+    /// Outline thickness in pixels. Zero disables the border entirely.
     pub border_width: u32,
+    /// Colour for text rendered by the widget. Distinct from
+    /// [`Self::foreground_color`] so text can contrast with filled shapes.
     pub text_color: Color,
+    /// Drop-shadow colour, or `None` for no shadow. Even when `Some`, the shadow
+    /// is invisible if [`Self::shadow_blur`] and the offset are both zero.
     pub shadow_color: Option<Color>,
+    /// Shadow displacement in pixels as `(dx, dy)`, positive `y` meaning
+    /// downwards. May be negative; the pair is not otherwise validated.
     pub shadow_offset: (i32, i32),
+    /// Shadow softness (blur radius) in pixels; `0` gives a hard-edged shadow.
     pub shadow_blur: u32,
+    /// Overall widget alpha in the range `0.0` (fully transparent) to `1.0`
+    /// (opaque). Clamped by [`StateTheme::with_opacity`], but a value assigned
+    /// directly to the field is not re-clamped at paint time.
     pub opacity: f32,
+    /// Arbitrary key/value extras for renderers or application code that need
+    /// styling data the typed fields do not cover (e.g. `"corner-radius"`).
+    /// Keys are free-form: the theme engine attaches no meaning to them, and a
+    /// duplicate key overwrites the previous value.
     pub custom_properties: HashMap<String, String>,
 }
 impl StateTheme {
+    /// Creates a theme with the three required colours and nothing else: no
+    /// border, no shadow, fully opaque and no custom properties.
     pub fn new(background: Color, foreground: Color, text: Color) -> Self {
         Self {
             background_color: background,
@@ -53,31 +97,47 @@ impl StateTheme {
             custom_properties: HashMap::new(),
         }
     }
+    /// Sets the border colour and thickness in pixels; a `width` of `0` leaves the
+    /// border invisible. Builder-style, returns `self`.
     pub fn with_border(mut self, color: Color, width: u32) -> Self {
         self.border_color = color;
         self.border_width = width;
         self
     }
+    /// Enables a drop shadow with the given colour, pixel `offset` as `(dx, dy)`
+    /// and blur radius in pixels. Builder-style, returns `self`.
     pub fn with_shadow(mut self, color: Color, offset: (i32, i32), blur: u32) -> Self {
         self.shadow_color = Some(color);
         self.shadow_offset = offset;
         self.shadow_blur = blur;
         self
     }
+    /// Sets overall opacity, clamping `opacity` into `0.0..=1.0` so an
+    /// out-of-range value cannot be stored. Builder-style, returns `self`.
     pub fn with_opacity(mut self, opacity: f32) -> Self {
         self.opacity = opacity.clamp(0.0, 1.0);
         self
     }
+    /// Stores an arbitrary extra property by `key`, replacing any previous value
+    /// for that key. Both strings are copied. Builder-style, returns `self`.
     pub fn with_property(mut self, key: &str, value: &str) -> Self {
         self.custom_properties.insert(key.to_string(), value.to_string());
         self
     }
 }
 impl Default for StateTheme {
+    /// A plain opaque theme: white background, black foreground and text, no
+    /// border or shadow. This is the theme returned for any [`WidgetState`] a
+    /// [`StatefulTheme`] has not explicitly defined.
     fn default() -> Self {
         Self::new(Color::WHITE, Color::BLACK, Color::BLACK)
     }
 }
+/// A named theme holding one [`StateTheme`] per [`WidgetState`].
+///
+/// States are opt-in: any state not registered via [`Self::add_state`] resolves to
+/// the single shared fallback theme, so a partially populated theme never panics
+/// or returns nothing.
 #[derive(Debug, Clone)]
 pub struct StatefulTheme {
     name: String,
@@ -88,6 +148,8 @@ pub struct StatefulTheme {
     transitions: HashMap<(WidgetState, WidgetState), u32>,
 }
 impl StatefulTheme {
+    /// Creates an empty theme with the given `name` (used only for identification
+    /// and lookup by the caller) and no registered states.
     pub fn new(name: &str) -> Self {
         Self {
             name: name.to_string(),
@@ -96,32 +158,59 @@ impl StatefulTheme {
             transitions: HashMap::new(),
         }
     }
+    /// Registers the theme used when a widget is in `state`, replacing any previous
+    /// theme for that state.
     pub fn add_state(&mut self, state: WidgetState, theme: StateTheme) {
         self.states.insert(state, theme);
     }
+    /// Looks up the theme for `state`.
+    ///
+    /// Never fails: a state that was never registered yields a reference to the
+    /// fallback theme set by [`Self::set_default_state`].
     pub fn get_state(&self, state: &WidgetState) -> &StateTheme {
         self.states.get(state).unwrap_or(&self.default_state)
     }
+    /// Replaces the theme returned for every unregistered state.
+    ///
+    /// Does not affect states that have been explicitly registered.
     pub fn set_default_state(&mut self, theme: StateTheme) {
         self.default_state = theme;
     }
+    /// Records a state-to-state transition duration in milliseconds.
+    ///
+    /// The pair is directed, so `(A, B)` and `(B, A)` are independent entries.
+    /// Stored only; nothing in this module drives animations from it.
     pub fn set_transition(&mut self, from: WidgetState, to: WidgetState, duration_ms: u32) {
         self.transitions.insert((from, to), duration_ms);
     }
+    /// Returns the transition duration in milliseconds for the directed pair
+    /// `from` -> `to`, or `None` if none was recorded. Symmetric transitions are
+    /// not implied.
     pub fn get_transition(&self, from: &WidgetState, to: &WidgetState) -> Option<u32> {
         self.transitions.get(&(*from, *to)).copied()
     }
+    /// The theme's identifying name, as passed to [`Self::new`].
     pub fn name(&self) -> &str {
         &self.name
     }
 }
+/// How a [`ThemeStateManager`] chooses between its light and dark themes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ThemeMode {
+    /// Always use the light theme. The default.
     #[default]
     Light,
+    /// Always use the dark theme.
     Dark,
+    /// Choose per [`ThemeStateManager::set_auto_switch`]; with no window
+    /// configured, falls back to the light theme.
     Auto,
 }
+/// Pairs a light and a dark [`StatefulTheme`] and tracks which is active.
+///
+/// Owns both themes for the lifetime of the manager. Not reference-counted or
+/// synchronised, so it is confined to one thread; the mode-changed callbacks are
+/// `Rc<RefCell<..>>`-based and are invoked re-entrantly from [`Self::set_mode`].
 pub struct ThemeStateManager {
     light_theme: StatefulTheme,
     dark_theme: StatefulTheme,
@@ -131,6 +220,8 @@ pub struct ThemeStateManager {
     on_mode_changed: ModeChangedCallback,
 }
 impl ThemeStateManager {
+    /// Creates a manager holding the two themes, starting in [`ThemeMode::Light`]
+    /// with automatic switching disabled and no callbacks registered.
     pub fn new(light: StatefulTheme, dark: StatefulTheme) -> Self {
         Self {
             light_theme: light,
@@ -140,6 +231,12 @@ impl ThemeStateManager {
             on_mode_changed: Rc::new(RefCell::new(Vec::new())),
         }
     }
+    /// Sets the active mode and notifies callbacks if it actually changed.
+    ///
+    /// Setting the mode it already has is a no-op as far as callbacks are
+    /// concerned. Callbacks are invoked synchronously, with the callback list
+    /// mutably borrowed, so a callback that re-enters `set_mode` will panic on the
+    /// `RefCell` borrow.
     pub fn set_mode(&mut self, mode: ThemeMode) {
         let old_mode = self.current_mode;
         self.current_mode = mode;
@@ -150,9 +247,19 @@ impl ThemeStateManager {
             }
         }
     }
+    /// The mode last set by [`Self::set_mode`], [`Self::toggle_mode`] or the
+    /// initial [`ThemeMode::Light`].
+    ///
+    /// This is the *requested* mode; it is not rewritten when [`ThemeMode::Auto`]
+    /// resolves to dark, so it can disagree with the theme [`Self::current_theme`]
+    /// actually returns.
     pub fn current_mode(&self) -> ThemeMode {
         self.current_mode
     }
+    /// Borrows whichever of the two themes is currently active.
+    ///
+    /// [`ThemeMode::Light`] and [`ThemeMode::Dark`] return their theme directly;
+    /// [`ThemeMode::Auto`] consults the time window from [`Self::set_auto_switch`].
     pub fn current_theme(&self) -> &StatefulTheme {
         match self.current_mode {
             ThemeMode::Light => &self.light_theme,
@@ -166,6 +273,11 @@ impl ThemeStateManager {
             }
         }
     }
+    /// Flips between light and dark, going through [`Self::set_mode`] so callbacks
+    /// fire.
+    ///
+    /// Toggling from [`ThemeMode::Auto`] selects light rather than dark, which is
+    /// not a strict inversion of the auto-resolved theme.
     pub fn toggle_mode(&mut self) {
         let new_mode = match self.current_mode {
             ThemeMode::Light => ThemeMode::Dark,
@@ -174,9 +286,22 @@ impl ThemeStateManager {
         };
         self.set_mode(new_mode);
     }
+    /// Enables [`ThemeMode::Auto`] resolution using an hour window.
+    ///
+    /// `hour_start` and `hour_end` are UTC hours in `0..24`, and dark mode is
+    /// chosen when the current hour is in `[hour_start, hour_end)`. The window
+    /// does not wrap past midnight, so `(22, 6)` never selects dark; use
+    /// `(0, 6)` plus `(22, 24)` semantics in application code if needed. Calling
+    /// this does not by itself switch the mode to [`ThemeMode::Auto`].
     pub fn set_auto_switch(&mut self, hour_start: u8, hour_end: u8) {
         self.auto_switch_threshold = Some((hour_start, hour_end));
     }
+    /// Resolves whether the automatic window currently calls for the dark theme.
+    ///
+    /// Compares against the system clock read as UTC whole hours from the Unix
+    /// epoch, which is approximate for local-time expectations. Returns `false`
+    /// when no window is configured or the clock is unavailable (an error is
+    /// treated as the epoch).
     fn should_use_dark(&self) -> bool {
         if let Some((start, end)) = self.auto_switch_threshold {
             let now = std::time::SystemTime::now()
@@ -190,6 +315,9 @@ impl ThemeStateManager {
             false
         }
     }
+    /// Looks up the [`StateTheme`] for `state` in the theme that is currently
+    /// active, falling back to that theme's default state as
+    /// [`StatefulTheme::get_state`] does.
     pub fn get_state_theme(&self, state: &WidgetState) -> &StateTheme {
         self.current_theme().get_state(state)
     }

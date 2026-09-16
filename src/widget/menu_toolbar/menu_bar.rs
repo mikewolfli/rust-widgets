@@ -12,44 +12,79 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// A top-level menu entry in the menu bar.
+///
+/// Entries carry only a title and an enabled flag; the menu contents they open
+/// live in a separate menu model, not here.
 #[derive(Debug, Clone)]
 pub struct MenuBarEntry {
     title: String,
     enabled: bool,
 }
 impl MenuBarEntry {
+    /// Creates an enabled entry with the given title.
     pub fn new(title: impl Into<String>) -> Self {
         Self { title: title.into(), enabled: true }
     }
 
     // --- Accessors ---
 
+    /// Returns the label drawn in the bar.
     pub fn title(&self) -> &str {
         &self.title
     }
 
+    /// Replaces the label. The bar's layout is derived from title width, so
+    /// changing this shifts the entries that follow it.
     pub fn set_title(&mut self, title: impl Into<String>) {
         self.title = title.into();
     }
 
+    /// Returns whether the entry accepts mouse input.
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }
 
+    /// Enables or disables the entry.
+    ///
+    /// A disabled entry is still drawn, in a greyed colour, but click and hover
+    /// do not activate it — in particular no `triggered` or `hovered_entry`
+    /// signal is emitted for it.
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
     }
 }
 /// Menu bar widget.
+///
+/// A horizontal strip of top-level entries, exactly one of which may be active
+/// (i.e. its drop-down is considered open). The bar manages only the entries,
+/// the pointer cursor, and the signals; it does not own or display drop-down
+/// menus, so a consumer is expected to open the matching menu in response to
+/// [`MenuBar::triggered`].
+///
+/// Entry hit areas are estimated from title length rather than measured against
+/// real glyph advances, so very wide or narrow fonts can make the clickable
+/// regions disagree with the drawn text.
+///
 pub struct MenuBar {
     base: BaseWidget,
     entries: Vec<MenuBarEntry>,
     active_index: Option<usize>,
     hovered_index: Option<usize>,
+    /// Emitted with the clicked entry's title when an enabled entry is pressed
+    /// with the primary mouse button. The payload is the title text, not the
+    /// index — duplicate titles are therefore indistinguishable, and renaming
+    /// an entry after the fact makes previously received payloads stale.
     pub triggered: Signal1<String>,
+    /// Emitted with the title of the entry the pointer newly entered. Not
+    /// emitted when the pointer moves to a different disabled entry, and not
+    /// re-emitted while the pointer stays on the same entry.
     pub hovered_entry: Signal1<String>,
 }
 impl MenuBar {
+    /// Creates an empty bar with no active or hovered entry.
+    ///
+    /// `geometry` is in parent-relative logical pixels; the size hint is
+    /// 400x28.
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::MenuBar, geometry, "MenuBar"),
@@ -60,34 +95,60 @@ impl MenuBar {
             hovered_entry: Signal1::new(),
         }
     }
+    /// Returns the entries in visual order.
     pub fn entries(&self) -> &[MenuBarEntry] {
         &self.entries
     }
+    /// Returns the index of the active entry, or `None` when no entry is
+    /// active.
+    ///
+    /// "Active" means the entry was last clicked. It is cleared by pressing
+    /// Escape and by [`MenuBar::clear`], but **not** by clicking a different
+    /// entry (that entry simply becomes the new active one) nor by
+    /// [`MenuBar::remove_menu`].
     pub fn active_index(&self) -> Option<usize> {
         self.active_index
     }
+    /// Returns the index currently under the pointer, or `None` when the
+    /// pointer is outside every entry.
     pub fn hovered_index(&self) -> Option<usize> {
         self.hovered_index
     }
+    /// Appends an entry and returns its index.
+    ///
+    /// Indices are positions in the list and therefore shift when an earlier
+    /// entry is removed.
     pub fn add_menu(&mut self, title: impl Into<String>) -> usize {
         let idx = self.entries.len();
         self.entries.push(MenuBarEntry::new(title));
         idx
     }
+    /// Removes the entry at `index`; out-of-range indices are ignored.
+    ///
+    /// Indices after the removal point shift down by one, but
+    /// [`MenuBar::active_index`] and [`MenuBar::hovered_index`] are **not**
+    /// adjusted, so a cursor can end up pointing at a different entry than the
+    /// one it was set for. The active entry can also be removed entirely,
+    /// leaving `active_index` out of range of the list.
     pub fn remove_menu(&mut self, index: usize) {
         if index < self.entries.len() {
             self.entries.remove(index);
         }
     }
+    /// Enables or disables the entry at `index`. Out-of-range indices are
+    /// ignored, but a redraw is still requested in that case.
     pub fn set_menu_enabled(&mut self, index: usize, enabled: bool) {
         if let Some(e) = self.entries.get_mut(index) {
             e.set_enabled(enabled);
         }
         self.base.request_redraw();
     }
+    /// Returns whether the entry at `index` is enabled, or `None` when the
+    /// index is out of range.
     pub fn menu_enabled(&self, index: usize) -> Option<bool> {
         self.entries.get(index).map(|entry| entry.is_enabled())
     }
+    /// Removes every entry and clears both the active and hovered cursors.
     pub fn clear(&mut self) {
         self.entries.clear();
         self.active_index = None;

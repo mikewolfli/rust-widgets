@@ -61,28 +61,127 @@ impl std::error::Error for BatchError {}
 /// A single draw command that can be recorded into a batch.
 ///
 /// Each variant describes a primitive operation the renderer can replay.
+/// Commands are replayed in the order they were recorded, so later commands
+/// paint over earlier ones. Two commands are stateful rather than immediate:
+/// [`BatchCommand::Translate`] and [`BatchCommand::SetOpacity`] accumulate into
+/// the replay transform and affect every *subsequent* command in the batch,
+/// exactly like their counterparts in an immediate-mode draw list.
 #[derive(Debug, Clone)]
 pub enum BatchCommand {
     /// Fill a rectangle with a solid colour.
-    FillRect { rect: Rect, color: Color },
+    ///
+    /// `color`'s alpha is multiplied by the active opacity, and the rectangle
+    /// is offset by the active translation.
+    FillRect {
+        /// Target rectangle in batch-local pixel coordinates.
+        rect: Rect,
+        /// Fill colour.
+        color: Color,
+    },
     /// Stroke a rectangular border.
-    StrokeRect { rect: Rect, color: Color, width: f32 },
+    ///
+    /// Translated by the active offset; `width` is in pixels and is truncated
+    /// to an integer by the replay path.
+    StrokeRect {
+        /// Rectangle whose outline is stroked.
+        rect: Rect,
+        /// Stroke colour, with alpha scaled by the active opacity.
+        color: Color,
+        /// Stroke width in pixels.
+        width: f32,
+    },
     /// Draw a line between two points.
-    DrawLine { from: Point, to: Point, color: Color, width: f32 },
+    ///
+    /// Both endpoints are offset by the active translation; `width` is in
+    /// pixels and is truncated to an integer by the replay path.
+    DrawLine {
+        /// Start point, in batch-local pixel coordinates.
+        from: Point,
+        /// End point, in batch-local pixel coordinates.
+        to: Point,
+        /// Stroke colour, with alpha scaled by the active opacity.
+        color: Color,
+        /// Stroke width in pixels.
+        width: f32,
+    },
     /// Draw an image identified by its resource id.
-    DrawImage { rect: Rect, image_id: ObjectId, opacity: f32 },
+    ///
+    /// The replay path looks the id up in the backend's image cache, which
+    /// must already contain raw RGBA bytes for it; an unknown id logs a warning
+    /// and the command is dropped. The per-command `opacity` is multiplied by
+    /// the active opacity and, when the product is below `1.0`, baked into the
+    /// image's alpha bytes before drawing.
+    DrawImage {
+        /// Destination rectangle, offset by the active translation.
+        rect: Rect,
+        /// Cache key of the source image.
+        image_id: ObjectId,
+        /// Multiplier in `0.0..=1.0` applied to the image's alpha channel.
+        opacity: f32,
+    },
     /// Draw a clipped region of an image.
-    DrawImageSubrect { dest: Rect, source: Rect, image_id: ObjectId, opacity: f32 },
+    ///
+    /// # Deprecated behaviour
+    ///
+    /// The current replay implementation drops this command and logs a warning,
+    /// because the image cache stores raw pixel bytes without the source
+    /// dimensions needed to compute the source rectangle. Record it only if a
+    /// future backend is expected to support cropping.
+    DrawImageSubrect {
+        /// Destination rectangle on the surface.
+        dest: Rect,
+        /// Sub-rectangle of the source image to draw.
+        source: Rect,
+        /// Cache key of the source image.
+        image_id: ObjectId,
+        /// Multiplier in `0.0..=1.0` applied to the image's alpha channel.
+        opacity: f32,
+    },
     /// Draw text at the given position.
-    DrawText { position: Point, text: String, color: Color, font_size: f32 },
+    ///
+    /// Replay renders with the batch's fixed default font family and
+    /// `font_size`, left-aligned, so the recorded text carries no font or
+    /// alignment of its own.
+    DrawText {
+        /// Baseline start point, offset by the active translation.
+        position: Point,
+        /// Text to draw.
+        text: String,
+        /// Text colour, with alpha scaled by the active opacity.
+        color: Color,
+        /// Font size in logical points.
+        font_size: f32,
+    },
     /// Push a clipping rectangle – subsequent commands are clipped.
-    PushClip { rect: Rect },
+    ///
+    /// Translated by the active offset, and intersected with any enclosing
+    /// clip. Must be balanced by a matching [`BatchCommand::PopClip`].
+    PushClip {
+        /// Clip rectangle in batch-local pixel coordinates.
+        rect: Rect,
+    },
     /// Pop the most recent clipping rectangle.
     PopClip,
     /// Apply a translation offset to all subsequent commands.
-    Translate { dx: f32, dy: f32 },
+    ///
+    /// The offsets accumulate rather than replace, and survive until the end of
+    /// the batch: there is no "reset translation" command. Recorded clips are
+    /// not affected retroactively.
+    Translate {
+        /// Additional X offset in pixels, added to the current translation.
+        dx: f32,
+        /// Additional Y offset in pixels, added to the current translation.
+        dy: f32,
+    },
     /// Apply an opacity multiplier to all subsequent commands.
-    SetOpacity { opacity: f32 },
+    ///
+    /// The multiplier is applied cumulatively (it multiplies the running
+    /// value) and only affects alpha-bearing primitives, i.e. fills, strokes,
+    /// lines, text, and images.
+    SetOpacity {
+        /// Multiplier in `0.0..=1.0`; `1.0` leaves alpha unchanged.
+        opacity: f32,
+    },
 }
 
 /// Trait implemented by renderers that can record and replay draw batches.
@@ -102,25 +201,57 @@ pub enum BatchCommand {
 /// }
 /// ```
 pub trait BatchRenderer {
-    /// Begin recording a new batch. Returns the batch id.
+    /// Opens a new, empty batch and returns its identifier.
+    ///
+    /// Identifiers are allocated monotonically per renderer and are never
+    /// reused, so a stale id simply becomes "not found" rather than aliasing a
+    /// newer batch. Only one batch is open at a time: calling this while
+    /// another batch is open abandons the previous one without closing it, and
+    /// subsequent [`BatchRenderer::record`] calls go to the new batch.
     fn begin_batch(&mut self) -> BatchId;
 
-    /// Finish recording the current batch.
+    /// Closes the batch opened by the last [`BatchRenderer::begin_batch`].
+    ///
+    /// The recorded commands are retained for later
+    /// [`BatchRenderer::replay`]; nothing is drawn here. Recording after this
+    /// call fails with [`BatchError::NoActiveBatch`]. Calling it with no open
+    /// batch is a no-op.
     fn end_batch(&mut self);
 
-    /// Record a single command into the currently open batch.
+    /// Appends one command to the currently open batch.
+    ///
+    /// Commands are stored verbatim and in order; no drawing happens until
+    /// [`BatchRenderer::replay`] is called.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BatchError::NoActiveBatch`] when there is no open batch, i.e.
+    /// [`BatchRenderer::begin_batch`] was not called or
+    /// [`BatchRenderer::end_batch`] has already closed it.
     fn record(&mut self, cmd: BatchCommand) -> Result<(), BatchError>;
 
-    /// Replay a previously recorded batch by its id.
+    /// Re-draws a previously recorded batch immediately.
+    ///
+    /// Commands are executed in recorded order, so later commands overdraw
+    /// earlier ones. Batches are not consumed and can be replayed repeatedly.
+    /// Replaying an id that was never created or has been destroyed is a
+    /// no-op.
     fn replay(&mut self, id: BatchId);
 
-    /// Remove a batch and free its resources.
+    /// Removes a batch and discards its recorded commands.
+    ///
+    /// If `id` is the batch currently being recorded, recording is closed as
+    /// well, so subsequent [`BatchRenderer::record`] calls fail. Unknown ids
+    /// are ignored. Ids are not recycled, so `id` never becomes valid again.
     fn destroy_batch(&mut self, id: BatchId);
 
-    /// Check whether a batch id is still valid.
+    /// Returns `true` while `id` still refers to a live batch.
+    ///
+    /// A batch is live from its [`BatchRenderer::begin_batch`] until
+    /// [`BatchRenderer::destroy_batch`].
     fn contains_batch(&self, id: BatchId) -> bool;
 
-    /// Return the number of currently recorded batches.
+    /// Returns the number of live batches, including any currently open one.
     fn batch_count(&self) -> usize;
 }
 
@@ -369,32 +500,51 @@ impl BatchState {
 }
 
 impl BatchRenderer for SoftwarePaintBackend {
+    /// Opens a new batch in this backend's [`BatchState`].
     fn begin_batch(&mut self) -> BatchId {
         self.batch_state.begin_batch()
     }
 
+    /// Closes the current batch, keeping its commands available for replay.
     fn end_batch(&mut self) {
         self.batch_state.end_batch()
     }
 
+    /// Appends a command to the current batch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BatchError::NoActiveBatch`] when no batch is open.
     fn record(&mut self, cmd: BatchCommand) -> Result<(), BatchError> {
         self.batch_state.record(cmd)
     }
 
+    /// Replays the batch through this backend's own paint path.
+    ///
+    /// The batch state is cloned first so the immutable borrow taken by the
+    /// lookup does not conflict with the mutable borrow required to paint;
+    /// this makes replay O(number of commands) in allocations and means edits
+    /// to the backend made during replay do not affect the commands remaining
+    /// to be drawn.
     fn replay(&mut self, id: BatchId) {
         // Clone the state to avoid borrow issues, then replay.
         let state = self.batch_state.clone();
         state.replay(self, id);
     }
 
+    /// Drops a batch and its recorded commands.
+    ///
+    /// If the id is the batch currently open, recording is closed too.
     fn destroy_batch(&mut self, id: BatchId) {
         self.batch_state.destroy_batch(id)
     }
 
+    /// Returns whether the id still refers to a live batch.
     fn contains_batch(&self, id: BatchId) -> bool {
         self.batch_state.contains_batch(id)
     }
 
+    /// Returns the number of live batches held by this backend.
     fn batch_count(&self) -> usize {
         self.batch_state.batch_count()
     }

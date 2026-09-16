@@ -18,15 +18,23 @@ pub enum Alignment {
 /// Horizontal alignment options for widget and layout APIs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HorizontalAlignment {
+    /// Content is flush with the left edge of the container.
     Left,
+    /// Content is horizontally centered; the value is also a valid
+    /// [`VerticalAlignment`] value, so `Center` is the one variant shared by
+    /// both axes.
     Center,
+    /// Content is flush with the right edge of the container.
     Right,
 }
 /// Vertical alignment options for widget and layout APIs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerticalAlignment {
+    /// Content is flush with the top edge of the container.
     Top,
+    /// Content is vertically centered; shared with [`HorizontalAlignment::Center`].
     Center,
+    /// Content is flush with the bottom edge of the container.
     Bottom,
 }
 impl HorizontalAlignment {

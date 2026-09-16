@@ -18,24 +18,40 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// File dialog mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileDialogMode {
+    /// Choose a single existing file.
     OpenFile,
+    /// Choose one or more existing files.
     OpenFiles,
+    /// Choose a destination path, which need not exist yet.
     SaveFile,
+    /// Choose a directory rather than a file.
     SelectDirectory,
 }
 /// File name filter entry.
 #[derive(Debug, Clone)]
 pub struct FileFilter {
+    /// The human-readable filter name shown in the dialog's filter drop-down,
+    /// e.g. `"Images"`.
     pub description: String,
+    /// The extensions the filter accepts, written **without** the leading dot —
+    /// `"png"`, not `".png"`. [Self's `Display`] is what adds the `*.` prefix, so
+    /// storing a dotted value here produces `"*.png"`-style duplication in the
+    /// rendered filter text. The single entry `"*"` means "all files".
     pub extensions: Vec<String>,
 }
 impl FileFilter {
+    /// Builds a filter from its description and extension list.
+    ///
+    /// Nothing is validated or normalised: extensions are stored exactly as
+    /// given, dots included, so the caller is responsible for the no-dot
+    /// convention described on [`FileFilter::extensions`].
     pub fn new(description: impl Into<String>, extensions: Vec<impl Into<String>>) -> Self {
         Self {
             description: description.into(),
             extensions: extensions.into_iter().map(|e| e.into()).collect(),
         }
     }
+    /// The catch-all filter: a translated "all files" description matching `*`.
     pub fn all_files() -> Self {
         Self::new(tr!("dialog.file_dialog.all_files_filter"), vec!["*"])
     }
@@ -56,13 +72,25 @@ pub struct FileDialog {
     name_filters: Vec<FileFilter>,
     current_filter: usize,
     modal: bool,
+    /// Emitted by [`FileDialog::accept`] with the full selection — every chosen
+    /// path, not just the first. Not emitted when nothing is selected.
     pub files_selected: Signal1<Vec<String>>,
+    /// Emitted by [`FileDialog::select_file`] with the newly chosen path.
     pub file_selected: Signal1<String>,
+    /// Emitted when the file under the cursor changes. Nothing in this widget
+    /// emits it — it has no file list of its own to move through — so it exists
+    /// for a host that drives the selection.
     pub current_changed: Signal1<String>,
+    /// Emitted by [`FileDialog::accept`], after `files_selected`.
     pub accepted: GenericSignal,
+    /// Emitted by [`FileDialog::reject`].
     pub rejected: GenericSignal,
 }
 impl FileDialog {
+    /// Creates an open-file dialog in `geometry`.
+    ///
+    /// Starts in [`FileDialogMode::OpenFile`], modal, with an empty directory and
+    /// selection, and a single "all files" filter selected.
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::FileDialog, geometry, "FileDialog"),
@@ -80,46 +108,88 @@ impl FileDialog {
             rejected: GenericSignal::new(),
         }
     }
+    /// Whether the dialog blocks interaction with its owner while open.
+    ///
+    /// This is a stored flag: nothing in this widget enforces modality, so the
+    /// host is what must act on it. On by default.
     pub fn is_modal(&self) -> bool {
         self.modal
     }
+    /// Sets the modality flag and repaints. See [`FileDialog::is_modal`].
     pub fn set_modal(&mut self, modal: bool) {
         self.modal = modal;
         self.base.request_redraw();
     }
+    /// Creates a dialog configured to open a single existing file.
+    ///
+    /// Equivalent to [`FileDialog::new`] followed by setting the mode, which is
+    /// also the title's source: the title is set to the translated "open file"
+    /// string, so any directory or selection the caller had set is not preserved
+    /// (there is none yet — this is a constructor).
     pub fn open_file(geometry: Rect) -> Self {
         let mut d = Self::new(geometry);
         d.mode = FileDialogMode::OpenFile;
         d.title = tr!("dialog.file_dialog.open_file");
         d
     }
+    /// Creates a dialog configured to choose a save destination.
+    ///
+    /// Like [`FileDialog::open_file`], the title is set to the translated "save
+    /// file" string.
     pub fn save_file(geometry: Rect) -> Self {
         let mut d = Self::new(geometry);
         d.mode = FileDialogMode::SaveFile;
         d.title = tr!("dialog.file_dialog.save_file");
         d
     }
+    /// What the dialog is choosing.
     pub fn mode(&self) -> FileDialogMode {
         self.mode
     }
+    /// The dialog's title, as shown in its header bar.
     pub fn title(&self) -> &str {
         &self.title
     }
+    /// The directory the dialog is browsing, or `""` when none was set.
+    ///
+    /// Nothing in this widget populates it: it is a slot the host fills in, and
+    /// no file listing is read from it here.
     pub fn directory(&self) -> &str {
         &self.directory
     }
+    /// Every path currently selected, in selection order. Empty until
+    /// [`FileDialog::select_file`] is called; this widget never populates it from
+    /// a directory listing.
     pub fn selected_files(&self) -> &[String] {
         &self.selected_files
     }
+    /// The first selected path, or `None` when the selection is empty.
+    ///
+    /// This is the convenience accessor for the single-selection modes; for
+    /// [`FileDialogMode::OpenFiles`] read [`FileDialog::selected_files`], since
+    /// this discards all but the first.
     pub fn selected_file(&self) -> Option<&str> {
         self.selected_files.first().map(|s| s.as_str())
     }
+    /// The configured file name filters, in the order they are offered.
     pub fn name_filters(&self) -> &[FileFilter] {
         &self.name_filters
     }
+    /// The filter currently in effect.
+    ///
+    /// Always the first filter after construction or
+    /// [`FileDialog::set_name_filters`], because nothing here changes the
+    /// selection. `None` only if the filter list was emptied.
     pub fn current_filter(&self) -> Option<&FileFilter> {
         self.name_filters.get(self.current_filter)
     }
+    /// Switches the dialog to `mode` and repaints.
+    ///
+    /// The title is **overwritten** with the translated string for the new mode —
+    /// open file for the two open modes, save file for
+    /// [`FileDialogMode::SaveFile`], select directory for
+    /// [`FileDialogMode::SelectDirectory`] — so a custom title must be reapplied
+    /// afterwards with [`FileDialog::set_title`].
     pub fn set_mode(&mut self, mode: FileDialogMode) {
         self.mode = mode;
         self.title = tr!(match mode {
@@ -129,24 +199,46 @@ impl FileDialog {
         });
         self.base.request_redraw();
     }
+    /// Sets the title shown in the header bar and repaints.
     pub fn set_title(&mut self, title: impl Into<String>) {
         self.title = title.into();
         self.base.request_redraw();
     }
+    /// Sets the directory the dialog reports as current and repaints.
+    ///
+    /// Purely informational — see [`FileDialog::directory`].
     pub fn set_directory(&mut self, dir: impl Into<String>) {
         self.directory = dir.into();
         self.base.request_redraw();
     }
+    /// Replaces the filter list and repaints.
+    ///
+    /// Resets the current filter to the first one, so any previous selection is
+    /// lost. Passing an empty list leaves [`FileDialog::current_filter`]
+    /// returning `None`.
     pub fn set_name_filters(&mut self, filters: Vec<FileFilter>) {
         self.name_filters = filters;
         self.current_filter = 0;
         self.base.request_redraw();
     }
+    /// Replaces the selection with a single path and emits `file_selected` with
+    /// it.
+    ///
+    /// This is a **setter, not a toggle**: any previous selection is discarded,
+    /// so it cannot be used to build up a multi-file selection for
+    /// [`FileDialogMode::OpenFiles`]. No repaint is requested.
     pub fn select_file(&mut self, path: impl Into<String>) {
         let path = path.into();
         self.selected_files = vec![path.clone()];
         self.file_selected.emit(path);
     }
+    /// Confirms the dialog: emits `files_selected` with the whole selection (or
+    /// nothing at all when the selection is empty), then `accepted`, then hides
+    /// the dialog.
+    ///
+    /// The selection is **not** cleared, so it can be read back after the dialog
+    /// closes. Pressing Enter (key code 13) while the dialog is enabled and
+    /// visible does the same.
     pub fn accept(&mut self) {
         if !self.selected_files.is_empty() {
             self.files_selected.emit(self.selected_files.clone());
@@ -154,6 +246,11 @@ impl FileDialog {
         self.accepted.emit();
         self.hide();
     }
+    /// Cancels the dialog: clears the selection, emits `rejected`, and hides the
+    /// dialog.
+    ///
+    /// Unlike [`FileDialog::accept`] the selection is discarded, so it cannot be
+    /// read back afterwards. Pressing Escape (key code 27) has the same effect.
     pub fn reject(&mut self) {
         self.selected_files.clear();
         self.rejected.emit();

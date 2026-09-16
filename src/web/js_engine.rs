@@ -3,27 +3,51 @@
 
 use crate::compat::HashMap;
 use std::sync::{Arc, Mutex};
+/// A JavaScript value in the engine-neutral subset understood by this module.
+///
+/// Mirrors the ECMAScript value types, but only shallowly: collections are plain
+/// Rust containers with no prototype chain, getters or cycles, and [`Self::Ident`]
+/// is an internal parsing artefact that is never a real runtime value.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum JsValue {
+    /// The absence of a value; the default, corresponding to `undefined`.
     #[default]
     Undefined,
+    /// The explicit empty value `null`.
     Null,
+    /// A boolean `true`/`false`.
     Boolean(bool),
+    /// An IEEE-754 double, which also carries `NaN` and `Infinity`.
     Number(f64),
+    /// A string.
     String(String),
+    /// A dense, ordered list of values; sparse arrays are not representable.
     Array(Vec<JsValue>),
+    /// A string-keyed map of values. Iteration order is the map's, not
+    /// insertion order, so it may differ from the script that built it.
     Object(HashMap<String, JsValue>),
+    /// A reference to a callable known only by `name` (e.g. a built-in such as
+    /// `parseInt`); the name is resolved later by the engine.
     Function(String),
     /// An identifier reference (used during parsing).
     Ident(String),
     /// A function with a parameter list and body source.
     FunctionDef {
+        /// Function name as written in the script.
         name: String,
+        /// Parameter names, in declaration order; position determines which
+        /// argument is bound to which parameter.
         params: Vec<String>,
+        /// The function body as raw source text, re-parsed on each call.
         body: String,
     },
 }
 impl JsValue {
+    /// Whether this value counts as `true` in a JavaScript boolean context.
+    ///
+    /// Follows ECMAScript `ToBoolean`: `undefined`/`null` are false, `NaN` and
+    /// both zeros are false, empty strings, arrays and objects are false, while
+    /// functions are always true.
     pub fn is_truthy(&self) -> bool {
         match self {
             JsValue::Undefined | JsValue::Null => false,
@@ -36,6 +60,12 @@ impl JsValue {
             JsValue::Function(_) | JsValue::FunctionDef { .. } => true,
         }
     }
+    /// Renders the value as display text using JavaScript-like rules.
+    ///
+    /// Intended for logging and diagnostics, not for round-tripping: strings are
+    /// returned unquoted, arrays/objects are rendered recursively with
+    /// `[...]`/`{...}`, and a `Number` uses Rust's formatting, so `NaN` and
+    /// `Infinity` print as `NaN`/`inf` rather than the ECMAScript spellings.
     #[allow(clippy::inherent_to_string)]
     pub fn to_string(&self) -> String {
         match self {
@@ -60,6 +90,12 @@ impl JsValue {
             }
         }
     }
+    /// Converts the value to a number following ECMAScript `ToNumber`.
+    ///
+    /// `undefined` and every composite value (array, object, function, identifier)
+    /// become `NaN`, since this does not attempt `valueOf`/`toString` coercions.
+    /// `null` becomes `0`, booleans become `1`/`0`, and a string is parsed as a
+    /// Rust float — so `"12px"` yields `NaN` rather than `12` as JS would.
     pub fn to_number(&self) -> f64 {
         match self {
             JsValue::Undefined => f64::NAN,
@@ -80,21 +116,39 @@ impl JsValue {
             | JsValue::FunctionDef { .. } => f64::NAN,
         }
     }
+    /// Converts the value to a boolean with the same truthiness rules as
+    /// [`Self::is_truthy`]; provided for symmetry with [`Self::to_number`].
     pub fn to_boolean(&self) -> bool {
         self.is_truthy()
     }
 }
+/// An error raised while evaluating a script.
+///
+/// Deliberately plain data rather than a rich exception type: there is no
+/// wrapped JavaScript value, no error kind, and no cause chain.
 #[derive(Debug, Clone)]
 pub struct JsError {
+    /// Human-readable description. Built-in errors carry no prefix, but the
+    /// [`std::fmt::Display`] impl prepends `JsError: ` when printing.
     pub message: String,
+    /// Optional captured call stack, or `None` when none was recorded. Error
+    /// constructors in this module never populate it.
     pub stack: Option<String>,
+    /// 1-based source line, or `None` if unknown. At least one producer in this
+    /// module reports position using the *character offset* while labelling it as
+    /// a line, so do not assume strict 1-based line semantics.
     pub line: Option<u32>,
+    /// Column, or `None` if unknown. Only meaningful alongside [`Self::line`];
+    /// [`std::fmt::Display`] prints both or neither.
     pub column: Option<u32>,
 }
 impl JsError {
+    /// Creates an error with just a message; stack, line and column are unset.
     pub fn new(message: String) -> Self {
         Self { message, stack: None, line: None, column: None }
     }
+    /// Creates an error carrying a source position, both values 1-based by
+    /// convention. The stack remains unset.
     pub fn with_location(message: String, line: u32, column: u32) -> Self {
         Self { message, stack: None, line: Some(line), column: Some(column) }
     }
@@ -109,29 +163,53 @@ impl std::fmt::Display for JsError {
     }
 }
 impl std::error::Error for JsError {}
+/// Result alias for evaluation: `Ok` holds the script's value, `Err` a
+/// [`JsError`].
 pub type JsResult<T> = Result<T, JsError>;
 
+/// Per-evaluation state: the global namespace plus captured console output.
+///
+/// A context must be passed explicitly to every [`JsEngine`] call rather than
+/// being owned by the engine, which is what lets several engines share (or each
+/// keep separate) globals. It is a plain value type with no interior mutability.
 #[derive(Debug, Clone)]
 pub struct JsContext {
     global: HashMap<String, JsValue>,
     console_messages: Vec<ConsoleMessage>,
 }
+/// A single captured `console.*` call.
 #[derive(Debug, Clone)]
 pub struct ConsoleMessage {
+    /// Severity of the call. Note the simple engine funnels every console method
+    /// through [`JsContext::log`] and so always reports [`ConsoleLevel::Log`].
     pub level: ConsoleLevel,
+    /// The already-stringified argument, not a live [`JsValue`].
     pub message: String,
+    /// Source line, or `0` when unknown — which is the case for every message
+    /// produced by the simple engine, so `0` is not a real line number.
     pub line: u32,
+    /// Source identifier (e.g. a file name); empty when unknown, which is again
+    /// always the case for the simple engine.
     pub source: String,
 }
+/// Severity of a [`ConsoleMessage`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConsoleLevel {
+    /// `console.log` — ordinary informational output.
     Log,
+    /// `console.info` — informational output, typically non-critical.
     Info,
+    /// `console.warn` — a non-fatal problem worth reporting.
     Warn,
+    /// `console.error` — a failure.
     Error,
+    /// `console.debug` — verbose developer output.
     Debug,
 }
 impl JsContext {
+    /// Creates an empty context seeded with the three globals `undefined`,
+    /// `NaN` and `Infinity`, so scripts referencing them resolve without the
+    /// engine having to special-case them.
     pub fn new() -> Self {
         let mut global = HashMap::new();
         global.insert("undefined".to_string(), JsValue::Undefined);
@@ -139,19 +217,29 @@ impl JsContext {
         global.insert("Infinity".to_string(), JsValue::Number(f64::INFINITY));
         Self { global, console_messages: Vec::new() }
     }
+    /// Defines or overwrites the global named `name`.
+    ///
+    /// There is no error and no notice when overwriting an existing global,
+    /// including the seeded `undefined`/`NaN`/`Infinity`.
     pub fn set_global(&mut self, name: &str, value: JsValue) {
         self.global.insert(name.to_string(), value);
     }
+    /// Borrows the global named `name`, or `None` if it was never defined.
     pub fn get_global(&self, name: &str) -> Option<&JsValue> {
         self.global.get(name)
     }
+    /// All console output captured so far, in call order.
     pub fn console_messages(&self) -> &[ConsoleMessage] {
         &self.console_messages
     }
+    /// Discards all captured console output, leaving globals untouched.
     pub fn clear_console(&mut self) {
         self.console_messages.clear();
     }
     /// Emit a console message with log level.
+    ///
+    /// Appends at [`ConsoleLevel::Log`] with no position information; line and
+    /// source are empty, so the entry cannot be traced back to script text.
     pub fn log(&mut self, message: String) {
         self.console_messages.push(ConsoleMessage {
             level: ConsoleLevel::Log,
@@ -162,24 +250,64 @@ impl JsContext {
     }
 }
 crate::impl_default_via_new!(JsContext);
+/// The abstraction the rest of the library evaluates JavaScript through.
+///
+/// Implementations must be `Send + Sync` because engines are shared behind a
+/// mutex (see [`SharedJsEngine`]). Globals live in the caller-supplied
+/// [`JsContext`], not in the engine, so an engine holds no per-script state that
+/// caller could not inspect.
 pub trait JsEngine: Send + Sync {
+    /// Evaluates a complete `script` and returns its value.
+    ///
+    /// The returned value is the script's last expression; statements that
+    /// produce nothing yield [`JsValue::Undefined`]. Syntax and runtime problems
+    /// come back as `Err(JsError)`, and a failure must not be assumed to leave
+    /// `context` or the engine unchanged.
     fn evaluate(&mut self, script: &str, context: &mut JsContext) -> JsResult<JsValue>;
+    /// Invokes a function by `name` — either one defined in a script, or a
+    /// built-in — with positional `args`.
+    ///
+    /// Callers are responsible for argument count and types: implementations may
+    /// bind missing arguments as `undefined` and cannot type-check them. An
+    /// unknown name is an error rather than a returned `undefined`.
     fn call_function(
         &mut self,
         name: &str,
         args: &[JsValue],
         context: &mut JsContext,
     ) -> JsResult<JsValue>;
+    /// Exposes `value` to scripts as the global `name`, replacing any previous
+    /// binding of that name.
     fn set_global(&mut self, name: &str, value: JsValue, context: &mut JsContext) -> JsResult<()>;
+    /// Returns the current value of the global `name`, or `None` if it is not
+    /// defined. Taking `&self` means implementations need interior mutability to
+    /// report state here.
     fn get_global(&self, name: &str, context: &JsContext) -> Option<JsValue>;
 }
 
+/// A small interpreter that understands a pragmatic *subset* of JavaScript.
+///
+/// It is not a conforming engine: it supports var/let/const declarations,
+/// function definitions and calls with positional parameters, `if`/`else`,
+/// `for` loops, array literals, member/index access and the `parseInt`,
+/// `parseFloat`, `String`, `Number` and `Boolean` built-ins, but it performs no
+/// prototype lookups, no closures (function bodies see whatever globals exist at
+/// call time), no exceptions/`try`, and no real number formatting. Parsing is
+/// textual and recursive, so deeply nested scripts consume stack proportional to
+/// nesting depth.
+///
+/// Globals are stored in the engine as well as in the passed [`JsContext`], and
+/// the context argument is ignored by the [`JsEngine`] methods, so two calls
+/// sharing one context still share nothing through the engine's own map.
 pub struct SimpleJsEngine {
     variables: HashMap<String, JsValue>,
     /// Defined functions (name -> FunctionDef)
     functions: HashMap<String, JsValue>,
 }
 impl SimpleJsEngine {
+    /// Creates an engine with the five built-in functions pre-registered and no
+    /// user variables. Built-ins are stored by name only; their behaviour is
+    /// implemented in [`JsEngine::call_function`].
     pub fn new() -> Self {
         let mut functions = HashMap::new();
         // Built-in functions
@@ -433,6 +561,14 @@ impl SimpleJsEngine {
 }
 crate::impl_default_via_new!(SimpleJsEngine);
 impl JsEngine for SimpleJsEngine {
+    /// Evaluates `script`, dispatching on its textual prefix.
+    ///
+    /// Handles `console.*(...)` calls and top-level `var`/`let`/`const`
+    /// declarations directly, deferring everything else to an internal statement
+    /// evaluator. Leading/trailing whitespace is ignored, and an empty script
+    /// evaluates to [`JsValue::Undefined`]. Note that declarations are stored in
+    /// the engine, so they persist across calls regardless of which
+    /// [`JsContext`] is passed.
     fn evaluate(&mut self, script: &str, context: &mut JsContext) -> JsResult<JsValue> {
         let script = script.trim();
         if script.is_empty() {
@@ -485,6 +621,17 @@ impl JsEngine for SimpleJsEngine {
         // Delegate to eval_stmt for all other constructs
         self.eval_stmt(script, context)
     }
+    /// Calls a user-defined function if one exists, otherwise a built-in.
+    ///
+    /// User-defined functions take precedence over the built-ins of the same
+    /// name. Parameters are bound by position and callers' values override the
+    /// parameters' previous globals, which are restored afterwards; surplus
+    /// arguments are ignored and missing ones bind as `undefined`. There is no
+    /// `this`, no closure over the definition site, and no return-value
+    /// propagation from a bare `return`, so a body that returns a computed value
+    /// still yields the body's last expression. An unknown `name` returns
+    /// `Err` rather than `undefined`, unlike a reference to an undefined
+    /// variable inside a script.
     fn call_function(
         &mut self,
         name: &str,
@@ -564,15 +711,35 @@ impl JsEngine for SimpleJsEngine {
             }
         }
     }
+    /// Defines or overwrites a global as an engine variable.
+    ///
+    /// The `context` argument is ignored, so globals set here are *not* visible
+    /// through [`JsContext::get_global`] and do not carry across engines. Always
+    /// succeeds.
     fn set_global(&mut self, name: &str, value: JsValue, _context: &mut JsContext) -> JsResult<()> {
         self.variables.insert(name.to_string(), value);
         Ok(())
     }
+    /// Reads an engine variable by name, or `None` if it was never defined.
+    ///
+    /// Like [`JsEngine::set_global`] this ignores `context`, so it sees only
+    /// variables defined through the engine, not those set on the context.
     fn get_global(&self, name: &str, _context: &JsContext) -> Option<JsValue> {
         self.variables.get(name).cloned()
     }
 }
+/// A shared, mutable JavaScript engine.
+///
+/// Use this to hand one engine to several owners, or to satisfy a `Send + Sync`
+/// bound. Locking is coarse — one mutex guards the whole engine — so evaluation
+/// is serialised across threads and a long-running script blocks every other
+/// caller. Recover from poisoning rather than unwrapping.
 pub type SharedJsEngine = Arc<Mutex<dyn JsEngine>>;
+/// Creates a [`SharedJsEngine`] wrapping a new [`SimpleJsEngine`].
+///
+/// The returned handle owns the engine; cloning the `Arc` shares it, and the
+/// engine's interpreter semantics (and limitations) are those of
+/// [`SimpleJsEngine`], not a full ECMAScript implementation.
 pub fn create_simple_engine() -> SharedJsEngine {
     Arc::new(Mutex::new(SimpleJsEngine::new()))
 }
@@ -613,6 +780,14 @@ fn our_value_to_boa(v: &JsValue) -> boa_engine::JsValue {
 
 /// Real JavaScript engine powered by `boa_engine`.
 /// Gated behind `#[cfg(feature = "js-engine")]`.
+/// A JavaScript engine backed by the `boa_engine` crate.
+///
+/// Unlike [`SimpleJsEngine`] this is a real, spec-conformant interpreter, but it
+/// belongs to the `boa` host: it owns its own global object and context, is
+/// unbounded in recursion (deep scripts can overflow the stack instead of
+/// returning an error), and its globals are entirely separate from any
+/// [`JsContext`] — the two engines cannot see each other's state. Only compiled
+/// when the `js-engine` feature is enabled.
 #[cfg(feature = "js-engine")]
 pub struct BoaJsEngine {
     context: boa_engine::Context,

@@ -4,6 +4,12 @@
 //! PDF data types and structures.
 
 use crate::core::{Rect, Size};
+/// Permission and password settings applied to a generated PDF.
+///
+/// The `*_permission` flags are the crate's declared intent; whether they are
+/// enforced depends on the consumer applying them as PDF encryption
+/// permissions. All four default to `true`, so a [`PdfSecurity::default`] grants
+/// everything and sets no passwords.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PdfSecurity {
     /// Optional password required to open the document.
@@ -32,36 +38,61 @@ impl Default for PdfSecurity {
     }
 }
 
+/// One interactive form field placed on a page.
+///
+/// The `rect` of each variant is in PDF user-space **points** (1/72 inch),
+/// unlike widget geometry elsewhere in the crate which is in logical pixels.
 #[derive(Debug, Clone)]
 pub enum PdfFormField {
     /// Text field with default value.
     TextField {
+        /// Field name, unique within the form.
         name: String,
+        /// Position and extent in PDF points.
         rect: Rect,
+        /// Initial contents of the field.
         value: String,
     },
     /// Checkbox field.
     CheckBox {
+        /// Field name, unique within the form.
         name: String,
+        /// Position and extent in PDF points.
         rect: Rect,
+        /// Initial tick state.
         checked: bool,
     },
     /// Button field.
     Button {
+        /// Field name, unique within the form.
         name: String,
+        /// Position and extent in PDF points.
         rect: Rect,
+        /// Caption drawn on the button face.
         text: String,
     },
+    /// Drop-down list permitting exactly one selection.
     ComboBox {
+        /// Field name, unique within the form.
         name: String,
+        /// Position and extent in PDF points.
         rect: Rect,
+        /// Currently selected option text; should match one entry of `options`,
+        /// though nothing here enforces that.
         value: String,
+        /// Selectable entries, in display order.
         options: Vec<String>,
     },
+    /// Scrollable list permitting zero or more selections.
     ListBox {
+        /// Field name, unique within the form.
         name: String,
+        /// Position and extent in PDF points.
         rect: Rect,
+        /// Zero-based indices into `options`. Out-of-range indices are the
+        /// caller's responsibility; they are not validated here.
         selected: Vec<usize>,
+        /// Selectable entries, in display order.
         options: Vec<String>,
     },
 }

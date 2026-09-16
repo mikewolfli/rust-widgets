@@ -28,6 +28,8 @@ use std::path::{Path, PathBuf};
 pub enum AssetEvent {
     /// A watched file was modified or created.
     FileChanged {
+        /// Path reported by the OS watcher: absolute on every platform this
+        /// library targets, and the same path the filter predicate saw.
         path: PathBuf,
         /// The OS-level event kind.
         kind: EventKind,
@@ -35,7 +37,14 @@ pub enum AssetEvent {
         timestamp: std::time::SystemTime,
     },
     /// The underlying watcher reported an error for a given path.
-    WatchError { path: PathBuf, error: String },
+    WatchError {
+        /// Path the error concerns. The watcher's own error callback carries no
+        /// path, so this is populated empty by `AssetWatcher` and is reserved
+        /// for backends that can attribute the failure.
+        path: PathBuf,
+        /// Human-readable description of the underlying `notify` error.
+        error: String,
+    },
 }
 
 /// A generic file watcher that monitors a directory for file changes matching

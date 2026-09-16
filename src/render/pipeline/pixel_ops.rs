@@ -87,6 +87,11 @@ pub(crate) fn glyph_bitmap(ch: char) -> [u8; 8] {
 pub(crate) fn pixel_bytes_len(size: Size) -> usize {
     size.width.saturating_mul(size.height).saturating_mul(4) as usize
 }
+/// Writes `color` into `pixels` as consecutive RGBA quads.
+///
+/// `pixels` must be a row-major RGBA buffer. Trailing bytes that do not form a
+/// complete quad are filled with the first bytes of `color[r,g,b,a]` — i.e. a
+/// non-multiple-of-four length is tolerated rather than rejected.
 pub fn fill_pixels(pixels: &mut [u8], color: Color) {
     let chunk_size = 4;
     let color_arr = [color.r, color.g, color.b, color.a];
@@ -119,6 +124,12 @@ pub(crate) fn pixel_visible(clip: Option<(i32, i32, u32, u32)>, x: i32, y: i32) 
         && x < clip_x.saturating_add(clip_width as i32)
         && y < clip_y.saturating_add(clip_height as i32)
 }
+/// Alpha-blends `color` over the pixel at `(x, y)` of a row-major RGBA frame
+/// buffer, using `coverage` as an extra multiplier on the source alpha.
+///
+/// `frame` must be laid out with `width` pixels per row in RGBA order. The call
+/// is a no-op when `coverage` is non-positive or when `(x, y)` falls outside
+/// `frame`. `coverage` is clamped to `[0, 1]`.
 pub fn blend_pixel(frame: &mut [u8], width: u32, x: u32, y: u32, color: Color, coverage: f32) {
     if coverage <= 0.0 {
         return;

@@ -127,6 +127,12 @@ impl AutoCompleteEdit {
         self.base.request_redraw();
     }
 
+    /// Steps back one text edit and returns `true`, or `false` when there is
+    /// nothing to undo.
+    ///
+    /// Replaying history emits `text_changed` but deliberately does not push a
+    /// new undo entry. The undo stack is **not** cleared, so a redo of the
+    /// undone change remains available.
     pub fn undo(&mut self) -> bool {
         if self.undo_stack.undo().is_err() {
             return false;
@@ -135,6 +141,9 @@ impl AutoCompleteEdit {
         true
     }
 
+    /// Steps forward one undone edit and returns `true`, or `false` when there is
+    /// nothing to redo. Signal behaviour matches
+    /// [`AutoCompleteEdit::undo`].
     pub fn redo(&mut self) -> bool {
         if self.undo_stack.redo().is_err() {
             return false;
@@ -143,9 +152,11 @@ impl AutoCompleteEdit {
         true
     }
 
+    /// Returns `true` if [`AutoCompleteEdit::undo`] would change the text.
     pub fn can_undo(&self) -> bool {
         self.undo_stack.can_undo()
     }
+    /// Returns `true` if [`AutoCompleteEdit::redo`] would change the text.
     pub fn can_redo(&self) -> bool {
         self.undo_stack.can_redo()
     }

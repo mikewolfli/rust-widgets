@@ -31,10 +31,10 @@ use winapi::um::wingdi::{
 };
 use winapi::um::winuser::{
     BeginPaint, CreateWindowExW, DefWindowProcW, EndPaint, GetClientRect, InvalidateRect,
-    LoadCursorW, RegisterClassW, SetWindowPos, UpdateWindow, CS_HREDRAW, CS_OWNDC, CS_VREDRAW,
-    IDC_ARROW, PAINTSTRUCT, SWP_NOACTIVATE, SWP_NOZORDER, WM_ERASEBKGND, WM_KEYDOWN,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_SIZE, WNDCLASSW, WS_CHILD, WS_TABSTOP,
-    WS_VISIBLE,
+    LoadCursorW, RegisterClassW, SetFocus, SetWindowPos, TrackMouseEvent, UpdateWindow, CS_HREDRAW,
+    CS_OWNDC, CS_VREDRAW, IDC_ARROW, PAINTSTRUCT, SWP_NOACTIVATE, SWP_NOZORDER, TME_LEAVE,
+    TRACKMOUSEEVENT, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSELEAVE,
+    WM_MOUSEMOVE, WM_PAINT, WM_SIZE, WNDCLASSW, WS_CHILD, WS_TABSTOP, WS_VISIBLE,
 };
 
 /// Child-window class name used for every self-drawn canvas.
@@ -48,6 +48,30 @@ const CANVAS_CLASS: &str = "RustWidgetsCanvasClass";
 fn canvases() -> &'static Mutex<HashMap<usize, ObjectId>> {
     static CANVASES: OnceLock<Mutex<HashMap<usize, ObjectId>>> = OnceLock::new();
     CANVASES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Maps a canvas `HWND` to its origin in the parent window's client area.
+///
+/// Win32 reports mouse positions in the *child window's own* client coordinates, but
+/// widget geometry in this library is absolute, so an event has to be offset by this
+/// origin before it can be hit-tested. The value is recorded at mount time and kept
+/// current by [`resize_canvas`], which is the only thing that moves a canvas.
+fn canvas_origins() -> &'static Mutex<HashMap<usize, (i32, i32)>> {
+    static ORIGINS: OnceLock<Mutex<HashMap<usize, (i32, i32)>>> = OnceLock::new();
+    ORIGINS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Returns the recorded origin of a canvas, defaulting to `(0, 0)`.
+///
+/// A missing entry means the canvas was created before this map existed or its
+/// origin was never recorded; treating that as `(0, 0)` keeps behaviour identical to
+/// the pre-hit-test code path rather than dropping input.
+fn canvas_origin(hwnd: HWND) -> (i32, i32) {
+    canvas_origins()
+        .lock()
+        .ok()
+        .and_then(|map| map.get(&(hwnd as usize)).copied())
+        .unwrap_or((0, 0))
 }
 
 /// Encodes a Rust string as a NUL-terminated UTF-16 buffer for Win32 APIs.
@@ -113,6 +137,15 @@ unsafe extern "system" fn canvas_wnd_proc(
         }
         WM_MOUSEMOVE => {
             forward_mouse(hwnd, lparam, MousePhase::Drag);
+            0
+        }
+        WM_MOUSELEAVE => {
+            // Win32 only sends this after the window asks for it, so the request is
+            // (re)issued on every move (see `forward_mouse`). This is the one case the
+            // coordinate-based hover transition cannot observe: the pointer is outside, so
+            // the previously hovered control would otherwise stay highlighted.
+            crate::widget::runtime::clear_hover(Point::new(0, 0));
+            invalidate_canvas(hwnd);
             0
         }
         WM_KEYDOWN => {
@@ -219,6 +252,11 @@ pub(crate) fn invalidate_canvas(hwnd: HWND) {
 }
 
 /// Translates a Win32 mouse message into a widget event and delivers it.
+///
+/// The coordinates Win32 reports are relative to this child window, so they are
+/// offset by the canvas origin to reach the absolute space the widget tree uses.
+/// Routing then goes through the platform's hit test, so a click on a widget nested
+/// inside the mounted one reaches that widget rather than the surface owner.
 unsafe fn forward_mouse(hwnd: HWND, lparam: LPARAM, phase: MousePhase) {
     let Some(widget_id) = widget_id_of(hwnd) else {
         return;
@@ -226,26 +264,58 @@ unsafe fn forward_mouse(hwnd: HWND, lparam: LPARAM, phase: MousePhase) {
     // The low/high words of lparam hold signed client-area coordinates.
     let x = (lparam & 0xFFFF) as u16 as i16 as i32;
     let y = ((lparam >> 16) & 0xFFFF) as u16 as i16 as i32;
-    let position = Point::new(x, y);
+    let (origin_x, origin_y) = canvas_origin(hwnd);
+    let position = Point::new(origin_x + x, origin_y + y);
     let event = match phase {
         MousePhase::Press => Event::MousePress { pos: position, button: 1 },
         MousePhase::Release => Event::MouseRelease { pos: position, button: 1 },
         MousePhase::Drag => Event::MouseMove { pos: position },
     };
-    if crate::widget::runtime::dispatch_event(widget_id, &event) {
+    let delivered =
+        crate::platform::platform_facts().route_pointer_event(widget_id, &event, position);
+    if matches!(phase, MousePhase::Drag) {
+        // Ask Win32 for a `WM_MOUSELEAVE` on the next exit. The request is consumed
+        // by the event it produces, so it must be re-issued on every move — without
+        // it the leave message never arrives and hover would stick.
+        let mut track: TRACKMOUSEEVENT = std::mem::zeroed();
+        track.cbSize = std::mem::size_of::<TRACKMOUSEEVENT>() as u32;
+        track.dwFlags = TME_LEAVE;
+        track.hwndTrack = hwnd;
+        TrackMouseEvent(&mut track);
+    }
+    if delivered {
+        if matches!(phase, MousePhase::Press) {
+            // A click can move focus to a nested control; give the canvas the
+            // keyboard so subsequent keys are delivered here.
+            SetFocus(hwnd);
+        }
         invalidate_canvas(hwnd);
     }
 }
 
 /// Translates a Win32 key message into a widget event and delivers it.
+///
+/// Tab is consumed here to move focus, matching the other backends: it is not a
+/// printable character, so forwarding it to the widget would be a no-op and the user
+/// could never leave the first control.
 unsafe fn forward_key(hwnd: HWND, wparam: WPARAM) {
     let Some(widget_id) = widget_id_of(hwnd) else {
         return;
     };
     let key = wparam as u32;
+    const VK_TAB: u32 = 0x09;
+    const WIDGET_SHIFT: u32 = 1;
+    if key == VK_TAB {
+        let forward = current_modifiers() & WIDGET_SHIFT == 0;
+        crate::widget::runtime::focus_next(forward);
+        invalidate_canvas(hwnd);
+        return;
+    }
     let modifiers = current_modifiers();
     let event = Event::KeyPress { key, modifiers };
-    if crate::widget::runtime::dispatch_event(widget_id, &event) {
+    // Keys follow focus: with nothing focused, the surface owner keeps them.
+    let target = crate::widget::runtime::focused_widget().unwrap_or(widget_id);
+    if crate::widget::runtime::dispatch_event(target, &event) {
         invalidate_canvas(hwnd);
     }
 }
@@ -315,6 +385,12 @@ pub(crate) fn mount_canvas(parent: HWND, id: ObjectId, rect: Rect) -> Option<HWN
             return None;
         }
         canvases().lock().expect("windows canvas lock poisoned").insert(hwnd as usize, id);
+        // Record where this canvas sits so pointer coordinates can be made absolute
+        // before hit-testing (see `canvas_origin`).
+        canvas_origins()
+            .lock()
+            .expect("windows canvas origin lock poisoned")
+            .insert(hwnd as usize, (rect.x, rect.y));
         invalidate_canvas(hwnd);
         UpdateWindow(hwnd);
         Some(hwnd)
@@ -338,6 +414,13 @@ pub(crate) fn resize_canvas(hwnd: HWND, rect: Rect) -> bool {
             log::error!("[windows] resize_surface: SetWindowPos failed");
             return false;
         }
+        // The canvas moved, so its origin — and therefore the offset applied to
+        // pointer coordinates — must move with it, or hit-testing drifts by the
+        // resize delta.
+        canvas_origins()
+            .lock()
+            .expect("windows canvas origin lock poisoned")
+            .insert(hwnd as usize, (rect.x, rect.y));
         invalidate_canvas(hwnd);
         true
     }
@@ -354,6 +437,10 @@ pub(crate) fn unmount_canvas(hwnd: HWND) -> bool {
             return false;
         }
     }
+    let _ = canvas_origins()
+        .lock()
+        .expect("windows canvas origin lock poisoned")
+        .remove(&(hwnd as usize));
     canvases().lock().expect("windows canvas lock poisoned").remove(&(hwnd as usize)).is_some()
 }
 

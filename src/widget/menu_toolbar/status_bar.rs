@@ -13,14 +13,26 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// Status bar widget — shows status messages and permanent widgets.
+///
+/// Holds two independent strings: a transient `message` on the left and a
+/// `permanent_message` on the right. "Permanent" describes the intended role,
+/// not the implementation — both fields are plain stored strings and nothing
+/// clears either on a timer. See [`StatusBar::show_message`].
+///
 pub struct StatusBar {
     base: BaseWidget,
     message: String,
     permanent_message: String,
     size_grip_enabled: bool,
+    /// Emitted with the new message text on every message change, including the
+    /// empty string emitted by [`StatusBar::clear_message`]. Changing the
+    /// permanent message does **not** emit it.
     pub message_changed: Signal1<String>,
 }
 impl StatusBar {
+    /// Creates an empty status bar with the size grip enabled.
+    ///
+    /// `geometry` is in parent-relative logical pixels; the size hint is 400x24.
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::StatusBar, geometry, "StatusBar"),
@@ -30,28 +42,48 @@ impl StatusBar {
             message_changed: Signal1::new(),
         }
     }
+    /// Returns the transient message, or `""` when none is shown.
     pub fn message(&self) -> &str {
         &self.message
     }
+    /// Returns the permanent message, or `""` when none is set.
     pub fn permanent_message(&self) -> &str {
         &self.permanent_message
     }
+    /// Returns whether the resize grip is drawn. Defaults to `true`.
+    ///
+    /// Note that `StatusBar::draw` does not currently render a grip, so this
+    /// flag has no visual effect yet.
     pub fn size_grip_enabled(&self) -> bool {
         self.size_grip_enabled
     }
     /// Show a temporary status message (timeout_ms is informational; actual timeout managed externally).
+    ///
+    /// The `_timeout_ms` argument is accepted and **ignored**: the widget does
+    /// not schedule clearing, so a message stays until
+    /// [`StatusBar::clear_message`] or another `show_message` call. The caller
+    /// owns the timeout. Emits `message_changed` but does not itself request a
+    /// redraw.
     pub fn show_message(&mut self, message: impl Into<String>, _timeout_ms: u64) {
         self.message = message.into();
         self.message_changed.emit(self.message.clone());
     }
+    /// Clears the transient message and emits `message_changed` with an empty
+    /// string. The permanent message is untouched.
     pub fn clear_message(&mut self) {
         self.message.clear();
         self.message_changed.emit(String::new());
     }
+    /// Replaces the permanent message and requests a redraw.
+    ///
+    /// Unlike the transient message this is not reported through
+    /// `message_changed`, so a listener relying on that signal will miss it.
     pub fn set_permanent_message(&mut self, msg: impl Into<String>) {
         self.permanent_message = msg.into();
         self.base.request_redraw();
     }
+    /// Enables or disables the resize grip flag and requests a redraw. See
+    /// [`StatusBar::size_grip_enabled`] — currently has no visual effect.
     pub fn set_size_grip_enabled(&mut self, enabled: bool) {
         self.size_grip_enabled = enabled;
         self.base.request_redraw();

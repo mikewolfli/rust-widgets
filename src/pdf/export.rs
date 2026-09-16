@@ -21,8 +21,14 @@ pub enum PageSize {
     A4,
     /// US Letter: 612.0 x 792.0 pt
     Letter,
-    /// Custom width/height in points.
-    Custom { width: f32, height: f32 },
+    /// Custom page size. Raw values: they are used as given, with no rounding
+    /// and no validation against zero or negative sizes.
+    Custom {
+        /// Page width in points.
+        width: f32,
+        /// Page height in points.
+        height: f32,
+    },
 }
 
 impl PageSize {

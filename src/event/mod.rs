@@ -10,11 +10,14 @@
 //! - Pointer capture management (`capture.rs`)
 //! - Event loop (`loop.rs`)
 //! - Generic queue utilities (`queue.rs`)
-// Submodules
+/// Pointer capture: routes pointer events to the widget that claimed the
+/// pointer, and releases it on explicit release or on widget destruction.
 pub mod capture;
 pub mod event_queue;
+/// Focus ownership and traversal order.
 pub mod focus;
 pub mod r#loop;
+/// A generic, runtime-typed queue used by the event and task plumbing.
 pub mod queue;
 pub mod timer;
 #[cfg(feature = "touch")]
@@ -24,8 +27,10 @@ pub mod types;
 pub use capture::PointerCaptureManager;
 pub use event_queue::{EventQueue, EventSender};
 pub use focus::FocusManager;
+pub use focus::FocusTraversalStrategy;
 pub use r#loop::AnimationFrameRequest;
 pub use r#loop::EventLoop;
+pub use timer::IdleTask;
 pub use timer::TimerManager;
 /// Named mouse-button codes, re-exported so a widget never writes a bare `2` to
 /// mean "secondary button".

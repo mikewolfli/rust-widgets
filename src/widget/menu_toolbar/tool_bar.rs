@@ -16,7 +16,9 @@ use crate::{impl_widget_property_hooks, property_names_of};
 /// Orientation of a toolbar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolBarOrientation {
+    /// Items laid out left to right.
     Horizontal,
+    /// Items laid out top to bottom.
     Vertical,
 }
 /// A button entry in the toolbar.
@@ -31,6 +33,10 @@ pub struct ToolBarItem {
     separator: bool,
 }
 impl ToolBarItem {
+    /// Creates an enabled, unchecked, non-separator item.
+    ///
+    /// `id` identifies the item in the `action_triggered` signal; `text` is what
+    /// is painted on the button. The tooltip starts empty.
     pub fn new(id: impl Into<String>, text: impl Into<String>) -> Self {
         Self {
             id: id.into(),
@@ -42,6 +48,11 @@ impl ToolBarItem {
             separator: false,
         }
     }
+    /// Creates a separator: an item with an empty id and text and
+    /// [`Self::is_separator`] true.
+    ///
+    /// Separators occupy a fixed gap, are never hit-testable as actions, and are
+    /// skipped when a press is dispatched.
     pub fn separator() -> Self {
         let mut t = Self::new("", "");
         t.set_separator(true);
@@ -50,58 +61,84 @@ impl ToolBarItem {
 
     // --- Accessors ---
 
+    /// The item's identity, emitted through `action_triggered` when it is chosen.
     pub fn id(&self) -> &str {
         &self.id
     }
 
+    /// Replaces the item's identity. Changing it changes what a later activation
+    /// emits, so any handler matching on the old id stops firing.
     pub fn set_id(&mut self, id: impl Into<String>) {
         self.id = id.into();
     }
 
+    /// The label painted on the item.
     pub fn text(&self) -> &str {
         &self.text
     }
 
+    /// Replaces the label.
     pub fn set_text(&mut self, text: impl Into<String>) {
         self.text = text.into();
     }
 
+    /// The item's hover tooltip, or `""` when none was set.
     pub fn tooltip(&self) -> &str {
         &self.tooltip
     }
 
+    /// Sets the hover tooltip. Note that this widget only stores it: nothing in
+    /// `ToolBar`'s own drawing shows a tooltip.
     pub fn set_tooltip(&mut self, tooltip: impl Into<String>) {
         self.tooltip = tooltip.into();
     }
 
+    /// Whether the item toggles its checked state when activated.
     pub fn is_checkable(&self) -> bool {
         self.checkable
     }
 
+    /// Makes the item toggle on activation, or turns that off. Turning it off
+    /// leaves `checked` as it is.
     pub fn set_checkable(&mut self, checkable: bool) {
         self.checkable = checkable;
     }
 
+    /// Whether the item is currently checked. Only meaningful when
+    /// [`Self::is_checkable`] is true — a non-checkable item keeps whatever
+    /// value was set here but nothing will ever toggle it.
     pub fn is_checked(&self) -> bool {
         self.checked
     }
 
+    /// Sets the checked state directly, regardless of [`Self::is_checkable`].
+    /// Use `ToolBar::set_item_checked`, which respects checkability, if the
+    /// caller is not sure which kind of item it holds.
     pub fn set_checked(&mut self, checked: bool) {
         self.checked = checked;
     }
 
+    /// Whether the item can be activated. A disabled item still draws (in grey)
+    /// but ignores presses.
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }
 
+    /// Enables or disables the item.
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
     }
 
+    /// Whether this item is a visual divider rather than an action.
     pub fn is_separator(&self) -> bool {
         self.separator
     }
 
+    /// Makes this item a separator (`true`) or an ordinary action (`false`).
+    ///
+    /// A separator is drawn as a rule and occupies a fixed gap, but setting this
+    /// does not clear the id: a press can never reach a separator through
+    /// `hit_item`, so nothing is emitted either way.
     pub fn set_separator(&mut self, separator: bool) {
         self.separator = separator;
     }
@@ -115,12 +152,28 @@ pub struct ToolBar {
     floatable: bool,
     items: Vec<ToolBarItem>,
     hovered_index: Option<usize>,
+    /// Emitted with the id of the item that was activated.
+    ///
+    /// Fires on primary-button press over an enabled, non-separator item. For a
+    /// checkable item the checked flag has already been toggled by the time this
+    /// is emitted.
     pub action_triggered: Signal1<String>,
+    /// Emitted by [`ToolBar::set_orientation`] with `true` for horizontal and
+    /// `false` for vertical. Not emitted when the orientation is unchanged.
     pub orientation_changed: Signal1<bool>,
+    /// Emitted when the toolbar is docked or floated. Nothing in this widget
+    /// emits it yet — [`ToolBar::is_floatable`] only records the permission.
     pub top_level_changed: Signal1<bool>,
+    /// Emitted when the toolbar's visibility changes. Nothing in this widget
+    /// emits it yet.
     pub visibility_changed: Signal1<bool>,
 }
 impl ToolBar {
+    /// Creates a horizontal toolbar with a default icon size of 24 pixels, and
+    /// with both movable and floatable permitted.
+    ///
+    /// Starts with no items; add them with [`ToolBar::add_action`],
+    /// [`ToolBar::add_separator`] or by pushing to [`ToolBar::items`].
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::ToolBar, geometry, "ToolBar"),
@@ -136,21 +189,35 @@ impl ToolBar {
             visibility_changed: Signal1::new(),
         }
     }
+    /// The direction items are laid out in.
     pub fn orientation(&self) -> ToolBarOrientation {
         self.orientation
     }
+    /// The icon size in **pixels**. It sets the button size, but the toolbar has
+    /// no icons of its own — item labels are drawn at the default font size
+    /// regardless — so in practice this controls the spacing between items.
     pub fn icon_size(&self) -> f32 {
         self.icon_size
     }
+    /// Whether the toolbar is allowed to be dragged to another dock position.
     pub fn is_movable(&self) -> bool {
         self.movable
     }
+    /// Whether the toolbar is allowed to be torn off into a floating window.
+    ///
+    /// This is a stored preference only: nothing in this widget implements
+    /// docking or floating, and `top_level_changed` is never emitted.
     pub fn is_floatable(&self) -> bool {
         self.floatable
     }
+    /// The current items, in draw order.
     pub fn items(&self) -> &[ToolBarItem] {
         &self.items
     }
+    /// Sets the layout direction and repaints.
+    ///
+    /// Emits `orientation_changed` with `true` for horizontal, and only when the
+    /// value actually changes.
     pub fn set_orientation(&mut self, o: ToolBarOrientation) {
         let changed = self.orientation != o;
         self.orientation = o;
@@ -159,29 +226,52 @@ impl ToolBar {
         }
         self.base.request_redraw();
     }
+    /// Sets the icon size in **pixels** and repaints.
+    ///
+    /// Values below 8 are raised to 8, which is the smallest size at which an
+    /// item remains clickable rather than collapsing to a sliver.
     pub fn set_icon_size(&mut self, size: f32) {
         self.icon_size = size.max(8.0);
         self.base.request_redraw();
     }
+    /// Allows or forbids dragging the toolbar; repaints either way.
     pub fn set_movable(&mut self, v: bool) {
         self.movable = v;
         self.base.request_redraw();
     }
+    /// Allows or forbids tearing the toolbar off; repaints either way.
+    ///
+    /// Stored only — see [`ToolBar::is_floatable`].
     pub fn set_floatable(&mut self, v: bool) {
         self.floatable = v;
         self.base.request_redraw();
     }
+    /// Appends an action item and returns its index in [`ToolBar::items`].
+    ///
+    /// `id` is what a later `action_triggered` carries and `text` is the visible
+    /// label. The item starts enabled and unchecked. The returned index is the
+    /// item's position, so removing items later invalidates it.
     pub fn add_action(&mut self, id: impl Into<String>, text: impl Into<String>) -> usize {
         let idx = self.items.len();
         self.items.push(ToolBarItem::new(id, text));
         idx
     }
+    /// Appends a visual divider.
+    ///
+    /// Unlike [`ToolBar::add_action`] this returns nothing, so a caller that
+    /// needs the separator's index must read `items().len() - 1`.
     pub fn add_separator(&mut self) {
         self.items.push(ToolBarItem::separator());
     }
+    /// Removes every item, including separators. Invalidates all previously
+    /// returned indices.
     pub fn clear(&mut self) {
         self.items.clear();
     }
+    /// Enables or disables the item at `index`, and repaints.
+    ///
+    /// An out-of-range index is ignored rather than treated as an error; read
+    /// [`ToolBar::item_enabled`] afterwards to confirm the change took effect.
     pub fn set_item_enabled(&mut self, index: usize, enabled: bool) {
         if let Some(item) = self.items.get_mut(index) {
             item.set_enabled(enabled);
@@ -189,9 +279,16 @@ impl ToolBar {
         self.base.request_redraw();
     }
     /// Returns enabled state for item at index.
+    ///
+    /// `None` when `index` is out of range — which is how a caller notices that
+    /// [`ToolBar::set_item_enabled`] silently ignored its index.
     pub fn item_enabled(&self, index: usize) -> Option<bool> {
         self.items.get(index).map(|item| item.is_enabled())
     }
+    /// Sets the checked state of the item at `index`, and repaints.
+    ///
+    /// Only takes effect on a checkable item; on any other item the call does
+    /// nothing, silently. An out-of-range index is likewise ignored.
     pub fn set_item_checked(&mut self, index: usize, checked: bool) {
         if let Some(item) = self.items.get_mut(index) {
             if item.is_checkable() {
@@ -201,6 +298,11 @@ impl ToolBar {
         self.base.request_redraw();
     }
     /// Returns checked state for item at index.
+    ///
+    /// `None` when `index` is out of range. For a non-checkable item this
+    /// returns `Some(false)` (or whatever was set directly on the item) rather
+    /// than `None`, so it does not tell the caller whether the item is togglable
+    /// — check `items()[index].is_checkable()` for that.
     pub fn item_checked(&self, index: usize) -> Option<bool> {
         self.items.get(index).map(|item| item.is_checked())
     }

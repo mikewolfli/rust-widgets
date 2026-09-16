@@ -3,12 +3,20 @@
 
 //! Video module — container format detection, metadata reading, frame extraction, and playback control.
 
+/// Codec-agnostic decoder interface plus the built-in MJPEG and
+/// frame-buffer decoders.
 pub mod decoder;
+/// Container format sniffing (MP4, WebM, AVI, MJPEG, …).
 pub mod format;
+/// The decoded-frame type handed to the renderer.
 pub mod frame;
+/// Title, dimensions, duration, and frame-rate information read from a
+/// container without decoding the video stream.
 pub mod metadata;
 pub mod player;
 
+/// Container-level streaming engine that drives a decoder and manages
+/// playback state.
 pub mod engine;
 #[cfg(feature = "video-codecs")]
 pub mod ffmpeg_decoder;

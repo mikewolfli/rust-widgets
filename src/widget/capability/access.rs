@@ -93,6 +93,13 @@ pub fn write_widget_property_by_id(
 // ---------------------------------------------------------------------------
 
 #[cfg(full_widgets)]
+/// Encodes a data-grid sort specification as a single string for the property
+/// layer.
+///
+/// Each entry becomes `"<column>:asc"` or `"<column>:desc"`, joined with `,`.
+/// The column *name* is written verbatim, so a name containing `:` or `,`
+/// produces an ambiguous encoding that a reader cannot reliably split.
+/// Empty input yields an empty string.
 pub fn sort_specs_to_string(sort_specs: &[SortSpec]) -> String {
     sort_specs
         .iter()
@@ -102,6 +109,11 @@ pub fn sort_specs_to_string(sort_specs: &[SortSpec]) -> String {
 }
 
 #[cfg(full_widgets)]
+/// Encodes data-grid column filters as a single `"<column>=<query>"` string,
+/// joined with `,`.
+///
+/// As with [`sort_specs_to_string`], `=` and `,` inside a column name or query
+/// make the result ambiguous. Empty input yields an empty string.
 pub fn column_filters_to_string(filters: &[ColumnFilter]) -> String {
     filters
         .iter()
@@ -111,6 +123,11 @@ pub fn column_filters_to_string(filters: &[ColumnFilter]) -> String {
 }
 
 #[cfg(full_widgets)]
+/// Returns the published token for a list-view selection mode: one of
+/// `"single"`, `"multi"`, `"extended"`, or `"none"`.
+///
+/// These strings are part of the property schema and are matched by consumers,
+/// so they must not be reworded.
 pub fn selection_mode_to_str(mode: SelectionMode) -> &'static str {
     match mode {
         SelectionMode::Single => "single",
@@ -136,6 +153,11 @@ pub fn list_box_selection_mode_to_str(mode: ListBoxSelectionMode) -> &'static st
 }
 
 #[cfg(full_widgets)]
+/// Returns the published token for a list-view display mode: one of `"list"`,
+/// `"icon"`, `"details"`, or `"thumbnails"`.
+///
+/// `thumbnails` exists in the codec even though the icon view may not render a
+/// distinct thumbnail layout; the token is still valid to round-trip.
 pub fn view_mode_to_str(mode: ViewMode) -> &'static str {
     match mode {
         ViewMode::List => "list",
@@ -146,6 +168,8 @@ pub fn view_mode_to_str(mode: ViewMode) -> &'static str {
 }
 
 #[cfg(full_widgets)]
+/// Returns the published token for a toolbar orientation: `"horizontal"` or
+/// `"vertical"`.
 pub fn tool_bar_orientation_to_str(orientation: ToolBarOrientation) -> &'static str {
     match orientation {
         ToolBarOrientation::Horizontal => "horizontal",
@@ -153,6 +177,11 @@ pub fn tool_bar_orientation_to_str(orientation: ToolBarOrientation) -> &'static 
     }
 }
 
+/// Returns the published token for a scroll bar policy: `"always_on"`,
+/// `"always_off"`, or `"as_needed"`.
+///
+/// Note the underscore spelling, unlike the other codecs in this module which
+/// use single words — these tokens are the schema's, not a convention.
 pub fn scroll_bar_policy_to_str(policy: ScrollBarPolicy) -> &'static str {
     match policy {
         ScrollBarPolicy::AlwaysOn => "always_on",
@@ -167,6 +196,11 @@ pub use super::coercion::{
 };
 
 #[cfg(full_widgets)]
+/// Returns the published three-letter token for a weekday: `"mon"` through
+/// `"sun"`.
+///
+/// Lowercase and fixed-length; unlike locale-aware day names, these are stable
+/// identifiers suitable for storing and matching.
 pub fn weekday_to_str(weekday: Weekday) -> &'static str {
     match weekday {
         Weekday::Mon => "mon",
@@ -180,11 +214,15 @@ pub fn weekday_to_str(weekday: Weekday) -> &'static str {
 }
 
 #[cfg(full_widgets)]
+/// Formats a [`Date`] as its `Display` representation for the property layer.
+/// The exact layout is the date type's, not fixed here.
 pub fn date_to_string(date: Date) -> String {
     date.to_string()
 }
 
 #[cfg(full_widgets)]
+/// Formats a [`Time`] as its `Display` representation for the property layer.
+/// The exact layout is the time type's, not fixed here.
 pub fn time_to_string(time: Time) -> String {
     time.to_string()
 }
@@ -194,6 +232,12 @@ pub fn time_to_string(time: Time) -> String {
 // ---------------------------------------------------------------------------
 
 #[cfg(full_widgets)]
+/// Looks up the value a property reports before anything has written it.
+///
+/// Returns `None` when the kind/property pair is unknown to the schema, so a
+/// `None` here means "no default is declared", not "the default is null".
+/// Values are produced fresh on each call; enum-backed properties are returned
+/// in their published string form.
 pub fn default_widget_property_default_value(
     kind: WidgetKind,
     property_name: &str,
@@ -1169,6 +1213,11 @@ pub fn default_widget_property_default_value(
 }
 
 #[cfg(stripped_widgets)]
+/// Stripped-profile stub: always `None`.
+///
+/// With the concrete controls compiled out there is no schema to consult, so
+/// no property has a declared default. Callers must treat `None` as "unknown"
+/// rather than "unset", exactly as in the full profile.
 pub fn default_widget_property_default_value(
     _kind: WidgetKind,
     _property_name: &str,

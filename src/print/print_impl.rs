@@ -10,7 +10,9 @@
 use crate::core::{Rect, Size};
 use std::collections::HashMap;
 use std::fs;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 /// Page ordering for multi-copy print jobs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -182,26 +184,119 @@ fn parse_page_range_spec(spec: &str) -> Result<Vec<(u32, u32)>, String> {
     }
     Ok(ranges)
 }
-/// Print document
+/// A document that can be printed.
+///
+/// A document owns its content and answers two questions: how many pages it has,
+/// and how to draw any one of them into a [`PrintContext`]. It is the only public
+/// seam between an application and the print pipeline — the pipeline knows nothing
+/// about what is being printed.
+///
+/// # Page numbering
+///
+/// `draw_page` is called with a **zero-based page index**, not a printed page
+/// number. Index `0` is the first page. Callers that render "Page 3 of 10" to the
+/// page must add one themselves. This is the same convention as the pagination
+/// model's page selection, which is what drives the calls.
+///
+/// # Example
+///
+/// ```
+/// use rust_widgets::print::{PrintContext, PrintDocument};
+/// use rust_widgets::core::{Rect, Size};
+///
+/// struct Invoice { lines: Vec<String> }
+///
+/// impl PrintDocument for Invoice {
+///     fn page_count(&self) -> u32 {
+///         // One line per page, and never zero pages.
+///         self.lines.len().max(1) as u32
+///     }
+///
+///     fn draw_page(&self, page_index: u32, context: &mut dyn PrintContext) {
+///         let page = context.page_size();
+///         context.draw_text("INVOICE", 40.0, 40.0, 18.0);
+///         if let Some(line) = self.lines.get(page_index as usize) {
+///             let _ = page;
+///             context.draw_text(line, 40.0, 80.0, 12.0);
+///         }
+///     }
+/// }
+/// ```
 pub trait PrintDocument {
-    /// Get number of pages
+    /// Number of pages in the document.
+    ///
+    /// A document with no pages is allowed and prints nothing; it is not an error.
     fn page_count(&self) -> u32;
-    /// Draw one page into provided print context.
-    fn draw_page(&self, page_num: u32, context: &mut dyn PrintContext);
+
+    /// Draws the page at `page_index` (zero-based) into `context`.
+    ///
+    /// The pipeline calls this once per selected page, in the order the
+    /// pagination model produces — which may repeat an index (copies), skip
+    /// indices (a page range), or visit them in descending order. Implementations
+    /// must therefore draw exactly the index they are given and must not assume the
+    /// calls arrive in ascending order, once each.
+    ///
+    /// The context starts blank for each call: anything not drawn is not printed,
+    /// and no state carries over from the previous page.
+    fn draw_page(&self, page_index: u32, context: &mut dyn PrintContext);
 }
-/// Print context
+
+/// The surface a [`PrintDocument`] draws one page onto.
+///
+/// Coordinates are in page-space units (the same units as [`PrintContext::page_size`]),
+/// with the origin at the top-left of the page. Implementations are responsible for
+/// clipping to the page — a document that draws outside it is not an error, but the
+/// excess is not printed.
+///
+/// # Current completeness
+///
+/// This is the minimal surface the pipeline can drive with today. It deliberately
+/// does **not** yet cover clipping, coordinate transforms, paths/curves, stroked or
+/// dashed line styles, per-glyph fonts, or alpha. Those are tracked as extension
+/// work rather than silently missing; see `docs/log/log-20260916-2.md` §17.
+///
+/// The one asymmetry worth knowing about: [`Self::draw_rect`] outlines in the
+/// context's current stroke colour and takes no colour argument, while
+/// [`Self::fill_rect`] takes a colour and no width. A black outline is therefore
+/// the only outline a document can ask for today.
 pub trait PrintContext {
-    /// Draw text
+    /// Draws `text` with its left edge at `x` and baseline at `y`.
+    ///
+    /// `font_size` is in page-space units. There is no font-selection parameter yet:
+    /// the context chooses the family, so a document cannot request bold or italic.
     fn draw_text(&mut self, text: &str, x: f32, y: f32, font_size: f32);
-    /// Draw line
+
+    /// Draws a straight line from `(x1, y1)` to `(x2, y2)` with the given width.
     fn draw_line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, width: f32);
-    /// Draw rectangle
+
+    /// Outlines `rect` with the given stroke width.
+    ///
+    /// Takes no colour, unlike [`Self::fill_rect`]; an outline is currently always
+    /// the context's default stroke colour.
     fn draw_rect(&mut self, rect: Rect, width: f32);
-    /// Draw filled rectangle
+
+    /// Fills `rect` with `color`, as `0xRRGGBB`.
+    ///
+    /// An alpha channel is not interpreted; the top byte is ignored.
     fn fill_rect(&mut self, rect: Rect, color: u32);
-    /// Draw image
+
+    /// Draws `image` into `rect`.
+    ///
+    /// The payload is raw pixel samples, row-major and tightly packed, and the
+    /// format is **inferred from the length** against `rect.width * rect.height`:
+    /// 3 bytes per pixel is treated as RGB, 4 as RGBA (alpha ignored), 1 as
+    /// grayscale (expanded to RGB). Any other length is truncated or zero-padded to
+    /// fit rather than rejected. This mirrors the PDF page's `draw_image`, which is
+    /// the one implementation of this family that genuinely decodes the payload.
+    ///
+    /// Encoded formats (PNG/JPEG/…) are not accepted: decode first. An empty slice
+    /// or a zero-area rect draws nothing.
     fn draw_image(&mut self, image: &[u8], rect: Rect);
-    /// Get page size
+
+    /// The size of one page, in the same units as the coordinates above.
+    ///
+    /// Constant for the lifetime of the context: every page of a job is the same
+    /// size, so a document may compute its layout from this once per page.
     fn page_size(&self) -> Size;
 }
 /// Print dialog
@@ -281,7 +376,11 @@ pub struct PrintPreviewDialog {
     current_page: u32,
     /// Stored document reference for rendering previews.
     document: Option<Box<dyn PrintDocument>>,
-    /// Rendered preview output (commands from Memory backend).
+    /// Rendered preview output, in draw order, as recorded by the memory backend.
+    ///
+    /// Empty until [`Self::show`] succeeds. A caller renders the preview by showing
+    /// this list; it is the only way to see what a document would actually print,
+    /// short of sending it to a printer.
     preview_commands: Vec<String>,
 }
 impl PrintPreviewDialog {
@@ -308,11 +407,15 @@ impl PrintPreviewDialog {
     pub fn prev_page(&mut self) {
         self.current_page = self.current_page.saturating_sub(1);
     }
-    /// Returns whether preview can be displayed.
+    /// Renders the document into `self.preview_commands` and reports success.
     ///
-    /// Renders the document pages using a temporary Printer with the Memory
-    /// backend, storing the generated output internally. Returns `true` only
-    /// if the document has at least one page and the preview was generated.
+    /// The document's pages are drawn through a memory-backed context so nothing is
+    /// sent to a printer. Returns `false` — leaving `preview_commands` untouched —
+    /// when the document has no pages or the render failed, so a caller can tell
+    /// "nothing to show" from "showing a stale preview".
+    ///
+    /// The document is retained and can be previewed again; the recorded output is
+    /// replaced on each call rather than appended to.
     pub fn show(&mut self) -> bool {
         if self.page_count == 0 {
             log::warn!("PrintPreviewDialog::show() — no pages to preview");
@@ -324,34 +427,28 @@ impl PrintPreviewDialog {
             return false;
         }
 
-        // Take ownership of the document to render the preview.
+        // Take ownership of the document to render the preview, then put it back on
+        // both the success and the failure path — a preview dialog that could only
+        // be shown once would be useless.
         let Some(document) = self.document.take() else {
             return false;
         };
 
-        // Create a temporary printer with the Memory backend to capture output.
-        let printer =
-            Printer { page_size: Size { width: 595, height: 842 }, backend: PrintBackend::Memory };
-
-        let result = printer.print_with_result(document.as_ref());
-
-        match result {
-            Ok(()) => {
-                log::info!(
-                    "PrintPreviewDialog::show() — preview generated ({} pages)",
-                    self.page_count
-                );
-                // Store the document back so it can be used again if needed.
-                self.document = Some(document);
-                true
-            }
-            Err(e) => {
-                log::error!("PrintPreviewDialog::show() — preview failed: {e}");
-                // Store the document back even on failure.
-                self.document = Some(document);
-                false
-            }
+        // A memory-backed context, so `show()` records instead of printing.
+        let mut context = MemoryPrintContext::new(Size { width: 595, height: 842 });
+        for page in PrintPagination::default().selected_pages(self.page_count) {
+            document.draw_page(page, &mut context);
+            context.end_page();
         }
+
+        self.preview_commands = context.commands;
+        self.document = Some(document);
+        log::info!(
+            "PrintPreviewDialog::show() — preview generated ({} pages, {} commands)",
+            self.page_count,
+            self.preview_commands.len()
+        );
+        true
     }
 
     /// Rendered preview commands from the last successful `show()` call.
@@ -483,24 +580,68 @@ fn submit_system_print_job(job: &PrintJobPayload) -> Result<(), String> {
     let _ = fs::remove_file(&path);
     result
 }
+/// Creates the job file for `job`, streaming the body into it.
+///
+/// The destination is a temporary file whose name must be unique **within this
+/// process as well as across processes**: the spooler reads it after this returns,
+/// and two jobs written in the same millisecond would otherwise share one path and
+/// overwrite each other's document. A millisecond timestamp plus the process id is
+/// not enough — two jobs from the same process still collide (this is reproducible
+/// under parallel tests). A per-process counter makes the name unique, and the
+/// process id keeps it unique against other processes.
 fn write_print_job_file(job: &PrintJobPayload) -> Result<PathBuf, String> {
+    static JOB_SEQ: AtomicU64 = AtomicU64::new(0);
+
     let mut path = std::env::temp_dir();
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|err| format!("clock error: {err}"))?
         .as_millis();
-    path.push(format!("rw_print_job_{ts}.txt"));
-    let mut content = String::new();
-    content.push_str(&format!(
-        "rust_widgets print job\npage_size={}x{}\n\n",
-        job.page_size.width, job.page_size.height
-    ));
-    for cmd in &job.commands {
-        content.push_str(cmd);
-        content.push('\n');
+    let seq = JOB_SEQ.fetch_add(1, Ordering::Relaxed);
+    path.push(format!("rw_print_job_{}_{ts}_{seq}.txt", std::process::id()));
+
+    // Created exclusively (`create_new`) rather than truncating. A name collision
+    // must be a reported error, never a silent overwrite of another job's file.
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    let file = opts
+        .open(&path)
+        .map_err(|err| format!("create print job file failed at {}: {err}", path.display()))?;
+
+    // Written incrementally rather than built as one `String`. A large job used to be
+    // held twice over (the assembled buffer plus the encoded copy `fs::write` makes),
+    // which is pure waste for a document whose size is set by the caller. The stream
+    // is wrapped in a `BufWriter` so the per-command writes are still batched to disk.
+    let mut out = std::io::BufWriter::new(file);
+    let write = write_print_job_body(&mut out, job);
+    // `flush` errors are reported too: a failure there means the file is incomplete, so
+    // silently returning the path would hand the spooler a truncated document.
+    let flushed = out.flush();
+    if let Err(err) = write.and(flushed) {
+        // Leave no half-written file behind for the spooler to pick up.
+        let _ = fs::remove_file(&path);
+        return Err(format!("write print job file failed: {err}"));
     }
-    fs::write(&path, content).map_err(|err| format!("write print job file failed: {err}"))?;
     Ok(path)
+}
+
+/// Writes the job header and commands into `out`.
+///
+/// Split from [`write_print_job_file`] so the streaming and the content are separable,
+/// and so the failure path has a single place to clean up a partial file.
+fn write_print_job_body(
+    out: &mut impl std::io::Write,
+    job: &PrintJobPayload,
+) -> std::io::Result<()> {
+    writeln!(
+        out,
+        "rust_widgets print job\npage_size={}x{}\n",
+        job.page_size.width, job.page_size.height
+    )?;
+    for cmd in &job.commands {
+        writeln!(out, "{cmd}")?;
+    }
+    Ok(())
 }
 fn run_print_command(path: &Path) -> Result<(), String> {
     // The OS-specific printing mechanism (lpr/lp on macOS and Linux, the shell
@@ -932,6 +1073,113 @@ mod tests {
 
     // ── Print framework tests ─────────────────────────────────────
 
+    /// The job file must contain the header and every command, in order.
+    ///
+    /// This covers the streaming rewrite: the body is written incrementally rather
+    /// than assembled into one `String`, and the bytes on disk must be identical.
+    #[test]
+    fn print_job_file_streams_header_and_commands() {
+        let job = PrintJobPayload {
+            page_size: Size { width: 595, height: 842 },
+            commands: vec!["page:1".into(), "text:Hello@10,10:12".into()],
+        };
+        let path = write_print_job_file(&job).expect("temp file is writable");
+        let written = fs::read_to_string(&path).expect("job file is readable");
+        let _ = fs::remove_file(&path);
+
+        assert!(written.contains("page_size=595x842"), "header must record the page size");
+        // Order is part of the contract: the spooler renders these in sequence.
+        let first = written.find("page:1").expect("first command present");
+        let second = written.find("text:Hello@10,10:12").expect("second command present");
+        assert!(first < second, "commands must be written in order");
+    }
+
+    /// Two job files written close together must not collide.
+    ///
+    /// The name used to be the millisecond timestamp alone, so two processes printing
+    /// in the same millisecond would overwrite each other's document. The process id is
+    /// now part of the name — and, because a millisecond alone is also not unique
+    /// *within* one process (two jobs written in the same millisecond shared a path and
+    /// the second silently overwrote the first), a per-process sequence number too.
+    #[test]
+    fn print_job_file_names_include_the_process_id() {
+        let job = PrintJobPayload {
+            page_size: Size { width: 100, height: 100 },
+            commands: vec!["page:1".into()],
+        };
+        let path = write_print_job_file(&job).expect("temp file is writable");
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
+        let _ = fs::remove_file(&path);
+
+        assert!(
+            name.contains(&std::process::id().to_string()),
+            "job file name {name:?} must carry the process id so two processes cannot collide"
+        );
+    }
+
+    /// Jobs written back to back must land in distinct files, each with its own body.
+    ///
+    /// This is the regression guard for the collision above: writing several jobs in
+    /// a tight loop (all within one millisecond) used to reuse a single path, so every
+    /// job but the last was lost. The bodies are checked, not just the paths — two
+    /// different names pointing at overwritten content would still be a silent loss.
+    #[test]
+    fn print_job_files_written_back_to_back_do_not_share_a_path_or_a_body() {
+        let job = |page: u32| PrintJobPayload {
+            page_size: Size { width: 595, height: 842 },
+            commands: vec![format!("page:{page}")],
+        };
+
+        let first = write_print_job_file(&job(1)).expect("first job file is writable");
+        let second = write_print_job_file(&job(2)).expect("second job file is writable");
+        let third = write_print_job_file(&job(3)).expect("third job file is writable");
+
+        assert_ne!(first, second, "back-to-back jobs must not share a path");
+        assert_ne!(second, third, "back-to-back jobs must not share a path");
+
+        let read = |path: &PathBuf| fs::read_to_string(path).expect("job file is readable");
+        let bodies = [read(&first), read(&second), read(&third)];
+        for path in [&first, &second, &third] {
+            let _ = fs::remove_file(path);
+        }
+
+        for (index, body) in bodies.iter().enumerate() {
+            let expected = format!("page:{}", index + 1);
+            assert!(
+                body.contains(&expected),
+                "job {} must still hold its own body ({expected:?}), got: {body:?}",
+                index + 1
+            );
+        }
+    }
+
+    /// An unwritable destination must report an error and leave nothing behind.
+    ///
+    /// A half-written file handed to the spooler would print a truncated document, so
+    /// the failure path removes it.
+    #[test]
+    fn print_job_body_writes_nothing_when_the_sink_fails() {
+        struct FailingSink;
+        impl std::io::Write for FailingSink {
+            fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("disk full"))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let job = PrintJobPayload {
+            page_size: Size { width: 10, height: 10 },
+            commands: vec!["page:1".into()],
+        };
+        let mut sink = FailingSink;
+        assert!(
+            write_print_job_body(&mut sink, &job).is_err(),
+            "a sink that cannot write must surface the error, not report success"
+        );
+    }
+
     #[test]
     fn print_manager_creates_and_tracks_jobs() {
         let mut manager = PrintManager::new();
@@ -1052,6 +1300,166 @@ mod tests {
             assert_eq!(dialog, Ok(false), "no interactive terminal must cancel, not accept");
         } else {
             assert_eq!(dialog, Err("print dialog is not supported on this platform".to_string()));
+        }
+    }
+
+    // ── PrintContext / PrintDocument contract ─────────────────────────
+
+    /// `draw_page` receives a **zero-based index**, and the first page is `0`.
+    ///
+    /// This was ambiguous before the contract review: the parameter was named
+    /// `page_num` and the only caller passed values from `selected_pages`, which is
+    /// index-based. A document author rendering "Page 3" from that value would have
+    /// been off by one, and nothing in the code or tests said which it was.
+    #[test]
+    fn draw_page_receives_a_zero_based_index() {
+        let printer =
+            Printer { page_size: Size { width: 595, height: 842 }, backend: PrintBackend::Memory };
+        let doc = TestDoc::new(3);
+        printer.print_with_result(&doc).expect("memory backend never fails");
+
+        assert_eq!(
+            doc.drawn_pages(),
+            vec![0, 1, 2],
+            "a three-page document must be drawn as indices 0,1,2 — a first value of 1 \
+             would mean the parameter is a one-based page number"
+        );
+    }
+
+    /// The pipeline may repeat, skip and reorder page indices, so a document must
+    /// not assume one ascending visit per page.
+    ///
+    /// This is the observable consequence of `draw_page` being driven by
+    /// `selected_pages` rather than by a `0..page_count` loop: copies repeat an
+    /// index, ranges skip the rest, and descending order reverses them.
+    #[test]
+    fn draw_page_may_be_called_repeatedly_and_out_of_order() {
+        let printer =
+            Printer { page_size: Size { width: 595, height: 842 }, backend: PrintBackend::Memory };
+        let doc = TestDoc::new(5);
+
+        let mut pagination = PrintPagination::new();
+        pagination.set_range(3, 4);
+        pagination.set_page_order(PageOrder::Descending);
+        pagination.set_copies(2);
+        pagination.set_collate(true);
+
+        printer.print_with_pagination_result(&doc, &pagination).expect("memory backend");
+
+        // Pages 3 and 4 (one-based) are indices 2 and 3, descending, twice over.
+        assert_eq!(
+            doc.drawn_pages(),
+            vec![3, 2, 3, 2],
+            "draw_page must be handed exactly the selected indices, in selection order"
+        );
+    }
+
+    /// A document with no pages prints nothing and must not be an error.
+    #[test]
+    fn a_document_with_no_pages_prints_nothing_without_failing() {
+        let printer =
+            Printer { page_size: Size { width: 595, height: 842 }, backend: PrintBackend::Memory };
+        let doc = TestDoc::new(0);
+        let result = printer.print_with_result(&doc);
+
+        assert!(result.is_ok(), "an empty document is not a failure, got {result:?}");
+        assert!(doc.drawn_pages().is_empty(), "no page may be drawn for a 0-page document");
+    }
+
+    /// The preview must expose the commands the document actually produced.
+    ///
+    /// `preview_commands` was a field that nothing ever wrote to: `show()` rendered
+    /// through a throwaway `Printer` and dropped the output, so a caller could ask
+    /// for the preview and always get an empty list. The accessor existed and was
+    /// documented to return "rendered preview output", which made it a silent lie.
+    #[test]
+    fn preview_exposes_the_commands_it_recorded() {
+        let mut preview = PrintPreviewDialog::new(Box::new(RecordingDoc));
+        assert!(preview.show(), "a document that draws must preview successfully");
+        let commands = preview.preview_commands();
+        assert!(
+            commands.iter().any(|c| c.starts_with("text:")),
+            "preview must expose the recorded draw commands, got {commands:?}"
+        );
+        assert!(commands.contains(&"page-break".to_string()), "each page must end with a break");
+    }
+
+    /// A preview of a document with no pages must fail and record nothing.
+    ///
+    /// The two are different questions: `show()` is about whether there is something
+    /// to preview, `preview_commands()` about what was recorded. A zero-page document
+    /// answers no/false and must leave no stale output behind.
+    #[test]
+    fn previewing_an_empty_document_fails_and_records_nothing() {
+        let mut preview = PrintPreviewDialog::new(Box::new(TestDoc::new(0)));
+        assert!(!preview.show(), "a zero-page document has nothing to preview");
+        assert!(
+            preview.preview_commands().is_empty(),
+            "a failed preview must not record commands, got {:?}",
+            preview.preview_commands()
+        );
+    }
+
+    /// A document that draws nothing still yields one page break per page.
+    ///
+    /// Pins the page structure independently of drawing: the frame exists even when
+    /// the document puts no marks on it, which is what lets a caller count pages from
+    /// the recorded output.
+    #[test]
+    fn a_page_with_no_marks_still_records_its_page_break() {
+        let mut preview = PrintPreviewDialog::new(Box::new(TestDoc::new(2)));
+        assert!(preview.show(), "a two-page document is previewable");
+        let breaks = preview.preview_commands().iter().filter(|c| *c == "page-break").count();
+        assert_eq!(breaks, 2, "one page break per page, even for a blank page");
+    }
+
+    /// Previewing twice must reflect the second render, not accumulate both.
+    #[test]
+    fn previewing_twice_replaces_rather_than_appends() {
+        let mut preview = PrintPreviewDialog::new(Box::new(RecordingDoc));
+        assert!(preview.show(), "first preview");
+        let first = preview.preview_commands().len();
+        assert!(preview.show(), "second preview");
+        assert_eq!(
+            preview.preview_commands().len(),
+            first,
+            "a second render must replace the recorded commands, not append to them"
+        );
+    }
+
+    /// The context must report the page size the caller asked for.
+    #[test]
+    fn context_reports_the_configured_page_size() {
+        let size = Size { width: 123, height: 456 };
+        let context = MemoryPrintContext::new(size);
+        assert_eq!(context.page_size(), size);
+    }
+
+    /// A one-page document whose index is out of range must not be drawn.
+    ///
+    /// Guards the boundary of the `draw_page` index contract: with `page_count() == 1`
+    /// the only valid index is `0`.
+    #[test]
+    fn an_out_of_range_index_is_never_requested() {
+        let printer =
+            Printer { page_size: Size { width: 595, height: 842 }, backend: PrintBackend::Memory };
+        let doc = TestDoc::new(1);
+        printer.print_with_result(&doc).expect("memory backend");
+        assert_eq!(doc.drawn_pages(), vec![0]);
+        assert!(
+            doc.drawn_pages().iter().all(|index| *index < doc.page_count()),
+            "every requested index must be within page_count()"
+        );
+    }
+
+    /// A document that draws text, used to give the preview something to record.
+    struct RecordingDoc;
+    impl PrintDocument for RecordingDoc {
+        fn page_count(&self) -> u32 {
+            2
+        }
+        fn draw_page(&self, page_index: u32, context: &mut dyn PrintContext) {
+            context.draw_text(&format!("page {page_index}"), 10.0, 20.0, 12.0);
         }
     }
 }

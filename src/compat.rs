@@ -39,14 +39,27 @@ pub use alloc::vec::Vec;
 // Under desktop/full, they remain dynamic (alloc::vec::Vec, alloc::string::String).
 
 /// Fixed-capacity vector for mini builds. Falls back to `Vec<T>` on desktop.
+///
+/// Under `alloc_frugal` this is `heapless::Vec<T, 64>`: **pushing beyond 64
+/// elements fails** rather than reallocating. Under desktop builds it is an
+/// ordinary growable `alloc::vec::Vec<T>`, so code must not rely on the
+/// capacity limit being enforced.
 #[cfg(alloc_frugal)]
 pub type MiniVec<T> = heapless::Vec<T, 64>;
+/// Growable vector alias used on desktop builds; see the `alloc_frugal`
+/// definition for the capacity-limited variant.
 #[cfg(not(alloc_frugal))]
 pub type MiniVec<T> = alloc::vec::Vec<T>;
 
 /// Fixed-capacity string for mini builds. Falls back to `String` on desktop.
+///
+/// Under `alloc_frugal` this is `heapless::String<256>`, so at most 256 bytes
+/// of UTF-8 are retained; see [`into_mini`], which silently truncates on
+/// overflow. Under desktop builds it is an unbounded `alloc::string::String`.
 #[cfg(alloc_frugal)]
 pub type MiniString = heapless::String<256>;
+/// Growable string alias used on desktop builds; see the `alloc_frugal`
+/// definition for the capacity-limited variant.
 #[cfg(not(alloc_frugal))]
 pub type MiniString = alloc::string::String;
 
@@ -153,20 +166,35 @@ crate::impl_default_via_new!(MiniArena);
 
 #[cfg(not(alloc_frugal))]
 #[derive(Default)]
+/// No-op arena used on desktop builds.
+///
+/// Allocation is delegated to the global allocator, and [`MiniArena::reset`]
+/// does nothing because there is nothing arena-owned to free. It exists so the
+/// arena call sites compile unchanged on both profiles.
 pub struct MiniArena;
 
 #[cfg(not(alloc_frugal))]
 impl MiniArena {
+    /// Creates the desktop no-op arena; there is exactly one, but constructing
+    /// extra values is harmless since it carries no state.
     pub const fn new() -> Self {
         Self
     }
+    /// Allocates on the global heap and returns an owning `Box<T>`.
+    ///
+    /// Unlike the `alloc_frugal` version, the result is a normal owned pointer
+    /// that is freed when dropped rather than borrowed from an arena.
     pub fn alloc<T>(&self, val: T) -> alloc::boxed::Box<T> {
         alloc::boxed::Box::new(val)
     }
+    /// Copies `slice` into a freshly allocated `Vec<T>` owned by the caller.
     pub fn alloc_slice<T: Copy>(&self, slice: &[T]) -> alloc::vec::Vec<T> {
         slice.to_vec()
     }
+    /// No-op on desktop: nothing is arena-owned, so there is nothing to free.
     pub fn reset(&self) {}
+    /// Always `0` on desktop, because no bytes are tracked by this no-op arena.
+    /// Do not use this as a memory-usage measurement.
     pub fn allocated_bytes(&self) -> usize {
         0
     }

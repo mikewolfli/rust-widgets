@@ -17,14 +17,34 @@ use crate::{impl_widget_property_hooks, property_names_of};
 pub struct SpinBox {
     base: BaseWidget,
     value: i32,
+    /// Lower bound of the value range; also the value that triggers
+    /// `special_value_text`.
     minimum: i32,
+    /// Upper bound of the value range; the value a wrapping `step_up` from
+    /// `maximum` lands on.
     maximum: i32,
+    /// Amount added or subtracted per step. Applied to the current value, so a
+    /// step may be clamped (or wrapped) rather than landing on a multiple.
     single_step: i32,
+    /// Text placed before the number in the displayed value; display only — it
+    /// is not part of the parsed numeric value.
     prefix: String,
+    /// Text placed after the number in the displayed value; display only.
     suffix: String,
+    /// Replaces the formatted number in the display whenever the value equals
+    /// `minimum`, e.g. `"Auto"` for a value of 0. `None` always shows the
+    /// number.
     special_value_text: Option<String>,
+    /// When true, stepping past `minimum` jumps to `maximum` (and vice versa)
+    /// instead of clamping. Affects only the step buttons / keyboard stepping,
+    /// not `set_value`.
     wrapping: bool,
+    /// Emitted with the new value after any change, including clamping by
+    /// `minimum` / `maximum`. Not emitted when the value is set to the value it
+    /// already had.
     pub value_changed: Signal1<i32>,
+    /// Emitted without a payload when an in-progress edit is committed or
+    /// cancelled (Enter, focus loss, or step).
     pub editing_finished: GenericSignal,
 }
 impl SpinBox {

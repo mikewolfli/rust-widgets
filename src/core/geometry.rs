@@ -394,11 +394,22 @@ impl Rect {
         let max_y = self.y.saturating_add_unsigned(self.height);
         point.x >= self.x && point.y >= self.y && point.x < max_x && point.y < max_y
     }
+    /// Returns `true` if the two rectangles overlap in a non-empty area.
+    ///
+    /// Edges that merely touch do **not** count: `Rect::new(0, 0, 10, 10)` and
+    /// `Rect::new(10, 0, 10, 10)` are reported as disjoint. Zero-sized
+    /// rectangles never intersect anything.
     pub fn intersects(&self, other: &Rect) -> bool {
         let (sx, sy) = self.max_coords();
         let (ox, oy) = other.max_coords();
         self.x < ox && sx > other.x && self.y < oy && sy > other.y
     }
+    /// Returns `true` if `other` lies entirely inside `self`.
+    ///
+    /// Edges touching counts as containment: `other`'s origin must be at or
+    /// after `self`'s origin and its exclusive max edge at or before `self`'s.
+    /// Degenerate rectangles (zero width or height) therefore contain
+    /// themselves and any other degenerate rectangle that is inside them.
     pub fn contains_rect(&self, other: &Rect) -> bool {
         let (sx, sy) = self.max_coords();
         let (ox, oy) = other.max_coords();
@@ -432,6 +443,13 @@ impl Rect {
             height: self.height.saturating_add(dy_t).saturating_add(dy_b),
         }
     }
+    /// Returns the smallest rectangle enclosing both `self` and `other`.
+    ///
+    /// Inputs are assumed non-degenerate. Under that precondition this is the
+    /// exact bounding box, but the helper used to compute the max edge
+    /// saturates at [`i32::MAX`], so a rectangle whose far edge overflows i32
+    /// contributes a truncated — that is, *too small* — bounding box rather
+    /// than panicking.
     pub fn union(&self, other: &Rect) -> Rect {
         let x = self.x.min(other.x);
         let y = self.y.min(other.y);
@@ -443,6 +461,11 @@ impl Rect {
         let height = (max_y as i64 - y as i64).clamp(0, u32::MAX as i64) as u32;
         Rect::new(x, y, width, height)
     }
+    /// Returns the overlapping region of the two rectangles.
+    ///
+    /// Returns `None` when the rectangles do not overlap or merely touch:
+    /// the overlap must have strictly positive width *and* height. The result
+    /// is a sub-rectangle of both inputs.
     pub fn intersection(&self, other: &Rect) -> Option<Rect> {
         let x = self.x.max(other.x);
         let y = self.y.max(other.y);

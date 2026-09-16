@@ -96,13 +96,23 @@ pub(crate) fn mount_canvas(
     // The area must be able to take keyboard focus for the editor to be usable.
     area.set_can_focus(true);
 
-    area.connect_button_press_event(move |_, event| {
+    // GTK reports pointer positions in this area's local space, but widget geometry
+    // is absolute, so each event is offset by where this surface was placed. Without
+    // the offset every nested control would be hit-tested against the wrong point.
+    let origin = Point::new(rect.x, rect.y);
+
+    area.connect_button_press_event(move |area, event| {
         let position = Point::new(event.position().0 as i32, event.position().1 as i32);
-        let delivered = crate::widget::runtime::dispatch_event(
+        let absolute = Point::new(origin.x + position.x, origin.y + position.y);
+        let delivered = forward_pointer_to_platform(
             id,
-            &Event::MousePress { pos: position, button: 1 },
+            &Event::MousePress { pos: absolute, button: 1 },
+            absolute,
         );
         if delivered {
+            // A click may move focus to a child, so give it the keyboard too. The
+            // area only receives key events while GTK considers it focused.
+            focus_area_if_enabled(area);
             press_area.queue_draw();
         }
         glib::Propagation::Proceed
@@ -110,9 +120,11 @@ pub(crate) fn mount_canvas(
 
     area.connect_button_release_event(move |widget, event| {
         let position = Point::new(event.position().0 as i32, event.position().1 as i32);
-        if crate::widget::runtime::dispatch_event(
+        let absolute = Point::new(origin.x + position.x, origin.y + position.y);
+        if forward_pointer_to_platform(
             id,
-            &Event::MouseRelease { pos: position, button: 1 },
+            &Event::MouseRelease { pos: absolute, button: 1 },
+            absolute,
         ) {
             widget.queue_draw();
         }
@@ -121,13 +133,36 @@ pub(crate) fn mount_canvas(
 
     area.connect_motion_notify_event(move |widget, event| {
         let position = Point::new(event.position().0 as i32, event.position().1 as i32);
-        if crate::widget::runtime::dispatch_event(id, &Event::MouseMove { pos: position }) {
+        let absolute = Point::new(origin.x + position.x, origin.y + position.y);
+        if forward_pointer_to_platform(id, &Event::MouseMove { pos: absolute }, absolute) {
             widget.queue_draw();
         }
         glib::Propagation::Proceed
     });
 
+    // GTK delivers a crossing event when the pointer leaves the area, which is the one
+    // case the coordinate-based hover transition cannot observe: there is no widget
+    // under the pointer, so a previously hovered control would stay highlighted.
+    area.connect_leave_notify_event(move |widget, _| {
+        crate::widget::runtime::clear_hover(Point::new(0, 0));
+        widget.queue_draw();
+        glib::Propagation::Proceed
+    });
+
     area.connect_key_press_event(move |widget, event| {
+        // Tab is handled by the library rather than forwarded as text: moving focus
+        // is a library-level action, and `event.keyval()` for Tab is not a printable
+        // character, so it would otherwise be delivered to the widget and ignored.
+        if gdk_keyval_is_tab(*event.keyval()) {
+            // Shift reverses the direction, matching every other toolkit's Tab
+            // convention. The bit is read straight from the widget-layer mask rather
+            // than through `Modifiers`, because this is the platform boundary.
+            const WIDGET_SHIFT: u32 = 1;
+            let forward = modifier_bits(event) & WIDGET_SHIFT == 0;
+            crate::widget::runtime::focus_next(forward);
+            widget.queue_draw();
+            return glib::Propagation::Stop;
+        }
         let translated = if let Some(text) = printable_text(event) {
             Event::TextInput { text }
         } else {
@@ -136,7 +171,7 @@ pub(crate) fn mount_canvas(
             let key = *event.keyval();
             Event::KeyPress { key, modifiers: modifier_bits(event) }
         };
-        if crate::widget::runtime::dispatch_event(id, &translated) {
+        if forward_key_to_platform(id, &translated) {
             widget.queue_draw();
         }
         glib::Propagation::Proceed
@@ -322,6 +357,54 @@ fn modifier_bits(event: &gdk::EventKey) -> u32 {
         bits |= WIDGET_META;
     }
     bits
+}
+
+/// Whether a GDK keyval is Tab, which the library consumes to move focus.
+///
+/// Kept as a named predicate because the raw keyval (`0xFF09`) is otherwise an
+/// unexplained magic number at the call site.
+fn gdk_keyval_is_tab(keyval: u32) -> bool {
+    keyval == KEY_TAB
+}
+
+/// GDK keyval for Tab.
+const KEY_TAB: u32 = 0xFF09;
+
+/// Routes a pointer event through the active platform backend.
+///
+/// The backend is asked rather than called directly because only it knows where its
+/// surface sits in the window, and therefore which widget the point lands on. Calling
+/// into `platform_facts()` here — rather than importing a concrete backend — keeps
+/// this module free of per-target branching (BLUE15 rules #35/#36).
+fn forward_pointer_to_platform(id: ObjectId, event: &Event, absolute: Point) -> bool {
+    crate::platform::platform_facts().route_pointer_event(id, event, absolute)
+}
+
+/// Delivers a key event to the focused widget, falling back to the surface's own
+/// widget when nothing is focused.
+///
+/// Routing keys to `focused` rather than to the surface is what makes a multi-widget
+/// window behave: the user tabs between controls, and the keys follow. Before this,
+/// every key went to whichever widget owned the surface, so two controls in one
+/// window could not both be typed into.
+fn forward_key_to_platform(id: ObjectId, event: &Event) -> bool {
+    match crate::widget::runtime::focused_widget() {
+        Some(focused) => crate::widget::runtime::dispatch_event(focused, event),
+        None => crate::widget::runtime::dispatch_event(id, event),
+    }
+}
+
+/// Grants GTK keyboard focus to `area` when the widget is enabled.
+///
+/// A disabled widget must not take the keyboard: GTK would then swallow the key
+/// before the library could honour Tab, and the user would be stuck. Returns whether
+/// the grab was requested.
+fn focus_area_if_enabled(area: &gtk::DrawingArea) -> bool {
+    if !area.is_sensitive() {
+        return false;
+    }
+    area.grab_focus();
+    true
 }
 
 #[cfg(test)]

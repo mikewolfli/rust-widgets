@@ -16,15 +16,32 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Font selection dialog.
+///
+/// Holds the font the user is choosing and signals the outcome. It does not
+/// enumerate or preview installed fonts — the caller supplies candidate fonts
+/// through [`FontDialog::set_current_font`].
 pub struct FontDialog {
     base: BaseWidget,
     current_font: Font,
     modal: bool,
+    /// Emitted with the new font on every change, including while the user is
+    /// still browsing, and again from [`FontDialog::accept`]. A slot that reads
+    /// it as "confirmed" will fire on unconfirmed selections; use `accepted` for
+    /// the commit point.
     pub font_selected: Signal1<Font>,
+    /// Emitted by [`FontDialog::accept`], after `font_selected`. Carries no
+    /// payload.
     pub accepted: GenericSignal,
+    /// Emitted by [`FontDialog::reject`]. The current font is **not** restored
+    /// to its pre-dialog value, so a caller that needs cancel semantics must
+    /// snapshot the original font itself.
     pub rejected: GenericSignal,
 }
 impl FontDialog {
+    /// Creates a dialog with the default font and modality on.
+    ///
+    /// `geometry` is in parent-relative logical pixels; the size hint is
+    /// 400x300.
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::FontDialog, geometry, "FontDialog"),
@@ -35,29 +52,51 @@ impl FontDialog {
             rejected: GenericSignal::new(),
         }
     }
+    /// Returns the font currently selected in the dialog.
     pub fn current_font(&self) -> &Font {
         &self.current_font
     }
+    /// Replaces the selected font and emits `font_selected`.
+    ///
+    /// Always signals and always requests a redraw, even for an unchanged
+    /// value, so a slot that calls back into this setter will recurse.
     pub fn set_current_font(&mut self, font: Font) {
         self.current_font = font.clone();
         self.font_selected.emit(font);
         self.base.request_redraw();
     }
+    /// Confirms the dialog: emits `font_selected` with the current font, then
+    /// `accepted`, then hides.
+    ///
+    /// Note the current font is reported twice in total — once from the
+    /// preceding `set_current_font` calls and once here — so a slot connected
+    /// to `font_selected` will see a duplicate for the final value.
     pub fn accept(&mut self) {
         self.font_selected.emit(self.current_font.clone());
         self.accepted.emit();
         self.hide();
     }
+    /// Cancels the dialog: emits `rejected` and hides. The selected font is
+    /// left as-is; see [`FontDialog::rejected`].
     pub fn reject(&mut self) {
         self.rejected.emit();
         self.hide();
     }
+    /// Returns a copy of the selected font. Equivalent to cloning
+    /// [`FontDialog::current_font`]; kept for callers using the
+    /// `get_font`/`set_current_font` pairing.
     pub fn get_font(&self) -> Font {
         self.current_font.clone()
     }
+    /// Returns whether the dialog is modal. Defaults to `true`.
+    ///
+    /// Advisory: the surrounding dialog manager enforces modality, not this
+    /// flag.
     pub fn is_modal(&self) -> bool {
         self.modal
     }
+    /// Sets the modality intent and requests a redraw. See
+    /// [`FontDialog::is_modal`].
     pub fn set_modal(&mut self, modal: bool) {
         self.modal = modal;
         self.base.request_redraw();

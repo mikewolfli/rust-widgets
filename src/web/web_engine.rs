@@ -29,13 +29,27 @@ use crate::widget::{Widget, WidgetKind};
 /// so this widget names no platform crate — see principle #36.
 pub struct WebEngineViewEnhanced {
     core: WebViewCore,
+    /// Emitted when the engine rejects a site certificate, carrying the
+    /// description of the failure. Nothing in this widget emits it yet; it exists
+    /// for backends that surface a certificate callback.
     pub certificate_error: Signal1<String>,
+    /// Emitted when a navigation asks to download rather than to display,
+    /// carrying the URL of the download. Nothing in this widget emits it yet.
     pub download_requested: Signal1<String>,
     /// Real engine when the backend provides one, `None` for the simulated path.
     webkit_backend: Option<Box<dyn NativeWebEngine>>,
 }
 
 impl WebEngineViewEnhanced {
+    /// Creates an engine view in `geometry` with an empty URL, no title, and
+    /// nothing loading.
+    ///
+    /// The active backend is asked for a native web engine at this point: if
+    /// [`Platform::create_web_engine`](crate::platform::Platform::create_web_engine)
+    /// returns one, navigation is forwarded to it; if it returns `None` — a
+    /// headless host, for instance — the widget degrades to the simulated path
+    /// rather than failing. Which of the two happened is not exposed, so a caller
+    /// that must know should query the platform directly.
     pub fn new(geometry: Rect) -> Self {
         // Ask the active backend rather than testing `cfg(target_os)`: a headless
         // Linux host returns `None` here and the widget degrades to simulation.
@@ -51,63 +65,101 @@ impl WebEngineViewEnhanced {
 
     // -- Accessors that delegate to core --
 
+    /// The address currently shown, or `""` until something is loaded.
+    ///
+    /// Read back from the core even when a native engine is driving, so it
+    /// reflects what this widget asked the engine to load rather than what the
+    /// engine ended up at after redirects.
     pub fn url(&self) -> &str {
         self.core.url()
     }
+    /// Whether a navigation is in flight.
+    ///
+    /// On the simulated path a load completes within the call, so this is `false`
+    /// again by the time the loader returns; treat it as meaningful only while a
+    /// native engine is driving the load.
     pub fn is_loading(&self) -> bool {
         self.core.is_loading()
     }
+    /// The page title, or `""` when none has been set or extracted.
     pub fn title(&self) -> &str {
         self.core.title()
     }
+    /// Load completion as a percentage, `0`..=`100`.
+    ///
+    /// 100 means the last navigation finished; it says nothing about whether the
+    /// document was valid.
     pub fn load_progress(&self) -> u8 {
         self.core.load_progress()
     }
+    /// Whether the session history has an entry behind the current one.
     pub fn can_go_back(&self) -> bool {
         self.core.can_go_back()
     }
+    /// Whether the session history has an entry ahead of the current one.
     pub fn can_go_forward(&self) -> bool {
         self.core.can_go_forward()
     }
+    /// The engine preferences in force.
     pub fn settings(&self) -> &super::WebSettings {
         self.core.settings()
     }
+    /// The engine preferences in force, mutably, for changing several at once
+    /// without going through a setter per field.
     pub fn settings_mut(&mut self) -> &mut super::WebSettings {
         self.core.settings_mut()
     }
+    /// The security preferences in force.
     pub fn security(&self) -> &super::SecuritySettings {
         self.core.security()
     }
+    /// The security preferences in force, mutably.
     pub fn security_mut(&mut self) -> &mut super::SecuritySettings {
         self.core.security_mut()
     }
+    /// This view's cookie jar.
     pub fn cookies(&self) -> &super::privacy::CookieJar {
         self.core.cookies()
     }
+    /// This view's cookie jar, mutably.
     pub fn cookies_mut(&mut self) -> &mut super::privacy::CookieJar {
         self.core.cookies_mut()
     }
+    /// The tracking-protection state, including the blocked-request count.
     pub fn privacy(&self) -> &super::privacy::TrackingProtection {
         self.core.privacy()
     }
+    /// The tracking-protection state, mutably.
     pub fn privacy_mut(&mut self) -> &mut super::privacy::TrackingProtection {
         self.core.privacy_mut()
     }
+    /// The registered plugins.
     pub fn plugins(&self) -> &super::plugins::PluginManager {
         self.core.plugins()
     }
+    /// The registered plugins, mutably.
     pub fn plugins_mut(&mut self) -> &mut super::plugins::PluginManager {
         self.core.plugins_mut()
     }
+    /// Session history for the back/forward buttons.
     pub fn history(&self) -> &super::history::SessionHistory {
         self.core.history()
     }
+    /// The longer-term browsing history, distinct from [`Self::history`].
     pub fn browser_history(&self) -> &super::history::BrowserHistory {
         self.core.browser_history()
     }
 
     // -- Methods that delegate to core --
 
+    /// Navigates to `url`.
+    ///
+    /// With a native engine present the load is handed to it, and a failure is
+    /// logged and then ignored — the previous page stays on screen and this
+    /// method still returns `()`, so a caller that must react to a failed load
+    /// should watch the engine's own error signal instead. Without one, this
+    /// delegates to the simulated loader (see [`Self::set_url`] for that
+    /// contract).
     pub fn load_url(&mut self, url: &str) {
         if let Some(ref mut backend) = self.webkit_backend {
             if let Err(error) = backend.load_url(url) {
@@ -117,6 +169,17 @@ impl WebEngineViewEnhanced {
         }
         self.core.load_url(url);
     }
+    /// Navigates to `url`, which must begin with `http://`, `https://` or
+    /// `file://`.
+    ///
+    /// Simulated path (no native engine): a URL with an unrecognised scheme is
+    /// logged and rejected, leaving the view untouched and returning silently;
+    /// navigating to the URL already displayed just marks the load complete at
+    /// 100%.
+    ///
+    /// Native path: the load is handed to the engine (failures logged, not
+    /// reported to the caller) *and* the core state is updated too, so the URL,
+    /// title and history stay in step with what the engine was asked to show.
     pub fn set_url(&mut self, url: String) {
         if let Some(ref mut backend) = self.webkit_backend {
             if let Err(error) = backend.load_url(&url) {
@@ -127,6 +190,13 @@ impl WebEngineViewEnhanced {
         }
         self.core.set_url(url);
     }
+    /// Loads `html` as the document, with `base_url` as the address it is
+    /// considered to have come from — used to resolve relative links and, when
+    /// `None`, replaced with `"data:text/html"`.
+    ///
+    /// The title becomes `"HTML Content"` and the body is stored verbatim: no
+    /// parsing, scripting or sanitising happens, so this is a way to display
+    /// markup, not to run a page.
     pub fn load_html(&mut self, html: &str, base_url: Option<&str>) {
         if let Some(ref mut backend) = self.webkit_backend {
             if let Err(error) = backend.load_html(html, base_url) {
@@ -137,12 +207,22 @@ impl WebEngineViewEnhanced {
         }
         self.core.load_html(html, base_url);
     }
+    /// Loads `data` as the document at `base_url`, declaring the bytes to be of
+    /// type `mime_type` (the title becomes `"Data: <mime_type>"`).
+    ///
+    /// The engine trait has no native equivalent, so this always takes the
+    /// simulated path even when a native engine is present. `data` is decoded
+    /// with [`String::from_utf8_lossy`], so invalid UTF-8 becomes replacement
+    /// characters rather than an error.
     pub fn load_data(&mut self, data: &[u8], mime_type: &str, base_url: &str) {
         // `load_data` has no native equivalent on the engine trait; the core path
         // still runs, and the early return below keeps the prior behaviour of
         // routing through core only when a native engine is present.
         self.core.load_data(data, mime_type, base_url);
     }
+    /// Steps one entry back in session history. A no-op when there is nothing
+    /// behind the current entry, or when a native engine is present and returns
+    /// without the entry — the core's history is not consulted on that path.
     pub fn go_back(&mut self) {
         if let Some(ref mut backend) = self.webkit_backend {
             backend.go_back();
@@ -150,6 +230,8 @@ impl WebEngineViewEnhanced {
         }
         self.core.go_back();
     }
+    /// Steps one entry forward in session history. A no-op when there is nothing
+    /// ahead of the current entry.
     pub fn go_forward(&mut self) {
         if let Some(ref mut backend) = self.webkit_backend {
             backend.go_forward();
@@ -157,6 +239,9 @@ impl WebEngineViewEnhanced {
         }
         self.core.go_forward();
     }
+    /// Reloads the current document, driving the same 0 → 50 → 100 progress
+    /// callbacks as a fresh load on the simulated path. Does nothing when there
+    /// is no URL.
     pub fn reload(&mut self) {
         if let Some(ref mut backend) = self.webkit_backend {
             backend.reload();
@@ -164,6 +249,8 @@ impl WebEngineViewEnhanced {
         }
         self.core.reload();
     }
+    /// Aborts an in-flight load and resets progress to 0. A no-op when nothing
+    /// is loading.
     pub fn stop(&mut self) {
         if let Some(ref mut backend) = self.webkit_backend {
             backend.stop_loading();
@@ -171,28 +258,58 @@ impl WebEngineViewEnhanced {
         }
         self.core.stop();
     }
+    /// Sets the title, emitting the core's `title_changed` signal only when the
+    /// value actually differs.
+    ///
+    /// Always applied to the core, engine or not, so the widget's own view of the
+    /// title is the authority rather than the engine's.
     pub fn set_title(&mut self, title: String) {
         self.core.set_title(title);
     }
+    /// Runs `script` in the page context and returns its value.
+    ///
+    /// Fails with an error whose message is `"JavaScript is disabled"` when
+    /// [`WebSettings::javascript_enabled`](super::WebSettings::javascript_enabled)
+    /// is `false`, and with the evaluator's own error otherwise. Console output
+    /// produced by the script is forwarded to the core's `console_message`
+    /// signal.
     pub fn evaluate_javascript(&mut self, script: &str) -> JsResult<JsValue> {
         self.core.evaluate_javascript(script)
     }
+    /// Turns script evaluation on or off by setting
+    /// [`WebSettings::javascript_enabled`](super::WebSettings::javascript_enabled).
+    /// Existing content is unaffected.
     pub fn set_javascript_enabled(&mut self, enabled: bool) {
         self.core.set_javascript_enabled(enabled);
     }
+    /// The decoded document body most recently loaded, or `""` if none.
     pub fn content(&self) -> &str {
         self.core.content()
     }
+    /// The document body most recently loaded.
+    ///
+    /// Identical to [`Self::content`] — the two names exist because one reads
+    /// naturally for a markup payload and the other for a fetched body.
     pub fn html(&self) -> &str {
         self.core.html()
     }
 
     // -- Unique methods on WebEngineViewEnhanced --
 
+    /// Enables or disables plugin support by setting
+    /// [`WebSettings::plugins_enabled`](super::WebSettings::plugins_enabled).
+    /// Plugins already registered are not unloaded by turning this off.
     pub fn set_plugins_enabled(&mut self, enabled: bool) {
         self.core.settings.plugins_enabled = enabled;
     }
 
+    /// Enters or leaves private browsing.
+    ///
+    /// Turning it **on** also replaces the current tracking protection with
+    /// [`PrivacySettings::strict`](super::privacy::PrivacySettings::strict),
+    /// discarding the previous policy and its blocked-request count. Turning it
+    /// off resets the flag only — strict protection stays in force, and the
+    /// relaxed policy that preceded it is not restored.
     pub fn set_private_browsing(&mut self, enabled: bool) {
         self.core.settings.private_browsing = enabled;
         if enabled {
@@ -201,6 +318,11 @@ impl WebEngineViewEnhanced {
         }
     }
 
+    /// Erases the parts of the local browsing state selected by `data`, as
+    /// described by [`BrowsingData`](super::privacy::BrowsingData).
+    ///
+    /// Clearing history empties the browsing history *and* resets the
+    /// back/forward stack.
     pub fn clear_browsing_data(&mut self, data: super::privacy::BrowsingData) {
         self.core.clear_browsing_data(data);
     }

@@ -97,82 +97,153 @@ impl Color {
         Self::from_f32_rgb(r, g, b)
     }
     /// Common color constants.
+    /// Opaque black (`#000000`).
     pub const BLACK: Self = Self::rgb(0, 0, 0);
+    /// Opaque white (`#FFFFFF`).
     pub const WHITE: Self = Self::rgb(255, 255, 255);
+    /// Opaque pure red (`#FF0000`).
     pub const RED: Self = Self::rgb(255, 0, 0);
+    /// Opaque pure green (`#00FF00`).
     pub const GREEN: Self = Self::rgb(0, 255, 0);
+    /// Opaque pure blue (`#0000FF`).
     pub const BLUE: Self = Self::rgb(0, 0, 255);
+    /// Opaque pure yellow (`#FFFF00`).
     pub const YELLOW: Self = Self::rgb(255, 255, 0);
+    /// Opaque pure cyan (`#00FFFF`).
     pub const CYAN: Self = Self::rgb(0, 255, 255);
+    /// Opaque pure magenta (`#FF00FF`).
     pub const MAGENTA: Self = Self::rgb(255, 0, 255);
+    /// Opaque mid gray (`#808080`).
     pub const GRAY: Self = Self::rgb(128, 128, 128);
+    /// Opaque light gray (`#C8C8C8`).
     pub const LIGHT_GRAY: Self = Self::rgb(200, 200, 200);
+    /// Opaque dark gray (`#404040`).
     pub const DARK_GRAY: Self = Self::rgb(64, 64, 64);
+    /// Opaque extra-light gray (`#E6E6E6`), lighter than [`Color::LIGHT_GRAY`].
     pub const EXTRA_LIGHT_GRAY: Self = Self::rgb(230, 230, 230);
+    /// Opaque medium gray (`#A0A0A0`), between [`Color::GRAY`] and [`Color::LIGHT_GRAY`].
     pub const MEDIUM_GRAY: Self = Self::rgb(160, 160, 160);
+    /// Opaque extra-dark gray (`#202020`), darker than [`Color::DARK_GRAY`].
     pub const EXTRA_DARK_GRAY: Self = Self::rgb(32, 32, 32);
+    /// Fully transparent black: every channel is zero, so the alpha channel is 0 (`#00000000`).
     pub const TRANSPARENT: Self = Self::rgba(0, 0, 0, 0);
     /// Color variants.
+    /// Opaque bright red tint (`#FF6464`).
     pub const LIGHT_RED: Self = Self::rgb(255, 100, 100);
+    /// Opaque deep red shade (`#960000`).
     pub const DARK_RED: Self = Self::rgb(150, 0, 0);
+    /// Opaque bright green tint (`#64FF64`).
     pub const LIGHT_GREEN: Self = Self::rgb(100, 255, 100);
+    /// Opaque deep green shade (`#009600`).
     pub const DARK_GREEN: Self = Self::rgb(0, 150, 0);
+    /// Opaque bright blue tint (`#6464FF`).
     pub const LIGHT_BLUE: Self = Self::rgb(100, 100, 255);
+    /// Opaque deep blue shade (`#000096`).
     pub const DARK_BLUE: Self = Self::rgb(0, 0, 150);
+    /// Opaque pale yellow tint (`#FFFF96`).
     pub const LIGHT_YELLOW: Self = Self::rgb(255, 255, 150);
+    /// Opaque dark olive yellow shade (`#969600`).
     pub const DARK_YELLOW: Self = Self::rgb(150, 150, 0);
     /// UI color constants.
+    /// Accent for primary actions and selected controls (`#488EF6`).
     pub const PRIMARY: Self = Self::rgb(72, 142, 246);
+    /// Muted accent for less prominent actions (`#787C84`).
     pub const SECONDARY: Self = Self::rgb(120, 124, 132);
+    /// Positive outcome indicator (`#3EA552`).
     pub const SUCCESS: Self = Self::rgb(62, 165, 82);
+    /// Caution indicator (`#F5A623`).
     pub const WARNING: Self = Self::rgb(245, 166, 35);
+    /// Failure indicator (`#EA3943`).
     pub const ERROR: Self = Self::rgb(234, 57, 67);
+    /// Default light canvas behind content (`#F5F6F8`).
     pub const BACKGROUND: Self = Self::rgb(245, 246, 248);
+    /// Default text color drawn on [`Color::BACKGROUND`] (`#1A1C20`).
     pub const FOREGROUND: Self = Self::rgb(26, 28, 32);
+    /// Hyperlink color in its resting state (`#0070C9`).
     pub const LINK: Self = Self::rgb(0, 112, 201);
+    /// Hyperlink color while hovered (`#008EFB`), lighter than [`Color::LINK`].
     pub const LINK_HOVER: Self = Self::rgb(0, 142, 251);
+    /// Outline around interactive surfaces (`#C0C4CC`).
     pub const BORDER: Self = Self::rgb(192, 196, 204);
+    /// Hairline rule between adjacent sections (`#DFE1E6`).
     pub const DIVIDER: Self = Self::rgb(223, 225, 230);
+    /// Fill behind selected text or list rows (`#ADD8E6`).
     pub const SELECTION: Self = Self::rgb(173, 216, 230);
+    /// Backing color for tooltip popups (`#FFFFE0`).
     pub const TOOLTIP: Self = Self::rgb(255, 255, 224);
+    /// Backing color for menu popups (`#FFFFFF`).
     pub const MENU_BACKGROUND: Self = Self::rgb(255, 255, 255);
+    /// Text color inside menu popups (`#1A1C20`), matching [`Color::FOREGROUND`].
     pub const MENU_FOREGROUND: Self = Self::rgb(26, 28, 32);
     /// Semantic colors.
+    /// Neutral informational accent (`#4285F4`).
     pub const INFO: Self = Self::rgb(66, 133, 244);
+    /// Accent for notification badges and banners (`#673AB7`).
     pub const NOTIFICATION: Self = Self::rgb(103, 58, 183);
+    /// Background of a control that cannot be interacted with (`#F5F5F5`).
     pub const DISABLED_BACKGROUND: Self = Self::rgb(245, 245, 245);
+    /// Text of a control that cannot be interacted with (`#999999`).
     pub const DISABLED_FOREGROUND: Self = Self::rgb(153, 153, 153);
     /// Neutral colors.
+    /// Pale blue-white tint (`#F0F8FF`).
     pub const ALICE_BLUE: Self = Self::rgb(240, 248, 255);
+    /// Pale warm cream (`#F5F5DC`).
     pub const BEIGE: Self = Self::rgb(245, 245, 220);
+    /// Orange-pink accent (`#FF7F50`).
     pub const CORAL: Self = Self::rgb(255, 127, 80);
+    /// Metallic yellow (`#FFD700`).
     pub const GOLD: Self = Self::rgb(255, 215, 0);
+    /// Very pale yellow, slightly warmer than white (`#FFFFF0`).
     pub const IVORY: Self = Self::rgb(255, 255, 240);
+    /// Pale violet tint (`#E6E6FA`).
     pub const LAVENDER: Self = Self::rgb(230, 230, 250);
+    /// Bright pink (`#FF69B4`).
     pub const ROSE: Self = Self::rgb(255, 105, 180);
+    /// Neutral metallic gray (`#C0C0C0`).
     pub const SILVER: Self = Self::rgb(192, 192, 192);
+    /// Sandy brown-beige (`#D2B48C`).
     pub const TAN: Self = Self::rgb(210, 180, 140);
     /// Additional QT-like colors.
+    /// Cyan accent, channel-identical to [`Color::CYAN`] (`#00FFFF`).
     pub const AQUA: Self = Self::rgb(0, 255, 255);
+    /// Dark reddish-brown (`#A52A2A`).
     pub const BROWN: Self = Self::rgb(165, 42, 42);
+    /// Deep leafy green (`#228B22`).
     pub const FOREST_GREEN: Self = Self::rgb(34, 139, 34);
+    /// Deep violet-blue (`#4B0082`).
     pub const INDIGO: Self = Self::rgb(75, 0, 130);
+    /// Dark brownish red (`#800000`).
     pub const MAROON: Self = Self::rgb(128, 0, 0);
+    /// Dark blue (`#000080`).
     pub const NAVY: Self = Self::rgb(0, 0, 128);
+    /// Dark yellow-green (`#808000`).
     pub const OLIVE: Self = Self::rgb(128, 128, 0);
+    /// Bright orange (`#FFA500`).
     pub const ORANGE: Self = Self::rgb(255, 165, 0);
+    /// Soft pink (`#FFC0CB`).
     pub const PINK: Self = Self::rgb(255, 192, 203);
+    /// Dark violet (`#800080`).
     pub const PURPLE: Self = Self::rgb(128, 0, 128);
+    /// Dark blue-green (`#008080`).
     pub const TEAL: Self = Self::rgb(0, 128, 128);
     /// Additional WX-like colors.
+    /// Light azure blue (`#87CEEB`).
     pub const SKY_BLUE: Self = Self::rgb(135, 206, 235);
+    /// Muted blue-gray (`#4682B4`).
     pub const STEEL_BLUE: Self = Self::rgb(70, 130, 180);
+    /// Neutral blue-tinted gray (`#708090`).
     pub const SLATE_GRAY: Self = Self::rgb(112, 128, 144);
+    /// Dark blue-tinted gray (`#2F4F4F`).
     pub const DARK_SLATE_GRAY: Self = Self::rgb(47, 79, 79);
+    /// Lighter blue-tinted gray (`#778899`), between [`Color::SLATE_GRAY`] and [`Color::SILVER`].
     pub const LIGHT_SLATE_GRAY: Self = Self::rgb(119, 136, 153);
+    /// Very pale cyan (`#E0FFFF`).
     pub const LIGHT_CYAN: Self = Self::rgb(224, 255, 255);
+    /// Pale yellow (`#FAFAD2`).
     pub const LIGHT_GOLDENROD_YELLOW: Self = Self::rgb(250, 250, 210);
+    /// Pale pink (`#FFB6C1`).
     pub const LIGHT_PINK: Self = Self::rgb(255, 182, 193);
+    /// Pale salmon orange (`#FFA07A`).
     pub const LIGHT_SALMON: Self = Self::rgb(255, 160, 122);
     /// Parses `#RRGGBB`, `#RRGGBBAA`, `#RGB` or `#RGBA` hex color strings.
     ///

@@ -569,10 +569,18 @@ pub struct WindowHandle {
 }
 
 impl WindowHandle {
+    /// Rebuilds a handle from a raw object id.
+    ///
+    /// The id is **not** verified: nothing is looked up and no error is possible,
+    /// so this can be given an id that addresses no window — or a widget of
+    /// another kind. Every later operation on such a handle either fails
+    /// quietly or returns `None`/`false`; nothing panics.
     pub fn from_raw(id: ObjectId) -> Self {
         Self { id }
     }
 
+    /// The underlying object id, for the raw `set_widget_*` functions and for
+    /// `Platform` calls that have no handle wrapper.
     pub fn raw_id(&self) -> ObjectId {
         self.id
     }
@@ -622,24 +630,43 @@ impl Drop for WindowHandle {
 }
 
 impl WindowHandle {
+    /// Sets the window's title bar text and repaints.
+    ///
+    /// Routed through `crate::set_widget_text`, so on a non-window id it has no
+    /// effect. On macOS the title is also what the Dock and the application menu
+    /// show.
     pub fn set_title(&self, title: &str) {
         crate::set_widget_text(self.id, title);
     }
 
     // ── Child-widget factory methods ──────────────────────
 
+    /// Creates a push button as a child of this window.
+    ///
+    /// `x`/`y` are in the window's client-area coordinates and `w`/`h` in pixels.
+    /// The returned handle is the caller's way to reach the button from then on.
     pub fn new_button(&self, text: &str, x: i32, y: i32, w: u32, h: u32) -> ButtonHandle {
         ButtonHandle::from_raw(crate::create_button(self.id, text, x, y, w, h))
     }
 
+    /// Creates a static text label as a child of this window.
     pub fn new_label(&self, text: &str, x: i32, y: i32, w: u32, h: u32) -> LabelHandle {
         LabelHandle::from_raw(crate::create_label(self.id, text, x, y, w, h))
     }
 
+    /// Creates a check box as a child of this window.
+    ///
+    /// Starts unchecked and single-state; use [`CheckBoxHandle::set_tristate`]
+    /// for a three-state box.
     pub fn new_checkbox(&self, text: &str, x: i32, y: i32, w: u32, h: u32) -> CheckBoxHandle {
         CheckBoxHandle::from_raw(crate::create_checkbox(self.id, text, x, y, w, h))
     }
 
+    /// Creates a radio button as a child of this window.
+    ///
+    /// Radio buttons are mutually exclusive within a group and independent
+    /// across groups; see [`RadioButtonHandle::set_group`]. A new button starts
+    /// with no group and unselected.
     pub fn new_radio_button(
         &self,
         text: &str,
@@ -651,18 +678,30 @@ impl WindowHandle {
         RadioButtonHandle::from_raw(crate::create_radio_button(self.id, text, x, y, w, h))
     }
 
+    /// Creates a single-line text entry as a child of this window, with `text` as
+    /// its initial contents.
     pub fn new_line_edit(&self, text: &str, x: i32, y: i32, w: u32, h: u32) -> LineEditHandle {
         LineEditHandle::from_raw(crate::create_line_edit(self.id, text, x, y, w, h))
     }
 
+    /// Creates an empty drop-down list as a child of this window.
+    ///
+    /// It has no items, so nothing is selected; add them with
+    /// [`ComboBoxHandle::add_item`].
     pub fn new_combo_box(&self, x: i32, y: i32, w: u32, h: u32) -> ComboBoxHandle {
         ComboBoxHandle::from_raw(crate::create_combo_box(self.id, x, y, w, h))
     }
 
+    /// Creates an empty single-selection list box as a child of this window.
     pub fn new_list_box(&self, x: i32, y: i32, w: u32, h: u32) -> ListBoxHandle {
         ListBoxHandle::from_raw(crate::create_list_box(self.id, x, y, w, h))
     }
 
+    /// Creates a horizontal slider as a child of this window.
+    ///
+    /// Orientation cannot be changed afterwards on most backends; use
+    /// [`WindowHandle::new_slider_with_orientation`] when you need a vertical
+    /// one.
     pub fn new_slider(&self, x: i32, y: i32, w: u32, h: u32) -> SliderHandle {
         SliderHandle::from_raw(crate::create_slider(self.id, x, y, w, h))
     }
@@ -692,6 +731,10 @@ impl WindowHandle {
         handle
     }
 
+    /// Creates a progress bar as a child of this window.
+    ///
+    /// Starts in the determinate state; [`ProgressBarHandle::set_indeterminate`]
+    /// switches it to a busy animation for work of unknown duration.
     pub fn new_progress_bar(&self, x: i32, y: i32, w: u32, h: u32) -> ProgressBarHandle {
         ProgressBarHandle::from_raw(crate::create_progress_bar(self.id, x, y, w, h))
     }
@@ -781,6 +824,12 @@ impl WindowHandle {
         self.mount_surface(widget, rect)
     }
 
+    /// Creates a container panel as a child of this window.
+    ///
+    /// A panel is a layout surface rather than a control: it groups children and
+    /// can carry a title. The handle's geometry is recorded so
+    /// [`PanelHandle::set_geometry`] and [`PanelHandle::set_layout`] can
+    /// re-lay out its contents.
     pub fn new_panel(&self, x: i32, y: i32, w: u32, h: u32) -> PanelHandle {
         let panel = PanelHandle::from_raw(crate::create_panel(self.id, x, y, w, h));
         PANEL_STATES.with(|map| {
@@ -798,6 +847,12 @@ impl WindowHandle {
         FrameHandle::from_raw(crate::create_panel(self.id, x, y, w, h))
     }
 
+    /// Creates a spin box as a child of this window: a numeric field with an
+    /// increment/decrement pair.
+    ///
+    /// Starts at 0 with the full numeric range; constrain it with
+    /// [`SpinBoxHandle::set_range`] and label it with
+    /// [`SpinBoxHandle::set_prefix`]/[`SpinBoxHandle::set_suffix`].
     pub fn new_spin_box(&self, x: i32, y: i32, w: u32, h: u32) -> SpinBoxHandle {
         SpinBoxHandle::from_raw(crate::create_spin_box(self.id, x, y, w, h))
     }
@@ -897,14 +952,32 @@ impl WindowHandle {
         StatusBarHandle::from_raw(crate::create_status_bar(self.id, text, x, y, w, h))
     }
 
+    /// Creates a single-selection table of rows and columns as a child of this
+    /// window.
+    ///
+    /// The view starts with no columns and no model, so it has nothing to show;
+    /// build it with [`ListViewHandle::add_column`] and
+    /// [`ListViewHandle::set_model`].
     pub fn new_list_view(&self, x: i32, y: i32, w: u32, h: u32) -> ListViewHandle {
         ListViewHandle::from_raw(crate::create_list_view(self.id, x, y, w, h))
     }
 
+    /// Creates a scrollable viewport as a child of this window.
+    ///
+    /// Its content is larger than the viewport and is reached by scrolling; the
+    /// extent of that content has to be declared with
+    /// [`ScrollAreaHandle::set_content_size`] or no scrollbar can appear.
     pub fn new_scroll_area(&self, x: i32, y: i32, w: u32, h: u32) -> ScrollAreaHandle {
         ScrollAreaHandle::from_raw(crate::create_scroll_area(self.id, x, y, w, h))
     }
 
+    /// Creates a modal message box as a child of this window.
+    ///
+    /// `title` is the box's own caption; `text` is the body. It is created
+    /// hidden — call [`MessageBoxHandle::show_modal`] to display it. Note that
+    /// `MessageBoxHandle` deliberately does not implement the geometry and
+    /// enable/disable operations the other handles have, so the position and size
+    /// passed here are the ones the backend chooses to honour.
     pub fn new_message_box(
         &self,
         title: &str,
@@ -997,6 +1070,12 @@ macro_rules! impl_handle {
         }
 
         impl $name {
+            /// Rebuilds a handle from a raw object id.
+            ///
+            /// The id is not verified against the registry, so a stale or
+            /// wrong-kind id produces a handle whose methods fail quietly rather
+            /// than a panic. Prefer the factory method on `WindowHandle`, which
+            /// hands back an id it has just created.
             pub fn from_raw(id: ObjectId) -> Self {
                 Self { id }
             }
@@ -1073,10 +1152,15 @@ pub struct MessageBoxHandle {
 }
 
 impl MessageBoxHandle {
+    /// Rebuilds a handle from a raw object id.
+    ///
+    /// The id is not verified, so this can name a widget of another kind or
+    /// nothing at all; the methods below then do nothing.
     pub fn from_raw(id: ObjectId) -> Self {
         Self { id }
     }
 
+    /// The underlying object id.
     pub fn raw_id(&self) -> ObjectId {
         self.id
     }
@@ -1131,26 +1215,45 @@ impl Drop for MessageBoxHandle {
 
 /// # Combo-box specific operations
 impl ComboBoxHandle {
+    /// Appends an item with the given text.
+    ///
+    /// Returns `false` when the id is not a combo box or the backend refused, so
+    /// a caller that must know the item was added should check the result rather
+    /// than assuming.
     pub fn add_item(&self, text: &str) -> bool {
         crate::combo_box_add_item(self.raw_id(), text)
     }
 
+    /// Removes every item, leaving the combo box empty and with nothing selected.
+    /// Returns `false` under the same conditions as [`ComboBoxHandle::add_item`].
     pub fn clear_items(&self) -> bool {
         crate::combo_box_clear_items(self.raw_id())
     }
 
+    /// Selects the item at `index`.
+    ///
+    /// Returns `false` when the id is not a combo box, or when the widget does
+    /// not publish its `current_index` property — an out-of-range `index` is
+    /// **not** reliably reported as a failure, so a caller that must know should
+    /// read [`ComboBoxHandle::current_index`] back.
     pub fn set_current_index(&self, index: usize) -> bool {
         crate::combo_box_set_current_index(self.raw_id(), index)
     }
 
+    /// The selected item's index, or `None` when nothing is selected (and for an
+    /// id that is not a combo box).
     pub fn current_index(&self) -> Option<usize> {
         crate::combo_box_current_index(self.raw_id())
     }
 
+    /// How many items the combo box holds. Reports `0` for an unknown id as well
+    /// as for a genuinely empty list, so it cannot distinguish the two.
     pub fn item_count(&self) -> usize {
         crate::combo_box_item_count(self.raw_id())
     }
 
+    /// The text of the item at `index`, or `None` when the index is out of range
+    /// or the id is not a combo box.
     pub fn item_text(&self, index: usize) -> Option<String> {
         crate::combo_box_item_text(self.raw_id(), index)
     }
@@ -1162,30 +1265,51 @@ impl ComboBoxHandle {
 
 /// # List-box specific operations
 impl ListBoxHandle {
+    /// Appends an item with the given text. Returns `false` when the id is not a
+    /// list box or the backend refused.
     pub fn add_item(&self, text: &str) -> bool {
         crate::list_box_add_item(self.raw_id(), text)
     }
 
+    /// Removes the item at `index`, shifting later items down.
+    ///
+    /// Returns `false` when the id is not a list box or the backend refused. An
+    /// out-of-range index is not reliably distinguished from a refusal, so a
+    /// caller that must know should re-read [`ListBoxHandle::item_count`].
     pub fn remove_item(&self, index: usize) -> bool {
         crate::list_box_remove_item(self.raw_id(), index)
     }
 
+    /// Removes every item, leaving the list empty and with nothing selected.
+    /// Returns `false` when the id is not a list box.
     pub fn clear_items(&self) -> bool {
         crate::list_box_clear_items(self.raw_id())
     }
 
+    /// Selects the item at `index`.
+    ///
+    /// Returns `false` when the id is not a list box, or when the widget does not
+    /// publish its selection property. As with the combo box, an out-of-range
+    /// index is not reliably reported, so read [`ListBoxHandle::current_index`]
+    /// back to confirm.
     pub fn set_current_index(&self, index: usize) -> bool {
         crate::list_box_set_current_index(self.raw_id(), index)
     }
 
+    /// The selected item's index, or `None` when nothing is selected (and for an
+    /// id that is not a list box).
     pub fn current_index(&self) -> Option<usize> {
         crate::list_box_current_index(self.raw_id())
     }
 
+    /// How many items the list holds. Reports `0` for an unknown id as well as
+    /// for a genuinely empty list.
     pub fn item_count(&self) -> usize {
         crate::list_box_item_count(self.raw_id())
     }
 
+    /// The text of the item at `index`, or `None` when the index is out of range
+    /// or the id is not a list box.
     pub fn item_text(&self, index: usize) -> Option<String> {
         crate::list_box_item_text(self.raw_id(), index)
     }

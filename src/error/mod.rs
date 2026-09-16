@@ -40,10 +40,24 @@ pub struct ErrorId(pub i32);
 
 impl ErrorId {
     // --- General (1‑99) ---
+    /// Operation completed successfully. This is the only `ErrorId` that
+    /// callers of an FFI function should treat as "no error"; all others are
+    /// nonzero failures.
     pub const SUCCESS: Self = Self(0);
+    /// The requested operation exists in the API surface but has no working
+    /// implementation yet. Callers should surface this as a hard failure and
+    /// not retry.
     pub const NOT_IMPLEMENTED: Self = Self(1);
+    /// The current backend or platform cannot perform the operation at all.
+    /// Unlike [`ErrorId::NOT_IMPLEMENTED`], this is a permanent capability gap
+    /// rather than missing code.
     pub const UNSUPPORTED_OPERATION: Self = Self(2);
+    /// An argument was rejected — wrong type, out of range, or inconsistent
+    /// with the current state. Indicates a caller bug, not an environment
+    /// problem.
     pub const INVALID_ARGUMENT: Self = Self(3);
+    /// Catch-all failure with no more specific code available. Used by
+    /// [`RwError::msg`] and by panics crossing [`catch_panic`].
     pub const GENERAL: Self = Self(999);
     /// Reserved — not yet wired into any code path.
     pub const NULL_POINTER: Self = Self(4);
@@ -81,13 +95,21 @@ impl ErrorId {
     // --- I/O (400–499) ---
     /// Reserved — not yet wired into any code path.
     pub const I18N_LOAD_FAILED: Self = Self(400);
+    /// A path or resource referenced by the caller could not be located on
+    /// disk or in the active bundle.
     pub const FILE_NOT_FOUND: Self = Self(401);
 
     // --- EW alias constants (compatibility) ---
+    /// Legacy alias for [`ErrorId::SUCCESS`]; same numeric value. Kept for
+    /// source compatibility with earlier `EW_*`-prefixed API users.
     pub const EW_SUCCESS: Self = Self(0);
+    /// Legacy alias for [`ErrorId::NOT_IMPLEMENTED`]; same numeric value.
     pub const EW_NOT_IMPLEMENTED: Self = Self(1);
+    /// Legacy alias for [`ErrorId::UNSUPPORTED_OPERATION`]; same numeric value.
     pub const EW_UNSUPPORTED_OPERATION: Self = Self(2);
+    /// Legacy alias for [`ErrorId::INVALID_ARGUMENT`]; same numeric value.
     pub const EW_INVALID_ARGUMENT: Self = Self(3);
+    /// Legacy alias for [`ErrorId::GENERAL`]; same numeric value.
     pub const EW_GENERAL: Self = Self(999);
     /// Reserved — not yet wired into any code path.
     pub const EW_NULL_POINTER: Self = Self(4);
@@ -117,6 +139,7 @@ impl ErrorId {
     pub const EW_RENDER_PIPELINE_FAILED: Self = Self(301);
     /// Reserved — not yet wired into any code path.
     pub const EW_I18N_LOAD_FAILED: Self = Self(400);
+    /// Legacy alias for [`ErrorId::FILE_NOT_FOUND`]; same numeric value.
     pub const EW_FILE_NOT_FOUND: Self = Self(401);
 }
 
@@ -140,7 +163,12 @@ impl ErrorId {
 /// ```
 #[derive(Debug, Clone)]
 pub struct RwError {
+    /// Stable machine-readable error code. Treat as the authoritative
+    /// classifier; `message` is for humans only and may be reworded.
     pub id: ErrorId,
+    /// Human-readable description of what went wrong. Never parsed by code,
+    /// never guaranteed to be localised, and may embed untrusted input taken
+    /// from the caller's arguments.
     pub message: String,
 }
 
@@ -226,12 +254,28 @@ where
 /// Convert an `RwResult<T>` into an `ErrorId` (i32) for C callers.
 ///
 /// Logs the error via `log::error!` for debugging.
+///
+/// This is the last step of an `extern "C"` function: it maps `Ok(())` to
+/// [`ErrorId::SUCCESS`] and, on failure, logs the full `Display` form of the
+/// error at error level before returning its numeric id. The error value is
+/// consumed and no detail survives past this boundary — anything a C caller
+/// needs must be in `message` and logged here.
+///
+/// Note that the success value is not representable: the parameter is
+/// `RwResult<()>`, so a function that must return both a status code and a
+/// value needs a separate out-parameter.
 // ---------------------------------------------------------------------------
 // FFI safety — c_try! macro and helpers
 // ---------------------------------------------------------------------------
 pub mod ffi;
 pub use ffi::{c_try_fallback, CAbiSafe};
 
+/// Convert a fallible FFI body into an `ErrorId` for the C ABI boundary.
+///
+/// Maps `Ok(())` to [`ErrorId::SUCCESS`] and otherwise logs the error via
+/// `log::error!` and returns the numeric code. See the module docs for why
+/// every `extern "C"` entry point should funnel its result through this (or
+/// [`catch_panic`]) rather than returning a `Result` directly.
 pub fn to_error_id(result: RwResult<()>) -> i32 {
     match result {
         Ok(()) => ErrorId::SUCCESS.0,

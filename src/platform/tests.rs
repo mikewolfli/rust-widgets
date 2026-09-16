@@ -21,6 +21,37 @@ fn runtime_selects_harmony_backend_when_feature_enabled() {
     assert_eq!(platform.family(), PlatformFamily::Desktop);
 }
 
+/// Every build must resolve a *real* backend, and only one.
+///
+/// `create_native_platform` is defined eleven times, once per target/feature
+/// combination, and they must stay mutually exclusive. Overlap is a compile error
+/// (`E0428`), but the opposite failure — a combination that matches **no** arm —
+/// would fall through to `unknown-runtime-stub`, which looks like a working build
+/// until the first control does nothing. This test names that failure.
+///
+/// Measured behaviour (so the assertion below is not an overclaim): a build with a
+/// device profile resolves to that platform's real backend, and a build with **no**
+/// device profile still resolves to a real one on a supported target
+/// (`linux-state-backend` on Linux, for example) because the per-target arm does not
+/// depend on the profile. The unknown stub is therefore reached only on a target this
+/// crate has no backend for, which the CI target matrix does not cover. The assertion
+/// is scoped to device builds because that is where a missing arm would be a silent
+/// regression rather than an expected fallback.
+#[test]
+fn the_selected_backend_is_real_and_not_the_unknown_stub() {
+    let name = crate::platform::backend_name();
+    assert!(!name.is_empty(), "a backend must name itself");
+
+    let has_device_profile = cfg!(any(feature = "desktop", feature = "tablet", feature = "mobile"));
+    if has_device_profile {
+        assert_ne!(
+            name, "unknown-runtime-stub",
+            "a device build resolved no backend at all: one of the \
+             `create_native_platform` arms is missing its condition"
+        );
+    }
+}
+
 /// The generic stub must never be selected merely because the host OS is
 /// unrecognised; a feature-selected backend takes precedence.
 #[cfg(feature = "harmony")]

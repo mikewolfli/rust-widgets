@@ -30,8 +30,10 @@ Under the self-drawn strategy (BLUE15 #55/#56) the library paints every
 `WidgetKind`, so the host supplies a **window plus a drawing surface** and
 nothing per-kind. The control creators, the view registry, the `ButtonTarget`
 Objective-C class and its event queue existed only to serve that path and have
-been **deleted** (#59: delete means delete). The drawing surface is mounted
-through `MobilePlatformExtension::attach_to_native_view`.
+been **deleted** (#59: delete means delete).
+
+The host attaches its view with `MobilePlatformExtension::attach_to_native_view`,
+and widgets are then displayed through `Platform::mount_surface` — see below.
 
 ## What is implemented
 
@@ -40,6 +42,7 @@ through `MobilePlatformExtension::attach_to_native_view`.
 | `Platform` contract (`create_window` + full window contract) | ✅ Implemented | state-backed, with parent/kind validation |
 | `UIWindow` creation | ✅ Implemented | real `UIWindow` with a root view controller, visible |
 | Per-kind UIKit controls (`UIButton` / `UILabel` / …) | ⛔ Deleted | BLUE15 #59 — the library paints them |
+| **Widget surfaces** (`mount_surface` + repaint queue) | ✅ Implemented | records which widgets are displayed and returns their frames |
 | Menu tree (MenuBar/Menu/MenuItem) | ✅ Implemented | in-process tree + injectable trigger queue |
 | ComboBox / ListBox data paths | ✅ Implemented | shared list-data tables |
 | Show / hide / geometry / text / enabled | ✅ Implemented | logical state round-trips |
@@ -47,6 +50,33 @@ through `MobilePlatformExtension::attach_to_native_view`.
 | Drag & drop | ✅ Implemented | injectable drop-event queue |
 | IME + accessibility metadata | ✅ Implemented | modelled state |
 | Print facts | ✅ Implemented | honest error: `UIPrintInteractionController` is not bound |
+| **Input delivery into widgets** | ⬜ Not wired | the host must forward its touch/key events; see below |
+
+### How a widget reaches the screen
+
+The host owns the pixels; the library hands them over as a frame.
+
+```text
+1. host:  attach_to_native_view(ui_view_handle)
+2. host:  mount_surface(parent, widget_id, rect)   -> true
+3. library: invalidate_surface(widget_id)          -> queued (coalesced)
+4. host:  take_pending_repaint()                   -> Some(widget_id)
+5. host:  render_frame(widget_id, size, clear)     -> RGBA, blit it
+6. host:  unmount_surface(widget_id) on teardown
+```
+
+In step 3-4 the queue is the backend's, so the host learns *which* widget went
+stale rather than repainting everything. Pinned by
+`ios_hosts_widget_surfaces_and_queues_repaints`.
+
+### Input is not yet delivered into widgets
+
+`mount_surface` makes a widget **visible**; it does not make it **interactive**.
+A UIKit host must translate its touches and keys and forward them, e.g. through
+`crate::widget::runtime::dispatch_pointer_event(root, event, point)` (which also
+drives focus, hover and pointer capture) or `dispatch_event(id, event)` when the
+target is already known. Until that wiring exists in the host layer, this backend
+paints but does not react.
 
 ## Capabilities (honest contract)
 

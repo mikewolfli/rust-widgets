@@ -4,6 +4,7 @@
 //! Space allocation preference used by layout items.
 
 use crate::core::{ObjectId, Point, Rect, Size};
+/// How a layout item reacts to the space its parent offers it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SizePolicy {
     /// Use fixed size defined by constraints.

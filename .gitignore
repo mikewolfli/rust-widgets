@@ -52,5 +52,11 @@ demo/code_editor/target
 # Test outputs
 **/test_output/
 
+# mdBook build output (`mdbook build` in cookbook/{en,zh-CN,zh-TW})
+#
+# Generated HTML from the Markdown sources; the sources are the artefact and are
+# verified by `tools/check_cookbook.sh`, so the rendered copy must not be committed.
+cookbook/*/book/
+
 # Stray lint/build dumps
 clippy_output.txt

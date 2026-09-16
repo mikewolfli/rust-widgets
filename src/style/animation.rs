@@ -6,20 +6,45 @@ use crate::compat::{Duration, Instant};
 use crate::core::Color;
 use crate::style::theme_state::{StatefulTheme, WidgetState};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// The timing curve applied to an animation's raw progress.
+///
+/// [`EasingFunction::apply`] maps a normalized input `t` in `0.0..=1.0` to an
+/// eased output that is *usually* in the same range, but not always: [`Self::BackIn`],
+/// [`Self::BackOut`], [`Self::ElasticIn`] and [`Self::ElasticOut`] deliberately
+/// overshoot outside it, which is how the "pull back" and "spring past" effects
+/// are produced. Input outside `0.0..=1.0` is clamped first.
 pub enum EasingFunction {
     #[default]
+    /// Constant speed: the output equals the input.
     Linear,
+    /// Accelerates from rest; the output lags the input in the first half.
     EaseIn,
+    /// Decelerates to rest; the output leads the input in the first half.
     EaseOut,
+    /// Accelerates out of the start and decelerates into the end.
     EaseInOut,
+    /// [`Self::BounceOut`] played backwards, so the motion collides at the end.
     BounceIn,
+    /// Decelerates into the target with a series of diminishing bounces.
     BounceOut,
+    /// [`Self::ElasticOut`] played backwards, so the motion snaps into the
+    /// start with increasing oscillation.
     ElasticIn,
+    /// Overshoots the target and oscillates back to it, like a stretched spring.
     ElasticOut,
+    /// Starts by moving *away* from the target before accelerating toward it.
+    /// Overshoots below `0.0`.
     BackIn,
+    /// Overshoots past the target before settling back. Overshoots above `1.0`.
     BackOut,
 }
 impl EasingFunction {
+    /// Maps normalized progress `t` through this curve.
+    ///
+    /// `t` is clamped to `0.0..=1.0` before evaluation, so every variant yields
+    /// exactly `0.0` at `t <= 0.0` and exactly `1.0` at `t >= 1.0`. The result of
+    /// an intermediate `t` may fall outside `0.0..=1.0` for the overshooting
+    /// variants listed on [`EasingFunction`].
     pub fn apply(&self, t: f32) -> f32 {
         let t = t.clamp(0.0, 1.0);
         match self {
@@ -81,32 +106,69 @@ impl EasingFunction {
     }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Which direction each iteration of a repeating animation runs in.
+///
+/// Only [`Self::Alternate`] and [`Self::AlternateReverse`] depend on the
+/// iteration index; the other two play every iteration identically, so a
+/// non-infinite animation with them simply restarts from the same end.
 pub enum AnimationDirection {
     #[default]
+    /// Play forwards on every iteration: progress runs `0.0` to `1.0`.
     Normal,
+    /// Play backwards on every iteration: progress runs `1.0` to `0.0`.
     Reverse,
+    /// Alternate: forwards on even iterations, backwards on odd ones.
     Alternate,
+    /// Alternate starting from backwards: backwards on even iterations,
+    /// forwards on odd ones.
     AlternateReverse,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// What an animation's value is before it starts and after it finishes.
+///
+/// This is a declaration carried on [`AnimationConfig`]; the animators in this
+/// module read the `to`/`from` values directly rather than consulting the mode,
+/// so treat it as a hint for whatever layer consumes the animation.
 pub enum AnimationFillMode {
     #[default]
+    /// Apply no value outside the active interval: before the delay the
+    /// animation has no effect, and it is dropped once finished.
     None,
+    /// Retain the final value after the animation finishes.
     Forwards,
+    /// Apply the first value during the delay, before the animation starts.
     Backwards,
+    /// Both [`Self::Backwards`] and [`Self::Forwards`].
     Both,
 }
 #[derive(Debug, Clone)]
+/// The timing and repetition parameters for one animation.
+///
 pub struct AnimationConfig {
+    /// How long one iteration lasts. A zero duration is handled by the animators,
+    /// which treat it as an instant jump rather than dividing by it.
     pub duration: Duration,
+    /// How long to wait before the first iteration begins. Progress reads `0.0`
+    /// for the whole delay.
     pub delay: Duration,
+    /// The timing curve applied to each iteration's progress.
     pub easing: EasingFunction,
+    /// Which direction iteration 0 runs in, and whether later iterations flip.
     pub direction: AnimationDirection,
+    /// What value the animation leaves behind before and after its active interval.
     pub fill_mode: AnimationFillMode,
+    /// How many iterations to run before the animation counts as complete.
+    ///
+    /// Ignored while `infinite` is set. [`AnimationConfig::new`] starts this at
+    /// `1`, so an animation plays once by default.
     pub iteration_count: u32,
+    /// Run forever: [`Animation::is_completed`] always returns `false` and
+    /// `iteration_count` is not consulted.
     pub infinite: bool,
 }
 impl AnimationConfig {
+    /// Creates a config running one forward, linear iteration over `duration`,
+    /// with no delay, no fill and no repetition.
     pub fn new(duration: Duration) -> Self {
         Self {
             duration,
@@ -118,37 +180,54 @@ impl AnimationConfig {
             infinite: false,
         }
     }
+    /// Returns a copy with the start delay set to `delay`.
     pub fn with_delay(mut self, delay: Duration) -> Self {
         self.delay = delay;
         self
     }
+    /// Returns a copy using `easing` as the timing curve.
     pub fn with_easing(mut self, easing: EasingFunction) -> Self {
         self.easing = easing;
         self
     }
+    /// Returns a copy running in `direction`.
     pub fn with_direction(mut self, direction: AnimationDirection) -> Self {
         self.direction = direction;
         self
     }
+    /// Returns a copy with `fill_mode` applied.
     pub fn with_fill_mode(mut self, fill_mode: AnimationFillMode) -> Self {
         self.fill_mode = fill_mode;
         self
     }
+    /// Returns a copy running `count` iterations, and clears the infinite flag.
+    ///
+    /// The reset matters because `infinite` otherwise wins: without it,
+    /// `config.infinite().with_iterations(3)` would still never complete.
     pub fn with_iterations(mut self, count: u32) -> Self {
         self.iteration_count = count;
         self.infinite = false;
         self
     }
+    /// Returns a copy that repeats forever, ignoring `iteration_count`.
     pub fn infinite(mut self) -> Self {
         self.infinite = true;
         self
     }
 }
 impl Default for AnimationConfig {
+    /// A one-shot 300 ms linear animation with no delay — the conventional UI
+    /// transition length.
     fn default() -> Self {
         Self::new(Duration::from_millis(300))
     }
 }
+/// A single animation instance: config plus the clock state needed to drive it.
+///
+/// The clock is advanced by explicit calls to [`Animation::update`] rather than a
+/// timer, so how smooth the result looks depends on how often the host calls it.
+/// Reading [`Animation::progress`] does not advance anything and is safe from
+/// `&self`.
 pub struct Animation {
     config: AnimationConfig,
     start_time: Option<Instant>,
@@ -163,6 +242,7 @@ pub struct Animation {
     frozen_progress: Option<f32>,
 }
 impl Animation {
+    /// Creates a stopped animation in iteration `0` with no completion callback.
     pub fn new(config: AnimationConfig) -> Self {
         Self {
             config,
@@ -175,12 +255,19 @@ impl Animation {
             frozen_progress: None,
         }
     }
+    /// Starts the animation from now, clearing any pause and resetting the
+    /// iteration counter to `0`.
     pub fn start(&mut self) {
         self.start_time = Some(Instant::now());
         self.is_running = true;
         self.is_paused = false;
         self.current_iteration = 0;
     }
+    /// Stops the animation and resets its clock, leaving it at iteration `0`.
+    ///
+    /// The completion callback fires here, even though the animation did not
+    /// reach its end, and is consumed: a later [`Animation::start`] will not
+    /// invoke it again until [`Animation::on_complete`] installs a new one.
     pub fn stop(&mut self) {
         self.is_running = false;
         self.start_time = None;
@@ -190,14 +277,26 @@ impl Animation {
             callback();
         }
     }
+    /// Freezes progress at its current value and records the pause instant.
+    ///
+    /// The animation is not advanced by [`Animation::update`] while paused, so
+    /// progress holds at the frozen value until [`Animation::resume`].
     pub fn pause(&mut self) {
         self.frozen_progress = Some(self.compute_progress());
         self.is_paused = true;
         self.pause_start_time = Some(Instant::now());
     }
+    /// Reports whether the animation is currently paused.
+    ///
+    /// A paused animation is still "started": [`Animation::is_running`] returns
+    /// `false` while this does.
     pub fn is_paused(&self) -> bool {
         self.is_paused
     }
+    /// Returns the animation to the state [`Animation::new`] left it in:
+    /// stopped, unpaused, iteration `0`, no frozen progress.
+    ///
+    /// The completion callback is *not* cleared and does not fire.
     pub fn reset(&mut self) {
         self.is_running = false;
         self.is_paused = false;
@@ -206,9 +305,19 @@ impl Animation {
         self.current_iteration = 0;
         self.frozen_progress = None;
     }
+    /// Sets the callback invoked once when the animation completes or is stopped.
+    ///
+    /// Setting a new callback replaces the old one. The callback is single-shot:
+    /// it is taken and consumed the first time it fires.
     pub fn on_complete(&mut self, callback: Box<dyn FnMut()>) {
         self.on_complete_callback = Some(callback);
     }
+    /// Un-pauses the animation and shifts its start instant forward by however
+    /// long the pause lasted, so progress picks up where it stopped rather than
+    /// jumping ahead.
+    ///
+    /// Calling this on an animation that is not paused is harmless; if the
+    /// animation was never started there is no start instant to shift.
     pub fn resume(&mut self) {
         self.is_paused = false;
         self.frozen_progress = None;
@@ -221,9 +330,15 @@ impl Animation {
             }
         }
     }
+    /// Reports whether the animation is advancing: started and not paused.
     pub fn is_running(&self) -> bool {
         self.is_running && !self.is_paused
     }
+    /// Reports whether every requested iteration has been played.
+    ///
+    /// Always `false` for an infinite animation. This is derived from the
+    /// iteration counter, which only [`Animation::update`] advances, so an
+    /// animation that was started but never updated still reads as incomplete.
     pub fn is_completed(&self) -> bool {
         if self.config.infinite {
             false
@@ -231,6 +346,13 @@ impl Animation {
             self.current_iteration >= self.config.iteration_count
         }
     }
+    /// The animation's position in its current iteration, as an eased
+    /// `0.0..=1.0` fraction (outside that range for an overshooting easing curve).
+    ///
+    /// Returns `0.0` while the animation is stopped or still in its delay, and
+    /// returns the frozen value while paused. Within an iteration the raw
+    /// progress wraps, so a non-infinite animation that has overrun its last
+    /// iteration reads `1.0` and an infinite one restarts the range.
     pub fn progress(&self) -> f32 {
         if self.is_paused {
             // Return the progress frozen at the moment pause() was called.
@@ -269,6 +391,12 @@ impl Animation {
             }
         }
     }
+    /// Advances the clock: recomputes the iteration counter and finishes the
+    /// animation once its last iteration has elapsed.
+    ///
+    /// Does nothing while the animation is stopped or paused. Call it once per
+    /// frame; the completion callback fires from here rather than from a timer.
+    /// Unlike [`Animation::progress`], this path has no zero-duration guard.
     pub fn update(&mut self) {
         if !self.is_running || self.is_paused {
             // Paused animations keep their frozen progress and do
@@ -290,6 +418,7 @@ impl Animation {
             }
         }
     }
+    /// Borrows the configuration this animation runs with.
     pub fn config(&self) -> &AnimationConfig {
         &self.config
     }
@@ -330,28 +459,39 @@ impl Animation {
         }
     }
 }
+/// Animates between two colours, interpolating each RGBA channel independently.
 pub struct ColorAnimation {
     animation: Animation,
     from_color: Color,
     to_color: Color,
 }
 impl ColorAnimation {
+    /// Creates a stopped colour animation running from `from` to `to`.
     pub fn new(config: AnimationConfig, from: Color, to: Color) -> Self {
         Self { animation: Animation::new(config), from_color: from, to_color: to }
     }
+    /// Starts the animation from now.
     pub fn start(&mut self) {
         self.animation.start();
     }
+    /// Stops the animation, firing its completion callback if one was set.
     pub fn stop(&mut self) {
         self.animation.stop();
     }
+    /// The colour at the animation's current progress.
+    ///
+    /// The blend is linear in the channels' 8-bit values, so it traverses the
+    /// RGB cube rather than a perceptual colour space. Reads `from` when stopped,
+    /// since progress is then `0.0`.
     pub fn current_color(&self) -> Color {
         let progress = self.animation.progress();
         Self::interpolate_color(self.from_color, self.to_color, progress)
     }
+    /// Advances the animation. Call once per frame.
     pub fn update(&mut self) {
         self.animation.update();
     }
+    /// Reports whether the animation is running and not paused.
     pub fn is_running(&self) -> bool {
         self.animation.is_running()
     }
@@ -363,28 +503,37 @@ impl ColorAnimation {
         Color::rgba(r, g, b, a)
     }
 }
+/// Animates a single `f32` between two values.
 pub struct FloatAnimation {
     animation: Animation,
     from_value: f32,
     to_value: f32,
 }
 impl FloatAnimation {
+    /// Creates a stopped float animation running from `from` to `to`.
     pub fn new(config: AnimationConfig, from: f32, to: f32) -> Self {
         Self { animation: Animation::new(config), from_value: from, to_value: to }
     }
+    /// Starts the animation from now.
     pub fn start(&mut self) {
         self.animation.start();
     }
+    /// Stops the animation, firing its completion callback if one was set.
     pub fn stop(&mut self) {
         self.animation.stop();
     }
+    /// The interpolated value at the animation's current progress.
+    ///
+    /// Reads `from_value` when stopped, since progress is then `0.0`.
     pub fn current_value(&self) -> f32 {
         let progress = self.animation.progress();
         self.from_value + (self.to_value - self.from_value) * progress
     }
+    /// Advances the animation. Call once per frame.
     pub fn update(&mut self) {
         self.animation.update();
     }
+    /// Reports whether the animation is running and not paused.
     pub fn is_running(&self) -> bool {
         self.animation.is_running()
     }
@@ -670,11 +819,18 @@ where
 }
 
 /// A group of animations that run concurrently.
+///
+/// This is a grouping handle, not a scheduler: the child animations are still
+/// owned and advanced by [`AnimationDriver`], and the group only remembers their
+/// IDs so they can be waited on together. Removing a child from the driver
+/// makes this group consider it complete, because a missing animation has no
+/// progress to check.
 pub struct ParallelAnimation {
     ids: Vec<AnimationId>,
 }
 
 impl ParallelAnimation {
+    /// Creates a group with no children.
     pub fn new() -> Self {
         Self { ids: Vec::new() }
     }
@@ -698,12 +854,19 @@ impl ParallelAnimation {
         self.ids.len()
     }
 
+    /// Reports whether the group has no children. A group with no children is
+    /// also treated as completed by [`ParallelAnimation::is_completed`].
     pub fn is_empty(&self) -> bool {
         self.ids.is_empty()
     }
 }
 
 /// A group of animations that run sequentially (one after another).
+///
+/// Child configs are stored, not live animations: each one is started on the
+/// driver only when the previous one reports full progress. That single-child
+/// handoff is also the main limitation — a child whose [`AnimationConfig`] is
+/// infinite would stall the sequence forever.
 pub struct SequentialAnimation {
     animations: Vec<AnimationConfig>,
     current_index: usize,
@@ -711,6 +874,7 @@ pub struct SequentialAnimation {
 }
 
 impl SequentialAnimation {
+    /// Creates a sequence with no steps, positioned before the first one.
     pub fn new() -> Self {
         Self { animations: Vec::new(), current_index: 0, current_id: None }
     }
@@ -766,6 +930,11 @@ impl SequentialAnimation {
         }
     }
 
+    /// Resets the sequence to its first step, so the next
+    /// [`SequentialAnimation::advance`] starts it over.
+    ///
+    /// Any animation the sequence already registered keeps running on the
+    /// driver; the sequence simply forgets it and starts a fresh one.
     pub fn reset(&mut self) {
         self.current_index = 0;
         self.current_id = None;
@@ -895,12 +1064,15 @@ pub struct TransitionRule {
 }
 
 impl TransitionRule {
+    /// Creates a rule for `property` that transitions over `duration` with
+    /// `easing`, with no delay.
     pub fn new(property: impl Into<String>, duration: Duration, easing: EasingFunction) -> Self {
         Self {
             property: property.into(),
             config: AnimationConfig::new(duration).with_easing(easing),
         }
     }
+    /// Returns a copy that waits `delay` before starting each transition.
     pub fn with_delay(mut self, delay: Duration) -> Self {
         self.config = self.config.clone().with_delay(delay);
         self
@@ -997,12 +1169,16 @@ impl TransitionManager {
     pub fn current_value(&self, property: &str) -> Option<f32> {
         self.transitions.get(property).map(|t| t.current)
     }
+    /// The number of child animations currently mid-transition.
     pub fn len(&self) -> usize {
         self.transitions.len()
     }
+    /// Reports whether no property is currently transitioning.
     pub fn is_empty(&self) -> bool {
         self.transitions.is_empty()
     }
+    /// Drops every in-flight transition and their values, keeping the registered
+    /// rules so later changes to the same properties still animate.
     pub fn clear(&mut self) {
         self.transitions.clear();
     }
@@ -1023,6 +1199,11 @@ pub struct SpringAnimation {
 }
 
 impl SpringAnimation {
+    /// Creates a stopped spring running from `from` to `to`.
+    ///
+    /// The defaults are stiffness `200.0`, damping `20.0` and mass `1.0`. The
+    /// inner [`Animation`] is given a 1-second duration, but the spring's own
+    /// integration decides when it settles, so that duration does not bound it.
     pub fn new(from: f32, to: f32) -> Self {
         Self {
             animation: Animation::new(AnimationConfig::new(Duration::from_secs(1))),
@@ -1035,35 +1216,65 @@ impl SpringAnimation {
             current_value: from,
         }
     }
+    /// Returns a copy with the spring constant set to `s`: a higher value pulls
+    /// the value toward the target harder, making the motion faster and bouncier.
     pub fn with_stiffness(mut self, s: f32) -> Self {
         self.stiffness = s;
         self
     }
+    /// Returns a copy with the damping coefficient set to `d`: a higher value
+    /// bleeds off velocity faster, reducing overshoot. `0.0` lets the spring
+    /// oscillate indefinitely.
     pub fn with_damping(mut self, d: f32) -> Self {
         self.damping = d;
         self
     }
+    /// Returns a copy with the moving mass set to `m`.
+    ///
+    /// Mass scales the acceleration (`a = F / m`), so a larger value slows every
+    /// response. It must not be zero: the acceleration divides by it, so a zero
+    /// mass yields a non-finite step.
     pub fn with_mass(mut self, m: f32) -> Self {
         self.mass = m;
         self
     }
+    /// Starts the spring.
+    ///
+    /// The value is *not* reset to `from_value`; integration continues from
+    /// wherever [`SpringAnimation::current_value`] currently stands.
     pub fn start(&mut self) {
         self.animation.start();
     }
+    /// Stops the spring where it is, leaving the current value and velocity as
+    /// they were.
     pub fn stop(&mut self) {
         self.animation.stop();
     }
+    /// The value the spring was created from.
+    ///
+    /// This is informational: integration starts from `current_value`, so
+    /// restarting a spring does not return it to `from_value`.
     pub fn from_value(&self) -> f32 {
         self.from_value
     }
 
+    /// The value the spring has integrated to so far.
     pub fn current_value(&self) -> f32 {
         self.current_value
     }
+    /// Reports whether the spring is running and not paused.
     pub fn is_running(&self) -> bool {
         self.animation.is_running()
     }
 
+    /// Integrates the spring forward by one frame of `dt`.
+    ///
+    /// `dt` is clamped to at most 50 ms so a stalled or resumed application
+    /// cannot take an oversized integration step. The spring is considered
+    /// settled — and stops itself, snapping exactly onto `to_value` — once both
+    /// the displacement and the velocity fall below `0.5`. This is a
+    /// single-step Euler integration and is not unconditionally stable: a large
+    /// `stiffness` combined with a small `mass` can diverge.
     pub fn update(&mut self, dt: Duration) {
         if !self.animation.is_running() {
             return;

@@ -35,15 +35,37 @@ pub struct Action {
     shortcut: String,
     /// Whether this action is a visual separator.
     separator: bool,
+    /// Emitted when the action fires, with the checked state *after* the fire.
+    ///
+    /// Emitted by [`Action::trigger`], which routes through the inner command,
+    /// so it does not fire when the action is disabled or is a separator.
+    /// Distinct from the inner command's own `triggered` signal.
     pub triggered: Signal1<bool>,
+    /// Emitted with the new checked state when it changes, whether the change
+    /// came from [`Action::set_checked`] or from a trigger toggling a checkable
+    /// action.
     pub toggled: Signal1<bool>,
+    /// Declared for pointer-enter notification, but never emitted: the action's
+    /// event handling ignores mouse motion. Treat as inert.
     pub hovered: GenericSignal,
+    /// Emitted whenever any presentation or command state changes — text, icon,
+    /// shortcut, checkable, checked, enabled, or a command sync. Carries no
+    /// payload, so a listener must re-read whatever it needs; it is a
+    /// "something changed" notification, not a diff.
     pub changed: GenericSignal,
     // Connection handles to keep inner cmd signals wired.
     _toggled_handle: Option<ConnectionHandle>,
     _enabled_handle: Option<ConnectionHandle>,
 }
 impl Action {
+    /// Creates a plain (non-checkable, non-separator) action enabled by default.
+    ///
+    /// The inner command starts with an empty id, so
+    /// [`Action::command_id`] returns `None` until
+    /// [`Action::set_command_id`] is called. The signal wiring to the inner
+    /// command is established here.
+    ///
+    /// `geometry` is in parent-relative logical pixels.
     pub fn new(text: impl Into<String>, geometry: Rect) -> Self {
         let text = text.into();
         let mut action = Self {
@@ -63,17 +85,30 @@ impl Action {
         action.wire_signals();
         action
     }
+    /// Creates a visual separator: an empty action flagged via
+    /// [`Action::is_separator`], which drawing renders as a divider rather than
+    /// a clickable item.
+    ///
+    /// The action still has working command and signal plumbing; the separator
+    /// flag is a rendering and layout hint, not a behavioural one.
     pub fn separator(geometry: Rect) -> Self {
         let mut a = Self::new("", geometry);
         a.separator = true;
         a
     }
+    /// Returns the label shown in its host menu or toolbar.
     pub fn text(&self) -> &str {
         &self.text
     }
+    /// Returns the icon stand-in text, or `""` when none was set.
+    /// This is text, not image data.
     pub fn icon_text(&self) -> &str {
         &self.icon_text
     }
+    /// Returns the shortcut display string (for example `"Ctrl+S"`).
+    ///
+    /// Purely a label: the action does not register or respond to the shortcut
+    /// it displays.
     pub fn shortcut(&self) -> &str {
         &self.shortcut
     }
@@ -85,6 +120,7 @@ impl Action {
     pub fn is_checked(&self) -> bool {
         self.cmd.is_checked()
     }
+    /// Returns `true` for a visual separator. See [`Action::separator`].
     pub fn is_separator(&self) -> bool {
         self.separator
     }
@@ -99,11 +135,15 @@ impl Action {
     }
     /// Links this widget action to a named action command.
     /// Sets the inner [`CmdAction`]'s id.
+    /// Sets the inner command's id and requests a redraw. An empty id makes
+    /// [`Action::command_id`] report `None` again.
     pub fn set_command_id(&mut self, id: impl Into<String>) {
         self.cmd.id = id.into();
         self.base.request_redraw();
     }
     /// Clears the link to the command action.
+    ///
+    /// Does not request a redraw, unlike [`Action::set_command_id`].
     pub fn clear_command_id(&mut self) {
         self.cmd.id = String::new();
     }
@@ -140,6 +180,11 @@ impl Action {
     /// Wires the inner `CmdAction` signals to this widget's signals.
     /// Call once after construction if you want the inner action's
     /// `toggled`/`enabled_changed` to propagate to widget signals.
+    ///
+    /// Calling it again is safe but leaks the previous connections: the old
+    /// handles are overwritten without being disconnected, so each call adds
+    /// another forwarding path and a single inner toggle will emit the widget
+    /// `toggled`/`changed` signals once per call.
     pub fn wire_signals(&mut self) {
         let toggled_out = self.toggled.clone();
         let changed_out = self.changed.clone();
@@ -154,17 +199,23 @@ impl Action {
         });
         self._enabled_handle = Some(handle2);
     }
+    /// Replaces the label, mirrors it into the inner command, emits `changed`,
+    /// and requests a redraw.
     pub fn set_text(&mut self, text: impl Into<String>) {
         self.text = text.into();
         self.cmd.text = self.text.clone();
         self.changed.emit();
         self.base.request_redraw();
     }
+    /// Replaces the icon stand-in text, emits `changed`, and requests a redraw.
     pub fn set_icon_text(&mut self, text: impl Into<String>) {
         self.icon_text = text.into();
         self.changed.emit();
         self.base.request_redraw();
     }
+    /// Replaces the shortcut *display* string, emits `changed`, and requests a
+    /// redraw. No shortcut is registered as a result — see
+    /// [`Action::shortcut`].
     pub fn set_shortcut(&mut self, shortcut: impl Into<String>) {
         self.shortcut = shortcut.into();
         self.changed.emit();

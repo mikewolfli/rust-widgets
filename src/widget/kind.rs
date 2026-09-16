@@ -12,117 +12,178 @@ use serde::{Deserialize, Serialize};
 pub enum WidgetKind {
     /// Top-level window.
     Window,
+    /// Secondary window, usually modal, that hosts its own child widgets.
     #[cfg(widgets_unstripped)]
     Dialog,
+    /// Modal alert that shows a short message and a fixed set of response buttons.
     #[cfg(widgets_unstripped)]
     MessageBox,
+    /// Modal dialog for browsing the filesystem and picking a file.
     #[cfg(widgets_unstripped)]
     FileDialog,
+    /// Modal dialog with a color wheel, swatches and RGBA value entry for picking a color.
     #[cfg(widgets_unstripped)]
     ColorDialog,
+    /// Modal dialog for browsing installed typefaces and picking a font.
     #[cfg(widgets_unstripped)]
     FontDialog,
+    /// Modal prompt that collects a single line of text from the user.
     #[cfg(widgets_unstripped)]
     InputDialog,
+    /// Modal dialog with a progress bar and a cancel button for long-running work.
     #[cfg(widgets_unstripped)]
     ProgressDialog,
+    /// Borderless window that floats above other windows.
     #[cfg(widgets_unstripped)]
     PopupWindow,
+    /// Push button that fires its clicked signal when activated.
     Button,
+    /// Label with an independent on/off box, used for multi-choice settings.
     CheckBox,
+    /// Round choice control, mutually exclusive with the other radio buttons in its group.
     RadioButton,
+    /// Non-interactive text display.
     Label,
+    /// Single-line text input field.
     LineEdit,
+    /// Framed multi-line plain-text editor.
     #[cfg(widgets_unstripped)]
     TextEdit,
+    /// Multi-line editor with character and paragraph formatting attributes.
     #[cfg(widgets_unstripped)]
     RichEdit,
+    /// Text field with a drop-down list of selectable items.
     ComboBox,
+    /// Numeric entry with increment/decrement arrows and a range constraint.
     SpinBox,
+    /// Scrollable list from which one or more items can be selected.
     ListBox,
+    /// Item view backed by a model with a customizable item delegate.
     #[cfg(widgets_unstripped)]
     ListView,
+    /// Item view that presents a model as expandable hierarchical rows.
     #[cfg(widgets_unstripped)]
     TreeView,
+    /// Visual fill indicator for the progress of a bounded operation.
     ProgressBar,
+    /// Handle dragged along a groove to pick a value from a continuous range.
     Slider,
+    /// Thumb on a rail that scrolls a related viewport.
     ScrollBar,
+    /// Scrollable container that clips and offsets a larger child widget.
     ScrollArea,
+    /// Plain rectangular container used for grouping child widgets.
     Panel,
+    /// Container that draws a border or 3D frame around its child.
     Frame,
+    /// Dockable container that arranges child panels into docked regions.
     #[cfg(widgets_unstripped)]
     DockPanel,
+    /// Frame with a title label drawn over its top border, grouping related controls.
     GroupBox,
+    /// Container of tabbed pages in which only the selected page is visible.
     #[cfg(widgets_unstripped)]
     TabWidget,
+    /// Draggable divider that splits a container into resizable panes.
     #[cfg(widgets_unstripped)]
     Splitter,
+    /// Workspace that hosts multiple independent child windows.
     #[cfg(widgets_unstripped)]
     MdiArea,
+    /// Horizontal strip of top-level menu titles.
     #[cfg(widgets_unstripped)]
     MenuBar,
+    /// Drop-down list of commands or submenus.
     #[cfg(widgets_unstripped)]
     Menu,
     /// Individual item inside a menu.
     #[cfg(widgets_unstripped)]
     MenuItem,
+    /// Menu opened at the pointer position in response to a secondary click.
     #[cfg(widgets_unstripped)]
     ContextMenu,
+    /// Strip of icon buttons and other controls for quick actions.
     #[cfg(widgets_unstripped)]
     ToolBar,
+    /// Strip at the bottom of a window that shows transient status messages.
     #[cfg(widgets_unstripped)]
     StatusBar,
+    /// Free-form surface that draws user-supplied shapes.
     #[cfg(widgets_unstripped)]
     Canvas,
+    /// Cell-based view that arranges its model into rows and columns.
     #[cfg(widgets_unstripped)]
     Table,
+    /// Rectangular layout container that arranges children into cells.
     #[cfg(widgets_unstripped)]
     Grid,
     /// Chart surface widget.
     #[cfg(widgets_unstripped)]
     Chart,
+    /// Button that latches between checked and unchecked states when clicked.
     #[cfg(widgets_unstripped)]
     ToggleButton,
+    /// List box whose rows carry independent check boxes.
     #[cfg(widgets_unstripped)]
     CheckListBox,
+    /// Spin box that edits a floating-point value.
     #[cfg(widgets_unstripped)]
     DoubleSpinBox,
+    /// Rotary knob that maps its angle to a bounded value.
     #[cfg(widgets_unstripped)]
     Dial,
+    /// Multi-page dialog that walks the user through ordered steps.
     #[cfg(widgets_unstripped)]
     Wizard,
+    /// Field that opens a calendar popup for selecting a date.
     #[cfg(widgets_unstripped)]
     DatePicker,
+    /// Field that opens a popup for selecting a time of day.
     #[cfg(widgets_unstripped)]
     TimePicker,
+    /// Field for selecting a combined date and time value.
     #[cfg(widgets_unstripped)]
     DateTimePicker,
+    /// Modal dialog for choosing a directory from the filesystem.
     #[cfg(widgets_unstripped)]
     DirectoryDialog,
+    /// View that renders model items using one of several switchable display modes.
     #[cfg(widgets_unstripped)]
     DataView,
+    /// Two-column editor that lists named properties with an editable value cell.
     #[cfg(widgets_unstripped)]
     PropertyGrid,
+    /// Side panel of expandable grouped commands, typically shown alongside a design surface.
     #[cfg(widgets_unstripped)]
     Toolbox,
+    /// Container that shows one child page at a time, selected programmatically.
     #[cfg(widgets_unstripped)]
     StackedWidget,
+    /// Collapsible section with a clickable header that expands or hides its content.
     #[cfg(widgets_unstripped)]
     CollapsiblePane,
+    /// Individual panel that can be detached and re-docked inside a DockPanel.
     #[cfg(widgets_unstripped)]
     DockWidget,
+    /// Animated indicator shown while a background operation is running.
     #[cfg(widgets_unstripped)]
     ActivityIndicator,
+    /// Month grid for browsing and selecting calendar dates.
     #[cfg(widgets_unstripped)]
     Calendar,
+    /// Hierarchical view that lists one column of children per selected branch.
     #[cfg(widgets_unstripped)]
     ColumnView,
+    /// Read-only list of the edit commands available in the current undo stack.
     #[cfg(widgets_unstripped)]
     UndoView,
+    /// Button styled as a key command link, optionally with an explanatory subtitle.
     #[cfg(widgets_unstripped)]
     CommandLink,
+    /// Seven-segment display that renders a numeric string as digit segments.
     #[cfg(widgets_unstripped)]
     LCDNumber,
+    /// Combo box populated with the installed typefaces and rendered in each font.
     #[cfg(widgets_unstripped)]
     FontComboBox,
     /// Web engine view widget for displaying web content.
@@ -158,7 +219,7 @@ pub enum WidgetKind {
     /// Action widget for menu and toolbar actions.
     #[cfg(widgets_unstripped)]
     Action,
-    /// Tool button widget.
+    /// Compact button with an icon and optional caption, used on toolbars.
     #[cfg(widgets_unstripped)]
     ToolButton,
     /// Freeform shape widget — a path-based non-rectangular clickable shape.
@@ -199,43 +260,43 @@ pub enum WidgetKind {
     Keyboard,
     /// Switch/Toggle widget for on/off binary state.
     Switch,
-    /// Search box with search icon and clear button.
+    /// Text field with a leading search icon and a trailing clear button.
     #[cfg(widgets_unstripped)]
     SearchBox,
-    /// Chip/Tag widget for labels and tokens.
+    /// Compact rounded label that carries a short tag or token, optionally removable.
     #[cfg(widgets_unstripped)]
     Chip,
-    /// Badge widget for notification counts and status indicators.
+    /// Small overlay marker carrying a count or status dot, anchored to another widget.
     #[cfg(widgets_unstripped)]
     Badge,
-    /// Skeleton loader placeholder widget.
+    /// Grey placeholder block shown while the real content is still loading.
     #[cfg(widgets_unstripped)]
     SkeletonLoader,
-    /// Floating action button.
+    /// Round, elevated button that floats over content for the primary page action.
     #[cfg(widgets_unstripped)]
     FAB,
-    /// Bottom sheet modal panel.
+    /// Modal panel that slides up from the bottom edge and can be dragged back down.
     #[cfg(widgets_unstripped)]
     BottomSheet,
-    /// Bottom navigation bar (mobile tab bar).
+    /// Row of tabs fixed along the bottom edge, as used by mobile apps.
     #[cfg(widgets_unstripped)]
     BottomNavigationBar,
-    /// Navigation drawer sidebar.
+    /// Sidebar that slides in from the edge to hold primary navigation entries.
     #[cfg(widgets_unstripped)]
     NavigationDrawer,
-    /// Top app bar.
+    /// Bar pinned to the top of a window that holds the title and primary actions.
     #[cfg(widgets_unstripped)]
     AppBar,
-    /// Mobile-style date picker.
+    /// Date picker laid out for touch input rather than a desktop calendar grid.
     #[cfg(widgets_unstripped)]
     MobileDatePicker,
-    /// Divider/Separator line widget.
+    /// Thin rule that separates adjacent sections of content.
     #[cfg(widgets_unstripped)]
     Divider,
-    /// Stepper widget for numeric increment/decrement with +/- buttons.
+    /// Numeric field flanked by plus and minus buttons that nudge the value by fixed steps.
     #[cfg(widgets_unstripped)]
     Stepper,
-    /// Star rating control.
+    /// Row of selectable stars or icons that records a discrete rating value.
     #[cfg(widgets_unstripped)]
     Rating,
     /// Avatar widget — circular/square user image placeholder with initials fallback.

@@ -24,6 +24,9 @@ pub struct MdiArea {
     view_mode: ViewMode,
     background: Background,
     activation_order: ActivationOrder,
+    /// Emitted with the child `ObjectId` whenever a sub-window becomes active,
+    /// including the automatic activation of the first sub-window on add and of
+    /// a replacement sub-window after the active one is removed.
     pub subwindow_activated: Signal1<ObjectId>,
     /// Optional shared registry for child widget forwarding.
     registry: Option<Rc<RefCell<SimpleRegistry>>>,

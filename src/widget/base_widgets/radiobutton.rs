@@ -18,7 +18,11 @@ pub struct RadioButton {
     checked: bool,
     group_id: Option<String>,
     text: String,
+    /// Emitted without a payload when this button becomes the selected member of
+    /// its peer group. Only fires on a `false` -> `true` transition; deselection
+    /// does not emit.
     pub selected: GenericSignal,
+    /// Emitted with the new state after `checked` changes, in both directions.
     pub checked_changed: Signal1<bool>,
 }
 impl RadioButton {

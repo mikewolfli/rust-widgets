@@ -15,12 +15,27 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// One gantt task bar.
+///
+/// Describes a single bar on the timeline. The widget treats `start` and `end`
+/// as opaque integers on a linear axis — no calendar or timezone interpretation
+/// is applied, so the unit (days since epoch, milliseconds, sprint numbers, ...)
+/// is whatever the caller decides. Only their ordering and difference matter for
+/// drawing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GanttTask {
+    /// Stable identifier. Not shown to the user; it is how a caller correlates a
+    /// selected task with its own data.
     pub id: String,
+    /// Caption drawn on or beside the bar.
     pub label: String,
+    /// Start position on the task axis.
     pub start: i64,
+    /// End position on the task axis. Must be at least `start`; a reversed range
+    /// yields a zero- or negative-width bar rather than an error.
     pub end: i64,
+    /// Completion percentage, `0 ..= 100`. Values above 100 are not clamped by
+    /// the type, so a caller is responsible for the range; drawing a value over
+    /// 100 would overflow the bar.
     pub progress: u8,
 }
 

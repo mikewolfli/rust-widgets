@@ -230,6 +230,12 @@ fn rects_overlap_excluding_touch(a: &Rect, b: &Rect) -> bool {
 // ── LayoutInspector public API ───────────────────────────────
 
 #[derive(Debug)]
+/// Stateless, process-wide facade over the layout diagnostic store.
+///
+/// All state lives in module-level globals guarded by an atomic `ENABLED` flag,
+/// so every method is associated rather than taking `&self`. While disabled
+/// every recording call is a no-op, which is what keeps the instrumentation
+/// free in release builds that never opt in.
 pub struct LayoutInspector;
 
 impl LayoutInspector {

@@ -130,6 +130,10 @@ impl MarkdownEditor {
         self.cursor_line
     }
 
+    /// Reverts the most recent markdown text mutation.
+    ///
+    /// Returns `false` and changes nothing when there is nothing to undo;
+    /// otherwise requests layout and redraw and clamps `cursor_line`.
     pub fn undo(&mut self) -> bool {
         if self.undo_stack.undo().is_err() {
             return false;
@@ -138,6 +142,10 @@ impl MarkdownEditor {
         true
     }
 
+    /// Reapplies the most recently undone markdown text mutation.
+    ///
+    /// Returns `false` and changes nothing when there is nothing to redo;
+    /// otherwise requests layout and redraw.
     pub fn redo(&mut self) -> bool {
         if self.undo_stack.redo().is_err() {
             return false;
@@ -146,10 +154,12 @@ impl MarkdownEditor {
         true
     }
 
+    /// Returns whether there is a markdown text mutation to undo.
     pub fn can_undo(&self) -> bool {
         self.undo_stack.can_undo()
     }
 
+    /// Returns whether there is an undone markdown text mutation to reapply.
     pub fn can_redo(&self) -> bool {
         self.undo_stack.can_redo()
     }

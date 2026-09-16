@@ -7,7 +7,7 @@
 // Note: Removed `#![allow(unsafe_code)]` — default is allow, no-op.
 // BLUE11 R4.7: Documentation completeness
 // Note: Missing docs warnings silenced to reduce noise. Docs added for public API items.
-#![allow(missing_docs)]
+#![warn(missing_docs)]
 // BLUE11: Clippy lints enabled for quality enforcement.
 // Individual allows are placed next to their specific violations.
 #![cfg_attr(test, allow(clippy::needless_pass_by_value, clippy::unwrap_used))]
@@ -1155,14 +1155,26 @@ pub fn widget_scroll_position(widget_id: crate::core::ObjectId) -> Option<(i32, 
     Some((x as i32, y as i32))
 }
 // ComboBox operations
+/// Appends an item with the given text to a combo box.
+///
+/// Returns `false` when the backend refuses — which includes being handed an id
+/// that is not a combo box.
 #[cfg(not(alloc_frugal))]
 pub fn combo_box_add_item(combo_box: crate::core::ObjectId, text: &str) -> bool {
     control_backend::get_control_backend().combo_box_add_item(combo_box, text)
 }
+/// Removes every item from a combo box, leaving it empty and with nothing
+/// selected. Returns `false` when the backend refuses.
 #[cfg(not(alloc_frugal))]
 pub fn combo_box_clear_items(combo_box: crate::core::ObjectId) -> bool {
     control_backend::get_control_backend().combo_box_clear_items(combo_box)
 }
+/// Selects the combo box item at `index`.
+///
+/// Routed through the property contract as the `current_index` property, so this
+/// reports `false` when the widget does not publish that property. An
+/// out-of-range `index` is **not** reliably reported as a failure — read
+/// [`combo_box_current_index`] back to confirm what took effect.
 #[cfg(not(alloc_frugal))]
 pub fn combo_box_set_current_index(combo_box: crate::core::ObjectId, index: usize) -> bool {
     widget::capability::widget_access::write_first(
@@ -1171,31 +1183,53 @@ pub fn combo_box_set_current_index(combo_box: crate::core::ObjectId, index: usiz
         &crate::widget::capability::CapabilityValue::UInt(index as u64),
     )
 }
+/// The combo box's selected index, or `None` when nothing is selected or the id
+/// is unknown.
 #[cfg(not(alloc_frugal))]
 pub fn combo_box_current_index(combo_box: crate::core::ObjectId) -> Option<usize> {
     widget::capability::widget_access::read_index(combo_box, &["current_index"])
 }
+/// How many items a combo box holds.
+///
+/// Reports `0` for an unknown id as well as for a genuinely empty list, so it
+/// cannot be used to tell "empty" from "not a combo box".
 #[cfg(not(alloc_frugal))]
 pub fn combo_box_item_count(combo_box: crate::core::ObjectId) -> usize {
     widget::capability::widget_access::read_index(combo_box, &["item_count"]).unwrap_or(0)
 }
+/// The text of the combo box item at `index`, or `None` when the index is out of
+/// range or the id is unknown.
 #[cfg(not(alloc_frugal))]
 pub fn combo_box_item_text(combo_box: crate::core::ObjectId, index: usize) -> Option<String> {
     control_backend::get_control_backend().combo_box_item_text(combo_box, index)
 }
 // ListBox operations
+/// Appends an item with the given text to a list box. Returns `false` when the
+/// backend refuses.
 #[cfg(not(alloc_frugal))]
 pub fn list_box_add_item(list_box: crate::core::ObjectId, text: &str) -> bool {
     control_backend::get_control_backend().list_box_add_item(list_box, text)
 }
+/// Removes the list box item at `index`, shifting later items down.
+///
+/// Returns `false` when the backend refuses. As with the combo box, an
+/// out-of-range index is not reliably distinguished from a refusal — re-read
+/// [`list_box_item_count`] to check.
 #[cfg(not(alloc_frugal))]
 pub fn list_box_remove_item(list_box: crate::core::ObjectId, index: usize) -> bool {
     control_backend::get_control_backend().list_box_remove_item(list_box, index)
 }
+/// Removes every item from a list box. Returns `false` when the backend refuses.
 #[cfg(not(alloc_frugal))]
 pub fn list_box_clear_items(list_box: crate::core::ObjectId) -> bool {
     control_backend::get_control_backend().list_box_clear_items(list_box)
 }
+/// Selects the list box item at `index`.
+///
+/// Tries the `current_row` property first and falls back to `current_index`,
+/// because both spellings are published by list controls in this library.
+/// Returns `false` when neither is published; an out-of-range `index` is not
+/// reliably reported, so read [`list_box_current_index`] back to confirm.
 #[cfg(not(alloc_frugal))]
 pub fn list_box_set_current_index(list_box: crate::core::ObjectId, index: usize) -> bool {
     widget::capability::widget_access::write_first(
@@ -1204,27 +1238,47 @@ pub fn list_box_set_current_index(list_box: crate::core::ObjectId, index: usize)
         &crate::widget::capability::CapabilityValue::UInt(index as u64),
     )
 }
+/// The list box's selected index, or `None` when nothing is selected or the id
+/// is unknown.
 #[cfg(not(alloc_frugal))]
 pub fn list_box_current_index(list_box: crate::core::ObjectId) -> Option<usize> {
     widget::capability::widget_access::read_index(list_box, &["current_row", "current_index"])
 }
+/// How many items a list box holds. Reports `0` for an unknown id as well as for
+/// an empty list.
 #[cfg(not(alloc_frugal))]
 pub fn list_box_item_count(list_box: crate::core::ObjectId) -> usize {
     widget::capability::widget_access::read_index(list_box, &["item_count"]).unwrap_or(0)
 }
+/// The text of the list box item at `index`, or `None` when the index is out of
+/// range or the id is unknown.
 #[cfg(not(alloc_frugal))]
 pub fn list_box_item_text(list_box: crate::core::ObjectId, index: usize) -> Option<String> {
     control_backend::get_control_backend().list_box_item_text(list_box, index)
 }
 // Event polling
+/// Takes the id of the next widget that has been activated, or `None` when no
+/// activation is queued.
+///
+/// This is a queue, not a state: each successful call removes one event, so a
+/// loop calling it until `None` drains the pending activations. Use
+/// [`poll_widget_trigger_event`] when the kind of activation matters.
 #[cfg(not(alloc_frugal))]
 pub fn poll_widget_triggered() -> Option<crate::core::ObjectId> {
     control_backend::get_control_backend().poll_widget_triggered()
 }
+/// Takes the next queued widget activation together with what kind it was, or
+/// `None` when the queue is empty. Drains the same queue as
+/// [`poll_widget_triggered`].
 #[cfg(not(alloc_frugal))]
 pub fn poll_widget_trigger_event() -> Option<WidgetTriggerEvent> {
     control_backend::get_control_backend().poll_widget_trigger_event()
 }
+/// Queues an activation of `widget_id` as if the user had performed it, for
+/// tests and for driving the UI from outside the event loop.
+///
+/// Returns `false` when the backend will not accept the injected event, in
+/// which case nothing is queued and no later poll will report it.
 #[cfg(not(alloc_frugal))]
 pub fn inject_widget_trigger_event(
     widget_id: crate::core::ObjectId,
@@ -1233,10 +1287,20 @@ pub fn inject_widget_trigger_event(
     control_backend::get_control_backend().inject_widget_trigger_event(widget_id, kind)
 }
 // Clipboard
+/// Replaces the platform clipboard's text contents.
+///
+/// Returns `false` when the clipboard could not be written — including when
+/// another application holds it, which is a normal, transient condition. This
+/// function takes only text; see [`platform_clipboard`] for the rich backend.
 #[cfg(not(alloc_frugal))]
 pub fn set_clipboard_text(text: &str) -> bool {
     platform::get_platform().set_clipboard_text(text)
 }
+/// The platform clipboard's text contents.
+///
+/// Returns an empty string when the clipboard holds no text, holds a non-text
+/// format, or cannot be read — the three cases are **not** distinguished here,
+/// so an empty result does not mean the copy succeeded with empty text.
 #[cfg(not(alloc_frugal))]
 pub fn get_clipboard_text() -> String {
     platform::get_platform().get_clipboard_text()
@@ -1248,6 +1312,11 @@ pub fn platform_clipboard() -> Option<&'static dyn crate::platform::clipboard::R
     platform::get_platform().clipboard_backend()
 }
 // Menu operations
+/// Creates a native menu bar as a child of `parent`.
+///
+/// On macOS the bar only becomes the application's main menu once it is attached
+/// with [`attach_menu_bar_to_window`]. Add menus with [`create_menu`] and items
+/// with [`menu_add_item`].
 #[cfg(not(alloc_frugal))]
 pub fn create_menu_bar(
     parent: crate::core::ObjectId,
@@ -1258,6 +1327,11 @@ pub fn create_menu_bar(
 ) -> crate::core::ObjectId {
     backend_for_kind(KIND_MENU_BAR).create_menu_bar(parent, x, y, width, height)
 }
+/// Adds a top-level menu to a menu bar.
+///
+/// `parent` must be the **menu bar**, not the window: a menu's parent is
+/// structurally its bar and several backends silently do nothing when given a
+/// window instead.
 #[cfg(not(alloc_frugal))]
 pub fn create_menu(
     parent: crate::core::ObjectId,
@@ -1269,6 +1343,9 @@ pub fn create_menu(
 ) -> crate::core::ObjectId {
     backend_for_kind(KIND_MENU).create_menu(parent, text, x, y, width, height)
 }
+/// Attaches a menu bar to a window.
+///
+/// Returns `false` when the backend cannot attach it.
 #[cfg(not(alloc_frugal))]
 pub fn attach_menu_bar_to_window(
     window: crate::core::ObjectId,
@@ -1276,6 +1353,12 @@ pub fn attach_menu_bar_to_window(
 ) -> bool {
     control_backend::get_control_backend().attach_menu_bar_to_window(window, menu_bar)
 }
+/// Adds an item to a menu, returning the item's id.
+///
+/// `shortcut` is **display text** and is neither parsed nor registered as an
+/// accelerator — use [`format_shortcut`] to render a platform-correct string
+/// from a typed shortcut declaration. The returned id is what
+/// [`poll_menu_triggered`] reports once the item is chosen.
 #[cfg(not(alloc_frugal))]
 pub fn menu_add_item(
     parent_menu: crate::core::ObjectId,
@@ -1308,6 +1391,12 @@ pub fn menu_add_item(
 pub fn format_shortcut(shortcut: &crate::shortcut::Shortcut) -> String {
     platform::get_platform().format_shortcut(shortcut)
 }
+/// Takes the id of the next menu item the user activated, or `None` when none is
+/// queued.
+///
+/// Like the widget version this drains a queue, so a loop calling it until
+/// `None` collects every pending activation. The id returned is the one
+/// [`menu_add_item`] handed back.
 #[cfg(not(alloc_frugal))]
 pub fn poll_menu_triggered() -> Option<crate::core::ObjectId> {
     control_backend::get_control_backend().poll_menu_triggered()
@@ -1334,11 +1423,18 @@ pub fn menu_item_shortcut(menu_item: crate::core::ObjectId) -> Option<String> {
 pub fn native_handle(widget: crate::core::ObjectId) -> Option<usize> {
     platform::get_platform().get_native_handle(widget)
 }
+/// Queues activation of a menu item as if the user had chosen it, for tests.
+///
+/// Returns `false` when the backend will not accept the injected event.
 #[cfg(not(alloc_frugal))]
 pub fn inject_menu_trigger(menu_item_id: crate::core::ObjectId) -> bool {
     control_backend::get_control_backend().inject_menu_trigger(menu_item_id)
 }
 // ToolBar and StatusBar
+/// Creates a tool bar strip as a child of `parent`.
+///
+/// The returned id can be wrapped in a [`app::ToolBarHandle`] for the
+/// typed operations (adding actions, changing orientation).
 #[cfg(not(alloc_frugal))]
 pub fn create_tool_bar(
     parent: crate::core::ObjectId,
@@ -1349,6 +1445,7 @@ pub fn create_tool_bar(
 ) -> crate::core::ObjectId {
     backend_for_kind(KIND_TOOL_BAR).create_tool_bar(parent, x, y, width, height)
 }
+/// Creates a status bar as a child of `parent`, with `text` as its message.
 #[cfg(not(alloc_frugal))]
 pub fn create_status_bar(
     parent: crate::core::ObjectId,
@@ -1361,23 +1458,46 @@ pub fn create_status_bar(
     backend_for_kind(KIND_STATUS_BAR).create_status_bar(parent, text, x, y, width, height)
 }
 // Drag and Drop
+/// Starts a drag of `payload` out of `source_widget_id`, advertising it as
+/// `mime`.
+///
+/// `payload` is copied into the platform's drag object and is not retained by
+/// this library, so the caller may free it once this returns. Returns `false`
+/// when the backend cannot begin a drag — for instance when a drag is already in
+/// progress — in which case no drop event will follow.
 #[cfg(not(alloc_frugal))]
 pub fn begin_drag(source_widget_id: crate::core::ObjectId, mime: &str, payload: &[u8]) -> bool {
     platform::get_platform().begin_drag(source_widget_id, mime, payload)
 }
+/// Takes the next completed drop, or `None` when none is pending.
+///
+/// Polling a queue: each successful call removes one event. A drop is only
+/// reported after the user has released, so a drag in progress yields `None`.
 #[cfg(not(alloc_frugal))]
 pub fn poll_drop_event() -> Option<DropEvent> {
     platform::get_platform().poll_drop_event()
 }
+/// Queues a drop event as if the user had performed it, for tests.
+///
+/// Returns `false` when the backend will not accept the injected event, in which
+/// case a later poll will not report it.
 #[cfg(not(alloc_frugal))]
 pub fn inject_drop_event(event: DropEvent) -> bool {
     platform::get_platform().inject_drop_event(event)
 }
 // IME and Accessibility
+/// Enables or disables input-method (IME) input for a text-entry widget.
+///
+/// Returns `false` when the backend refuses — typically because the id is not a
+/// text-entry control, or because the platform has no IME support to switch.
 #[cfg(not(alloc_frugal))]
 pub fn set_widget_ime_enabled(widget_id: crate::core::ObjectId, enabled: bool) -> bool {
     control_backend::get_control_backend().set_widget_ime_enabled(widget_id, enabled)
 }
+/// Whether input-method input is enabled for a widget.
+///
+/// Reports `false` both for "enabled is off" and for "this id is unknown or not
+/// a text control", so it cannot distinguish the two.
 #[cfg(not(alloc_frugal))]
 pub fn is_widget_ime_enabled(widget_id: crate::core::ObjectId) -> bool {
     control_backend::get_control_backend().is_widget_ime_enabled(widget_id)
@@ -1387,10 +1507,20 @@ pub fn is_widget_ime_enabled(widget_id: crate::core::ObjectId) -> bool {
 pub fn platform_ime_bridge() -> Option<&'static dyn crate::platform::ime::ImeBridge> {
     platform::get_platform().ime_bridge()
 }
+/// Sets the accessible name of a widget, as reported to assistive technology.
+///
+/// This is the label a screen reader announces — distinct from the visible text,
+/// which is often too terse or ambiguous to read aloud. Returns `false` when the
+/// backend refuses.
 #[cfg(not(alloc_frugal))]
 pub fn set_widget_accessibility_name(widget_id: crate::core::ObjectId, name: &str) -> bool {
     control_backend::get_control_backend().set_widget_accessibility_name(widget_id, name)
 }
+/// The accessible name set by [`set_widget_accessibility_name`].
+///
+/// Returns an empty string when no name was set, when the id is unknown, or when
+/// the backend refused — the cases are not distinguished, so an empty result
+/// does not prove the widget is nameless to assistive technology.
 #[cfg(not(alloc_frugal))]
 pub fn get_widget_accessibility_name(widget_id: crate::core::ObjectId) -> String {
     control_backend::get_control_backend().get_widget_accessibility_name(widget_id)

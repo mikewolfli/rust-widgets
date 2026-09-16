@@ -10,16 +10,42 @@ use crate::tr;
 
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Color dialog for picking RGBA colors.
+///
+/// # Not a full picker
+///
+/// The "picker" area is a synthetic two-axis field, not a real palette: the x
+/// axis drives the red and blue channels inversely and the y axis drives green,
+/// so only a subset of RGB space is reachable by clicking. The alpha channel is
+/// never changed by clicking — it is carried over from the previous color (or
+/// forced to fully opaque when `options_alpha` is off).
+///
+/// Alpha is only ever preserved or set to `255`; there is no control for
+/// choosing it.
+///
 pub struct ColorDialog {
     base: BaseWidget,
     current_color: Color,
     options_alpha: bool,
     modal: bool,
+    /// Emitted with the new color on every colour change, including ones made
+    /// by keyboard nudges and by clicks in the picker area. Fires during
+    /// [`ColorDialog::set_current_color`] and therefore also *before* the user
+    /// confirms, so a slot reacting to it sees uncommitted selections.
     pub color_selected: Signal1<Color>,
+    /// Emitted by [`ColorDialog::accept`], when the user confirms with Enter.
+    /// Carries no color — read [`ColorDialog::current_color`] instead.
     pub accepted: GenericSignal,
+    /// Emitted by [`ColorDialog::reject`], when the user cancels with Escape.
+    /// The selected color is **not** rolled back, so the caller must decide
+    /// whether to keep the pre-dialog value.
     pub rejected: GenericSignal,
 }
 impl ColorDialog {
+    /// Creates a dialog with the color `rgb(255, 255, 255)`, alpha options off,
+    /// and modality on.
+    ///
+    /// `geometry` is in parent-relative logical pixels; the size hint is
+    /// 400x300, which the picker and button layout assume.
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::ColorDialog, geometry, "ColorDialog"),
@@ -31,34 +57,63 @@ impl ColorDialog {
             rejected: GenericSignal::new(),
         }
     }
+    /// Returns whether the dialog is modal. Defaults to `true`.
+    ///
+    /// Advisory only: the widget records the intent, and the surrounding dialog
+    /// manager is what actually blocks interaction behind it.
     pub fn is_modal(&self) -> bool {
         self.modal
     }
+    /// Sets the modality intent. See [`ColorDialog::is_modal`].
     pub fn set_modal(&mut self, modal: bool) {
         self.modal = modal;
     }
+    /// Returns the currently selected color.
     pub fn current_color(&self) -> Color {
         self.current_color
     }
+    /// Returns whether alpha editing is offered. Defaults to `false`.
+    ///
+    /// When off, picking a color forces alpha to `255`; when on, the existing
+    /// alpha is preserved across picks.
     pub fn options_alpha(&self) -> bool {
         self.options_alpha
     }
+    /// Sets the current color and emits `color_selected`.
+    ///
+    /// Unlike most widgets' setters this is **not** a no-op for a repeated
+    /// value — it always signals and always requests a redraw. A slot that
+    /// calls back into a setter will therefore recurse.
     pub fn set_current_color(&mut self, color: Color) {
         self.current_color = color;
         self.color_selected.emit(color);
         self.base.request_redraw();
     }
+    /// Enables or disables alpha handling for picker clicks. See
+    /// [`ColorDialog::options_alpha`]. Does not request a redraw.
     pub fn set_options_alpha(&mut self, enabled: bool) {
         self.options_alpha = enabled;
     }
+    /// Emits `accepted` and hides the dialog.
+    ///
+    /// The signal is emitted before hiding, and nothing else happens: no
+    /// validation, and no signal distinguishing this acceptance from a previous
+    /// one.
     pub fn accept(&mut self) {
         self.accepted.emit();
         self.hide();
     }
+    /// Emits `rejected` and hides the dialog.
+    ///
+    /// The color chosen so far is left untouched, so a caller that wants cancel
+    /// to restore the original color must snapshot it beforehand.
     pub fn reject(&mut self) {
         self.rejected.emit();
         self.hide();
     }
+    /// Returns the selected color. Identical to
+    /// [`ColorDialog::current_color`]; kept for callers using the
+    /// `get_color`/`set_current_color` pairing.
     pub fn get_color(&self) -> Color {
         self.current_color
     }

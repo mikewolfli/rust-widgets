@@ -13,11 +13,23 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Safe area insets for mobile devices.
+///
+/// All four values are in logical pixels and describe how much of each edge is
+/// obstructed by system UI (notch, status bar, home indicator, rounded corners)
+/// and therefore must stay clear of content. They are edge distances, not a
+/// rectangle: the defaults describe a portrait phone with a notch and a home
+/// indicator, and are wrong for tablets, landscape, or desktop — set them from
+/// the platform's reported insets rather than relying on the default.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SafeAreaInsets {
+    /// Space to reserve along the top edge, in logical pixels.
     pub top: u32,
+    /// Space to reserve along the bottom edge, in logical pixels.
     pub bottom: u32,
+    /// Space to reserve along the left edge, in logical pixels. Zero in the
+    /// default, since portrait phones rarely obstruct the sides.
     pub left: u32,
+    /// Space to reserve along the right edge, in logical pixels.
     pub right: u32,
 }
 
@@ -28,6 +40,11 @@ impl Default for SafeAreaInsets {
 }
 
 /// SafeArea widget — wraps content with safe area insets (BLUE11 R10.14).
+///
+/// The widget does not reposition its children itself. It publishes
+/// [`SafeArea::content_rect`] and paints the inset margins, leaving the host
+/// layout to place content inside that rectangle. Children laid out against
+/// [`Widget::geometry`] instead of `content_rect` will overlap system UI.
 pub struct SafeArea {
     base: BaseWidget,
     insets: SafeAreaInsets,
@@ -36,6 +53,11 @@ pub struct SafeArea {
 }
 
 impl SafeArea {
+    /// Creates a widget using the default phone-style insets
+    /// ([`SafeAreaInsets::default`]) and a white margin colour.
+    ///
+    /// `geometry` is in parent-relative logical pixels; the size hint is
+    /// 300x200.
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::SafeArea, geometry, "SafeArea"),
@@ -43,13 +65,22 @@ impl SafeArea {
             margin_color: Color::WHITE,
         }
     }
+    /// Replaces all four insets at once and requests a redraw.
+    ///
+    /// Insets larger than the widget in a given axis are tolerated: the content
+    /// rect saturates to zero extent rather than underflowing, and the margin
+    /// bars may then paint outside the widget's own rectangle.
     pub fn set_insets(&mut self, insets: SafeAreaInsets) {
         self.insets = insets;
         self.base.request_redraw();
     }
+    /// Returns the current insets.
     pub fn insets(&self) -> SafeAreaInsets {
         self.insets
     }
+    /// Sets the colour painted in the four inset margin bars.
+    ///
+    /// Does not request a redraw, so a visible change needs an explicit repaint.
     pub fn set_margin_color(&mut self, color: Color) {
         self.margin_color = color;
     }
@@ -69,6 +100,12 @@ impl SafeArea {
     pub fn set_right_inset(&mut self, right: u32) {
         self.set_insets(SafeAreaInsets { right, ..self.insets });
     }
+    /// Returns the rectangle content should occupy: the widget's geometry
+    /// inset by the safe area on all four sides.
+    ///
+    /// In the same parent-relative coordinate space as [`Widget::geometry`].
+    /// Width and height saturate at zero when the insets exceed the widget, so
+    /// the result is never inverted.
     pub fn content_rect(&self) -> Rect {
         let g = self.geometry();
         Rect::new(

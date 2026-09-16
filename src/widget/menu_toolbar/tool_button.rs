@@ -14,22 +14,58 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::path::{Path, PathBuf};
 /// Tool button popup mode.
+///
+/// Selects how the button's attached menu is presented. The mode is stored and
+/// exposed as a property, but the widget does not itself own or show a menu, so
+/// the value is currently a hint for the containment layer that wires the button
+/// to one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolButtonPopupMode {
+    /// Opening the menu requires a long or delayed press, so a quick click
+    /// performs the button's main action instead.
     DelayedPopup,
+    /// The menu opens from a dedicated arrow area while the rest of the button
+    /// performs the main action.
     MenuButtonPopup,
+    /// A click opens the menu immediately; there is no separate main action.
     InstantPopup,
 }
 /// Tool button style.
+///
+/// Selects which of the text and icon parts are painted. The widget's own
+/// `draw` renders only the text, so the variants differ in label placement only
+/// once an icon renderer is supplied by the containment layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolButtonStyle {
+    /// Show the icon only, with no label.
     IconOnly,
+    /// Show the label only, with no icon.
     TextOnly,
+    /// Show the icon followed by the label on the same line.
     TextBesideIcon,
+    /// Show the label centred beneath the icon.
     TextUnderIcon,
+    /// Defer to the enclosing tool bar's style rather than setting one here.
     FollowStyle,
 }
 /// Tool button widget.
+///
+/// A compact button for tool bars and menu surfaces. It can act as a plain push
+/// button or, when [`ToolButton::set_checkable`] is enabled, as a toggle whose
+/// state is exposed through [`ToolButton::is_checked`].
+///
+/// # Activation
+///
+/// Every activation path routes through [`ToolButton::click`], so the signals
+/// fire consistently whether the button was clicked, activated by Enter or
+/// Space, or driven programmatically. Events are ignored entirely while the
+/// widget is disabled.
+///
+/// # Appearance
+///
+/// Drawing uses the widget's interaction state directly rather than a theme: the
+/// background varies for pressed, checked, and hovered states, and the label is
+/// centred. The icon path is stored but not decoded or painted by this widget.
 pub struct ToolButton {
     base: BaseWidget,
     text: String,
@@ -41,11 +77,26 @@ pub struct ToolButton {
     auto_raise: bool,
     pressed: bool,
     hovered: bool,
+    /// Emitted on every activation by [`ToolButton::click`], carrying the
+    /// button's checked state at that moment. For a non-checkable button this is
+    /// therefore always `false`, and it is emitted even when nothing was
+    /// toggled.
     pub clicked: Signal1<bool>,
+    /// Emitted when the checked state actually changes, carrying the new state.
+    /// Never emitted for a non-checkable button, or when a set leaves the state
+    /// unchanged.
     pub toggled: Signal1<bool>,
+    /// Emitted on every activation, with no payload; a convenience signal for
+    /// handlers that do not care about the checked state.
     pub triggered: GenericSignal,
 }
 impl ToolButton {
+    /// Creates a tool button labelled `text` occupying `geometry`.
+    ///
+    /// The label may be any string-convertible value. The defaults are: no icon,
+    /// not checkable and unchecked, [`ToolButtonPopupMode::DelayedPopup`],
+    /// [`ToolButtonStyle::IconOnly`], and auto-raise off. Note that the default
+    /// style hides the label even though one is set.
     pub fn new(text: impl Into<String>, geometry: Rect) -> Self {
         let text = text.into();
         Self {
@@ -64,35 +115,61 @@ impl ToolButton {
             triggered: GenericSignal::new(),
         }
     }
+    /// Returns the button's label.
+    ///
+    /// The label is stored whether or not the current [`ToolButtonStyle`]
+    /// paints it.
     pub fn text(&self) -> &str {
         &self.text
     }
+    /// Returns the icon's file path, or `None` when no icon has been set.
+    ///
+    /// The path is returned as given; nothing verifies that the file exists or
+    /// that it decodes as an image.
     pub fn icon(&self) -> Option<&Path> {
         self.icon.as_deref()
     }
+    /// Returns whether the button toggles rather than acting as a momentary
+    /// push button.
     pub fn is_checkable(&self) -> bool {
         self.checkable
     }
+    /// Returns whether the button is currently checked.
+    ///
+    /// Always `false` for a non-checkable button.
     pub fn is_checked(&self) -> bool {
         self.checked
     }
+    /// Returns how the button's attached menu should be presented.
     pub fn popup_mode(&self) -> ToolButtonPopupMode {
         self.popup_mode
     }
+    /// Returns which parts of the button are painted.
     pub fn button_style(&self) -> ToolButtonStyle {
         self.button_style
     }
+    /// Returns whether the button raises itself out of a tool bar when hovered.
     pub fn auto_raise(&self) -> bool {
         self.auto_raise
     }
+    /// Sets the button's label and requests a redraw.
     pub fn set_text(&mut self, text: impl Into<String>) {
         self.text = text.into();
         self.base.request_redraw();
     }
+    /// Sets or clears the icon path and requests a redraw.
+    ///
+    /// The path is stored verbatim; it is not validated, loaded, or decoded
+    /// here.
     pub fn set_icon(&mut self, icon: Option<PathBuf>) {
         self.icon = icon;
         self.base.request_redraw();
     }
+    /// Enables or disables checkable behaviour and requests a redraw.
+    ///
+    /// Turning checkability **off** also clears the checked state without
+    /// emitting [`ToolButton::toggled`], so a listener is not told about the
+    /// change. Turning it on leaves the current state untouched.
     pub fn set_checkable(&mut self, v: bool) {
         self.checkable = v;
         if !v {
@@ -100,18 +177,29 @@ impl ToolButton {
         }
         self.base.request_redraw();
     }
+    /// Sets the popup mode and requests a redraw.
     pub fn set_popup_mode(&mut self, mode: ToolButtonPopupMode) {
         self.popup_mode = mode;
         self.base.request_redraw();
     }
+    /// Sets the button style and requests a redraw.
     pub fn set_button_style(&mut self, style: ToolButtonStyle) {
         self.button_style = style;
         self.base.request_redraw();
     }
+    /// Enables or disables auto-raise and requests a redraw.
     pub fn set_auto_raise(&mut self, v: bool) {
         self.auto_raise = v;
         self.base.request_redraw();
     }
+    /// Sets the checked state, if the button is checkable and the state changes.
+    ///
+    /// The call is a no-op for a non-checkable button, or when `checked` already
+    /// matches the current state; in those cases nothing is emitted and no
+    /// redraw is requested. On an actual change, [`ToolButton::toggled`] is
+    /// emitted with the new state and a redraw is requested. Note that unlike
+    /// [`ToolButton::click`], this does not emit `clicked` or `triggered`, so a
+    /// programmatic change is distinguishable from a user activation.
     pub fn set_checked(&mut self, checked: bool) {
         if self.checkable && self.checked != checked {
             self.checked = checked;
@@ -119,6 +207,13 @@ impl ToolButton {
             self.base.request_redraw();
         }
     }
+    /// Activates the button as if the user had clicked it.
+    ///
+    /// A checkable button flips its state first (emitting [`ToolButton::toggled`]
+    /// if it changed); then [`ToolButton::clicked`] is emitted with the resulting
+    /// state and [`ToolButton::triggered`] with no payload. This runs regardless
+    /// of whether the widget is enabled, so wrap it in an enabled check if the
+    /// caller is acting on external input.
     pub fn click(&mut self) {
         if self.checkable {
             self.set_checked(!self.checked);

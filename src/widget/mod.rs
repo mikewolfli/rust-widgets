@@ -1,8 +1,44 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! Widget models and controls.
+//! Widget models, their capabilities, and the runtime that drives them.
+//!
+//! # Layering
+//!
+//! The module is organised in three layers on top of the core types:
+//!
+//! 1. **Widget models** — the control types re-exported at the bottom of this
+//!    file ([`Button`], [`Slider`], [`MenuBar`], ...). Each is a plain Rust
+//!    struct holding its own state and a [`BaseWidget`]. They implement
+//!    [`Widget`] by delegating the shared fields to the base, and describe
+//!    themselves for accessibility through [`Widget::accessible_role`].
+//! 2. **Capability** ([`capability`]) — a uniform, name-addressed view over
+//!    those models: a property schema per kind, a get/set dispatch
+//!    ([`capability::WidgetProperties`], surfaced as
+//!    [`Widget::properties_dyn`]), and the factory that constructs controls by
+//!    kind. This is what lets generic tooling (property editors, serialisers,
+//!    FFI bindings) manipulate a widget without knowing its concrete type.
+//! 3. **Runtime** ([`runtime`]) — the owner of the live widget tree. It holds
+//!    widgets behind `dyn Widget`, delivers events, and resolves
+//!    [`ObjectId`](crate::core::ObjectId)s back to widgets. Only compiled when
+//!    widgets are not stripped.
+//!
+//! The layering is one-way: models do not know about the runtime, and the
+//! capability layer reaches models only through [`Widget`].
+//!
+//! # Profile gating
+//!
+//! Types are gated by profile so that the mini and embedded builds stay small.
+//! [`Widget`], [`BaseWidget`], [`WidgetKind`], and the property contract exist
+//! in every profile; concrete controls and the factory are gated behind
+//! `widgets_unstripped` / `full_widgets`, and the most advanced controls behind
+//! `full_widgets` alone. Code that must build everywhere should depend only on
+//! [`Widget`] plus the capability layer, and refer to concrete kinds by name at
+//! the factory instead of by type.
+
 // Base widget types
+/// The shared state block every widget embeds: id, kind, geometry, visibility,
+/// enabled flag, style, parent/child links, and the standard signal set.
 pub mod base;
 /// Widget capability metadata, the runtime factory, and the property contract.
 ///
@@ -141,8 +177,12 @@ pub use container_widgets::tabwidget::TabWidget;
 pub use container_widgets::tile_view::TileView;
 #[cfg(widgets_unstripped)]
 pub use container_widgets::toolbox::ToolBox;
+/// Alias for [`GroupBox`], for callers that name the container a "panel".
+/// Interchangeable with `GroupBox`; only the spelling differs.
 pub type Panel = GroupBox;
 pub use base_widgets::frame::Frame;
+/// Alias for [`DockWidget`], for callers that think of a dockable region as a
+/// panel. Used only when widgets are not stripped.
 #[cfg(widgets_unstripped)]
 pub type DockPanel = DockWidget;
 // Re-export container widgets from new additions
@@ -243,6 +283,7 @@ pub use media_widgets::video_player::VideoPlayer;
 pub use overlay_widgets::fab::FAB;
 #[cfg(full_widgets)]
 pub use overlay_widgets::refresh_control::RefreshControl;
+/// Alias for [`RefreshControl`], naming it after the gesture it implements.
 #[cfg(full_widgets)]
 pub type PullToRefresh = RefreshControl;
 #[cfg(full_widgets)]
@@ -306,8 +347,13 @@ pub use dialog::{
     tooltip::Tooltip,
     wizard::{WizardDialog, WizardStep},
 };
+/// Generic dialog alias, currently resolving to [`PopupWindow`].
+/// Not a distinct type: code that needs a dialog-specific API must name the
+/// concrete dialog.
 #[cfg(full_widgets)]
 pub type Dialog = PopupWindow;
+/// Alias for [`FileDialog`], for callers that only ever select directories.
+/// Selecting files is not prevented by this alias — it is unchecked.
 #[cfg(full_widgets)]
 pub type DirectoryDialog = FileDialog;
 // Re-export menu and toolbar widgets
@@ -322,6 +368,9 @@ pub use menu_toolbar::{
     tool_bar::ToolBar,
     tool_button::ToolButton,
 };
+/// Alias for [`Menu`], naming the role rather than the control.
+/// Context menus are ordinary menus shown at the pointer; the difference is
+/// in how the caller shows them, not in the type.
 #[cfg(full_widgets)]
 pub type ContextMenu = Menu;
 // Re-export view widgets
@@ -353,36 +402,63 @@ pub use special_widgets::{
     SegmentItem, SegmentedControl, Snackbar, SplitAction, SplitButton, TerminalView, TimelineItem,
     TimelineWidget, ToastItem, ToastLevel, ToastStack,
 };
+/// Alias for [`ProgressBar`], naming an indicator use case.
+/// This is a plain progress bar: it does not animate on its own.
 #[cfg(full_widgets)]
 pub type ActivityIndicator = ProgressBar;
+/// Alias for [`ListBox`], naming the checklist use case.
+/// Per-item checkboxes are **not** implied — this is a selectable list.
 #[cfg(full_widgets)]
 pub type CheckListBox = ListBox;
+/// Alias for [`ToolBox`] declared here as well as re-exported above, so it
+/// remains reachable under every gate. Identical to the `ToolBox` re-export.
 #[cfg(full_widgets)]
 pub type Toolbox = ToolBox;
+/// Alias for [`SpinBox`] intended for floating-point input.
+/// It is the same integer spin box: no decimal support is added by the alias.
 #[cfg(full_widgets)]
 pub type DoubleSpinBox = SpinBox;
+/// Alias for [`WizardDialog`]; the `WidgetKind::Wizard` spelling.
 #[cfg(full_widgets)]
 pub type Wizard = WizardDialog;
 // ── P3-6: WidgetKind variant type aliases ──
+//
+// Each alias renames a concrete control after the `WidgetKind` variant it
+// corresponds to. They are pure renames: none adds behaviour, and none is a
+// distinct type from its target, so they can be used interchangeably.
+
+/// Alias for [`VirtualList`]; the `WidgetKind::DataView` spelling.
 #[cfg(full_widgets)]
 pub type DataView = VirtualList;
+/// Alias for [`TreeView`]; the `WidgetKind::ColumnView` spelling. Despite the
+/// name, this is a tree, not a column layout.
 #[cfg(full_widgets)]
 pub type ColumnView = TreeView;
+/// Alias for [`ListView`]; the `WidgetKind::UndoView` spelling. Undo has to be
+/// wired up by the caller — this is not an undo-aware view.
 #[cfg(full_widgets)]
 pub type UndoView = ListView;
+/// Alias for [`DateEdit`]; the `WidgetKind::DatePicker` spelling.
 #[cfg(full_widgets)]
 pub type DatePicker = DateEdit;
+/// Alias for [`TimeEdit`]; the `WidgetKind::TimePicker` spelling.
 #[cfg(full_widgets)]
 pub type TimePicker = TimeEdit;
+/// Alias for [`DateTimeEdit`]; the `WidgetKind::DateTimePicker` spelling.
 #[cfg(full_widgets)]
 pub type DateTimePicker = DateTimeEdit;
+/// Alias for [`GridWidget`]; the `WidgetKind::Grid` spelling.
 #[cfg(full_widgets)]
 pub type Grid = GridWidget;
+/// Alias for [`ChartWidget`]; the `WidgetKind::Chart` spelling.
 #[cfg(full_widgets)]
 pub type Chart = ChartWidget;
+/// Alias for [`GridTableWidget`]; the `WidgetKind::GridTable` spelling.
 #[cfg(full_widgets)]
 pub type GridTable = GridTableWidget;
+/// Alias for [`TableWidget`]; the `WidgetKind::Table` spelling.
 #[cfg(full_widgets)]
 pub type Table = TableWidget;
+/// Alias for [`FreeformShapeWidget`]; the `WidgetKind::FreeformShape` spelling.
 #[cfg(full_widgets)]
 pub type FreeformShape = FreeformShapeWidget;

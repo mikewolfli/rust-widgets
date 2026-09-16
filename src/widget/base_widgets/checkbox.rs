@@ -15,19 +15,37 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// Checkbox state.
+///
+/// A three-valued state even though the checkbox is two-valued by default:
+/// [`CheckState::PartiallyChecked`] is only reachable when tristate mode is on,
+/// and is how a checkbox represents "some of my children are checked".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckState {
+    /// Off.
     Unchecked,
+    /// Intermediate; drawn as a dash/filled square rather than a tick.
     PartiallyChecked,
+    /// On.
     Checked,
 }
 /// Checkbox widget for boolean or tristate selection.
+///
+/// Carries a [`CheckState`], so it can act as either a plain boolean (the
+/// default) or a tristate control. See [`CheckBox::set_tristate_enabled`].
 pub struct CheckBox {
     base: BaseWidget,
     state: CheckState,
     text: String,
     tristate_enabled: bool,
+    /// Emitted with a boolean view of the state on every change: `true` for
+    /// [`CheckState::Checked`], `false` for the other two.
+    ///
+    /// Because partially-checked collapses to `false`, a listener cannot
+    /// distinguish "unchecked" from "indeterminate" — connect to
+    /// `state_changed` when that distinction matters.
     pub toggled: Signal1<bool>,
+    /// Emitted with the new [`CheckState`] on every change, including
+    /// transitions involving [`CheckState::PartiallyChecked`].
     pub state_changed: Signal1<CheckState>,
 }
 impl CheckBox {

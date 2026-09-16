@@ -40,8 +40,15 @@ pub struct ListBox {
     current_row: Option<usize>,
     item_height: f32,
     scroll_offset: usize,
+    /// Emitted when the cursor row changes to a valid item, with that item's
+    /// index. Also emitted when programmatically setting the current row.
     pub item_selected: Signal1<usize>,
+    /// Emitted when the user confirms an item (double-click or Enter), with the
+    /// item's index. Not emitted by programmatic selection.
     pub item_activated: Signal1<usize>,
+    /// Emitted without a payload after any selection-affecting change —
+    /// including mode switches and `clear()`, which can alter the selection
+    /// without changing the cursor row.
     pub selection_changed: GenericSignal,
 }
 /// Selection mode for list, tree, table and list-box views.

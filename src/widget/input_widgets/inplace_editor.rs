@@ -113,6 +113,12 @@ impl InplaceEditor {
         self.base.request_redraw();
     }
 
+    /// Steps back one committed edit and returns `true`, or `false` when there is
+    /// nothing to undo.
+    ///
+    /// Only committed values are undoable: text edited in the box but not yet
+    /// accepted is not on the stack. The cursor is moved to the end of the
+    /// restored text.
     pub fn undo(&mut self) -> bool {
         if self.undo_stack.undo().is_err() {
             return false;
@@ -121,6 +127,8 @@ impl InplaceEditor {
         true
     }
 
+    /// Steps forward one undone edit and returns `true`, or `false` when there is
+    /// nothing to redo. Behaviour matches [`InplaceEditor::undo`].
     pub fn redo(&mut self) -> bool {
         if self.undo_stack.redo().is_err() {
             return false;
@@ -129,9 +137,11 @@ impl InplaceEditor {
         true
     }
 
+    /// Returns `true` if [`InplaceEditor::undo`] would change the value.
     pub fn can_undo(&self) -> bool {
         self.undo_stack.can_undo()
     }
+    /// Returns `true` if [`InplaceEditor::redo`] would change the value.
     pub fn can_redo(&self) -> bool {
         self.undo_stack.can_redo()
     }

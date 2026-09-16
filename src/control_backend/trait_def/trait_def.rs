@@ -16,6 +16,59 @@
 use crate::control_backend::types::ControlBackendKind;
 use crate::core::ObjectId;
 use crate::platform::{WidgetTriggerEvent, WidgetTriggerKind};
+/// The contract every control backend satisfies.
+///
+/// # Required vs. inherited
+///
+/// Only a small core is *required*. A backend must provide:
+///
+/// * [`backend_name`](ControlBackend::backend_name) and
+///   [`kind`](ControlBackend::kind) — identity, used by diagnostics and by the
+///   dispatcher's cache key;
+/// * the widget **creation** methods for the kinds it actually supports
+///   ([`create_window`](ControlBackend::create_window),
+///   [`create_button`](ControlBackend::create_button), …);
+/// * the **write** side of the shared widget-state accessors
+///   ([`set_widget_text`](ControlBackend::set_widget_text),
+///   [`set_widget_enabled`](ControlBackend::set_widget_enabled),
+///   [`set_widget_visible`](ControlBackend::set_widget_visible),
+///   [`set_widget_geometry`](ControlBackend::set_widget_geometry)), which every
+///   backend can answer because it owns the state it just allocated;
+/// * the IME and accessibility-name accessors, whose defaults likewise cannot
+///   be invented (a wrong label is worse than a missing one).
+///
+/// Everything else has a default body and **may** be inherited. That is the
+/// whole point of the split: the crate declares well over a hundred
+/// `create_*` methods, so a minimal backend (say `embedded-mini`) overrides
+/// only the handful of kinds it can actually host and lets the rest fall
+/// through, rather than being forced to write a hundred stubs.
+///
+/// # The honest-failure convention
+///
+/// The inherited defaults do not pretend to work. They report absence:
+///
+/// * `create_*` returns `ObjectId` `0` — an id that no allocation can produce,
+///   so a caller that failed to override one gets an id it cannot store or
+///   query rather than a plausible-looking handle;
+/// * boolean queries return `false`, accessor results return `None`,
+///   mutating operations return `false` for "not performed", and `()`-returning
+///   operations do nothing;
+/// * read accessors return the empty string (see
+///   [`get_widget_text`](ControlBackend::get_widget_text)).
+///
+/// A backend must therefore **never** return a defaulted success to mean
+/// "done", and a caller must not read `0` / `false` / `None` as a silent
+/// success. This is deliberate (principle #37): a stub that fakes a control
+/// would put a second, divergent copy of widget semantics behind a code path
+/// that tests cannot distinguish from a working backend.
+///
+/// # Threading and lifetimes
+///
+/// Implementations must be `Send + Sync`: the process-wide backend from
+/// [`get_control_backend`](crate::control_backend::get_control_backend) is
+/// shared across threads. Returned `ObjectId`s stay valid until
+/// [`destroy_widget`](ControlBackend::destroy_widget) is called; recycling an id
+/// for a different widget is not permitted while the old one is alive.
 pub trait ControlBackend: Send + Sync {
     /// Backend display name.
     fn backend_name(&self) -> &'static str;

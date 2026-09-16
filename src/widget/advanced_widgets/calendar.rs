@@ -67,6 +67,9 @@ pub struct Calendar {
     navigation_bar_visible: bool,
     horizontal_header_visible: bool,
     vertical_header_visible: bool,
+    /// Emitted with the newly selected date when `selected_date` changes, whether
+    /// from a click, keyboard navigation, or a programmatic setter. Not emitted
+    /// when the selection is set to the date it already held.
     pub selection_changed: Signal1<chrono::NaiveDate>,
     date_format: String,
 }

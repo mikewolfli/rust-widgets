@@ -30,8 +30,21 @@ pub struct LineEdit {
     undo_stack: UndoStack,
     history_target: Rc<RefCell<String>>,
     restoring_history: bool,
+    /// Whether this field currently owns keyboard focus.
+    ///
+    /// Tracked here because the caret is only drawn for the focused field, and the
+    /// library's focus router sends `FocusGained` / `FocusLost` (see
+    /// `crate::widget::runtime::focus_widget`). Without it the field had no way to
+    /// know, and the caret was never drawn at all.
+    focused: bool,
+    /// Emitted after the widget's text changes: on edit commits, and after an
+    /// undo/redo restores a snapshot. Not emitted when a programmatic
+    /// `set_text` is given the text the field already holds.
     pub text_changed: Signal1<String>,
+    /// Emitted when editing ends — the field loses focus or Enter is pressed.
+    /// Carries no payload.
     pub editing_finished: GenericSignal,
+    /// Emitted when Enter is pressed in the field, after the edit is committed.
     pub return_pressed: GenericSignal,
 }
 /// Text echo mode for a line edit.
@@ -64,6 +77,7 @@ impl LineEdit {
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(String::new())),
             restoring_history: false,
+            focused: false,
             text_changed: Signal1::new(),
             editing_finished: GenericSignal::new(),
             return_pressed: GenericSignal::new(),
@@ -72,6 +86,22 @@ impl LineEdit {
     /// Returns current text.
     pub fn text(&self) -> &str {
         &self.text
+    }
+    /// Returns whether this field currently has keyboard focus.
+    pub fn is_focused(&self) -> bool {
+        self.focused
+    }
+    /// Sets the focus flag directly.
+    ///
+    /// The runtime normally drives this through `FocusGained` / `FocusLost`, the same
+    /// way the other input controls are driven; this setter exists for hosts and tests
+    /// that need to place focus without an event round-trip.
+    pub fn set_focused(&mut self, focused: bool) {
+        if self.focused == focused {
+            return;
+        }
+        self.focused = focused;
+        self.base.request_redraw();
     }
     /// Sets text and emits text_changed signal if different.
     pub fn set_text(&mut self, text: impl Into<String>) {
@@ -538,7 +568,11 @@ impl EventHandler for LineEdit {
                 }
             }
             Event::FocusLost => {
+                self.set_focused(false);
                 self.editing_finished.emit();
+            }
+            Event::FocusGained => {
+                self.set_focused(true);
             }
             _ => { /* Other events are not relevant */ }
         }
@@ -586,8 +620,25 @@ impl Draw for LineEdit {
                 HorizontalAlignment::Left,
             );
         }
-        // Draw cursor if focused
-        // Note: Would need focus state tracking
+        // Draw the caret for whichever field owns keyboard focus.
+        if self.focused && !self.read_only {
+            // The caret sits after the text drawn so far — measured with the same font
+            // the text was drawn with, so it tracks the character count rather than
+            // the pixel count. Before this, nothing was drawn at all: the field had no
+            // focus state to consult.
+            let default_font = crate::core::Font::default();
+            let font = style.font.as_ref().unwrap_or(&default_font);
+            let caret_x = text_x + context.measure_text(display_text, font).width as i32;
+            // Inset so the caret does not touch the border.
+            let caret_top = rect.y + 2;
+            let caret_bottom = rect.y + rect.height as i32 - 2;
+            let caret_color = style.text_color.unwrap_or(Color::rgb(0, 0, 0));
+            context.draw_line(
+                Point::new(caret_x, caret_top),
+                Point::new(caret_x, caret_bottom),
+                caret_color,
+            );
+        }
     }
 }
 
@@ -605,6 +656,70 @@ mod tests {
         assert_eq!(le.echo_mode(), EchoMode::Normal);
         assert_eq!(le.cursor_position(), 0);
         assert!(le.selection_start().is_none());
+        assert!(!le.is_focused(), "a fresh field is not focused");
+    }
+
+    /// The field must learn about focus from the events the runtime sends, since
+    /// that is what gates the caret. Before this the field had no focus state, so
+    /// `FocusGained` was ignored and the caret was never drawn.
+    #[test]
+    fn lineedit_tracks_focus_from_events() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
+
+        le.handle_event(&Event::FocusGained);
+        assert!(le.is_focused(), "FocusGained must mark the field focused");
+
+        le.handle_event(&Event::FocusLost);
+        assert!(!le.is_focused(), "FocusLost must clear it");
+    }
+
+    /// Setting focus directly must be idempotent in effect: the flag is a boolean,
+    /// so a repeated set cannot leave it in a contradictory state.
+    #[test]
+    fn lineedit_set_focused_round_trips() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
+        le.set_focused(true);
+        assert!(le.is_focused());
+        le.set_focused(true);
+        assert!(le.is_focused());
+        le.set_focused(false);
+        assert!(!le.is_focused());
+    }
+
+    /// A focused field must actually paint a caret. The previous code drew nothing,
+    /// and the comment said why — there was no focus state to read.
+    #[test]
+    fn focused_lineedit_draws_a_caret() {
+        let rect = Rect::new(0, 0, 200, 24);
+        let mut focused = LineEdit::new(rect);
+        focused.set_text("ab");
+        focused.set_focused(true);
+
+        let mut unfocused = LineEdit::new(rect);
+        unfocused.set_text("ab");
+
+        let focused_frame = render(&mut focused, rect);
+        let unfocused_frame = render(&mut unfocused, rect);
+        assert_ne!(
+            focused_frame, unfocused_frame,
+            "focusing must change what is painted, because it draws the caret"
+        );
+    }
+
+    /// Renders a widget into an RGBA frame for comparison.
+    fn render(widget: &mut LineEdit, rect: Rect) -> Vec<u8> {
+        use crate::core::{Color, Size};
+        use crate::render::{PaintBackend, RenderContext, SoftwarePaintBackend};
+        use crate::widget::Draw;
+
+        let mut surface = SoftwarePaintBackend::new(Size::new(rect.width, rect.height), 1.0);
+        surface.begin_frame(Color::WHITE);
+        {
+            let mut context = RenderContext::new(&mut surface);
+            widget.draw(&mut context);
+        }
+        surface.end_frame();
+        surface.frame_rgba().to_vec()
     }
 
     #[test]

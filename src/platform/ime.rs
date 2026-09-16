@@ -20,9 +20,17 @@ pub struct ImeComposition {
 }
 
 /// IME candidate window position.
+///
+/// In **screen** coordinates, not widget-relative ones, because the candidate
+/// window is an OS-level window rather than part of the widget tree. Physical or
+/// logical pixels depends on the backend, which is why this is documented rather
+/// than converted here.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ImeCandidatePosition {
+    /// Horizontal position in screen coordinates.
     pub x: i32,
+    /// Vertical position in screen coordinates. Screen y grows downward on all
+    /// supported backends.
     pub y: i32,
 }
 
@@ -66,6 +74,8 @@ pub struct MockImeBridge {
 crate::impl_default_via_new!(MockImeBridge);
 
 impl MockImeBridge {
+    /// Creates an inactive bridge with no focused widget, no committed text, a
+    /// default (empty) composition, and a zeroed candidate position.
     pub fn new() -> Self {
         Self {
             focused_widget: crate::compat::Mutex::new(None),
@@ -76,10 +86,16 @@ impl MockImeBridge {
         }
     }
 
+    /// Forces the mock's active flag, which `is_active` then reports.
+    ///
+    /// Real backends derive activity from their host connection; this setter
+    /// exists so tests can exercise both states without one.
     pub fn set_active(&self, active: bool) {
         *self.active.lock().unwrap() = active;
     }
 
+    /// Returns the widget id passed to the most recent `focus_in`, or `None`
+    /// after a `focus_out` or before any focus call.
     pub fn focused_widget(&self) -> Option<ObjectId> {
         *self.focused_widget.lock().unwrap()
     }

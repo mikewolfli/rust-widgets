@@ -311,6 +311,36 @@ impl Platform for IosMobilePlatform {
         true
     }
 
+    /// Mounts a library-painted widget onto a surface this host will present.
+    ///
+    /// The backend keeps no native object per control (every `WidgetKind` is painted
+    /// by `src/widget/`), so the surface is a record plus a repaint queue: the UIKit
+    /// side owns the pixels and pulls them with the render API, and this tells it
+    /// which widgets exist and when they went stale.
+    fn mount_surface(&self, _parent: u64, id: u64, rect: crate::core::Rect) -> bool {
+        self.state.mount_surface_record(id, rect)
+    }
+
+    /// Updates the rect of a mounted surface. `false` when `id` is not mounted.
+    fn resize_surface(&self, id: u64, rect: crate::core::Rect) -> bool {
+        self.state.resize_surface_record(id, rect)
+    }
+
+    /// Releases a mounted surface.
+    fn unmount_surface(&self, id: u64) -> bool {
+        self.state.unmount_surface_record(id)
+    }
+
+    /// Queues a repaint for the host to pick up. `false` when `id` is not mounted.
+    fn invalidate_surface(&self, id: u64) -> bool {
+        self.state.invalidate_surface_record(id)
+    }
+
+    /// The backend displays library-painted widgets by handing the host their frames.
+    fn supports_surfaces(&self) -> bool {
+        true
+    }
+
     // ─── Tool Bar / Status Bar ───
 
     // ─── Message Box ───
@@ -453,5 +483,38 @@ mod tests {
         // which is why the capability is advertised as `false`.
         assert!(!caps.native_menu);
         assert!(caps.typed_widget_trigger);
+    }
+
+    /// The backend must host library-painted widgets, and each step must work:
+    /// a bare `true` from `supports_surfaces()` would be a claim, not a capability.
+    #[test]
+    fn ios_hosts_widget_surfaces_and_queues_repaints() {
+        use crate::platform::Platform as _;
+
+        let platform = IosMobilePlatform::new();
+        assert!(platform.supports_surfaces());
+
+        let window = platform.create_window("w", 0, 0, 390, 844);
+        let rect = crate::core::Rect::new(0, 0, 120, 44);
+        assert!(platform.mount_surface(window, window, rect));
+        assert_eq!(platform.state.surface_rect(window), Some(rect));
+
+        assert!(platform.invalidate_surface(window));
+        assert_eq!(platform.state.take_pending_repaint(), Some(window));
+        assert_eq!(platform.state.pending_repaint_count(), 0);
+
+        assert!(platform.unmount_surface(window));
+        assert_eq!(platform.state.surface_rect(window), None);
+    }
+
+    /// A surface for a widget this backend never made must be refused.
+    #[test]
+    fn ios_refuses_a_surface_for_an_unknown_widget() {
+        use crate::platform::Platform as _;
+
+        let platform = IosMobilePlatform::new();
+        assert!(!platform.mount_surface(1, 9_999, crate::core::Rect::new(0, 0, 10, 10)));
+        assert!(!platform.invalidate_surface(9_999));
+        assert_eq!(platform.state.mounted_surface_count(), 0);
     }
 }

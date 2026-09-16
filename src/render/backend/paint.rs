@@ -10,25 +10,75 @@ use crate::render::{
 };
 
 /// Pluggable paint backend strategy used by render scene composition.
+///
+/// A backend receives a frame's worth of [`RenderCommand`]s between
+/// [`PaintBackend::begin_frame`] and [`PaintBackend::end_frame`] and is
+/// responsible for rasterising them into some surface. Implementations may be
+/// software (see [`SoftwarePaintBackend`]) or hardware. Commands arriving
+/// outside a frame are outside the contract.
 pub trait PaintBackend {
+    /// Starts a frame, filling the target with `clear` first.
+    ///
+    /// Must be paired with [`PaintBackend::end_frame`]. Anything drawn before
+    /// this call is not guaranteed to survive it.
     fn begin_frame(&mut self, clear: Color);
+    /// Finishes the frame, making its contents available for presentation.
+    ///
+    /// For a software backend this is what flushes any pending batched work;
+    /// reading the surface before this point may see a partially drawn frame.
     fn end_frame(&mut self);
+    /// Executes a single drawing command in the current frame.
+    ///
+    /// The command is applied in sequence, so ordering matters: a clip push
+    /// affects every command until its matching pop.
     fn execute_command(&mut self, command: &RenderCommand);
+    /// Returns the size of the target surface in logical (DPI-independent)
+    /// units.
     fn size(&self) -> Size;
+    /// Resizes the target surface, discarding its contents.
     fn set_size(&mut self, size: Size);
+    /// Returns the device pixel ratio the backend rasterises at; `1.0` is the
+    /// 96-DPI baseline.
     fn dpi_scale(&self) -> f32;
+    /// Sets the device pixel ratio used for subsequent rasterisation.
     fn set_dpi_scale(&mut self, dpi_scale: f32);
+    /// Measures `text` in `font`, returning advance and bounding-box metrics.
+    ///
+    /// Measurement is independent of the current frame, so it is valid to call
+    /// outside `begin_frame`/`end_frame` — layout code relies on this.
     fn measure_text(&self, text: &str, font: &Font) -> TextMetrics;
+    /// Shapes `text` in `font`, returning positioned glyphs.
+    ///
+    /// Like [`PaintBackend::measure_text`], valid outside a frame. Backends
+    /// without real shaping may return a trivial single-run result.
     fn shape_text(&self, text: &str, font: &Font) -> ShapedText;
+    /// Returns the final frame as tightly packed RGBA bytes, 8 bits per
+    /// channel, row-major, top row first.
+    ///
+    /// The slice length is `width * height * 4` and the buffer is owned by the
+    /// backend: it is invalidated by the next frame, resize, or mutable access.
     fn frame_rgba(&self) -> &[u8];
     /// Apply backend-specific render quality configuration.
+    ///
+    /// The default implementation ignores the config, which is the honest
+    /// behaviour for a backend with no quality knobs; such a backend still
+    /// accepts the call rather than failing, so callers need not feature-detect.
     fn apply_render_config(&mut self, _config: SoftwareRenderConfig) {}
     /// Read backend-specific render quality configuration.
+    ///
+    /// The default returns [`SoftwareRenderConfig::default`], which does **not**
+    /// necessarily reflect what a non-software backend is actually doing — a
+    /// backend with real quality settings should override both this and
+    /// [`PaintBackend::apply_render_config`].
     fn render_config(&self) -> SoftwareRenderConfig {
         SoftwareRenderConfig::default()
     }
 }
 /// Software implementation of the paint backend strategy.
+///
+/// Rasterises commands into an in-memory [`SoftwareSurface`]. This is the
+/// reference implementation and the fallback when no accelerated backend is
+/// available.
 pub struct SoftwarePaintBackend {
     pub(crate) surface: SoftwareSurface,
     pub(crate) batch_state: BatchState,

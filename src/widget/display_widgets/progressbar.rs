@@ -23,6 +23,9 @@ pub struct ProgressBar {
     text_visible: bool,
     orientation: Orientation,
     inverted_appearance: bool,
+    /// Emitted with the new value after any change to `value` — from
+    /// `set_value`, the steppers, or keyboard/wheel input. Not emitted when the
+    /// value is set to the value it already had.
     pub value_changed: Signal1<i32>,
 }
 impl ProgressBar {

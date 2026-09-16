@@ -58,6 +58,25 @@ dependency) so the bridge's diagnostics are visible on-device. Without it the
 |-----------|--------|-------|
 | JNI bridge initialization | ✅ Verified | `nativeInit` stores `JavaVM`, installs logcat |
 | Activity Context storage | ✅ Verified | `nativeAttachContext` / `set_activity_context` store a `GlobalRef` |
+
+### Widget surfaces (the BLUE15 path)
+
+Everything below this line describes the **self-drawn** path, which is the one in
+use: the library paints every `WidgetKind` and the host supplies pixels.
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| `mount_surface` / `resize` / `unmount` | ✅ Implemented | records the displayed widgets and their rects |
+| `invalidate_surface` + repaint queue | ✅ Implemented | coalesced; the Activity drains it to know what went stale |
+| `supports_surfaces()` | ✅ `true` | backed by the above, pinned by `android_hosts_widget_surfaces_and_queues_repaints` |
+| Input delivery into widgets | ⬜ Not wired | the Activity must forward its touch/key events into `widget::runtime::dispatch_pointer_event` |
+
+> The table that follows is the **historical** native-control inventory. It is kept
+> because the JNI view factory still exists for hosts that ask for a native view
+> directly; it is not the path self-drawn widgets take.
+
+| Component | Status | Notes |
+|-----------|--------|-------|
 | Rust → Java view factory | ✅ Verified | `create_native_view` constructs any mapped `AndroidViewClass` |
 | Button | ✅ Verified | `android.widget.Button` |
 | TextView | ✅ Verified | `android.widget.TextView` (Label, StatusBar) |

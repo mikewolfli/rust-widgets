@@ -204,6 +204,10 @@ impl TextArea {
         }
     }
 
+    /// Reverts the most recent text mutation.
+    ///
+    /// Returns `false` and changes nothing when there is nothing to undo;
+    /// otherwise emits `changed` and clamps the caret to the restored length.
     pub fn undo(&mut self) -> bool {
         if self.undo_stack.undo().is_err() {
             return false;
@@ -212,6 +216,10 @@ impl TextArea {
         true
     }
 
+    /// Reapplies the most recently undone text mutation.
+    ///
+    /// Returns `false` and changes nothing when there is nothing to redo;
+    /// otherwise emits `changed` and clamps the caret to the restored length.
     pub fn redo(&mut self) -> bool {
         if self.undo_stack.redo().is_err() {
             return false;
@@ -220,9 +228,11 @@ impl TextArea {
         true
     }
 
+    /// Returns whether there is a text mutation to undo.
     pub fn can_undo(&self) -> bool {
         self.undo_stack.can_undo()
     }
+    /// Returns whether there is an undone text mutation to reapply.
     pub fn can_redo(&self) -> bool {
         self.undo_stack.can_redo()
     }

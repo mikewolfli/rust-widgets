@@ -27,6 +27,13 @@ pub struct WebViewEnhanced {
 }
 
 impl WebViewEnhanced {
+    /// Creates a web view in `geometry` showing `about:blank`, with no title and
+    /// nothing loading.
+    ///
+    /// Unlike [`WebEngineViewEnhanced::new`](super::web_engine::WebEngineViewEnhanced::new),
+    /// this type never acquires a native engine: every operation runs on the
+    /// simulated loader, which emits 0% → 50% → 100% progress and stores the URL
+    /// without performing any network I/O.
     pub fn new(geometry: Rect) -> Self {
         Self {
             core: WebViewCore::new(WidgetKind::WebEngineView, geometry, "WebView", "about:blank"),
@@ -35,78 +42,122 @@ impl WebViewEnhanced {
 
     // -- Accessors that delegate to core --
 
+    /// The address currently shown, `"about:blank"` until something is loaded.
     pub fn url(&self) -> &str {
         self.core.url()
     }
+    /// Whether a navigation is in flight.
+    ///
+    /// Always `false` by the time a loader returns: the simulated path completes
+    /// the whole 0 → 50 → 100 sequence inside the call, so this only reports
+    /// `true` if read from a loading-progress callback.
     pub fn is_loading(&self) -> bool {
         self.core.is_loading()
     }
+    /// The page title, or `""` when none has been set or inferred.
     pub fn title(&self) -> &str {
         self.core.title()
     }
+    /// Load completion as a percentage, `0`..=`100`. 100 means the last
+    /// navigation finished; it says nothing about the document's validity.
     pub fn load_progress(&self) -> u8 {
         self.core.load_progress()
     }
+    /// Whether the session history has an entry behind the current one.
     pub fn can_go_back(&self) -> bool {
         self.core.can_go_back()
     }
+    /// Whether the session history has an entry ahead of the current one.
     pub fn can_go_forward(&self) -> bool {
         self.core.can_go_forward()
     }
+    /// The view's preferences.
     pub fn settings(&self) -> &super::WebSettings {
         self.core.settings()
     }
+    /// The view's preferences, mutably, for changing several at once.
     pub fn settings_mut(&mut self) -> &mut super::WebSettings {
         self.core.settings_mut()
     }
+    /// The security preferences in force.
     pub fn security(&self) -> &super::SecuritySettings {
         self.core.security()
     }
+    /// The security preferences in force, mutably.
     pub fn security_mut(&mut self) -> &mut super::SecuritySettings {
         self.core.security_mut()
     }
+    /// This view's cookie jar.
     pub fn cookies(&self) -> &super::privacy::CookieJar {
         self.core.cookies()
     }
+    /// This view's cookie jar, mutably.
     pub fn cookies_mut(&mut self) -> &mut super::privacy::CookieJar {
         self.core.cookies_mut()
     }
+    /// The tracking-protection state, including the blocked-request count.
     pub fn privacy(&self) -> &super::privacy::TrackingProtection {
         self.core.privacy()
     }
+    /// The tracking-protection state, mutably.
     pub fn privacy_mut(&mut self) -> &mut super::privacy::TrackingProtection {
         self.core.privacy_mut()
     }
+    /// The registered plugins.
     pub fn plugins(&self) -> &super::plugins::PluginManager {
         self.core.plugins()
     }
+    /// The registered plugins, mutably.
     pub fn plugins_mut(&mut self) -> &mut super::plugins::PluginManager {
         self.core.plugins_mut()
     }
+    /// Session history backing the back/forward state.
     pub fn history(&self) -> &super::history::SessionHistory {
         self.core.history()
     }
+    /// The longer-term browsing history, distinct from [`Self::history`].
     pub fn browser_history(&self) -> &super::history::BrowserHistory {
         self.core.browser_history()
     }
 
     // -- Methods that delegate to core --
 
+    /// Navigates to `url`.
+    ///
+    /// The URL must begin with `http://`, `https://` or `file://`; anything else
+    /// is logged and rejected, leaving the view as it was, and this method returns
+    /// without reporting the refusal.
     pub fn load_url(&mut self, url: &str) {
         self.core.load_url(url);
     }
+    /// Navigates to `url`, taking ownership of it. Same scheme validation as
+    /// [`Self::load_url`].
     pub fn set_url(&mut self, url: String) {
         self.core.set_url(url);
     }
+    /// Loads `html` as the document, with `base_url` as the address it came from
+    /// — `None` becomes `"data:text/html"`.
+    ///
+    /// The title becomes `"HTML Content"` and the body is stored verbatim: no
+    /// parsing, scripting or sanitising happens.
     pub fn load_html(&mut self, html: &str, base_url: Option<&str>) {
         self.core.load_html(html, base_url);
     }
+    /// Loads `data` as the document at `base_url`, declaring the bytes to be of
+    /// type `mime_type`, which also becomes the title as `"Data: <mime_type>"`.
+    ///
+    /// `data` is decoded with [`String::from_utf8_lossy`], so invalid UTF-8
+    /// becomes replacement characters rather than an error.
     pub fn load_data(&mut self, data: &[u8], mime_type: &str, base_url: &str) {
         self.core.load_data(data, mime_type, base_url);
     }
+    /// Steps one entry back in session history, driving simulated loading
+    /// callbacks. A no-op when there is nothing behind the current entry.
     pub fn go_back(&mut self) {
         self.core.go_back();
     }
+    /// Steps one entry forward in session history, driving simulated loading
+    /// callbacks. A no-op when there is nothing ahead of the current entry.
     pub fn go_forward(&mut self) {
         self.core.go_forward();
     }
@@ -116,25 +167,48 @@ impl WebViewEnhanced {
             self.core.reload();
         }
     }
+    /// Aborts an in-flight load and resets progress to 0. A no-op when nothing
+    /// is loading.
     pub fn stop(&mut self) {
         self.core.stop();
     }
+    /// Sets the title, emitting `title_changed` only when the value actually
+    /// differs from the current one.
     pub fn set_title(&mut self, title: String) {
         self.core.set_title(title);
     }
+    /// Runs `script` and returns its value.
+    ///
+    /// Fails with a `"JavaScript is disabled"` error when
+    /// [`WebSettings::javascript_enabled`](super::WebSettings::javascript_enabled)
+    /// is `false`. Scripts run against this view's own context, so state does not
+    /// leak between views.
     pub fn evaluate_javascript(&mut self, script: &str) -> JsResult<JsValue> {
         self.core.evaluate_javascript(script)
     }
+    /// Turns script evaluation on or off by setting
+    /// [`WebSettings::javascript_enabled`](super::WebSettings::javascript_enabled).
     pub fn set_javascript_enabled(&mut self, enabled: bool) {
         self.core.set_javascript_enabled(enabled);
     }
+    /// The decoded document body most recently loaded, or `""` if none.
     pub fn content(&self) -> &str {
         self.core.content()
     }
+    /// The document body most recently loaded.
+    ///
+    /// Identical to [`Self::content`]; the two names exist because one reads
+    /// naturally for a markup payload and the other for a fetched body.
     pub fn html(&self) -> &str {
         self.core.html()
     }
 
+    /// Erases the parts of the local browsing state selected by `data`, as
+    /// described by [`BrowsingData`](super::privacy::BrowsingData).
+    ///
+    /// Clearing history empties the browsing history *and* resets the
+    /// back/forward stack, so [`Self::can_go_back`] and [`Self::can_go_forward`]
+    /// both become `false`.
     pub fn clear_browsing_data(&mut self, data: super::privacy::BrowsingData) {
         self.core.clear_browsing_data(data);
     }

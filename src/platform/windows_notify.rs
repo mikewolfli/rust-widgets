@@ -22,47 +22,90 @@ use crate::platform::WidgetTriggerKind;
 /// existing public path.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum WindowsHandleKind {
+    /// A top-level or child window.
     Window,
+    /// A push button.
     Button,
+    /// A non-interactive text label.
     Label,
+    /// A check box.
     CheckBox,
+    /// A radio button.
     RadioButton,
+    /// A single-line text entry field.
     LineEdit,
+    /// A list box.
     ListBox,
+    /// A container panel.
     Panel,
+    /// The window's menu bar.
     MenuBar,
+    /// A drop-down or popup menu.
     Menu,
+    /// A single entry inside a [`Self::Menu`].
     MenuItem,
+    /// A toolbar strip.
     ToolBar,
+    /// A status bar.
     StatusBar,
+    /// A progress indicator.
     ProgressBar,
+    /// A continuous-value slider.
     Slider,
+    /// A combo box (drop-down list with an optional edit field).
     ComboBox,
+    /// A modal message box.
     MessageBox,
+    /// A file picker dialog. Compare [`Self::DirectoryDialog`] for folder picking.
     FileDialog,
+    /// A colour picker dialog.
     ColorDialog,
+    /// A font picker dialog.
     FontDialog,
+    /// A numeric spin box with up/down buttons.
     SpinBox,
+    /// A view listing items, possibly in columns.
     ListView,
+    /// A scrollable viewport that clips its content.
     ScrollArea,
+    /// A titled box grouping related controls.
     GroupBox,
+    /// A decorative frame, typically used as a separator.
     Frame,
+    /// A notebook-style tab widget. Compare [`Self::TabWidget`]'s siblings;
+    /// note there is no distinct handle kind for an individual tab.
     TabWidget,
+    /// A draggable divider splitting two panes.
     Splitter,
+    /// A button with a persistent on/off state.
     ToggleButton,
+    /// A month-view calendar control.
     Calendar,
+    /// A scrollbar track and thumb.
     ScrollBar,
+    /// A spin box with a floating-point value.
     DoubleSpinBox,
+    /// A combo box listing installed fonts.
     FontComboBox,
+    /// A right-click context menu.
     ContextMenu,
+    /// A frameless popup window.
     PopupWindow,
+    /// A generic dialog window.
     Dialog,
+    /// A dialog prompting for a single text value.
     InputDialog,
+    /// A dialog reporting progress with a possible cancel button.
     ProgressDialog,
+    /// A dialog for choosing a directory. Compare [`Self::FileDialog`].
     DirectoryDialog,
+    /// A date entry control.
     DatePicker,
+    /// A time-of-day entry control.
     TimePicker,
+    /// A combined date and time entry control.
     DateTimePicker,
+    /// A busy/spinner indicator.
     ActivityIndicator,
 }
 

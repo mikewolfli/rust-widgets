@@ -1,6 +1,19 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
+//! `Platform` implementation for Linux (GTK when `gtk-native` is on, otherwise a
+//! state-only host).
+//!
+//! Two facts drive most of what is here:
+//!
+//! * **GTK binds a process to one main thread.** Building a widget from any other
+//!   thread aborts the process, so the surface methods check
+//!   `gtk::is_initialized_main_thread()` and refuse rather than crash. That refusal is
+//!   reported as `false`, which callers must read as "cannot display here".
+//! * **OpenHarmony also reports `target_os = "linux"`.** Every arm that selects this
+//!   backend therefore excludes `target_env = "ohos"`, or an OpenHarmony build would
+//!   pick a GTK host that cannot exist there.
+
 use super::types::{LinuxHandleKind, LinuxPlatform};
 use crate::compat::OnceLock;
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]

@@ -7,5 +7,7 @@
 mod pool;
 pub use pool::*;
 
+/// Arena, pool, and stack allocator implementations with a common
+/// allocator interface.
 pub mod allocators;
 pub use allocators::*;

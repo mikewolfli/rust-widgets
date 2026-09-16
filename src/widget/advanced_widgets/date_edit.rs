@@ -2,6 +2,25 @@
 // SPDX-License-Identifier: MIT
 
 //! Date editor widget.
+//!
+//! [`DateEdit`] stores a calendar date as a [`Date`] value and lets the user
+//! step through it or set it programmatically.
+//!
+//! # Conventions
+//!
+//! * The month is **1-based** (`1` = January, `12` = December) and the day is
+//!   **1-based** (`1` = the first of the month), matching both the text format
+//!   and the widget's setters.
+//! * The widget's range is **inclusive at both ends**: a date equal to
+//!   [`DateEdit::minimum_date`] or [`DateEdit::maximum_date`] is accepted.
+//! * A `Date` stores whatever it is constructed with; validity is checked
+//!   separately. [`Date::is_valid`] is the predicate, and
+//!   [`DateEdit::set_date`] rejects invalid or out-of-range dates silently
+//!   rather than clamping them, leaving the previous value in place.
+//! * The month and day setters on [`Date`] clamp to the field's numeric range
+//!   (`1..=12` and `1..=31`); they do not consult the month length, so they can
+//!   leave the value invalid. Use [`DateEdit::set_date`] to keep it valid.
+//! * Dates are compared and ordered by year, then month, then day.
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -62,6 +81,14 @@ impl UndoCommand for DateEditCommand {
     }
 }
 /// Date value (year, month, day).
+///
+/// This is a plain value type, not a validated one: [`Date::new`] stores the
+/// components as given, including values outside the calendar, and the month
+/// and day setters clamp only to their field's numeric range. Call
+/// [`Date::is_valid`] to check that the combination exists, or use the widget's
+/// [`DateEdit::set_date`], which performs that check for you.
+///
+/// `Ord` follows chronological order: year, then month, then day.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Date {
     year: i32,
@@ -69,30 +96,64 @@ pub struct Date {
     day: u8,   // 1-31
 }
 impl Date {
+    /// Creates a date from raw components without validation.
+    ///
+    /// `month` is 1-based (`1..=12`) and `day` is 1-based (`1..=31`); the year
+    /// may be negative. Out-of-range components are stored as-is and reported
+    /// later by [`Date::is_valid`].
     pub fn new(year: i32, month: u8, day: u8) -> Self {
         Self { year, month, day }
     }
+    /// Returns the current date.
+    ///
+    /// # Caveat
+    ///
+    /// This does **not** consult the system clock: it currently returns the
+    /// fixed date `2024-01-01`. Treat it as "a default date", not "today".
+    /// Callers that need the real date should obtain it from the platform and
+    /// construct a [`Date`] explicitly.
     pub fn today() -> Self {
         Self { year: 2024, month: 1, day: 1 }
     }
+    /// Returns the year component. The year is not range-checked.
     pub fn year(&self) -> i32 {
         self.year
     }
+    /// Returns the 1-based month (`1` = January).
     pub fn month(&self) -> u8 {
         self.month
     }
+    /// Returns the 1-based day of the month (`1` = first).
     pub fn day(&self) -> u8 {
         self.day
     }
+    /// Sets the year, accepting any `i32` including negative values.
+    ///
+    /// No range check is applied; whether the result is a valid date is left to
+    /// [`Date::is_valid`].
     pub fn set_year(&mut self, year: i32) {
         self.year = year;
     }
+    /// Sets the 1-based month, clamped into `1..=12`.
+    ///
+    /// Only the numeric range is enforced, so setting a month to `2` on a
+    /// 31-day date leaves an invalid combination for [`Date::is_valid`] to
+    /// report; the day is not adjusted.
     pub fn set_month(&mut self, month: u8) {
         self.month = month.clamp(1, 12);
     }
+    /// Sets the 1-based day, clamped into `1..=31`.
+    ///
+    /// The month length is not considered, so the result may be invalid for the
+    /// month; see [`Date::is_valid`].
     pub fn set_day(&mut self, day: u8) {
         self.day = day.clamp(1, 31);
     }
+    /// Returns the number of days in this date's month.
+    ///
+    /// February accounts for leap years via [`Date::is_leap_year`], giving 28
+    /// or 29 days. If `month` is outside `1..=12` (possible after [`Date::new`]
+    /// or a direct field assignment) this returns `30`.
     pub fn days_in_month(&self) -> u8 {
         match self.month {
             1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
@@ -107,19 +168,50 @@ impl Date {
             _ => 30,
         }
     }
+    /// Returns `true` for Gregorian leap years.
+    ///
+    /// The rule is the proleptic Gregorian one: divisible by 4, except centuries,
+    /// except millennia. It is applied to negative and zero years too, where the
+    /// "divisible by" test follows Rust's remainder semantics.
     pub fn is_leap_year(&self) -> bool {
         (self.year % 4 == 0 && self.year % 100 != 0) || (self.year % 400 == 0)
     }
+    /// Returns `true` when the stored combination is a real calendar date.
+    ///
+    /// Requires a month in `1..=12` and a day in `1..=`[`Date::days_in_month`].
+    /// The year is never a reason for invalidity.
     pub fn is_valid(&self) -> bool {
         self.month >= 1 && self.month <= 12 && self.day >= 1 && self.day <= self.days_in_month()
     }
 }
+/// Formats the date as `YYYY-MM-DD`.
+///
+/// The year is zero-padded to four digits; the month and day are always two
+/// digits. This is the spelling [`crate::widget::capability::coercion::expect_date`]
+/// parses back, so the round-trip is lossless. The fields are emitted verbatim
+/// even when the date is not a valid calendar date.
 impl std::fmt::Display for Date {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:04}-{:02}-{:02}", self.year, self.month, self.day)
     }
 }
 /// Date editor widget.
+///
+/// Shows a date and allows it to be changed a day at a time (see
+/// [`DateEdit::step_up`] / [`DateEdit::step_down`]), programmatically via
+/// [`DateEdit::set_date`], or through the keyboard (Up/Down step, Ctrl+Z/Ctrl+Y
+/// undo and redo).
+///
+/// The accepted range defaults to `1752-09-14 ..= 9999-12-31` and is inclusive
+/// at both ends; see [`DateEdit::minimum_date`] and
+/// [`DateEdit::maximum_date`].
+///
+/// # Display format
+///
+/// [`DateEdit::display_format`] holds a format pattern string that is exposed
+/// as a property, but the widget's own `draw` and `Display` output always use
+/// the fixed `YYYY-MM-DD` spelling. The pattern is stored and round-tripped, not
+/// yet applied when painting.
 pub struct DateEdit {
     base: BaseWidget,
     date: Date,
@@ -127,12 +219,20 @@ pub struct DateEdit {
     maximum: Date,
     display_format: String,
     calendar_popup: bool,
+    /// Emitted with the new date after every accepted change, including changes
+    /// produced by [`DateEdit::undo`] and [`DateEdit::redo`]. Not emitted when a
+    /// change is rejected or when the date is already the requested value.
     pub date_changed: Signal1<Date>,
     undo_stack: UndoStack,
     history_target: Rc<RefCell<Date>>,
     restoring_history: bool,
 }
 impl DateEdit {
+    /// Creates a date editor occupying `geometry`.
+    ///
+    /// The initial date is [`Date::today`], the accepted range is
+    /// `1752-09-14 ..= 9999-12-31` (inclusive), the display format is
+    /// `"yyyy-MM-dd"`, and the calendar popup is disabled.
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::DatePicker, geometry, "DateEdit"),
@@ -147,21 +247,49 @@ impl DateEdit {
             restoring_history: false,
         }
     }
+    /// Returns the current date.
     pub fn date(&self) -> Date {
         self.date
     }
+    /// Returns the inclusive lower bound accepted by [`DateEdit::set_date`].
+    ///
+    /// Defaults to `1752-09-14`, the first date of the Gregorian calendar in
+    /// this implementation's convention.
     pub fn minimum_date(&self) -> Date {
         self.minimum
     }
+    /// Returns the inclusive upper bound accepted by [`DateEdit::set_date`].
+    ///
+    /// Defaults to `9999-12-31`.
     pub fn maximum_date(&self) -> Date {
         self.maximum
     }
+    /// Returns the stored display-format pattern.
+    ///
+    /// This is a plain string; it is currently stored and round-tripped but not
+    /// interpreted when the widget paints (painting always uses `YYYY-MM-DD`).
     pub fn display_format(&self) -> &str {
         &self.display_format
     }
+    /// Returns whether the calendar popup is enabled.
+    ///
+    /// Defaults to `false`. This is a stored flag; the widget's own `draw` does
+    /// not yet render a popup.
     pub fn calendar_popup(&self) -> bool {
         self.calendar_popup
     }
+    /// Sets the current date, subject to validation and the accepted range.
+    ///
+    /// The assignment happens only when `date` satisfies [`Date::is_valid`],
+    /// falls within `minimum ..= maximum` (both inclusive), and differs from the
+    /// current date; otherwise the call is a no-op and the previous date is
+    /// kept. Out-of-range input is therefore **rejected, not clamped**.
+    ///
+    /// # Side effects
+    ///
+    /// On a successful change, an undo entry is pushed (unless this call comes
+    /// from [`DateEdit::undo`] / [`DateEdit::redo`]), `date_changed` is emitted
+    /// with the new date, and a redraw is requested.
     pub fn set_date(&mut self, date: Date) {
         if date.is_valid() && date >= self.minimum && date <= self.maximum && self.date != date {
             let before = self.date;
@@ -178,29 +306,58 @@ impl DateEdit {
             self.base.request_redraw();
         }
     }
+    /// Sets the inclusive lower bound for accepted dates.
+    ///
+    /// The current date is **not** re-validated against the new bound, so the
+    /// widget can be left holding a date below its own minimum. The bound
+    /// itself is not validated either.
     pub fn set_minimum_date(&mut self, date: Date) {
         self.minimum = date;
         self.base.request_redraw();
     }
+    /// Sets the inclusive upper bound for accepted dates.
+    ///
+    /// Like [`DateEdit::set_minimum_date`], the current date is not re-checked
+    /// against the new bound, so lowering it can leave an out-of-range value in
+    /// place.
     pub fn set_maximum_date(&mut self, date: Date) {
         self.maximum = date;
         self.base.request_redraw();
     }
     /// Sets both minimum and maximum dates in one call.
     /// This is a convenience writer; query bounds via `minimum_date()` and `maximum_date()`.
+    /// Sets both ends of the accepted range in one call.
+    ///
+    /// The bounds are stored as given; `min` is not required to be less than or
+    /// equal to `max`, and the current date is not re-validated, so an inverted
+    /// or narrowed range silently makes every subsequent [`DateEdit::set_date`]
+    /// fail. This is a convenience writer; query the bounds via
+    /// [`DateEdit::minimum_date`] and [`DateEdit::maximum_date`].
     pub fn set_date_range(&mut self, min: Date, max: Date) {
         self.minimum = min;
         self.maximum = max;
         self.base.request_redraw();
     }
+    /// Stores the display-format pattern.
+    ///
+    /// The string is kept verbatim; no validation is performed. See
+    /// [`DateEdit::display_format`] for the current limits on its use.
     pub fn set_display_format(&mut self, fmt: String) {
         self.display_format = fmt;
         self.base.request_redraw();
     }
+    /// Enables or disables the calendar popup flag.
+    ///
+    /// Purely stored state; changing it only triggers a redraw.
     pub fn set_calendar_popup(&mut self, popup: bool) {
         self.calendar_popup = popup;
         self.base.request_redraw();
     }
+    /// Advances the date by one day, rolling over month and year ends.
+    ///
+    /// The resulting date goes through [`DateEdit::set_date`], so stepping
+    /// beyond [`DateEdit::maximum_date`] is rejected and leaves the date
+    /// unchanged rather than wrapping around. A successful step is undoable.
     pub fn step_up(&mut self) {
         let mut d = self.date;
         let next_day = d.day() as i32 + 1;
@@ -218,6 +375,13 @@ impl DateEdit {
         }
         self.set_date(d);
     }
+    /// Moves the date back by one day, rolling over month and year starts.
+    ///
+    /// The month length used when wrapping is derived from the target month, so
+    /// `2024-03-01` steps back to `2024-02-29`. The change is applied through
+    /// [`DateEdit::set_date`], so going below [`DateEdit::minimum_date`] is
+    /// rejected and leaves the date unchanged rather than wrapping around. A
+    /// successful step is undoable.
     pub fn step_down(&mut self) {
         let mut d = self.date;
         if d.day() > 1 {
@@ -233,6 +397,11 @@ impl DateEdit {
         }
         self.set_date(d);
     }
+    /// Reverts the most recent date change.
+    ///
+    /// Returns `true` if a change was undone, `false` when the undo stack is
+    /// empty. Undoing emits `date_changed` with the restored date and requests a
+    /// redraw, but does not push a new undo entry.
     pub fn undo(&mut self) -> bool {
         if self.undo_stack.undo().is_err() {
             return false;
@@ -240,6 +409,11 @@ impl DateEdit {
         self.restore_history_date();
         true
     }
+    /// Re-applies the most recently undone date change.
+    ///
+    /// Returns `true` if a change was redone, `false` when there is nothing to
+    /// redo. Like [`DateEdit::undo`], it emits `date_changed` and requests a
+    /// redraw without recording a new undo entry.
     pub fn redo(&mut self) -> bool {
         if self.undo_stack.redo().is_err() {
             return false;
@@ -247,9 +421,11 @@ impl DateEdit {
         self.restore_history_date();
         true
     }
+    /// Returns `true` when there is at least one date change to undo.
     pub fn can_undo(&self) -> bool {
         self.undo_stack.can_undo()
     }
+    /// Returns `true` when there is at least one undone date change to redo.
     pub fn can_redo(&self) -> bool {
         self.undo_stack.can_redo()
     }

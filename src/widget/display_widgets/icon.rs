@@ -19,43 +19,88 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Common icon names for use with the Icon widget.
+///
+/// Each variant corresponds to a hand-drawn geometric representation rather
+/// than a glyph from an icon font, so the rendered result is a plain-shape
+/// approximation of the symbol. Every variant round-trips through
+/// [`IconName::as_str`] and [`IconName::from_name`].
+///
+/// Note that several variants are drawn as aliases of others (for example
+/// [`IconName::Close`] and [`IconName::Cross`]), so visually distinct names do
+/// not always produce distinct output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IconName {
+    /// A tick, for confirmation or success.
     Check,
+    /// Two crossing strokes, for cancel or "no".
     Cross,
+    /// A left-pointing arrow, for "back".
     ArrowLeft,
+    /// A right-pointing arrow, for "next".
     ArrowRight,
+    /// An upward arrow.
     ArrowUp,
+    /// A downward arrow.
     ArrowDown,
+    /// A five-pointed star, for favourites or ratings.
     Star,
+    /// A heart, for likes or favourites.
     Heart,
+    /// A gear, for configuration.
     Settings,
+    /// A house, for the home view.
     Home,
+    /// A magnifying glass, for search.
     Search,
+    /// Three stacked bars, for a navigation menu.
     Menu,
+    /// The X-shaped dismiss mark.
     Close,
+    /// A plus sign, for adding.
     Plus,
+    /// A minus sign, for removing.
     Minus,
+    /// The letter "i" in a circle, for informational messages.
     Info,
+    /// A triangle with an exclamation mark, for warnings.
     Warning,
+    /// A circle with an exclamation mark, for errors.
     Error,
+    /// A head-and-shoulders silhouette, for an account.
     User,
+    /// An envelope, for messages.
     Mail,
+    /// A bell, for notifications.
     Bell,
+    /// A pencil, for editing.
     Edit,
+    /// A waste bin, for deletion.
     Trash,
+    /// A node-and-branches glyph, for sharing.
     Share,
+    /// A circular arrow, for reloading.
     Refresh,
+    /// Three horizontal dots, for an overflow menu.
     More,
+    /// A funnel, for filtering.
     Filter,
+    /// A closed padlock.
     Lock,
+    /// An open padlock.
     Unlock,
+    /// A downward arrow into a tray, for downloading.
     Download,
+    /// An upward arrow out of a tray, for uploading.
     Upload,
 }
 
 impl IconName {
     /// Returns the string representation of this icon name.
+    ///
+    /// The tokens are lower-case and underscore-separated (`"arrow_left"`),
+    /// and are the exact spellings accepted by [`IconName::from_name`] and by
+    /// the `icon` property. They are also the names used by
+    /// [`Icon::set_icon`].
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Check => "check",
@@ -93,6 +138,11 @@ impl IconName {
     }
 
     /// Parses an icon name from its string representation.
+    ///
+    /// The match is exact and case-sensitive: only the tokens produced by
+    /// [`IconName::as_str`] are accepted, so `"ArrowLeft"` and `"arrow left"`
+    /// both return `None`. Use [`Icon::set_icon`] when an unrecognised name
+    /// should fall back to a placeholder rather than being rejected.
     pub fn from_name(s: &str) -> Option<Self> {
         match s {
             "check" => Some(Self::Check),
@@ -136,6 +186,21 @@ impl IconName {
 /// The icon is drawn using basic shapes (lines, circles, filled rects) through
 /// the render context. The widget supports all common icon names defined in
 /// `IconName` and renders a recognizable geometric representation for each.
+///
+/// # Sizing and layout
+///
+/// [`Icon::size`] gives the side of a square bounding box, which is centred in
+/// the widget's geometry and clipped to it: if the requested size is larger than
+/// the geometry, the icon is drawn at the geometry's smaller dimension and the
+/// extra is not scaled down proportionally. A zero-width or zero-height geometry
+/// draws nothing.
+///
+/// # Disabled appearance
+///
+/// When the widget is disabled, the icon is rendered with a desaturated version
+/// of [`Icon::color`] (the mean of its R, G, and B channels) at half the
+/// original alpha. The stored colour is restored after drawing, so reading
+/// [`Icon::color`] still returns what was set.
 pub struct Icon {
     base: BaseWidget,
     icon_name: String,
@@ -158,33 +223,56 @@ impl Icon {
 
     /// Sets the icon by name. Accepts any string; unrecognized names
     /// render as a simple question mark shape.
+    ///
+    /// The name is stored verbatim and matched case-sensitively at draw time
+    /// against [`IconName::as_str`] tokens, so an unknown or differently-cased
+    /// name does not fail: it draws the placeholder shape instead. Setting a
+    /// name requests a redraw.
     pub fn set_icon(&mut self, name: &str) {
         self.icon_name = name.to_string();
         self.base.request_redraw();
     }
 
     /// Returns the current icon name string.
+    ///
+    /// This is whatever was last passed to [`Icon::set_icon`] (or the default
+    /// `"check"`), not a canonicalised token: an unrecognised name is returned
+    /// as-is even though it draws as the placeholder.
     pub fn icon(&self) -> &str {
         &self.icon_name
     }
 
     /// Sets the icon using an `IconName` enum variant.
+    ///
+    /// Equivalent to [`Icon::set_icon`] with the variant's canonical string, so
+    /// the name always resolves to a real icon.
     pub fn set_icon_enum(&mut self, icon: IconName) {
         self.set_icon(icon.as_str());
     }
 
     /// Sets the icon size in logical pixels.
+    ///
+    /// The size is the length of the icon's square bounding box, not its
+    /// stroke or glyph height. Values are clamped to a minimum of `4.0` to keep
+    /// the icon legible. Requests a redraw.
     pub fn set_size(&mut self, size: f32) {
         self.size = size.max(4.0);
         self.base.request_redraw();
     }
 
     /// Returns the icon size in logical pixels.
+    ///
+    /// This is the requested square bounding-box length, which may exceed the
+    /// widget's own extent; see `icon_rect` for how it is fitted into the
+    /// geometry.
     pub fn size(&self) -> f32 {
         self.size
     }
 
     /// Sets the icon color.
+    ///
+    /// The color is used for every shape in the icon; there is no separate
+    /// stroke and fill colour. Requests a redraw.
     pub fn set_color(&mut self, color: Color) {
         self.color = color;
         self.base.request_redraw();

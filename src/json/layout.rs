@@ -19,17 +19,50 @@ use crate::layout::{BoxLayout, FormLayout, GridLayout, Layout, SplitterLayout, S
 #[derive(Debug, Clone, PartialEq)]
 pub enum DeclarativeLayoutKind {
     /// Horizontal box layout.
-    HBox { spacing: u32, margin: u32 },
+    HBox {
+        /// Gap in logical pixels between adjacent children.
+        spacing: u32,
+        /// Outer inset in logical pixels on all four sides.
+        margin: u32,
+    },
     /// Vertical box layout.
-    VBox { spacing: u32, margin: u32 },
+    VBox {
+        /// Gap in logical pixels between adjacent children.
+        spacing: u32,
+        /// Outer inset in logical pixels on all four sides.
+        margin: u32,
+    },
     /// Grid layout.
-    Grid { columns: u32, spacing: u32, margin: u32 },
-    /// Stack layout (card stack).
-    Stack { spacing: u32 },
-    /// Splitter layout.
-    Splitter { orientation: Orientation, margin: u32 },
+    Grid {
+        /// Number of columns; rows are created as needed.
+        columns: u32,
+        /// Gap in logical pixels between cells.
+        spacing: u32,
+        /// Outer inset in logical pixels on all four sides.
+        margin: u32,
+    },
+    /// Stack layout (card stack): children overlap, one visible at a time.
+    Stack {
+        /// Spacing in logical pixels. The stored value is currently ignored: a
+        /// stack is constructed with [`StackLayout::new`], which does not
+        /// accept a spacing parameter.
+        spacing: u32,
+    },
+    /// Splitter layout: children are separated by user-draggable handles.
+    Splitter {
+        /// Axis along which the panes are laid out.
+        orientation: Orientation,
+        /// Margin in logical pixels. The stored value is currently ignored:
+        /// the splitter handle width is hard-coded to `0` at construction.
+        margin: u32,
+    },
     /// Form layout (label-field pairs).
-    Form { spacing: u32, margin: u32 },
+    Form {
+        /// Gap in logical pixels between rows.
+        spacing: u32,
+        /// Outer inset in logical pixels on all four sides.
+        margin: u32,
+    },
 }
 
 // ── Thread-local layout storage ──────────────────────────────
@@ -39,6 +72,11 @@ thread_local! {
 }
 
 /// Store a layout manager for a parent widget.
+///
+/// The layout is keyed by `parent_id` in a thread-local map, replacing any
+/// layout previously stored for that id. Because the map is thread-local, a
+/// layout stored on one thread is invisible to another — declarative layouts
+/// are therefore single-threaded by construction.
 pub fn store_layout(parent_id: u64, layout: Box<dyn Layout>) {
     LAYOUT_MAP.with(|map| {
         map.borrow_mut().insert(parent_id, layout);
@@ -46,6 +84,11 @@ pub fn store_layout(parent_id: u64, layout: Box<dyn Layout>) {
 }
 
 /// Register a widget as a layout child with its stretch factor.
+///
+/// Looks the layout up by `parent_id`, ignoring `_layout` (the caller's view of
+/// the same object). Silent no-op when no layout is stored for `parent_id`. The
+/// stretch factor is stored verbatim; `0` is not a valid stretch in most layout
+/// implementations and may make the child invisible.
 pub fn add_widget_to_layout(_layout: &dyn Layout, child_id: u64, stretch: u32, parent_id: u64) {
     LAYOUT_MAP.with(|map| {
         let mut map = map.borrow_mut();
@@ -59,6 +102,13 @@ pub fn add_widget_to_layout(_layout: &dyn Layout, child_id: u64, stretch: u32, p
 ///
 /// Box layouts support stretchable spacers. The spacer is resolved
 /// from the stored layout for `_parent_id`.
+///
+/// Because the generic [`Layout`] trait has no spacer method, the spacer is
+/// smuggled through as a child whose id is [`u64::MAX`](u64::MAX) — the widest
+/// possible id, which no real widget can hold. A layout implementation that
+/// does not know this sentinel will treat it as a normal child; in particular
+/// the box and grid layouts used by the declarative engine will allocate it
+/// space. Silent no-op when no layout is stored for the parent.
 pub fn add_spacer_to_layout(_stretch: u32, _parent_id: u64) {
     LAYOUT_MAP.with(|map| {
         let mut map = map.borrow_mut();
@@ -76,6 +126,17 @@ pub fn add_spacer_to_layout(_stretch: u32, _parent_id: u64) {
 }
 
 /// Apply a stored declarative layout to its child widget geometries.
+///
+/// `rect` is the parent's own rectangle; the layout distributes it among the
+/// children and each resulting rectangle is written back through
+/// [`crate::set_widget_geometry`]. Spacer children ([`u64::MAX`](u64::MAX)) are
+/// filtered out and never written to a widget.
+///
+/// The stored layout is looked up only for this call. Silent no-op when
+/// `parent_id` has no stored layout, so applying an unknown parent is not an
+/// error. The map borrow is released before geometers are written, so a
+/// geometry callback that re-enters the layout engine will not panic on a
+/// double borrow.
 pub fn apply_layout(parent_id: u64, rect: Rect) {
     let geometries = LAYOUT_MAP.with(|map| {
         let map = map.borrow();
@@ -118,6 +179,8 @@ pub fn parse_layout_kind(value: &Value) -> Result<DeclarativeLayoutKind, String>
         .and_then(|v| v.as_str())
         .ok_or_else(|| "layout must have a 'type' field (string)".to_string())?;
 
+    // Both numeric fields are forgiving: a missing value, a non-numeric value,
+    // or a negative value all fall back to 0.
     let spacing = obj.get("spacing").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
     let margin = obj.get("margin").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
 
@@ -142,6 +205,12 @@ pub fn parse_layout_kind(value: &Value) -> Result<DeclarativeLayoutKind, String>
 }
 
 /// Build a concrete `Layout` trait object from a `DeclarativeLayoutKind`.
+///
+/// Not every field of the kind survives the conversion: [`StackLayout`] and
+/// [`SplitterLayout`] have no spacing/margin constructor arguments here, so
+/// those fields are dropped (see the variant documentation), and a
+/// [`DeclarativeLayoutKind::Grid`] is always built with a single row — the row
+/// count grows as children are added.
 pub fn create_layout_from_kind(kind: &DeclarativeLayoutKind) -> Box<dyn Layout> {
     match *kind {
         DeclarativeLayoutKind::HBox { spacing, margin } => {
@@ -164,8 +233,14 @@ pub fn create_layout_from_kind(kind: &DeclarativeLayoutKind) -> Box<dyn Layout> 
 }
 
 /// Attributes for a child widget within a layout.
+///
+/// Every field is optional in the JSON sense; see
+/// [`ChildLayoutAttrs::from_value`] for the defaults applied when a key is
+/// absent.
 pub struct ChildLayoutAttrs {
     /// Stretch factor (0 = default).
+    ///
+    /// The JSON parser defaults this to `1`, not `0`, when the key is absent.
     pub stretch: u32,
     /// For grid layouts: column position.
     pub col: Option<u32>,
@@ -179,6 +254,11 @@ pub struct ChildLayoutAttrs {
 
 impl ChildLayoutAttrs {
     /// Parse layout child attributes from a JSON object.
+    ///
+    /// A non-object value, or an object without `stretch`, yields a stretch of
+    /// `1`. `col`, `row`, `col_span`, and `row_span` stay `None` unless present
+    /// as non-negative integers, so a caller must distinguish "unset" from
+    /// "explicitly 0".
     pub fn from_value(value: &serde_json::Value) -> Self {
         let obj = value.as_object();
         Self {

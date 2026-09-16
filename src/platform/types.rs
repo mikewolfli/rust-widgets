@@ -76,6 +76,12 @@ pub trait NativeWebEngine: Send {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(all(feature = "serde", widgets_unstripped), derive(Serialize, Deserialize))]
+/// Normalized classification of a widget trigger.
+///
+/// The platform reports the same semantic answer on every host, so consuming
+/// code does not branch on OS. The explicit discriminants are part of the
+/// published representation: `Unknown` is `0`, so an unset or zero-initialised
+/// value degrades to "unknown" rather than to a real trigger kind.
 pub enum WidgetTriggerKind {
     /// No concrete trigger semantic is known.
     Unknown = 0,
@@ -212,9 +218,16 @@ pub struct EmbeddedCapabilityContract {
     pub typed_widget_trigger: bool,
 }
 /// Runtime capability negotiation result split by profile contract.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// A backend answers with exactly one of these, matching the family it was
+/// built for: see [`Platform::native_capability_contract`] and
+/// [`Platform::embedded_capability_contract`]. The variant tells the caller
+/// which half of the capability model applies, so it must not have to guess
+/// from the widget set.
 pub enum CapabilityContract {
+    /// Desktop/hosted backend, described by the full capability set.
     Native(NativeCapabilityContract),
+    /// Constrained backend, described by the reduced embedded set.
     Embedded(EmbeddedCapabilityContract),
 }
 /// The capabilities a backend with the given `family` reports when it does **not**
@@ -318,8 +331,24 @@ pub trait Platform: Send + Sync {
     fn dpi_scale_factor(&self) -> f32 {
         1.0
     }
+    /// Initialises the backend, acquiring whatever host resources it needs.
+    ///
+    /// Called once before any widget is created. A backend that fails here has
+    /// no way to report it through this signature, so implementations should
+    /// make failures observable (log, or expose a queryable status) rather than
+    /// silently degrading.
     fn init(&self);
+    /// Runs the backend's event loop until [`Platform::quit`] or the host closes
+    /// the last window.
+    ///
+    /// This blocks; it is the top of the stack for a host that lets the platform
+    /// own the main loop. Backends whose loop is externally driven may treat it
+    /// as returning immediately.
     fn run(&self);
+    /// Requests that the event loop started by [`Platform::run`] terminate.
+    ///
+    /// A request, not a synchronous stop: the loop exits at its next
+    /// opportunity, so state may still be delivered after this returns.
     fn quit(&self);
 
     /// Destroy a widget and release the resources associated with it.
@@ -411,6 +440,50 @@ pub trait Platform: Send + Sync {
     /// would not be able to display.
     fn supports_surfaces(&self) -> bool {
         false
+    }
+
+    /// Routes a pointer event that arrived at the surface `root` to the widget
+    /// actually under `point`.
+    ///
+    /// # Why the backend owns this
+    ///
+    /// A mounted surface corresponds to one widget, but the user may click any
+    /// widget nested inside it. Only the backend knows where its surface sits in the
+    /// window, so only the backend can turn a surface-local position into the
+    /// coordinate space the widget tree uses (which, in this library, is absolute —
+    /// see [`crate::widget::runtime::widget_at`]).
+    ///
+    /// The default implementation resolves the point against the widget tree rooted
+    /// at `root` and delivers there, which is correct for any backend whose surface
+    /// hosts a tree of widgets. A backend that already routes input itself (because
+    /// its toolkit delivers per-child events) overrides this.
+    ///
+    /// # Naming
+    ///
+    /// The method describes the *intent* ("route this pointer event"), not the
+    /// mechanism, so callers stay free of per-OS knowledge (BLUE15 rules #35/#52).
+    ///
+    /// Returns whether a widget accepted the event.
+    ///
+    /// Under the alloc-frugal `mini` profile there is no widget registry (see
+    /// `src/widget/mod.rs`), so no widget can be routed to and the honest answer is
+    /// `false` — the same "this host cannot do it" reply every other optional method
+    /// in this trait gives, rather than a silent no-op that looks like success.
+    fn route_pointer_event(
+        &self,
+        root: ObjectId,
+        event: &crate::event::Event,
+        point: crate::core::Point,
+    ) -> bool {
+        #[cfg(alloc_frugal)]
+        {
+            let _ = (root, event, point);
+            false
+        }
+        #[cfg(not(alloc_frugal))]
+        {
+            crate::widget::runtime::dispatch_pointer_event(root, event, point)
+        }
     }
 
     /// Renders a shortcut in the notation this operating system uses in menus.
@@ -553,10 +626,25 @@ pub trait Platform: Send + Sync {
     /// shortcut uses a key the backend cannot express. Backends override this
     /// only when registering a menu item needs a representation other than the
     /// displayed text (for example a Win32 `ACCEL` table entry).
+    /// Converts a shortcut into the backend's own native representation, when
+    /// one is needed for registration.
+    ///
+    /// Returns `None` when the backend has no representation for shortcuts —
+    /// which is the norm and the default, since most hosts register a shortcut
+    /// by displayed text alone. `None` therefore means "register it by its text",
+    /// not "this shortcut is unsupported"; the latter must be reported by the
+    /// registration call itself.
     fn parse_shortcut(&self, _shortcut: &crate::shortcut::Shortcut) -> Option<String> {
         None
     }
 
+    /// Creates a top-level window and returns its id, placing it at `(x, y)` in
+    /// logical pixels with the given size.
+    ///
+    /// The returned id addresses the window in the same space as widget ids, so
+    /// later calls ([`Platform::destroy_widget`], geometry updates) accept it.
+    /// A backend unable to create a window has no failure channel through this
+    /// signature; it should log rather than return a fabricated id.
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> ObjectId;
 
     // ── Control construction ────────────────────────────────────────────────

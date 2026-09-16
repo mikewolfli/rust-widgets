@@ -421,7 +421,14 @@ wayland-cursor = { version = "0.31", optional = true }
 zbus = { version = "5", optional = true }
 webkit2gtk = { version = "2.0", optional = true }
 
-[target.'cfg(target_os = "harmony")'.dependencies]
+# NOTE: there is deliberately no `[target.'cfg(target_os = "harmony")'.dependencies]`
+# section. OpenHarmony targets are spelled `*-unknown-linux-ohos` and rustc reports
+# `target_os = "linux"` / `target_env = "ohos"` for them, so such a section could
+# never match — it was an empty, permanently-dead block. The OpenHarmony backend
+# needs no extra crates: the NDK libraries it links against (e.g.
+# `libtime_service_ndk.so`, pulled in by `time`) are resolved by the toolchain's
+# sysroot, which `cargo ohos` points at. See `tools/check_harmony_cross.sh` and
+# `src/platform/harmony/status.md` for the working recipe.
 
 # `wasm32-unknown-unknown` has no OS entropy source, so `getrandom` refuses to
 # build unless its `js` feature is on. The dependency reaches us transitively

@@ -7,6 +7,13 @@ use crate::widget::chart_widgets::types::*;
 // svg used for chart rendering
 use crate::core::{Color, Point, Rect};
 
+/// A line chart: one polyline per series, drawn over shared cartesian axes.
+///
+/// Chart data lives in `ChartSeries` values added through the [`Chart`] trait;
+/// the fields here are presentation settings only. Tick counts are a *minimum*
+/// in effect — the drawing helpers raise anything below 2 so at least one
+/// interior gridline exists.
+///
 pub struct LineChart {
     title: String,
     x_axis_label: String,
@@ -17,6 +24,12 @@ pub struct LineChart {
     show_grid: bool,
 }
 /// Common cartesian layout for line/bar style charts.
+///
+/// Computes where the plot area and legend column sit inside a widget's
+/// rectangle, accounting for axis labels and legend presence. All values are in
+/// device pixels (f32), in the same coordinate space as the `Rect` passed to
+/// [`compute_cartesian_layout`].
+///
 pub struct CartesianLayout {
     plot_x: f32,
     plot_y: f32,
@@ -57,6 +70,16 @@ impl CartesianLayout {
         self.legend_y
     }
 }
+/// Computes the plot and legend placement for a chart occupying `rect`.
+///
+/// The margins are fixed constants chosen to fit axis labels and a legend
+/// column; the booleans only select between the larger and smaller margin, they
+/// do not measure the label text. `legend_items > 0` reserves a 170 px legend
+/// column on the right, which is a large share of a narrow chart.
+///
+/// The plot dimensions are floored at `1.0` so a chart too small for its own
+/// margins still yields a usable (if squashed) rectangle rather than a negative
+/// or zero one.
 pub fn compute_cartesian_layout(
     rect: Rect,
     has_x_label: bool,
@@ -80,6 +103,11 @@ pub fn compute_cartesian_layout(
         legend_y: plot_y + 8.0,
     }
 }
+/// Draws the x and y axis lines for a cartesian chart.
+///
+/// The axes are drawn along the left and bottom edges of the plot area, always
+/// 1.0 px wide in a fixed grey. Tick marks, gridlines, and labels are drawn by
+/// [`draw_y_ticks`] / [`draw_x_ticks`], not here.
 pub fn draw_cartesian_axes(context: &mut dyn ChartContext, layout: &CartesianLayout) {
     let axis_color = Color { r: 90, g: 90, b: 90, a: 255 };
     context.draw_line(
@@ -95,6 +123,15 @@ pub fn draw_cartesian_axes(context: &mut dyn ChartContext, layout: &CartesianLay
         axis_color,
     );
 }
+/// Draws value ticks and labels along the y axis.
+///
+/// `min_y` and `max_y` bound the *data* range, not the screen: `min_y` is placed
+/// at the bottom of the plot and `max_y` at the top, with `tick_count + 1` ticks
+/// (boundaries included). Labels are formatted to one decimal place, so a range
+/// narrower than ~0.05 units will print repeated identical labels.
+///
+/// `tick_count` is clamped up to 2. When `draw_grid` is set, full-width
+/// gridlines are drawn at each tick in addition to the tick marks.
 pub fn draw_y_ticks(
     context: &mut dyn ChartContext,
     layout: &CartesianLayout,
@@ -133,6 +170,12 @@ pub fn draw_y_ticks(
         );
     }
 }
+/// Draws value ticks and labels along the x axis.
+///
+/// The x counterpart to [`draw_y_ticks`]: `min_x` at the left edge, `max_x` at
+/// the right, `tick_count + 1` ticks, labels fixed to one decimal place, and an
+/// upward tick mark at each position. `tick_count` is clamped up to 2; when
+/// `draw_grid` is set, full-height gridlines are added.
 pub fn draw_x_ticks(
     context: &mut dyn ChartContext,
     layout: &CartesianLayout,
@@ -171,6 +214,14 @@ pub fn draw_x_ticks(
         );
     }
 }
+/// Draws the series legend to the right of the plot area.
+///
+/// Rows are spaced 18 px apart and the number of rows is derived from the plot
+/// height, so a short chart silently shows fewer entries. When entries are
+/// dropped, a single `"+N more"` summary line is drawn in the last row instead
+/// of overrunning the widget. Labels are colour-swatched with a short line and
+/// truncated via [`truncate_legend_label`]. Returns immediately for an empty
+/// series list.
 pub fn draw_legend(
     context: &mut dyn ChartContext,
     layout: &CartesianLayout,
@@ -209,6 +260,13 @@ pub fn draw_legend(
         );
     }
 }
+/// Truncates a legend label to at most `max_chars` **characters** (not bytes),
+/// appending `"..."` when it has to cut.
+///
+/// The ellipsis is part of the budget, so a label is short enough to fit
+/// `max_chars`. When `max_chars` is 3 or fewer the result is exactly `"..."`,
+/// since there is no room to keep any of the label; the reserved space is still
+/// filled, so a zero-width column is not produced.
 pub fn truncate_legend_label(label: &str, max_chars: usize) -> String {
     let char_count = label.chars().count();
     if char_count <= max_chars {

@@ -76,6 +76,21 @@ jobs:
           chmod +x tools/check_single_creation_mechanism.sh
           ./tools/check_single_creation_mechanism.sh
 
+      # The cookbook is the user-facing API reference and nothing compiles it, so
+      # a renamed or deleted item leaves it confidently wrong (principle #18).
+      # This gate checks that every API name the cookbook declares exists in src/
+      # and that all three books still build with no warnings.
+      - name: Install mdbook
+        uses: taiki-e/install-action@v2
+        with:
+          tool: mdbook
+
+      - name: Run cookbook gate
+        shell: bash
+        run: |
+          chmod +x tools/check_cookbook.sh
+          ./tools/check_cookbook.sh
+
   feature-completeness-matrix:
     name: Feature completeness matrix
     runs-on: ubuntu-latest
@@ -299,12 +314,22 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Install Rust stable with OpenHarmony target
+      - name: Install Rust stable with OpenHarmony targets
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-unknown-linux-ohos
+          # All OpenHarmony triples rustup ships a prebuilt std for. The fourth
+          # (`loongarch64-unknown-linux-ohos`) is Tier 3 — no official builds —
+          # and the SDK ships no libc for it either, so it is not installed here;
+          # the gate asserts that state instead of assuming it.
+          targets: aarch64-unknown-linux-ohos,armv7-unknown-linux-ohos,x86_64-unknown-linux-ohos
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+      # `cargo ohos` computes the correct cross environment (sysroot, per-target
+      # clang, cc-rs/bindgen/pkg-config flags, `-D__MUSL__`). Driving it instead of
+      # hand-setting only the linker is what makes C dependencies compile against
+      # the OpenHarmony sysroot rather than the host's headers.
+      - name: Install cargo-ohos
+        run: cargo install cargo-ohos --locked
       # The OpenHarmony native toolchain (clang + sysroot) ships inside the OHOS
       # SDK, which is not on crates.io. Without it the cross build fails at link
       # time with "file in wrong format" / "Relocations in generic ELF (EM: 183)":
@@ -339,9 +364,10 @@ jobs:
       - name: Configure OpenHarmony linker
         shell: bash
         run: |
+          # `cargo ohos` reads OHOS_SDK_NATIVE and points it at the SDK's `native`
+          # directory. The gate derives it from OHOS_SDK too, so either works.
+          echo "OHOS_SDK_NATIVE=$OHOS_SDK/native" >> "$GITHUB_ENV"
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_OHOS_LINKER=$OHOS_SDK/native/llvm/bin/aarch64-unknown-linux-ohos-clang" >> "$GITHUB_ENV"
-          echo "CC_aarch64_unknown_linux_ohos=$OHOS_SDK/native/llvm/bin/aarch64-unknown-linux-ohos-clang" >> "$GITHUB_ENV"
-          echo "AR_aarch64_unknown_linux_ohos=$OHOS_SDK/native/llvm/bin/llvm-ar" >> "$GITHUB_ENV"
       # The checks themselves live in the gate script so CI and a workstation run
       # byte-identical commands. It also re-asserts the target-identification
       # premise they rest on (`target_os="linux"`, `target_env="ohos"`): the

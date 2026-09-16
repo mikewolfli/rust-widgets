@@ -2,11 +2,16 @@
 // SPDX-License-Identifier: MIT
 
 //! Performance monitoring and optimization utilities, including dirty region tracking, update batching, and profiling.
+/// Coalesces repaint requests so a burst of invalidations costs one frame.
 pub mod batcher;
+/// Tracks the union of regions that need repainting.
 pub mod dirty;
+/// Frame timing and frame-rate statistics.
 pub mod frame_timer;
 mod profiler;
+/// Rect-region primitives used by the dirty-region tracker.
 pub mod region;
+/// Turns widget-level repaint requests into renderer-level dirty regions.
 pub mod render_dirty;
 pub use batcher::*;
 pub use dirty::*;

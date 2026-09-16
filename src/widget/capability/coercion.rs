@@ -5,6 +5,37 @@
 //!
 //! These functions convert [`CapabilityValue`] variants into concrete Rust types,
 //! performing string parsing and numeric coercion as needed.
+//!
+//! # Coercion rules
+//!
+//! A property write is accepted or rejected by these functions, so the rules
+//! below are the contract callers can rely on:
+//!
+//! * **Booleans and strings never coerce.** [`expect_bool`] accepts only
+//!   [`CapabilityValue::Bool`]; [`expect_string`] accepts only
+//!   [`CapabilityValue::String`]. No `"true"`/`"1"` parsing happens.
+//! * **Numeric widening is allowed, narrowing is not.** [`expect_f32`] and
+//!   [`expect_f64`] accept floats and both signed and unsigned integers;
+//!   [`expect_i64`] accepts signed integers and unsigned integers in range;
+//!   [`expect_usize`] and [`expect_u32`] accept unsigned integers and
+//!   non-negative signed integers. A value that does not fit the target type
+//!   (for example `-1` for `usize`, or `2^64 - 1` for `i64`) is rejected rather
+//!   than being wrapped or saturated, as is a float targeted at an integer type.
+//! * **Enumerations parse from strings only.** The `expect_*` functions for
+//!   control enums require a string, which is normalised by [`normalize_key`]
+//!   first: underscores, hyphens, and spaces are removed and the result is
+//!   lower-cased. Several historical spellings are accepted per variant; the
+//!   accepted synonym for each is listed on the function.
+//! * **Dates and times parse from strings only**, using the same normalisation
+//!   rules as the corresponding `Display` implementations so values round-trip.
+//!
+//! Every rejection is reported as [`CapabilityAccessError::TypeMismatch`]; the
+//! helpers never panic on malformed input and never silently substitute a
+//! default value.
+//!
+//! Each function with a `*_to_str` counterpart is half of a codec pair: the
+//! parser is the inverse of the formatter, and the pair is kept in this module
+//! so that a control can read back whatever a caller can write.
 
 #[cfg(full_widgets)]
 use chrono::{NaiveDate, Weekday};
@@ -34,10 +65,16 @@ use crate::widget::Widget;
 // Low-level downcast helpers
 // ---------------------------------------------------------------------------
 
+/// Downcasts a widget reference to its concrete type, or returns `None` when
+/// the widget is not a `T`.
+///
+/// The cast goes through `dyn Any`, so it requires `T: 'static` and compares
+/// types exactly; a trait object of a supertype will not match its subtypes.
 pub fn widget_as<T: Widget + 'static>(widget: &dyn Widget) -> Option<&T> {
     (widget as &dyn std::any::Any).downcast_ref::<T>()
 }
 
+/// Mutable counterpart of [`widget_as`], for writing to a widget's properties.
 pub fn widget_as_mut<T: Widget + 'static>(widget: &mut dyn Widget) -> Option<&mut T> {
     (widget as &mut dyn std::any::Any).downcast_mut::<T>()
 }
@@ -46,6 +83,10 @@ pub fn widget_as_mut<T: Widget + 'static>(widget: &mut dyn Widget) -> Option<&mu
 // Primitive value extractors
 // ---------------------------------------------------------------------------
 
+/// Extracts the boolean payload, without coercion.
+///
+/// Returns [`CapabilityAccessError::TypeMismatch`] for any other variant,
+/// including strings such as `"true"`.
 pub fn expect_bool(value: CapabilityValue) -> Result<bool, CapabilityAccessError> {
     match value {
         CapabilityValue::Bool(v) => Ok(v),
@@ -53,6 +94,10 @@ pub fn expect_bool(value: CapabilityValue) -> Result<bool, CapabilityAccessError
     }
 }
 
+/// Extracts the string payload, without coercion.
+///
+/// Returns [`CapabilityAccessError::TypeMismatch`] for any other variant; in
+/// particular numbers are not stringified.
 pub fn expect_string(value: CapabilityValue) -> Result<String, CapabilityAccessError> {
     match value {
         CapabilityValue::String(v) => Ok(v),
@@ -60,6 +105,11 @@ pub fn expect_string(value: CapabilityValue) -> Result<String, CapabilityAccessE
     }
 }
 
+/// Extracts a non-negative index.
+///
+/// Accepts [`CapabilityValue::UInt`] and non-negative [`CapabilityValue::Int`].
+/// Negative integers and values too large for `usize` yield
+/// [`CapabilityAccessError::TypeMismatch`].
 pub fn expect_usize(value: CapabilityValue) -> Result<usize, CapabilityAccessError> {
     match value {
         CapabilityValue::UInt(v) => {
@@ -72,6 +122,11 @@ pub fn expect_usize(value: CapabilityValue) -> Result<usize, CapabilityAccessErr
     }
 }
 
+/// Extracts a single-precision float.
+///
+/// Accepts [`CapabilityValue::Float`], [`CapabilityValue::UInt`], and
+/// [`CapabilityValue::Int`]. Integer payloads are converted with `as`, so
+/// magnitudes beyond 24 bits lose precision silently; nothing else is accepted.
 pub fn expect_f32(value: CapabilityValue) -> Result<f32, CapabilityAccessError> {
     match value {
         CapabilityValue::Float(v) => Ok(v as f32),
@@ -81,6 +136,10 @@ pub fn expect_f32(value: CapabilityValue) -> Result<f32, CapabilityAccessError> 
     }
 }
 
+/// Extracts a double-precision float.
+///
+/// Accepts float, unsigned, and signed integer payloads, widening integers to
+/// `f64`. Integers above `2^53` lose precision without an error.
 pub fn expect_f64(value: CapabilityValue) -> Result<f64, CapabilityAccessError> {
     match value {
         CapabilityValue::Float(v) => Ok(v),
@@ -90,6 +149,11 @@ pub fn expect_f64(value: CapabilityValue) -> Result<f64, CapabilityAccessError> 
     }
 }
 
+/// Extracts a signed 64-bit integer.
+///
+/// Accepts signed integers, and unsigned integers that fit in `i64`. Unsigned
+/// values above `i64::MAX` are rejected. Floats are not converted, even when
+/// they hold a whole number.
 pub fn expect_i64(value: CapabilityValue) -> Result<i64, CapabilityAccessError> {
     match value {
         CapabilityValue::Int(v) => Ok(v),
@@ -100,6 +164,11 @@ pub fn expect_i64(value: CapabilityValue) -> Result<i64, CapabilityAccessError> 
     }
 }
 
+/// Extracts an unsigned 32-bit integer.
+///
+/// Applies the [`expect_usize`] rules first, then rejects values that do not
+/// fit in `u32` with [`CapabilityAccessError::TypeMismatch`] rather than
+/// truncating them.
 pub fn expect_u32(value: CapabilityValue) -> Result<u32, CapabilityAccessError> {
     let raw = expect_usize(value)?;
     u32::try_from(raw).map_err(|_| CapabilityAccessError::TypeMismatch)
@@ -110,12 +179,25 @@ pub fn expect_u32(value: CapabilityValue) -> Result<u32, CapabilityAccessError> 
 // ---------------------------------------------------------------------------
 
 #[cfg(full_widgets)]
+/// Parses a `chrono` date from the ISO-8601 `"YYYY-MM-DD"` spelling.
+///
+/// Requires a string payload. Unlike [`expect_date`], the calendar validity is
+/// checked by `chrono`, which rejects impossible dates such as `2026-02-30`.
 pub fn expect_naive_date(value: CapabilityValue) -> Result<NaiveDate, CapabilityAccessError> {
     let text = expect_string(value)?;
     NaiveDate::parse_from_str(&text, "%Y-%m-%d").map_err(|_| CapabilityAccessError::TypeMismatch)
 }
 
 #[cfg(full_widgets)]
+/// Parses a [`Date`] from the `"YYYY-MM-DD"` spelling used by
+/// [`Date`]'s `Display` implementation.
+///
+/// Requires a string payload. Year, month, and day are accepted as
+/// decimal integers separated by `-`, so the month and day are 1-based as
+/// usual. Extra components are rejected, as are non-numeric ones. The parsed
+/// values must satisfy [`Date::is_valid`]; out-of-range input (month `0` or
+/// `13`, day `0` or `32`) is rejected with
+/// [`CapabilityAccessError::TypeMismatch`] rather than being clamped.
 pub fn expect_date(value: CapabilityValue) -> Result<Date, CapabilityAccessError> {
     let text = expect_string(value)?;
     let mut parts = text.split('-');
@@ -143,6 +225,16 @@ pub fn expect_date(value: CapabilityValue) -> Result<Date, CapabilityAccessError
 }
 
 #[cfg(full_widgets)]
+/// Parses a [`Time`] from the `"HH:MM:SS[.fff]"` spelling used by
+/// [`Time`]'s `Display` implementation.
+///
+/// Requires a string payload. The hour is 24-hour (`0`-`23`), the minute and
+/// second are 1-based fields ranging over `0`-`59`, and the optional fractional
+/// part gives milliseconds; it is right-padded to three digits, so `".5"` means
+/// 500 ms and digits beyond the third are dropped rather than rounded. The
+/// seconds component is mandatory. Invalid clock values are rejected with
+/// [`CapabilityAccessError::TypeMismatch`] via [`Time::is_valid`], never
+/// wrapped or clamped.
 pub fn expect_time(value: CapabilityValue) -> Result<Time, CapabilityAccessError> {
     let text = expect_string(value)?;
     let mut parts = text.split(':');
@@ -197,6 +289,11 @@ pub fn expect_datetime(
 }
 
 #[cfg(full_widgets)]
+/// Parses a weekday name.
+///
+/// Accepts an abbreviated or full English name (`"Mon"`, `"monday"`, …), in
+/// any case and with separators ignored. A string payload is required; unknown
+/// names yield [`CapabilityAccessError::TypeMismatch`].
 pub fn expect_weekday(value: CapabilityValue) -> Result<Weekday, CapabilityAccessError> {
     let token = match value {
         CapabilityValue::String(v) => normalize_key(&v),
@@ -219,6 +316,15 @@ pub fn expect_weekday(value: CapabilityValue) -> Result<Weekday, CapabilityAcces
 // ---------------------------------------------------------------------------
 
 #[cfg(full_widgets)]
+/// Parses a sort specification list of the form `"col:order,col:order"`.
+///
+/// The column is a 0-based index into the view's columns; the order is `asc`
+/// or `desc`, case-insensitive and separator-insensitive. An empty or
+/// whitespace-only string means "no sorting" and yields an empty vector.
+/// Sorting is applied in the order given. A missing or unrecognised order, a
+/// non-numeric column, or a token with more than one `:` is rejected with
+/// [`CapabilityAccessError::TypeMismatch`]; whitespace around each field is
+/// ignored.
 pub fn expect_sort_specs(value: CapabilityValue) -> Result<Vec<SortSpec>, CapabilityAccessError> {
     let text = expect_string(value)?;
     if text.trim().is_empty() {
@@ -251,6 +357,13 @@ pub fn expect_sort_specs(value: CapabilityValue) -> Result<Vec<SortSpec>, Capabi
 }
 
 #[cfg(full_widgets)]
+/// Parses a per-column filter list of the form `"col=query,col=query"`.
+///
+/// The column is a 0-based index; the query is the remaining text after the
+/// first `=` and is taken verbatim, so it may itself contain `=` signs. An
+/// empty or whitespace-only string means "no filters" and yields an empty
+/// vector. A token with no `=` or a non-numeric column index is rejected with
+/// [`CapabilityAccessError::TypeMismatch`].
 pub fn expect_column_filters(
     value: CapabilityValue,
 ) -> Result<Vec<ColumnFilter>, CapabilityAccessError> {
@@ -274,6 +387,10 @@ pub fn expect_column_filters(
 }
 
 #[cfg(full_widgets)]
+/// Parses a list-view selection mode: `single`, `multi`, or `extended`.
+///
+/// A string payload is required; the match is case- and separator-insensitive.
+/// Any other value yields [`CapabilityAccessError::TypeMismatch`].
 pub fn expect_selection_mode(
     value: CapabilityValue,
 ) -> Result<SelectionMode, CapabilityAccessError> {
@@ -290,6 +407,12 @@ pub fn expect_selection_mode(
     }
 }
 
+/// Parses a list-box selection mode: `none`, `single`, `multi`, or `extended`.
+///
+/// Both the short names above and the historical `noselection`,
+/// `singleselection`, `multiselection`, and `extendedselection` spellings are
+/// accepted, in any case and with separators ignored. Any other value yields
+/// [`CapabilityAccessError::TypeMismatch`].
 pub fn expect_list_box_selection_mode(
     value: CapabilityValue,
 ) -> Result<ListBoxSelectionMode, CapabilityAccessError> {
@@ -311,6 +434,10 @@ pub fn expect_list_box_selection_mode(
 }
 
 #[cfg(full_widgets)]
+/// Parses a list-view display mode: `list`, `icon`, `details`, or
+/// `thumbnails`.
+///
+/// A string payload is required; the match ignores case and separators.
 pub fn expect_view_mode(value: CapabilityValue) -> Result<ViewMode, CapabilityAccessError> {
     let token = match value {
         CapabilityValue::String(v) => normalize_key(&v),
@@ -327,6 +454,9 @@ pub fn expect_view_mode(value: CapabilityValue) -> Result<ViewMode, CapabilityAc
 }
 
 #[cfg(full_widgets)]
+/// Parses a tool-bar orientation: `horizontal` or `vertical`.
+///
+/// Case- and separator-insensitive; accepts a string payload only.
 pub fn expect_toolbar_orientation(
     value: CapabilityValue,
 ) -> Result<ToolBarOrientation, CapabilityAccessError> {
@@ -342,6 +472,12 @@ pub fn expect_toolbar_orientation(
     }
 }
 
+/// Parses an [`Alignment`]: `left`, `center` (or the British `centre`),
+/// `right`, `top`, or `bottom`.
+///
+/// Case- and separator-insensitive; accepts a string payload only. Note that
+/// the accepted horizontal and vertical values are not interchangeable: the
+/// caller is responsible for picking one consistent with the widget.
 pub fn expect_alignment(value: CapabilityValue) -> Result<Alignment, CapabilityAccessError> {
     let token = match value {
         CapabilityValue::String(v) => normalize_key(&v),
@@ -358,6 +494,11 @@ pub fn expect_alignment(value: CapabilityValue) -> Result<Alignment, CapabilityA
     }
 }
 
+/// Parses a tri-state [`CheckState`].
+///
+/// Accepts `unchecked`/`off`, `partiallychecked`/`partial`/`indeterminate`,
+/// and `checked`/`on` (case- and separator-insensitive), matching the tokens
+/// emitted by [`check_state_to_str`].
 pub fn expect_check_state(value: CapabilityValue) -> Result<CheckState, CapabilityAccessError> {
     let token = match value {
         CapabilityValue::String(v) => normalize_key(&v),
@@ -372,6 +513,9 @@ pub fn expect_check_state(value: CapabilityValue) -> Result<CheckState, Capabili
     }
 }
 
+/// Parses an [`Orientation`]: `horizontal` or `vertical`.
+///
+/// Case- and separator-insensitive; accepts a string payload only.
 pub fn expect_orientation(value: CapabilityValue) -> Result<Orientation, CapabilityAccessError> {
     let token = match value {
         CapabilityValue::String(v) => normalize_key(&v),
@@ -386,6 +530,13 @@ pub fn expect_orientation(value: CapabilityValue) -> Result<Orientation, Capabil
 }
 
 #[cfg(full_widgets)]
+/// Parses a slider [`TickPosition`].
+///
+/// Accepts `none`/`noticks`, `above`/`ticksabove`/`left`,
+/// `below`/`ticksbelow`/`right`, and `both`/`ticksbothsides`, so the tokens
+/// also work for the vertical orientation where "left"/"right" are the
+/// spelling used. Case- and separator-insensitive; a string payload is
+/// required.
 pub fn expect_tick_position(value: CapabilityValue) -> Result<TickPosition, CapabilityAccessError> {
     let token = match value {
         CapabilityValue::String(v) => normalize_key(&v),
@@ -402,6 +553,11 @@ pub fn expect_tick_position(value: CapabilityValue) -> Result<TickPosition, Capa
 }
 
 #[cfg(widgets_unstripped)]
+/// Parses an [`LCDNumberMode`]: `hex`, `dec`/`decimal`, `oct`/`octal`, or
+/// `bin`/`binary`.
+///
+/// Case- and separator-insensitive; the tokens match those produced by
+/// [`lcd_mode_to_str`].
 pub fn expect_lcd_mode(value: CapabilityValue) -> Result<LCDNumberMode, CapabilityAccessError> {
     let token = match value {
         CapabilityValue::String(v) => normalize_key(&v),
@@ -418,6 +574,10 @@ pub fn expect_lcd_mode(value: CapabilityValue) -> Result<LCDNumberMode, Capabili
 }
 
 #[cfg(widgets_unstripped)]
+/// Parses a [`SegmentStyle`]: `outline`, `filled`, or `flat`.
+///
+/// Case- and separator-insensitive; the tokens match those produced by
+/// [`segment_style_to_str`].
 pub fn expect_segment_style(value: CapabilityValue) -> Result<SegmentStyle, CapabilityAccessError> {
     let token = match value {
         CapabilityValue::String(v) => normalize_key(&v),
@@ -473,10 +633,21 @@ pub fn tick_position_to_str(tick_position: TickPosition) -> &'static str {
 // ---------------------------------------------------------------------------
 
 #[cfg(full_widgets)]
+/// Formats a `chrono` date as `"YYYY-MM-DD"`, the inverse of
+/// [`expect_naive_date`].
+///
+/// The year is not zero-padded beyond four digits, matching `chrono`'s
+/// `%Y` specifier.
 pub fn naive_date_to_string(date: NaiveDate) -> String {
     date.format("%Y-%m-%d").to_string()
 }
 
+/// Normalises an enumeration token for matching.
+///
+/// Removes all underscores, hyphens, and spaces, then lower-cases the result,
+/// so `"Partially_Checked"`, `"partially-checked"`, and `"PARTIALLY CHECKED"`
+/// all become `"partiallychecked"`. Used by every string-based `expect_*`
+/// parser, which is why separators in the accepted spellings do not matter.
 pub fn normalize_key(input: &str) -> String {
     input
         .chars()
@@ -494,6 +665,9 @@ pub fn normalize_key(input: &str) -> String {
 // gated to device profiles, but `coercion` is not.
 
 /// Formats an [`Alignment`] as its published token.
+///
+/// The inverse of [`expect_alignment`] for the canonical values; it emits
+/// `"center"` (never `"centre"`).
 pub const fn alignment_to_str(alignment: Alignment) -> &'static str {
     match alignment {
         Alignment::Left => "left",
@@ -505,6 +679,9 @@ pub const fn alignment_to_str(alignment: Alignment) -> &'static str {
 }
 
 /// Formats a [`CheckState`] as its published token.
+///
+/// The inverse of [`expect_check_state`]; note the underscore in
+/// `"partially_checked"`, which [`normalize_key`] strips on the way back in.
 pub const fn check_state_to_str(state: CheckState) -> &'static str {
     match state {
         CheckState::Unchecked => "unchecked",
@@ -514,6 +691,8 @@ pub const fn check_state_to_str(state: CheckState) -> &'static str {
 }
 
 /// Formats an [`Orientation`] as its published token.
+///
+/// The inverse of [`expect_orientation`].
 pub const fn orientation_to_str(orientation: Orientation) -> &'static str {
     match orientation {
         Orientation::Horizontal => "horizontal",

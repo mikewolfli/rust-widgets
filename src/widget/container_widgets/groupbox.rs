@@ -23,6 +23,9 @@ pub struct GroupBox {
     alignment: Alignment,
     checkable: bool,
     checked: bool,
+    /// Emitted when the group box is toggled, with the new checked state.
+    /// `checked` starts as `true` even when `checkable` is false; the signal is
+    /// only emitted for a real state change.
     pub toggled: Signal1<bool>,
     /// Cached title width computed in draw() via RenderContext::measure_text().
     cached_title_width: Option<u32>,

@@ -12,12 +12,23 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// Toggle button state enumeration.
+///
+/// Derived from the checked and enabled flags, never stored: see
+/// [`ToggleButton::state`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToggleButtonState {
+    /// Enabled and not checked.
     Normal,
+    /// Enabled and checked. Disabled always wins over checked, so an unchecked
+    /// *and* disabled button also reports [`ToggleButtonState::Disabled`].
     Checked,
+    /// Not enabled; reported regardless of the checked flag.
     Disabled,
 }
+/// Toggle button: a two-state push button that latches on click.
+///
+/// Also carries press tracking (`is_pressed`) so it can render a pressed
+/// appearance between mouse-down and mouse-up.
 pub struct ToggleButton {
     base: BaseWidget,
     text: String,
@@ -25,13 +36,26 @@ pub struct ToggleButton {
     auto_exclusive: bool,
     group_id: Option<String>,
     pressed: bool,
+    /// Emitted with the new checked flag whenever it changes. Semantically a
+    /// synonym for `checked_changed`, kept for callers using the checked-state
+    /// terminology.
     pub toggled: Signal1<bool>,
+    /// Emitted with the new checked flag whenever it changes.
     pub checked_changed: Signal1<bool>,
+    /// Emitted on the rising edge of the pressed flag (mouse down).
     pub pressed_signal: GenericSignal,
+    /// Emitted on the falling edge of the pressed flag (mouse up).
     pub released_signal: GenericSignal,
+    /// Emitted with the recomputed [`ToggleButtonState`] whenever the checked
+    /// flag changes. Not emitted when only the enabled flag changes, so a
+    /// disabled button can still report a stale `Normal`. Reading
+    /// [`ToggleButton::state`] after `set_enabled` gives the current value.
     pub state_changed: Signal1<ToggleButtonState>,
 }
 impl ToggleButton {
+    /// Creates an unchecked, enabled toggle button with the given caption.
+    ///
+    /// `geometry` is in parent-relative logical pixels.
     pub fn new(text: String, geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::ToggleButton, geometry, "ToggleButton"),
@@ -47,9 +71,12 @@ impl ToggleButton {
             state_changed: Signal1::new(),
         }
     }
+    /// Returns the button caption, drawn centered. Empty by default only if
+    /// constructed that way (`new` takes the text up front).
     pub fn text(&self) -> &str {
         &self.text
     }
+    /// Replaces the caption. No-op (and no redraw) when the text is unchanged.
     pub fn set_text(&mut self, text: impl Into<String>) {
         let text = text.into();
         if self.text != text {
@@ -57,9 +84,16 @@ impl ToggleButton {
             self.base.request_redraw();
         }
     }
+    /// Returns the latched checked flag.
     pub fn is_checked(&self) -> bool {
         self.checked
     }
+    /// Sets the checked flag.
+    ///
+    /// A no-op when the value is unchanged, which means **no signals fire on a
+    /// redundant set**. On an actual change this emits `checked_changed` and
+    /// `toggled` (both with the new flag) followed by `state_changed`, and
+    /// requests a redraw.
     pub fn set_checked(&mut self, checked: bool) {
         if self.checked == checked {
             return;
@@ -70,26 +104,49 @@ impl ToggleButton {
         self.toggled.emit(checked);
         self.state_changed.emit(self.state());
     }
+    /// Flips the checked flag through [`ToggleButton::set_checked`], so the
+    /// usual signals fire.
     pub fn toggle(&mut self) {
         self.set_checked(!self.checked);
     }
+    /// Returns the auto-exclusive intent flag. Defaults to `false`.
     pub fn is_auto_exclusive(&self) -> bool {
         self.auto_exclusive
     }
+    /// Sets the auto-exclusive intent flag.
+    ///
+    /// This records intent only: the button does **not** enforce exclusivity
+    /// itself. A group manager is expected to read this flag plus
+    /// [`ToggleButton::group_id`] and uncheck the group's other members when
+    /// one is checked. Setting it requests a redraw even though the flag is not
+    /// drawn.
     pub fn set_auto_exclusive(&mut self, exclusive: bool) {
         self.auto_exclusive = exclusive;
         self.base.request_redraw();
     }
+    /// Returns the group this button belongs to, or `None` when ungrouped.
+    ///
+    /// The id is an opaque caller-chosen string; the widget only stores and
+    /// reports it. See [`ToggleButton::set_auto_exclusive`].
     pub fn group_id(&self) -> Option<&str> {
         self.group_id.as_deref()
     }
+    /// Sets (or clears, with `None`) the group id. See
+    /// [`ToggleButton::group_id`].
     pub fn set_group_id(&mut self, group_id: Option<String>) {
         self.group_id = group_id;
         self.base.request_redraw();
     }
+    /// Returns whether the button is currently held down.
     pub fn is_pressed(&self) -> bool {
         self.pressed
     }
+    /// Sets the pressed flag.
+    ///
+    /// No-op when unchanged, so the signals fire only on an actual edge: a
+    /// rising edge emits `pressed_signal`, a falling edge emits
+    /// `released_signal`. Unlike the checked flag, this does not request a
+    /// redraw.
     pub fn set_pressed(&mut self, pressed: bool) {
         if self.pressed == pressed {
             return;
@@ -101,6 +158,8 @@ impl ToggleButton {
             self.released_signal.emit();
         }
     }
+    /// Returns the interaction state derived from the enabled and checked
+    /// flags. Disabled takes precedence over checked.
     pub fn state(&self) -> ToggleButtonState {
         if !self.base.enabled {
             ToggleButtonState::Disabled

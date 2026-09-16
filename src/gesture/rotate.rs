@@ -19,6 +19,7 @@ pub struct RotateGesture {
 }
 
 impl RotateGesture {
+    /// Creates a recognizer with no tracked touches and no reference angle.
     pub fn new() -> Self {
         Self { touches: Vec::with_capacity(2), previous_angle: None }
     }

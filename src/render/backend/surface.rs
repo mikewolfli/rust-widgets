@@ -7,7 +7,20 @@ use crate::render::pixel_bytes_len;
 use crate::render::{PaintBackend, RenderCommand, ShapedText, TextMetrics};
 use std::sync::{Mutex, OnceLock};
 
-/// Double-buffered RGBA pixel storage used by software rendering.
+/// Double-buffered 8-bit RGBA pixel storage used by software rendering.
+///
+/// Pixels are stored as `[R, G, B, A]` bytes with no padding: the buffers are
+/// exactly `width * height * 4` bytes long and rows are tightly packed, so the
+/// byte offset of pixel `(x, y)` is `(y * width + x) * 4`.
+///
+/// Two buffers are held. The **back** buffer is the drawing target; all
+/// rasterisation writes there. The **front** buffer holds the last presented
+/// frame. [`BackBuffer::present`] swaps them, and reads through
+/// [`BackBuffer::front`] therefore observe the previously *back* buffer, not
+/// the pixels most recently written via [`BackBuffer::back_mut`].
+///
+/// Both buffers are zero-initialised (fully transparent black) on creation and
+/// on growth during [`BackBuffer::resize`].
 #[derive(Debug, Clone)]
 pub struct BackBuffer {
     size: Size,
@@ -16,44 +29,77 @@ pub struct BackBuffer {
     pub(crate) back: Vec<u8>,
 }
 impl BackBuffer {
-    /// Creates a new back buffer for size and DPI scale.
+    /// Creates a new back buffer of `size` physical pixels at `dpi_scale`.
+    ///
+    /// Both front and back are allocated and zero-filled. `dpi_scale` is
+    /// clamped to a minimum of `0.1`; values above `1.0` denote HiDPI scaling.
     pub fn new(size: Size, dpi_scale: f32) -> Self {
         let bytes = pixel_bytes_len(size);
         Self { size, dpi_scale: dpi_scale.max(0.1), front: vec![0; bytes], back: vec![0; bytes] }
     }
-    /// Resizes front/back buffers to the new size.
+    /// Resizes front and back buffers to `size` pixels.
+    ///
+    /// Growing a buffer appends zero bytes, so newly exposed pixels are
+    /// transparent black. Shrinking truncates, discarding the overflowed rows
+    /// and columns; no attempt is made to preserve or rescale the remaining
+    /// content, so the retained prefix is *not* a correctly re-strided image.
     pub fn resize(&mut self, size: Size) {
         self.size = size;
         let bytes = pixel_bytes_len(size);
         self.front.resize(bytes, 0);
         self.back.resize(bytes, 0);
     }
-    /// Returns logical buffer size.
+    /// Returns the buffer size in physical pixels, not in logical units.
     pub fn size(&self) -> Size {
         self.size
     }
-    /// Returns current logical DPI scale.
+    /// Returns the logical DPI scale; `1.0` means unscaled.
     pub fn dpi_scale(&self) -> f32 {
         self.dpi_scale
     }
-    /// Updates logical DPI scale.
+    /// Updates the logical DPI scale, clamped to a minimum of `0.1`.
+    ///
+    /// Only the recorded scale changes; existing pixel data is not resized or
+    /// resampled.
     pub fn set_dpi_scale(&mut self, dpi_scale: f32) {
         self.dpi_scale = dpi_scale.max(0.1);
     }
-    /// Returns mutable reference to the back buffer pixels.
+    /// Returns the back buffer's pixels for writing, in RGBA byte order.
+    ///
+    /// This is the buffer that rendering targets. Its length is
+    /// `size.width * size.height * 4`.
     pub fn back_mut(&mut self) -> &mut [u8] {
         &mut self.back
     }
-    /// Returns immutable reference to the front buffer pixels.
+    /// Returns the front buffer's pixels in RGBA byte order.
+    ///
+    /// These are the pixels of the most recently presented frame; writes made
+    /// through [`BackBuffer::back_mut`] since the last [`BackBuffer::present`]
+    /// are not visible here.
     pub fn front(&self) -> &[u8] {
         &self.front
     }
-    /// Swaps back and front buffers.
+    /// Swaps the front and back buffers, publishing the drawn frame.
+    ///
+    /// After the swap the former back buffer is readable through
+    /// [`BackBuffer::front`], while the back buffer holds the previous frame's
+    /// pixels rather than a cleared surface; callers typically clear it at the
+    /// start of the next frame.
     pub fn present(&mut self) {
         std::mem::swap(&mut self.front, &mut self.back);
     }
 }
 /// Software raster surface with quality controls and RGBA frame output.
+///
+/// Wraps a double-buffered [`BackBuffer`]: drawing commands and
+/// [`SoftwareSurface::begin_frame`] act on the back buffer, and
+/// [`SoftwareSurface::end_frame`] presents it. Reads via
+/// [`SoftwareSurface::frame_rgba`] therefore return the last presented frame
+/// (the front buffer), which is one frame behind the buffer currently being
+/// drawn into.
+///
+/// Pixels are 8-bit RGBA, tightly packed at 4 bytes per pixel regardless of
+/// DPI scale; `dpi_scale` only affects text metrics and geometry that opts in.
 pub struct SoftwareSurface {
     pub(crate) buffer: BackBuffer,
     pub(crate) aa_samples_per_axis: u8,
@@ -61,9 +107,18 @@ pub struct SoftwareSurface {
     pub(crate) clip_stack: Vec<(i32, i32, u32, u32)>,
 }
 /// Public software render configuration for quality-related knobs.
+///
+/// This type is `Copy` and cheap to pass around; a [`SoftwareSurface`] inherits
+/// the process-wide default returned by [`default_software_render_config`] at
+/// construction time unless [`SoftwareSurface::apply_render_config`] overrides
+/// it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SoftwareRenderConfig {
-    /// Anti-aliasing sample grid size per axis (clamped to 1..=8).
+    /// Number of anti-aliasing samples taken along each axis, forming an
+    /// `n x n` sample grid. Higher values cost more per primitive. The valid
+    /// range is `1..=8` (where `1` disables anti-aliasing); out-of-range values
+    /// are silently clamped by [`SoftwareRenderConfig::normalized`] or
+    /// [`SoftwareSurface::apply_render_config`]. Defaults to `4`.
     pub aa_samples_per_axis: u8,
 }
 impl Default for SoftwareRenderConfig {
@@ -72,7 +127,9 @@ impl Default for SoftwareRenderConfig {
     }
 }
 impl SoftwareRenderConfig {
-    /// Build a config with normalized value bounds.
+    /// Returns a copy with every value clamped into its documented range.
+    ///
+    /// Currently this only clamps `aa_samples_per_axis` to `1..=8`.
     pub fn normalized(self) -> Self {
         Self { aa_samples_per_axis: self.aa_samples_per_axis.clamp(1, 8) }
     }
@@ -87,16 +144,44 @@ pub(crate) fn software_render_config_test_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }
-/// Set process-wide default software render configuration.
+/// Sets the process-wide default software render configuration.
+///
+/// The value is normalized (clamped) before being stored. The setting is
+/// global and guarded by a mutex, so it is not scoped to a thread or a window;
+/// it affects surfaces created afterwards. Newly created [`SoftwareSurface`]s
+/// pick it up, existing ones keep their own value until reconfigured.
+///
+/// # Panics
+///
+/// Panics if the internal config lock is poisoned by a previous panic.
+///
+/// ```text
+/// // Illustrates the API shape; the crate's tests use an internal guard lock.
+/// set_default_software_render_config(SoftwareRenderConfig { aa_samples_per_axis: 4 });
+/// ```
 pub fn set_default_software_render_config(config: SoftwareRenderConfig) {
     *global_software_render_config().lock().expect("software render config lock poisoned") =
         config.normalized();
 }
-/// Get process-wide default software render configuration.
+/// Returns a copy of the process-wide default software render configuration.
+///
+/// This never fails on an unset value: it falls back to
+/// [`SoftwareRenderConfig::default`] the first time it is called.
+///
+/// # Panics
+///
+/// Panics if the internal config lock is poisoned by a previous panic.
 pub fn default_software_render_config() -> SoftwareRenderConfig {
     *global_software_render_config().lock().expect("software render config lock poisoned")
 }
 /// Render context for custom widget drawing.
+///
+/// Handed to widget draw code and wrapping a [`PaintBackend`]. Every primitive
+/// is translated by the context's current offset *before* being forwarded to
+/// the backend, which lets containers translate their children without
+/// mutating child geometry. Unless stated otherwise, coordinates are physical
+/// pixels in surface space and each draw call is clipped by whatever clip
+/// rectangle is currently active on the backend.
 pub struct RenderContext<'a> {
     backend: &'a mut dyn PaintBackend,
     /// Current translation applied to all subsequent draw primitives.
@@ -106,15 +191,24 @@ pub struct RenderContext<'a> {
     offset_stack: Vec<(i32, i32)>,
 }
 impl<'a> RenderContext<'a> {
+    /// Wraps `backend` in a context whose translation offset starts at `(0, 0)`.
+    ///
+    /// The context borrows the backend mutably; it does not take ownership.
     pub fn new(backend: &'a mut dyn PaintBackend) -> Self {
         Self { backend, offset_x: 0, offset_y: 0, offset_stack: Vec::new() }
     }
+    /// Returns the wrapped backend, for operations not exposed by the context.
+    ///
+    /// Commands issued directly on the backend bypass this context's
+    /// translation offset and must be offset by the caller if required.
     pub fn backend(&mut self) -> &mut dyn PaintBackend {
         self.backend
     }
+    /// Returns the target surface size in physical pixels.
     pub fn size(&self) -> Size {
         self.backend.size()
     }
+    /// Returns the backend's logical DPI scale; `1.0` means unscaled.
     pub fn dpi_scale(&self) -> f32 {
         self.backend.dpi_scale()
     }
@@ -153,26 +247,51 @@ impl<'a> RenderContext<'a> {
     fn offset_points(&self, points: &[Point]) -> Vec<Point> {
         points.iter().map(|point| self.offset_point(*point)).collect()
     }
+    /// Fills `rect` with a solid `color`, ignoring any alpha blending
+    /// limitations of the backend's fill primitive.
+    ///
+    /// `rect` is translated by the current offset before drawing.
     pub fn fill_rect(&mut self, rect: Rect, color: Color) {
         let rect = self.offset_rect(rect);
         self.backend.execute_command(&RenderCommand::FillRect { rect, color });
     }
+    /// Draws a one-pixel-wide outline of `rect` (alias-aliased) in `color`.
+    ///
+    /// `rect` is translated by the current offset before drawing.
     pub fn draw_rect(&mut self, rect: Rect, color: Color) {
         let rect = self.offset_rect(rect);
         self.backend.execute_command(&RenderCommand::DrawRect { rect, color });
     }
+    /// Draws an outline of `rect` in `color` with the given stroke `width` in
+    /// pixels.
+    ///
+    /// `rect` is translated by the current offset before drawing.
     pub fn draw_rect_stroke(&mut self, rect: Rect, color: Color, width: u32) {
         let rect = self.offset_rect(rect);
         self.backend.execute_command(&RenderCommand::DrawRectStroke { rect, color, width });
     }
+    /// Fills `rect` with `color` using rounded corners of `radius` pixels.
+    ///
+    /// The non-anti-aliased variant; use [`RenderContext::fill_rounded_rect_aa`]
+    /// for smoother edges. `radius` is typically clamped by the backend to half
+    /// the shorter side of `rect`.
     pub fn fill_rounded_rect(&mut self, rect: Rect, radius: u32, color: Color) {
         let rect = self.offset_rect(rect);
         self.backend.execute_command(&RenderCommand::FillRoundedRect { rect, radius, color });
     }
+    /// Anti-aliased equivalent of [`RenderContext::fill_rounded_rect`].
+    ///
+    /// Costs more per call: the corners are sampled on the surface's
+    /// configured `aa_samples_per_axis` grid.
     pub fn fill_rounded_rect_aa(&mut self, rect: Rect, radius: u32, color: Color) {
         let rect = self.offset_rect(rect);
         self.backend.execute_command(&RenderCommand::FillRoundedRectAA { rect, radius, color });
     }
+    /// Strokes the rounded-rectangle outline of `rect` in `color` with the
+    /// given `width` in pixels.
+    ///
+    /// The non-anti-aliased variant; use
+    /// [`RenderContext::draw_rounded_rect_stroke_aa`] for smoother edges.
     pub fn draw_rounded_rect_stroke(&mut self, rect: Rect, radius: u32, color: Color, width: u32) {
         let rect = self.offset_rect(rect);
         self.backend.execute_command(&RenderCommand::DrawRoundedRectStroke {
@@ -182,6 +301,8 @@ impl<'a> RenderContext<'a> {
             width,
         });
     }
+    /// Anti-aliased equivalent of
+    /// [`RenderContext::draw_rounded_rect_stroke`].
     pub fn draw_rounded_rect_stroke_aa(
         &mut self,
         rect: Rect,
@@ -197,38 +318,55 @@ impl<'a> RenderContext<'a> {
             width,
         });
     }
+    /// Draws a one-pixel-wide, non-anti-aliased line from `from` to `to` in
+    /// `color`.
+    ///
+    /// Both endpoints are translated by the current offset.
     pub fn draw_line(&mut self, from: Point, to: Point, color: Color) {
         let from = self.offset_point(from);
         let to = self.offset_point(to);
         self.backend.execute_command(&RenderCommand::DrawLine { from, to, color });
     }
+    /// Anti-aliased equivalent of [`RenderContext::draw_line`].
     pub fn draw_line_aa(&mut self, from: Point, to: Point, color: Color) {
         let from = self.offset_point(from);
         let to = self.offset_point(to);
         self.backend.execute_command(&RenderCommand::DrawLineAA { from, to, color });
     }
+    /// Draws a line from `from` to `to` in `color` with the given `width` in
+    /// pixels, without anti-aliasing.
     pub fn draw_line_stroke(&mut self, from: Point, to: Point, color: Color, width: u32) {
         let from = self.offset_point(from);
         let to = self.offset_point(to);
         self.backend.execute_command(&RenderCommand::DrawLineStroke { from, to, color, width });
     }
+    /// Anti-aliased equivalent of [`RenderContext::draw_line_stroke`].
     pub fn draw_line_stroke_aa(&mut self, from: Point, to: Point, color: Color, width: u32) {
         let from = self.offset_point(from);
         let to = self.offset_point(to);
         self.backend.execute_command(&RenderCommand::DrawLineStrokeAA { from, to, color, width });
     }
+    /// Fills a circle centred on `center` with `radius` pixels, without
+    /// anti-aliasing.
+    ///
+    /// The centre is translated by the current offset.
     pub fn fill_circle(&mut self, center: Point, radius: u32, color: Color) {
         let center = self.offset_point(center);
         self.backend.execute_command(&RenderCommand::FillCircle { center, radius, color });
     }
+    /// Anti-aliased equivalent of [`RenderContext::fill_circle`].
     pub fn fill_circle_aa(&mut self, center: Point, radius: u32, color: Color) {
         let center = self.offset_point(center);
         self.backend.execute_command(&RenderCommand::FillCircleAA { center, radius, color });
     }
+    /// Draws the one-pixel outline of a circle centred on `center` with
+    /// `radius` pixels, without anti-aliasing.
     pub fn draw_circle(&mut self, center: Point, radius: u32, color: Color) {
         let center = self.offset_point(center);
         self.backend.execute_command(&RenderCommand::DrawCircle { center, radius, color });
     }
+    /// Draws a circular outline of `width` pixels centred on `center` with
+    /// `radius` pixels, without anti-aliasing.
     pub fn draw_circle_stroke(&mut self, center: Point, radius: u32, color: Color, width: u32) {
         let center = self.offset_point(center);
         self.backend.execute_command(&RenderCommand::DrawCircleStroke {
@@ -261,6 +399,11 @@ impl<'a> RenderContext<'a> {
             width,
         });
     }
+    /// Draws `text` with its origin (baseline start, per `alignment`) at
+    /// `origin`, using `font` and `color`.
+    ///
+    /// The origin is translated by the current offset. `alignment` selects how
+    /// the text is positioned horizontally relative to `origin`.
     pub fn draw_text(
         &mut self,
         origin: Point,
@@ -278,21 +421,48 @@ impl<'a> RenderContext<'a> {
             alignment,
         });
     }
+    /// Returns the measured bounds of `text` in `font` under the backend's DPI
+    /// scale.
+    ///
+    /// The result is not affected by the current translation offset, so it is
+    /// an unscaled layout measurement and carries no `(x, y)` origin.
     pub fn measure_text(&self, text: &str, font: &Font) -> TextMetrics {
         self.backend.measure_text(text, font)
     }
+    /// Splits `text` into visual clusters (grapheme-like units) with per-cluster
+    /// advances, as used for hit testing and caret placement.
+    ///
+    /// Unaffected by the current translation offset.
     pub fn shape_text(&self, text: &str, font: &Font) -> ShapedText {
         self.backend.shape_text(text, font)
     }
+    /// Pushes a clip rectangle onto the backend's clip stack, translated by the
+    /// current offset.
+    ///
+    /// Subsequent draws are restricted to this rectangle intersected with any
+    /// enclosing clip. Every push must be matched by a
+    /// [`RenderContext::pop_clip`]; the offsets pushed via
+    /// [`RenderContext::push_offset`] also apply to it.
     pub fn push_clip(&mut self, x: i32, y: i32, width: u32, height: u32) {
         let x = x + self.offset_x;
         let y = y + self.offset_y;
         self.backend.execute_command(&RenderCommand::PushClip { x, y, width, height });
     }
+    /// Pops the innermost clip rectangle from the backend's clip stack.
+    ///
+    /// A pop with an empty stack is a no-op on the software backend; unbalanced
+    /// pops would otherwise widen the clip unexpectedly.
     pub fn pop_clip(&mut self) {
         self.backend.execute_command(&RenderCommand::PopClip);
     }
 
+    /// Draws `data` as an image at `(x, y)` scaled to `width` x `height` pixels.
+    ///
+    /// `data` is interpreted as 8-bit RGBA, four bytes per pixel, tightly
+    /// packed, and is expected to hold at least `width * height * 4` bytes;
+    /// a shorter slice is cropped by the backend. The position is translated by
+    /// the current offset. The slice is copied into the command, so the caller
+    /// need not keep it alive.
     pub fn draw_image(&mut self, x: i32, y: i32, width: u32, height: u32, data: &[u8]) {
         let x = x + self.offset_x;
         let y = y + self.offset_y;

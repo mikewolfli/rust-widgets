@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Display widgets: progress bars, sliders, scroll bars, etc.
+/// Circular arc / gauge primitive used by the progress and meter widgets.
 pub mod arc;
 #[cfg(widgets_unstripped)]
 pub mod badge;
@@ -22,6 +23,7 @@ pub mod icon;
 #[cfg(feature = "image")]
 pub mod image_view;
 #[cfg(widgets_unstripped)]
+/// Seven-segment style numeric readout.
 pub mod lcd_number;
 pub mod line;
 pub mod meter;

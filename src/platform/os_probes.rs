@@ -111,19 +111,91 @@ pub fn process_cpu_utilization() -> Option<f32> {
 /// BSD-compat layer). Returns the failure of the *last* attempt, so a caller sees
 /// the `lp` error when both are missing rather than a generic "no spooler".
 ///
+/// # Why this waits for the spooler
+///
+/// The job file is a temporary file owned by the caller, which deletes it as soon
+/// as this returns. `spawn` alone therefore *reports* success while the spooler is
+/// still opening the file — `lpr` then fails with "cannot access …: No such file
+/// or directory" and the document is silently never printed. The child is reaped
+/// here so that the caller only ever deletes a file the spooler has finished with,
+/// and so that a spooler which rejects the job is reported instead of looking like
+/// a successful submission.
+///
+/// The wait is unbounded on purpose: `lpr` talking to a slow CUPS server can take
+/// seconds, and a timeout would reintroduce the exact race this exists to remove.
+///
 /// Windows uses the PowerShell spooler instead and does not call this.
 pub fn spawn_print_job(job_file: &std::path::Path) -> Result<(), String> {
     let attempts: [&str; 2] = ["lpr", "lp"];
     let mut last_error = String::from("no print spooler found");
+    let mut attempted = false;
     for program in attempts {
-        match std::process::Command::new(program).arg(job_file).spawn() {
-            Ok(_child) => return Ok(()),
+        match run_spooler(program, job_file) {
+            Ok(()) => return Ok(()),
             Err(error) => {
-                last_error = format!("{program}: {error}");
+                // Distinguish "this program is not installed" from "this program
+                // rejected the job": only the former leaves `attempted` false.
+                if error.is_rejection() {
+                    attempted = true;
+                }
+                last_error = error.to_string();
             }
         }
     }
-    Err(last_error)
+    if attempted {
+        Err(last_error)
+    } else {
+        Err(format!("no print spooler found ({last_error})"))
+    }
+}
+
+/// Why a single spooler attempt did not produce a printed job.
+#[derive(Debug)]
+enum SpoolerFailure {
+    /// The program could not be started — it is not installed (or not executable).
+    Unavailable(String),
+    /// The program ran and refused the job; the message is its own diagnostics.
+    Rejected(String),
+}
+
+impl SpoolerFailure {
+    fn is_rejection(&self) -> bool {
+        matches!(self, Self::Rejected(_))
+    }
+}
+
+impl std::fmt::Display for SpoolerFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unavailable(message) | Self::Rejected(message) => f.write_str(message),
+        }
+    }
+}
+
+/// Runs one spooler program to completion and reports whether it accepted the job.
+///
+/// Split from [`spawn_print_job`] so the waiting behaviour can be tested against a
+/// stand-in program without mutating the process-global `PATH`.
+fn run_spooler(program: &str, job_file: &std::path::Path) -> Result<(), SpoolerFailure> {
+    let output = std::process::Command::new(program)
+        .arg(job_file)
+        .output()
+        .map_err(|error| SpoolerFailure::Unavailable(format!("{program}: {error}")))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    // Surface the spooler's own diagnosis. An empty stderr still has to name the
+    // program and its exit status, otherwise the caller learns nothing.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = stderr.trim();
+    let message = if stderr.is_empty() {
+        format!("{program}: exited with {}", output.status)
+    } else {
+        format!("{program}: failed: {stderr}")
+    };
+    Err(SpoolerFailure::Rejected(message))
 }
 
 #[cfg(test)]
@@ -148,15 +220,108 @@ mod tests {
         let _ = is_on_battery();
     }
 
-    /// A path that does not exist must produce an error, not a panic or a silent
-    /// success — the caller uses the `Result` to report the failure.
+    /// The spooler must have finished reading the job file before this returns.
+    ///
+    /// This is the guard for a silent data-loss bug: the caller deletes the job file
+    /// as soon as this function returns, and the original implementation used
+    /// `Command::spawn` without waiting. With a real spooler present that returns
+    /// `Ok(())` while `lpr` is still opening the file — the spooler then prints
+    /// nothing and the failure is only visible in its own stderr.
+    ///
+    /// A stand-in spooler is used so the race can be observed deterministically on
+    /// any unix host: it pauses, then reads the file and fails if it is already gone.
+    /// Because the program path is passed in, no process-global state is touched —
+    /// mutating `PATH` from a test would race every other test in the binary.
+    #[test]
+    fn print_job_waits_for_the_spooler_before_reading_back() {
+        use std::io::Write as _;
+
+        let dir = std::env::temp_dir().join(format!("rw_spool_probe_{}", std::process::id()));
+        if std::fs::create_dir_all(&dir).is_err() {
+            return;
+        }
+        let record = dir.join("read_back.txt");
+        let _ = std::fs::remove_file(&record);
+
+        // A stand-in spooler that only succeeds if the file is still there after a
+        // pause long enough for a non-waiting caller to have deleted it.
+        let fake = dir.join("lpr");
+        let script = format!(
+            "#!/bin/sh\nsleep 0.2\ncat \"$1\" > \"{}\" 2>/dev/null || exit 1\n",
+            record.display()
+        );
+        if std::fs::File::create(&fake)
+            .and_then(|mut file| file.write_all(script.as_bytes()))
+            .is_err()
+        {
+            return;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            if std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).is_err() {
+                return;
+            }
+        }
+
+        let job = dir.join("job.txt");
+        if std::fs::write(&job, "page:1\n").is_err() {
+            return;
+        }
+
+        let result = run_spooler(fake.to_str().unwrap_or("lpr"), &job);
+        // The caller's next action, verbatim from `print_to_printer`.
+        let removed = std::fs::remove_file(&job);
+
+        let read_back = std::fs::read_to_string(&record).unwrap_or_default();
+        let _ = std::fs::remove_file(&fake);
+
+        assert!(result.is_ok(), "the stand-in spooler must report success, got {result:?}");
+        assert!(
+            removed.is_ok(),
+            "the caller must be able to delete the job file straight after submission: \
+             {removed:?}"
+        );
+        assert_eq!(
+            read_back.trim(),
+            "page:1",
+            "the spooler read the job file back as {read_back:?} — an empty value means \
+             `run_spooler` returned before the spooler had finished reading, so the \
+             caller deleted the file underneath it and nothing was printed"
+        );
+    }
+
+    /// A program that is not installed must be reported as missing, not as a rejected
+    /// job — the two lead to different caller-visible messages.
+    #[test]
+    fn an_absent_spooler_is_reported_as_unavailable() {
+        let job = std::path::Path::new("/tmp/rw_probe_absent_job.txt");
+        let result = run_spooler("rw_definitely_not_a_spooler", job);
+        match result {
+            Err(failure) => assert!(
+                !failure.is_rejection(),
+                "an uninstalled program must not be reported as rejecting the job: {failure}"
+            ),
+            Ok(()) => panic!("a non-existent spooler must not report success"),
+        }
+    }
+
+    /// A file that does not exist must be reported as a failure when a spooler is
+    /// present, and as "no spooler" when none is — never as a success.
+    ///
+    /// This test previously accepted **any** outcome (`let _ = result;`) on the
+    /// reasoning that a real spooler rejects the file asynchronously. That leniency
+    /// is what let a genuine race through: the caller deletes the job file as soon
+    /// as this function returns, and `spawn` returned before the spooler had read
+    /// it, so every print job on a host with `lpr` installed failed silently. The
+    /// only acceptable answer now is an error.
     #[test]
     fn print_job_reports_failure_for_a_missing_spooler_or_file() {
-        let missing = std::path::Path::new("/nonexistent/rust_widgets_probe_job.pdf");
+        let missing = std::path::Path::new("/nonexistent/rust_widgets_probe_job.txt");
         let result = spawn_print_job(missing);
-        // Either there is no spooler (an error) or there is one and it rejected
-        // the missing file asynchronously (Ok from `spawn`). Both are acceptable;
-        // what must not happen is a panic.
-        let _ = result;
+        assert!(
+            result.is_err(),
+            "submitting a non-existent job file must not report success, got {result:?}"
+        );
     }
 }

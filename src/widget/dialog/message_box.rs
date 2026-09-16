@@ -18,31 +18,58 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Message box icon type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageBoxIcon {
+    /// No icon is drawn; the text fills the full content area.
     NoIcon,
+    /// Informational "i" glyph, drawn in blue.
     Information,
+    /// A question-mark glyph, drawn in the same blue as
+    /// [`Self::Information`].
     Question,
+    /// A warning triangle glyph, drawn in orange.
     Warning,
+    /// A critical cross glyph, drawn in red; use for errors that blocked an
+    /// action.
     Critical,
 }
 /// Standard buttons for message boxes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StandardButton {
+    /// Acknowledge and dismiss.
     Ok,
+    /// Abandon the operation and dismiss.
     Cancel,
+    /// Affirm the prompt.
     Yes,
+    /// Decline the prompt.
     No,
+    /// Affirm, and stop asking for the same kind of prompt in this run.
     YesAll,
+    /// Decline, and stop asking for the same kind of prompt in this run.
     NoAll,
+    /// Persist the current state.
     Save,
+    /// Abandon the current changes.
     Discard,
+    /// Keep the current changes without dismissing.
     Apply,
+    /// Dismiss without an accept/reject judgement. Note that
+    /// [`MessageBox::click_button`] still counts it as a rejection.
     Close,
+    /// Stop an in-progress operation because it cannot succeed.
     Abort,
+    /// Repeat the operation that just failed.
     Retry,
+    /// Continue past a non-fatal problem.
     Ignore,
+    /// Open contextual help instead of answering.
     Help,
 }
 impl StandardButton {
+    /// The English label shown on the button, e.g. `"OK"` or `"Yes to All"`.
+    ///
+    /// This is the untranslated string; use [`Self::translated_label`] for a
+    /// locale-aware label. `'static` because the labels are compile-time
+    /// constants.
     pub fn label(&self) -> &'static str {
         match self {
             StandardButton::Ok => "OK",
@@ -92,6 +119,17 @@ impl StandardButton {
     }
 }
 /// Message box dialog.
+///
+/// A ready-made modal prompt: it owns its title, body text, icon and the list of
+/// standard buttons, and reports the user's answer through three signals rather
+/// than a return value.
+///
+/// Note the widget does not dismiss itself: after `click_button` (or an Enter/
+/// Escape key press) the signals fire but the dialog stays on screen, so the
+/// owner is expected to react to `accepted`/`rejected` and close it.
+///
+/// As with every widget it inherits geometry, visibility, enablement and the
+/// shared event plumbing from its [`BaseWidget`].
 pub struct MessageBox {
     base: BaseWidget,
     title: String,
@@ -100,11 +138,22 @@ pub struct MessageBox {
     buttons: Vec<StandardButton>,
     default_button: Option<StandardButton>,
     modal: bool,
+    /// Emitted for every button activation, including ones that also trigger
+    /// [`Self::accepted`] or [`Self::rejected`]. Carries the button that was
+    /// activated.
     pub button_clicked: Signal1<StandardButton>,
+    /// Emitted when the box was answered affirmatively, i.e. with OK, Yes, Save
+    /// or Apply. Carries no payload; read the button from
+    /// [`Self::button_clicked`] if the distinction matters.
     pub accepted: GenericSignal,
+    /// Emitted for every other button — Cancel, No, YesAll, NoAll, Discard,
+    /// Close, Abort, Retry, Ignore and Help. Note that YesAll and NoAll are
+    /// therefore *both* rejections by this rule.
     pub rejected: GenericSignal,
 }
 impl MessageBox {
+    /// Creates an empty message box with no title or text, no icon, a single OK
+    /// button as both the only and the default button, and modal mode enabled.
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::MessageBox, geometry, "MessageBox"),
@@ -119,6 +168,8 @@ impl MessageBox {
             rejected: GenericSignal::new(),
         }
     }
+    /// Creates a question prompt: [`MessageBoxIcon::Question`] with Yes and No
+    /// buttons, Yes being the default.
     pub fn question(geometry: Rect, title: impl Into<String>, text: impl Into<String>) -> Self {
         let mut mb = Self::new(geometry);
         mb.title = title.into();
@@ -128,6 +179,8 @@ impl MessageBox {
         mb.default_button = Some(StandardButton::Yes);
         mb
     }
+    /// Creates an informational box: [`MessageBoxIcon::Information`], leaving the
+    /// default OK button and modal flag from [`Self::new`] in place.
     pub fn information(geometry: Rect, title: impl Into<String>, text: impl Into<String>) -> Self {
         let mut mb = Self::new(geometry);
         mb.title = title.into();
@@ -135,6 +188,8 @@ impl MessageBox {
         mb.icon = MessageBoxIcon::Information;
         mb
     }
+    /// Creates a warning box: [`MessageBoxIcon::Warning`], still with a single,
+    /// default OK button.
     pub fn warning(geometry: Rect, title: impl Into<String>, text: impl Into<String>) -> Self {
         let mut mb = Self::new(geometry);
         mb.title = title.into();
@@ -142,6 +197,8 @@ impl MessageBox {
         mb.icon = MessageBoxIcon::Warning;
         mb
     }
+    /// Creates an error box: [`MessageBoxIcon::Critical`], still with a single,
+    /// default OK button.
     pub fn critical(geometry: Rect, title: impl Into<String>, text: impl Into<String>) -> Self {
         let mut mb = Self::new(geometry);
         mb.title = title.into();
@@ -149,50 +206,85 @@ impl MessageBox {
         mb.icon = MessageBoxIcon::Critical;
         mb
     }
+    /// The current title, empty if none was set.
     pub fn title(&self) -> &str {
         &self.title
     }
+    /// The current body text, empty if none was set.
     pub fn text(&self) -> &str {
         &self.text
     }
+    /// The current icon, [`MessageBoxIcon::NoIcon`] by default.
     pub fn icon(&self) -> MessageBoxIcon {
         self.icon
     }
+    /// The configured buttons, in the order they were supplied.
+    ///
+    /// May be empty, in which case the user has no way to answer the box.
     pub fn buttons(&self) -> &[StandardButton] {
         &self.buttons
     }
+    /// The button activated by Enter, or `None` if Enter should do nothing.
+    ///
+    /// Not validated against [`Self::buttons`]: the default can name a button that
+    /// is not currently shown, and Enter will still activate it.
     pub fn default_button(&self) -> Option<StandardButton> {
         self.default_button
     }
+    /// Replaces the title and requests a redraw.
     pub fn set_title(&mut self, title: impl Into<String>) {
         self.title = title.into();
         self.base.request_redraw();
     }
+    /// Replaces the body text and requests a redraw.
     pub fn set_text(&mut self, text: impl Into<String>) {
         self.text = text.into();
         self.base.request_redraw();
     }
+    /// Replaces the icon and requests a redraw.
     pub fn set_icon(&mut self, icon: MessageBoxIcon) {
         self.icon = icon;
         self.base.request_redraw();
     }
+    /// Replaces the visible buttons and requests a redraw.
+    ///
+    /// Does not touch [`Self::default_button`], so a stale default may remain
+    /// reachable via Enter after this call.
     pub fn set_buttons(&mut self, buttons: Vec<StandardButton>) {
         self.buttons = buttons;
         self.base.request_redraw();
     }
+    /// Sets which button Enter activates and requests a redraw.
+    ///
+    /// Takes a value, not an `Option`: there is no way to disable the default
+    /// button through this setter once it has been set.
     pub fn set_default_button(&mut self, btn: StandardButton) {
         self.default_button = Some(btn);
         self.base.request_redraw();
     }
+    /// Whether the box is marked modal. Defaults to `true`.
+    ///
+    /// This is a flag the surrounding dialog machinery reads; the widget itself
+    /// performs no input blocking, so a modal box is only actually modal if the
+    /// host honours the flag.
     pub fn is_modal(&self) -> bool {
         self.modal
     }
 
+    /// Marks the box modal or not and requests a redraw.
     pub fn set_modal(&mut self, modal: bool) {
         self.modal = modal;
         self.base.request_redraw();
     }
 
+    /// Simulates the user activating `btn`: emits [`Self::button_clicked`], then
+    /// either [`Self::accepted`] or [`Self::rejected`].
+    ///
+    /// The accept/reject split is by button identity, not by context: OK, Yes,
+    /// Save and Apply accept, and *every* other button rejects — including YesAll,
+    /// Close and Help. Any button at all may be passed, even one not in
+    /// [`Self::buttons`]; no validation is performed. The dialog is not dismissed
+    /// and no redraw is requested.
     pub fn click_button(&mut self, btn: StandardButton) {
         self.button_clicked.emit(btn);
         match btn {
@@ -207,6 +299,9 @@ impl MessageBox {
             }
         }
     }
+    /// The glyph drawn for the current icon: `"ℹ"` for information, `"?"` for a
+    /// question, `"⚠"` for a warning, `"✗"` for critical, and an empty string for
+    /// [`MessageBoxIcon::NoIcon`].
     fn icon_symbol(&self) -> &'static str {
         match self.icon {
             MessageBoxIcon::Information => "ℹ",
@@ -216,6 +311,9 @@ impl MessageBox {
             MessageBoxIcon::NoIcon => "",
         }
     }
+    /// The colour used to draw [`Self::icon_symbol`]: blue for information and
+    /// questions, orange for warnings, red for critical, and black (unused) for
+    /// [`MessageBoxIcon::NoIcon`].
     fn icon_color(&self) -> Color {
         match self.icon {
             MessageBoxIcon::Information => Color::rgb(0, 120, 215),
@@ -256,6 +354,9 @@ impl Widget for MessageBox {
 /// `access_read_dialog.in.rs` dispatch. Both properties are read-only: the old
 /// write layer had no arm for this kind.
 impl WidgetProperties for MessageBox {
+    /// Returns `"title"` and `"text"` as strings (never `None` — the fields simply
+    /// default to empty), delegating anything else to the base widget's shared
+    /// properties such as geometry and visibility.
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "title" => Ok(CapabilityValue::String(self.title().to_string())),
@@ -264,6 +365,9 @@ impl WidgetProperties for MessageBox {
         }
     }
 
+    /// Accepts `"title"` and `"text"` and requires a string value for each,
+    /// rejecting other types with [`CapabilityAccessError`]. Other names fall
+    /// through to the base widget's setters. Both writes request a redraw.
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         match name {
             "title" => {
@@ -278,10 +382,20 @@ impl WidgetProperties for MessageBox {
         }
     }
 
+    /// `"title"`, `"text"`, then every universally supported base property.
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["title", "text", BASE_PROPERTY_NAMES]
     }
 }
+/// Keyboard handling: Enter activates the default button and Escape activates
+/// Cancel, falling back to No and then Close.
+///
+/// The event is always forwarded to the base widget first (which handles
+/// enable/disable bookkeeping), and everything is ignored entirely while the
+/// widget is disabled. Key codes are raw values — `13` for Enter and `27` for
+/// Escape — rather than a key enum. Escape does nothing if none of Cancel, No or
+/// Close is among the configured buttons, and Enter does nothing when
+/// [`MessageBox::default_button`] is `None`.
 impl EventHandler for MessageBox {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);

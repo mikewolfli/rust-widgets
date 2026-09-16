@@ -26,7 +26,10 @@ pub struct TextEdit {
     undo_stack: UndoStack,
     history_target: Rc<RefCell<String>>,
     restoring_history: bool,
+    /// Emitted after the text changes: on edits, and after an undo/redo restore.
+    /// Not emitted when a `set_text` is given the text the widget already holds.
     pub text_changed: Signal1<String>,
+    /// Emitted with the zero-based caret offset, in bytes, into the text.
     pub cursor_position_changed: Signal1<usize>,
 }
 
@@ -177,10 +180,12 @@ impl TextEdit {
         true
     }
 
+    /// Returns whether there is a text mutation to undo.
     pub fn can_undo(&self) -> bool {
         self.undo_stack.can_undo()
     }
 
+    /// Returns whether there is an undone text mutation to reapply.
     pub fn can_redo(&self) -> bool {
         self.undo_stack.can_redo()
     }

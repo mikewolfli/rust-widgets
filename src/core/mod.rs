@@ -37,6 +37,8 @@
 //! - **Widgets**: All widget positioning uses screen coordinates
 mod alignment;
 mod color;
+/// Coordinate conversions and transforms between the screen, Cartesian, and
+/// PDF conventions documented above.
 pub mod coords;
 mod font;
 mod geometry;

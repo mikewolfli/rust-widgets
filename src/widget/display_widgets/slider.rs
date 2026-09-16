@@ -28,9 +28,19 @@ pub struct Slider {
     tracking: bool,
     slider_position: i32,
     mouse_pressed: bool,
+    /// Emitted with the new value on every value change, from user interaction
+    /// or from a programmatic setter.
     pub value_changed: Signal1<i32>,
+    /// Emitted with the new value when the value changes by dragging the handle,
+    /// as opposed to clicking the groove or keyboard stepping. Allows a consumer
+    /// to treat continuous manipulation differently (for example, defer expensive
+    /// work until release).
     pub slider_moved: Signal1<i32>,
+    /// Emitted when the handle is pressed. Carries no payload.
     pub slider_pressed: GenericSignal,
+    /// Emitted when the handle is released. Paired with
+    /// [`Slider::slider_pressed`], so the widget's own press tracking decides
+    /// when it fires rather than the pointer's position.
     pub slider_released: GenericSignal,
 }
 /// Tick mark position.
