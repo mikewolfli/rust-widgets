@@ -1,16 +1,20 @@
-// criterion (benchmark harness) cannot compile for wasm32.
-#![cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_arch = "wasm32"))]
 use criterion::{criterion_group, criterion_main, Criterion};
 
+#[cfg(not(target_arch = "wasm32"))]
 use rust_widgets::core::*;
+#[cfg(not(target_arch = "wasm32"))]
 use rust_widgets::render::*;
 
+#[cfg(not(target_arch = "wasm32"))]
 fn bench_fill_pixels(c: &mut Criterion) {
     let mut pixels = vec![0u8; 1920 * 1080 * 4];
     let color = Color::rgba(128, 64, 32, 255);
     c.bench_function("fill_pixels 1080p", |b| b.iter(|| fill_pixels(&mut pixels, color)));
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn bench_blend_pixel(c: &mut Criterion) {
     let mut pixels = vec![0u8; 1920 * 1080 * 4];
     let color = Color::rgba(128, 64, 32, 128);
@@ -39,6 +43,7 @@ fn bench_blend_pixel(c: &mut Criterion) {
 /// compiles the runtime out, so a build that enables every feature *and* `mini` (the
 /// `--all-features` shape) has no path here to measure.
 #[cfg(not(feature = "mini"))]
+#[cfg(not(target_arch = "wasm32"))]
 fn bench_render_frame(c: &mut Criterion) {
     use rust_widgets::widget::{runtime, Button, Widget};
 
@@ -64,6 +69,7 @@ fn bench_render_frame(c: &mut Criterion) {
 /// The other path named in the TODO. The tree is built outside the timed loop so the
 /// measurement is the traversal, not the construction. Gated like `bench_render_frame`.
 #[cfg(not(feature = "mini"))]
+#[cfg(not(target_arch = "wasm32"))]
 fn bench_dispatch_pointer_event(c: &mut Criterion) {
     use rust_widgets::core::Point;
     use rust_widgets::event::Event;
@@ -114,12 +120,33 @@ fn bench_dispatch_pointer_event(c: &mut Criterion) {
 // alloc-frugal profile (`mini`) compiles the widget runtime out, and a benchmark cannot
 // measure a path that is not there. Grouping them separately keeps the pixel-level
 // benchmarks running in every profile, including `mini`.
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_arch = "wasm32"))]
 criterion_group!(pixel_benches, bench_fill_pixels, bench_blend_pixel);
 
 #[cfg(not(feature = "mini"))]
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_arch = "wasm32"))]
 criterion_group!(runtime_benches, bench_render_frame, bench_dispatch_pointer_event);
 
 #[cfg(not(feature = "mini"))]
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_arch = "wasm32"))]
 criterion_main!(pixel_benches, runtime_benches);
 #[cfg(feature = "mini")]
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_arch = "wasm32"))]
 criterion_main!(pixel_benches);
+
+/// The fallback entry point for configurations where `criterion_main!` above is
+/// compiled out.
+///
+/// `criterion` is a host-only dev-dependency (it cannot build for wasm32) — but the
+/// bench *target* exists in every configuration, and a bench target must have a
+/// `main`. Gating the whole file with a crate-level `#![cfg]` removed the
+/// `criterion_main!`-generated `main` along with everything else, which made
+/// `cargo check --all-targets --target wasm32-unknown-unknown` fail with E0601
+/// ("main function not found in crate `render_bench`"). This module body is empty on
+/// purpose: a benchmark that cannot run has nothing to do.
+#[cfg(target_arch = "wasm32")]
+fn main() {}

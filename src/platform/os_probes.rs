@@ -291,6 +291,14 @@ mod tests {
     /// for a real spooler (`lpr <job>`). `sh`/`cscript` both satisfy it, so the check
     /// is not skipped on a Windows checkout — where the equivalent silent loss lives
     /// in a different submission mechanism and is therefore easy to leave unguarded.
+    ///
+    /// Gated on `any(unix, windows)` because it *is* the gate for
+    /// [`stand_in_spooler`]: without it, a target that is neither (wasm, bare metal —
+    /// where `run_spooler` and `stand_in_spooler` do not exist) failed to compile
+    /// `--all-targets` with `cannot find function stand_in_spooler`. The property under
+    /// test is a property of the spooler submission path, which only exists there, so
+    /// skipping is honest rather than a lost assertion.
+    #[cfg(any(unix, windows))]
     #[test]
     fn print_job_waits_for_the_spooler_before_reading_back() {
         use std::io::Write as _;

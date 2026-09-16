@@ -4,6 +4,60 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 
+## 2.1.0 (2026-09-17) — HarmonyOS Made Real, Error Messages Audited, Cross-Target `--all-targets` Fixed
+
+Makes the cross-target claims falsifiable. No public API changed and no capability was
+added or removed: every entry below is code that already claimed to work and did not.
+
+See [docs/reports/CHANGELOG.md](docs/reports/CHANGELOG.md) for the full list.
+
+### Fixed
+
+- **The OpenHarmony SDK is on this host but the targets were never installed**, so
+  "HarmonyOS passes" had never been observed. `rustup target add` for
+  `aarch64`/`armv7`/`x86_64-unknown-linux-ohos` was the missing step; all three now
+  build **and link** against the SDK sysroot, with the produced `.so` machine type
+  verified (`AArch64`, `ARM`, `X86-64`), and clippy is clean under `-D warnings`.
+  `loongarch64` remains unbuildable (Tier 3, no prebuilt std, no libc for that arch in
+  the SDK) and the gate pins that specific outcome rather than pretending either way.
+
+- **`cargo check --target wasm32-unknown-unknown --all-targets` did not compile.**
+  A bench target has no wasm build (criterion is a host-only dev-dependency), but the
+  bench *targets* still existed, so five benches failed with `E0601` (`main` function
+  not found) — `wasm32 --all-targets` had never been run. Each bench is now gated by
+  item instead of by a crate-level `#![cfg]`, which is what had been removing the
+  `criterion_main!`-generated `main` along with everything else.
+
+- **`src/platform/os_probes.rs` did not compile off unix/windows.** The test
+  `print_job_waits_for_the_spooler_before_reading_back` called `stand_in_spooler`,
+  which is `#[cfg(any(unix, windows))]`; the test itself was ungated. The gate now sits
+  on the test, where the property it asserts is also the gate for the helper.
+
+- **`wasm32 --all-targets` also emitted an `unused_imports` warning** for `AtomicBool`
+  in `src/event/loop.rs`: its only uses are the native-pump tests, which are themselves
+  wasm-gated.
+
+- **206 error messages were not actionable** (`tools/check_error_messages.py`, the
+  `TODO.md` item "all error messages are user-friendly and actionable"). Each now names
+  the specific input that failed **and** states the expected form — e.g.
+  `PNG is 4096x4096 (16777216 pixels), which exceeds the 134217728 pixel cap; downscale
+  the image before decoding`. The scanner itself had a real defect: its string-literal
+  regex stopped at the `'` inside `"muxer '{name}' could not be created"`, so the message
+  was reported as the fragment `muxer ` — which then looked like it named nothing.
+  Fixing both took the report from **206 findings to 0**.
+
+- **Two doc-lint failures blocked the build** (`missing documentation` for
+  `MacOSAccessibilityBridge::new` and `MacOsClipboard`), reintroduced at some point after
+  the `#![deny(missing_docs)]` pass.
+
+### Verification
+
+`cargo test`: **desktop 4127 · embedded 1490 · mini 1411, 0 failed**. `cargo fmt --check`
+clean; `cargo clippy --all-features --all-targets -- -D warnings` clean. Cross targets
+build with 0 warnings: `wasm32-unknown-unknown --all-targets`,
+`x86_64-pc-windows-gnu --all-targets`, `aarch64-apple-ios`, `aarch64-apple-ios-sim
+--all-targets`, and the three linkable OpenHarmony triples.
+
 ## 2.0.1 (2026-09-16) — Linux GTK Backend Restored, HarmonyOS Target Buildable
 
 A corrective release for platform paths that 2.0.0's verification did not cover. No API

@@ -1,5 +1,3 @@
-// criterion (benchmark harness) cannot compile for wasm32.
-#![cfg(not(target_arch = "wasm32"))]
 //! Benchmarks for the signal system (emit, connect, disconnect).
 //!
 //! Covers:
@@ -46,12 +44,18 @@
 //! the ~30 ns per-slot take/restore, and that cost is what buys self-disconnect and
 //! re-entrancy — both of which are now pinned by tests in `signal::core_signal`.
 
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_arch = "wasm32"))]
 use criterion::{criterion_group, criterion_main, Criterion};
+#[cfg(not(target_arch = "wasm32"))]
 use rust_widgets::signal::{ConnectionHandle, Priority, Signal};
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 
 /// Emits against `slot_count` no-op slots, for the given label.
+#[cfg(not(target_arch = "wasm32"))]
 fn bench_emit_at(c: &mut Criterion, slot_count: usize) {
     let signal = Signal::<u32>::new();
     for _ in 0..slot_count {
@@ -61,6 +65,7 @@ fn bench_emit_at(c: &mut Criterion, slot_count: usize) {
 }
 
 /// The regime a UI actually runs in: one handler per signal.
+#[cfg(not(target_arch = "wasm32"))]
 fn bench_signal_emit_small(c: &mut Criterion) {
     for n in [1usize, 2, 4, 8] {
         bench_emit_at(c, n);
@@ -72,6 +77,7 @@ fn bench_signal_emit_small(c: &mut Criterion) {
 /// The re-entrant pass must skip the slot still on the stack (that is what makes
 /// recursion terminate), so this measures the cost of the recursion guard: a
 /// nested snapshot, sort, and per-handle lookup that finds nothing to call.
+#[cfg(not(target_arch = "wasm32"))]
 fn bench_signal_emit_nested(c: &mut Criterion) {
     let signal = Signal::<u32>::new();
     let depth = Arc::new(AtomicU64::new(0));
@@ -100,6 +106,7 @@ fn bench_signal_emit_nested(c: &mut Criterion) {
 /// Compared against `signal_emit_1_slot`, the delta is the price of supporting
 /// self-disconnect. That is the number to weigh against any proposal to drop the
 /// per-slot re-check, because dropping it would silently change this behaviour.
+#[cfg(not(target_arch = "wasm32"))]
 fn bench_signal_emit_with_self_disconnect(c: &mut Criterion) {
     c.bench_function("signal_emit_with_self_disconnect", |b| {
         b.iter(|| {
@@ -118,6 +125,7 @@ fn bench_signal_emit_with_self_disconnect(c: &mut Criterion) {
     });
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn bench_signal_emit(c: &mut Criterion) {
     let signal = Signal::<u32>::new();
     for _ in 0..1000 {
@@ -130,6 +138,7 @@ fn bench_signal_emit(c: &mut Criterion) {
     });
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn bench_signal_emit_10_slots(c: &mut Criterion) {
     let signal = Signal::<u32>::new();
     for _ in 0..10 {
@@ -142,6 +151,7 @@ fn bench_signal_emit_10_slots(c: &mut Criterion) {
     });
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn bench_signal_emit_100_slots(c: &mut Criterion) {
     let signal = Signal::<u32>::new();
     for _ in 0..100 {
@@ -154,6 +164,7 @@ fn bench_signal_emit_100_slots(c: &mut Criterion) {
     });
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn bench_signal_connect(c: &mut Criterion) {
     let signal = Signal::<u32>::new();
     c.bench_function("signal_connect", |b| {
@@ -163,6 +174,7 @@ fn bench_signal_connect(c: &mut Criterion) {
     });
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn bench_signal_disconnect(c: &mut Criterion) {
     let signal = Signal::<u32>::new();
     let handles: Vec<_> = (0..1000).map(|_| signal.connect(|_v: Arc<u32>| {})).collect();
@@ -176,6 +188,7 @@ fn bench_signal_disconnect(c: &mut Criterion) {
     });
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn bench_signal_emit_large_payload(c: &mut Criterion) {
     let signal = Signal::<String>::new();
     let large = "x".repeat(4096);
@@ -189,6 +202,8 @@ fn bench_signal_emit_large_payload(c: &mut Criterion) {
     });
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_arch = "wasm32"))]
 criterion_group!(
     benches,
     bench_signal_emit_small,
@@ -201,4 +216,27 @@ criterion_group!(
     bench_signal_disconnect,
     bench_signal_emit_large_payload,
 );
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_arch = "wasm32"))]
 criterion_main!(benches);
+
+/// Bench targets always need a `main`, whatever their body compiles to.
+///
+/// `criterion` is a host-only dev-dependency (it cannot build for wasm32), and the
+/// widget runtime is absent from the alloc-frugal profile — but the bench *target*
+/// exists in every configuration. Gating the whole file with a crate-level `#![cfg]`
+/// removes the `criterion_main!`-generated `main` too, which made
+/// `cargo check --all-targets --target wasm32-unknown-unknown` fail with E0601
+/// ("main function not found in crate ..."). Gating the items and supplying this
+/// entry point keeps every configuration a valid crate.
+/// The fallback entry point for configurations where `criterion_main!` above is
+/// compiled out.
+///
+/// `criterion` is a host-only dev-dependency (it cannot build for wasm32) — but the
+/// bench *target* exists in every configuration, and a bench target must have a
+/// `main`. Gating the whole file with a crate-level `#![cfg]` removed the
+/// `criterion_main!`-generated `main` along with everything else, which made
+/// `cargo check --all-targets --target wasm32-unknown-unknown` fail with E0601
+/// ("main function not found in crate `signal_bench`").
+#[cfg(target_arch = "wasm32")]
+fn main() {}

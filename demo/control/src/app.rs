@@ -356,7 +356,7 @@ fn build_custom_painted_controls(win: &WindowHandle, log: &Arc<EventLog>) {
 pub fn run() {
     println!();
     println!("╔══════════════════════════════════════════════════════════╗");
-    println!("║     rust_widgets  —  Controls Demo v2.0.1             ║");
+    println!("║     rust_widgets  —  Controls Demo v2.1.0             ║");
     println!("║     App 框架 · 统一控件 API · 实时事件日志                ║");
     println!("╚══════════════════════════════════════════════════════════╝");
     println!();

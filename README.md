@@ -51,9 +51,15 @@ property contract; the platform capability matrix
 is generated from source and gated for drift in CI.
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.0.1-blue)]()
+[![version](https://img.shields.io/badge/version-2.1.0-blue)]()
 [![tests](https://img.shields.io/badge/tests-4000%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
+
+**Verified in 2.1.0:** `4127` lib tests pass on `desktop` (`1490` on `embedded`, `1411` on
+`mini`), clippy is clean under `-D warnings` for `--all-features --all-targets`, and the
+cross targets **build with 0 warnings**: `wasm32-unknown-unknown` and
+`x86_64-pc-windows-gnu` (both including `--all-targets`), `aarch64-apple-ios` ± simulator,
+and the three linkable OpenHarmony triples. See [`CHANGELOG.md`](CHANGELOG.md).
 
 <p align="center">
   <a href="README.zh-CN.md">
@@ -168,16 +174,26 @@ Two consequences worth knowing before you rely on these profiles:
 
 ### OS Backends
 
-| OS | Feature | Auto-detect |
-|----|---------|:-----------:|
-| Windows (Win32) | `windows` | ✅ |
-| macOS (Cocoa/objc2) | `macos` | ✅ |
-| iOS (UIKit) | `ios` | ✅ |
-| Linux (GTK) | `linux-gtk` | — |
-| Linux (Wayland) | `linux-wayland` | — |
-| Android (JNI) | `android` | ✅ |
-| Web (WASM) | `wasm` | — |
-| HarmonyOS | `harmony` | — |
+| OS | Feature | Auto-detect | Cross-checked from macOS |
+|----|---------|:-----------:|:-----------------------:|
+| Windows (Win32) | `windows` | ✅ | ✅ `x86_64-pc-windows-gnu` (0 warnings) |
+| macOS (Cocoa/objc2) | `macos` | ✅ | n/a — host |
+| iOS (UIKit) | `ios` | ✅ | ✅ device **and** simulator, incl. `--all-targets` |
+| Linux (GTK) | `linux-gtk` | — | needs a cross sysroot (CI job) |
+| Linux (Wayland) | `linux-wayland` | — | needs a cross sysroot (CI job) |
+| Android (JNI) | `android` | ✅ | needs the NDK (CI job) |
+| Web (WASM) | `wasm` | — | ✅ `wasm32-unknown-unknown`, incl. `--all-targets` |
+| HarmonyOS | `harmony` | — | ✅ `aarch64`/`armv7`/`x86_64-unknown-linux-ohos`, **built and linked** |
+
+> **"Cross-checked" means compiled, not merely claimed.** The HarmonyOS rows are
+> built *and linked* against the OpenHarmony SDK sysroot, and the resulting
+> `librust_widgets.so` machine type is asserted (`AArch64` / `ARM` / `X86-64`) — a
+> `cargo check` alone never links, so it cannot catch a wrong or missing toolchain.
+> `loongarch64-unknown-linux-ohos` is **not buildable**: rustup ships no std for it
+> (Tier 3) and the SDK ships no libc for that architecture. Rather than report a pass
+> for a target it never touched, `tools/check_harmony_cross.sh` pins that specific
+> expected outcome and fails if it ever changes.
+>
 
 ---
 

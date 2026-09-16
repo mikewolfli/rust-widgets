@@ -2,6 +2,115 @@
 
 All notable changes to this project are documented in this file.
 
+## 2.1.0 (2026-09-17) — HarmonyOS Made Real, Error Messages Audited, Cross-Target `--all-targets` Fixed
+
+This release makes the cross-target claims **falsifiable**. No public API changed and no
+capability was added or removed. Every entry is code that already claimed to work and did
+not — the recurring shape is *a gate that had never been run in the configuration it
+names*, which is exactly what a green gate is supposed to rule out.
+
+### Fixed
+
+- **The OpenHarmony SDK was installed but its Rust targets were not**, so "HarmonyOS
+  passes" had never actually been observed on this host. Installing
+  `aarch64`/`armv7`/`x86_64-unknown-linux-ohos` was the missing step. All three now:
+
+  | target | `check` | `build` + link | artifact machine | clippy `-D warnings` |
+  |---|---|---|---|---|
+  | `aarch64-unknown-linux-ohos` | ✅ | ✅ 275 MB | `AArch64` | ✅ |
+  | `armv7-unknown-linux-ohos` | ✅ | ✅ 252 MB | `ARM` | — |
+  | `x86_64-unknown-linux-ohos` | ✅ | ✅ 277 MB | `X86-64` | — |
+
+  `loongarch64-unknown-linux-ohos` stays unbuildable — rustup ships no std for it
+  (Tier 3) and the SDK ships no libc for that architecture — and `check_harmony_cross.sh`
+  **pins that specific outcome** rather than reporting a pass for a target it never
+  touched. Full gate: `All HarmonyOS cross-target checks passed.` (6/6).
+
+- **`cargo check --target wasm32-unknown-unknown --all-targets` did not compile at all.**
+  criterion is a host-only dev-dependency, and the bench sources carried a crate-level
+  `#![cfg(not(target_arch = "wasm32"))]`. That removes the whole crate contents —
+  including the `main` that `criterion_main!` generates — while the bench *targets* still
+  exist in every configuration, so five benches failed with
+  `E0601: main function not found in crate`. The benches are now gated **item by item**,
+  with an explicit `#[cfg(target_arch = "wasm32")] fn main() {}` fallback so the crate is
+  well-formed wherever it is built. `json_bench` already used this pattern, which is what
+  made the other four look like a style difference rather than a defect.
+
+- **`src/platform/os_probes.rs` did not compile outside unix/windows.**
+  `print_job_waits_for_the_spooler_before_reading_back` called `stand_in_spooler`, which
+  is `#[cfg(any(unix, windows))]`; the test was ungated. The property it asserts really
+  is about the spooler submission path, which only exists on those hosts, so the gate
+  belongs on the test.
+
+- **An `unused_imports` warning on wasm32** for `AtomicBool` in `src/event/loop.rs`. Its
+  only users are the native-pump tests, which are themselves gated on
+  `not(target_arch = "wasm32")` (there is no native pump in a browser sandbox), so the
+  import now carries the same gate.
+
+- **206 error messages were not actionable.** `TODO.md` asks that "all error messages are
+  user-friendly and actionable"; restated as a checkable rule, a message a caller can see
+  must (a) name the specific value/path/id that failed and (b) state the expected form or
+  the next step. Every reported site now does both:
+
+  ```text
+  before  PNG dimensions too large: 4096x4096
+  after   PNG is 4096x4096 (16777216 pixels), which exceeds the 134217728 pixel cap;
+          downscale the image before decoding
+
+  before  Invalid JPEG signature
+  after   JPEG must start with the SOI marker FF D8, but this 3-byte input starts with [50, 36, 52]
+
+  before  Nothing to undo
+  after   nothing to undo: the undo stack is empty (0 redoable command(s) pending)
+  ```
+
+  The scanner itself had a real defect worth recording: its message regex
+  `["']([^"']{4,200})["']` stops at the `'` inside `"muxer '{name}' could not be
+  created"`, so the finding was reported as the fragment `muxer ` — which then looked
+  like a message that named nothing. Twelve of the reported messages were this artifact.
+  `STRING_LITERAL` now accepts `{…}` interpolations in the body. Report:
+  **206 findings → 0**. Six `expect(..)` strings were reclassified rather than rewritten:
+  they follow a value the crate itself constructs from literals
+  (`from_ymd_opt(1900,1,1)`, `with_day(1)`, `from_size_align(capacity, 8)`), so no caller
+  input can reach them — they explain a crash trace, they are not messages to act on.
+
+- **Two doc-lint failures blocked the build.** `#![deny(missing_docs)]` rejected
+  `MacOSAccessibilityBridge::new` and `MacOsClipboard`, neither of which carried a doc
+  comment. `cargo check --features desktop` failed with 2 errors before this round.
+
+- **Four tests asserted the exact old wording** and were updated to assert the refined
+  contract instead of a substring that had to change with it: the messages they pinned
+  (`"cannot print empty content"`, `"JSON data is empty"`, `"Nothing to undo"`,
+  `"JSON parse error"`, `"not found"`) were themselves the defect. Each test now pins the
+  two facts a caller needs — e.g. the missing id **and** the list of available ids.
+
+### Verification
+
+```text
+$ cargo test --no-default-features --features desktop --lib -q
+  test result: ok. 4127 passed; 0 failed; 0 ignored
+$ cargo test --no-default-features --features embedded --lib -q
+  test result: ok. 1490 passed; 0 failed; 0 ignored
+$ cargo test --no-default-features --features mini --lib -q
+  test result: ok. 1411 passed; 0 failed; 0 ignored
+
+$ cargo fmt --all -- --check                                  fmt OK
+$ cargo clippy --all-features --all-targets -- -D warnings     clean
+$ python3 tools/check_error_messages.py
+  Scanned 98 error message(s) that leave the crate from src/.
+  0 do not satisfy both parts of the rule.
+```
+
+Cross targets, all with 0 warnings:
+
+```text
+wasm32-unknown-unknown --features wasm --all-targets            Finished
+x86_64-pc-windows-gnu --features windows --all-targets         Finished
+aarch64-apple-ios          --features ios,ios-uikit-ffi          Finished
+aarch64-apple-ios-sim      --features ios,ios-uikit-ffi --all-targets  Finished
+aarch64/armv7/x86_64-unknown-linux-ohos (SDK sysroot, linked)   Finished
+```
+
 ## 2.0.1 (2026-09-16) — Linux GTK Backend Restored, Windows/Linux Link Fixes
 
 A corrective release for platform paths that 2.0.0's verification did not cover. No API

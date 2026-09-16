@@ -471,7 +471,12 @@ mod tests {
     #[cfg(not(alloc_frugal))]
     use alloc::sync::Arc;
     #[cfg(not(alloc_frugal))]
-    use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    // `AtomicBool` is only used by the native-pump tests, which are themselves gated
+    // on `not(target_arch = "wasm32")` (there is no native pump in a browser sandbox).
+    // Importing it unconditionally left an `unused_imports` warning on wasm32 builds.
+    #[cfg(all(not(alloc_frugal), not(target_arch = "wasm32")))]
+    use core::sync::atomic::AtomicBool;
 
     /// An idle task must actually run once the loop ticks enough frames.
     ///

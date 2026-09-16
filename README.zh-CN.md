@@ -125,9 +125,15 @@ Arc、Spinner、Roller、Dropdown、TextArea、Keyboard、Switch。
 （`docs/plans/platform_capability_matrix.md`）由源码机械派生，并在 CI 中设有防脱节门禁。
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.0.1-blue)]()
+[![version](https://img.shields.io/badge/version-2.1.0-blue)]()
 [![tests](https://img.shields.io/badge/tests-4000%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
+
+**2.1.0 实测：** `desktop` 档 **4127** 个库测试全通过（`embedded` **1490**、`mini` **1411**）；
+`--all-features --all-targets` 在 `-D warnings` 下 clippy 干净；交叉目标**均 0 warning 构建**：
+`wasm32-unknown-unknown` 与 `x86_64-pc-windows-gnu`（含 `--all-targets`）、
+`aarch64-apple-ios` 真机与模拟器、以及三个可构建的鸿蒙 target。详见
+[`CHANGELOG.md`](CHANGELOG.md)（中文版见 [`docs/reports/CHANGELOG.md`](docs/reports/CHANGELOG.md)）。
 
 <p align="center">
   <a href="README.md">
@@ -233,16 +239,26 @@ cargo check --no-default-features --features "tablet,macos"
 
 ### 操作系统支持
 
-| 系统 | 特性 | 自动检测 |
-|------|------|:--------:|
-| Windows (Win32) | `windows` | ✅ |
-| macOS (Cocoa/objc2) | `macos` | ✅ |
-| iOS (UIKit) | `ios` | ✅ |
-| Linux (GTK) | `linux-gtk` | — |
-| Linux (Wayland) | `linux-wayland` | — |
-| Android (JNI) | `android` | ✅ |
-| Web (WASM) | `wasm` | — |
-| HarmonyOS | `harmony` | — |
+| 系统 | 特性 | 自动检测 | 已在 macOS 上做交叉验证 |
+|------|------|:--------:|:----------------------:|
+| Windows (Win32) | `windows` | ✅ | ✅ `x86_64-pc-windows-gnu`（0 warning）|
+| macOS (Cocoa/objc2) | `macos` | ✅ | 不适用（本机）|
+| iOS (UIKit) | `ios` | ✅ | ✅ 真机与模拟器，含 `--all-targets` |
+| Linux (GTK) | `linux-gtk` | — | 需要 cross sysroot（见 CI）|
+| Linux (Wayland) | `linux-wayland` | — | 需要 cross sysroot（见 CI）|
+| Android (JNI) | `android` | ✅ | 需要 NDK（见 CI）|
+| Web (WASM) | `wasm` | — | ✅ `wasm32-unknown-unknown`，含 `--all-targets` |
+| HarmonyOS | `harmony` | — | ✅ `aarch64`/`armv7`/`x86_64-unknown-linux-ohos`，**已编译并链接** |
+
+> **「交叉验证」指的是真的编译过，不是声明。** HarmonyOS 一行不仅 `check`，还对着
+> OpenHarmony SDK sysroot **完成链接**，并断言产物 `librust_widgets.so` 的机器类型
+> （`AArch64` / `ARM` / `X86-64`）——`cargo check` 从不链接，因此它无法发现工具链缺失
+> 或架构不对。
+>
+> `loongarch64-unknown-linux-ohos` **不可构建**：rustup 没有该 target 的 std（Tier 3），
+> SDK 也没有该架构的 libc。`tools/check_harmony_cross.sh` 不会为一个它从未真正碰过的
+> target 报告通过，而是**正向钉住这个特定结果**，一旦情况变化就报错。
+>
 
 ---
 
