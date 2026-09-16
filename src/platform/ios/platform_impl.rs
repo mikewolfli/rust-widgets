@@ -76,8 +76,12 @@ impl Platform for IosMobilePlatform {
 
     /// iOS printing goes through `UIPrintInteractionController`, not a spooler
     /// command, so this state backend cannot submit a job file.
-    fn spawn_print_job(&self, _job_file: &std::path::Path) -> Result<(), String> {
-        Err("iOS printing requires UIPrintInteractionController (not bound)".to_string())
+    fn spawn_print_job(&self, job_file: &std::path::Path) -> Result<(), String> {
+        Err(format!(
+            "iOS printing requires UIPrintInteractionController, which is not bound in this \
+             build; job file '{}' was not printed",
+            job_file.display()
+        ))
     }
 
     /// iOS uses the same AppKit-style accelerator symbols as macOS (`⌘⇧Z`).

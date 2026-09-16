@@ -58,6 +58,15 @@ impl BoundJsonLayout {
         self.name_map.get(name).copied()
     }
 
+    /// Iterates the registered JSON `"id"` names.
+    ///
+    /// Exists so a caller that cannot resolve a name can report what *is*
+    /// available (e.g. [`widget_by_name`](Self::widget_by_name)'s error), instead
+    /// of leaving the reader to guess.
+    pub fn ids(&self) -> impl Iterator<Item = &str> {
+        self.name_map.keys().map(String::as_str)
+    }
+
     /// Number of registered widgets.
     pub fn len(&self) -> usize {
         self.name_map.len()
@@ -79,7 +88,12 @@ impl BoundJsonLayout {
     /// btn.set_text("Confirm");
     /// ```
     pub fn widget_by_name<T: WidgetHandle>(&self, name: &str) -> Result<T, String> {
-        let raw_id = self.id(name).ok_or_else(|| format!("widget '{name}' not found in layout"))?;
+        let raw_id = self.id(name).ok_or_else(|| {
+            format!(
+                "layout has no widget named '{name}'; available ids are {:?}",
+                self.ids().collect::<Vec<_>>()
+            )
+        })?;
         Ok(T::from_raw(raw_id))
     }
 
@@ -233,7 +247,11 @@ mod tests {
         let layout = BoundJsonLayout::new();
         let result = layout.widget_by_name::<LabelHandle>("missing");
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("not found"));
+        let err = result.unwrap_err();
+        // The message must name the missing id (otherwise the reader cannot tell a typo
+        // from a widget that was never registered) and list what does exist.
+        assert!(err.contains("missing"), "{err}");
+        assert!(err.contains("available ids"), "{err}");
     }
 
     #[test]

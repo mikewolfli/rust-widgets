@@ -442,7 +442,11 @@ impl LottieWidget {
     /// Returns Ok(()) on success, or an error string if parsing fails.
     pub fn load_json(&mut self, data: &str) -> Result<(), String> {
         if data.is_empty() {
-            return Err("JSON data is empty".to_string());
+            return Err(format!(
+                "Lottie JSON data is empty ({} bytes); pass the contents of a .json \
+                 animation file",
+                data.len()
+            ));
         }
 
         // Attempt to parse the data as JSON and extract frame-related fields.
@@ -462,7 +466,10 @@ impl LottieWidget {
 
         let total = (op - ip).max(0.0) as u32;
         if total == 0 {
-            return Err("Lottie animation has zero frames".to_string());
+            return Err(format!(
+                "Lottie animation has zero frames: its in-point {ip} and out-point {op} \
+                 declare no playable range"
+            ));
         }
 
         // Extract frame rate if present.
@@ -1110,7 +1117,8 @@ mod tests {
         let mut lottie = LottieWidget::new(Rect::new(0, 0, 200, 200));
         let result = lottie.load_json("");
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "JSON data is empty");
+        let err = result.unwrap_err();
+        assert!(err.contains("empty") && err.contains("0 bytes"), "{err}");
     }
 
     #[test]

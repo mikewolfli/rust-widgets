@@ -426,7 +426,11 @@ impl WebViewCore {
 
     pub fn evaluate_javascript(&mut self, script: &str) -> JsResult<JsValue> {
         if !self.settings.javascript_enabled {
-            return Err(super::js_engine::JsError::new("JavaScript is disabled".to_string()));
+            return Err(super::js_engine::JsError::new(format!(
+                "JavaScript is disabled for this view, so the {} byte script was not run; set \
+                 `settings.javascript_enabled` to true to allow evaluation",
+                script.len()
+            )));
         }
         let result = self.js_engine.evaluate(script, &mut self.js_context)?;
         for msg in self.js_context.console_messages() {

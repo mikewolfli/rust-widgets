@@ -83,7 +83,12 @@ impl WgpuRenderer {
                 trace: wgpu::Trace::Off,
             })
             .await
-            .map_err(|error| format!("wgpu request_device failed: {error}"))?;
+            .map_err(|error| {
+                format!(
+                    "the GPU device could not be requested: {error}; the adapter may have been \
+                     lost or the requested limits unsupported"
+                )
+            })?;
         // ── Create shader modules ──
         let clear_vs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("clear_vs"),
@@ -359,10 +364,12 @@ impl WgpuRenderer {
         let _ = self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
         let map_result =
             receiver.recv().map_err(|_| "wgpu map_async callback channel closed".to_string())?;
-        map_result.map_err(|error| format!("wgpu buffer map failed: {error:?}"))?;
-        let mapped = buffer_slice
-            .get_mapped_range()
-            .map_err(|error| format!("wgpu buffer get_mapped_range failed: {error:?}"))?;
+        map_result.map_err(|error| {
+            format!("GPU buffer could not be mapped for CPU readback: {error:?}")
+        })?;
+        let mapped = buffer_slice.get_mapped_range().map_err(|error| {
+            format!("mapped GPU buffer range could not be read back: {error:?}")
+        })?;
 
         // Copy row by row, stripping padding
         let unpadded = (width * 4) as usize;
@@ -547,10 +554,12 @@ impl WgpuRenderer {
         let _ = self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
         let map_result =
             receiver.recv().map_err(|_| "wgpu map_async callback channel closed".to_string())?;
-        map_result.map_err(|error| format!("wgpu buffer map failed: {error:?}"))?;
-        let mapped = buffer_slice
-            .get_mapped_range()
-            .map_err(|error| format!("wgpu buffer get_mapped_range failed: {error:?}"))?;
+        map_result.map_err(|error| {
+            format!("GPU buffer could not be mapped for CPU readback: {error:?}")
+        })?;
+        let mapped = buffer_slice.get_mapped_range().map_err(|error| {
+            format!("mapped GPU buffer range could not be read back: {error:?}")
+        })?;
 
         let unpadded = (width * 4) as usize;
         let padded = padded_bytes_per_row as usize;
@@ -699,7 +708,11 @@ impl WgpuRenderer {
         rgba8: &[u8],
     ) -> Result<Vec<u8>, String> {
         if rgba8.len() != (width * height * 4) as usize {
-            return Err("rgba8 input length does not match width*height*4".to_string());
+            return Err(format!(
+                "rgba8 input is {} bytes but a {width}x{height} image needs {} bytes",
+                rgba8.len(),
+                (width * height * 4) as usize
+            ));
         }
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("rw_wgpu_offscreen_texture"),
@@ -771,10 +784,12 @@ impl WgpuRenderer {
         let _ = self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
         let map_result =
             receiver.recv().map_err(|_| "wgpu map_async callback channel closed".to_string())?;
-        map_result.map_err(|error| format!("wgpu buffer map failed: {error:?}"))?;
-        let mapped = buffer_slice
-            .get_mapped_range()
-            .map_err(|error| format!("wgpu buffer get_mapped_range failed: {error:?}"))?;
+        map_result.map_err(|error| {
+            format!("GPU buffer could not be mapped for CPU readback: {error:?}")
+        })?;
+        let mapped = buffer_slice.get_mapped_range().map_err(|error| {
+            format!("mapped GPU buffer range could not be read back: {error:?}")
+        })?;
         let mut pixels = vec![0u8; (width * height * bytes_per_pixel) as usize];
         for row in 0..height as usize {
             let src_start = row * padded_bytes_per_row as usize;

@@ -125,10 +125,22 @@ impl AssetWatcher {
             },
             Config::default(),
         )
-        .map_err(|e| format!("Failed to create asset watcher: {e}"))?;
+        .map_err(|e| {
+            format!(
+                "asset watcher could not be created for '{}': {e} (the OS notify backend \
+                 may be unavailable)",
+                dir.display()
+            )
+        })?;
 
         let mode = if recursive { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive };
-        watcher.watch(dir, mode).map_err(|e| format!("Failed to watch directory: {e}"))?;
+        watcher.watch(dir, mode).map_err(|e| {
+            format!(
+                "directory '{}' could not be watched with mode {mode:?}: {e} (check that the \
+                 path exists and is readable)",
+                dir.display()
+            )
+        })?;
 
         self.watcher = Some(watcher);
         Ok(())

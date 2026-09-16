@@ -77,7 +77,11 @@ impl DecodedAnimation {
         loop_count: Option<u32>,
     ) -> Result<Self, String> {
         if frames.len() != delays.len() {
-            return Err("Animation frame and delay counts differ".into());
+            return Err(format!(
+                "animation has {} frames but {} delays: every frame needs exactly one delay",
+                frames.len(),
+                delays.len()
+            ));
         }
         Ok(Self { frames, delays, loop_count })
     }
@@ -193,6 +197,22 @@ impl ImageData {
             ImageData::Grayscale16(d) => d,
             ImageData::Rgba16(d) => d,
             ImageData::Rgb16(d) => d,
+        }
+    }
+
+    /// Returns the pixel layout's name, for use in error messages.
+    ///
+    /// Exists so a caller that rejects a layout can say *which* one it got
+    /// (`resize needs RGBA8 data, got Rgb16`) instead of only that the layout was
+    /// wrong — the reader cannot fix the call without knowing the actual variant.
+    pub fn variant_name(&self) -> &'static str {
+        match self {
+            ImageData::Rgba8(_) => "Rgba8",
+            ImageData::Rgb8(_) => "Rgb8",
+            ImageData::Grayscale8(_) => "Grayscale8",
+            ImageData::Grayscale16(_) => "Grayscale16",
+            ImageData::Rgba16(_) => "Rgba16",
+            ImageData::Rgb16(_) => "Rgb16",
         }
     }
 

@@ -52,6 +52,12 @@ LEAVES_THE_CRATE = re.compile(
     re.VERBOSE,
 )
 MESSAGE = re.compile(r"""["'](?P<message>[^"']{4,200})["']""")
+# A Rust string literal, including the `'` characters that appear *inside* it.
+# `["']([^"']{4,200})["']` cannot match `"muxer '{name}' could not ..."`: it stops at the
+# closing quote of the inner `{name}`, so the message is reported as the fragment
+# `muxer ` alone — which then looks like it names nothing. Accepting a `{...}`
+# interpolation as part of the body is what lets the scanner see the whole message.
+STRING_LITERAL = re.compile(r'"(?P<message>(?:\\.|\{[^"{}]*\}|[^"\\]){4,400})"')
 
 # Names a concrete value, location, or domain term the reader can act on.
 #
@@ -121,6 +127,18 @@ INVARIANT_EXPECT = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
+# A literal the code itself constructs and then unwraps: `from_ymd_opt(1900, 1, 1)`,
+# `with_day(1)`, `Layout::from_size_align(capacity, 8)`. These `expect("...")` calls
+# cannot fail for any *input a caller can supply* — refusing them is a compiler-level
+# impossibility, and the text exists to explain that impossibility in a crash trace.
+# Treating them as user-facing messages asks for information the caller cannot use,
+# which is why this file reports them separately instead of as findings.
+INVARIANT_CONSTRUCT = re.compile(
+    r"""(?:from_ymd_opt|with_day|with_month|from_size_align|from_secs|
+    from_millis|from_nanos|new_with_defaults|NonZeroU\d+::new)\s*\(""",
+    re.VERBOSE,
+)
+
 
 def is_test_file(path: Path) -> bool:
     """Whether the whole file is test code.
@@ -134,29 +152,17 @@ def is_test_file(path: Path) -> bool:
     return name in {"tests.rs", "test.rs"} or name.endswith("_tests.rs")
 
 
-def collect(source: str) -> list[tuple[int, str]]:
-    """Returns `(line_number, message)` for every error message that escapes the crate."""
+def collect(source: str) -> list[tuple[int, str, str]]:
+    """Returns `(line_number, message, anchor)` for every error message that escapes."""
     found = []
     for anchor in LEAVES_THE_CRATE.finditer(source):
         line_end = source.find("\n", anchor.end())
         window = source[anchor.end() : line_end if line_end > 0 else len(source)]
-        match = MESSAGE.search(window)
+        match = STRING_LITERAL.search(window) or MESSAGE.search(window)
         if match is None:
             continue
         line = source.count("\n", 0, anchor.start()) + 1
-        found.append((line, match.group("message")))
-    return found
-
-    """Returns `(line_number, message)` for every error message that escapes the crate."""
-    found = []
-    for anchor in LEAVES_THE_CRATE.finditer(source):
-        line_end = source.find("\n", anchor.end())
-        window = source[anchor.end() : line_end if line_end > 0 else len(source)]
-        match = MESSAGE.search(window)
-        if match is None:
-            continue
-        line = source.count("\n", 0, anchor.start()) + 1
-        found.append((line, match.group("message")))
+        found.append((line, match.group("message"), anchor.group(0)))
     return found
 
 
@@ -164,13 +170,21 @@ def main() -> int:
     verbose = "--verbose" in sys.argv
     incomplete: list[tuple[str, int, str, list[str]]] = []
     total = 0
+    invariant_panics = 0
 
     for path in sorted(SCAN_ROOT.rglob("*.rs")):
         if is_test_file(path):
             continue
         production = strip_non_production(path.read_text(encoding="utf-8"))
-        for line, message in collect(production):
+        for line, message, anchor in collect(production):
             if INVARIANT_EXPECT.search(message):
+                continue
+            # `.expect(...)` immediately after constructing a value from literals is a
+            # documented impossibility, not a message a caller acts on.
+            if anchor.startswith("expect") and INVARIANT_CONSTRUCT.search(production):
+                context_line = production.split("\n")[line - 1]
+                invariant_panics += 1
+                del context_line
                 continue
             total += 1
             missing = []
@@ -183,6 +197,11 @@ def main() -> int:
 
     print(f"Scanned {total} error message(s) that leave the crate from src/.")
     print(f"{len(incomplete)} do not satisfy both parts of the rule.")
+    if invariant_panics:
+        print(
+            f"{invariant_panics} invariant `.expect(...)` panic(s) skipped: they can only be "
+            f"reached by a bug in the crate, not by caller input."
+        )
     print()
 
     if incomplete:

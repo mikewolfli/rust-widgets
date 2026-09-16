@@ -328,7 +328,11 @@ impl RiveWidget {
     /// The JSON should contain shape definitions and animation parameters.
     pub fn load_animation_from_json(&mut self, name: &str, json_data: &str) -> Result<(), String> {
         if json_data.is_empty() {
-            return Err("Animation JSON data is empty".to_string());
+            return Err(format!(
+                "Rive animation \"{name}\" has empty JSON data ({} bytes); pass the contents \
+                 of a .json animation file",
+                json_data.len()
+            ));
         }
         let parsed: serde_json::Value = serde_json::from_str(json_data)
             .map_err(|e| format!("Invalid Rive animation JSON: {e}"))?;

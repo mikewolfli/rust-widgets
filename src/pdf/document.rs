@@ -52,7 +52,13 @@ impl PdfDocumentImpl {
     ) -> Result<Self, std::io::Error> {
         let font_data = fs::read(font_path)?;
         if font_data.is_empty() {
-            return Err(Error::new(ErrorKind::InvalidData, "font file is empty"));
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!(
+                    "font file '{font_path}' is empty (0 bytes); point it at a readable \
+                     TrueType/OpenType file (base font '{base_font}')"
+                ),
+            ));
         }
         let mut document = Self {
             pages: Vec::new(),

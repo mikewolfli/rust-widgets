@@ -89,7 +89,11 @@ impl AnimatedImage {
     /// Each frame carries its own `delay_ms`. Returns `Err` for an empty list.
     pub fn load_frames(&mut self, frames: Vec<AnimatedFrame>) -> Result<(), String> {
         if frames.is_empty() {
-            return Err("No frames provided".to_string());
+            return Err(format!(
+                "an animated image needs at least one frame, got {}; pass the decoded frames \
+                 from `decode_animation` instead of an empty list",
+                frames.len()
+            ));
         }
         self.frames = frames;
         self.current_frame = 0;

@@ -33,7 +33,12 @@ impl VideoEngine {
         let format = format::detect_container_format(&data);
         let decoder: Box<dyn VideoDecoder + Send> = match format {
             ContainerFormat::Unknown => {
-                return Err("Unknown video container format".into());
+                return Err(format!(
+                    "unknown video container format: the {} byte header matches no known \
+                     signature (MJPEG and the ffmpeg container set were checked); pass a \
+                     supported MP4/MOV/AVI/MKV/MJPEG stream",
+                    data.len()
+                ));
             }
             ContainerFormat::Mjpeg => Box::new(MjpegDecoder::new(data, format)),
             #[cfg(feature = "video-codecs")]

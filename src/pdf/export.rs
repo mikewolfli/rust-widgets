@@ -195,15 +195,22 @@ impl PdfExporter {
     pub fn export(&self, widgets: &mut [&mut dyn Draw], path: &str) -> Result<(), String> {
         let pages = self.render_pages(widgets)?;
         let pdf_bytes = build_svg_pdf(&pages, &self.settings)?;
-        std::fs::write(path, &pdf_bytes)
-            .map_err(|err| format!("failed to write PDF file '{path}': {err}"))?;
+        std::fs::write(path, &pdf_bytes).map_err(|err| {
+            format!(
+                "PDF ({} bytes) could not be written to '{path}': {err} (check that the \
+                     directory exists and is writable)",
+                pdf_bytes.len()
+            )
+        })?;
         Ok(())
     }
 
     /// Export requires the SVG pipeline (not available in mini mode).
     #[cfg(alloc_frugal)]
     pub fn export(&self, _widgets: &mut [&mut dyn Draw], _path: &str) -> Result<(), String> {
-        Err("PDF export requires the SVG pipeline which is not available in mini mode".to_string())
+        Err("PDF export needs the SVG pipeline, which is not compiled into the `mini` \
+             profile; build with a device profile (desktop/tablet/mobile) to export PDF"
+            .to_string())
     }
 
     /// Render each widget into a [`ExportPage`] using the SVG pipeline.
@@ -233,7 +240,9 @@ impl PdfExporter {
     /// Render pages requires the SVG pipeline (not available in mini mode).
     #[cfg(alloc_frugal)]
     pub fn render_pages(&self, _widgets: &mut [&mut dyn Draw]) -> Result<Vec<ExportPage>, String> {
-        Err("PDF export requires the SVG pipeline which is not available in mini mode".to_string())
+        Err("PDF export needs the SVG pipeline, which is not compiled into the `mini` \
+             profile; build with a device profile (desktop/tablet/mobile) to export PDF"
+            .to_string())
     }
 }
 
@@ -247,7 +256,10 @@ crate::impl_default_via_new!(PdfExporter);
 #[cfg(not(alloc_frugal))]
 fn build_svg_pdf(pages: &[ExportPage], settings: &PdfExportSettings) -> Result<Vec<u8>, String> {
     if pages.is_empty() {
-        return Err("at least one page is required".to_string());
+        return Err(format!(
+            "PDF export needs at least one page, got {}; pass the widgets to render as pages",
+            pages.len()
+        ));
     }
 
     let mut objects: Vec<Vec<u8>> = Vec::new();
@@ -579,7 +591,9 @@ pub fn export_to_pdf(widgets: &mut [&mut dyn Draw], path: &str) -> Result<(), St
 /// PDF export requires the SVG pipeline (not available in mini mode).
 #[cfg(alloc_frugal)]
 pub fn export_to_pdf(_widgets: &mut [&mut dyn Draw], _path: &str) -> Result<(), String> {
-    Err("PDF export requires the SVG pipeline which is not available in mini mode".to_string())
+    Err("PDF export needs the SVG pipeline, which is not compiled into the `mini` \
+         profile; build with a device profile (desktop/tablet/mobile) to export PDF"
+        .to_string())
 }
 
 #[cfg(test)]

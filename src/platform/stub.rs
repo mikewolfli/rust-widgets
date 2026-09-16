@@ -177,7 +177,11 @@ impl Platform for StubPlatform {
     /// The stub cannot reach a real spooler, and saying so is the point: demos
     /// exercising the system print backend must see a truthful failure.
     fn spawn_print_job(&self, _job_file: &std::path::Path) -> Result<(), String> {
-        Err("stub platform has no print spooler".to_string())
+        Err(format!(
+            "the stub platform has no print spooler, so job file '{}' was not printed; \
+             select a real OS backend to print",
+            _job_file.display()
+        ))
     }
 
     fn init(&self) {

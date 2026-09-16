@@ -14,18 +14,28 @@ pub fn resize(
     dst_h: u32,
 ) -> Result<ImageData, String> {
     if dst_w == 0 || dst_h == 0 {
-        return Err("Target dimensions must be > 0".into());
+        return Err(format!("resize target must be at least 1x1 pixels, got {dst_w}x{dst_h}"));
     }
     let pixels = match &data {
         ImageData::Rgba8(d) => d,
-        _ => return Err("Resize requires RGBA8 data".into()),
+        _ => {
+            return Err(format!(
+                "resize only accepts RGBA8 data, got {}; convert the image to Rgba8 first",
+                data.variant_name()
+            ))
+        }
     };
     let expected_len = (src_w as usize)
         .checked_mul(src_h as usize)
         .and_then(|pixels| pixels.checked_mul(4))
         .ok_or("Source dimensions overflow")?;
     if pixels.len() != expected_len || src_w == 0 || src_h == 0 {
-        return Err("Source RGBA8 data length does not match dimensions".into());
+        return Err(format!(
+            "resize source is {src_w}x{src_h}, which needs {} RGBA8 bytes, but the buffer \
+             holds {} — pass a buffer matching src_w x src_h",
+            expected_len,
+            pixels.len()
+        ));
     }
     let total = (dst_w * dst_h) as usize;
     let mut out = Vec::with_capacity(total * 4);
@@ -78,17 +88,29 @@ pub fn crop(
 ) -> Result<ImageData, String> {
     let pixels = match &data {
         ImageData::Rgba8(d) => d,
-        _ => return Err("Crop requires RGBA8 data".into()),
+        _ => {
+            return Err(format!(
+                "crop only accepts RGBA8 data, got {}; convert the image to Rgba8 first",
+                data.variant_name()
+            ))
+        }
     };
     let expected_len = (src_w as usize)
         .checked_mul(src_h as usize)
         .and_then(|pixels| pixels.checked_mul(4))
         .ok_or("Source dimensions overflow")?;
     if pixels.len() != expected_len || w == 0 || h == 0 {
-        return Err("Source RGBA8 data length does not match dimensions".into());
+        return Err(format!(
+            "crop source is {src_w}x{src_h}, which needs {expected_len} RGBA8 bytes, but the \
+             buffer holds {} (and the crop must be at least 1x1, got {w}x{h})",
+            pixels.len()
+        ));
     }
     if x > src_w || w > src_w - x || y > src_h || h > src_h - y {
-        return Err("Crop region exceeds image bounds".into());
+        return Err(format!(
+            "crop region {w}x{h} at ({x}, {y}) does not fit inside the {src_w}x{src_h} image; \
+             x + w must be <= {src_w} and y + h must be <= {src_h}"
+        ));
     }
     let mut out = Vec::with_capacity((w * h * 4) as usize);
     for row in 0..h {
@@ -108,14 +130,23 @@ pub fn rotate(
 ) -> Result<(ImageData, u32, u32), String> {
     let pixels = match &data {
         ImageData::Rgba8(d) => d,
-        _ => return Err("Rotate requires RGBA8 data".into()),
+        _ => {
+            return Err(format!(
+                "rotate only accepts RGBA8 data, got {}; convert the image to Rgba8 first",
+                data.variant_name()
+            ))
+        }
     };
     let expected_len = (src_w as usize)
         .checked_mul(src_h as usize)
         .and_then(|pixels| pixels.checked_mul(4))
         .ok_or("Source dimensions overflow")?;
     if pixels.len() != expected_len {
-        return Err("Source RGBA8 data length does not match dimensions".into());
+        return Err(format!(
+            "rotate source is {src_w}x{src_h}, which needs {expected_len} RGBA8 bytes, but the \
+             buffer holds {}",
+            pixels.len()
+        ));
     }
     match degrees % 360 {
         0 => Ok((data, src_w, src_h)),
@@ -149,7 +180,7 @@ pub fn rotate(
             }
             Ok((ImageData::Rgba8(out), src_h, src_w))
         }
-        _ => Err("Rotation must be 0, 90, 180, or 270 degrees".into()),
+        _ => Err(format!("rotation angle must be 0, 90, 180 or 270 degrees, got {degrees}")),
     }
 }
 
@@ -157,14 +188,23 @@ pub fn rotate(
 pub fn flip_horizontal(data: ImageData, w: u32, h: u32) -> Result<ImageData, String> {
     let pixels = match &data {
         ImageData::Rgba8(d) => d,
-        _ => return Err("Flip requires RGBA8 data".into()),
+        _ => {
+            return Err(format!(
+                "flip only accepts RGBA8 data, got {}; convert the image to Rgba8 first",
+                data.variant_name()
+            ))
+        }
     };
     let expected_len = (w as usize)
         .checked_mul(h as usize)
         .and_then(|pixels| pixels.checked_mul(4))
         .ok_or("Image dimensions overflow")?;
     if pixels.len() != expected_len {
-        return Err("RGBA8 data length does not match dimensions".into());
+        return Err(format!(
+            "flip image is {w}x{h}, which needs {expected_len} RGBA8 bytes, but the buffer \
+             holds {}",
+            pixels.len()
+        ));
     }
     let mut out = pixels.clone();
     for y in 0..h {
@@ -183,14 +223,23 @@ pub fn flip_horizontal(data: ImageData, w: u32, h: u32) -> Result<ImageData, Str
 pub fn flip_vertical(data: ImageData, w: u32, h: u32) -> Result<ImageData, String> {
     let pixels = match &data {
         ImageData::Rgba8(d) => d,
-        _ => return Err("Flip requires RGBA8 data".into()),
+        _ => {
+            return Err(format!(
+                "flip only accepts RGBA8 data, got {}; convert the image to Rgba8 first",
+                data.variant_name()
+            ))
+        }
     };
     let expected_len = (w as usize)
         .checked_mul(h as usize)
         .and_then(|pixels| pixels.checked_mul(4))
         .ok_or("Image dimensions overflow")?;
     if pixels.len() != expected_len {
-        return Err("RGBA8 data length does not match dimensions".into());
+        return Err(format!(
+            "flip image is {w}x{h}, which needs {expected_len} RGBA8 bytes, but the buffer \
+             holds {}",
+            pixels.len()
+        ));
     }
     let mut out = pixels.clone();
     let row_size = (w as usize) * 4;

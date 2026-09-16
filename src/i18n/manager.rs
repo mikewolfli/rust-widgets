@@ -104,11 +104,27 @@ impl I18nManager {
     /// Reload a specific translation file
     pub fn reload_translation(&mut self, language: &str) -> Result<(), String> {
         if let Some(path) = self.translation_paths.get(language) {
-            let mut file = File::open(path).map_err(|e| format!("Failed to open file: {e}"))?;
+            let mut file = File::open(path).map_err(|e| {
+                format!(
+                    "translation file '{}' for language \"{language}\" could not be opened: {e}",
+                    path.display()
+                )
+            })?;
             let mut content = String::new();
-            file.read_to_string(&mut content).map_err(|e| format!("Failed to read file: {e}"))?;
+            file.read_to_string(&mut content).map_err(|e| {
+                format!(
+                    "translation file '{}' for language \"{language}\" could not be read: {e}",
+                    path.display()
+                )
+            })?;
             let translation_file: TranslationFile =
-                serde_json::from_str(&content).map_err(|e| format!("Failed to parse JSON: {e}"))?;
+                serde_json::from_str(&content).map_err(|e| {
+                    format!(
+                        "translation file '{}' for language \"{language}\" is not valid \
+                         TranslationFile JSON: {e}",
+                        path.display()
+                    )
+                })?;
             self.translations.insert(language.to_string(), translation_file);
             if let Some(fingerprint) = FileFingerprint::read(path) {
                 self.file_fingerprints.insert(language.to_string(), fingerprint);
@@ -123,7 +139,11 @@ impl I18nManager {
             }
             Ok(())
         } else {
-            Err(format!("Translation file path not found for language: {language}"))
+            Err(format!(
+                "no translation file is registered for language \"{language}\"; call \
+                 `load_translation` for it first (known languages: {:?})",
+                self.translation_paths.keys().collect::<Vec<_>>()
+            ))
         }
     }
     /// Check and reload all modified translation files

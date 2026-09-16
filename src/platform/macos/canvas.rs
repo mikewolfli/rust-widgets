@@ -80,8 +80,10 @@ fn canvas_view_class() -> *const Class {
     static CLASS: OnceLock<usize> = OnceLock::new();
     (*CLASS.get_or_init(|| {
         let superclass = class!(NSView);
-        let mut decl = ClassDecl::new("RustWidgetsCanvasView", superclass)
-            .expect("failed to declare RustWidgetsCanvasView");
+        let mut decl = ClassDecl::new("RustWidgetsCanvasView", superclass).expect(
+            "the Objective-C runtime refused to declare RustWidgetsCanvasView (a class \
+                 with that name is already registered, so the surface cannot be hosted)",
+        );
         // SAFETY: both selectors are NSView API; the function pointers have the
         // ABI AppKit calls them with (`drawRect:` takes an NSRect by value, which
         // `objc`'s `extern "C" fn(&Object, Sel, NSRect)` reproduces).

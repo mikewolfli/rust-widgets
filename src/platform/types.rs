@@ -576,8 +576,11 @@ pub trait Platform: Send + Sync {
     /// available or all of them failed, so the caller can report it instead of
     /// pretending the job printed.
     fn spawn_print_job(&self, job_file: &std::path::Path) -> Result<(), String> {
-        let _ = job_file;
-        Err("system print backend is not supported on this platform".to_string())
+        Err(format!(
+            "no system print backend is available for job file '{}': this platform does not \
+             expose a spooler this build can submit to",
+            job_file.display()
+        ))
     }
 
     /// Whether the OS exposes a print spooler this backend can submit to.

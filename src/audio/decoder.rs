@@ -65,7 +65,11 @@ pub fn decode(data: &[u8]) -> Result<AudioBuffer, String> {
         AudioFormat::Pcm => {
             // Assume 44100 Hz, mono, F32
             if !data.len().is_multiple_of(4) {
-                return Err("Raw PCM data is not aligned to 32-bit samples".into());
+                return Err(format!(
+                    "raw PCM data is {} bytes, which is not a whole number of 32-bit \
+                     little-endian f32 samples; pad it to a multiple of 4 bytes",
+                    data.len()
+                ));
             }
             let samples: Vec<f32> = data
                 .chunks_exact(4)
@@ -140,7 +144,12 @@ fn decode_wav(data: &[u8]) -> Result<AudioBuffer, String> {
         _ => return Err(format!("Unsupported bits per sample: {bits_per_sample}")),
     };
     if raw_samples.len() % fmt.bytes_per_sample() != 0 {
-        return Err(format!("WAV data chunk is not aligned to {bits_per_sample}-bit samples"));
+        return Err(format!(
+            "WAV data chunk is {} bytes, which is not a whole number of {bits_per_sample}-bit \
+             samples ({} bytes each); the data chunk is truncated",
+            raw_samples.len(),
+            fmt.bytes_per_sample()
+        ));
     }
     let samples = fmt.to_f32(raw_samples);
     let mut buf = AudioBuffer::new(sample_rate.max(1), samples, channels.max(1));
@@ -184,12 +193,21 @@ fn decode_mp3(data: &[u8]) -> Result<AudioBuffer, String> {
                 }
             }
             Err(minimp3_fixed::Error::Eof) => break,
-            Err(e) => return Err(format!("MP3 decode error: {e:?}")),
+            Err(e) => {
+                return Err(format!(
+                    "MP3 frame after {} decoded sample(s) could not be decoded: {e:?}",
+                    all_samples.len()
+                ))
+            }
         }
     }
 
     if all_samples.is_empty() {
-        return Err("No audio frames found in MP3 data".into());
+        return Err(format!(
+            "MP3 decoded zero audio frames from {} bytes: the stream has no usable MPEG frame \
+             (check that the data is really MP3 and not a raw PCM or container payload)",
+            data.len()
+        ));
     }
 
     let mut buf = AudioBuffer::new(sample_rate, all_samples, channels);
@@ -231,7 +249,11 @@ fn decode_with_symphonia(data: &[u8], format: AudioFormat) -> Result<AudioBuffer
 
     let probed = symphonia::default::get_probe()
         .format(&hint, mss, &format_opts, &metadata_opts)
-        .map_err(|e| format!("Symphonia probe error: {:?}", e))?;
+        .map_err(|e| {
+        format!(
+            "symphonia could not probe the stream container (unsupported or corrupt format): {e:?}"
+        )
+    })?;
 
     let mut format_reader = probed.format;
 
@@ -240,7 +262,13 @@ fn decode_with_symphonia(data: &[u8], format: AudioFormat) -> Result<AudioBuffer
         .tracks()
         .iter()
         .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
-        .ok_or_else(|| "No audio track found by symphonia".to_string())?;
+        .ok_or_else(|| {
+            format!(
+                "the stream has no decodable audio track: symphonia found {} track(s), none with \
+                 a real codec — the container may hold only video or metadata",
+                format_reader.tracks().len()
+            )
+        })?;
 
     let codec_params = track.codec_params.clone();
     let track_id = track.id;
@@ -249,9 +277,14 @@ fn decode_with_symphonia(data: &[u8], format: AudioFormat) -> Result<AudioBuffer
     let channels = codec_params.channels.map(|c| c.count() as u8).unwrap_or(2);
 
     let decode_opts = DecoderOptions::default();
-    let mut decoder = symphonia::default::get_codecs()
-        .make(&codec_params, &decode_opts)
-        .map_err(|e| format!("Symphonia decoder error: {:?}", e))?;
+    let mut decoder =
+        symphonia::default::get_codecs().make(&codec_params, &decode_opts).map_err(|e| {
+            format!(
+                "symphonia could not build a decoder for codec {codec:?}: {e:?} (the codec may \
+                 require a different `symphonia-*` feature)",
+                codec = codec_params.codec
+            )
+        })?;
 
     let mut all_samples: Vec<f32> = Vec::new();
 
@@ -292,7 +325,11 @@ fn decode_with_symphonia(data: &[u8], format: AudioFormat) -> Result<AudioBuffer
     }
 
     if all_samples.is_empty() {
-        return Err("No audio samples decoded by symphonia".to_string());
+        return Err(format!(
+            "symphonia decoded zero audio samples from {} bytes: every packet was empty or \
+             skipped, so there is no PCM to return",
+            data.len()
+        ));
     }
 
     let mut buf = AudioBuffer::new(sample_rate, all_samples, channels);
@@ -315,7 +352,12 @@ fn decode_flac(data: &[u8]) -> Result<AudioBuffer, String> {
     #[cfg(not(feature = "symphonia-codecs"))]
     {
         if data.len() < 4 || &data[0..4] != b"fLaC" {
-            return Err("Invalid FLAC signature".into());
+            return Err(format!(
+                "FLAC must start with the magic \"fLaC\", but this {}-byte input starts with \
+                 {:02X?}",
+                data.len(),
+                &data[..data.len().min(4)]
+            ));
         }
         Err("decoding FLAC requires the `symphonia-codecs` feature".to_string())
     }
@@ -336,7 +378,12 @@ fn decode_ogg_vorbis(data: &[u8]) -> Result<AudioBuffer, String> {
     #[cfg(not(feature = "symphonia-codecs"))]
     {
         if data.len() < 28 || &data[0..4] != b"OggS" {
-            return Err("Invalid OGG signature".into());
+            return Err(format!(
+                "OGG must start with the capture pattern \"OggS\", but this {}-byte input \
+                 starts with {:02X?}",
+                data.len(),
+                &data[..data.len().min(4)]
+            ));
         }
         Err("decoding OGG Vorbis requires the `symphonia-codecs` feature".to_string())
     }
@@ -379,7 +426,11 @@ fn decode_aac(data: &[u8]) -> Result<AudioBuffer, String> {
             }
             pos += 1;
         }
-        Err("AAC data too short: no valid ADTS frame found".into())
+        Err(format!(
+            "AAC data ({} bytes) contains no valid ADTS frame: every 0xFFF sync candidate \
+             failed the header checks",
+            data.len()
+        ))
     }
 }
 
@@ -399,10 +450,19 @@ fn decode_opus(data: &[u8]) -> Result<AudioBuffer, String> {
     #[cfg(not(feature = "symphonia-codecs"))]
     {
         if data.len() < 28 || &data[0..4] != b"OggS" {
-            return Err("Invalid Opus stream: missing Ogg container".into());
+            return Err(format!(
+                "Opus must be wrapped in an Ogg container starting with \"OggS\", but this \
+                 {}-byte input starts with {:02X?}",
+                data.len(),
+                &data[..data.len().min(4)]
+            ));
         }
         if !data.windows(8).any(|w| w == b"OpusHead") {
-            return Err("No OpusHead header found in Opus stream".into());
+            return Err(format!(
+                "Opus stream has no OpusHead identification header in its {} bytes: the Ogg \
+                 container holds no Opus logical bitstream",
+                data.len()
+            ));
         }
         Err("decoding Opus requires the `symphonia-codecs` feature".to_string())
     }

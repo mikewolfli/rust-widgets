@@ -14,6 +14,7 @@ pub mod macos {
     use cocoa::foundation::NSString;
     use objc::{class, msg_send, sel, sel_impl};
 
+    /// macOS rich clipboard backed by the general `NSPasteboard`.
     pub struct MacOsClipboard;
 
     impl MacOsClipboard {

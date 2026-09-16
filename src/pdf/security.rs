@@ -295,9 +295,10 @@ fn aes128_cbc_encrypt(key: &[u8], iv: &[u8; 16], plaintext: &[u8]) -> Vec<u8> {
     // AES block size is 16 bytes; allocate buffer for plaintext + one padding block
     let mut out = vec![0u8; plaintext.len() + 16];
     // encrypt_padded_b2b_mut returns the padded ciphertext as a sub-slice
-    let encrypted = cipher
-        .encrypt_padded_b2b_mut::<Pkcs7>(plaintext, &mut out)
-        .expect("CBC encryption should not fail with valid padding");
+    let encrypted = cipher.encrypt_padded_b2b_mut::<Pkcs7>(plaintext, &mut out).expect(
+        "AES-128-CBC encryption cannot fail for a buffer that was sized as \
+             plaintext.len() + 16 and Pkcs7 padding, so the allocator or key length is wrong",
+    );
     encrypted.to_vec()
 }
 

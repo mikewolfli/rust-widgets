@@ -36,6 +36,7 @@ pub struct MacOSAccessibilityBridge {
 }
 
 impl MacOSAccessibilityBridge {
+    /// Create an empty bridge with no names or native handles registered.
     pub fn new() -> Self {
         Self { names: Mutex::new(HashMap::new()), native_handles: Mutex::new(HashMap::new()) }
     }

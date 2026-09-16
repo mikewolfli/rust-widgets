@@ -29,9 +29,12 @@ impl EventSender {
         event: Event,
         priority: EventPriority,
     ) -> Result<(), String> {
-        self.inner
-            .send(EventEnvelope { target: object_id, event, priority })
-            .map_err(|_| "event queue disconnected".to_string())
+        self.inner.send(EventEnvelope { target: object_id, event, priority }).map_err(|_| {
+            format!(
+                "event for object {object_id} could not be queued: the receiving end was \
+                     dropped, so the queue is closed"
+            )
+        })
     }
     /// Post idle-priority event.
     pub fn post_idle(&self, object_id: ObjectId, event: Event) -> Result<(), String> {

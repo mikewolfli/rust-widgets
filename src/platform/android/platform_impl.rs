@@ -69,8 +69,12 @@ impl Platform for AndroidPlatform {
 
     /// Android has no desktop print spooler; printing goes through the platform
     /// print framework via JNI, which this state backend does not bind.
-    fn spawn_print_job(&self, _job_file: &std::path::Path) -> Result<(), String> {
-        Err("Android printing requires the platform print framework (not bound)".to_string())
+    fn spawn_print_job(&self, job_file: &std::path::Path) -> Result<(), String> {
+        Err(format!(
+            "Android printing requires the platform print framework, which is not bound in \
+             this build; job file '{}' was not printed",
+            job_file.display()
+        ))
     }
 
     #[cfg(feature = "mobile-api")]

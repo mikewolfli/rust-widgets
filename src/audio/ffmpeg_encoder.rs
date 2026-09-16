@@ -124,7 +124,10 @@ fn format_to_ffmpeg_params(format: AudioFormat) -> Result<EncoderPlan, String> {
         AudioFormat::Opus => {
             Ok(EncoderPlan { muxer: "opus", encoders: &["libopus", "opus"], bit_rate: 64_000 })
         }
-        _ => Err(format!("FFmpeg encoder does not support {:?}", format)),
+        _ => Err(format!(
+            "audio format {format:?} cannot be encoded by FFmpeg; supported formats are \
+             Wav, Flac, Mp3, Aac and Opus"
+        )),
     }
 }
 
@@ -217,7 +220,12 @@ fn build_f32_frame(
 /// Only supports `Mp3`, `Flac`, `Ogg`, `Aac`, and `Opus`.
 /// Returns a `String` error on failure.
 pub fn ffmpeg_encode(buffer: &AudioBuffer, format: AudioFormat) -> Result<Vec<u8>, String> {
-    ffmpeg_next::init().map_err(|e| format!("FFmpeg init failed: {e}"))?;
+    ffmpeg_next::init().map_err(|e| {
+        format!(
+            "FFmpeg could not be initialised: {e}; the FFmpeg runtime libraries must be \
+             installed and resolvable on this host"
+        )
+    })?;
 
     let plan = format_to_ffmpeg_params(format)?;
     let muxer_name = plan.muxer;
@@ -234,8 +242,12 @@ pub fn ffmpeg_encode(buffer: &AudioBuffer, format: AudioFormat) -> Result<Vec<u8
     let _temp_guard = TempFileGuard::new(tmp_path.clone());
 
     // ── Create output context (muxer) ────────────────────────────────
-    let mut octx = ffmpeg_next::format::output_as(&path_str, muxer_name)
-        .map_err(|e| format!("Failed to create muxer '{muxer_name}': {e}"))?;
+    let mut octx = ffmpeg_next::format::output_as(&path_str, muxer_name).map_err(|e| {
+        format!(
+            "muxer '{muxer_name}' could not be created for output '{path_str}': \
+                     {e} (the extension selects the muxer; check the output format)"
+        )
+    })?;
 
     // Save global-header flag before we borrow octx via a stream.
     let global = octx.format().flags().contains(ffmpeg_next::format::flag::Flags::GLOBAL_HEADER);
@@ -244,18 +256,23 @@ pub fn ffmpeg_encode(buffer: &AudioBuffer, format: AudioFormat) -> Result<Vec<u8
     // Resolve at runtime so a build without the preferred external library
     // (e.g. Homebrew's ffmpeg has no `libvorbis`) still encodes.
     let (encoder_name, codec_descriptor) = resolve_encoder(&plan)?;
-    let codec_audio = codec_descriptor
-        .audio()
-        .map_err(|e| format!("'{encoder_name}' is not an audio encoder: {e}"))?;
+    let codec_audio = codec_descriptor.audio().map_err(|e| {
+        format!(
+            "'{encoder_name}' is not an audio encoder, so the plan's codec cannot \
+                     produce samples: {e}"
+        )
+    })?;
 
     // ── Create encoder context independently ─────────────────────────
     // Build and open the encoder before touching the muxer stream so we
     // can avoid borrowing `octx` through a `StreamMut` while encoding.
     let encoder_ctx = ffmpeg_next::codec::context::Context::new_with_codec(codec_descriptor);
-    let mut encoder_initial = encoder_ctx
-        .encoder()
-        .audio()
-        .map_err(|e| format!("Failed to create audio encoder: {e}"))?;
+    let mut encoder_initial = encoder_ctx.encoder().audio().map_err(|e| {
+        format!(
+            "audio encoder '{encoder_name}' could not be created for codec \
+                     {codec_descriptor:?}: {e}"
+        )
+    })?;
 
     // ── Set encoder parameters ──────────────────────────────────────
     let channel_layout = match buffer.channels {
@@ -292,9 +309,12 @@ pub fn ffmpeg_encode(buffer: &AudioBuffer, format: AudioFormat) -> Result<Vec<u8
     }
 
     // ── Open encoder ─────────────────────────────────────────────────
-    let mut encoder = encoder_initial
-        .open_as(codec_descriptor)
-        .map_err(|e| format!("Failed to open encoder '{encoder_name}': {e}"))?;
+    let mut encoder = encoder_initial.open_as(codec_descriptor).map_err(|e| {
+        format!(
+            "audio encoder '{encoder_name}' could not be opened: {e} (the codec may \
+                     reject the sample rate or channel layout)"
+        )
+    })?;
 
     // Determine the actual sample format the encoder uses after opening
     let actual_format = encoder.format();
@@ -302,14 +322,17 @@ pub fn ffmpeg_encode(buffer: &AudioBuffer, format: AudioFormat) -> Result<Vec<u8
     // ── Add stream, associate encoder, save index ────────────────────
     let stream_index: usize;
     {
-        let mut ost =
-            octx.add_stream(codec_descriptor).map_err(|e| format!("Failed to add stream: {e}"))?;
+        let mut ost = octx.add_stream(codec_descriptor).map_err(|e| {
+            format!("muxer '{muxer_name}' refused the stream for encoder '{encoder_name}': {e}")
+        })?;
         ost.set_parameters(&encoder);
         stream_index = ost.index();
     }
 
     // ── Write muxer header ───────────────────────────────────────────
-    octx.write_header().map_err(|e| format!("Failed to write header: {e}"))?;
+    octx.write_header().map_err(|e| {
+        format!("muxer '{muxer_name}' could not write its header for output '{path_str}': {e}")
+    })?;
 
     // ── Set up resampler (F32 packed → encoder's native format/rate) ─
     let src_rate = sample_rate as u32;
@@ -325,7 +348,12 @@ pub fn ffmpeg_encode(buffer: &AudioBuffer, format: AudioFormat) -> Result<Vec<u8
             resampling::Context::get(
                 src_format, src_layout, src_rate, dst_format, dst_layout, dst_rate,
             )
-            .map_err(|e| format!("Failed to create resampler: {e}"))?,
+            .map_err(|e| {
+                format!(
+                    "resampler {src_format:?}@{src_rate}Hz -> {dst_format:?}@{dst_rate}Hz \
+                     could not be created: {e}"
+                )
+            })?,
         )
     } else {
         None
@@ -365,9 +393,9 @@ pub fn ffmpeg_encode(buffer: &AudioBuffer, format: AudioFormat) -> Result<Vec<u8
         // Convert to encoder's format via resampler if needed
         let frame_to_send = if let Some(ref mut resampler) = resampler {
             let mut converted = AudioFrame::empty();
-            resampler
-                .run(&f32_frame, &mut converted)
-                .map_err(|e| format!("Resampler error: {e}"))?;
+            resampler.run(&f32_frame, &mut converted).map_err(|e| {
+                format!("resampling from {src_format:?} to {dst_format:?} failed: {e}")
+            })?;
             // Preserve PTS so the encoder can stamp packets correctly
             converted.set_pts(f32_frame.pts());
             converted
@@ -386,9 +414,12 @@ pub fn ffmpeg_encode(buffer: &AudioBuffer, format: AudioFormat) -> Result<Vec<u8
             match encoder.receive_packet(&mut packet) {
                 Ok(()) => {
                     packet.set_stream(stream_index);
-                    packet
-                        .write_interleaved(&mut octx)
-                        .map_err(|e| format!("Write packet error: {e}"))?;
+                    packet.write_interleaved(&mut octx).map_err(|e| {
+                        format!(
+                            "packet (pts={pts}, stream {stream_index}) could not be written \
+                                 to muxer '{muxer_name}': {e}"
+                        )
+                    })?;
                 }
                 // Eof ends the stream; EAGAIN means the encoder has no packet
                 // ready yet and is waiting for more input frames. Both are
@@ -401,7 +432,11 @@ pub fn ffmpeg_encode(buffer: &AudioBuffer, format: AudioFormat) -> Result<Vec<u8
                 {
                     break;
                 }
-                Err(e) => return Err(format!("Receive packet error (pts={pts}): {e}")),
+                Err(e) => {
+                    return Err(format!(
+                        "encoder '{encoder_name}' failed while receiving a packet at pts={pts}: {e}"
+                    ))
+                }
             }
             packet = Packet::empty();
         }
@@ -414,7 +449,9 @@ pub fn ffmpeg_encode(buffer: &AudioBuffer, format: AudioFormat) -> Result<Vec<u8
     // ── Flush encoder & write trailer ────────────────────────────────
     // Send EOF to switch the encoder into draining mode, then pull every
     // remaining packet until the encoder reports `Eof`.
-    encoder.send_eof().map_err(|e| format!("Failed to flush encoder: {e}"))?;
+    encoder.send_eof().map_err(|e| {
+        format!("encoder '{encoder_name}' could not be flushed at end of stream: {e}")
+    })?;
 
     let is_flac = format == AudioFormat::Flac;
     let mut dropped_packets: usize = 0;
@@ -432,7 +469,10 @@ pub fn ffmpeg_encode(buffer: &AudioBuffer, format: AudioFormat) -> Result<Vec<u8
                         dropped_packets += 1;
                         log::warn!("FLAC flush: muxer rejected a trailing packet ({e}); dropped");
                     } else {
-                        return Err(format!("Write packet error during flush: {e}"));
+                        return Err(format!(
+                            "packet at pts={pts} could not be written to muxer '{muxer_name}' \
+                             while flushing: {e}"
+                        ));
                     }
                 }
             }
@@ -446,7 +486,11 @@ pub fn ffmpeg_encode(buffer: &AudioBuffer, format: AudioFormat) -> Result<Vec<u8
             {
                 break;
             }
-            Err(e) => return Err(format!("Receive packet error during flush: {e}")),
+            Err(e) => {
+                return Err(format!(
+                "encoder '{encoder_name}' failed while receiving a flush packet at pts={pts}: {e}"
+            ))
+            }
         }
         packet = Packet::empty();
     }
@@ -454,10 +498,14 @@ pub fn ffmpeg_encode(buffer: &AudioBuffer, format: AudioFormat) -> Result<Vec<u8
         log::warn!("FLAC flush: dropped {dropped_packets} packet(s) rejected by the muxer");
     }
 
-    octx.write_trailer().map_err(|e| format!("Write trailer error: {e}"))?;
+    octx.write_trailer().map_err(|e| {
+        format!("muxer '{muxer_name}' could not write its trailer for output '{path_str}': {e}")
+    })?;
 
     // ── Read back ────────────────────────────────────────────────────
-    let result = fs::read(&tmp_path).map_err(|e| format!("Failed to read output file: {e}"))?;
+    let result = fs::read(&tmp_path).map_err(|e| {
+        format!("encoded output file '{}' could not be read back: {e}", tmp_path.display())
+    })?;
 
     // The bytes are in memory now; the guard removes the temp file when it goes
     // out of scope at the end of this function (including on the `?` above).

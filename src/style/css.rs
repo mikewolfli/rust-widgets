@@ -189,12 +189,20 @@ impl CssParser {
                 pos += 1;
             }
             if pos >= chars.len() {
-                return Err("Unterminated rule: missing '{'".to_string());
+                return Err(
+                    "CSS rule is unterminated: the `{` that opens the declaration block is \
+                     missing at end of input"
+                        .to_string(),
+                );
             }
             let selector_text: String = chars[start..pos].iter().collect();
             let selector_text = selector_text.trim().to_string();
             if selector_text.is_empty() {
-                return Err("Empty selector".to_string());
+                return Err(
+                    "CSS rule has an empty selector before `{`; every rule needs a selector \
+                     such as `Button` or `.primary`"
+                        .to_string(),
+                );
             }
 
             pos += 1; // skip '{'
@@ -205,7 +213,11 @@ impl CssParser {
                 pos += 1;
             }
             if pos >= chars.len() {
-                return Err("Unterminated rule: missing '}'".to_string());
+                return Err(
+                    "CSS rule is unterminated: the declaration block is missing its closing \
+                     `}` at end of input"
+                        .to_string(),
+                );
             }
             let decl_text: String = chars[decl_start..pos].iter().collect();
             pos += 1; // skip '}'
@@ -420,7 +432,11 @@ impl CssParser {
                 "maroon" => Ok(Color::rgba(128, 0, 0, 255)),
                 "olive" => Ok(Color::rgba(128, 128, 0, 255)),
                 "transparent" => Ok(Color::rgba(0, 0, 0, 0)),
-                _ => Err(format!("Unknown color: {v}")),
+                _ => Err(format!(
+                    "unknown color '{v}'; use a #RGB/#RRGGBB/#RRGGBBAA literal or one of \
+                     the named colors (black, white, red, green, blue, yellow, cyan, magenta, \
+                     gray, orange, purple, pink, brown, navy, teal, maroon, olive, transparent)"
+                )),
             }
         }
     }

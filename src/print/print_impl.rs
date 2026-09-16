@@ -798,9 +798,13 @@ fn write_print_job_file(job: &PrintJobPayload) -> Result<PathBuf, String> {
     // must be a reported error, never a silent overwrite of another job's file.
     let mut opts = fs::OpenOptions::new();
     opts.write(true).create_new(true);
-    let file = opts
-        .open(&path)
-        .map_err(|err| format!("create print job file failed at {}: {err}", path.display()))?;
+    let file = opts.open(&path).map_err(|err| {
+        format!(
+            "print job file '{}' could not be created: {err} (the directory must exist \
+                 and be writable)",
+            path.display()
+        )
+    })?;
 
     // Written incrementally rather than built as one `String`. A large job used to be
     // held twice over (the assembled buffer plus the encoded copy `fs::write` makes),
@@ -814,7 +818,11 @@ fn write_print_job_file(job: &PrintJobPayload) -> Result<PathBuf, String> {
     if let Err(err) = write.and(flushed) {
         // Leave no half-written file behind for the spooler to pick up.
         let _ = fs::remove_file(&path);
-        return Err(format!("write print job file failed: {err}"));
+        return Err(format!(
+            "print job file '{}' could not be written and was removed: {err} (the job would \
+             have reached the spooler truncated)",
+            path.display()
+        ));
     }
     Ok(path)
 }
@@ -1066,7 +1074,11 @@ crate::impl_default_via_new!(PrintManager);
 /// Returns `Ok(true)` if accepted, `Ok(false)` if cancelled.
 pub fn print_page_dialog() -> Result<bool, String> {
     if !crate::platform::platform_facts().has_print_support() {
-        return Err("print dialog is not supported on this platform".to_string());
+        return Err(format!(
+            "no print dialog is available: backend '{}' reports no system print support, so \
+             page selection cannot be offered",
+            crate::platform::platform_facts().backend_name()
+        ));
     }
 
     log::info!("[print] print_page_dialog() — no system dialog available; console confirmation");
@@ -1101,10 +1113,18 @@ pub fn print_page_dialog() -> Result<bool, String> {
 /// mechanism itself (`Platform::spawn_print_job`).
 pub fn print_to_printer(content: &str, settings: &PrintSettings) -> Result<(), String> {
     if !crate::platform::platform_facts().has_print_support() {
-        return Err("system printer is not supported on this platform".to_string());
+        return Err(format!(
+            "no system printer is available: backend '{}' reports no print support, so the \
+             {} byte document was not printed",
+            crate::platform::platform_facts().backend_name(),
+            content.len()
+        ));
     }
     if content.is_empty() {
-        return Err("cannot print empty content".to_string());
+        return Err(format!(
+            "cannot print an empty document ({} bytes); pass the rendered text to print",
+            content.len()
+        ));
     }
     let mut path = std::env::temp_dir();
     let ts = SystemTime::now()
@@ -1113,7 +1133,11 @@ pub fn print_to_printer(content: &str, settings: &PrintSettings) -> Result<(), S
         .as_millis();
     path.push(format!("rw_print_output_{ts}.txt"));
     if let Err(err) = fs::write(&path, content) {
-        return Err(format!("failed to write print temporary file at {}: {err}", path.display()));
+        return Err(format!(
+            "print spool file '{}' could not be written: {err} (check the temp directory \
+             is writable)",
+            path.display()
+        ));
     }
     let result = run_print_command(&path);
     if let Err(ref e) = result {
@@ -1957,9 +1981,17 @@ mod tests {
         let result = print_to_printer("", &PrintSettings::new());
         if supported {
             // Capability check passed, so the empty-content guard is what fires.
-            assert_eq!(result, Err("cannot print empty content".to_string()));
+            let err = result.unwrap_err();
+            assert!(
+                err.contains("empty document") && err.contains("0 bytes"),
+                "expected the empty-content guard, got: {err}"
+            );
         } else {
-            assert_eq!(result, Err("system printer is not supported on this platform".to_string()));
+            let err = result.unwrap_err();
+            assert!(
+                err.contains("no system printer is available") && err.contains("0 bytes"),
+                "expected the capability guard, got: {err}"
+            );
         }
 
         // A host without a spooler must reject the dialog outright; a host with one

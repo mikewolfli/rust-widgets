@@ -39,10 +39,27 @@ impl ThemeManager {
     /// Serializes the current active theme to a JSON file at the given path.
     #[cfg(not(alloc_frugal))]
     pub fn save_theme(&self, path: &str) -> Result<(), String> {
-        let theme = self.current_theme().ok_or_else(|| "No active theme to save".to_string())?;
-        let json = serde_json::to_string_pretty(theme)
-            .map_err(|e| format!("Failed to serialize theme: {e}"))?;
-        std::fs::write(path, &json).map_err(|e| format!("Failed to write theme file: {e}"))?;
+        let theme = self.current_theme().ok_or_else(|| {
+            format!(
+                "no active theme to save to '{path}': {} theme(s) are registered but none is \
+                 active; select one with `set_theme` first",
+                self.themes.len()
+            )
+        })?;
+        let json = serde_json::to_string_pretty(theme).map_err(|e| {
+            format!(
+                "theme '{}' could not be serialized to JSON (one of its colour or \
+                 metric fields is not representable): {e}",
+                theme.name
+            )
+        })?;
+        std::fs::write(path, &json).map_err(|e| {
+            format!(
+                "theme JSON ({} bytes) could not be written to '{path}': {e} (check that the \
+                 directory exists and is writable)",
+                json.len()
+            )
+        })?;
         Ok(())
     }
 

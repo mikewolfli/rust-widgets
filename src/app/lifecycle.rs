@@ -209,8 +209,9 @@ impl AppLifecycle {
             state: self.state,
             total_background_secs: self.total_background_duration().as_secs_f64(),
         };
-        serde_json::to_string(&snapshot)
-            .map_err(|e| format!("failed to serialize lifecycle state: {e}"))
+        serde_json::to_string(&snapshot).map_err(|e| {
+            format!("lifecycle snapshot could not be serialized to JSON (serde_json failed): {e}")
+        })
     }
 
     /// Restore lifecycle state from previously serialized JSON data.
@@ -220,8 +221,12 @@ impl AppLifecycle {
     /// (so [`uptime`](Self::uptime) measures the time since restoration).
     #[cfg(all(feature = "serde_json", feature = "serde", widgets_unstripped))]
     pub fn deserialize_state(data: &str) -> Result<Self, String> {
-        let snapshot: LifecycleSnapshot = serde_json::from_str(data)
-            .map_err(|e| format!("failed to deserialize lifecycle state: {e}"))?;
+        let snapshot: LifecycleSnapshot = serde_json::from_str(data).map_err(|e| {
+            format!(
+                "lifecycle state ({} bytes) is not valid LifecycleSnapshot JSON: {e}",
+                data.len()
+            )
+        })?;
         let mut lc = Self {
             state: snapshot.state,
             started_at: Instant::now(),

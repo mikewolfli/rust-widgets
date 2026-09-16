@@ -56,8 +56,12 @@ impl Platform for HarmonyPlatform {
 
     /// HarmonyOS printing is served by the ArkUI print service, which this state
     /// backend does not bind; it reports the gap instead of faking success.
-    fn spawn_print_job(&self, _job_file: &std::path::Path) -> Result<(), String> {
-        Err("HarmonyOS printing requires the ArkUI print service (not bound)".to_string())
+    fn spawn_print_job(&self, job_file: &std::path::Path) -> Result<(), String> {
+        Err(format!(
+            "HarmonyOS printing requires the ArkUI print service, which is not bound in this \
+             build; job file '{}' was not printed",
+            job_file.display()
+        ))
     }
 
     /// Whether ArkUI exposes a print spooler to this backend.

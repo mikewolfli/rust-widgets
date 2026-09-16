@@ -473,7 +473,10 @@ impl FlexLayout {
             if lines.is_empty() {
                 lines.push(Vec::new());
             }
-            lines.last_mut().expect("line exists").push(index);
+            lines
+                .last_mut()
+                .expect("a line was just pushed above, so the list is non-empty")
+                .push(index);
         }
 
         let mut line_cross_sizes = Vec::with_capacity(lines.len());

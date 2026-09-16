@@ -525,7 +525,14 @@ pub fn encode(image: &DecodedImage, format: ImageFormat) -> Result<Vec<u8>, Stri
         .and_then(|pixels| pixels.checked_mul(image.data.bytes_per_pixel()))
         .ok_or("Image dimensions overflow")?;
     if image.data.as_bytes().len() != expected_len {
-        return Err("Image data length does not match dimensions".into());
+        return Err(format!(
+            "image data length does not match dimensions: {}x{} with {} bytes per pixel \
+             needs {expected_len} bytes, but the buffer holds {}",
+            image.width,
+            image.height,
+            image.data.bytes_per_pixel(),
+            image.data.as_bytes().len()
+        ));
     }
     match format {
         ImageFormat::Png => encode_png(image),
@@ -538,7 +545,10 @@ pub fn encode(image: &DecodedImage, format: ImageFormat) -> Result<Vec<u8>, Stri
         ImageFormat::Gif => encode_gif(image),
         ImageFormat::Tiff => encode_tiff(image),
         ImageFormat::Svg | ImageFormat::Svgz => encode_svg(image),
-        _ => Err(format!("Encoding to {format:?} is not yet supported")),
+        _ => Err(format!(
+            "encoding to {format:?} is not supported; supported output formats are Png, Jpeg, \
+             Bmp, Qoi, Farbfeld, Pnm, Gif, Tiff, Svg and the raw Rgba8/Rgb8 pass-throughs"
+        )),
     }
 }
 
@@ -718,7 +728,9 @@ fn encode_gif(image: &DecodedImage) -> Result<Vec<u8>, String> {
     let h = image.height;
 
     if w == 0 || h == 0 {
-        return Err("Cannot encode GIF with zero dimensions".into());
+        return Err(format!(
+            "GIF cannot be encoded at {w}x{h}: both dimensions must be at least 1"
+        ));
     }
 
     let palette = build_gif_palette(pixels);
@@ -807,7 +819,9 @@ fn encode_tiff(image: &DecodedImage) -> Result<Vec<u8>, String> {
     let h = image.height;
 
     if w == 0 || h == 0 {
-        return Err("Cannot encode TIFF with zero dimensions".into());
+        return Err(format!(
+            "TIFF cannot be encoded at {w}x{h}: both dimensions must be at least 1"
+        ));
     }
 
     let samples_per_pixel: u16 = 4;

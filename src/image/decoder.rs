@@ -155,7 +155,10 @@ pub fn decode_to_rgba8(data: &[u8]) -> Result<DecodedImage, String> {
 pub fn decode_animation(data: &[u8]) -> Result<DecodedAnimation, String> {
     match detect_format(data) {
         ImageFormat::Gif | ImageFormat::WebP => decode_animation_codec(data),
-        format => Err(format!("Animation is not supported for {format:?}")),
+        format => Err(format!(
+            "animation decoding needs GIF or WebP input, got {format:?} \
+             (only those two formats carry frame delays)"
+        )),
     }
 }
 
@@ -167,8 +170,10 @@ fn decode_animation_codec(data: &[u8]) -> Result<DecodedAnimation, String> {
     let format = detect_format(data);
     let (frames, loop_count) = match format {
         ImageFormat::Gif => {
-            let decoder = image_codecs::codecs::gif::GifDecoder::new(Cursor::new(data))
-                .map_err(|error| format!("GIF animation decoder error: {error}"))?;
+            let decoder =
+                image_codecs::codecs::gif::GifDecoder::new(Cursor::new(data)).map_err(|error| {
+                    format!("GIF animation bytes could not be read as a GIF stream: {error}")
+                })?;
             let loop_count = match decoder.loop_count() {
                 image_codecs::metadata::LoopCount::Infinite => None,
                 image_codecs::metadata::LoopCount::Finite(count) => Some(count.get()),
@@ -176,8 +181,14 @@ fn decode_animation_codec(data: &[u8]) -> Result<DecodedAnimation, String> {
             (decoder.into_frames().collect_frames(), loop_count)
         }
         ImageFormat::WebP => {
-            let decoder = image_codecs::codecs::webp::WebPDecoder::new(Cursor::new(data))
-                .map_err(|error| format!("WebP animation decoder error: {error}"))?;
+            let decoder = image_codecs::codecs::webp::WebPDecoder::new(Cursor::new(data)).map_err(
+                |error| {
+                    format!(
+                        "WebP animation bytes are not a readable WebP stream (malformed or \
+                         truncated RIFF/VP8X container): {error}"
+                    )
+                },
+            )?;
             let loop_count = match decoder.loop_count() {
                 image_codecs::metadata::LoopCount::Infinite => None,
                 image_codecs::metadata::LoopCount::Finite(count) => Some(count.get()),
@@ -186,7 +197,12 @@ fn decode_animation_codec(data: &[u8]) -> Result<DecodedAnimation, String> {
         }
         _ => unreachable!("decode_animation validates the format before dispatch"),
     };
-    let frames = frames.map_err(|error| format!("{format:?} frame decode error: {error}"))?;
+    let frames = frames.map_err(|error| {
+        format!(
+            "a {format:?} animation frame could not be decoded (the frame stream is \
+                 truncated or corrupt): {error}"
+        )
+    })?;
     let mut decoded_frames = Vec::with_capacity(frames.len());
     let mut delays = Vec::with_capacity(frames.len());
     for frame in frames {
@@ -251,7 +267,11 @@ fn decode_png(data: &[u8]) -> Result<DecodedImage, String> {
 
     while pos < data.len() {
         if data.len() - pos < 12 {
-            return Err("PNG chunk header truncated".into());
+            return Err(format!(
+                "PNG chunk header is truncated at byte {pos}: a chunk needs 12 bytes (4 length \
+                 + 4 type + 4 CRC) but only {} remain",
+                data.len() - pos
+            ));
         }
         let chunk_len =
             u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
@@ -267,7 +287,9 @@ fn decode_png(data: &[u8]) -> Result<DecodedImage, String> {
         match &chunk_type {
             b"IHDR" => {
                 if chunk_len != 13 {
-                    return Err("Invalid IHDR chunk length".into());
+                    return Err(format!(
+                        "PNG IHDR chunk must be exactly 13 bytes, found {chunk_len}"
+                    ));
                 }
                 width = u32::from_be_bytes([
                     data[body],
@@ -286,15 +308,24 @@ fn decode_png(data: &[u8]) -> Result<DecodedImage, String> {
                 let interlace = data[body + 12];
                 have_ihdr = true;
                 if width == 0 || height == 0 {
-                    return Err("Invalid PNG dimensions".into());
+                    return Err(format!(
+                        "PNG IHDR declares an empty image: width and height must both be at \
+                         least 1, got {width}x{height}"
+                    ));
                 }
                 if interlace != 0 {
-                    return Err("Interlaced PNG (Adam7) is not supported".into());
+                    return Err(format!(
+                        "PNG interlace method {interlace} (Adam7) is not supported; \
+                         re-encode the image with interlace method 0 (none)"
+                    ));
                 }
             }
             b"PLTE" => {
                 if chunk_len == 0 || !chunk_len.is_multiple_of(3) || chunk_len > 256 * 3 {
-                    return Err("Invalid PLTE chunk length".into());
+                    return Err(format!(
+                        "PNG PLTE chunk length must be a multiple of 3 and at most 768 bytes, \
+                         found {chunk_len}"
+                    ));
                 }
                 palette.clear();
                 for i in 0..chunk_len / 3 {
@@ -317,10 +348,18 @@ fn decode_png(data: &[u8]) -> Result<DecodedImage, String> {
     }
 
     if !have_ihdr {
-        return Err("Missing IHDR chunk".into());
+        return Err(format!(
+            "PNG stream has no IHDR chunk: the first chunk of a PNG must be IHDR naming \
+             {width}x{height} and the bit depth ({} bytes were scanned)",
+            data.len()
+        ));
     }
     if !saw_idat {
-        return Err("No IDAT chunks found".into());
+        return Err(format!(
+            "PNG stream has no IDAT chunk: the image data is missing, so there is nothing to \
+             paint ({} bytes were scanned)",
+            data.len()
+        ));
     }
 
     let channels = match color_type {
@@ -351,11 +390,16 @@ fn decode_png(data: &[u8]) -> Result<DecodedImage, String> {
     // at the cap below is already far beyond realistic embedded images).
     let pixel_count = width as u64 * height as u64;
     if pixel_count > (1u64 << 27) {
-        return Err(format!("PNG dimensions too large: {width}x{height}"));
+        return Err(format!(
+            "PNG is {width}x{height} ({pixel_count} pixels), which exceeds the {} pixel cap; \
+             downscale the image before decoding",
+            1u64 << 27
+        ));
     }
 
-    let decompressed = miniz_oxide::inflate::decompress_to_vec_zlib(&raw_data)
-        .map_err(|e| format!("PNG decompress error: {e:?}"))?;
+    let decompressed = miniz_oxide::inflate::decompress_to_vec_zlib(&raw_data).map_err(|e| {
+        format!("PNG zlib stream could not be inflated (the IDAT data is corrupt): {e:?}")
+    })?;
 
     let bits_per_pixel = channels * bit_depth as usize;
     let row_bytes = (width as usize * bits_per_pixel).div_ceil(8);
@@ -409,7 +453,11 @@ fn decode_png(data: &[u8]) -> Result<DecodedImage, String> {
                 }
             }
             0 | 2 => {
-                return Err("PNG tRNS for grayscale/truecolor images is not supported".into());
+                return Err(format!(
+                    "PNG tRNS is only supported for palette (colour type 3) images, and this \
+                     image uses colour type {color_type}; drop the tRNS chunk or convert to a \
+                     palette image"
+                ));
             }
             _ => {}
         }
@@ -470,10 +518,13 @@ fn decode_png(data: &[u8]) -> Result<DecodedImage, String> {
                         let shift = 8 - bit_depth as usize - (x % pbb) * bit_depth as usize;
                         ((row[x / pbb] >> shift) & ((1u8 << bit_depth) - 1)) as usize
                     };
-                    let p = palette
-                        .get(idx)
-                        .copied()
-                        .ok_or_else(|| format!("PNG palette index {idx} is out of range"))?;
+                    let p = palette.get(idx).copied().ok_or_else(|| {
+                        format!(
+                            "PNG palette index {idx} is out of range: the PLTE chunk defines \
+                             only {} entries",
+                            palette.len()
+                        )
+                    })?;
                     pixels.extend_from_slice(&p);
                 }
             }
@@ -524,7 +575,12 @@ fn decode_png(data: &[u8]) -> Result<DecodedImage, String> {
 /// color conversion to produce a [`DecodedImage`].
 fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
     if data.len() < 2 || data[0] != 0xFF || data[1] != 0xD8 {
-        return Err("Invalid JPEG signature".into());
+        return Err(format!(
+            "JPEG must start with the SOI marker FF D8, but this {}-byte input starts with \
+             {:02X?}",
+            data.len(),
+            &data[..data.len().min(2)]
+        ));
     }
 
     // ── Parse marker segments ──
@@ -692,11 +748,18 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
     }
 
     if width == 0 || height == 0 {
-        return Err("Could not determine JPEG dimensions".into());
+        return Err(format!(
+            "JPEG declares no usable size: SOF reported {width}x{height}, but both must be at \
+             least 1 — the stream may be truncated before its SOF marker"
+        ));
     }
 
     if components.is_empty() {
-        return Err("No components found in JPEG".into());
+        return Err(format!(
+            "JPEG has no frame components: the SOF segment defined none, so no colour channels \
+             can be decoded ({} bytes were scanned)",
+            data.len()
+        ));
     }
 
     // ── Entropy decode and IDCT ──
@@ -718,7 +781,11 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
     let scan_data = if scan_data_start < scan_data_end && scan_data_end <= data.len() {
         &data[scan_data_start..scan_data_end]
     } else {
-        return Err("No scan data found in JPEG".into());
+        return Err(format!(
+            "JPEG has no scan data: the SOS marker declared bytes {scan_data_start}..\
+             {scan_data_end}, which is not a usable range inside the {}-byte input",
+            data.len()
+        ));
     };
 
     // Fill component buffers with decoded pixel data from the scan
@@ -734,7 +801,11 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
                 let sos =
                     *sos_components.get(ci).ok_or("JPEG scan is missing a component selector")?;
                 if sos.1 >= 4 || sos.2 >= 4 {
-                    return Err("JPEG Huffman table selector is out of range".into());
+                    return Err(format!(
+                        "JPEG scan selects Huffman table ({}, {}) but only tables 0..=3 exist; \
+                         the scan header is malformed",
+                        sos.1, sos.2
+                    ));
                 }
                 let dc_table =
                     dc_huff[sos.1 as usize].as_ref().ok_or("Missing DC Huffman table")?;
@@ -772,11 +843,17 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
                             let run = (symbol >> 4) as usize;
                             let cat = (symbol & 0x0F) as usize;
                             if cat == 0 && run != 15 {
-                                return Err("Invalid JPEG AC run-length symbol".into());
+                                return Err(format!(
+                                    "JPEG AC symbol 0x{symbol:02X} has magnitude 0 with run {run}: \
+                                     only the ZRL symbol (0xF0) may have magnitude 0"
+                                ));
                             }
                             k += run;
                             if k >= 64 {
-                                return Err("JPEG AC run exceeds block boundary".into());
+                                return Err(format!(
+                                    "JPEG AC run of {run} from coefficient {k} leaves the \
+                                     64-coefficient block"
+                                ));
                             }
                             if cat > 0 {
                                 let mag = receive_extended(scan_data, &mut bit_pos, cat)?;
@@ -932,7 +1009,12 @@ fn receive_extended(data: &[u8], bit_pos: &mut usize, cat: usize) -> Result<i32,
     let mut value = 0i32;
     for _ in 0..cat {
         if *bit_pos >= data.len() * 8 {
-            return Err("JPEG entropy data truncated in coefficient magnitude".into());
+            return Err(format!(
+                "JPEG entropy stream ends while reading the {cat}-bit coefficient magnitude at \
+                 bit {} of {} — the scan data is truncated",
+                bit_pos,
+                data.len() * 8
+            ));
         }
         let byte_idx = *bit_pos / 8;
         let bit_idx = *bit_pos % 8;
@@ -1016,10 +1098,16 @@ fn decode_bmp(data: &[u8]) -> Result<DecodedImage, String> {
     let bit_count = u16::from_le_bytes([data[28], data[29]]);
     let compression = u32::from_le_bytes([data[30], data[31], data[32], data[33]]);
     if width == 0 || height == 0 || !matches!(bit_count, 24 | 32) {
-        return Err("Unsupported BMP dimensions or bit depth".into());
+        return Err(format!(
+            "BMP must be {width}x{height} with 24 or 32 bits per pixel, but its header says \
+             {bit_count} bits per pixel"
+        ));
     }
     if compression != 0 {
-        return Err("Compressed BMP images are not supported".into());
+        return Err(format!(
+            "BMP uses compression method {compression}, but only method 0 (BI_RGB, \
+             uncompressed) is supported"
+        ));
     }
     let row_size = (width as usize)
         .checked_mul(bit_count as usize)
@@ -1064,7 +1152,12 @@ fn decode_bmp(data: &[u8]) -> Result<DecodedImage, String> {
 
 fn decode_gif(data: &[u8]) -> Result<DecodedImage, String> {
     if data.len() < 6 || !(data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a")) {
-        return Err("Invalid GIF signature".into());
+        return Err(format!(
+            "GIF must start with the signature GIF87a or GIF89a, but this {}-byte input starts \
+             with {:02X?}",
+            data.len(),
+            &data[..data.len().min(6)]
+        ));
     }
     decode_with_image_codecs(data, ImageFormat::Gif)
 }
@@ -1073,7 +1166,12 @@ fn decode_gif(data: &[u8]) -> Result<DecodedImage, String> {
 
 fn decode_webp(data: &[u8]) -> Result<DecodedImage, String> {
     if data.len() < 12 || &data[0..4] != b"RIFF" || &data[8..12] != b"WEBP" {
-        return Err("Invalid WebP signature".into());
+        return Err(format!(
+            "WebP must be a RIFF container tagged WEBP (bytes 0..4 = RIFF, bytes 8..12 = WEBP), \
+             but this {}-byte input starts with {:02X?}",
+            data.len(),
+            &data[..data.len().min(12)]
+        ));
     }
     decode_with_image_codecs(data, ImageFormat::WebP)
 }
@@ -1084,7 +1182,12 @@ fn decode_tiff(data: &[u8]) -> Result<DecodedImage, String> {
     let valid_le = data.len() >= 4 && &data[0..4] == b"II\x2a\x00";
     let valid_be = data.len() >= 4 && &data[0..4] == b"MM\x00\x2a";
     if !valid_le && !valid_be {
-        return Err("Invalid TIFF signature".into());
+        return Err(format!(
+            "TIFF must start with byte order II\\x2a\\x00 (little-endian) or MM\\x00\\x2a \
+             (big-endian), but this {}-byte input starts with {:02X?}",
+            data.len(),
+            &data[..data.len().min(4)]
+        ));
     }
     decode_with_image_codecs(data, ImageFormat::Tiff)
 }
@@ -1093,7 +1196,12 @@ fn decode_tiff(data: &[u8]) -> Result<DecodedImage, String> {
 
 fn decode_avif(data: &[u8]) -> Result<DecodedImage, String> {
     if data.len() < 12 || &data[4..8] != b"ftyp" {
-        return Err("Invalid AVIF data".into());
+        return Err(format!(
+            "AVIF needs an ISO base media file with an 'ftyp' box at byte 4, but this {}-byte \
+             input has {:02X?} there",
+            data.len(),
+            &data[4..data.len().min(8)]
+        ));
     }
     decode_with_image_codecs(data, ImageFormat::Avif)
 }
@@ -1102,15 +1210,24 @@ fn decode_avif(data: &[u8]) -> Result<DecodedImage, String> {
 
 fn decode_ico(data: &[u8]) -> Result<DecodedImage, String> {
     if data.len() < 6 || data[0] != 0 || data[1] != 0 || data[2] != 1 || data[3] != 0 {
-        return Err("Invalid ICO signature".into());
+        return Err(format!(
+            "ICO must start with a 6-byte ICONDIR whose reserved field is 0 and type is 1, but \
+             this {}-byte input starts with {:02X?}",
+            data.len(),
+            &data[..data.len().min(6)]
+        ));
     }
     decode_with_image_codecs(data, ImageFormat::Ico)
 }
 
 #[cfg(feature = "image-codecs")]
 fn decode_with_image_codecs(data: &[u8], format: ImageFormat) -> Result<DecodedImage, String> {
-    let image = image_codecs::load_from_memory(data)
-        .map_err(|error| format!("{format:?} decode error: {error}"))?;
+    let image = image_codecs::load_from_memory(data).map_err(|error| {
+        format!(
+            "the {format:?} payload could not be decoded (the data is malformed, truncated, \
+                 or uses an unsupported variant): {error}"
+        )
+    })?;
     let rgba = image.to_rgba8();
     let (width, height) = rgba.dimensions();
     let mut decoded = DecodedImage::new(format, ImageData::Rgba8(rgba.into_raw()), width, height);
@@ -1127,25 +1244,33 @@ fn decode_with_image_codecs(_data: &[u8], format: ImageFormat) -> Result<Decoded
 
 fn decode_pnm(data: &[u8]) -> Result<DecodedImage, String> {
     if data.len() < 3 || data[0] != b'P' || !(b'1'..=b'6').contains(&data[1]) {
-        return Err("Invalid PNM signature".into());
+        return Err(format!(
+            "PNM must start with P1..P6 selecting the pixel format, but this {}-byte input \
+             starts with {:02X?}",
+            data.len(),
+            &data[..data.len().min(2)]
+        ));
     }
     let format_type = data[1];
 
     // ASCII PNM formats have token-based headers and allow comments anywhere
     // between tokens, so parse them separately from the binary formats.
     if matches!(format_type, b'1' | b'2' | b'3') {
-        let header = std::str::from_utf8(&data[2..]).map_err(|_| "PNM: non-UTF-8 ASCII data")?;
+        let header = std::str::from_utf8(&data[2..]).map_err(|_| {
+            "PNM ASCII header is not valid UTF-8: P1/P2/P3 headers must be printable ASCII \
+             (a binary P4/P5/P6 payload here usually means the format digit is wrong)"
+        })?;
         let mut tokens = header
             .lines()
             .flat_map(|line| line.split('#').next().unwrap_or_default().split_whitespace());
         let w = tokens
             .next()
-            .ok_or("PNM: missing width")?
+            .ok_or("PNM header ends before its width token; expected `P<type> <width> <height> [<maxval>]`")?
             .parse::<u32>()
             .map_err(|_| "Invalid PNM width")?;
         let h = tokens
             .next()
-            .ok_or("PNM: missing height")?
+            .ok_or("PNM header ends before its height token; expected `P<type> <width> <height> [<maxval>]`")?
             .parse::<u32>()
             .map_err(|_| "Invalid PNM height")?;
         if w == 0 || h == 0 {
@@ -1160,7 +1285,9 @@ fn decode_pnm(data: &[u8]) -> Result<DecodedImage, String> {
                 .next()
                 .ok_or("PNM: header ended after the height; the maxval token is missing")?
                 .parse::<u32>()
-                .map_err(|_| "PNM maxval must be an integer in 1..=65535")?
+                .map_err(|t| {
+                    format!("PNM maxval must be a decimal integer in 1..=65535, got {t:?}")
+                })?
         };
         if maxval == 0 || maxval > 65535 {
             return Err(format!(
@@ -1181,7 +1308,10 @@ fn decode_pnm(data: &[u8]) -> Result<DecodedImage, String> {
                 .parse::<u32>()
                 .map_err(|_| format!("PNM: invalid sample at index {sample_index}"))?;
             if sample > maxval {
-                return Err(format!("PNM: sample {sample} exceeds maxval {maxval}"));
+                return Err(format!(
+                    "PNM sample {sample} exceeds the declared maxval {maxval}; every sample \
+                     must be <= maxval"
+                ));
             }
             let scaled = (sample * 255 / maxval) as u8;
             if format_type == b'1' {
@@ -1194,7 +1324,11 @@ fn decode_pnm(data: &[u8]) -> Result<DecodedImage, String> {
             }
         }
         if tokens.next().is_some() {
-            return Err("PNM: too many samples".into());
+            return Err(format!(
+                "PNM declares {w}x{h} = {} samples but the payload holds more; the \
+                 dimensions disagree with the data",
+                (w as usize) * (h as usize)
+            ));
         }
         let mut img = DecodedImage::new(ImageFormat::Pnm, ImageData::Rgb8(pixels), w, h);
         img.color_space = ColorSpace::Srgb;
@@ -1208,26 +1342,30 @@ fn decode_pnm(data: &[u8]) -> Result<DecodedImage, String> {
         .iter()
         .position(|&b| b == b'\n')
         .map(|p| p + 2)
-        .ok_or("PNM: missing first newline")?;
+        .ok_or("PNM binary header has no newline after the format digit; expected `P<type>\\n<width> <height>\\n<maxval>\\n`")?;
     let second_nl = data[first_nl + 1..]
         .iter()
         .position(|&b| b == b'\n')
         .map(|p| p + first_nl + 1)
-        .ok_or("PNM: missing second newline")?;
+        .ok_or("PNM binary header has no newline after the dimensions; expected `P<type>\\n<width> <height>\\n<maxval>\\n`")?;
 
     if format_type == b'4' {
         let w = std::str::from_utf8(&data[first_nl + 1..second_nl])
-            .map_err(|_| "PNM: non-UTF-8 in dimension line")?
+            .map_err(|_| {
+                "PNM dimension line must be ASCII (`<width> <height>`); found a non-UTF-8 byte"
+            })?
             .split_whitespace()
             .next()
-            .ok_or("Cannot parse PNM width")?
+            .ok_or("PNM dimension line has no width token; expected `<width> <height>`")?
             .parse::<u32>()
             .map_err(|_| "Invalid PNM width")?;
         let h = std::str::from_utf8(&data[first_nl + 1..second_nl])
-            .map_err(|_| "PNM: non-UTF-8 in dimension line")?
+            .map_err(|_| {
+                "PNM dimension line must be ASCII (`<width> <height>`); found a non-UTF-8 byte"
+            })?
             .split_whitespace()
             .nth(1)
-            .ok_or("Cannot parse PNM height")?
+            .ok_or("PNM dimension line has no height token; expected `<width> <height>`")?
             .parse::<u32>()
             .map_err(|_| "Invalid PNM height")?;
         if w == 0 || h == 0 {
@@ -1262,24 +1400,31 @@ fn decode_pnm(data: &[u8]) -> Result<DecodedImage, String> {
         .unwrap_or(data.len());
 
     // Parse the first dimension line (line after magic)
-    let dim_line = std::str::from_utf8(&data[first_nl + 1..second_nl])
-        .map_err(|_| "PNM: non-UTF-8 in dimension line")?;
+    let dim_line = std::str::from_utf8(&data[first_nl + 1..second_nl]).map_err(|_| {
+        "PNM dimension line must be ASCII (`<width> <height>`); found a non-UTF-8 byte"
+    })?;
     let dim_parts: Vec<&str> = dim_line.split_whitespace().collect();
     if dim_parts.len() < 2 {
-        return Err("Cannot parse PNM dimensions".into());
+        return Err(format!(
+            "PNM dimension line must hold exactly two tokens `<width> <height>`, got {dim_parts:?}"
+        ));
     }
-    let w = dim_parts[0].parse::<u32>().map_err(|_| "Invalid PNM width")?;
-    let h = dim_parts[1].parse::<u32>().map_err(|_| "Invalid PNM height")?;
+    let w = dim_parts[0]
+        .parse::<u32>()
+        .map_err(|t| format!("PNM width must be a decimal integer, got {t:?}"))?;
+    let h = dim_parts[1]
+        .parse::<u32>()
+        .map_err(|t| format!("PNM height must be a decimal integer, got {t:?}"))?;
 
     // Parse maxval from the line between second and third newline.
     let maxval_line = std::str::from_utf8(&data[second_nl + 1..third_nl])
-        .map_err(|_| "PNM: non-UTF-8 in maxval line")?;
+        .map_err(|_| "PNM maxval line must be ASCII (a decimal integer); found a non-UTF-8 byte")?;
     let maxval = maxval_line
         .split_whitespace()
         .next()
-        .ok_or("PNM: missing maxval")?
+        .ok_or("PNM header ends before its maxval token; expected a decimal integer in 1..=65535")?
         .parse::<u32>()
-        .map_err(|_| "PNM maxval must be an integer in 1..=65535")?;
+        .map_err(|t| format!("PNM maxval must be a decimal integer in 1..=65535, got {t:?}"))?;
     if maxval == 0 || maxval > 65535 {
         return Err(format!("PNM maxval must be in 1..=65535, got {maxval}"));
     }
@@ -1289,7 +1434,9 @@ fn decode_pnm(data: &[u8]) -> Result<DecodedImage, String> {
 
     if format_type == b'5' || format_type == b'6' {
         if w == 0 || h == 0 {
-            return Err("Invalid PNM dimensions".into());
+            return Err(format!(
+                "PNM dimensions must be at least 1x1, got {w}x{h} (the header declared an empty image)"
+            ));
         }
         let pixel_count = (w as usize).checked_mul(h as usize).ok_or("PNM dimensions overflow")?;
         // P5 stores one sample per pixel; P6 stores three (RGB).
@@ -1329,14 +1476,21 @@ fn decode_pnm(data: &[u8]) -> Result<DecodedImage, String> {
 
 fn decode_qoi(data: &[u8]) -> Result<DecodedImage, String> {
     if data.len() < 18 || &data[0..4] != b"qoif" {
-        return Err("Invalid QOI signature".into());
+        return Err(format!(
+            "QOI must start with the magic \"qoif\", but this {}-byte input starts with {:02X?}",
+            data.len(),
+            &data[..data.len().min(4)]
+        ));
     }
     let width = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
     let height = u32::from_be_bytes([data[8], data[9], data[10], data[11]]);
     let _channels = data[12];
     let _colorspace = data[13];
     if width == 0 || height == 0 {
-        return Err("Invalid QOI dimensions".into());
+        return Err(format!(
+            "QOI header declares {width}x{height}, but width and height must both be at \
+             least 1"
+        ));
     }
 
     let total = (width * height) as usize;
@@ -1424,13 +1578,21 @@ fn decode_qoi(data: &[u8]) -> Result<DecodedImage, String> {
         ));
     }
     if pixels.len() > total * 4 {
-        return Err("QOI run exceeds declared image dimensions".into());
+        return Err(format!(
+            "QOI stream produced {} pixels but the header declared {width}x{height} = {total}; \
+             the run lengths disagree with the dimensions",
+            pixels.len() / 4
+        ));
     }
     let end_marker = [0, 0, 0, 0, 0, 0, 0, 1];
     if data.len().saturating_sub(pos) < end_marker.len()
         || data[data.len() - end_marker.len()..] != end_marker
     {
-        return Err("QOI end marker is missing or invalid".into());
+        return Err(format!(
+            "QOI stream has no end marker (00 00 00 00 00 00 00 01) in its last 8 bytes: \
+             the {} byte input is truncated",
+            data.len()
+        ));
     }
     let mut img = DecodedImage::new(ImageFormat::Qoi, ImageData::Rgba8(pixels), width, height);
     img.color_space = ColorSpace::Srgb;
@@ -1441,17 +1603,29 @@ fn decode_qoi(data: &[u8]) -> Result<DecodedImage, String> {
 
 fn decode_farbfeld(data: &[u8]) -> Result<DecodedImage, String> {
     if data.len() < 16 || &data[0..8] != b"farbfeld" {
-        return Err("Invalid Farbfeld signature".into());
+        return Err(format!(
+            "Farbfeld must start with the magic \"farbfeld\", but this {}-byte input starts \
+             with {:02X?}",
+            data.len(),
+            &data[..data.len().min(8)]
+        ));
     }
     let width = u32::from_be_bytes([data[8], data[9], data[10], data[11]]);
     let height = u32::from_be_bytes([data[12], data[13], data[14], data[15]]);
     if width == 0 || height == 0 || width > 16384 || height > 16384 {
-        return Err("Invalid Farbfeld dimensions".into());
+        return Err(format!(
+            "Farbfeld header declares {width}x{height}, but width and height must both be in \
+             1..=16384"
+        ));
     }
     let total = (width * height) as usize;
     let required = 16 + total * 8;
     if data.len() < required {
-        return Err(format!("Farbfeld data truncated: need {required} bytes, got {}", data.len()));
+        return Err(format!(
+            "Farbfeld is {width}x{height} ({total} pixels), which needs {required} bytes \
+             of header plus RGBA16 samples, but the input holds only {}",
+            data.len()
+        ));
     }
     let mut pixels = Vec::with_capacity(total * 4);
     for i in 0..total {
@@ -1475,8 +1649,14 @@ fn decode_farbfeld(data: &[u8]) -> Result<DecodedImage, String> {
 fn decode_svg(data: &[u8]) -> Result<DecodedImage, String> {
     #[cfg(feature = "svg-rasterizer")]
     {
-        let tree = resvg::usvg::Tree::from_data(data, &resvg::usvg::Options::default())
-            .map_err(|error| format!("SVG parse error: {error}"))?;
+        let tree = resvg::usvg::Tree::from_data(data, &resvg::usvg::Options::default()).map_err(
+            |error| {
+                format!(
+                    "SVG document could not be parsed (malformed XML or unsupported SVG \
+                     feature): {error}"
+                )
+            },
+        )?;
         let size = tree.size().to_int_size();
         let mut pixmap = resvg::tiny_skia::Pixmap::new(size.width(), size.height())
             .ok_or("SVG raster dimensions are invalid")?;
@@ -1502,8 +1682,14 @@ fn decode_svg(data: &[u8]) -> Result<DecodedImage, String> {
 fn decode_svgz(data: &[u8]) -> Result<DecodedImage, String> {
     #[cfg(feature = "svg-rasterizer")]
     {
-        let tree = resvg::usvg::Tree::from_data(data, &resvg::usvg::Options::default())
-            .map_err(|error| format!("SVGZ parse error: {error}"))?;
+        let tree = resvg::usvg::Tree::from_data(data, &resvg::usvg::Options::default()).map_err(
+            |error| {
+                format!(
+                    "the decompressed SVGZ payload could not be parsed as SVG (malformed XML \
+                     or unsupported feature): {error}"
+                )
+            },
+        )?;
         let size = tree.size().to_int_size();
         let mut pixmap = resvg::tiny_skia::Pixmap::new(size.width(), size.height())
             .ok_or("SVGZ raster dimensions are invalid")?;
@@ -1521,8 +1707,13 @@ fn decode_svgz(data: &[u8]) -> Result<DecodedImage, String> {
     {
         // Decompress gzip, then delegate to the SVG decoder (which refuses to
         // rasterize).
-        let decompressed = miniz_oxide::inflate::decompress_to_vec(data)
-            .map_err(|_| "SVGZ decompression failed".to_string())?;
+        let decompressed = miniz_oxide::inflate::decompress_to_vec(data).map_err(|_| {
+            format!(
+                "SVGZ payload is not a valid gzip stream ({} bytes): decompression failed, \
+                     so no SVG document could be read",
+                data.len()
+            )
+        })?;
         decode_svg(&decompressed)
     }
 }
@@ -1718,7 +1909,12 @@ mod tests {
 
         let mut compressed = truncated;
         compressed[30..34].copy_from_slice(&1u32.to_le_bytes());
-        assert!(decode_bmp(&compressed).unwrap_err().contains("Compressed"));
+        let err = decode_bmp(&compressed).unwrap_err();
+        // The message must name the compression method found and the one accepted.
+        assert!(
+            err.contains("compression method 1") && err.contains("only method 0"),
+            "unexpected error: {err}"
+        );
     }
 
     /// Build a well-formed PNG file around raw (already filtered) scanlines.
@@ -1932,7 +2128,9 @@ mod tests {
     fn decode_pnm_ascii_rejects_invalid_sample_values() {
         let pnm = b"P2\n1 1\n10\n11\n";
         let err = decode_pnm(pnm).unwrap_err();
-        assert!(err.contains("exceeds maxval"), "unexpected error: {err}");
+        // The message must name both the offending sample and the declared bound,
+        // otherwise the reader cannot tell which pixel was out of range.
+        assert!(err.contains("sample 11") && err.contains("maxval 10"), "unexpected error: {err}");
     }
 
     #[cfg(not(feature = "image-codecs"))]
@@ -2184,7 +2382,11 @@ mod tests {
         let scanlines = [0u8, 1, 2, 3]; // content is irrelevant
         let png = make_png(2, 1, 8, 6, 1, &scanlines);
         let err = decode_png(&png).unwrap_err();
-        assert!(err.contains("interlaced") || err.contains("Interlaced"), "{err}");
+        // The message must name the interlace method found and the one accepted.
+        assert!(
+            err.contains("Adam7") && err.contains("interlace method 0"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

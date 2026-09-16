@@ -145,7 +145,10 @@ pub fn spawn_print_job(job_file: &std::path::Path) -> Result<(), String> {
     if attempted {
         Err(last_error)
     } else {
-        Err(format!("no print spooler found ({last_error})"))
+        Err(format!(
+            "no print spooler found: none of the known spooler commands could be spawned \
+             ({last_error}); install CUPS (`cups-client`) or a compatible `lpr` to print"
+        ))
     }
 }
 
@@ -177,10 +180,12 @@ impl std::fmt::Display for SpoolerFailure {
 /// Split from [`spawn_print_job`] so the waiting behaviour can be tested against a
 /// stand-in program without mutating the process-global `PATH`.
 fn run_spooler(program: &str, job_file: &std::path::Path) -> Result<(), SpoolerFailure> {
-    let output = std::process::Command::new(program)
-        .arg(job_file)
-        .output()
-        .map_err(|error| SpoolerFailure::Unavailable(format!("{program}: {error}")))?;
+    let output = std::process::Command::new(program).arg(job_file).output().map_err(|error| {
+        SpoolerFailure::Unavailable(format!(
+            "spooler command '{program}' could not be spawned: {error} (check that it is \
+                 installed and on PATH)"
+        ))
+    })?;
 
     if output.status.success() {
         return Ok(());

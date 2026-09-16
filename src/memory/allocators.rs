@@ -118,12 +118,18 @@ impl ArenaAllocator {
     /// Panics if `capacity` is zero or the layout is otherwise invalid, and aborts
     /// on out-of-memory — there is no fallible constructor.
     pub fn new(capacity: usize) -> Self {
-        let layout = Layout::from_size_align(capacity, 8).expect("Invalid layout");
+        let layout = Layout::from_size_align(capacity, 8).expect(
+            "capacity must be non-zero and fit an 8-byte alignment, which `Arena::new` documents \
+             as a panic condition",
+        );
         // SAFETY: layout is validated by Layout::from_size_align, which ensures
         // non-zero size and valid alignment. alloc() is guaranteed to return a
         // properly aligned pointer or abort on OOM.
         let ptr = unsafe { alloc(layout) };
-        let buffer = NonNull::new(ptr).expect("Allocation failed");
+        let buffer = NonNull::new(ptr).expect(
+            "the global allocator returned null for a non-zero layout, which aborts by \
+                     contract",
+        );
         Self { buffer, layout, offset: 0 }
     }
 

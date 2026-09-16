@@ -83,10 +83,10 @@ impl Calendar {
             display_month: today,
             // SAFETY: 1900-01-01 is a valid Gregorian date.
             minimum_date: chrono::NaiveDate::from_ymd_opt(1900, 1, 1)
-                .expect("1900-01-01 is a valid date"),
+                .expect("the calendar lower bound is the literal 1900-01-01, which is a valid Gregorian date"),
             // SAFETY: 3000-12-31 is a valid Gregorian date.
             maximum_date: chrono::NaiveDate::from_ymd_opt(3000, 12, 31)
-                .expect("3000-12-31 is a valid date"),
+                .expect("the calendar upper bound is the literal 3000-12-31, which is a valid Gregorian date"),
             first_day_of_week: chrono::Weekday::Mon,
             grid_visible: true,
             navigation_bar_visible: true,
@@ -265,7 +265,7 @@ impl Calendar {
     /// Compute the number of leading blank cells before day 1 of the displayed month.
     fn leading_blank_count(&self) -> u32 {
         // SAFETY: day 1 exists in every month.
-        let first = self.display_month.with_day(1).expect("day 1 always valid");
+        let first = self.display_month.with_day(1).expect("day 1 exists in every Gregorian month");
         let wd = first.weekday();
         let from_mon = wd.num_days_from_monday();
         match self.first_day_of_week {
@@ -294,7 +294,7 @@ impl Calendar {
         let row = ((pos.y - grid.y) / cell_h).clamp(0, 5);
         let day_num = row * 7 + col - self.leading_blank_count() as i32;
         // SAFETY: day 1 exists in every month.
-        let first = self.display_month.with_day(1).expect("day 1 always valid");
+        let first = self.display_month.with_day(1).expect("day 1 exists in every Gregorian month");
         first
             .checked_add_signed(chrono::TimeDelta::days(day_num as i64))
             .filter(|d| d.month() == self.display_month.month())
@@ -618,7 +618,7 @@ impl Draw for Calendar {
                     let date = self
                         .display_month
                         .with_day(day_num as u32)
-                        .expect("day_num validated against days_in_month");
+                        .expect("day_num was clamped to 1..=days_in_month for this month, so it is always a valid day");
 
                     // Cell background
                     let in_range = date >= self.minimum_date && date <= self.maximum_date;

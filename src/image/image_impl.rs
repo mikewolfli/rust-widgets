@@ -93,8 +93,12 @@ impl Image {
 
     /// Loads an image from a file path.
     pub fn from_file(path: &str) -> Result<Self, String> {
-        let data = std::fs::read(path)
-            .map_err(|error| format!("Failed to read image file '{path}': {error}"))?;
+        let data = std::fs::read(path).map_err(|error| {
+            format!(
+                "image file '{path}' could not be read: {error} (check that the path exists \
+                     and is readable)"
+            )
+        })?;
         Self::from_bytes(&data)
     }
 

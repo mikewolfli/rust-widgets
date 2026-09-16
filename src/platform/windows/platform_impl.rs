@@ -297,7 +297,11 @@ impl Platform for WindowsPlatform {
                 return Ok(());
             }
         }
-        Err("system print command failed on windows".to_string())
+        Err(format!(
+            "no Windows print command could submit job file '{}'; every candidate \
+             PowerShell/spooler invocation failed",
+            job_file.display()
+        ))
     }
 
     /// The shell `print` verb is always available on Windows.

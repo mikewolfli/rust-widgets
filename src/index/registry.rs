@@ -92,9 +92,19 @@ impl WidgetRegistry {
     /// or file writing fails.
     #[cfg(all(feature = "serde", feature = "serde_json", widgets_unstripped))]
     pub fn save(&self, path: &str) -> Result<(), String> {
-        let json =
-            serde_json::to_string_pretty(self).map_err(|e| format!("serialization error: {e}"))?;
-        std::fs::write(path, &json).map_err(|e| format!("write error: {e}"))
+        let json = serde_json::to_string_pretty(self).map_err(|e| {
+            format!(
+                "{} widget registry entry/entries could not be serialized to JSON: {e}",
+                self.len()
+            )
+        })?;
+        std::fs::write(path, &json).map_err(|e| {
+            format!(
+                "widget registry ({} bytes of JSON) could not be written to '{path}': {e} \
+                 (check that the directory exists and is writable)",
+                json.len()
+            )
+        })
     }
 
     /// Deserialize widget registry data from a JSON file at `path`.
@@ -104,9 +114,15 @@ impl WidgetRegistry {
     /// or parsing fails.
     #[cfg(all(feature = "serde", feature = "serde_json", widgets_unstripped))]
     pub fn load(&mut self, path: &str) -> Result<(), String> {
-        let json = std::fs::read_to_string(path).map_err(|e| format!("read error: {e}"))?;
-        let loaded: WidgetRegistry =
-            serde_json::from_str(&json).map_err(|e| format!("parse error: {e}"))?;
+        let json = std::fs::read_to_string(path).map_err(|e| {
+            format!(
+                "widget registry file '{path}' could not be read: {e} (check that the path \
+                 exists and is readable)"
+            )
+        })?;
+        let loaded: WidgetRegistry = serde_json::from_str(&json).map_err(|e| {
+            format!("widget registry file '{path}' is not valid WidgetRegistry JSON: {e}")
+        })?;
         *self = loaded;
         Ok(())
     }

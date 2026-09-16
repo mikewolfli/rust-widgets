@@ -61,8 +61,9 @@ impl JsonLoader {
     /// Returns an error if JSON parsing fails, an unknown widget type is
     /// encountered, or the widget tree exceeds `MAX_DEPTH`.
     pub fn load(json_str: &str) -> Result<BoundJsonLayout, String> {
-        let value: Value =
-            serde_json::from_str(json_str).map_err(|e| format!("JSON parse error: {e}"))?;
+        let value: Value = serde_json::from_str(json_str).map_err(|e| {
+            format!("layout JSON ({} bytes) could not be parsed: {e}", json_str.len())
+        })?;
         let mut registry = crate::index::WidgetRegistry::new();
         let mut binding = BoundJsonLayout::new();
 
@@ -101,7 +102,10 @@ impl JsonLoader {
         depth: u32,
     ) -> Result<ObjectId, String> {
         if depth > MAX_DEPTH {
-            return Err(format!("Maximum widget depth ({MAX_DEPTH}) exceeded"));
+            return Err(format!(
+                "widget tree is nested {depth} levels deep, which exceeds the maximum of \
+                 {MAX_DEPTH}; flatten the layout to load it"
+            ));
         }
 
         let obj = value
@@ -939,7 +943,10 @@ impl JsonLoader {
                 }
                 Ok(Box::new(fd))
             }
-            _ => Err(format!("unknown widget type: '{widget_type}'")),
+            _ => Err(format!(
+                "unknown widget type '{widget_type}'; the name must match a widget registered \
+                 with `WidgetRegistry`"
+            )),
         }
     }
 }
@@ -1332,7 +1339,9 @@ mod tests {
         let result = JsonLoader::load(json);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.contains("JSON parse error"), "Expected parse error, got: {}", err);
+        // The message must name the input (its size) and say the parse failed.
+        assert!(err.contains("could not be parsed"), "Expected parse error, got: {}", err);
+        assert!(err.contains("bytes"), "Expected the size to be named, got: {}", err);
     }
 
     #[test]

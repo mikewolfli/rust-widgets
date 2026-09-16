@@ -146,7 +146,12 @@ unsafe impl Send for FfmpegDecoder {}
 impl FfmpegDecoder {
     /// Create a new FFmpeg decoder from raw video bytes.
     pub fn new(data: Vec<u8>) -> Result<Self, String> {
-        ffmpeg_next::init().map_err(|e| format!("FFmpeg init failed: {e}"))?;
+        ffmpeg_next::init().map_err(|e| {
+            format!(
+                "FFmpeg could not be initialised: {e}; the FFmpeg runtime libraries must be \
+                 installed and resolvable on this host"
+            )
+        })?;
 
         // Write data to a temporary file so ffmpeg-next can open it.
         let temp_path = next_temp_path();
@@ -157,10 +162,19 @@ impl FfmpegDecoder {
         // failed `write_all`/`flush` left the file behind.
         let mut temp_guard = TempFileGuard::new(temp_path.clone());
 
-        let mut file =
-            fs::File::create(&temp_path).map_err(|e| format!("Failed to create temp file: {e}"))?;
-        file.write_all(&data).map_err(|e| format!("Failed to write temp file: {e}"))?;
-        file.flush().map_err(|e| format!("Failed to flush temp file: {e}"))?;
+        let mut file = fs::File::create(&temp_path).map_err(|e| {
+            format!("temp file '{}' could not be created: {e}", temp_path.display())
+        })?;
+        file.write_all(&data).map_err(|e| {
+            format!(
+                "{} bytes could not be written to temp file '{}': {e}",
+                data.len(),
+                temp_path.display()
+            )
+        })?;
+        file.flush().map_err(|e| {
+            format!("temp file '{}' could not be flushed to disk: {e}", temp_path.display())
+        })?;
         // Close the handle before FFmpeg opens the path, so the write is durable
         // on platforms that lock the file (Windows).
         drop(file);
@@ -174,26 +188,42 @@ impl FfmpegDecoder {
 
     /// Open an FFmpeg decoder from a file path.
     fn from_path(path: &std::path::Path) -> Result<Self, String> {
-        let input =
-            ffmpeg_next::format::input(path).map_err(|e| format!("Failed to open input: {e}"))?;
+        let input = ffmpeg_next::format::input(path).map_err(|e| {
+            format!(
+                "FFmpeg could not open input '{}' (unsupported or corrupt container): {e}",
+                path.display()
+            )
+        })?;
 
         // Find the best video stream.
-        let stream = input
-            .streams()
-            .best(media::Type::Video)
-            .ok_or_else(|| "No video stream found".to_string())?;
+        let stream = input.streams().best(media::Type::Video).ok_or_else(|| {
+            format!(
+                "input '{}' has no video stream ({} stream(s) present): audio-only \
+                     containers cannot be decoded into frames",
+                path.display(),
+                input.streams().len()
+            )
+        })?;
 
         let stream_index = stream.index();
         let time_base = stream.time_base();
 
         // Build codec parameters → decoder context.
-        let codec_ctx = ffmpeg_next::codec::Context::from_parameters(stream.parameters())
-            .map_err(|e| format!("Failed to create decoder context: {e}"))?;
+        let codec_ctx =
+            ffmpeg_next::codec::Context::from_parameters(stream.parameters()).map_err(|e| {
+                format!(
+                    "video codec parameters could not be turned into a decoder context: {e} \
+                     (the stream header may be truncated)"
+                )
+            })?;
 
-        let decoder = codec_ctx
-            .decoder()
-            .video()
-            .map_err(|e| format!("Failed to open video decoder: {e}"))?;
+        let decoder = codec_ctx.decoder().video().map_err(|e| {
+            format!(
+                "video decoder {}x{} could not be opened: {e}",
+                codec_ctx.width(),
+                codec_ctx.height()
+            )
+        })?;
 
         // Create the RGBA scaler.
         let scaler = software::converter(
@@ -201,7 +231,14 @@ impl FfmpegDecoder {
             decoder.format(),
             format::Pixel::RGBA,
         )
-        .map_err(|e| format!("Failed to create scaler: {e}"))?;
+        .map_err(|e| {
+            format!(
+                "colour converter {}x{} {:?} -> RGBA could not be created: {e}",
+                decoder.width(),
+                decoder.height(),
+                decoder.format()
+            )
+        })?;
 
         let metadata = build_metadata(&input, &decoder, &stream);
 
@@ -227,7 +264,12 @@ impl FfmpegDecoder {
         let height = frame.height();
         let mut rgb = ffmpeg_next::frame::Video::empty();
 
-        self.scaler.run(frame, &mut rgb).map_err(|e| format!("Scaler failed: {e}"))?;
+        self.scaler.run(frame, &mut rgb).map_err(|e| {
+            format!(
+                "frame {width}x{height} could not be converted to RGBA for output: {e} \
+                     (the scaler needs matching source format and size)"
+            )
+        })?;
 
         // The scaler has now allocated the output frame; read its data.
         let data = rgb.data(0).to_vec();
@@ -266,7 +308,13 @@ impl FfmpegDecoder {
                     self.eof = true;
                     return Ok(None);
                 }
-                Err(e) => return Err(format!("Failed to read packet: {e}")),
+                Err(e) => {
+                    return Err(format!(
+                        "packet after frame {} could not be read from the container (the file \
+                         may be truncated): {e}",
+                        self.frame_index
+                    ))
+                }
             }
         }
     }
@@ -281,7 +329,11 @@ impl FfmpegDecoder {
                     self.frame_index += 1;
                     match self.convert_frame(&frame) {
                         Ok(vf) => self.buffered.push_back(vf),
-                        Err(e) => log::warn!("[FfmpegDecoder] frame conversion skipped: {e}"),
+                        Err(e) => log::warn!(
+                            "[FfmpegDecoder] frame {} was skipped because it could not be \
+                             converted to RGBA: {e}",
+                            self.frame_index
+                        ),
                     }
                 }
                 Err(ffmpeg_next::Error::Eof) => break,
@@ -341,7 +393,12 @@ impl VideoDecoderTrait for FfmpegDecoder {
         let ts =
             (time * self.time_base.denominator() as f64 / self.time_base.numerator() as f64) as i64;
 
-        self.input.seek(ts, ..).map_err(|e| format!("Seek failed: {e}"))?;
+        self.input.seek(ts, ..).map_err(|e| {
+            format!(
+                "seek to {time:.3}s (stream timestamp {ts}) failed: {e}; the container may \
+                 not be seekable"
+            )
+        })?;
 
         // Flush decoder buffers so the next frame decode starts fresh.
         self.decoder.flush();

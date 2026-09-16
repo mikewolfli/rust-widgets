@@ -720,7 +720,10 @@ impl JsEngine for SimpleJsEngine {
             }
             _ => {
                 // Try to find a user-defined function
-                Err(JsError::new(format!("Function '{name}' is not defined")))
+                Err(JsError::new(format!(
+                    "function '{name}' is not defined: call `register_function` before invoking \
+                     it, or check the spelling"
+                )))
             }
         }
     }
@@ -815,10 +818,12 @@ impl BoaJsEngine {
 
     /// Evaluate JavaScript source code.
     pub fn evaluate(&mut self, source: &str) -> Result<JsValue, String> {
-        let result = self
-            .context
-            .eval(boa_engine::Source::from_bytes(source))
-            .map_err(|e| format!("JS error: {e}"))?;
+        let result = self.context.eval(boa_engine::Source::from_bytes(source)).map_err(|e| {
+            format!(
+                "script could not be evaluated: {e}; fix the JavaScript syntax or the \
+                         failing expression"
+            )
+        })?;
         Ok(js_value_to_ours(&result, &mut self.context))
     }
 
@@ -834,10 +839,13 @@ impl BoaJsEngine {
         name: &str,
         func: boa_engine::NativeFunction,
     ) -> Result<(), String> {
-        let name = boa_engine::JsString::from(name);
-        self.context
-            .register_global_builtin_callable(name, 0, func)
-            .map_err(|e| format!("Failed to register function: {e}"))?;
+        let js_name = boa_engine::JsString::from(name);
+        self.context.register_global_builtin_callable(js_name, 0, func).map_err(|e| {
+            format!(
+                "global function '{name}' could not be registered (the name may be \
+                     reserved or already defined): {e}"
+            )
+        })?;
         Ok(())
     }
 

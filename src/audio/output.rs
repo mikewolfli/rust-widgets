@@ -24,12 +24,17 @@ impl AudioOutput {
     /// Create a new audio output connected to the default output device.
     pub fn new() -> Result<Self, String> {
         let host = cpal::default_host();
-        let device = host
-            .default_output_device()
-            .ok_or_else(|| "No default audio output device found".to_string())?;
-        let config = device
-            .default_output_config()
-            .map_err(|e| format!("Failed to get default output config: {}", e))?;
+        let device = host.default_output_device().ok_or_else(|| {
+            "no default audio output device: the host reported no audio device, so playback \
+             cannot be started — check that an output device is enabled in the OS sound settings"
+                .to_string()
+        })?;
+        let config = device.default_output_config().map_err(|e| {
+            format!(
+                "default output device '{}' has no usable output config: {e}",
+                device.name().unwrap_or_else(|_| "<unnamed>".to_string())
+            )
+        })?;
         Ok(Self {
             device: Some(device),
             config: Some(config.into()),
@@ -87,9 +92,16 @@ impl AudioOutput {
                 err_fn,
                 None,
             )
-            .map_err(|e| format!("Failed to build audio stream: {}", e))?;
+            .map_err(|e| {
+                format!(
+                    "output stream could not be built for config {config:?}: {e} (check that \
+                     the device is still connected and supports this config)"
+                )
+            })?;
 
-        stream.play().map_err(|e| format!("Failed to start audio stream: {}", e))?;
+        stream.play().map_err(|e| {
+            format!("output stream could not be started for config {config:?}: {e}")
+        })?;
         self.stream = Some(stream);
         Ok(())
     }

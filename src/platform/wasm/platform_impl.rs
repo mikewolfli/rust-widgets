@@ -43,7 +43,11 @@ impl Platform for WasmPlatform {
 
     /// There is no printable document in the web sandbox.
     fn spawn_print_job(&self, _job_file: &std::path::Path) -> Result<(), String> {
-        Err("printing is not available in the WASM backend".to_string())
+        Err(format!(
+            "printing is not available in a browser (job file '{}' was not printed): the \
+             sandbox exposes no print spooler; the host page must call `window.print()`",
+            _job_file.display()
+        ))
     }
 
     fn has_print_support(&self) -> bool {
@@ -93,8 +97,14 @@ impl Platform for WasmPlatform {
         #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
         {
             use wasm_bindgen::JsCast;
-            let window = web_sys::window().expect("no global window");
-            let document = window.document().expect("no document");
+            let window = web_sys::window().expect(
+                "a canvas-backed WASM widget needs a browser global `window`, so this \
+                     must run on the main thread of a browser document",
+            );
+            let document = window.document().expect(
+                "a canvas-backed WASM widget needs `window.document`; the global window has \
+                     no document (e.g. it is a worker scope)",
+            );
             match document.get_element_by_id(&self.canvas_id) {
                 Some(canvas) => match canvas.dyn_into::<web_sys::HtmlCanvasElement>() {
                     Ok(html_canvas) => {

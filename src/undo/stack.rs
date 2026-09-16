@@ -70,7 +70,12 @@ impl UndoStack {
 
     /// Undo the most recent command, moving it to the redo stack.
     pub fn undo(&mut self) -> Result<(), String> {
-        let mut command = self.undo_stack.pop().ok_or_else(|| "Nothing to undo".to_string())?;
+        let mut command = self.undo_stack.pop().ok_or_else(|| {
+            format!(
+                "nothing to undo: the undo stack is empty ({} redoable command(s) pending)",
+                self.redo_stack.len()
+            )
+        })?;
         command.undo()?;
         self.redo_stack.push(command);
         Ok(())
@@ -78,7 +83,12 @@ impl UndoStack {
 
     /// Redo the most recently undone command, moving it back to the undo stack.
     pub fn redo(&mut self) -> Result<(), String> {
-        let mut command = self.redo_stack.pop().ok_or_else(|| "Nothing to redo".to_string())?;
+        let mut command = self.redo_stack.pop().ok_or_else(|| {
+            format!(
+                "nothing to redo: the redo stack is empty ({} undoable command(s) pending)",
+                self.undo_stack.len()
+            )
+        })?;
         command.redo()?;
         self.undo_stack.push(command);
         Ok(())
@@ -223,7 +233,10 @@ mod tests {
             let len = self.applied.len();
             let remove_len = self.text.len();
             if remove_len > len {
-                return Err("Nothing to undo".to_string());
+                return Err(format!(
+                    "cannot undo appending {} byte(s): only {} byte(s) are applied",
+                    remove_len, len
+                ));
             }
             self.applied.truncate(len - remove_len);
             Ok(())
@@ -273,7 +286,10 @@ mod tests {
             let len = self.applied.len();
             let remove_len = self.text.len();
             if remove_len > len {
-                return Err("Nothing to undo".to_string());
+                return Err(format!(
+                    "cannot undo appending {} byte(s): only {} byte(s) are applied",
+                    remove_len, len
+                ));
             }
             self.applied.truncate(len - remove_len);
             Ok(())
@@ -475,7 +491,8 @@ mod tests {
         let mut stack = UndoStack::new();
         let result = stack.undo();
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "Nothing to undo");
+        let err = result.unwrap_err();
+        assert!(err.contains("nothing to undo") && err.contains("empty"), "{err}");
     }
 
     #[test]
@@ -483,7 +500,8 @@ mod tests {
         let mut stack = UndoStack::new();
         let result = stack.redo();
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "Nothing to redo");
+        let err = result.unwrap_err();
+        assert!(err.contains("nothing to redo") && err.contains("empty"), "{err}");
     }
 
     #[test]
