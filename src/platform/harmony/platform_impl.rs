@@ -4,6 +4,7 @@
 use super::super::{DropEvent, Platform};
 use super::types::*;
 use crate::core::PlatformFamily;
+use crate::{WidgetTriggerEvent, WidgetTriggerKind};
 
 use std::sync::atomic::Ordering;
 #[cfg(not(target_arch = "wasm32"))]
@@ -147,6 +148,22 @@ impl Platform for HarmonyPlatform {
     }
     fn inject_drop_event(&self, event: DropEvent) -> bool {
         self.state.inject_drop_event(event)
+    }
+
+    /// Pops the next typed widget-trigger event injected into this backend.
+    ///
+    /// The queue lives in `BackendState` and is shared by every state-only
+    /// backend (iOS/Android/mobile/stub). Harmony delegates to it like the rest;
+    /// leaving this to the trait default made the pair below silently
+    /// asymmetric — `inject_widget_trigger_event` returned `false` and this
+    /// always returned `None`, so no injected trigger could ever be observed.
+    fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
+        self.state.pop_widget_trigger_event()
+    }
+
+    /// Injects a typed widget-trigger event, refusing ids the backend never made.
+    fn inject_widget_trigger_event(&self, widget_id: u64, kind: WidgetTriggerKind) -> bool {
+        self.state.inject_widget_trigger_event(widget_id, kind)
     }
     /// The Harmony backend has no widget surface bound yet, so this reports
     /// `false` until an ArkUI Canvas bridge is bound.

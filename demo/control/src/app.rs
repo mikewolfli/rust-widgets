@@ -23,7 +23,7 @@
 //! 在所有平台跑：控件怎么落地（OS 控件还是库自己的绘制面）是 `src/platform/`
 //! 的内部决定，调用方不需要知道，也无从知道。
 //!
-//! 唯一需要运行时询问的是**能力存在与否**，例如 `supports_custom_widgets()`：
+//! 唯一需要运行时询问的是**能力存在与否**，例如 `supports_surfaces()`：
 //! 一个平台若暂时无法承载自绘型控件，接口会如实回答 `false`，而不是让调用方
 //! 去按 OS 分支。
 
@@ -291,11 +291,11 @@ fn build_window_chrome(win: &WindowHandle, log: &Arc<EventLog>) {
 /// 挂载自绘型控件，证明它们能和其它控件放在同一个窗口里。
 ///
 /// `CodeEditor` 这类控件自己负责绘制内容，因此没有对应的 `new_*` 工厂方法；
-/// 用 `mount_custom_widget` 交给窗口托管。至于窗口用**什么**来承载它（子窗口？
+/// 用 `mount_surface` 交给窗口托管。至于窗口用**什么**来承载它（子窗口？
 /// 绘制区？视图？）是 `src/platform/` 的内部细节，本 demo 不需要知道，
 /// 跨平台也是同一段代码。
 ///
-/// 唯一要问的是**能力是否存在**：`supports_custom_widgets()` 返回 `false` 时，
+/// 唯一要问的是**能力是否存在**：`supports_surfaces()` 返回 `false` 时，
 /// 说明当前平台暂时撑不住这类控件，如实跳过即可。
 fn build_custom_painted_controls(win: &WindowHandle, log: &Arc<EventLog>) {
     use rust_widgets::core::Rect;
@@ -303,7 +303,7 @@ fn build_custom_painted_controls(win: &WindowHandle, log: &Arc<EventLog>) {
 
     log.append("═══ Row: Custom-painted Widgets ═══");
 
-    if !rust_widgets::supports_custom_widgets() {
+    if !rust_widgets::supports_surfaces() {
         log.append(format!(
             "[Custom] 当前后端 '{}' 暂不能承载自绘型控件，跳过本区域",
             rust_widgets::backend_name()
@@ -323,7 +323,7 @@ fn build_custom_painted_controls(win: &WindowHandle, log: &Arc<EventLog>) {
         Ok(mut editor) => {
             editor.set_text("fn main() {\n    let x = 1;\n}\n");
             let widget: Box<dyn rust_widgets::widget::Widget> = Box::new(editor);
-            match win.mount_custom_widget(widget, rect) {
+            match win.mount_surface(widget, rect) {
                 Ok(handle) => {
                     log.append(format!("[Custom] CodeEditor 挂载成功 id={}", handle.raw_id()))
                 }
@@ -337,7 +337,7 @@ fn build_custom_painted_controls(win: &WindowHandle, log: &Arc<EventLog>) {
     let chip_rect = Rect::new(720, 490, 160, 40);
     let factory = rust_widgets::widget::WidgetFactory::new_with_defaults();
     match factory.create("chip", chip_rect, "chip") {
-        Some(chip) => match win.mount_custom_widget(chip, chip_rect) {
+        Some(chip) => match win.mount_surface(chip, chip_rect) {
             Ok(handle) => log.append(format!("[Custom] Chip 挂载成功 id={}", handle.raw_id())),
             Err(error) => log.append(format!("[Custom] Chip 挂载失败：{error}")),
         },
@@ -356,7 +356,7 @@ fn build_custom_painted_controls(win: &WindowHandle, log: &Arc<EventLog>) {
 pub fn run() {
     println!();
     println!("╔══════════════════════════════════════════════════════════╗");
-    println!("║     rust_widgets  —  Controls Demo v2.0.0             ║");
+    println!("║     rust_widgets  —  Controls Demo v2.0.1             ║");
     println!("║     App 框架 · 统一控件 API · 实时事件日志                ║");
     println!("╚══════════════════════════════════════════════════════════╝");
     println!();

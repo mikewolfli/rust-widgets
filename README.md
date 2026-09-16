@@ -51,7 +51,7 @@ property contract; the platform capability matrix
 is generated from source and gated for drift in CI.
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.0.0-blue)]()
+[![version](https://img.shields.io/badge/version-2.0.1-blue)]()
 [![tests](https://img.shields.io/badge/tests-4000%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 

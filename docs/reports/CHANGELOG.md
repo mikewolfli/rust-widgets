@@ -2,6 +2,87 @@
 
 All notable changes to this project are documented in this file.
 
+## 2.0.1 (2026-09-16) — Linux GTK Backend Restored, Windows/Linux Link Fixes
+
+A corrective release for platform paths that 2.0.0's verification did not cover. No API
+changed; no capability was added or removed. Four of these were **functional blockers**
+on the affected platform, and all of them were invisible to the macOS-based evidence
+that 2.0.0 relied on.
+
+### Fixed
+
+- **`desktop` did not compile on Linux.** The `canvas` call sites were gated on
+  `widgets_unstripped` while the module itself also requires `gtk-native`, so
+  `--features desktop` produced four `E0433`s.
+- **The `gtk-native` backend had never compiled at all.** It referred to `glib`/`gdk`/
+  `cairo` as bare crates (only `gtk` is a declared dependency), missed a `MutexExt`
+  import, called `Fixed`-only `move_` on a child widget, and called an unsafe
+  `destroy` without an `unsafe` block. None of these needed a running GTK to find.
+- **A process-wide SIGSEGV in `gtk-native` test runs.** GTK binds a process to one main
+  thread, but the Rust test harness runs each `#[test]` on its own thread. `init` now
+  guards the check-then-initialize sequence with a process-wide lock, and `create_window`
+  / `mount_surface` degrade to a state-only window off the main thread instead of
+  aborting — the pattern the macOS backend already used for AppKit.
+- **The Linux clipboard was never wired.** Every other backend delegated to the shared
+  state record; `LinuxPlatform` inherited the trait default that returns `false`, so
+  copy/paste inside the library was a silent no-op on Linux.
+- **A library-created window could not carry controls** (BLUE15 Gap B). A window existed
+  in two disconnected id spaces — the widget registry's and the platform's — and
+  `mount_surface` can only resolve the latter. `App::new_window(..)` followed by
+  `mount_widget_by_name(..)` returned "refused the mount"; the host-window link is now
+  recorded at creation and resolved at mount.
+- **The Wayland menu model had consumers but no producers.** `create_menu_bar` first
+  checks that the parent is a `MenuBar`, but nothing ever constructed one, so
+  `attach_menu_bar_to_window` and `menu_add_item` could only return `false`/`0`.
+- **HarmonyOS targets did not build at all.** Every `*-unknown-linux-ohos` target reports
+  `target_os = "linux"` and `target_env = "ohos"`, so the six backend-selection sites
+  written as `cfg(target_os = "ohos")` never matched and `create_native_platform` had no
+  definition for the target. The checks now key off `target_env`, and the Linux/Wayland
+  arms exclude OpenHarmony explicitly (they share `target_os = "linux"`, so without that
+  exclusion both would match). Honest note: the backend status doc's own verification
+  command passed a `harmony` feature, which is a development switch — it satisfied the
+  `feature = "harmony"` arm and so masked the broken target arm.
+- **Harmony ignored injected widget-trigger events.** `inject_widget_trigger_event` and
+  `poll_widget_trigger_event` were not wired, though the shared implementation existed
+  and four sibling backends used it.
+- **A `clippy::missing_const_for_thread_local` false report on the OpenHarmony target**
+  (`src/widget/runtime.rs`). The lint suggests moving `RefCell::new(HashMap::new())` into
+  a `const` block, but `std::collections::HashMap::new()` is not a `const fn`; the host
+  toolchain can resolve `HashMap` and stays quiet, OpenHarmony's std cannot. The
+  suggestion would not compile, so it is allowed at the three affected cells with the
+  reason recorded.
+- **`cargo test --all-features` failed** (5 cases at the start of this round). Two were
+  the Wayland/Harmony defects above; three examples did not compile because
+  `--all-features` enables `desktop` and `mini` simultaneously, which compiles out the
+  modules they import (`required-features` cannot express this, since it is satisfied by
+  any listed feature).
+- **`reported_entry_point_count_matches_the_exports`** counted its own literal and the
+  module documentation as JNI entry points, so it reported 9 export sites for 7 real
+  `pub extern "system" fn` declarations. The declared count was correct; the measurement
+  was not.
+
+### Verification
+
+Five feature configurations and `--all-features` build and test clean, with zero clippy
+warnings under `-D warnings`, a clean `cargo doc -D warnings`, and clean cross-target
+builds for `x86_64-pc-windows-msvc`, `wasm32-unknown-unknown`, `aarch64-linux-android`
+and `aarch64-unknown-linux-ohos` (OpenHarmony).
+
+New CI job `linux-gtk` compiles and tests the `gtk-native` combination, which no previous
+job covered (and which `--all-features` cannot cover, because it also enables `mini`). It
+re-runs the suite to catch the concurrency-dependent failure mode above.
+
+New CI job `harmony-cross-check` builds the OpenHarmony target, which no previous job
+covered. Its checks live in `tools/check_harmony_cross.sh` so that CI and a workstation
+run identical commands; the gate also asserts the target-identification premise
+(`target_os="linux"`, `target_env="ohos"`) that the selection logic rests on, so a future
+change there fails loudly instead of silently flipping every backend arm.
+
+Full detail, with reproduction commands and the before/after evidence for Gap B, is in
+[docs/log/log-20260916-1.md](log/log-20260916-1.md). The HarmonyOS cross-target round,
+including the masked-blocker analysis, is in
+[docs/log/log-20260916-2.md](log/log-20260916-2.md).
+
 ## 2.0.0 (2026-09-14) — Self-Drawn Controls Everywhere (BLUE15)
 
 A major release that completes the move to a **fully self-drawn** architecture. Every

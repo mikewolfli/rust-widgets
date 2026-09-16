@@ -23,7 +23,15 @@
 
 use super::types::LinuxPlatform;
 use crate::core::{Color, ObjectId, Point, Rect, Size};
+// `cairo`, `gdk` and `glib` are re-exported by `gtk`, which is the only
+// GTK-family crate this project declares. Referring to them as bare crates made
+// `gtk-native` builds fail with E0433 unless a transitive dependency happened to
+// leak the name into scope; these aliases pin them to the declared dependency.
+use crate::core::MutexExt;
 use crate::event::Event;
+use gtk::cairo;
+use gtk::gdk;
+use gtk::glib;
 use gtk::prelude::*;
 
 /// Creates a `DrawingArea` for `id`, adds it to `parent`'s content container and
@@ -34,6 +42,16 @@ pub(crate) fn mount_canvas(
     id: ObjectId,
     rect: Rect,
 ) -> bool {
+    // GTK widgets belong to the thread that initialized GTK; building one from any
+    // other thread aborts the process (`assert_initialized_main_thread!()`). Report
+    // the refusal instead of crashing, so `mount_surface` returns its documented
+    // `false` and the caller learns the surface could not be shown.
+    if !gtk::is_initialized_main_thread() {
+        log::error!(
+            "[linux] mount_surface: refused off the GTK main thread (parent={parent}, id={id})"
+        );
+        return false;
+    }
     if !crate::widget::runtime::is_mounted(id) {
         log::error!(
             "[linux] mount_surface: id={id} is not in widget::runtime; \
@@ -179,7 +197,7 @@ pub(crate) fn repaint_canvas(platform: &LinuxPlatform, id: ObjectId) -> bool {
 
 /// Moves and resizes a mounted canvas.
 pub(crate) fn resize_canvas(platform: &LinuxPlatform, id: ObjectId, rect: Rect) -> bool {
-    let mut native = platform.native.lock_guard();
+    let native = platform.native.lock_guard();
     let Some(area) = native.canvases.get(&id) else {
         log::error!("[linux] resize_surface: id={id} is not mounted");
         return false;
@@ -187,7 +205,11 @@ pub(crate) fn resize_canvas(platform: &LinuxPlatform, id: ObjectId, rect: Rect) 
     // `gtk::Fixed` positions children through `move_`; a size change needs the
     // size request updated as well or GTK keeps the original allocation.
     area.set_size_request(rect.width as i32, rect.height as i32);
-    area.move_(rect.x, rect.y);
+    if let Some(parent) = area.parent() {
+        if let Ok(fixed) = parent.downcast::<gtk::Fixed>() {
+            fixed.move_(area, rect.x, rect.y);
+        }
+    }
     area.queue_resize();
     drop(native);
     crate::widget::runtime::set_geometry(id, rect);
@@ -203,8 +225,15 @@ pub(crate) fn unmount_canvas(platform: &LinuxPlatform, id: ObjectId) -> bool {
     };
     native.widgets.remove(&id);
     // `Fixed` has no per-child removal in gtk-rs 0.18; destroying the child is
-    // the supported way to take it out of the container.
-    area.destroy();
+    // the supported way to take it out of the container. `WidgetExtManual::destroy`
+    // is unsafe because the caller must be on the GTK main thread, which every
+    // entry point into this module guarantees by construction.
+    // SAFETY: this runs on the GTK main thread, with every GTK view reachable
+    // only through `LinuxNativeState`, which is `!Sync` and driven solely from
+    // the thread that called `gtk::init`.
+    unsafe {
+        area.destroy();
+    }
     true
 }
 
@@ -302,9 +331,9 @@ mod tests {
     #[test]
     fn modifier_bits_map_shift_control_and_alt() {
         // The three masks the widget layer understands, in isolation.
-        assert_eq!(gdk::ModifierType::SHIFT_MASK.bits() != 0, true);
-        assert_eq!(gdk::ModifierType::CONTROL_MASK.bits() != 0, true);
-        assert_eq!(gdk::ModifierType::MOD1_MASK.bits() != 0, true);
+        assert!(gdk::ModifierType::SHIFT_MASK.bits() != 0);
+        assert!(gdk::ModifierType::CONTROL_MASK.bits() != 0);
+        assert!(gdk::ModifierType::MOD1_MASK.bits() != 0);
     }
 
     #[test]

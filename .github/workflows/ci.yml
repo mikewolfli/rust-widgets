@@ -159,6 +159,62 @@ jobs:
         env:
           RUSTDOCFLAGS: "-D warnings"
 
+  # ── Linux GTK backend (the only job that compiles `gtk-native`) ──
+  #
+  # `gtk-native` was absent from every matrix, so nothing compiled the GTK
+  # backend: it accumulated six classes of error (bare `glib`/`gdk`/`cairo` names,
+  # a missing `MutexExt` import, a `Fixed`-vs-child `move_`, an unsafe `destroy`)
+  # and a main-thread SIGSEGV at runtime without a single red check. The profile
+  # matrix cannot cover it, because `desktop` does not imply `gtk-native` and
+  # `--all-features` turns `mini` on at the same time, which strips the very
+  # modules under test. This job pins the combination explicitly.
+  linux-gtk:
+    name: Linux GTK backend (gtk-native)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable with clippy
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # The system dependency of the `gtk` crate; `build.rs` names the same
+      # package in its diagnostic for developers.
+      - name: Install GTK 3 development files
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgtk-3-dev
+          pkg-config --modversion gtk+-3.0
+
+      # A display is present on the runner, and the backend's own tests assert the
+      # GDK clipboard round-trip when GTK initializes, so the suite runs as-is.
+      - name: Cargo check (desktop + gtk-native)
+        run: cargo check --no-default-features --features "desktop,gtk-native" --all-targets
+
+      - name: Cargo clippy (desktop + gtk-native)
+        run: >-
+          cargo clippy --no-default-features --features "desktop,gtk-native"
+          --all-targets -- -D warnings
+
+      - name: Cargo test (desktop + gtk-native)
+        run: cargo test --no-default-features --features "desktop,gtk-native" -q
+
+      # GTK binds a process to one main thread, and several tests construct
+      # windows. Running the suite repeatedly catches the class of regression that
+      # produced intermittent panics and a SIGSEGV in the first place, which a
+      # single green run can miss.
+      - name: Cargo test repeated (GTK main-thread stability)
+        run: |
+          for run in 1 2 3; do
+            echo "--- run $run ---"
+            cargo test --no-default-features --features "desktop,gtk-native" --lib -q
+          done
+
   feature-matrix:
     name: Feature matrix (${{ matrix.profile }})
     runs-on: ubuntu-latest
@@ -236,6 +292,64 @@ jobs:
         run: >-
           cargo check --target wasm32-unknown-unknown
           --no-default-features --features wasm,js-engine
+
+  harmony-cross-check:
+    name: HarmonyOS (OpenHarmony) cross-compile check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Rust stable with OpenHarmony target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-ohos
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      # The OpenHarmony native toolchain (clang + sysroot) ships inside the OHOS
+      # SDK, which is not on crates.io. Without it the cross build fails at link
+      # time with "file in wrong format" / "Relocations in generic ELF (EM: 183)":
+      # the host `ld` cannot read OpenHarmony objects. `actions/setup-*` has no
+      # OpenHarmony action, so the SDK is fetched from the upstream mirror that
+      # also serves Ubuntu hosts.
+      #
+      # The archive is a bundle of *nested* per-component zips
+      # (`ohos-sdk/linux/{ets,js,native,previewer,toolchains}-linux-x64-*.zip`),
+      # so unpacking it alone yields zips, not headers and binaries. Only
+      # `native` is needed here; it expands to `native/{llvm,sysroot,build,...}`.
+      # URL and checksum verified against the mirror (HTTP 200, sha256 matches).
+      - name: Install OpenHarmony SDK (native toolchain)
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/ohos-sdk.tar.gz "$OHOS_SDK_URL"
+          echo "$OHOS_SDK_SHA256  /tmp/ohos-sdk.tar.gz" | sha256sum -c -
+
+          mkdir -p /tmp/ohos-bundle "$HOME/ohos-sdk"
+          tar -xzf /tmp/ohos-sdk.tar.gz -C /tmp/ohos-bundle
+          component="$(find /tmp/ohos-bundle -name 'native-*-x64-*.zip' -print -quit)"
+          test -n "$component" || { echo "no native component zip in the bundle"; exit 1; }
+
+          unzip -q "$component" -d "$HOME/ohos-sdk/linux"
+          test -x "$HOME/ohos-sdk/linux/native/llvm/bin/aarch64-unknown-linux-ohos-clang" \
+            || { echo "native component did not unpack to native/llvm/bin"; exit 1; }
+          echo "OHOS_SDK=$HOME/ohos-sdk/linux" >> "$GITHUB_ENV"
+        env:
+          OHOS_SDK_URL: https://repo.huaweicloud.com/harmonyos/os/6.0-Beta1/ohos-sdk-windows_linux-public.tar.gz
+          OHOS_SDK_SHA256: 26f8e0a57a391927bf6d7f484047895c724055b4c1f9c97ad87b5d51fb55b4cd
+      - name: Configure OpenHarmony linker
+        shell: bash
+        run: |
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_OHOS_LINKER=$OHOS_SDK/native/llvm/bin/aarch64-unknown-linux-ohos-clang" >> "$GITHUB_ENV"
+          echo "CC_aarch64_unknown_linux_ohos=$OHOS_SDK/native/llvm/bin/aarch64-unknown-linux-ohos-clang" >> "$GITHUB_ENV"
+          echo "AR_aarch64_unknown_linux_ohos=$OHOS_SDK/native/llvm/bin/llvm-ar" >> "$GITHUB_ENV"
+      # The checks themselves live in the gate script so CI and a workstation run
+      # byte-identical commands. It also re-asserts the target-identification
+      # premise they rest on (`target_os="linux"`, `target_env="ohos"`): the
+      # backend arms in `src/platform/runtime.rs` key off `target_env`, and a
+      # silent change there would flip every one of them.
+      - name: HarmonyOS cross-target gate
+        shell: bash
+        run: bash tools/check_harmony_cross.sh
 
   android-cross-check:
     name: Android NDK cross-compile check

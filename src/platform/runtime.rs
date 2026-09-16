@@ -12,7 +12,7 @@ use crate::compat::OnceLock;
 #[cfg(all(target_os = "android", not(alloc_frugal), not(embedded_surface)))]
 use crate::platform::android::AndroidPlatform;
 #[cfg(all(
-    any(target_os = "ohos", feature = "harmony"),
+    any(target_env = "ohos", feature = "harmony"),
     not(target_os = "android"),
     not(alloc_frugal),
     not(embedded_surface)
@@ -22,6 +22,7 @@ use crate::platform::harmony::HarmonyPlatform;
 use crate::platform::ios::IosMobilePlatform;
 #[cfg(all(
     target_os = "linux",
+    not(target_env = "ohos"),
     not(alloc_frugal),
     not(embedded_surface),
     not(feature = "harmony")
@@ -44,6 +45,7 @@ use crate::platform::mobile;
 pub use crate::platform::types::*;
 #[cfg(all(
     target_os = "linux",
+    not(target_env = "ohos"),
     not(embedded_surface),
     feature = "wayland-native",
     not(feature = "harmony")
@@ -70,6 +72,7 @@ use crate::platform::windows::WindowsPlatform;
 ///  3. Otherwise → assume X11/"plain" Linux
 #[cfg(all(
     target_os = "linux",
+    not(target_env = "ohos"),
     not(embedded_surface),
     feature = "wayland-native",
     not(feature = "harmony")
@@ -142,9 +145,13 @@ fn create_native_platform() -> Box<dyn Platform> {
 /// Linux runtime auto-detection:
 ///   - Wayland session → WaylandPlatform (when wayland-native feature enabled)
 ///   - Otherwise → LinuxPlatform (GTK or state-backed)
+///
+/// `not(target_env = "ohos")` keeps this arm off OpenHarmony, which reports
+/// `target_os = "linux"` and must select `HarmonyPlatform` instead (see below).
 #[cfg(all(
     not(alloc_frugal),
     target_os = "linux",
+    not(target_env = "ohos"),
     not(embedded_surface),
     feature = "wayland-native",
     not(feature = "harmony")
@@ -159,12 +166,15 @@ fn create_native_platform() -> Box<dyn Platform> {
 
 /// Linux without wayland-native feature → always use LinuxPlatform.
 ///
-/// The `harmony` feature excludes this arm: enabling the Harmony preview
-/// backend on a Linux host must select `HarmonyPlatform`, matching the
-/// `any(target_os = "ohos", feature = "harmony")` arm below.
+/// Both the `harmony` feature and the OpenHarmony target exclude this arm: either
+/// must select `HarmonyPlatform`, matching the `any(target_env = "ohos",
+/// feature = "harmony")` arm below. Without the `target_env` test the two arms
+/// would both match on OpenHarmony and `create_native_platform` would be defined
+/// twice — a hard error, not a silent fallback.
 #[cfg(all(
     not(alloc_frugal),
     target_os = "linux",
+    not(target_env = "ohos"),
     not(embedded_surface),
     not(feature = "wayland-native"),
     not(feature = "harmony")
@@ -188,8 +198,13 @@ fn create_native_platform() -> Box<dyn Platform> {
 
 /// HarmonyOS (OpenHarmony `ohos` target, or the `harmony` preview feature on
 /// any host). Falls back to the state-backed Harmony backend.
+///
+/// The target test is `target_env`, not `target_os`: `*-unknown-linux-ohos`
+/// targets report `target_os = "linux"`, so a `target_os = "ohos"` arm here
+/// would never be reached and OpenHarmony builds would silently get
+/// `LinuxPlatform` (which requires GTK, absent on OpenHarmony).
 #[cfg(all(
-    any(target_os = "ohos", feature = "harmony"),
+    any(target_env = "ohos", feature = "harmony"),
     not(target_os = "android"),
     not(alloc_frugal),
     not(embedded_surface)
@@ -217,7 +232,7 @@ fn create_native_platform() -> Box<dyn Platform> {
     not(embedded_surface),
     not(all(feature = "wasm", target_arch = "wasm32")),
     not(target_os = "android"),
-    not(any(target_os = "ohos", feature = "harmony")),
+    not(any(target_env = "ohos", feature = "harmony")),
     not(any(target_os = "windows", target_os = "macos", target_os = "linux", target_os = "ios"))
 ))]
 fn create_native_platform() -> Box<dyn Platform> {

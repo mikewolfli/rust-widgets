@@ -125,7 +125,7 @@ Arc、Spinner、Roller、Dropdown、TextArea、Keyboard、Switch。
 （`docs/plans/platform_capability_matrix.md`）由源码机械派生，并在 CI 中设有防脱节门禁。
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.0.0-blue)]()
+[![version](https://img.shields.io/badge/version-2.0.1-blue)]()
 [![tests](https://img.shields.io/badge/tests-4000%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 

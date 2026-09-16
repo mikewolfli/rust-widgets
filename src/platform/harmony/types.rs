@@ -52,7 +52,4 @@ impl HarmonyPlatform {
     ) -> u64 {
         self.state.create_widget(kind, text, x, y, width, height)
     }
-    pub(crate) fn kind_of(&self, id: u64) -> Option<HarmonyHandleKind> {
-        self.state.kind_of(id)
-    }
 }

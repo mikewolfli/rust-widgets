@@ -84,15 +84,37 @@ struct Mounted {
     widget: Box<dyn Widget>,
 }
 
+// Per-thread widget registry.
+//
+// `clippy::missing_const_for_thread_local` fires on this block for the
+// OpenHarmony target only: `std::collections::HashMap::new()` is not a `const
+// fn` on any target, but the lint can resolve `HashMap` on the host and not on
+// OpenHarmony's std, so there it suggests a `const` initializer that would not
+// compile. The allow is per-cell rather than crate-wide.
 thread_local! {
     /// Widgets mounted for display, keyed by their `ObjectId`.
+    #[allow(clippy::missing_const_for_thread_local)]
     static MOUNTED: RefCell<HashMap<ObjectId, Mounted>> = RefCell::new(HashMap::new());
 
     /// Monotonic id source for mounted widgets.
     ///
     /// Starts high so a mounted id cannot collide with a platform-allocated
     /// widget id (those come from `BackendState`, which counts up from 1).
+    #[allow(clippy::missing_const_for_thread_local)]
     static NEXT_ID: RefCell<ObjectId> = const { RefCell::new(0x5345_4C46_0000_0001) };
+
+    /// Maps a mounted `Window` widget id to the host window the platform built
+    /// for it.
+    ///
+    /// A window exists in two id spaces: the widget registry's id (what the
+    /// library's `create_window` returns and every accessor accepts) and the
+    /// platform's own id (what `mount_surface` resolves a parent through, because
+    /// only the platform can reach a native `HWND`/`X11` window/`NSWindow`).
+    /// Without this link the two never met, so mounting a control on a window the
+    /// caller had just created was refused — the library's own window could not
+    /// carry the library's own controls.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static HOST_WINDOWS: RefCell<HashMap<ObjectId, ObjectId>> = RefCell::new(HashMap::new());
 }
 
 /// Hands ownership of `widget` to the registry and returns its display id.
@@ -115,7 +137,39 @@ pub fn register(widget: Box<dyn Widget>) -> Option<ObjectId> {
 
 /// Removes a mounted widget, dropping it. Returns whether it was present.
 pub fn unregister(id: ObjectId) -> bool {
+    // Drop any host-window association with the widget it belonged to, so a
+    // recycled or reused id cannot inherit a stale host window.
+    let _ = HOST_WINDOWS.try_with(|map| map.borrow_mut().remove(&id));
     MOUNTED.try_with(|map| map.borrow_mut().remove(&id).is_some()).unwrap_or(false)
+}
+
+/// Records the host window the platform built for the mounted window `id`.
+///
+/// Called on the creation path once `Platform::create_window` has returned, so
+/// that [`host_window_for`] can resolve a library window id to the id the host
+/// layer understands. Storing an association for an id that is not mounted is a
+/// programming error and is ignored, because a mapping to a window that does not
+/// exist could only produce a mount onto nothing.
+pub fn set_host_window(id: ObjectId, host: ObjectId) -> bool {
+    let stored = HOST_WINDOWS.try_with(|map| {
+        if MOUNTED.try_with(|m| m.borrow().contains_key(&id)).unwrap_or(false) {
+            map.borrow_mut().insert(id, host);
+            true
+        } else {
+            false
+        }
+    });
+    stored.unwrap_or(false)
+}
+
+/// Returns the host window associated with a mounted window widget `id`.
+///
+/// `None` means "this id is not a window the platform built a host object for" —
+/// either it is not a window at all, or the backend has no host windows to build
+/// (a state-only backend), in which case the caller must report that it cannot
+/// display rather than guessing.
+pub fn host_window_for(id: ObjectId) -> Option<ObjectId> {
+    HOST_WINDOWS.try_with(|map| map.borrow().get(&id).copied()).unwrap_or(None)
 }
 
 /// Returns whether `id` refers to a mounted self-drawn widget.

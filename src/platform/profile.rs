@@ -57,6 +57,39 @@ pub enum ProfileClass {
     Minimal,
 }
 
+/// `true` when this build targets OpenHarmony / HarmonyOS.
+///
+/// # Why this predicate exists (and why it tests `target_env`, not `target_os`)
+///
+/// Every OpenHarmony Rust target is spelled `*-unknown-linux-ohos`
+/// (`aarch64`, `armv7`, `x86_64`, `loongarch64`). Despite the name, rustc reports
+/// `target_os = "linux"` for them — verified with
+/// `rustc --target aarch64-unknown-linux-ohos --print cfg`:
+///
+/// ```text
+/// target_abi=""
+/// target_env="ohos"      <- the only discriminator
+/// target_family="unix"
+/// target_os="linux"
+/// ```
+///
+/// So `cfg(target_os = "ohos")` can never match, and a backend selected by it
+/// silently falls through to whatever the `linux` arm provides. The honest test is
+/// `target_env`, which is exactly the field OpenHarmony's target spec overrides.
+///
+/// `cfg(unix)` is deliberately **not** used here: it is true for both OpenHarmony
+/// and ordinary Linux, so it cannot tell them apart.
+///
+/// Note that this is a *compile-time target fact*, so it is legitimately a `cfg` in
+/// the sense of BLUE15 principle #42: it describes the execution environment the
+/// artifact is built for, not "which OS the developer happens to use".
+///
+/// The `harmony` Cargo feature remains the way to select the backend on a
+/// *non*-OpenHarmony host for development and testing.
+pub const fn is_openharmony_target() -> bool {
+    cfg!(target_env = "ohos")
+}
+
 /// How this build is driven at runtime.
 ///
 /// The pair distinguishes "the OS owns the loop" from "the library owns the
@@ -386,6 +419,58 @@ mod tests {
     fn capability_questions_match_the_engine_class() {
         assert_eq!(has_os_runtime(), matches!(engine_class(), EngineClass::OsHosted(_)));
         assert_eq!(has_os_input(), has_os_runtime());
+    }
+
+    /// The OpenHarmony predicate must agree with the target it claims to describe.
+    ///
+    /// `is_openharmony_target()` is the single place that knows how OpenHarmony is
+    /// spelled at compile time. The fact it encodes is easy to get wrong and
+    /// impossible to notice: every `*-unknown-linux-ohos` target reports
+    /// `target_os = "linux"` and `target_env = "ohos"`, so a `cfg(target_os =
+    /// "ohos")` test never matches and a backend selected by it silently falls
+    /// through to the Linux arm. This pins the predicate to that one field.
+    #[test]
+    fn openharmony_predicate_tracks_the_target_env_field() {
+        assert_eq!(
+            is_openharmony_target(),
+            cfg!(target_env = "ohos"),
+            "is_openharmony_target() must report exactly whether this artifact targets OpenHarmony"
+        );
+
+        // The reason `target_env` is the discriminator and `target_os` is not:
+        // OpenHarmony targets inherit the Linux OS name. `const {}` keeps the
+        // check at compile time, which is the only time it can be evaluated.
+        if cfg!(target_env = "ohos") {
+            const { assert!(cfg!(target_os = "linux"), "OpenHarmony targets report target_os=linux") };
+        }
+    }
+
+    /// The selected backend must be the one this target actually needs.
+    ///
+    /// This is the behavioural guard, phrased against a *runtime* fact rather
+    /// than a `cfg`: on an OpenHarmony artifact the library must not be serving
+    /// the GTK-only Linux backend, which cannot exist there. Before the
+    /// `target_env` fix this assertion failed on `aarch64-unknown-linux-ohos`,
+    /// because `create_native_platform` matched the `target_os = "linux"` arm.
+    ///
+    /// Gated off `mini` for the same reason `backend_name` itself is: that
+    /// profile has no platform singleton, so there is no serving backend to ask.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn the_serving_backend_matches_the_target_family() {
+        let name = crate::platform::backend_name();
+        if is_openharmony_target() {
+            assert!(
+                name.starts_with("harmony"),
+                "an OpenHarmony artifact must be served by the Harmony backend, not {name:?}"
+            );
+        } else {
+            assert!(
+                !name.starts_with("harmony") || cfg!(feature = "harmony"),
+                "{name:?} claims to be the Harmony backend, but neither the target nor the \
+                 `harmony` feature asked for it"
+            );
+        }
     }
 
     /// The widget-set aliases must be complementary whenever a device profile is

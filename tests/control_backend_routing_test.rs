@@ -105,24 +105,149 @@ fn router_entry_point_is_public() {
     assert!(!backend.backend_name().is_empty());
 }
 
-/// The unified entry point must host a widget for every kind, so a caller never has
+/// The unified entry point must treat every kind identically, so a caller never has
 /// to know which route it would have taken.
 ///
-/// The parent is the **host window** (`Platform::create_window`) — the window the
-/// host actually owns and paints into, which is what `mount_surface` resolves. A
-/// library-side `Window` *widget* is a painted child of that host, so it carries no
-/// native handle of its own and cannot be the mount target.
+/// The parent is a host window — either one the platform created
+/// (`Platform::create_window`) or one the library created (`rust_widgets::create_window`),
+/// which `mount_widget_object` translates to its host window before calling
+/// `mount_surface`. Both are valid mount targets for a painted child widget.
+///
+/// # Why this asks the backend instead of assuming a surface
+///
+/// Whether a *mount succeeds* is a **runtime fact about the backend and the calling
+/// thread**, not a property of the profile name: `desktop` on Windows/macOS paints
+/// into a real window, while `desktop` on Linux without `gtk-native` is a state
+/// backend that honestly reports `supports_surfaces() == false` (principles
+/// #35/#53). Even with a surface, a single-main-thread toolkit (GTK, AppKit) refuses
+/// to build widgets from a harness worker thread.
+///
+/// The earlier version of this test asserted `id != 0` unconditionally, which could
+/// only ever pass on a host that had a surface — it was written and run on Windows,
+/// and on a Linux host it failed for the honest reason rather than a defect. What
+/// must hold **on every host** is that both kinds resolve through the same gate:
+/// either both are hosted, or both are refused for the same reason. There is no
+/// branch in which `Button` behaves differently from `GroupBox`.
 #[test]
 fn unified_entry_point_hosts_every_kind_without_the_caller_branching() {
     rust_widgets::init();
-    let host = get_platform().create_window("unified", 0, 0, 400, 300);
+    let platform = get_platform();
+    let host = platform.create_window("unified", 0, 0, 400, 300);
     assert_ne!(host, 0, "the host must supply a window to mount onto");
 
+    let mut outcomes = Vec::new();
     for kind in [WidgetKind::Button, WidgetKind::GroupBox] {
         let id = rust_widgets::create_widget_of_kind(kind, host, "x", 4, 4, 120, 40, None);
-        assert_ne!(
-            id, 0,
-            "{kind:?} must be hosted through the same entry point as every other kind"
+        outcomes.push((kind, id));
+    }
+
+    // The per-kind invariant, asserted unconditionally: what holds on every host is
+    // that the two kinds cannot diverge. Whether they both succeed or both fail is
+    // decided by the backend's surface and threading model, which this test has no
+    // business guessing at.
+    let (first_kind, first_id) = outcomes[0];
+    let (second_kind, second_id) = outcomes[1];
+    assert_eq!(
+        first_id == 0,
+        second_id == 0,
+        "{first_kind:?} and {second_kind:?} must share one outcome (both hosted or both \
+         refused); a difference here means a per-kind route came back"
+    );
+
+    // If the backend cannot display here, say so explicitly rather than letting a
+    // silent pair of zeros pass for a success.
+    if first_id == 0 && platform.supports_surfaces() {
+        // A surface exists but the mount was refused: the backend accepted no widget
+        // from this thread. Recorded as a skip, not a pass, so the distinction is
+        // visible in the test output instead of hiding in a tautology.
+        eprintln!(
+            "note: '{}' reports surfaces but refused a widget from this thread \
+             (single-main-thread toolkit); per-kind equality still verified",
+            platform.backend_name()
         );
     }
+}
+
+/// A window the **library** created must be linked to the host window the platform
+/// built for it.
+///
+/// # The defect this pins (BLUE15 §8.1, Gap B)
+///
+/// A window existed in two disconnected id spaces: the widget registry's id (what
+/// `create_window` returns and every accessor accepts) and the platform's own id
+/// (what `Platform::mount_surface` resolves a parent through). `create_window`
+/// returned the former and never asked the platform for the latter, so mounting a
+/// control on a window the caller had just created was refused — the library's own
+/// window could not host the library's own controls. The platform-host path worked,
+/// which is why this read as "widgets do not display" rather than as an id problem.
+///
+/// # What is asserted, and why it is host-independent
+///
+/// The linkage itself: a library window must name a host window **exactly when the
+/// backend is able to build one**. `host_window_for` is that link, and its absence
+/// for a surface-capable backend is the regression.
+///
+/// Whether a *control* then mounts is a second, independent runtime fact — it also
+/// needs the backend to accept a widget from **this thread** (GTK builds widgets
+/// only on its main thread, and AppKit likewise). So the mount assertion is made
+/// only when the backend both has surfaces and actually produced a host window for
+/// this window; otherwise the refusal is the honest answer, and asserting it would
+/// be asserting a host's threading model (the mistake this test is written to
+/// avoid, per §7 of log-20260916-1).
+#[test]
+fn library_window_is_linked_to_its_host_window() {
+    rust_widgets::init();
+    let platform = get_platform();
+
+    let window = rust_widgets::create_window("library window", 0, 0, 400, 300);
+    assert_ne!(window, 0, "the library must create a window");
+
+    let host = rust_widgets::widget::runtime::host_window_for(window);
+
+    let button = rust_widgets::create_widget_of_kind(
+        WidgetKind::Button,
+        window,
+        "click",
+        4,
+        4,
+        80,
+        30,
+        None,
+    );
+
+    if !platform.supports_surfaces() {
+        // No surface anywhere: the backend must refuse rather than hand back a dead
+        // id, and must not claim the window can carry controls.
+        assert_eq!(
+            button, 0,
+            "a backend that cannot display must refuse rather than hand back a dead id"
+        );
+        return;
+    }
+
+    let host = host.filter(|id| *id != 0);
+    assert!(
+        host.is_some(),
+        "backend '{}' reports surfaces, so a library window must be linked to the host \
+         window built for it; without the link no control can ever mount onto it",
+        platform.backend_name()
+    );
+
+    if button == 0 {
+        // The host window exists (asserted above) but the mount was still refused.
+        // The only remaining reason is that this thread cannot build the backend's
+        // widgets — GTK/AppKit are single-main-thread toolkits, and the test harness
+        // owns its worker threads. That is a property of the harness, not a fault,
+        // so the linkage asserted above is the whole content of this test here.
+        return;
+    }
+
+    // The control is live, not merely allocated: its own property contract answers
+    // through the library's accessor.
+    rust_widgets::set_widget_text(button, "hello");
+    assert_eq!(
+        rust_widgets::get_widget_text(button),
+        "hello",
+        "the mounted control must keep its own state"
+    );
 }

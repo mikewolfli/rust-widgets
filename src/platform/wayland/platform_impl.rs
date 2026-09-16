@@ -263,6 +263,66 @@ impl Platform for WaylandPlatform {
     // Menu system
     // -----------------------------------------------------------------------
 
+    /// Creates the root of the in-process menu model and attaches nothing to the
+    /// compositor.
+    ///
+    /// Wayland has no menu protocol, so this is a model node rather than a
+    /// compositor object. Without this producer the consumers below
+    /// (`attach_menu_bar_to_window`, `menu_add_item`, `inject_menu_trigger`) could
+    /// never succeed: they all validate the parent's kind first, and no `MenuBar`
+    /// was ever inserted, so each returned `false`/`0` unconditionally. That was an
+    /// unfinished part of the BLUE15 migration rather than a Wayland limitation —
+    /// the model is exactly the mechanism this backend is supposed to offer.
+    fn create_menu_bar(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        // A menu bar hangs off a window; without one there is nothing to attach to.
+        if !matches!(self.state.kind_of(parent), Some(WaylandHandleKind::Window)) {
+            return 0;
+        }
+        let id = self.insert_widget(WaylandHandleKind::MenuBar, "", x, y, width, height);
+        if let Ok(mut menus) = self.menus.lock() {
+            menus.attached_menu_bar.insert(parent, id);
+        } else {
+            log::error!("[wayland] create_menu_bar: mutex poisoned");
+        }
+        id
+    }
+
+    /// Creates a dropdown [`WaylandHandleKind::Menu`] node under `parent`.
+    ///
+    /// `parent` may be a menu bar (a top-level menu) or another menu (a submenu),
+    /// which is what makes arbitrarily nested menus expressible. The child link is
+    /// recorded so a host walking the model can render the hierarchy.
+    fn create_menu(
+        &self,
+        parent: ObjectId,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        if !matches!(
+            self.state.kind_of(parent),
+            Some(WaylandHandleKind::MenuBar | WaylandHandleKind::Menu)
+        ) {
+            return 0;
+        }
+        let id = self.insert_widget(WaylandHandleKind::Menu, text, x, y, width, height);
+        if let Ok(mut menus) = self.menus.lock() {
+            menus.menu_children.entry(parent).or_default().push(id);
+        } else {
+            log::error!("[wayland] create_menu: mutex poisoned");
+        }
+        id
+    }
+
     /// Attach a menu bar to a window.
     ///
     /// Wayland has no menu protocol at all: `xdg_shell` models toplevels and

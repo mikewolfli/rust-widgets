@@ -30,9 +30,25 @@ use crate::platform::Platform;
 /// Initialize GTK on the current thread.
 ///
 /// Returns `false` when no display is reachable, which selects the state-only
-/// fallback path in the combined GTK test.
+/// fallback path in the combined GTK test. Also returns `false` when GTK already
+/// belongs to a **different** thread: `gtk::init()` aborts the process in that
+/// case, and under the test harness (one worker thread per `#[test]`) that is a
+/// reachable state. Reporting `false` then selects the same honest fallback, so the
+/// test asserts the state-backend contract instead of crashing.
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]
 fn ensure_gtk() -> bool {
+    use std::sync::{Mutex, OnceLock};
+
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let lock = LOCK.get_or_init(|| Mutex::new(()));
+    let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    if gtk::is_initialized_main_thread() {
+        return true;
+    }
+    if gtk::is_initialized() {
+        return false;
+    }
     gtk::init().is_ok()
 }
 
@@ -148,10 +164,26 @@ fn state_backend_linux_subsystems_still_forward() {
 #[test]
 fn gtk_native_backend_lifecycle() {
     if !ensure_gtk() {
-        // Honest fallback: without a display the native backend cannot run.
+        // Honest fallback: GTK is not usable from this thread (no display, or the
+        // toolkit already belongs to another thread). The backend still reports the
+        // build it was compiled for — `backend_name()` is a compile-time fact, not a
+        // statement that GTK initialized — so assert that build identity plus the
+        // state-only behaviour that is actually observable here.
         let backend = LinuxPlatform::new();
         backend.init();
-        assert_eq!(backend.backend_name(), "linux-state-backend");
+        assert_eq!(
+            backend.backend_name(),
+            "gtk",
+            "the name reflects the compiled backend, which is the gtk build"
+        );
+        // No native window could be built, so the registry holds a state-only id.
+        let window = backend.create_window("fallback", 0, 0, 200, 120);
+        assert!(window > 0, "a state-only window id is still returned");
+        assert_eq!(
+            Platform::get_native_handle(&backend, window),
+            None,
+            "no native handle exists when GTK could not be initialized"
+        );
         return;
     }
 

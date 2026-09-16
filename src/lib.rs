@@ -564,6 +564,17 @@ pub fn supports_surfaces() -> bool {
 /// failure the widget is unregistered, so the registry never holds a widget the
 /// backend is not showing.
 ///
+/// # Resolving the parent
+///
+/// `parent` may be either a **window widget** (what [`create_window`] returns and
+/// what `App::new_window` hands out) or a **host window** (what
+/// `Platform::create_window` returns). `mount_surface` is a `Platform` method, so
+/// it can only resolve the latter — the platform knows nothing of the widget
+/// registry. Translating here, at the one place that already owns both the widget
+/// registry and the platform handle, is what lets a caller mount controls on the
+/// window it created. Without it the library's own windows could not carry the
+/// library's own controls, because the two id spaces never met.
+///
 /// Returns `Ok(id)` with the widget live in the registry, or `Err(reason)`.
 #[cfg(not(alloc_frugal))]
 fn mount_widget_object(
@@ -577,7 +588,9 @@ fn mount_widget_object(
     let id = widget::runtime::register(widget).ok_or(SurfaceMountError::NoRegistryOnThread)?;
     widget::runtime::set_geometry(id, rect);
 
-    if !platform::get_platform().mount_surface(parent, id, rect) {
+    let host_parent = widget::runtime::host_window_for(parent).unwrap_or(parent);
+
+    if !platform::get_platform().mount_surface(host_parent, id, rect) {
         // Do not leave a widget stranded when the backend refused to show it.
         widget::runtime::unregister(id);
         if !supports_surfaces() {

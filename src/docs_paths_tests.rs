@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! Compile-checks for the API paths promised in the 2.0.0 documentation.
+//! Compile-checks for the API paths promised in the 2.0.x documentation.
 //!
 //! # Why this file exists
 //!

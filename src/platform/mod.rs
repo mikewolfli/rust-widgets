@@ -14,7 +14,16 @@ pub mod android;
 /// Android JNI bridge (native view creation via JNI, feature-gated).
 #[cfg(feature = "android-jni")]
 pub mod android_jni;
-#[cfg(any(target_os = "ohos", feature = "harmony"))]
+/// HarmonyOS / OpenHarmony backend.
+///
+/// Selected either because the artifact targets OpenHarmony (`target_env = "ohos"`)
+/// or because the `harmony` preview feature asked for it on a non-OpenHarmony host.
+///
+/// It must be `target_env`, not `target_os`: every `*-unknown-linux-ohos` target
+/// reports `target_os = "linux"`, so a `cfg(target_os = "ohos")` here would never
+/// match and the backend would silently be compiled out on real HarmonyOS builds.
+/// See [`crate::platform::profile::is_openharmony_target`].
+#[cfg(any(target_env = "ohos", feature = "harmony"))]
 pub mod harmony;
 /// iOS mobile backend (state-driven).
 ///

@@ -331,7 +331,7 @@ pub fn run() {
     // ── 前置检查：当前后端必须真的能承载自绘型控件 ────────────────────
     //
     // 这一步不能省：把"工厂能造出对象"当成"窗口里能看到"会导致窗口空白却毫无提示。
-    if !rust_widgets::supports_custom_widgets() {
+    if !rust_widgets::supports_surfaces() {
         eprintln!(
             "错误：后端 '{backend}' 暂不能承载自绘型控件，无法显示 CodeEditor。\n\
              Linux 桌面请启用 gtk-native（见 demo/code_editor/Cargo.toml），\n\
@@ -353,7 +353,7 @@ pub fn run() {
     // ── 挂载编辑器 ──────────────────────────────────────────────────────
     let rect = editor_rect();
     let editor_box: Box<dyn Widget> = Box::new(build_editor());
-    let editor = match win.mount_custom_widget(editor_box, rect) {
+    let editor = match win.mount_surface(editor_box, rect) {
         Ok(handle) => {
             log.append(format!(
                 "[Mount] CodeEditor id={} rect=({},{}, {}, {})",

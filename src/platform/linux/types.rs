@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 //! Linux backend shell.
+#[cfg(all(target_os = "linux", feature = "gtk-native"))]
 use crate::compat::HashMap;
+#[cfg(all(target_os = "linux", feature = "gtk-native"))]
 use crate::compat::Mutex;
 use crate::platform::state::BackendState;
 use std::sync::atomic::AtomicBool;
@@ -54,6 +56,11 @@ pub(crate) struct LinuxNativeState {
     pub(crate) widgets: HashMap<u64, gtk::Widget>,
     /// Native `DrawingArea`s hosting self-drawn widgets, indexed by the widget
     /// registry id they paint (see `linux/canvas.rs`).
+    ///
+    /// Gated exactly like `canvas.rs`, which is its only reader and writer: a
+    /// stripped build (`mini`/`embedded`) has no `widget::runtime` to paint from,
+    /// so there is nothing to host here.
+    #[cfg(widgets_unstripped)]
     pub(crate) canvases: HashMap<u64, gtk::DrawingArea>,
 }
 
@@ -102,8 +109,5 @@ impl LinuxPlatform {
         height: u32,
     ) -> u64 {
         self.state.create_widget(kind, text, x, y, width, height)
-    }
-    pub(crate) fn kind_of(&self, id: u64) -> Option<LinuxHandleKind> {
-        self.state.kind_of(id)
     }
 }

@@ -1163,6 +1163,49 @@ Step 10 Phase F            上层与文档同步（含视觉基线重生）
 | **F 上层与文档（原则 #18/#52）** | ✅ 完成 | **100%** | 121 处去机制词重命名 + **crate root 兼容路径**；探针替换为 `control_creation_is_single_mechanism`；能力矩阵重生（0 矛盾）；CI 同步（+`mini` 档、-probe 步骤）|
 | **G 精炼收尾（第七轮）** | ✅ 完成 | **100%** | 净 **−1339 行**；删除 13 个文件；5 类跨文件重复消除（`/proc` 探针 296 行、日期工具×3、`floor_char_boundary`×6、`Default`×117、能力契约类型）；新增 3 个共享模块；**9 条文档路径门禁测试** |
 | **H 版本与发布物（第七轮）** | ✅ 完成 | **100%** | 版本 `1.1.3` → **`2.0.0`**（4 处落点）；README/README.zh-CN/CHANGELOG×2/MIGRATION_GUIDE/cookbook×2 全部同步，含**自绘声明**与**OS 支持矩阵** |
+| **I HarmonyOS 交叉目标（第 18 轮）** | ✅ 完成 | **100%** | SDK 就位后首跑即发现 **ohos target 完全不可构建**：`target_os = "ohos"` 永不匹配 → 改 `target_env`；新增 `is_openharmony_target()` 单一判据 + 2 条回归测试；新增 CI job `harmony-cross-check`（4 步，逐条本机实跑）|
+
+### 第 18 轮补充：HarmonyOS 交叉目标从「不可验证」到「真实验证」
+
+> 依据：`docs/plans/principle.md`、`src/platform/harmony/status.md`。
+> 详细证据见 `docs/log/log-20260916-1.md` §16。
+
+在 OpenHarmony SDK 装好后首跑 `aarch64-unknown-linux-ohos`，**第一条命令就暴露出
+该 target 从未被真正验证过**：
+
+```text
+$ rustc --target aarch64-unknown-linux-ohos --print cfg
+target_abi=""
+target_env="ohos"        ← 唯一的判别字段
+target_family="unix"
+target_os="linux"        ← 名字叫 ohos，OS 字段却是 linux
+```
+
+而全库 6 处后端选择全用 `cfg(target_os = "ohos")`，**永不匹配**。后果不是「选错后端」，
+而是 **`create_native_platform` 一个定义都不存在**：
+
+```text
+（把 runtime.rs 的 harmony 臂改回 `target_os = "ohos"` 后）
+$ cargo check --target aarch64-unknown-linux-ohos --no-default-features --features desktop
+error[E0425]: cannot find value `create_native_platform` in this scope
+```
+
+**修正**：判别字段改为 `target_env = "ohos"`，并在 `platform/profile.rs` 建立
+`is_openharmony_target()` 作为唯一真相；同时给三条 `target_os = "linux"` 臂
+（Linux×2 + Wayland）补 `not(target_env = "ohos")`，否则 OpenHarmony 上两个
+provider 会同时命中（`E0428` 重定义）。
+
+| 项 | 修正前 | 修正后 |
+|---|---|---|
+| 判别字段 | `target_os = "ohos"`（**永不匹配**） | `target_env = "ohos"` |
+| ohos target 能否构建 | ❌ `E0425` | ✅ 0 warning |
+| 单一真相 | 6 处重复字面量 | `profile::is_openharmony_target()` |
+| 回归测试 | 无 | 2 条（判别字段 + 服务后端一致性）|
+| CI 覆盖 | **零** | `harmony-cross-check` job（4 步）|
+
+**顺带修复**（原则 #2 冰山法则）：`clippy::missing_const_for_thread_local` 在 ohos target
+上对 `widget/runtime.rs` 的 `thread_local!` 块报错——**该 lint 仅在 OpenHarmony 上触发**
+（host/windows/android 均为 0 例），属既有潜伏缺陷，非本轮引入（已用 `git stash` 对照取证）。
 
 ### 🎯 跨目标编译：从“不可验证”升为真实验证
 

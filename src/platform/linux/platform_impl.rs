@@ -10,7 +10,7 @@ use crate::core::PlatformFamily;
 use crate::platform::accessibility::linux::LinuxAccessibilityBridge;
 #[cfg(target_os = "linux")]
 use crate::platform::accessibility::AccessibilityBridge;
-use crate::platform::{DropEvent, Platform};
+use crate::platform::Platform;
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]
 use gtk::prelude::*;
 use std::sync::atomic::Ordering;
@@ -84,10 +84,11 @@ impl Platform for LinuxPlatform {
     /// container; its `draw` signal blits a frame from `widget::runtime`.
     /// See `linux/canvas.rs`.
     ///
-    /// Gated on the same profile conditions as `canvas.rs`: `mini`/`embedded`
-    /// have no widget registry, so the trait defaults apply and
-    /// `supports_surfaces()` honestly reports `false`.
-    #[cfg(widgets_unstripped)]
+    /// Gated on exactly the same conditions as `canvas.rs` itself: `mini`/
+    /// `embedded` have no widget registry, and a build without `gtk-native` has
+    /// no GTK toplevel to put a `DrawingArea` in. In both cases the trait
+    /// defaults apply and `supports_surfaces()` honestly reports `false`.
+    #[cfg(all(target_os = "linux", feature = "gtk-native", widgets_unstripped))]
     fn mount_surface(
         &self,
         parent: crate::core::ObjectId,
@@ -97,24 +98,24 @@ impl Platform for LinuxPlatform {
         super::canvas::mount_canvas(self, parent, id, rect)
     }
 
-    #[cfg(widgets_unstripped)]
+    #[cfg(all(target_os = "linux", feature = "gtk-native", widgets_unstripped))]
     fn resize_surface(&self, id: crate::core::ObjectId, rect: crate::core::Rect) -> bool {
         super::canvas::resize_canvas(self, id, rect)
     }
 
-    #[cfg(widgets_unstripped)]
+    #[cfg(all(target_os = "linux", feature = "gtk-native", widgets_unstripped))]
     fn unmount_surface(&self, id: crate::core::ObjectId) -> bool {
         super::canvas::unmount_canvas(self, id)
     }
 
     /// `true` only when the widget surface exists for this profile.
-    #[cfg(widgets_unstripped)]
+    #[cfg(all(target_os = "linux", feature = "gtk-native", widgets_unstripped))]
     fn supports_surfaces(&self) -> bool {
         true
     }
 
     /// Queue a redraw on the canvas's `DrawingArea`.
-    #[cfg(widgets_unstripped)]
+    #[cfg(all(target_os = "linux", feature = "gtk-native", widgets_unstripped))]
     fn invalidate_surface(&self, id: crate::core::ObjectId) -> bool {
         super::canvas::repaint_canvas(self, id)
     }
@@ -122,7 +123,30 @@ impl Platform for LinuxPlatform {
         self.runtime.initialized.store(true, Ordering::SeqCst);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
-            if let Err(e) = gtk::init() {
+            // GTK 3 permits `gtk::init()` on exactly one thread per process and
+            // **aborts the process** if another thread calls it ("Attempted to
+            // initialize GTK from two different threads"). The check-then-init
+            // sequence must therefore be atomic: testing `is_initialized()` first
+            // and initializing second lets two threads both observe "not
+            // initialized" and then both call `gtk::init()`, which is a data race
+            // inside GTK (observed as intermittent panics and, under load, a
+            // SIGSEGV). Holding a process-wide mutex across both steps makes the
+            // first caller the GTK main thread and every later caller a no-op, so
+            // `init()` is safe from any thread — which is what a test runner (one
+            // worker thread per `#[test]`) and a worker thread both require.
+            use std::sync::{Mutex, OnceLock};
+            static GTK_INIT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+            let lock = GTK_INIT_LOCK.get_or_init(|| Mutex::new(()));
+            let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+
+            if gtk::is_initialized_main_thread() {
+                // Already owned by this thread; nothing to do.
+            } else if gtk::is_initialized() {
+                log::debug!(
+                    "[linux] init: GTK is already initialized on another thread; \
+                     not re-initializing (GTK permits a single main thread)"
+                );
+            } else if let Err(e) = gtk::init() {
                 log::error!("[linux] gtk::init() failed: {:?}", e);
             }
         }
@@ -177,12 +201,35 @@ impl Platform for LinuxPlatform {
         self.state.destroy_widget(widget_id)
     }
 
+    /// Creates a top-level window, with a real GTK toplevel when this is the GTK
+    /// main thread.
+    ///
+    /// # Off-main callers get a state-only window
+    ///
+    /// GTK 3 binds every widget to one main thread: `gtk::Window::new` (and the
+    /// rest of the toolkit) calls `assert_initialized_main_thread!()`, which
+    /// **aborts the process** from any other thread. Off-main is a real case — the
+    /// C ABI may be driven from a worker thread, and a test harness runs every
+    /// `#[test]` on its own thread. Skipping the native construction there and
+    /// returning a state-only handle keeps the call honouring its contract (a
+    /// valid, text/geometry-consistent id) instead of taking down the process.
+    ///
+    /// This mirrors `CocoaPlatform::create_window`, which refuses to construct an
+    /// `NSWindow` off the AppKit main thread for exactly the same reason.
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
         let id = self.insert_widget(LinuxHandleKind::Window, title, x, y, width, height);
         // A fresh GTK toplevel is restored, windowed, resizable and decorated.
         self.state.init_window_state(id, crate::platform::state::WindowStateRecord::new_window());
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
+            // Only the thread that owns GTK may build widgets on it.
+            if !gtk::is_initialized_main_thread() {
+                log::debug!(
+                    "[linux] create_window: off the GTK main thread; registered a \
+                     state-only window (id={id}). GTK widgets are main-thread-only."
+                );
+                return id;
+            }
             let window = gtk::Window::new(gtk::WindowType::Toplevel);
             window.set_title(title);
             window.set_default_size(width as i32, height as i32);
@@ -203,6 +250,44 @@ impl Platform for LinuxPlatform {
     #[cfg(target_os = "linux")]
     fn ime_bridge(&self) -> Option<&dyn crate::platform::ime::ImeBridge> {
         Some(&self.ime_bridge)
+    }
+
+    /// Stores the text in the backend's clipboard record.
+    ///
+    /// Without `gtk-native` this backend has no GDK clipboard to hand the text
+    /// to, but the record is still the honest answer for the running process —
+    /// and it is what every other backend's `state` delegation does
+    /// (macOS/Harmony/iOS/Android/Wayland/Wasm). Inheriting the trait default
+    /// here made a copy/paste inside the library a silent no-op while the
+    /// identical call on every sibling backend worked.
+    ///
+    /// With `gtk-native` the text is also published to the display clipboard.
+    /// That path is guarded by `is_initialized_main_thread()` because GDK aborts
+    /// when driven from any other thread ("GDK may only be used from the main
+    /// thread") — and widgets legitimately call this from worker threads, e.g. a
+    /// background copy. Off the main thread the in-process record is still
+    /// updated, which keeps the call useful instead of aborting the process.
+    fn set_clipboard_text(&self, text: &str) -> bool {
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            // Same contract every native entry point in this backend follows
+            // (see the `Send` note in `linux/types.rs`): touch GTK only from the
+            // thread that called `gtk::init`.
+            if gtk::is_initialized_main_thread() {
+                if let Some(display) = gtk::gdk::Display::default() {
+                    if let Some(clipboard) = gtk::Clipboard::default(&display) {
+                        clipboard.set_text(text);
+                        clipboard.store();
+                    }
+                }
+            }
+        }
+        self.state.set_clipboard_text(text)
+    }
+
+    /// Reads back what [`Platform::set_clipboard_text`] stored.
+    fn get_clipboard_text(&self) -> String {
+        self.state.clipboard_text()
     }
 
     #[cfg(target_os = "linux")]

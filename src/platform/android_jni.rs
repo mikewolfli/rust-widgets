@@ -480,12 +480,20 @@ mod tests {
     ///
     /// A mismatch means a host compiled against a different bridge would get a
     /// link-time failure at the first call instead of a diagnosable status.
+    ///
+    /// # Why the count is taken from declaration lines only
+    ///
+    /// Counting the bare symbol prefix with `matches()` counted this test's own
+    /// literal and the module documentation as if they were entry points, so the
+    /// measured value was always 2 higher than the truth and the assertion could
+    /// not pass. Anchoring on `pub extern "system" fn <symbol>` counts exactly the
+    /// `#[no_mangle]` exports the JVM can resolve — which is the number
+    /// `NATIVE_METHOD_COUNT` advertises to the host.
     #[test]
     fn reported_entry_point_count_matches_the_exports() {
+        const PREFIX: &str = "pub extern \"system\" fn Java_rust_1widgets_RustWidgets_";
         let source = include_str!("android_jni.rs");
-        let exported = source.matches("Java_rust_1widgets_RustWidgets_").count();
-        // Each declaration appears once in its `pub extern "system" fn` line; the
-        // module's own doc comment mentions none, so the raw count is the answer.
+        let exported = source.matches(PREFIX).count();
         assert_eq!(
             exported as u32, NATIVE_METHOD_COUNT,
             "NATIVE_METHOD_COUNT must be updated when a JNI entry point is added or removed",

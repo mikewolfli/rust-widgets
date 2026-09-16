@@ -33,11 +33,34 @@
 //! window  set min 320x240 -> true
 //! ```
 
+// The probe drives `app::App` and the platform singleton, both compiled out under
+// `mini`/`alloc_frugal`. `required-features = ["desktop"]` in `Cargo.toml` cannot
+// express that, because it is satisfied by any listed feature being on, and
+// `cargo --all-features` enables `desktop` and `mini` together. Gate `main` on the
+// same condition the modules use, with a stub for the builds where the subject is
+// absent.
+#[cfg(all(
+    not(alloc_frugal),
+    any(feature = "desktop", feature = "tablet", feature = "mobile")
+))]
 use rust_widgets::app::{App, CheckBoxHandle, WidgetHandle};
+#[cfg(all(
+    not(alloc_frugal),
+    any(feature = "desktop", feature = "tablet", feature = "mobile")
+))]
 use rust_widgets::core::{ObjectId, Orientation};
+#[cfg(all(
+    not(alloc_frugal),
+    any(feature = "desktop", feature = "tablet", feature = "mobile")
+))]
 use rust_widgets::platform::{get_platform, EchoMode};
+#[cfg(all(
+    not(alloc_frugal),
+    any(feature = "desktop", feature = "tablet", feature = "mobile")
+))]
 use rust_widgets::WindowStateFlag;
 
+#[cfg(all(not(alloc_frugal), any(feature = "desktop", feature = "tablet", feature = "mobile")))]
 fn main() {
     App::new().init();
 
@@ -168,4 +191,18 @@ fn main() {
     // Same call shape through the type-safe handle layer — still no `cfg`.
     let boxed = CheckBoxHandle::from_raw(check);
     println!("handle  checked     -> {:?}", boxed.checked());
+}
+
+/// The probe's subject does not exist in this build: `mini`/`embedded` compile out
+/// the app lifecycle and the platform singleton. Report that rather than fail to
+/// build, which a bare `required-features` gate cannot do under `--all-features`.
+#[cfg(not(all(
+    not(alloc_frugal),
+    any(feature = "desktop", feature = "tablet", feature = "mobile")
+)))]
+fn main() {
+    println!(
+        "control_property_uniform: not applicable in this build — it needs a device \
+         profile with the platform singleton; skipped."
+    );
 }

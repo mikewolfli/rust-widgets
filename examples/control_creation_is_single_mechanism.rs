@@ -26,10 +26,32 @@
 //! Run with `cargo run --example control_creation_is_single_mechanism`.
 //! Exit code 0 means every assertion held.
 
+// This probe drives `app::App` and the platform singleton, both of which are
+// compiled out under `mini` (`alloc_frugal` has no platform singleton and no app
+// lifecycle). Cargo's `required-features = ["desktop"]` in `Cargo.toml` cannot
+// express this, because it is satisfied by *any* of the listed features being on:
+// `cargo --all-features` turns `desktop` **and** `mini` on simultaneously, so the
+// build is both a device profile and alloc-frugal, and the probe's subject is
+// absent. Gating `main` on the same condition the modules use keeps the file
+// compiling everywhere: where the subject exists the probe runs, and elsewhere a
+// stub explains why there is nothing to probe.
+#[cfg(all(
+    not(alloc_frugal),
+    any(feature = "desktop", feature = "tablet", feature = "mobile")
+))]
 use rust_widgets::app::App;
+#[cfg(all(
+    not(alloc_frugal),
+    any(feature = "desktop", feature = "tablet", feature = "mobile")
+))]
 use rust_widgets::core::ObjectId;
+#[cfg(all(
+    not(alloc_frugal),
+    any(feature = "desktop", feature = "tablet", feature = "mobile")
+))]
 use rust_widgets::platform::get_platform;
 
+#[cfg(all(not(alloc_frugal), any(feature = "desktop", feature = "tablet", feature = "mobile")))]
 fn main() {
     App::new().init();
     let platform = get_platform();
@@ -109,4 +131,19 @@ fn main() {
 
     println!("{} control member(s) correctly reported absence", controls.len());
     println!("RESULT: PASS");
+}
+
+/// The probe's subject does not exist here: `mini`/`embedded` compile out both the
+/// app lifecycle and the platform singleton. Report that honestly rather than
+/// failing to build, which is what a bare `required-features` gate cannot do under
+/// `cargo --all-features` (it enables `desktop` and `mini` together).
+#[cfg(not(all(
+    not(alloc_frugal),
+    any(feature = "desktop", feature = "tablet", feature = "mobile")
+)))]
+fn main() {
+    println!(
+        "control_creation_is_single_mechanism: not applicable in this build — it needs a \
+              device profile with the platform singleton; skipped."
+    );
 }

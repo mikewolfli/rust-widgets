@@ -4,6 +4,53 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 
+## 2.0.1 (2026-09-16) — Linux GTK Backend Restored, HarmonyOS Target Buildable
+
+A corrective release for platform paths that 2.0.0's verification did not cover. No API
+changed.
+
+See [docs/reports/CHANGELOG.md](docs/reports/CHANGELOG.md) for the full list and
+[docs/log/log-20260916-1.md](docs/log/log-20260916-1.md) (Linux/Windows hosts) and
+[docs/log/log-20260916-2.md](docs/log/log-20260916-2.md) (HarmonyOS cross target) for the
+reproduction commands.
+
+### Fixed
+
+- **HarmonyOS targets did not build.** Every `*-unknown-linux-ohos` target reports
+  `target_os = "linux"` and `target_env = "ohos"`, so the backend-selection sites written
+  as `cfg(target_os = "ohos")` never matched and the target had no platform constructor.
+  Selection now keys off `target_env`, and the Linux/Wayland arms exclude OpenHarmony
+  explicitly (they share `target_os = "linux"`).
+
+- **`desktop` did not compile on Linux** — the `canvas` call sites dropped the
+  `gtk-native` condition the module itself is gated on.
+- **The `gtk-native` backend had never compiled at all** — bare `glib`/`gdk`/`cairo`
+  crate names, a missing import, a `Fixed`-only method called on a child, and an
+  unsafe call without an `unsafe` block.
+- **A SIGSEGV in `gtk-native` test runs**, plus the underlying single-main-thread
+  constraint: GTK aborts when a second thread initializes it or builds a window.
+  `init`, `create_window` and `mount_surface` now degrade honestly instead.
+- **The Linux clipboard was never wired** — every other backend delegated to the
+  shared state record; Linux inherited the `false` default, so copy/paste was a
+  silent no-op.
+- **A library-created window could not carry controls** (BLUE15 Gap B) — the widget
+  registry id and the platform's window id were never linked, so
+  `App::new_window(..)` + `mount_widget_by_name(..)` was refused.
+- **The Wayland menu model had no producers** for the nodes it validated, making
+  `attach_menu_bar_to_window` and `menu_add_item` unreachable.
+- **Harmony ignored injected widget-trigger events** (the methods were not wired to
+  the shared implementation four sibling backends use).
+- **`cargo test --all-features` failures**, including three examples that cannot
+  compile when `desktop` and `mini` are both on.
+
+### Verification
+
+Five feature configurations plus `--all-features` build and test clean; zero clippy
+warnings under `-D warnings`; clean `cargo doc -D warnings`; clean cross-target builds
+for windows-msvc, wasm32, android and OpenHarmony (`aarch64-unknown-linux-ohos`).
+New CI jobs `linux-gtk` (the `gtk-native` combination) and `harmony-cross-check` (the
+OpenHarmony target) cover two configurations no previous job built.
+
 ## 2.0.0 (2026-09-14) — Self-Drawn Controls Everywhere (BLUE15)
 
 See [docs/reports/CHANGELOG.md](docs/reports/CHANGELOG.md),

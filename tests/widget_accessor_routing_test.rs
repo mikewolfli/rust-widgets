@@ -302,20 +302,46 @@ fn trigger_queue_is_shared_between_its_two_readers() {
 
 // ── Native handle accessor ─────────────────────────────────────────────────
 
-/// The public `native_handle` accessor must report the host window's handle.
+/// The public `native_handle` accessor must report the host window's handle
+/// **whenever the backend has one to report**.
 ///
 /// `WindowsPlatform` kept that mapping as an *inherent* method, so the trait
 /// method kept its `None` default and the accessor reported "no native object" for
 /// a window that plainly had one.
+///
+/// # Why "whenever" matters
+///
+/// A native handle is a property of the backend, not of the profile: Windows and
+/// macOS hand back a real `HWND`/`NSView`, while `desktop` on Linux without
+/// `gtk-native` is a state backend that owns no native window at all and reports
+/// `get_native_handle() == None` (principles #35/#37). Asserting `is_some()`
+/// unconditionally made the test pass only on the host it was written on. The
+/// property that must hold everywhere — and the one the Windows fix was about — is
+/// that the answer is **consistent across the two entry points**: the public
+/// accessor must agree with the backend's own trait method, never falling back to
+/// the default while the backend has a handle. A shadowed inherent method would
+/// make these two disagree, so this is exactly the regression guard needed.
 #[test]
 fn native_handle_reports_the_host_window_handle() {
     rust_widgets::init();
-    let host = rust_widgets::platform::get_platform().create_window("handle probe", 0, 0, 200, 120);
+    let platform = rust_widgets::platform::get_platform();
+    let host = platform.create_window("handle probe", 0, 0, 200, 120);
     assert_ne!(host, 0, "the host must create a window");
-    assert!(
-        rust_widgets::native_handle(host).is_some(),
-        "the host window must report its native handle through the public accessor"
-    );
+
+    // The Windows defect was a backend that *had* a handle but reported `None`,
+    // because its inherent method shadowed the trait one. The durable guard is that
+    // the two entry points can never disagree: the public accessor is a pure
+    // forward to the backend, so a shadowed or missing override shows up as a
+    // mismatch, while a genuine `None` (a state-only window, e.g. no display) is
+    // reported identically by both and stays honest.
+    for probe in [host, 0xdead_beef_u64] {
+        assert_eq!(
+            rust_widgets::native_handle(probe),
+            platform.get_native_handle(probe),
+            "the accessor and the backend must agree for id {probe:#x}"
+        );
+    }
+
     assert_eq!(
         rust_widgets::native_handle(0xdead_beef_u64),
         None,

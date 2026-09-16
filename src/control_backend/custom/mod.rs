@@ -128,7 +128,36 @@ impl CustomPaintControlBackend {
                 }
                 widget.set_parent(Some(parent));
             }
-            crate::widget::runtime::register(widget).unwrap_or(0)
+            let id = crate::widget::runtime::register(widget).unwrap_or(0);
+            if id == 0 {
+                return 0;
+            }
+
+            // A window is not only a painted widget: it needs a host object for
+            // the platform to draw into, and that is what `mount_surface` resolves
+            // a parent through. Creating it here — on the one creation path — is
+            // what links the widget id the caller holds to the id the platform
+            // knows, instead of leaving two unreachable id spaces.
+            //
+            // A backend without host windows (state-only, e.g. no display) returns
+            // 0 and no association is recorded, so mounting onto that window is
+            // still refused honestly rather than appearing to succeed.
+            if kind == crate::widget::WidgetKind::Window {
+                // `text` carries the window's title, the same spelling the factory
+                // was given above for this kind.
+                let host = crate::platform::get_platform().create_window(text, x, y, width, height);
+                if host != 0 {
+                    crate::widget::runtime::set_host_window(id, host);
+                } else {
+                    log::debug!(
+                        "custom backend: backend '{}' built no host window for {id}; controls \
+                         cannot be mounted onto it",
+                        crate::platform::backend_name()
+                    );
+                }
+            }
+
+            id
         }
     }
 
