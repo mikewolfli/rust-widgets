@@ -202,6 +202,54 @@ fn run_spooler(program: &str, job_file: &std::path::Path) -> Result<(), SpoolerF
 mod tests {
     use super::*;
 
+    /// The interpreter, script file name and script body of a stand-in spooler.
+    ///
+    /// A real spooler is invoked as `program <job file>` — one argument, no process
+    /// globals touched (mutating `PATH` from a test would race every other test in
+    /// the binary). Both interpreters below take the program to run as their single
+    /// argument, so the fixture keeps that shape on every host: `sh spool.sh` on
+    /// unix, `cscript spool.vbs` on Windows.
+    ///
+    /// The script pauses, then copies the job file it was given to `record`. A copy
+    /// that fails (because the caller already deleted the job file) must leave
+    /// `record` unwritten, which is what makes the wait observable.
+    #[cfg(any(unix, windows))]
+    fn stand_in_spooler(
+        job: &std::path::Path,
+        record: &std::path::Path,
+    ) -> (&'static str, &'static str, String) {
+        #[cfg(unix)]
+        {
+            let script = format!(
+                "sleep 0.2\ncat \"{}\" > \"{}\" 2>/dev/null || exit 1\n",
+                job.display(),
+                record.display()
+            );
+            ("sh", "spool.sh", script)
+        }
+        #[cfg(windows)]
+        {
+            // VBScript via `cscript`: an unhandled runtime error (the missing job
+            // file) aborts the script before the record is written — verified by
+            // running it, not assumed. `wscript` is deliberately not used, as it
+            // reports errors in a modal dialog instead of on stderr.
+            let script = format!(
+                "Dim fso, src, dst\n\
+                 WScript.Sleep 200\n\
+                 Set fso = CreateObject(\"Scripting.FileSystemObject\")\n\
+                 Set src = fso.OpenTextFile(\"{}\", 1)\n\
+                 Set dst = fso.CreateTextFile(\"{}\", True)\n\
+                 dst.Write src.ReadAll\n\
+                 dst.Close\n\
+                 src.Close\n\
+                 WScript.Quit 0\n",
+                job.display(),
+                record.display()
+            );
+            ("cscript", "spool.vbs", script)
+        }
+    }
+
     /// The probes read live system files. On a Linux host they must answer
     /// something sensible; on any other host they must answer `None`/`false`
     /// rather than panic, which is what the backends rely on.
@@ -228,10 +276,16 @@ mod tests {
     /// `Ok(())` while `lpr` is still opening the file — the spooler then prints
     /// nothing and the failure is only visible in its own stderr.
     ///
-    /// A stand-in spooler is used so the race can be observed deterministically on
-    /// any unix host: it pauses, then reads the file and fails if it is already gone.
-    /// Because the program path is passed in, no process-global state is touched —
-    /// mutating `PATH` from a test would race every other test in the binary.
+    /// A stand-in spooler is used so the race can be observed deterministically: it
+    /// pauses, then copies the job file back out. The caller deletes the job file the
+    /// moment this returns, so an empty record can only mean the copy happened after
+    /// the deletion — i.e. that `run_spooler` did not wait.
+    ///
+    /// The stand-in runs on every host, not just unix: the interpreter is handed the
+    /// program to run as its *only* argument, which is the shape `run_spooler` uses
+    /// for a real spooler (`lpr <job>`). `sh`/`cscript` both satisfy it, so the check
+    /// is not skipped on a Windows checkout — where the equivalent silent loss lives
+    /// in a different submission mechanism and is therefore easy to leave unguarded.
     #[test]
     fn print_job_waits_for_the_spooler_before_reading_back() {
         use std::io::Write as _;
@@ -243,33 +297,23 @@ mod tests {
         let record = dir.join("read_back.txt");
         let _ = std::fs::remove_file(&record);
 
+        let job = dir.join("job.txt");
+        if std::fs::write(&job, "page:1\n").is_err() {
+            return;
+        }
+
         // A stand-in spooler that only succeeds if the file is still there after a
         // pause long enough for a non-waiting caller to have deleted it.
-        let fake = dir.join("lpr");
-        let script = format!(
-            "#!/bin/sh\nsleep 0.2\ncat \"$1\" > \"{}\" 2>/dev/null || exit 1\n",
-            record.display()
-        );
+        let (program, script_name, script) = stand_in_spooler(&job, &record);
+        let fake = dir.join(script_name);
         if std::fs::File::create(&fake)
             .and_then(|mut file| file.write_all(script.as_bytes()))
             .is_err()
         {
             return;
         }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            if std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).is_err() {
-                return;
-            }
-        }
 
-        let job = dir.join("job.txt");
-        if std::fs::write(&job, "page:1\n").is_err() {
-            return;
-        }
-
-        let result = run_spooler(fake.to_str().unwrap_or("lpr"), &job);
+        let result = run_spooler(program, &fake);
         // The caller's next action, verbatim from `print_to_printer`.
         let removed = std::fs::remove_file(&job);
 

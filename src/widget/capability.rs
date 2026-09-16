@@ -161,11 +161,14 @@ pub use access::{read_widget_property_by_id, write_widget_property_by_id};
 /// The canonical `snake_case` name of a kind.
 ///
 /// Used by [`WidgetFactory::capability_by_kind`] to pick the *canonical* entry when
-/// several controls share a kind, and by the registry-free name lookup that serves
-/// builds without the capability registry. Derived from the variant's spelling,
-/// which follows the factory's own naming convention (`WidgetKind::ToolButton` →
-/// `tool_button`).
-#[cfg(widgets_unstripped)]
+/// several controls share a kind. Derived from the variant's spelling, which follows
+/// the factory's own naming convention (`WidgetKind::ToolButton` → `tool_button`).
+///
+/// Gated with its only caller: `capability_by_kind` lives in the `full_widgets`
+/// `impl WidgetFactory` block, so a build with an OS backend but no device profile
+/// (CI's `windows-cross-check` feature set) compiles the registry out and had this
+/// function left over as dead code.
+#[cfg(full_widgets)]
 pub(crate) fn kind_canonical_name(kind: crate::widget::WidgetKind) -> alloc::string::String {
     let mut name = alloc::string::String::new();
     kind_canonical_name_into(kind, &mut name);
@@ -174,9 +177,9 @@ pub(crate) fn kind_canonical_name(kind: crate::widget::WidgetKind) -> alloc::str
 
 /// Appends the canonical `snake_case` name of `kind` to `out`, without allocating.
 ///
-/// The allocation-free half of [`kind_canonical_name`], for callers that already own a
-/// buffer (which is all of them — the name is used transiently). Reusing one buffer
-/// across lookups removed the mutex that used to guard an intern map here; see
+/// The allocation-free half of the allocating wrapper above, for callers that already
+/// own a buffer (which is all of them — the name is used transiently). Reusing one
+/// buffer across lookups removed the mutex that used to guard an intern map here; see
 /// [`canonical_name_for_kind`] for the history.
 ///
 /// Compiled wherever a caller exists. `mini` compiles the capability layer out
@@ -290,8 +293,6 @@ fn alias_factory_name(kind: crate::widget::WidgetKind) -> &'static str {
 /// constructor.
 #[cfg(all(widgets_unstripped, not(full_widgets)))]
 fn factory_name_for_kind_without_registry(kind: crate::widget::WidgetKind) -> &'static str {
-    use core::fmt::Write as _;
-
     // Build the name in a stack buffer and look it up immediately. The name is not
     // retained, so nothing is interned and no lock is taken — see
     // `intern_kind_name` below for why that matters.

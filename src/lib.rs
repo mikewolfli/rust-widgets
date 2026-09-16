@@ -181,16 +181,33 @@ pub fn quit() {
     platform::profile::runtime_quit();
 }
 /// Logs the resolved profile/backend/route when `RUST_WIDGETS_TRACE_RUNTIME=1`.
-fn trace_runtime_route(stage: &str) {
-    if std::env::var("RUST_WIDGETS_TRACE_RUNTIME").ok().as_deref() == Some("1") {
-        log::info!(
-            "[rust_widgets.runtime] stage={} profile={} backend={} route={}",
-            stage,
-            platform::profile::profile_name(),
-            platform::platform_facts().backend_name(),
-            platform::profile::route_name()
-        );
+///
+/// # Why this writes to stderr as well as the log
+///
+/// `log::info!` goes to the `log` facade, and this crate installs no logger on
+/// desktop builds (`src/platform/android_jni.rs` does, via logcat, and that is the
+/// only one). A program that has not installed one therefore saw **nothing** when it
+/// asked for the trace, so the runtime audit BLUE15 #55 requires could not actually
+/// be performed: `RUST_WIDGETS_TRACE_RUNTIME=1` printed an empty line and the route
+/// stayed unverified. Writing the same record to stderr when the variable is set
+/// makes the audit work out of the box, while the `log` record keeps the event
+/// available to a host that does install a logger. The stderr write is opt-in — the
+/// variable has to be exactly `1` — so a normal run prints nothing.
+pub(crate) fn trace_runtime_route(stage: &str) {
+    if std::env::var("RUST_WIDGETS_TRACE_RUNTIME").ok().as_deref() != Some("1") {
+        return;
     }
+
+    let line = format!(
+        "[rust_widgets.runtime] stage={} profile={} backend={} route={} host={}",
+        stage,
+        platform::profile::profile_name(),
+        platform::platform_facts().backend_name(),
+        platform::profile::route_name(),
+        platform::profile::host_name()
+    );
+    log::info!("{line}");
+    eprintln!("{line}");
 }
 // Convenient wrapper functions for platform operations
 // Users can call these directly without manually getting a platform instance

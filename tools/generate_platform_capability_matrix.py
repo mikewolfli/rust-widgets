@@ -568,7 +568,12 @@ def main():
     output = generate_matrix()
 
     if args.output:
-        with open(args.output, "w", encoding="utf-8") as f:
+        # `newline="\n"` keeps the artifact byte-identical on every host. Without
+        # it Windows translates every `\n` to `\r\n`, which made
+        # `tools/check_platform_capability_matrix.sh` step [4] report a false
+        # "document is stale" (its `diff` compares bytes) and made the truthfulness
+        # gate rewrite the checked-in LF file with CRLF on that host.
+        with open(args.output, "w", encoding="utf-8", newline="\n") as f:
             f.write(output)
         print(f"Matrix written to {args.output}")
     else:

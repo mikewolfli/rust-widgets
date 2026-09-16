@@ -16,15 +16,57 @@ mkdir -p "$REPORT_DIR"
   echo "## Snapshot tests"
 } > "$REPORT_FILE"
 
-echo "[1/2] line chart SVG snapshot"
-cargo test chart::tests::svg_snapshot_line_chart_stable
-printf -- "- ✅ line chart SVG snapshot stable\n" >> "$REPORT_FILE"
+# Runs one snapshot test and records the result.
+#
+# # Why this asserts that a test actually ran
+#
+# The filters used to be `chart::tests::svg_snapshot_*`, a path that has not
+# existed since the chart controls moved under `src/widget/chart_widgets/`. A
+# `cargo test <filter>` that matches nothing **exits 0**, so this gate printed
+# "✅ snapshot stable" for both charts, wrote a report claiming coverage, and
+# passed while running zero tests — the exact false-green failure mode that was
+# previously found and fixed in `check_behavior_matrix.sh`. A gate that cannot
+# fail is worse than no gate, because it is read as evidence.
+#
+# The name is therefore taken from the test binary's own output rather than
+# trusted, and a missing match is a failure.
+run_snapshot() {
+  local label="$1"
+  local filter="$2"
+  local out
 
-echo "[2/2] bar chart SVG snapshot"
-cargo test chart::tests::svg_snapshot_bar_chart_stable
-printf -- "- ✅ bar chart SVG snapshot stable\n" >> "$REPORT_FILE"
+  echo "[*] $label ($filter)"
+  if ! out="$(cargo test "$filter" 2>&1)"; then
+    printf '%s\n' "$out" | grep -E "^test |test result|error|panicked" | tail -20 >&2
+    echo "❌ $label FAILED (see above)" >&2
+    return 1
+  fi
+
+  if ! printf '%s\n' "$out" | grep -qE "^test ${filter} \.\.\. ok"; then
+    echo "  ❌ the filter '$filter' matched no test, so this gate would be vacuous:" >&2
+    printf '%s\n' "$out" | grep -E "test result|^error" | tail -5 >&2
+    echo "  Fix the filter to the test's real module path (cargo test exits 0 on no match)." >&2
+    return 1
+  fi
+
+  printf -- "- ✅ %s (%s)\n" "$label" "$filter" >> "$REPORT_FILE"
+  return 0
+}
+
+fail=0
+
+run_snapshot "line chart SVG snapshot stable" \
+  widget::chart_widgets::tests::svg_snapshot_line_chart_stable || fail=1
+
+run_snapshot "bar chart SVG snapshot stable" \
+  widget::chart_widgets::tests::svg_snapshot_bar_chart_stable || fail=1
 
 echo >> "$REPORT_FILE"
-echo "All visual regression checks passed." >> "$REPORT_FILE"
+if [ "$fail" -ne 0 ]; then
+  echo "Visual regression checks FAILED." >> "$REPORT_FILE"
+  echo "Visual regression checks FAILED."
+  exit 1
+fi
 
+echo "All visual regression checks passed." >> "$REPORT_FILE"
 echo "Visual regression report written to $REPORT_FILE"

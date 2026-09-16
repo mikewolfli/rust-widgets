@@ -302,8 +302,12 @@ where
     f(&mut guard)
 }
 
+/// Records an `App` lifecycle stage in the runtime trace.
+///
+/// Forwards to the crate-root trace so both report the same fields: the local copy
+/// that used to live here logged only `stage=`, which meant the app stages and the
+/// `lib.rs` stages produced two different record shapes for one audit line
+/// (principle #54 — one definition per meaning).
 fn trace_runtime_route(stage: &str) {
-    if std::env::var("RUST_WIDGETS_TRACE_RUNTIME").ok().as_deref() == Some("1") {
-        log::info!("[rust_widgets.app] stage={stage}");
-    }
+    crate::trace_runtime_route(stage);
 }

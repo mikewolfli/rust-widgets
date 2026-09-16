@@ -90,6 +90,20 @@ pub const fn is_openharmony_target() -> bool {
     cfg!(target_env = "ohos")
 }
 
+/// Compile-time proof that the discriminator above is the only one that works.
+///
+/// Phrased as an implication so it is evaluated — and vacuously true — on every
+/// target. The earlier form (`if cfg!(target_env = "ohos") { const { .. } }`)
+/// looked equivalent but was not: an inline `const` block is const-evaluated even
+/// in a branch that is never taken, so the assertion also fired on Windows,
+/// macOS and wasm (where `target_os` is not `linux`) and broke `cargo test --lib`
+/// there. As an implication the check is real on OpenHarmony and inert elsewhere.
+const _: () = assert!(
+    !cfg!(target_env = "ohos") || cfg!(target_os = "linux"),
+    "OpenHarmony targets report target_os=linux; if that ever stops being true, \
+     `is_openharmony_target()` must be re-derived from a different field"
+);
+
 /// How this build is driven at runtime.
 ///
 /// The pair distinguishes "the OS owns the loop" from "the library owns the
@@ -222,12 +236,36 @@ pub const fn profile_name() -> &'static str {
     }
 }
 
-/// Human-readable name of the route a widget-creation call takes.
+/// Human-readable name of the mechanism that lands widgets.
 ///
-/// Replaces the two `runtime_route_name()` overloads in `src/lib.rs`.
+/// Replaces the two `runtime_route_name()` overloads in `src/lib.rs`, which split
+/// on the OS backend feature. The answer is now single-valued and deliberately so:
+/// BLUE15 #55 requires the control-landing mechanism to be unique *and runtime
+/// auditable*, so this reports the mechanism (`self-drawn`) rather than the runtime
+/// question — a build with an OS backend still paints its own controls.
+///
+/// The runtime question is answered separately by [`has_os_runtime`] and reported
+/// next to this in the `RUST_WIDGETS_TRACE_RUNTIME` line as `host=…`, so nothing is
+/// lost by no longer overloading the word "route" with it.
+///
+/// The value also keeps mechanism vocabulary out of user-visible output: the
+/// previous spelling was `native-platform`, which named the implementation instead
+/// of what it does (principle #52).
 pub const fn route_name() -> &'static str {
+    "self-drawn"
+}
+
+/// Which loop drives this build, for the `RUST_WIDGETS_TRACE_RUNTIME` audit line.
+///
+/// `os-hosted` — the OS owns the window and pumps its own event loop (desktop,
+/// tablet, mobile). `surface-only` — the library drives its own loop over a bare
+/// drawing surface (`embedded`, `mini`, and any host without an OS backend).
+///
+/// Kept beside [`route_name`] because the two facts used to be one string; they are
+/// independent, and a reader of the trace line needs both.
+pub const fn host_name() -> &'static str {
     if has_os_runtime() {
-        "native-platform"
+        "os-hosted"
     } else {
         "surface-only"
     }
@@ -437,12 +475,10 @@ mod tests {
             "is_openharmony_target() must report exactly whether this artifact targets OpenHarmony"
         );
 
-        // The reason `target_env` is the discriminator and `target_os` is not:
-        // OpenHarmony targets inherit the Linux OS name. `const {}` keeps the
-        // check at compile time, which is the only time it can be evaluated.
-        if cfg!(target_env = "ohos") {
-            const { assert!(cfg!(target_os = "linux"), "OpenHarmony targets report target_os=linux") };
-        }
+        // The reason `target_env` is the discriminator and `target_os` is not —
+        // OpenHarmony targets inherit the Linux OS name — is enforced at compile
+        // time by the `const _` assertion right after `is_openharmony_target()`,
+        // on every target rather than only inside an OpenHarmony branch.
     }
 
     /// The selected backend must be the one this target actually needs.
@@ -499,10 +535,17 @@ mod tests {
         }
     }
 
-    /// The route name must reflect the runtime question, not a separate `cfg`.
+    /// The route name must report the control-landing mechanism, which BLUE15 #55
+    /// makes single-valued: every kind is painted by the library on every host.
     #[test]
-    fn route_name_follows_the_runtime_question() {
-        assert_eq!(route_name(), if has_os_runtime() { "native-platform" } else { "surface-only" });
+    fn route_name_reports_the_single_landing_mechanism() {
+        assert_eq!(route_name(), "self-drawn");
+    }
+
+    /// The runtime question must still be answerable, now under its own name.
+    #[test]
+    fn host_name_follows_the_runtime_question() {
+        assert_eq!(host_name(), if has_os_runtime() { "os-hosted" } else { "surface-only" });
     }
 
     /// The policy table's `os_window` must agree with the runtime question.
