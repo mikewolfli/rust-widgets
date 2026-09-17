@@ -14,8 +14,6 @@ pub mod masonry_layout;
 #[cfg(widgets_unstripped)]
 pub mod mdiarea;
 #[cfg(widgets_unstripped)]
-pub mod pager_page_view;
-#[cfg(widgets_unstripped)]
 pub mod safe_area;
 pub mod scrollarea;
 #[cfg(widgets_unstripped)]
@@ -26,12 +24,11 @@ pub mod stackedwidget;
 pub mod stepper;
 #[cfg(widgets_unstripped)]
 pub mod tabwidget;
-pub mod tile_view;
 #[cfg(widgets_unstripped)]
 pub mod toolbox;
 // Re-export container widgets
 #[cfg(widgets_unstripped)]
-pub use carousel::Carousel;
+pub use carousel::{Carousel, WidgetAndDraw};
 #[cfg(widgets_unstripped)]
 pub use collapsible_pane::CollapsiblePane;
 #[cfg(widgets_unstripped)]
@@ -41,8 +38,6 @@ pub use groupbox::GroupBox;
 pub use masonry_layout::{MasonryItem, MasonryLayout};
 #[cfg(widgets_unstripped)]
 pub use mdiarea::MdiArea;
-#[cfg(widgets_unstripped)]
-pub use pager_page_view::PagerPageView;
 #[cfg(widgets_unstripped)]
 pub use safe_area::{SafeArea, SafeAreaInsets};
 pub use scrollarea::ScrollArea;

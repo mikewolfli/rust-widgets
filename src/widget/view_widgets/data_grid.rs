@@ -19,6 +19,7 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 use super::data_source::IncrementalTableDataSource;
+use super::filter_expr::{FilterCondition, FilterExpr};
 
 /// Sort descriptor for a data grid column.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,6 +63,11 @@ pub struct DataGrid {
     frozen_columns: usize,
     sort_specs: Vec<SortSpec>,
     filters: Vec<ColumnFilter>,
+    /// The filter as a recursive expression.
+    ///
+    /// This is what `apply_filter_sort` evaluates; `filters` is derived from it, so
+    /// the two cannot describe different filters.
+    filter_expr: FilterExpr,
     window_cache: Option<GridWindowCache>,
     /// Emitted when visible row/column window changes.
     pub visible_window_changed: Signal1<(usize, usize, usize, usize)>,
@@ -83,6 +89,7 @@ impl DataGrid {
             frozen_columns: 0,
             sort_specs: Vec::new(),
             filters: Vec::new(),
+            filter_expr: FilterExpr::MatchAll,
             window_cache: None,
             visible_window_changed: Signal1::new(),
         }
@@ -239,16 +246,58 @@ impl DataGrid {
         &self.sort_specs
     }
 
-    /// Replaces filter list.
+    /// Replaces the filter list with a flat conjunction of `contains` conditions.
+    ///
+    /// Kept as the simple spelling: a caller that wants "contains this text in this
+    /// column" does not have to build a tree. Delegates to
+    /// [`Self::set_filter_expr`] so the two spellings cannot diverge — the list is
+    /// converted to one `And` of predicates, which is the semantics this method
+    /// always had (an implicit AND, `apply_filter_sort`).
     pub fn set_filters(&mut self, filters: Vec<ColumnFilter>) {
+        let expr = FilterExpr::from_conditions(
+            filters
+                .iter()
+                .map(|filter| FilterCondition::contains(filter.column, filter.query.clone()))
+                .collect(),
+        );
+        self.set_filter_expr(expr);
+        // Kept in step so `filters()` reports what was set rather than what the
+        // tree happens to flatten to (a caller may have set an `Or`/`Not` tree, in
+        // which case the list is the predicates in reading order).
         self.filters = filters;
+    }
+
+    /// Returns the active filters as a flat list.
+    ///
+    /// The conditions of the **tree**, in reading order, so a grid whose filter was
+    /// set through [`Self::set_filter_expr`] still reports them. Each condition's
+    /// operator is dropped, because `ColumnFilter` has no operator field and
+    /// inventing one here would be a second definition of the same thing.
+    pub fn filters(&self) -> Vec<ColumnFilter> {
+        self.filter_expr
+            .conditions()
+            .iter()
+            .map(|condition| ColumnFilter {
+                column: condition.column,
+                query: condition.operand.clone(),
+            })
+            .collect()
+    }
+
+    /// Replaces the filter with a recursive expression.
+    ///
+    /// This is the model a query-builder UI produces (nested AND/OR, non-text
+    /// operators), so "code sets a filter" and "a user builds one" share one
+    /// evaluation path (principle #54).
+    pub fn set_filter_expr(&mut self, filter_expr: FilterExpr) {
+        self.filter_expr = filter_expr;
         self.clear_cache();
         self.base.request_redraw();
     }
 
-    /// Returns active filters.
-    pub fn filters(&self) -> &[ColumnFilter] {
-        &self.filters
+    /// Returns the active filter expression.
+    pub fn filter_expr(&self) -> &FilterExpr {
+        &self.filter_expr
     }
 
     /// Returns `(row_start, row_len, col_start, col_len)` for visible+overscan window.
@@ -319,16 +368,10 @@ impl DataGrid {
     }
 
     fn apply_filter_sort(&self, mut cells: Vec<Vec<Option<String>>>) -> Vec<Vec<Option<String>>> {
-        if !self.filters.is_empty() {
-            cells.retain(|row| {
-                self.filters.iter().all(|filter| {
-                    let query = filter.query.to_lowercase();
-                    row.get(filter.column)
-                        .and_then(|cell| cell.as_ref())
-                        .map(|cell| cell.to_lowercase().contains(&query))
-                        .unwrap_or(false)
-                })
-            });
+        // `is_noop` lets the whole `retain` pass be skipped when the filter cannot
+        // reject anything, rather than walking every cell to conclude the same thing.
+        if !self.filter_expr.is_noop() {
+            cells.retain(|row| self.filter_expr.accepts(row));
         }
 
         if !self.sort_specs.is_empty() {
@@ -448,9 +491,14 @@ impl WidgetProperties for DataGrid {
             "column_width" => Ok(CapabilityValue::UInt(self.column_width() as u64)),
             "frozen_columns" => Ok(CapabilityValue::UInt(self.frozen_columns() as u64)),
             "sort_spec_count" => Ok(CapabilityValue::UInt(self.sort_specs().len() as u64)),
-            "filter_count" => Ok(CapabilityValue::UInt(self.filters().len() as u64)),
+            // The count is of *conditions*, not of `ColumnFilter`s: a tree with a
+            // nested `And` holds more conditions than the flat list would, and the
+            // number a query-builder UI shows is the condition count.
+            "filter_count" => {
+                Ok(CapabilityValue::UInt(self.filter_expr().condition_count() as u64))
+            }
             "sort_specs" => Ok(CapabilityValue::String(sort_specs_to_string(self.sort_specs()))),
-            "filters" => Ok(CapabilityValue::String(column_filters_to_string(self.filters()))),
+            "filters" => Ok(CapabilityValue::String(column_filters_to_string(&self.filters()))),
             _ => base_property_get(self, name),
         }
     }

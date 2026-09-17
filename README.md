@@ -28,7 +28,7 @@ There is no `CreateWindowExW`/`NSButton`/`gtk_button_new`/`android.widget.Button
 | Property | Self-drawn (this library) | Native controls |
 |---|---|---|
 | Appearance | **Identical on every OS** | Differs per OS toolkit and version |
-| Widget count | **174 kinds, all platforms** | Only what the OS toolkit offers |
+| Widget count | **169 kinds, all platforms** | Only what the OS toolkit offers |
 | Dependency weight | **No GUI toolkit linked** | GTK / AppKit / Win32 / Android SDK |
 | Headless & embedded | **Runs with no OS at all** (`mini`, SVG) | Impossible |
 | Deterministic tests | **Pixel/serialise snapshots** | Needs a real display |
@@ -45,11 +45,12 @@ A backend that cannot supply even a surface (for example a bare framebuffer) sti
 
 > **Migrating from 1.x?** Native control creation was removed from all ten backends in 2.0.0. See [`CHANGELOG.md`](CHANGELOG.md) and [`docs/MIGRATION_GUIDE.md`](docs/MIGRATION_GUIDE.md).
 
-All 174 widget kinds are self-drawn. 169 of them are registered in the factory under
-their own name (447 accepted names in total, counting aliases); the remainder are
-alias kinds (`pub type`), base/child kinds, or the optional WebEngine series — every one
-of the 174 is classified, and `tools/check_widget_registration_fidelity.sh` fails if a
-new kind is added without an answer. See
+All 169 widget kinds are self-drawn. Every one of them resolves a constructor through
+`factory_name_for_kind` (`456` accepted names in total, counting aliases);
+`tools/check_widget_registration_fidelity.sh` fails if a kind is added without an
+answer, or resolves to no constructor at all — the latter caught four `create_*`
+methods (`Frame`, `DockPanel`, `CupertinoSwitch` and nine WebEngine names) that
+returned id `0` while every other gate passed. See
 [`docs/plans/blue16.md`](docs/plans/blue16.md) §12 for the per-kind audit. The platform
 capability matrix
 ([`docs/plans/platform_capability_matrix.md`](docs/plans/platform_capability_matrix.md))
@@ -248,9 +249,9 @@ what the OS can draw.
 
 | Profile | Widget set | Registry | Custom-painted controls | GPU | i18n |
 |---------|-----------|:--------:|:-----------------------:|:---:|:----:|
-| `desktop` | **174 kinds** (full) | ✅ | ✅ | ✅ wgpu | ✅ |
-| `tablet` | **174 kinds** (full) | ✅ | ✅ | ✅ wgpu | ✅ |
-| `mobile` | **174 kinds** (full) | ✅ | ✅ | ✅ wgpu | ✅ |
+| `desktop` | **169 kinds** (full) | ✅ | ✅ | ✅ wgpu | ✅ |
+| `tablet` | **169 kinds** (full) | ✅ | ✅ | ✅ wgpu | ✅ |
+| `mobile` | **169 kinds** (full) | ✅ | ✅ | ✅ wgpu | ✅ |
 | `embedded` | reduced core set | — | — | — software | — |
 | `mini` | reduced core set | — | — | — software | — |
 
@@ -260,7 +261,7 @@ operation rather than mount into a blank surface.
 
 The reduced `embedded`/`mini` set is: Window, Button, CheckBox, RadioButton, Label,
 LineEdit, ComboBox, SpinBox, ListBox, ProgressBar, Slider, ScrollBar, ScrollArea,
-Panel, Frame, GroupBox, TileView, Line, Meter, MiniChart, ImageView, MiniCanvas,
+Panel, Frame, GroupBox, Line, Meter, MiniChart, ImageView, MiniCanvas,
 Arc, Spinner, Roller, Dropdown, TextArea, Keyboard, Switch.
 
 ### 3. What "support" means per OS
@@ -393,13 +394,13 @@ silently stay unreachable from a language.
 
 ## Widget Library
 
-### Desktop/Tablet/Mobile (174 widget kinds)
+### Desktop/Tablet/Mobile (169 widget kinds)
 
 **Core**: Window, Dialog, MessageBox, FileDialog, ColorDialog, FontDialog, InputDialog, ProgressDialog, PopupWindow, Button, CheckBox, RadioButton, Label, LineEdit, TextEdit, RichEdit, ComboBox, SpinBox, ListBox, ListView, TreeView, ProgressBar, Slider, ScrollBar, ScrollArea, TabWidget, Splitter, GroupBox, MenuBar, Menu, MenuItem, ContextMenu, ToolBar, StatusBar, Canvas, Table, Grid, Chart, ToggleButton
 
 **Date & Time**: Calendar, DateEdit, TimeEdit, DateTimeEdit, DatePicker, TimePicker, DateTimePicker, CupertinoDatePicker, DateRangePicker, MobileDatePicker
 
-**Containers**: CollapsiblePane, DockWidget, MdiArea, StackedWidget, ToolBox, TabBar, NavigationStack, PagerPageView, Carousel, BottomSheet, ModalBottomSheet
+**Containers**: CollapsiblePane, DockWidget, MdiArea, StackedWidget, ToolBox, TabBar, NavigationStack, Carousel, BottomSheet, ModalBottomSheet
 
 **Mobile**: BottomNavigationBar, NavigationDrawer, AppBar, SafeArea, PullToRefresh, RefreshControl, SearchBar, CupertinoSwitch, CupertinoSlider, CupertinoNavigationBar, CupertinoSegmentedControl, AdaptiveScaffold
 
@@ -417,7 +418,7 @@ silently stay unreachable from a language.
 
 ### Mini / Embedded (reduced core widget set)
 
-Window, Button, CheckBox, RadioButton, Label, LineEdit, ComboBox, SpinBox, ListBox, ProgressBar, Slider, ScrollBar, ScrollArea, Panel, Frame, GroupBox, TileView, Line, Meter, MiniChart, ImageView, MiniCanvas, Arc, Spinner, Roller, Dropdown, TextArea, Keyboard, Switch
+Window, Button, CheckBox, RadioButton, Label, LineEdit, ComboBox, SpinBox, ListBox, ProgressBar, Slider, ScrollBar, ScrollArea, Panel, Frame, GroupBox, Line, Meter, MiniChart, ImageView, MiniCanvas, Arc, Spinner, Roller, Dropdown, TextArea, Keyboard, Switch
 
 ---
 

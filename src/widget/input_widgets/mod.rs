@@ -5,6 +5,9 @@
 
 #[cfg(widgets_unstripped)]
 pub mod auto_complete_edit;
+#[cfg(full_widgets)]
+/// Multi-level option chooser that walks a path down a tree.
+pub mod cascader;
 /// Editable and non-editable drop-down item selector.
 pub mod combobox;
 #[cfg(widgets_unstripped)]
@@ -26,6 +29,9 @@ pub mod lineedit;
 pub mod listbox;
 #[cfg(widgets_unstripped)]
 pub mod masked_edit;
+/// `@`-triggered candidate completion inside free text.
+#[cfg(full_widgets)]
+pub mod mention;
 #[cfg(widgets_unstripped)]
 pub mod multi_select_combo_box;
 #[cfg(widgets_unstripped)]
@@ -51,6 +57,8 @@ pub mod textedit;
 // Re-export widget types
 #[cfg(widgets_unstripped)]
 pub use auto_complete_edit::AutoCompleteEdit;
+#[cfg(full_widgets)]
+pub use cascader::{Cascader, CascaderOption};
 pub use combobox::ComboBox;
 #[cfg(widgets_unstripped)]
 pub use command_link::CommandLink;
@@ -68,6 +76,8 @@ pub use lineedit::{EchoMode, LineEdit};
 pub use listbox::{ListBox, SelectionMode};
 #[cfg(widgets_unstripped)]
 pub use masked_edit::MaskedEdit;
+#[cfg(full_widgets)]
+pub use mention::{CompletedMention, Mention, MentionCandidate};
 #[cfg(widgets_unstripped)]
 pub use multi_select_combo_box::{MultiSelectComboBox, MultiSelectItem};
 #[cfg(widgets_unstripped)]

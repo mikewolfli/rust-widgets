@@ -732,6 +732,25 @@ fn unregistered_controls_are_constructible_by_canonical_name_and_alias() {
         ("otp_input", "otp", WidgetKind::OtpInput),
         ("banner", "notice", WidgetKind::Banner),
         ("pagination", "page_numbers", WidgetKind::Pagination),
+        // `RadarChart` (BLUE17 Phase D-3) is a kind of its own rather than a
+        // `chart_type` token, because its data model (series over *dimensions*)
+        // is not the same shape as `ChartWidget`'s (a value over its index).
+        ("radar_chart", "radar", WidgetKind::RadarChart),
+        // `KanbanBoard` (BLUE17 Phase D-1) is two-level (columns of cards) with
+        // cross-container moves, which no existing control's model carries.
+        ("kanban_board", "kanban", WidgetKind::KanbanBoard),
+        // `Cascader` (BLUE17 Phase D-5) selects a *path* of varying depth, where
+        // `dropdown` selects one index into a flat list.
+        ("cascader", "cascade", WidgetKind::Cascader),
+        // `QueryBuilder` (BLUE17 Phase D-6) renders the same `FilterExpr` the grid
+        // evaluates; the flat `Vec<ColumnFilter>` model could not express it.
+        ("query_builder", "filter_builder", WidgetKind::QueryBuilder),
+        // `EmojiPicker` (BLUE17 Phase D-4) is the picker shell; its glyph table is
+        // supplied by the caller, so it ships no data of its own.
+        ("emoji_picker", "emoji", WidgetKind::EmojiPicker),
+        // `Mention` (BLUE17 Phase D-2) completes the token before the caret and
+        // holds several mentions, where `auto_complete_edit` replaces the whole field.
+        ("mention", "at_mention", WidgetKind::Mention),
     ];
 
     for (name, alias, kind) in cases {

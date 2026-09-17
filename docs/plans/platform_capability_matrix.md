@@ -57,6 +57,7 @@
 | **CameraPreview** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Canvas** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Carousel** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Cascader** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Chart** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **CheckBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
 | **CheckListBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
@@ -90,6 +91,7 @@
 | **Dropdown** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **DropdownMenu** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **EditableComboBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **EmojiPicker** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **EmptyState** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **FAB** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **FileDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
@@ -110,6 +112,7 @@
 | **ImePreedit** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **InplaceEditor** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **InputDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **KanbanBoard** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Keyboard** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **LCDNumber** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Label** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
@@ -124,6 +127,7 @@
 | **MaterialNavigationRail** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **MaterialSnackbar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **MdiArea** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Mention** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Menu** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
 | **MenuBar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
 | **MenuButton** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
@@ -139,7 +143,6 @@
 | **NavigationStack** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **NumberPicker** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **OtpInput** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
-| **PagerPageView** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Pagination** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Panel** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
 | **PieChart** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
@@ -152,6 +155,8 @@
 | **PropertiesPanel** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **PropertyGrid** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **QRCode** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **QueryBuilder** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **RadarChart** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **RadioButton** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
 | **RangeSlider** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Rating** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
@@ -186,7 +191,6 @@
 | **TagInput** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **TextArea** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **TextEdit** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
-| **TileView** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **TimePicker** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Toast** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **ToggleButton** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
@@ -213,9 +217,9 @@
 
 ---
 
-Total widgets: 174 (matches 174 WidgetKind variants)
+Total widgets: 180 (matches 180 WidgetKind variants)
 
-C-ABI typed constructors: 22 of 174 kinds. The remainder are reachable through `rw_create_widget_of_kind`, which takes a factory name at run time.
+C-ABI typed constructors: 22 of 180 kinds. The remainder are reachable through `rw_create_widget_of_kind`, which takes a factory name at run time.
 
 ---
 
@@ -234,7 +238,7 @@ emitted only for `data_view`, `property_grid`, `collapsible_pane`, `column_view`
 | `create_line_edit` | RichEdit, TextEdit |
 | `create_list_box` | CheckListBox, TreeView |
 | `create_list_view` | ColumnView, UndoView |
-| `create_panel` | Canvas, Chart, CollapsiblePane, DataView, DockPanel, DockWidget, Grid, MdiArea, PropertyGrid, StackedWidget, Table, Toolbox, WebEngineContextMenuRequest, WebEngineCookieStore, WebEngineDownloadItem, WebEngineFindTextResult, WebEngineNotification, WebEnginePage, WebEngineScriptDialog, WebEngineSettings, WebEngineView, WebEngineWebChannel, Wizard |
+| `create_panel` | Canvas, Cascader, Chart, CollapsiblePane, DataView, DockPanel, DockWidget, EmojiPicker, Grid, KanbanBoard, MdiArea, Mention, PropertyGrid, QueryBuilder, RadarChart, StackedWidget, Table, Toolbox, Wizard |
 | `create_progress_bar` | ActivityIndicator |
 | `create_slider` | Dial |
 

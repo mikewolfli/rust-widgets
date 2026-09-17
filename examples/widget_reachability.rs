@@ -15,7 +15,7 @@
 //!
 //! The gate reads the single JSON line printed here.
 
-use rust_widgets::widget::capability::WidgetFactory;
+use rust_widgets::widget::capability::{factory_name_for_kind, WidgetFactory};
 use rust_widgets::widget::WidgetKind;
 
 /// Every `WidgetKind` variant, in declaration order.
@@ -69,6 +69,12 @@ fn all_kinds() -> Vec<WidgetKind> {
         Table,
         Grid,
         Chart,
+        RadarChart,
+        KanbanBoard,
+        Cascader,
+        QueryBuilder,
+        EmojiPicker,
+        Mention,
         ToggleButton,
         CheckListBox,
         DoubleSpinBox,
@@ -92,22 +98,12 @@ fn all_kinds() -> Vec<WidgetKind> {
         LCDNumber,
         FontComboBox,
         WebEngineView,
-        WebEnginePage,
-        WebEngineSettings,
-        WebEngineDownloadItem,
-        WebEngineCookieStore,
-        WebEngineWebChannel,
-        WebEngineFindTextResult,
-        WebEngineNotification,
-        WebEngineScriptDialog,
-        WebEngineContextMenuRequest,
         Action,
         ToolButton,
         FreeformShape,
         TabBar,
         PieMenu,
         RibbonBar,
-        TileView,
         Line,
         Meter,
         MiniChart,
@@ -168,7 +164,6 @@ fn all_kinds() -> Vec<WidgetKind> {
         CupertinoNavigationBar,
         CupertinoSegmentedControl,
         SwipeToDismiss,
-        PagerPageView,
         TabView,
         SearchBar,
         ShortcutEditor,
@@ -259,6 +254,12 @@ fn exhaustive(kind: WidgetKind) -> &'static str {
         Table => "Table",
         Grid => "Grid",
         Chart => "Chart",
+        RadarChart => "RadarChart",
+        KanbanBoard => "KanbanBoard",
+        Cascader => "Cascader",
+        QueryBuilder => "QueryBuilder",
+        EmojiPicker => "EmojiPicker",
+        Mention => "Mention",
         ToggleButton => "ToggleButton",
         CheckListBox => "CheckListBox",
         DoubleSpinBox => "DoubleSpinBox",
@@ -282,22 +283,12 @@ fn exhaustive(kind: WidgetKind) -> &'static str {
         LCDNumber => "LCDNumber",
         FontComboBox => "FontComboBox",
         WebEngineView => "WebEngineView",
-        WebEnginePage => "WebEnginePage",
-        WebEngineSettings => "WebEngineSettings",
-        WebEngineDownloadItem => "WebEngineDownloadItem",
-        WebEngineCookieStore => "WebEngineCookieStore",
-        WebEngineWebChannel => "WebEngineWebChannel",
-        WebEngineFindTextResult => "WebEngineFindTextResult",
-        WebEngineNotification => "WebEngineNotification",
-        WebEngineScriptDialog => "WebEngineScriptDialog",
-        WebEngineContextMenuRequest => "WebEngineContextMenuRequest",
         Action => "Action",
         ToolButton => "ToolButton",
         FreeformShape => "FreeformShape",
         TabBar => "TabBar",
         PieMenu => "PieMenu",
         RibbonBar => "RibbonBar",
-        TileView => "TileView",
         Line => "Line",
         Meter => "Meter",
         MiniChart => "MiniChart",
@@ -358,7 +349,6 @@ fn exhaustive(kind: WidgetKind) -> &'static str {
         CupertinoNavigationBar => "CupertinoNavigationBar",
         CupertinoSegmentedControl => "CupertinoSegmentedControl",
         SwipeToDismiss => "SwipeToDismiss",
-        PagerPageView => "PagerPageView",
         TabView => "TabView",
         SearchBar => "SearchBar",
         ShortcutEditor => "ShortcutEditor",
@@ -416,12 +406,24 @@ fn main() {
     aliases.sort_unstable();
     aliases.dedup();
 
+    // The kinds the library can actually build, asked the same way
+    // `mount_widget_of_kind` asks: through `factory_name_for_kind`. A kind that
+    // resolves to the empty string has no constructor, so every `create_*` method
+    // that names it returns id `0` — see `check_widget_registration_fidelity.py`
+    // for the three defects this caught.
+    let unconstructible: Vec<String> = all_kinds()
+        .into_iter()
+        .filter(|kind| factory_name_for_kind(*kind).is_empty())
+        .map(kind_name)
+        .collect();
+
     println!(
         "{}",
         serde_json::json!({
             "kinds": kinds,
             "registered": aliases,
             "canonical": registered,
+            "unconstructible": unconstructible,
         })
     );
 }
@@ -438,7 +440,7 @@ mod tests {
     /// mutually visible.
     #[test]
     fn kind_list_is_exhaustive() {
-        assert_eq!(super::all_kinds().len(), 174);
+        assert_eq!(super::all_kinds().len(), 169);
     }
 
     /// The `match` in `exhaustive` and the `vec!` in `all_kinds` must agree.

@@ -545,7 +545,6 @@ impl From<WidgetKind> for AccessibleRole {
             | WidgetKind::Frame
             | WidgetKind::GroupBox
             | WidgetKind::ScrollArea
-            | WidgetKind::TileView
             | WidgetKind::Keyboard => AccessibleRole::Group,
             WidgetKind::Window => AccessibleRole::Window,
             _ => AccessibleRole::Unknown,
@@ -649,7 +648,7 @@ impl From<WidgetKind> for A11yRole {
             | WidgetKind::PieChart
             | WidgetKind::Sparkline => A11yRole::Image,
             WidgetKind::Rating => A11yRole::Slider,
-            WidgetKind::Carousel | WidgetKind::PagerPageView => A11yRole::Tab,
+            WidgetKind::Carousel => A11yRole::Tab,
             _ => A11yRole::Unknown,
         }
     }
@@ -677,7 +676,6 @@ impl From<WidgetKind> for A11yRole {
             | WidgetKind::Frame
             | WidgetKind::GroupBox
             | WidgetKind::ScrollArea
-            | WidgetKind::TileView
             | WidgetKind::Keyboard => A11yRole::Group,
             WidgetKind::Window => A11yRole::Window,
             _ => A11yRole::Unknown,

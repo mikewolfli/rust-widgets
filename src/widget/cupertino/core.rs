@@ -73,6 +73,29 @@ impl Widget for CupertinoSwitch {
         WidgetKind::CupertinoSwitch
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `CupertinoSwitch`'s property contract.
+///
+/// The control is a `Switch` restricted to the iOS design language, so it
+/// forwards every name to the inner switch and only overrides the *kind* it
+/// reports. That indirection is the whole difference: `switch` and
+/// `cupertino_switch` are two registered names for two `WidgetKind` variants that
+/// share one implementation.
+impl WidgetProperties for CupertinoSwitch {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        self.0.get(name)
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        self.0.set(name, value)
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        // Mirrors `SWITCH_PROPERTIES`, which `cupertino_switch_capability` reuses.
+        self.0.property_names()
+    }
 }
 
 impl Draw for CupertinoSwitch {

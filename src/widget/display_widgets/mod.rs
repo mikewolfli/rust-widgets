@@ -12,6 +12,9 @@ pub mod color_history;
 pub mod color_well;
 #[cfg(widgets_unstripped)]
 pub mod divider;
+/// Shell for choosing a glyph; the glyph table is supplied by the caller.
+#[cfg(full_widgets)]
+pub mod emoji_picker;
 #[cfg(widgets_unstripped)]
 pub mod empty_state;
 #[cfg(widgets_unstripped)]

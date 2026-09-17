@@ -6,6 +6,7 @@ use crate::core::{Color, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 
+use crate::widget::capability::coercion::{expect_f32, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -43,6 +44,35 @@ pub enum FrameShape {
     /// WinPanel frame
     WinPanel,
 }
+
+impl FrameShape {
+    /// The factory spelling of this shape, matching `FRAME_PROPERTIES`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FrameShape::NoFrame => "no_frame",
+            FrameShape::Box => "box",
+            FrameShape::Panel => "panel",
+            FrameShape::StyledPanel => "styled_panel",
+            FrameShape::HLine => "hline",
+            FrameShape::VLine => "vline",
+            FrameShape::WinPanel => "win_panel",
+        }
+    }
+
+    /// Parses a factory spelling into a shape.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "no_frame" => FrameShape::NoFrame,
+            "box" => FrameShape::Box,
+            "panel" => FrameShape::Panel,
+            "styled_panel" => FrameShape::StyledPanel,
+            "hline" => FrameShape::HLine,
+            "vline" => FrameShape::VLine,
+            "win_panel" => FrameShape::WinPanel,
+            _ => return None,
+        })
+    }
+}
 /// Frame shadow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FrameShadow {
@@ -53,6 +83,27 @@ pub enum FrameShadow {
     Raised,
     /// Sunken shadow
     Sunken,
+}
+
+impl FrameShadow {
+    /// The factory spelling of this shadow, matching `FRAME_PROPERTIES`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FrameShadow::Plain => "plain",
+            FrameShadow::Raised => "raised",
+            FrameShadow::Sunken => "sunken",
+        }
+    }
+
+    /// Parses a factory spelling into a shadow.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "plain" => FrameShadow::Plain,
+            "raised" => FrameShadow::Raised,
+            "sunken" => FrameShadow::Sunken,
+            _ => return None,
+        })
+    }
 }
 impl Frame {
     /// Creates a frame.
@@ -393,22 +444,71 @@ impl Widget for Frame {
 
 /// `Frame`'s property contract.
 ///
-/// `Frame` owns no widget properties of its own: the old dispatch grouped
-/// `WidgetKind::Panel | WidgetKind::Frame` into the breadcrumb arm, which only
-/// ever matched `Breadcrumb` instances and answered `UnsupportedOnWidget` for a
-/// `Frame`. The empty declaration below states that honestly — the shared four
-/// still work through the base helpers.
+/// # Why this is not empty
+///
+/// The old dispatch grouped `WidgetKind::Panel | WidgetKind::Frame` into the
+/// breadcrumb arm, which only ever matched `Breadcrumb` instances and answered
+/// `UnsupportedOnWidget` for a `Frame`. Declaring nothing was honest about *that*
+/// bug but wrong about the control: `Frame` has four real, independently settable
+/// fields (`frame_shape`, `frame_shadow`, `line_width`, `mid_line_width`), and back
+/// when it had no capability the factory could not construct one at all —
+/// `factory_name_for_kind(WidgetKind::Frame)` returned `""`, so
+/// `create_frame(..)` silently produced id `0`.
+///
+/// The names match `FRAME_PROPERTIES` one for one; a token that appears in the
+/// schema but not in the `set` match below is a property that answers
+/// `UnknownProperty` on write, which
+/// `published_enum_tokens_are_accepted_by_their_control` rejects.
 impl WidgetProperties for Frame {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
-        base_property_get(self, name)
+        match name {
+            "frame_shape" => Ok(CapabilityValue::String(self.frame_shape.as_str().to_string())),
+            "frame_shadow" => Ok(CapabilityValue::String(self.frame_shadow.as_str().to_string())),
+            "line_width" => Ok(CapabilityValue::Float(self.line_width as f64)),
+            "mid_line_width" => Ok(CapabilityValue::Float(self.mid_line_width as f64)),
+            _ => base_property_get(self, name),
+        }
     }
 
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
-        base_property_set(self, name, value)
+        match name {
+            "frame_shape" => {
+                let text = expect_string(value)?;
+                let Some(shape) = FrameShape::from_name(&text) else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                self.set_frame_shape(shape);
+                Ok(())
+            }
+            "frame_shadow" => {
+                let text = expect_string(value)?;
+                let Some(shadow) = FrameShadow::from_name(&text) else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                self.set_frame_shadow(shadow);
+                Ok(())
+            }
+            "line_width" => {
+                self.set_line_width(expect_f32(value)?);
+                Ok(())
+            }
+            "mid_line_width" => {
+                self.set_mid_line_width(expect_f32(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of![BASE_PROPERTY_NAMES]
+        // Mirrors `FRAME_PROPERTIES`.
+        property_names_of![
+            "frame_shape",
+            "frame_shadow",
+            "line_width",
+            "mid_line_width",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 

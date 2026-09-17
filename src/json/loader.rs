@@ -221,6 +221,13 @@ impl JsonLoader {
             binding.register(id_str, widget_id);
         }
 
+        // Structural index: record which node this is, under which parent, and with which
+        // key. `id_str` doubles as the key because the JSON schema already requires it to be
+        // unique per document (it is how `widget_by_name` addresses a control), so requiring
+        // a second, separate `key` field would let the two disagree. A node without an `id`
+        // therefore has no stable identity to diff on, and `node_key` reports `None` for it.
+        binding.register_node(widget_id, widget_type, id_str, parent_id);
+
         // ── Apply text property via platform API ────────────
         // Text for widgets that accept it (checkbox, radiobutton,
         // groupbox title via "title" key, lineedit placeholder, etc.)
@@ -1357,7 +1364,6 @@ fn infer_kind(widget_type: &str) -> WidgetKind {
         "spinbox" => WidgetKind::SpinBox,
         "switch" => WidgetKind::Switch,
         "textarea" => WidgetKind::TextArea,
-        "tileview" => WidgetKind::TileView,
         "window" => WidgetKind::Window,
         // cfg(not(alloc_frugal)) variants
         #[cfg(not(alloc_frugal))]

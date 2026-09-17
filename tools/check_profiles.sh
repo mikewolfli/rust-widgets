@@ -40,31 +40,38 @@ run_test_case() {
   echo "  - ✅ $title"
 }
 
-echo "[1/8] cargo check (default)"
+echo "[1/9] cargo check (default)"
 cargo check
 
-echo "[2/8] cargo check --examples"
+echo "[2/9] cargo check --examples"
 cargo check --examples
 
-echo "[3/8] cargo check --no-default-features --features tablet --all-targets"
+echo "[3/9] cargo check --no-default-features --features tablet --all-targets"
 cargo check --no-default-features --features tablet --all-targets
 
-echo "[4/8] cargo check --no-default-features --features mobile --all-targets"
+echo "[4/9] cargo check --no-default-features --features mobile --all-targets"
 cargo check --no-default-features --features mobile --all-targets
 
-echo "[5/8] cargo check --no-default-features --features mini --all-targets"
+echo "[5/9] cargo check --no-default-features --features mini --all-targets"
 cargo check --no-default-features --features mini --all-targets
 
-echo "[6/8] cargo check --no-default-features --features embedded --all-targets"
+echo "[6/9] cargo check --no-default-features --features embedded --all-targets"
 cargo check --no-default-features --features embedded --all-targets
 
-echo "[7/8] embedded P4c regression gate"
+echo "[7/9] embedded P4c regression gate"
 run_test_case "embedded selection-state roundtrip" \
   cargo test --lib --no-default-features --features embedded platform::tests::embedded_profile_selection_state_roundtrip
 run_test_case "embedded task queue determinism" \
   cargo test --lib --no-default-features --features embedded render_engine::embedded_engine::tests::embedded_task_queue_order_is_deterministic
 
-echo "[8/8] gpu P3g parity regression gate"
+echo "[8/9] declarative-layer platform gate (BLUE18 rules #92/#94)"
+# Asserts `crate::view` is compiled for desktop/tablet/mobile and ABSENT for
+# mini/embedded and for a build with no device profile. Run here, beside the
+# profile checks it duplicates in spirit, so a `cargo check` that starts
+# succeeding on a stripped profile is caught in the same place.
+bash tools/check_view_platform_gate.sh
+
+echo "[9/9] gpu P3g parity regression gate"
 run_test_case "gpu auto-compose mixed scene" \
   cargo test --lib --features gpu-wgpu render::tests::auto_compose_renders_mixed_commands_scene_with_gpu_or_cpu_backend
 run_test_case "gpu auto-compose cpu fallback" \

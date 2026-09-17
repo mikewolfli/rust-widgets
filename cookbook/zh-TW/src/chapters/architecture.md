@@ -414,7 +414,7 @@ pub enum WidgetKind {
     LineEdit, ComboBox, SpinBox, ListBox,
     ProgressBar, Slider, ScrollBar, ScrollArea,
     Panel, GroupBox, ToggleButton,
-    FreeformShape, TileView,
+    FreeformShape,
     Line, Meter, MiniChart, ImageView,
     MiniCanvas, Arc, Spinner, Roller,
     Dropdown, TextArea, Keyboard, Switch,

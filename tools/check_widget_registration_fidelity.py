@@ -41,8 +41,27 @@ Every kind must hit exactly one of:
   otherwise lives only in a developer's head, which is indistinguishable from
   "somebody forgot to register it" — precisely how this defect arose.
 
-Usage
------
+# The fourth question: does the kind actually *construct*?
+
+The three states above answer "is this kind accounted for", which is a question
+about the *enum*. They do not answer "can this kind be built", which is a question
+about the *runtime*. Those came apart:
+
+* `WidgetKind::Frame` carried a `kind-role: base` marker, so it was classified
+  `BaseOrChild` and passed — while `create_frame(..)` went through
+  `mount_widget_of_kind`, whose `factory_name_for_kind` returned `""`, so the
+  control silently became id `0`.
+* `WidgetKind::DockPanel` was `AliasOf(DockWidget)` — true of the *type* — but the
+  kind→name table had no row for it, so `create_dock_panel(..)` also returned `0`.
+* `WidgetKind::CupertinoSwitch` was "Registered" because `cupertino_switch` was an
+  alias of `switch`; the *kind* had no capability, so
+  `capability_by_kind(CupertinoSwitch)` missed and `create_cupertino_switch(..)`
+  returned `0`.
+
+Every one of those was a public `create_*` method that could never build anything,
+with all 28 gates green. So the report now calls the library's own
+`factory_name_for_kind` for each kind and fails on an empty answer, naming the
+kinds that resolve to nothing.
 
     tools/check_widget_registration_fidelity.sh            # gate
     tools/check_widget_registration_fidelity.sh --report   # print the full table
@@ -209,6 +228,11 @@ def main() -> int:
     aliases = parse_aliases()
     roles = parse_kind_roles()
 
+    # `factory_name_for_kind` is the library's own answer to "what constructor
+    # serves this kind", and it is the call `mount_widget_of_kind` makes. The
+    # report therefore carries the kinds it cannot answer for.
+    unconstructible: set[str] = set(reachability.get("unconstructible", []))
+
     unresolved: list[str] = []
     rows: list[tuple[str, str]] = []
 
@@ -217,17 +241,26 @@ def main() -> int:
         if snake in registered:
             rows.append((kind, "Registered"))
             continue
-        # An alias declared as `pub type X = Y;` is the same control under a second
-        # name; registering it would create a duplicate entry (`Panel = GroupBox`).
+        # A capability may register a kind under a *different* canonical name
+        # (`WebEngineView` is served by the capability named `web_view`). The JSON
+        # report does not carry each capability's `kind` field, so a name-identity
+        # test alone cannot see that — and the version of this gate that had only
+        # the name test is why `WebEngineView` needed a `kind-role: base` marker to
+        # pass, a marker that said something untrue about it.
+        #
+        # `unconstructible` is the honest replacement: the library already answers
+        # "does a constructor serve this kind", for every kind, and `WebEngineView`
+        # is not in that set. A kind with a constructor needs no other proof.
+        if kind not in unconstructible:
+            rows.append((kind, "Constructible"))
+            continue
         target = aliases.get(kind)
         if target is not None:
-            if pascal_to_snake(target) in registered:
-                rows.append((kind, f"AliasOf({target})"))
-                continue
-            # An alias whose target is not registered is *not* reachable: the
-            # chain terminates nowhere, which is a real defect rather than a
-            # passing alias.
-            unresolved.append(f"{kind} (alias of {target}, which is not registered)")
+            # An alias declared as `pub type X = Y;` is the same control under a
+            # second name; the target's constructor serves this kind too, so the
+            # unconstructible set could only contain the alias if the target were
+            # missing.
+            unresolved.append(f"{kind} (alias of {target}, which has no constructor)")
             continue
         role = roles.get(kind)
         if role is not None:
@@ -256,9 +289,31 @@ def main() -> int:
         )
         return 1
 
+    # The fourth question, and the one that mattered: can the kind actually be
+    # built? `factory_name_for_kind` is the same call `mount_widget_of_kind` makes,
+    # so an empty answer here is an empty answer there — a public `create_*` method
+    # that always returns id `0`. The classification above dismisses a kind only
+    # when it is genuinely a base/child role; see the module docstring for the
+    # three defects that passed every other gate.
+    remaining = sorted(kind for kind in unconstructible if kind not in roles)
+    constructible = len(kinds) - len(remaining)
+    if remaining:
+        print("WidgetKind variants with no resolvable constructor:", file=sys.stderr)
+        for entry in remaining:
+            print(f"  ❌ {entry}", file=sys.stderr)
+        print(
+            "\nEvery kind must resolve a constructor name through "
+            "`factory_name_for_kind`, because that is what `mount_widget_of_kind` "
+            "asks. An empty answer makes every `create_*` method naming the kind "
+            "return id 0 while all the other gates still pass.",
+            file=sys.stderr,
+        )
+        return 1
+
     print(
         f"✅ widget registration fidelity: {len(kinds)} kinds classified "
-        f"({len(registered)} registered names, {len(aliases)} aliases, {len(roles)} role markers)"
+        f"({len(registered)} registered names, {len(aliases)} aliases, {len(roles)} role markers), "
+        f"{constructible}/{len(kinds)} constructible"
     )
     return 0
 

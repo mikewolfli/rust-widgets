@@ -107,8 +107,70 @@ pub struct ScrollArea {
     registry: Option<Rc<RefCell<SimpleRegistry>>>,
     /// Current scroll position (x, y) in content coordinates.
     scroll_position: (i32, i32),
+    /// Content-space regions that stay pinned while their group is scrolled past.
+    sticky_regions: Vec<StickyRegion>,
     /// Emitted whenever scroll position changes.
     pub scroll_position_changed: Signal1<(i32, i32)>,
+}
+
+/// A content-space band that sticks to the top of the viewport while scrolling.
+///
+/// # Why a region rather than a child widget id
+///
+/// A sticky header is pinned to the top of the *group it belongs to*, and that
+/// group's extent is a property of the content, not of the header itself. Naming
+/// the group's band here is what lets the pin be released when the group scrolls
+/// past instead of leaving the header pinned forever — the behaviour that
+/// distinguishes a useful sticky header from a broken one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StickyRegion {
+    /// Top of the group in content coordinates.
+    pub group_top: i32,
+    /// Bottom of the group in content coordinates; the pin releases here.
+    pub group_bottom: i32,
+    /// Height of the pinned band, measured from the group's top.
+    pub height: u32,
+}
+
+impl StickyRegion {
+    /// Creates a sticky band of `height` pixels at the top of a group spanning
+    /// `group_top..group_bottom` in content coordinates.
+    pub fn new(group_top: i32, group_bottom: i32, height: u32) -> Self {
+        Self { group_top, group_bottom: group_bottom.max(group_top), height }
+    }
+
+    /// The offset this band's top should be drawn at for a viewport scrolled to
+    /// `scroll_y`.
+    ///
+    /// Three cases, in the order they apply:
+    ///
+    /// 1. the group has not been reached — the band scrolls normally, so its
+    ///    offset is its own content position;
+    /// 2. the group is being scrolled through — the band pins to the viewport top;
+    /// 3. the group's end is approaching — the band is pushed up by however much of
+    ///    it would otherwise overflow, so one group's header makes room for the
+    ///    next rather than overlapping it.
+    pub fn draw_offset(&self, scroll_y: i32) -> i32 {
+        let natural = self.group_top - scroll_y;
+        if natural > 0 {
+            return natural;
+        }
+        let pinned = 0;
+        // How far the group's bottom has risen past the band's own height; past
+        // that point the band is pushed off the top.
+        let group_bottom_in_view = self.group_bottom - scroll_y;
+        let band_height = self.height as i32;
+        if group_bottom_in_view < band_height {
+            return group_bottom_in_view - band_height;
+        }
+        pinned
+    }
+
+    /// Returns whether this band is pinned (rather than scrolling normally) for a
+    /// viewport scrolled to `scroll_y`.
+    pub fn is_pinned(&self, scroll_y: i32) -> bool {
+        self.draw_offset(scroll_y) == 0 && self.group_top - scroll_y < 0
+    }
 }
 /// Scroll bar policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -148,6 +210,7 @@ impl ScrollArea {
             content_size: Size::new(0, 0),
             registry: None,
             scroll_position: (0, 0),
+            sticky_regions: Vec::new(),
             scroll_position_changed: Signal1::new(),
         }
     }
@@ -201,6 +264,57 @@ impl ScrollArea {
     /// Returns widget.
     pub fn widget(&self) -> Option<ObjectId> {
         self.widget
+    }
+
+    /// Marks the band at the top of `group_top..group_bottom` as sticky.
+    ///
+    /// The band stays pinned to the top of the viewport from the moment its group's
+    /// top scrolls off until the group's bottom reaches it, after which the next
+    /// group's band takes its place. That is the "section header that follows the
+    /// scroll" behaviour: a header is useful while its own items are on screen and
+    /// is in the way once they are not.
+    ///
+    /// `height` is measured from the group's top, so it is the header's own height.
+    /// A zero height marks nothing and is ignored, because a pinned band with no
+    /// extent could not be seen to be pinned.
+    pub fn add_sticky_region(&mut self, group_top: i32, group_bottom: i32, height: u32) {
+        if height == 0 {
+            return;
+        }
+        self.sticky_regions.push(StickyRegion::new(group_top, group_bottom, height));
+        self.base.request_redraw();
+    }
+
+    /// Removes every sticky band.
+    pub fn clear_sticky_regions(&mut self) {
+        self.sticky_regions.clear();
+        self.base.request_redraw();
+    }
+
+    /// Returns the sticky bands, in insertion order.
+    pub fn sticky_regions(&self) -> &[StickyRegion] {
+        &self.sticky_regions
+    }
+
+    /// Returns the bands that are pinned at the current scroll position, with the
+    /// viewport-relative `y` each should be drawn at.
+    ///
+    /// Exposed because a caller that draws its own content needs the same answer
+    /// the internal drawing path uses; deriving it twice is how the two would
+    /// disagree about which header is currently pinned.
+    pub fn pinned_sticky_bands(&self) -> Vec<(usize, i32)> {
+        self.sticky_regions
+            .iter()
+            .enumerate()
+            .filter(|(_, region)| {
+                region.is_pinned(self.scroll_position.1) || {
+                    // A band that has not been reached yet is not pinned but is still
+                    // in view; only bands whose group has been entered are reported.
+                    region.group_top - self.scroll_position.1 <= 0
+                }
+            })
+            .map(|(index, region)| (index, region.draw_offset(self.scroll_position.1)))
+            .collect()
     }
     /// Returns viewport rectangle.
     pub fn viewport(&self) -> Rect {
@@ -331,6 +445,29 @@ impl ScrollArea {
         self.base.request_redraw();
     }
 
+    /// Paints one pinned band.
+    ///
+    /// Opaque and bordered, because a sticky header that lets the content beneath
+    /// show through reads as a rendering glitch rather than as a header. The
+    /// colours come from the style where the caller set them, so a themed scroll
+    /// area's headers are themed too.
+    fn draw_sticky_band(&self, context: &mut RenderContext, band_rect: Rect) {
+        let style = self.style();
+        let fill = style.background_color.unwrap_or(Color::rgb(248, 248, 248));
+        let border = style.border_color.unwrap_or(Color::rgb(200, 200, 200));
+        context.fill_rect(band_rect, fill);
+        // Only the bottom edge is stroked: a full rectangle would draw a line along
+        // the viewport's own top edge, doubling the border that already exists
+        // there.
+        let bottom = band_rect.y + band_rect.height as i32 - 1;
+        context.draw_line_stroke(
+            Point::new(band_rect.x, bottom),
+            Point::new(band_rect.x + band_rect.width as i32, bottom),
+            border,
+            1,
+        );
+    }
+
     /// Computes scroll-bar thumb geometry for a track of `track_len` logical
     /// pixels over content of `content_len` shown in a `view_len` viewport at
     /// scroll offset `scroll`. Returns `(thumb_len, thumb_offset)` where the
@@ -394,6 +531,7 @@ impl WidgetProperties for ScrollArea {
             )),
             "scroll_position_x" => Ok(CapabilityValue::Int(self.scroll_position().0 as i64)),
             "scroll_position_y" => Ok(CapabilityValue::Int(self.scroll_position().1 as i64)),
+            "sticky_region_count" => Ok(CapabilityValue::UInt(self.sticky_regions().len() as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -431,6 +569,9 @@ impl WidgetProperties for ScrollArea {
                 self.set_scroll_position(x, y);
                 Ok(())
             }
+            // Derived from the registered bands, which are written through
+            // `add_sticky_region` / `clear_sticky_regions`.
+            "sticky_region_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }
@@ -443,6 +584,7 @@ impl WidgetProperties for ScrollArea {
             "vertical_scroll_bar_policy",
             "scroll_position_x",
             "scroll_position_y",
+            "sticky_region_count",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -509,6 +651,26 @@ impl Draw for ScrollArea {
                 reg.borrow_mut().draw_widget(widget_id, context);
                 context.pop_offset();
             }
+        }
+        // Sticky bands are drawn *after* the scrolled content, still inside the
+        // clip and without the scroll offset, which is precisely what makes them
+        // stay put. Drawing them with the offset (i.e. as ordinary content) would
+        // make this loop a no-op.
+        for region in &self.sticky_regions {
+            // A band whose group has not been reached yet scrolls normally, so the
+            // content itself already put it in the right place; re-drawing it here
+            // would double-paint it.
+            if region.group_top - self.scroll_position.1 > 0 {
+                continue;
+            }
+            let offset_y = region.draw_offset(self.scroll_position.1);
+            let band_rect =
+                Rect::new(rect.x, rect.y + offset_y, rect.width, region.height.min(rect.height));
+            // A band pushed entirely above the viewport has nothing left to show.
+            if band_rect.y + band_rect.height as i32 <= rect.y {
+                continue;
+            }
+            self.draw_sticky_band(context, band_rect);
         }
         context.pop_clip();
         // Draw scroll bars if visible
@@ -585,6 +747,7 @@ impl Draw for ScrollArea {
 mod tests {
     use super::*;
     use crate::core::{Point, Rect};
+    use crate::render::SoftwarePaintBackend;
 
     #[test]
     fn scrollarea_creation_defaults() {
@@ -776,5 +939,155 @@ mod tests {
 
         sa.handle_event(&Event::mouse_press(10, 12, 1));
         assert_eq!(received.lock().ok().and_then(|value| *value), Some(Point::new(50, 37)));
+    }
+
+    // ── B6 / C-4: sticky regions ───────────────────────────────────────────
+
+    /// Renders the scroll area into a software frame and returns the pixels.
+    fn render(sa: &mut ScrollArea, size: Size) -> Vec<u8> {
+        use crate::render::PaintBackend;
+        let mut backend = SoftwarePaintBackend::new(size, 1.0);
+        backend.begin_frame(Color::WHITE);
+        let mut context = RenderContext::new(&mut backend);
+        sa.draw(&mut context);
+        backend.end_frame();
+        backend.frame_rgba().to_vec()
+    }
+
+    /// The colour at `(x, y)` in an RGBA buffer `width` pixels wide.
+    fn pixel(rgba: &[u8], width: u32, x: u32, y: u32) -> (u8, u8, u8, u8) {
+        let index = ((y * width + x) * 4) as usize;
+        (rgba[index], rgba[index + 1], rgba[index + 2], rgba[index + 3])
+    }
+
+    #[test]
+    fn sticky_region_offset_scrolls_then_pins_then_releases() {
+        // A group spanning content y 100..400 with a 30px header.
+        let region = StickyRegion::new(100, 400, 30);
+
+        // Not reached yet: the band scrolls with the content.
+        assert_eq!(region.draw_offset(0), 100);
+        assert_eq!(region.draw_offset(50), 50);
+        assert!(!region.is_pinned(50));
+
+        // Entered: pinned to the viewport top.
+        assert_eq!(region.draw_offset(150), 0);
+        assert!(region.is_pinned(150));
+        // Still pinned while the group's end is at least a band-height away.
+        assert_eq!(region.draw_offset(370), 0);
+        assert!(region.is_pinned(370));
+
+        // Group's end in view: pushed up so the next group's header takes over.
+        // The push begins as soon as the remaining group height drops below the
+        // band's own height, which is what stops two headers overlapping.
+        assert_eq!(region.draw_offset(399), 1 - 30);
+        assert_eq!(region.draw_offset(380), 20 - 30);
+        assert_eq!(region.draw_offset(400), 0 - 30);
+    }
+
+    #[test]
+    fn sticky_region_zero_height_is_ignored() {
+        let mut sa = ScrollArea::new(Rect::new(0, 0, 200, 200));
+        sa.add_sticky_region(0, 100, 0);
+        // A band with no extent could not be seen to be pinned.
+        assert!(sa.sticky_regions().is_empty());
+        assert_eq!(sa.get("sticky_region_count").unwrap(), CapabilityValue::UInt(0));
+    }
+
+    #[test]
+    fn sticky_region_registration_and_clearing() {
+        let mut sa = ScrollArea::new(Rect::new(0, 0, 200, 200));
+        sa.add_sticky_region(0, 100, 24);
+        sa.add_sticky_region(100, 200, 24);
+        assert_eq!(sa.sticky_regions().len(), 2);
+        assert_eq!(sa.get("sticky_region_count").unwrap(), CapabilityValue::UInt(2));
+
+        sa.clear_sticky_regions();
+        assert!(sa.sticky_regions().is_empty());
+    }
+
+    #[test]
+    fn sticky_region_count_is_read_only() {
+        let mut sa = ScrollArea::new(Rect::new(0, 0, 200, 200));
+        assert_eq!(
+            sa.set("sticky_region_count", CapabilityValue::UInt(3)),
+            Err(CapabilityAccessError::ReadOnlyProperty)
+        );
+    }
+
+    #[test]
+    fn sticky_bands_are_reported_only_once_their_group_is_entered() {
+        let mut sa = ScrollArea::new(Rect::new(0, 0, 200, 200));
+        sa.set_content_size(Size::new(200, 600));
+        sa.add_sticky_region(0, 200, 24);
+        sa.add_sticky_region(300, 500, 24);
+
+        // At scroll 0 only the first group has been entered.
+        let bands = sa.pinned_sticky_bands();
+        assert_eq!(bands.len(), 1);
+        assert_eq!(bands[0].1, 0, "the first band pins to the viewport top");
+
+        // Past the second group's top, both are reported, and the first is still
+        // pinned because its group has not ended.
+        sa.set_scroll_position(0, 350);
+        let bands = sa.pinned_sticky_bands();
+        assert_eq!(bands.len(), 2);
+        assert_eq!(bands[1].1, 0);
+    }
+
+    #[test]
+    fn sticky_band_is_painted_at_the_viewport_top_when_pinned() {
+        let size = Size::new(200, 200);
+        let mut sa = ScrollArea::new(Rect::new(0, 0, 200, 200));
+        sa.set_content_size(Size::new(200, 600));
+
+        let without = render(&mut sa, size);
+
+        sa.add_sticky_region(100, 400, 24);
+        // Scroll past the group's top so the band pins.
+        sa.set_scroll_position(0, 200);
+        let with = render(&mut sa, size);
+
+        // The pinned band is opaque and bordered, so its bottom rule (200,200,200)
+        // appears on the row one pixel above the band's 24px extent — a row that
+        // was plain background before the band was registered.
+        let band_bottom_row = 23;
+        let border_pixels = (0..size.width)
+            .filter(|x| {
+                let px = pixel(&with, size.width, *x, band_bottom_row);
+                px.0 == 200 && px.1 == 200 && px.2 == 200 && px.3 == 255
+            })
+            .count();
+        assert!(
+            border_pixels > size.width as usize / 2,
+            "the pinned band must paint a rule across the viewport top: {border_pixels} pixels"
+        );
+
+        // And it must differ from the un-sticky frame, which is what makes this a
+        // behaviour assertion rather than a tautology.
+        assert_ne!(without, with);
+    }
+
+    #[test]
+    fn sticky_band_before_its_group_is_not_double_painted() {
+        let mut sa = ScrollArea::new(Rect::new(0, 0, 200, 200));
+        sa.set_content_size(Size::new(200, 600));
+        sa.add_sticky_region(300, 500, 24);
+        // At scroll 0 the group has not been reached, so the band is ordinary
+        // content and this path must not paint it again at the viewport top.
+        let bands = sa.pinned_sticky_bands();
+        assert!(bands.is_empty());
+    }
+
+    #[test]
+    fn sticky_band_fully_scrolled_off_is_not_drawn() {
+        let mut sa = ScrollArea::new(Rect::new(0, 0, 200, 200));
+        sa.set_content_size(Size::new(200, 600));
+        sa.add_sticky_region(0, 100, 24);
+        // Scrolling well past the group's end pushes the band off the top.
+        sa.set_scroll_position(0, 300);
+        let bands = sa.pinned_sticky_bands();
+        assert_eq!(bands.len(), 1);
+        assert_eq!(bands[0].1, 100 - 300 - 24, "the band is pushed above the viewport");
     }
 }

@@ -146,7 +146,6 @@ fn widget_kind_from_str(name: &str) -> Option<WidgetKind> {
         n if n.eq_ignore_ascii_case("Panel") => WidgetKind::Panel,
         n if n.eq_ignore_ascii_case("Frame") => WidgetKind::Frame,
         n if n.eq_ignore_ascii_case("GroupBox") => WidgetKind::GroupBox,
-        n if n.eq_ignore_ascii_case("TileView") => WidgetKind::TileView,
         n if n.eq_ignore_ascii_case("Line") => WidgetKind::Line,
         n if n.eq_ignore_ascii_case("Meter") => WidgetKind::Meter,
         n if n.eq_ignore_ascii_case("MiniChart") => WidgetKind::MiniChart,
@@ -159,6 +158,21 @@ fn widget_kind_from_str(name: &str) -> Option<WidgetKind> {
         n if n.eq_ignore_ascii_case("Keyboard") => WidgetKind::Keyboard,
         n if n.eq_ignore_ascii_case("Switch") => WidgetKind::Switch,
         n if n.eq_ignore_ascii_case("MiniCanvas") => WidgetKind::MiniCanvas,
+        // `RadarChart` exists only with the full widget set, matching the kind's
+        // own gate in `kind.rs`. Without this the arm would name a variant the
+        // `mini`/`embedded` profiles compile out.
+        #[cfg(full_widgets)]
+        n if n.eq_ignore_ascii_case("RadarChart") => WidgetKind::RadarChart,
+        #[cfg(full_widgets)]
+        n if n.eq_ignore_ascii_case("KanbanBoard") => WidgetKind::KanbanBoard,
+        #[cfg(full_widgets)]
+        n if n.eq_ignore_ascii_case("Cascader") => WidgetKind::Cascader,
+        #[cfg(full_widgets)]
+        n if n.eq_ignore_ascii_case("QueryBuilder") => WidgetKind::QueryBuilder,
+        #[cfg(full_widgets)]
+        n if n.eq_ignore_ascii_case("EmojiPicker") => WidgetKind::EmojiPicker,
+        #[cfg(full_widgets)]
+        n if n.eq_ignore_ascii_case("Mention") => WidgetKind::Mention,
         _ => return None,
     })
 }

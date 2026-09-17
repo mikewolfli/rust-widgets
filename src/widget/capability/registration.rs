@@ -34,12 +34,18 @@ impl WidgetFactory {
         self.register(text_area_capability(), create_textarea);
         self.register(keyboard_capability(), create_keyboard);
         self.register(switch_capability(), create_switch);
+        self.register(cupertino_switch_capability(), create_cupertino_switch);
         self.register(line_capability(), create_line);
         self.register(meter_capability(), create_meter);
+        self.register(radar_chart_capability(), create_radar_chart);
+        self.register(kanban_board_capability(), create_kanban_board);
+        self.register(cascader_capability(), create_cascader);
+        self.register(query_builder_capability(), create_query_builder);
+        self.register(emoji_picker_capability(), create_emoji_picker);
+        self.register(mention_capability(), create_mention);
         self.register(mini_chart_capability(), create_mini_chart);
         self.register(image_view_capability(), create_image_view);
         self.register(mini_canvas_capability(), create_mini_canvas);
-        self.register(tile_view_capability(), create_tile_view);
 
         // ── Non-core widgets ────────────────────────────────────────
         //
@@ -53,6 +59,7 @@ impl WidgetFactory {
             self.register(menu_capability(), create_menu);
             self.register(freeform_shape_capability(), create_freeform_shape);
             self.register(splitter_capability(), create_splitter);
+            self.register(frame_capability(), create_frame);
             self.register(lcd_number_capability(), create_lcd_number);
             self.register(command_link_capability(), create_command_link);
             self.register(font_combo_box_capability(), create_font_combo_box);
@@ -203,7 +210,6 @@ impl WidgetFactory {
             self.register(search_bar_capability(), create_search_bar);
             self.register(shortcut_editor_capability(), create_shortcut_editor);
             self.register(swipe_to_dismiss_capability(), create_swipe_to_dismiss);
-            self.register(pager_page_view_capability(), create_pager_page_view);
             self.register(line_chart_capability(), create_line_chart);
             self.register(sparkline_capability(), create_sparkline);
             self.register(bar_chart_capability(), create_bar_chart);

@@ -546,6 +546,72 @@ pub trait ControlBackend: Send + Sync {
     ) -> ObjectId {
         0
     }
+    /// Create radar (spider) chart control.
+    fn create_radar_chart(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create kanban board control.
+    fn create_kanban_board(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create cascader (multi-level path chooser) control.
+    fn create_cascader(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create query builder (condition-row filter editor) control.
+    fn create_query_builder(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create emoji picker (caller-supplied glyph shell) control.
+    fn create_emoji_picker(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create mention (triggered candidate completion) control.
+    fn create_mention(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
     /// Create toggle button control.
     fn create_toggle_button(
         &self,
@@ -803,104 +869,120 @@ pub trait ControlBackend: Send + Sync {
     ) -> ObjectId {
         0
     }
-    /// Create web engine page control.
+    /// Create a web engine page, which is the *same control* as
+    /// [`ControlBackend::create_web_engine_view`].
+    ///
+    /// The nine `create_web_engine_*` methods below all name one view under the
+    /// render pipeline's per-symbol names (`page`, `settings`, `download`, …), so
+    /// each forwards to the view rather than building a different control. They
+    /// remain on the trait because they are part of the C ABI's method set; a
+    /// backend with no web support returns `0` from the view method and therefore
+    /// `0` here too, honestly.
     fn create_web_engine_page(
         &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
     ) -> ObjectId {
-        0
+        self.create_web_engine_view(parent, x, y, width, height)
     }
-    /// Create web engine settings control.
+    /// Create web engine settings control. See
+    /// [`ControlBackend::create_web_engine_page`].
     fn create_web_engine_settings(
         &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
     ) -> ObjectId {
-        0
+        self.create_web_engine_view(parent, x, y, width, height)
     }
-    /// Create web engine download item control.
+    /// Create web engine download item control. See
+    /// [`ControlBackend::create_web_engine_page`].
     fn create_web_engine_download_item(
         &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
     ) -> ObjectId {
-        0
+        self.create_web_engine_view(parent, x, y, width, height)
     }
-    /// Create web engine cookie store control.
+    /// Create web engine cookie store control. See
+    /// [`ControlBackend::create_web_engine_page`].
     fn create_web_engine_cookie_store(
         &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
     ) -> ObjectId {
-        0
+        self.create_web_engine_view(parent, x, y, width, height)
     }
-    /// Create web engine web channel control.
+    /// Create web engine web channel control. See
+    /// [`ControlBackend::create_web_engine_page`].
     fn create_web_engine_web_channel(
         &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
     ) -> ObjectId {
-        0
+        self.create_web_engine_view(parent, x, y, width, height)
     }
-    /// Create web engine find text result control.
+    /// Create web engine find text result control. See
+    /// [`ControlBackend::create_web_engine_page`].
     fn create_web_engine_find_text_result(
         &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
     ) -> ObjectId {
-        0
+        self.create_web_engine_view(parent, x, y, width, height)
     }
-    /// Create web engine notification control.
+    /// Create web engine notification control. See
+    /// [`ControlBackend::create_web_engine_page`].
     fn create_web_engine_notification(
         &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
     ) -> ObjectId {
-        0
+        self.create_web_engine_view(parent, x, y, width, height)
     }
-    /// Create web engine script dialog control.
+    /// Create web engine script dialog control. See
+    /// [`ControlBackend::create_web_engine_page`].
     fn create_web_engine_script_dialog(
         &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
     ) -> ObjectId {
-        0
+        self.create_web_engine_view(parent, x, y, width, height)
     }
-    /// Create web engine context menu request control.
+    /// Create web engine context menu request control. See
+    /// [`ControlBackend::create_web_engine_page`].
     fn create_web_engine_context_menu_request(
         &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
     ) -> ObjectId {
-        0
+        self.create_web_engine_view(parent, x, y, width, height)
     }
     /// Create action control.
     fn create_action(
@@ -1722,17 +1804,6 @@ pub trait ControlBackend: Send + Sync {
     ) -> ObjectId {
         0
     }
-    /// Create pager page view control.
-    fn create_pager_page_view(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        0
-    }
     /// Create pie chart control.
     fn create_pie_chart(
         &self,
@@ -2077,17 +2148,6 @@ pub trait ControlBackend: Send + Sync {
     }
     /// Create text area control.
     fn create_text_area(
-        &self,
-        _parent: ObjectId,
-        _x: i32,
-        _y: i32,
-        _width: u32,
-        _height: u32,
-    ) -> ObjectId {
-        0
-    }
-    /// Create tile view control.
-    fn create_tile_view(
         &self,
         _parent: ObjectId,
         _x: i32,

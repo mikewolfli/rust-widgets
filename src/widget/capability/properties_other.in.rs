@@ -115,6 +115,36 @@ macro_rules! impl_properties_other {
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
+        // `ChartWidget`'s property contract. This is the single definition of the
+        // constant; it was previously written out twice in this file, which stayed
+        // invisible only while both copies were byte-identical.
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const CHART_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::enumerated(
+                "chart_type",
+                true,
+                true,
+                &[
+                    "bar",
+                    "line",
+                    "area",
+                    "pie",
+                    "scatter",
+                    "waterfall",
+                    "funnel",
+                    "candlestick",
+                    "box_plot",
+                ],
+            ),
+            PropertySchema::new("point_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("label_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("series_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
         #[cfg(not(alloc_frugal))]
         pub(crate) const SPLIT_BUTTON_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("text", PropertyValueKind::String, true, true),
@@ -289,10 +319,119 @@ macro_rules! impl_properties_other {
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const MENTION_PROPERTIES: &[PropertySchema] = &[
+            // The candidates and the text are written through `set_candidates` /
+            // `set_text`; the counts and the trigger are what the property layer
+            // reports. Same convention as the other list-valued controls.
+            PropertySchema::new("text", PropertyValueKind::String, true, true),
+            PropertySchema::new("trigger", PropertyValueKind::String, true, true),
+            PropertySchema::new("candidate_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("visible_candidate_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("mention_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("popup_open", PropertyValueKind::Bool, true, false),
+            PropertySchema::new("caret", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const EMOJI_PICKER_PROPERTIES: &[PropertySchema] = &[
+            // The glyph table is written through `set_glyphs`; the counts and the
+            // two editable scalars are what the property layer reports. Same
+            // convention as the other list-valued controls.
+            PropertySchema::new("glyph_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("visible_glyph_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("tab_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("active_tab", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("search", PropertyValueKind::String, true, true),
+            PropertySchema::new("recent_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const QUERY_BUILDER_PROPERTIES: &[PropertySchema] = &[
+            // The fields and rows are lists, written through `set_fields` /
+            // `add_row` and the per-row setters; the counts are what the property
+            // layer reports. Same convention as `Meter`/`RadarChart`/`KanbanBoard`.
+            PropertySchema::new("row_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("incomplete_row_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("field_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::enumerated("conjunction", true, true, &["and", "or"]),
+            PropertySchema::new("active_row", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const CASCADER_PROPERTIES: &[PropertySchema] = &[
+            // The selected path is a sequence, written through `set_selected_path`;
+            // what the property layer reports is the joined text, the derived depth,
+            // and the three scalar display switches. Same convention as `Meter`,
+            // `RadarChart` and `KanbanBoard`.
+            PropertySchema::new("value", PropertyValueKind::String, true, false),
+            PropertySchema::new("depth", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("expanded", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("separator", PropertyValueKind::String, true, true),
+            PropertySchema::new("filterable", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("filter", PropertyValueKind::String, true, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const KANBAN_BOARD_PROPERTIES: &[PropertySchema] = &[
+            // The columns and cards are two-level lists, written through
+            // `add_column` / `add_card`; the counts are what the property layer
+            // reports, following the same convention as `Meter` and `RadarChart`.
+            PropertySchema::new("column_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("card_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("dragging_card_id", PropertyValueKind::String, true, false),
+            PropertySchema::new("hovered_column", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("column_width", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const RADAR_CHART_PROPERTIES: &[PropertySchema] = &[
+            // The axes and series are lists, written through `set_axes` /
+            // `set_series`; the counts are what the property layer reports.
+            PropertySchema::new("axis_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("series_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("show_grid", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("show_axis_labels", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("show_legend", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("hovered_axis", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
         pub(crate) const METER_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("value", PropertyValueKind::UInt, true, true),
             PropertySchema::new("minimum", PropertyValueKind::UInt, true, true),
             PropertySchema::new("maximum", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("tick_count", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("show_tick_labels", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("unit", PropertyValueKind::String, true, true),
+            // Derived from the value and the unit.
+            PropertySchema::new("value_text", PropertyValueKind::String, true, false),
+            // The threshold list is written through `add_threshold_range` /
+            // `clear_thresholds`; the count is what the property layer reports.
+            PropertySchema::new("threshold_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -337,21 +476,11 @@ macro_rules! impl_properties_other {
         // `ChartWidget` holds a numeric series plus its labels. It previously carried
         // only `selected_marker_id` — a leftover from a marker concept this type
         // never had — so a caller could discover the control but not read its data.
-        pub(crate) const CHART_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema::enumerated(
-                "chart_type",
-                true,
-                true,
-                &["bar", "line", "pie", "scatter"],
-            ),
-            PropertySchema::new("point_count", PropertyValueKind::UInt, true, false),
-            PropertySchema::new("label_count", PropertyValueKind::UInt, true, false),
-            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
-            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
-            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
-            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
-        ];
-
+        //
+        // (This constant used to be defined twice in this file. The duplicate was
+        // invisible while both copies were identical; updating one of them turned
+        // it into a compile error, which is how it was found. The single
+        // definition above is the one in use.)
         #[cfg(not(alloc_frugal))]
         pub(crate) const BADGE_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("text", PropertyValueKind::String, true, true),

@@ -145,6 +145,7 @@ pub use input_widgets::{
     ime_preedit::ImePreedit,
     inplace_editor::InplaceEditor,
     masked_edit::MaskedEdit,
+    mention::{CompletedMention, Mention, MentionCandidate},
     multi_select_combo_box::{MultiSelectComboBox, MultiSelectItem},
     otp_input::OtpInput,
     range_slider::{RangeSlider, RangeSliderOrientation},
@@ -164,6 +165,10 @@ pub use input_widgets::{
     spinbox::SpinBox,
     textarea::TextArea,
 };
+// `Cascader` publishes a property contract and is built by the factory, so a
+// stripped profile compiles it out — same gate as its module declaration.
+#[cfg(full_widgets)]
+pub use input_widgets::cascader::{Cascader, CascaderOption};
 // `NumberPicker` needs the full property registry (it publishes a contract and is
 // constructed by the factory), so a stripped profile compiles it out. The export
 // carries the same gate as the module, not the looser `full_widgets` one.
@@ -177,14 +182,13 @@ pub use container_widgets::dockwidget::DockWidget;
 pub use container_widgets::groupbox::GroupBox;
 #[cfg(widgets_unstripped)]
 pub use container_widgets::mdiarea::MdiArea;
-pub use container_widgets::scrollarea::ScrollArea;
+pub use container_widgets::scrollarea::{ScrollArea, StickyRegion};
 #[cfg(widgets_unstripped)]
 pub use container_widgets::splitter::Splitter;
 #[cfg(widgets_unstripped)]
 pub use container_widgets::stackedwidget::StackedWidget;
 #[cfg(widgets_unstripped)]
 pub use container_widgets::tabwidget::TabWidget;
-pub use container_widgets::tile_view::TileView;
 #[cfg(widgets_unstripped)]
 pub use container_widgets::toolbox::ToolBox;
 /// Alias for [`GroupBox`], for callers that name the container a "panel".
@@ -197,11 +201,11 @@ pub use base_widgets::frame::Frame;
 pub type DockPanel = DockWidget;
 // Re-export container widgets from new additions
 #[cfg(widgets_unstripped)]
-pub use container_widgets::carousel::Carousel;
+pub use container_widgets::carousel::{
+    Carousel, CarouselIndicatorPosition, CarouselIndicatorStyle, CarouselPage, WidgetAndDraw,
+};
 #[cfg(widgets_unstripped)]
 pub use container_widgets::masonry_layout::{MasonryItem, MasonryLayout};
-#[cfg(widgets_unstripped)]
-pub use container_widgets::pager_page_view::PagerPageView;
 #[cfg(widgets_unstripped)]
 pub use container_widgets::safe_area::{SafeArea, SafeAreaInsets};
 #[cfg(widgets_unstripped)]
@@ -230,6 +234,10 @@ pub use display_widgets::color_history::ColorHistory;
 pub use display_widgets::color_well::ColorWell;
 #[cfg(widgets_unstripped)]
 pub use display_widgets::divider::Divider;
+// `EmojiPicker` publishes a property contract and is built by the factory, so a
+// stripped profile compiles it out — same gate as its module declaration.
+#[cfg(full_widgets)]
+pub use display_widgets::emoji_picker::{EmojiGlyph, EmojiPicker};
 #[cfg(widgets_unstripped)]
 pub use display_widgets::empty_state::EmptyState;
 #[cfg(widgets_unstripped)]
@@ -397,11 +405,13 @@ pub use view_widgets::tree_view::TreeModel;
 #[cfg(full_widgets)]
 pub use view_widgets::{
     data_grid::{ColumnFilter, DataGrid, SortSpec},
+    filter_expr::{FilterCondition, FilterExpr, FilterOperator},
     grid_table::GridTableWidget,
     image_gallery::{GalleryImage, ImageGallery},
     list_view::{ListModel, ListView, VecListModel},
     properties_panel::{PropertiesPanel, PropertyEntry, PropertyValue},
     property_grid::{PropertyGrid, PropertyItem},
+    query_builder::{FilterConjunction, FilterField, QueryBuilder, QueryBuilderRow},
     table_widget::TableWidget,
     tree_table::{TreeTable, TreeTableModel},
     tree_view::TreeView,
@@ -413,10 +423,11 @@ pub use view_widgets::{
 pub use special_widgets::{
     Breadcrumb, BreadcrumbSegment, Canvas, ChartWidget, Chip, ChipItem, CodeEditor, ColorPicker,
     CommandEntry, CommandPalette, DiagnosticMarker, DiffKind, DiffLine, DiffViewer,
-    FreeformShapeWidget, GanttTask, GanttWidget, GridWidget, MapMarker, MapView, MarkdownEditor,
-    MarkerSeverity, MediaPlayer, NotificationCenter, NotificationItem, NotificationLevel,
-    SegmentItem, SegmentedControl, Snackbar, SplitAction, SplitButton, TerminalView, TimelineItem,
-    TimelineWidget, Toast, ToastItem, ToastLevel, ToastStack,
+    FreeformShapeWidget, GanttTask, GanttWidget, GridWidget, KanbanBoard, KanbanCard, KanbanColumn,
+    MapMarker, MapView, MarkdownEditor, MarkerSeverity, MediaPlayer, NotificationCenter,
+    NotificationItem, NotificationLevel, RadarChart, SegmentItem, SegmentedControl, Snackbar,
+    SplitAction, SplitButton, TerminalView, TimelineItem, TimelineWidget, Toast, ToastItem,
+    ToastLevel, ToastStack,
 };
 /// Alias for [`ProgressBar`], naming an indicator use case.
 /// This is a plain progress bar: it does not animate on its own.

@@ -497,7 +497,12 @@ unsafe fn printable_characters(event: id) -> Option<String> {
 ///
 /// Wrapped in `catch_unwind` because AppKit calls this from its own run loop; a
 /// panic unwinding through an Objective-C frame is undefined behaviour.
-extern "C" fn draw_rect(this: &Object, _cmd: Sel, rect: NSRect) {
+///
+/// The `_rect` parameter is the dirty rectangle AppKit passes, and the body
+/// deliberately ignores it in favour of `bounds` (see the note below); its name
+/// carries the underscore so the intent is visible in the signature rather than
+/// left as a compiler warning.
+extern "C" fn draw_rect(this: &Object, _cmd: Sel, _rect: NSRect) {
     let outcome = std::panic::catch_unwind(|| {
         // SAFETY: `this` is the live canvas view AppKit is asking to draw.
         unsafe {

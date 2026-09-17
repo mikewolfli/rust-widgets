@@ -650,7 +650,6 @@ fn modern_widgets_allocate_valid_ids() {
         backend.create_rating(parent, 0, 0, 100, 24),
         backend.create_tooltip(parent, 0, 0, 120, 40),
         backend.create_search_box(parent, 0, 0, 160, 28),
-        backend.create_tile_view(parent, 0, 0, 300, 200),
         backend.create_divider(parent, 0, 0, 200, 2),
         backend.create_icon(parent, 0, 0, 24, 24),
         backend.create_qr_code(parent, 0, 0, 120, 120),
@@ -680,7 +679,6 @@ fn modern_widgets_store_correct_widget_kind() {
     let arc = backend.create_arc(parent, 0, 0, 100, 100);
     let switch = backend.create_switch(parent, 0, 0, 60, 30);
     let chip = backend.create_chip(parent, 0, 0, 80, 30);
-    let tile_view = backend.create_tile_view(parent, 0, 0, 300, 200);
     let qr_code = backend.create_qr_code(parent, 0, 0, 120, 120);
     let freeform_shape = backend.create_freeform_shape(parent, 0, 0, 120, 80);
     let tab_bar = backend.create_tab_bar(parent, 0, 0, 180, 32);
@@ -695,7 +693,6 @@ fn modern_widgets_store_correct_widget_kind() {
     assert_eq!(stored_kind(arc), Some(WidgetKind::Arc));
     assert_eq!(stored_kind(switch), Some(WidgetKind::Switch));
     assert_eq!(stored_kind(chip), Some(WidgetKind::Chip));
-    assert_eq!(stored_kind(tile_view), Some(WidgetKind::TileView));
     assert_eq!(stored_kind(qr_code), Some(WidgetKind::QRCode));
     assert_eq!(stored_kind(freeform_shape), Some(WidgetKind::FreeformShape));
     assert_eq!(stored_kind(tab_bar), Some(WidgetKind::TabBar));

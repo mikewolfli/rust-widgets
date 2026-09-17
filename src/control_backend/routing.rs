@@ -47,7 +47,9 @@ mod tests {
     /// constant rather than to `kind.rs`; `check_widget_kind_count.sh` could not
     /// either, because it compares prose numbers to each other. See BLUE16 §十二
     /// E-2 and the `check_kind_reachability.sh` gate it adds.
-    const EXPECTED_WIDGET_KIND_COUNT: usize = 174;
+    /// `PagerPageView` and `TileView` were then deleted outright (171 → 169), so the
+    /// constant and the array were updated together in that change.
+    const EXPECTED_WIDGET_KIND_COUNT: usize = 169;
 
     /// Every widget kind must be routed to the library.
     ///
@@ -104,6 +106,12 @@ mod tests {
             WidgetKind::Table,
             WidgetKind::Grid,
             WidgetKind::Chart,
+            WidgetKind::RadarChart,
+            WidgetKind::KanbanBoard,
+            WidgetKind::Cascader,
+            WidgetKind::QueryBuilder,
+            WidgetKind::EmojiPicker,
+            WidgetKind::Mention,
             WidgetKind::ToggleButton,
             WidgetKind::CheckListBox,
             WidgetKind::DoubleSpinBox,
@@ -127,15 +135,6 @@ mod tests {
             WidgetKind::LCDNumber,
             WidgetKind::FontComboBox,
             WidgetKind::WebEngineView,
-            WidgetKind::WebEnginePage,
-            WidgetKind::WebEngineSettings,
-            WidgetKind::WebEngineDownloadItem,
-            WidgetKind::WebEngineCookieStore,
-            WidgetKind::WebEngineWebChannel,
-            WidgetKind::WebEngineFindTextResult,
-            WidgetKind::WebEngineNotification,
-            WidgetKind::WebEngineScriptDialog,
-            WidgetKind::WebEngineContextMenuRequest,
             WidgetKind::Action,
             WidgetKind::ToolButton,
             WidgetKind::FreeformShape,
@@ -197,7 +196,6 @@ mod tests {
             WidgetKind::CupertinoNavigationBar,
             WidgetKind::CupertinoSegmentedControl,
             WidgetKind::SwipeToDismiss,
-            WidgetKind::PagerPageView,
             WidgetKind::TabView,
             WidgetKind::SearchBar,
             WidgetKind::ShortcutEditor,
@@ -212,7 +210,6 @@ mod tests {
             WidgetKind::CupertinoDatePicker,
             WidgetKind::EditableComboBox,
             WidgetKind::DateRangePicker,
-            WidgetKind::TileView,
             WidgetKind::Line,
             WidgetKind::Meter,
             WidgetKind::MiniChart,

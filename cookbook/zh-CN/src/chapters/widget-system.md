@@ -430,7 +430,7 @@ impl EventHandler for MyWidget {
 ```mermaid
 graph TB
     subgraph "始终可用（mini-safe）"
-        ALWAYS["Window, Dialog, PopupWindow<br/>Button, CheckBox, RadioButton<br/>Label, LineEdit, ComboBox<br/>SpinBox, ListBox<br/>ProgressBar, Slider, ScrollBar<br/>ScrollArea, Panel, GroupBox<br/>ToggleButton, FreeformShape<br/>TileView, Line, Meter, MiniChart<br/>ImageView, MiniCanvas<br/>Arc, Spinner, Roller<br/>Dropdown, TextArea, Keyboard<br/>Switch"]
+        ALWAYS["Window, Dialog, PopupWindow<br/>Button, CheckBox, RadioButton<br/>Label, LineEdit, ComboBox<br/>SpinBox, ListBox<br/>ProgressBar, Slider, ScrollBar<br/>ScrollArea, Panel, GroupBox<br/>ToggleButton, FreeformShape<br/>Line, Meter, MiniChart<br/>ImageView, MiniCanvas<br/>Arc, Spinner, Roller<br/>Dropdown, TextArea, Keyboard<br/>Switch"]
     end
 
     subgraph "特性门控（非 mini）"
@@ -493,7 +493,6 @@ graph TB
 | **容器** | `ScrollArea` | ✓ | 可滚动视口 |
 | | `GroupBox` | ✓ | 分组/面板容器 |
 | | `Panel` | ✓ | 面板（GroupBox 的别名） |
-| | `TileView` | ✓ | 可滑动的瓦片页面 |
 | | `TabWidget` | ✗ | 标签面板容器 |
 | | `Splitter` | ✗ | 可调整大小的分割面板 |
 | | `MdiArea` | ✗ | MDI 子窗口区域 |
@@ -577,7 +576,6 @@ graph TB
 | | `Avatar` | ✗ | 用户头像 |
 | | `EmptyState` | ✗ | 空状态占位符 |
 | | `Divider` | ✗ | 分隔线 |
-| | `PagerPageView` | ✗ | 带圆点的页面视图 |
 | | `SegmentedControl` | ✗ | Material 3 分段控件 |
 | | `SegmentedButton` | ✗ | 分段按钮组 |
 | | `Popover` | ✗ | 浮动弹出卡 |

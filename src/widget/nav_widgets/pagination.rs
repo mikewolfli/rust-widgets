@@ -3,13 +3,13 @@
 
 //! Pagination — numbered page navigation for paged content.
 //!
-//! # Why this is not `PagerPageView`
+//! # Why this is not `Carousel`
 //!
-//! `PagerPageView` is a **swipeable container**: it holds the pages and changes
-//! which one is visible as the user drags. This control holds no content at all —
-//! it is the *index* for content somebody else owns (typically a table). It knows
-//! the total, the page size and the current page, and it shortens a long run of
-//! numbers into the `1 … 4 5 6 … 20` shape every platform's table footer uses.
+//! `Carousel` is a **swipeable container**: it holds the pages and changes which
+//! one is visible as the user swipes. This control holds no content at all — it is
+//! the *index* for content somebody else owns (typically a table). It knows the
+//! total, the page size and the current page, and it shortens a long run of numbers
+//! into the `1 … 4 5 6 … 20` shape every platform's table footer uses.
 //!
 //! The distinction matters because the two have opposite ownership: a page view
 //! owns pages, a pagination bar owns only a number.

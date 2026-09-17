@@ -140,6 +140,13 @@ pub fn create_splitter(geometry: Rect, text: &str) -> Box<dyn Widget> {
 }
 
 #[cfg(full_widgets)]
+/// Creates a boxed frame that draws a border around its child. `text` is applied
+/// as the control's label.
+pub fn create_frame(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(Frame::new(geometry)))
+}
+
+#[cfg(full_widgets)]
 /// Creates a seven-segment number display reading zero. `text` is applied as the
 /// control's label.
 pub fn create_lcd_number(geometry: Rect, text: &str) -> Box<dyn Widget> {
@@ -545,6 +552,13 @@ pub fn create_switch(geometry: Rect, text: &str) -> Box<dyn Widget> {
     label(geometry, text, Box::new(Switch::new(geometry)))
 }
 
+#[cfg(full_widgets)]
+/// Creates a Cupertino (iOS-styled) switch in the off position. `text` is applied
+/// as the control's label.
+pub fn create_cupertino_switch(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(CupertinoSwitch::new(geometry)))
+}
+
 /// Creates a horizontal separator line. `text` is applied as the control's
 /// label.
 pub fn create_line(geometry: Rect, text: &str) -> Box<dyn Widget> {
@@ -564,6 +578,63 @@ pub fn create_meter(geometry: Rect, text: &str) -> Box<dyn Widget> {
     label(geometry, text, Box::new(Meter::new(geometry)))
 }
 
+#[cfg(full_widgets)]
+/// Creates a radar chart with no axes and no series. `text` is applied as the
+/// control's label.
+///
+/// Empty rather than pre-populated with sample dimensions: an axis name is the
+/// caller's domain vocabulary, and a default like `"Axis 1"` would have to be
+/// deleted before the control was usable.
+pub fn create_radar_chart(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(RadarChart::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates an empty kanban board. `text` is applied as the control's label.
+///
+/// No sample columns: a column title is the caller's workflow vocabulary, and a
+/// default like `"Column 1"` would have to be deleted before the board was usable.
+pub fn create_kanban_board(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(KanbanBoard::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates an empty cascader. `text` is applied as the control's label.
+///
+/// No sample options: the tree is the caller's domain vocabulary, and a default
+/// like `"Level 1"` would have to be deleted before the control was usable.
+pub fn create_cascader(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(Cascader::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates an empty query builder. `text` is applied as the control's label.
+///
+/// No default fields: a filter field is the caller's schema vocabulary, and a
+/// default like `"Column 1"` would have to be replaced before the builder was
+/// usable.
+pub fn create_query_builder(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(QueryBuilder::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates an empty emoji picker. `text` is applied as the control's label.
+///
+/// No glyph table: the shell is deliberately data-free, and the caller supplies the
+/// symbols through `set_glyphs`.
+pub fn create_emoji_picker(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(EmojiPicker::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates an empty mention field. `text` is applied as the control's label.
+///
+/// No default candidates: a mention candidate is the caller's people list, and any
+/// placeholder would have to be replaced before the control was usable.
+pub fn create_mention(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(Mention::new(geometry)))
+}
+
 /// Creates a small inline chart with no data. `text` is applied as the control's
 /// label.
 pub fn create_mini_chart(geometry: Rect, text: &str) -> Box<dyn Widget> {
@@ -580,11 +651,6 @@ pub fn create_image_view(geometry: Rect, text: &str) -> Box<dyn Widget> {
 /// control's label.
 pub fn create_mini_canvas(geometry: Rect, text: &str) -> Box<dyn Widget> {
     label(geometry, text, Box::new(MiniCanvas::new(geometry)))
-}
-
-/// Creates a tile view with no tiles. `text` is applied as the control's label.
-pub fn create_tile_view(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    label(geometry, text, Box::new(TileView::new(geometry)))
 }
 
 // ── Dialog widget constructors ────────────────────────────────
@@ -1135,13 +1201,6 @@ pub fn create_shortcut_editor(geometry: Rect, text: &str) -> Box<dyn Widget> {
 /// control's label.
 pub fn create_swipe_to_dismiss(geometry: Rect, text: &str) -> Box<dyn Widget> {
     label(geometry, text, Box::new(SwipeToDismiss::new(geometry)))
-}
-
-#[cfg(full_widgets)]
-/// Creates a horizontally paged view at the first page with no pages. `text` is
-/// applied as the control's label.
-pub fn create_pager_page_view(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    label(geometry, text, Box::new(PagerPageView::new(geometry)))
 }
 
 #[cfg(full_widgets)]

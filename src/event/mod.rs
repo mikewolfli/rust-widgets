@@ -17,6 +17,12 @@
 /// Pointer capture: routes pointer events to the widget that claimed the
 /// pointer, and releases it on explicit release or on widget destruction.
 pub mod capture;
+/// Drag-and-drop vocabulary: a payload, a placement, and a target that decides
+/// whether to accept one.
+///
+/// Not a widget: it produces no `WidgetKind`. It is the shared state machine a
+/// control uses when it is a drag source or a drop destination.
+pub mod dnd;
 pub mod event_queue;
 /// Focus ownership and traversal order.
 pub mod focus;
@@ -29,6 +35,7 @@ pub mod translator;
 pub mod types;
 // Re-export public types
 pub use capture::PointerCaptureManager;
+pub use dnd::{DragPayload, DragSession, DropEffect, DropTarget};
 pub use event_queue::{EventQueue, EventSender};
 pub use focus::FocusManager;
 pub use focus::FocusTraversalStrategy;

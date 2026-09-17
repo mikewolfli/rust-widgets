@@ -129,6 +129,23 @@ pub enum WidgetKind {
     /// Chart surface widget.
     #[cfg(widgets_unstripped)]
     Chart,
+    /// Radar (spider) chart — series plotted over shared dimension axes.
+    ///
+    /// A separate kind rather than a `Chart` variant: `ChartWidget` plots a value
+    /// against its position in an ordered series, while this plots a value against
+    /// *which dimension* it belongs to, and draws each series as a closed polygon.
+    /// The two data models are not the same shape (see the module docs of
+    /// `special_widgets::radar_chart`), which is the condition rule #80 sets.
+    #[cfg(widgets_unstripped)]
+    RadarChart,
+    /// Board of columns holding draggable cards.
+    ///
+    /// A separate kind rather than a `ListView` variant: the model is two-level and
+    /// a drag changes both the column and the index (see the module docs of
+    /// `special_widgets::kanban_board`). It is also the first consumer of
+    /// `event::dnd`.
+    #[cfg(widgets_unstripped)]
+    KanbanBoard,
     /// Button that latches between checked and unchecked states when clicked.
     #[cfg(widgets_unstripped)]
     ToggleButton,
@@ -159,6 +176,25 @@ pub enum WidgetKind {
     /// View that renders model items using one of several switchable display modes.
     #[cfg(widgets_unstripped)]
     DataView,
+    /// Shell for choosing a glyph, with the glyph table supplied by the caller.
+    ///
+    /// Ships no glyph data — this crate bundles no binary assets, and the Unicode
+    /// emoji table would dwarf the library. The picker supplies the grid, search,
+    /// categories, recents and keyboard navigation; `set_glyphs` supplies the
+    /// symbols (see `display_widgets::emoji_picker`).
+    #[cfg(widgets_unstripped)]
+    EmojiPicker,
+    /// Text field that completes `@`-mentions from a candidate list.
+    ///
+    /// A separate kind from `AutoCompleteEdit`: that control matches its suggestions
+    /// against the whole field and replaces all of it, while this completes the
+    /// *token before the caret* and supports several mentions in one field (see
+    /// `input_widgets::mention`).
+    #[cfg(widgets_unstripped)]
+    Mention,
+    /// Builder that edits a recursive filter as a list of condition rows.
+    #[cfg(widgets_unstripped)]
+    QueryBuilder,
     /// Two-column editor that lists named properties with an editable value cell.
     #[cfg(widgets_unstripped)]
     PropertyGrid,
@@ -197,53 +233,32 @@ pub enum WidgetKind {
     FontComboBox,
     /// Web engine view widget for displaying web content.
     ///
-    /// kind-role: base — the `WebEngine*` variants name one optional backend's
-    /// internal handle types, not independent controls. Only `WebEngineView` is
-    /// reachable, through the `web_view` capability.
+    /// # Why this is the only `WebEngine*` variant
+    ///
+    /// The other `WebEngine*` names (`WebEnginePage`, `WebEngineSettings`, …) were
+    /// once variants here, marked `kind-role: base`. They were not kinds at all:
+    /// each named a newtype wrapper around this view whose `Widget::base()`
+    /// forwards to the wrapped view, so `kind()` answered `WebEngineView` for
+    /// every one of them. Nothing could ever produce those variants, which made
+    /// them orphans (rule #22) — and because `factory_name_for_kind` resolves a
+    /// kind through `capability_by_kind`, `create_web_engine_page(..)` silently
+    /// produced id `0` rather than a control.
+    ///
+    /// The wrappers themselves are real and stay: they are the render pipeline's
+    /// named symbols for one view, reachable as Rust types
+    /// ([`crate::widget::WebEnginePage`] and siblings) and through the one
+    /// registered name `web_view`.
     #[cfg(widgets_unstripped)]
     WebEngineView,
-    /// Web engine page widget for managing web content.
-    /// kind-role: base
-    #[cfg(widgets_unstripped)]
-    WebEnginePage,
-    /// Web engine settings widget for configuring web engine behavior.
-    /// kind-role: base
-    #[cfg(widgets_unstripped)]
-    WebEngineSettings,
-    /// Web engine download item widget for managing downloads.
-    /// kind-role: base
-    #[cfg(widgets_unstripped)]
-    WebEngineDownloadItem,
-    /// Web engine cookie store widget for managing cookies.
-    /// kind-role: base
-    #[cfg(widgets_unstripped)]
-    WebEngineCookieStore,
-    /// Web engine web channel widget for JavaScript communication.
-    /// kind-role: base
-    #[cfg(widgets_unstripped)]
-    WebEngineWebChannel,
-    /// Web engine find text result widget for text search results.
-    /// kind-role: base
-    #[cfg(widgets_unstripped)]
-    WebEngineFindTextResult,
-    /// Web engine notification widget for web notifications.
-    /// kind-role: base
-    #[cfg(widgets_unstripped)]
-    WebEngineNotification,
-    /// Web engine script dialog widget for JavaScript dialogs.
-    /// kind-role: base
-    #[cfg(widgets_unstripped)]
-    WebEngineScriptDialog,
-    /// Web engine context menu request widget for context menu handling.
-    /// kind-role: base
-    #[cfg(widgets_unstripped)]
-    WebEngineContextMenuRequest,
     /// Action widget for menu and toolbar actions.
     #[cfg(widgets_unstripped)]
     Action,
     /// Compact button with an icon and optional caption, used on toolbars.
     #[cfg(widgets_unstripped)]
     ToolButton,
+    /// Multi-level chooser that walks a path down a tree of options.
+    #[cfg(widgets_unstripped)]
+    Cascader,
     /// Freeform shape widget — a path-based non-rectangular clickable shape.
     #[cfg(widgets_unstripped)]
     FreeformShape,
@@ -256,8 +271,6 @@ pub enum WidgetKind {
     /// RibbonBar (Office-style ribbon) widget.
     #[cfg(widgets_unstripped)]
     RibbonBar,
-    /// TileView widget — swipeable tiled page view (BLUE13 R2.8).
-    TileView,
     /// Line widget — horizontal or vertical divider line (BLUE13 R2.13).
     Line,
     /// Meter widget — gauge with arc and needle (BLUE13 R2.14).
@@ -429,9 +442,6 @@ pub enum WidgetKind {
     /// SwipeToDismiss — swipe-to-dismiss/delete gesture container.
     #[cfg(widgets_unstripped)]
     SwipeToDismiss,
-    /// PagerPageView — horizontal page view with dot indicators.
-    #[cfg(widgets_unstripped)]
-    PagerPageView,
     /// TabView — iOS-style segmented tab page view.
     #[cfg(widgets_unstripped)]
     TabView,
@@ -522,7 +532,7 @@ pub enum WidgetKind {
     Banner,
     /// Pagination — numbered page navigation bar for paged content.
     ///
-    /// Holds no content itself, unlike `PagerPageView` which contains the pages and
+    /// Holds no content itself; `Carousel` is the control that contains the pages and
     /// changes which one is visible. This is the index for content another control
     /// owns.
     #[cfg(widgets_unstripped)]

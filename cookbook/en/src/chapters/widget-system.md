@@ -434,7 +434,7 @@ The `WidgetKind` enum categorizes every widget type. It is feature-gated:
 ```mermaid
 graph TB
     subgraph "Always Available (mini-safe)"
-        ALWAYS["Window, Dialog, PopupWindow<br/>Button, CheckBox, RadioButton<br/>Label, LineEdit, ComboBox<br/>SpinBox, ListBox<br/>ProgressBar, Slider, ScrollBar<br/>ScrollArea, Panel, GroupBox<br/>ToggleButton, FreeformShape<br/>TileView, Line, Meter, MiniChart<br/>ImageView, MiniCanvas<br/>Arc, Spinner, Roller<br/>Dropdown, TextArea, Keyboard<br/>Switch"]
+        ALWAYS["Window, Dialog, PopupWindow<br/>Button, CheckBox, RadioButton<br/>Label, LineEdit, ComboBox<br/>SpinBox, ListBox<br/>ProgressBar, Slider, ScrollBar<br/>ScrollArea, Panel, GroupBox<br/>ToggleButton, FreeformShape<br/>Line, Meter, MiniChart<br/>ImageView, MiniCanvas<br/>Arc, Spinner, Roller<br/>Dropdown, TextArea, Keyboard<br/>Switch"]
     end
 
     subgraph "Feature-Gated (non-mini)"
@@ -497,7 +497,6 @@ graph TB
 | **Container** | `ScrollArea` | ✓ | Scrollable viewport |
 | | `GroupBox` | ✓ | Group/panel container |
 | | `Panel` | ✓ | Panel (alias for GroupBox) |
-| | `TileView` | ✓ | Swipeable tiled pages |
 | | `TabWidget` | ✗ | Tabbed panel container |
 | | `Splitter` | ✗ | Resizable split panels |
 | | `MdiArea` | ✗ | MDI sub-window area |
@@ -581,7 +580,6 @@ graph TB
 | | `Avatar` | ✗ | User avatar |
 | | `EmptyState` | ✗ | Empty state placeholder |
 | | `Divider` | ✗ | Divider/separator line |
-| | `PagerPageView` | ✗ | Paged view with dots |
 | | `SegmentedControl` | ✗ | Material 3 segmented control |
 | | `SegmentedButton` | ✗ | Segmented button group |
 | | `Popover` | ✗ | Floating popover card |

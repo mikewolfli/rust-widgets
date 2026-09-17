@@ -390,6 +390,15 @@ pub fn default_widget_property_default_value(
             "pane_count" => CapabilityValue::UInt(0),
             _ => return None,
         },
+        WidgetKind::Frame => match property_name {
+            // Mirrors `Frame::new`'s field initialisers, so a freshly constructed
+            // frame and the schema's defaults agree.
+            "frame_shape" => CapabilityValue::String("box".to_string()),
+            "frame_shadow" => CapabilityValue::String("plain".to_string()),
+            "line_width" => CapabilityValue::Float(1.0),
+            "mid_line_width" => CapabilityValue::Float(0.0),
+            _ => return None,
+        },
         WidgetKind::LCDNumber => match property_name {
             "value" => CapabilityValue::Float(0.0),
             "min_value" => CapabilityValue::Float(-999999.0),
@@ -684,6 +693,7 @@ pub fn default_widget_property_default_value(
             "chart_type" => CapabilityValue::String("bar".to_string()),
             "point_count" => CapabilityValue::UInt(0),
             "label_count" => CapabilityValue::UInt(0),
+            "series_count" => CapabilityValue::UInt(0),
             _ => return None,
         },
         WidgetKind::TextEdit => match property_name {
@@ -714,6 +724,12 @@ pub fn default_widget_property_default_value(
             "current_index" => CapabilityValue::UInt(0),
             "item_count" => CapabilityValue::UInt(0),
             "current_page_title" => CapabilityValue::String(String::new()),
+            // Mirrors `Carousel::new`: wrap and autoplay are off, the indicator is a
+            // dot row at the bottom.
+            "loop" => CapabilityValue::Bool(false),
+            "autoplay_interval" => CapabilityValue::Null,
+            "indicator_style" => CapabilityValue::String("dots".to_string()),
+            "indicator_position" => CapabilityValue::String("bottom".to_string()),
             _ => return None,
         },
         WidgetKind::WebEngineView => match property_name {
@@ -732,7 +748,13 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
 
-        WidgetKind::Panel | WidgetKind::Frame => match property_name {
+        // `Breadcrumb` reports `WidgetKind::Panel` (see `breadcrumb_capability`),
+        // so this arm serves it. `Frame` used to be listed here too, which was the
+        // conflation the frame's own contract documents: `Frame` has no
+        // `segment_count` and the arm answered `None` for it anyway. Now that
+        // `Frame` has its own arm above, naming it here is unreachable code — hence
+        // its removal rather than an exclusion.
+        WidgetKind::Panel => match property_name {
             "segment_count" => CapabilityValue::UInt(0),
             "selected_index" => CapabilityValue::Null,
             _ => return None,
@@ -815,7 +837,14 @@ pub fn default_widget_property_default_value(
             "lowercase" => CapabilityValue::Bool(true),
             _ => return None,
         },
-        WidgetKind::Switch => match property_name {
+        // `CupertinoSwitch` publishes the same schema as `Switch` (it is the
+        // iOS-styled sibling of the same control), so it shares this arm rather
+        // than repeating the defaults. Registering the kind without adding it
+        // here left `default_property_value("cupertino_switch", "checked")`
+        // answering `None` while the schema declared the property readable,
+        // which `schema_defaults_are_readable_and_writable_when_declared`
+        // rejects.
+        WidgetKind::Switch | WidgetKind::CupertinoSwitch => match property_name {
             "checked" => CapabilityValue::Bool(false),
             _ => return None,
         },
@@ -827,6 +856,71 @@ pub fn default_widget_property_default_value(
             "value" => CapabilityValue::UInt(0),
             "minimum" => CapabilityValue::UInt(0),
             "maximum" => CapabilityValue::UInt(100),
+            // Mirrors `Meter::new`.
+            "tick_count" => CapabilityValue::UInt(5),
+            "show_tick_labels" => CapabilityValue::Bool(false),
+            "unit" => CapabilityValue::String(String::new()),
+            "value_text" => CapabilityValue::String("0".to_string()),
+            "threshold_count" => CapabilityValue::UInt(0),
+            _ => return None,
+        },
+        WidgetKind::RadarChart => match property_name {
+            "axis_count" => CapabilityValue::UInt(0),
+            "series_count" => CapabilityValue::UInt(0),
+            // Mirrors `RadarChart::new`.
+            "show_grid" => CapabilityValue::Bool(true),
+            "show_axis_labels" => CapabilityValue::Bool(true),
+            "show_legend" => CapabilityValue::Bool(true),
+            "hovered_axis" => CapabilityValue::Null,
+            _ => return None,
+        },
+        WidgetKind::KanbanBoard => match property_name {
+            "column_count" => CapabilityValue::UInt(0),
+            "card_count" => CapabilityValue::UInt(0),
+            "dragging_card_id" => CapabilityValue::Null,
+            "hovered_column" => CapabilityValue::Null,
+            // Mirrors the `COLUMN_WIDTH` layout constant in the control.
+            "column_width" => CapabilityValue::UInt(220),
+            _ => return None,
+        },
+        WidgetKind::Cascader => match property_name {
+            "value" => CapabilityValue::String(String::new()),
+            "depth" => CapabilityValue::UInt(0),
+            // Mirrors `Cascader::new`.
+            "expanded" => CapabilityValue::Bool(false),
+            "separator" => CapabilityValue::String("/".to_string()),
+            "filterable" => CapabilityValue::Bool(false),
+            "filter" => CapabilityValue::String(String::new()),
+            _ => return None,
+        },
+        WidgetKind::QueryBuilder => match property_name {
+            "row_count" => CapabilityValue::UInt(0),
+            "incomplete_row_count" => CapabilityValue::UInt(0),
+            "field_count" => CapabilityValue::UInt(0),
+            // Mirrors `QueryBuilder::new`.
+            "conjunction" => CapabilityValue::String("and".to_string()),
+            "active_row" => CapabilityValue::Null,
+            _ => return None,
+        },
+        WidgetKind::EmojiPicker => match property_name {
+            "glyph_count" => CapabilityValue::UInt(0),
+            "visible_glyph_count" => CapabilityValue::UInt(0),
+            "tab_count" => CapabilityValue::UInt(0),
+            // Mirrors `EmojiPicker::new`.
+            "active_tab" => CapabilityValue::UInt(0),
+            "search" => CapabilityValue::String(String::new()),
+            "recent_count" => CapabilityValue::UInt(0),
+            _ => return None,
+        },
+        WidgetKind::Mention => match property_name {
+            "text" => CapabilityValue::String(String::new()),
+            // Mirrors `Mention::new`.
+            "trigger" => CapabilityValue::String("@".to_string()),
+            "candidate_count" => CapabilityValue::UInt(0),
+            "visible_candidate_count" => CapabilityValue::UInt(0),
+            "mention_count" => CapabilityValue::UInt(0),
+            "popup_open" => CapabilityValue::Bool(false),
+            "caret" => CapabilityValue::UInt(0),
             _ => return None,
         },
         WidgetKind::MiniChart => match property_name {
@@ -835,11 +929,6 @@ pub fn default_widget_property_default_value(
         },
         WidgetKind::ImageView => match property_name {
             "scaled" => CapabilityValue::Bool(false),
-            _ => return None,
-        },
-        WidgetKind::TileView => match property_name {
-            "current_page" => CapabilityValue::UInt(0),
-            "page_count" => CapabilityValue::UInt(1),
             _ => return None,
         },
         // ── Dialog widgets ──────────────────────────────────
@@ -894,6 +983,7 @@ pub fn default_widget_property_default_value(
             "vertical_scroll_bar_policy" => CapabilityValue::String("as_needed".to_string()),
             "scroll_position_x" => CapabilityValue::Int(0),
             "scroll_position_y" => CapabilityValue::Int(0),
+            "sticky_region_count" => CapabilityValue::UInt(0),
             _ => return None,
         },
         WidgetKind::TabWidget => match property_name {
@@ -1242,12 +1332,6 @@ pub fn default_widget_property_default_value(
         },
         WidgetKind::MaterialNavigationRail => match property_name {
             "selected_index" => CapabilityValue::UInt(0),
-            _ => return None,
-        },
-
-        // ── New widgets (container) ─────────────────────────────────
-        WidgetKind::PagerPageView => match property_name {
-            "current_page" => CapabilityValue::UInt(0),
             _ => return None,
         },
 

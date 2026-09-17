@@ -497,6 +497,32 @@ harness = false
 name = "signal_bench"
 harness = false
 
+# Compile-time probe for the declarative-layer platform gate.
+#
+# `tools/check_view_platform_gate.sh` (BLUE18 rules #92/#94) asserts that
+# `crate::view` is compiled on desktop/tablet/mobile and ABSENT on
+# mini/embedded. Its criterion is executable: it compiles a probe that names
+# `rust_widgets::view::VIEW_GATE_PROBE`, so the probe resolving *is* the
+# module being in the compilation unit.
+#
+# The path is under `tools/`, not `tests/`, so cargo's test auto-discovery
+# never picks it up. That matters: an auto-discovered test naming that constant
+# would be built by `cargo check --all-targets` on mini/embedded, fail to
+# resolve the path, and report the very condition this gate exists to detect.
+# The file is committed (so this entry never dangles) and is a no-op unless
+# the gate compiles it.
+#
+# No `required-features`: the gate must compile this target under *every*
+# profile, because the absent-profile steps are the ones asserting the build
+# fails. Restricting it to a device profile would make those steps untestable.
+#
+# It is also excluded from `check_profiles.sh`'s `--all-targets` runs by
+# carrying no assertions of its own on a stripped profile: the `use` is
+# `cfg`-gated, so building it on mini/embedded succeeds trivially.
+[[test]]
+name = "view_platform_gate_probe"
+path = "tools/view_platform_gate_probe.rs"
+
 [[bench]]
 name = "layout_bench"
 harness = false

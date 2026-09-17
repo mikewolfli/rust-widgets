@@ -272,6 +272,16 @@ pub fn factory_name_for_kind(kind: crate::widget::WidgetKind) -> &'static str {
 /// The alias table, shared by the registry-backed lookup above and the
 /// registry-free lookup below so the two cannot disagree about the fallback.
 ///
+/// # Why `DockPanel` is here
+///
+/// `src/widget/mod.rs` declares `pub type DockPanel = DockWidget;`, so the kind
+/// and the type are the same control under two names — but the factory registers
+/// the *canonical* `DockWidget` capability, whose canonical name is `dock_widget`.
+/// `capability_by_kind(DockPanel)` therefore misses (no entry declares that kind)
+/// and the lookup falls through to here. Omitting this row made
+/// `factory_name_for_kind(DockPanel)` return `""`, so `create_dock_panel(..)`
+/// silently produced id `0`.
+///
 /// Gated with the full widget set because it names variants `embedded` compiles
 /// out (`ActivityIndicator`, `ColumnView`, …). The registry-free path resolves the
 /// same names from the variant's spelling, so nothing is lost there.
@@ -288,6 +298,7 @@ fn alias_factory_name(kind: crate::widget::WidgetKind) -> &'static str {
         crate::widget::WidgetKind::ContextMenu => "menu",
         crate::widget::WidgetKind::Dialog => "popup_window",
         crate::widget::WidgetKind::Wizard => "wizard_dialog",
+        crate::widget::WidgetKind::DockPanel => "dock_widget",
         other => {
             // Reached only if a kind is added to `WidgetKind` with neither a
             // capability nor an alias. Reported loudly rather than returning a
@@ -342,6 +353,7 @@ fn alias_for_name(name: &str) -> Option<&'static str> {
         "context_menu" => "menu",
         "dialog" => "popup_window",
         "wizard" => "wizard_dialog",
+        "dock_panel" => "dock_widget",
         _ => return None,
     })
 }

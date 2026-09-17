@@ -106,10 +106,16 @@ pub mod test;
 pub mod theme;
 /// Undo/Redo framework for undoable commands and cross-widget undo/redo.
 pub mod undo;
-/// Generic utility modules (asset watcher, helpers, etc.).
 /// Video module — container format detection, frame extraction, metadata, and playback.
 #[cfg(feature = "video")]
 pub mod video;
+/// Generic utility modules (asset watcher, helpers, etc.).
+/// Declarative-retained view layer: `state → Node → diff → Patch → retained tree`.
+///
+/// The declarative half of the hybrid architecture. Additive: it consumes the existing
+/// widget factory and property contract rather than changing them.
+#[cfg(all(any(feature = "desktop", feature = "tablet", feature = "mobile"), widgets_unstripped))]
+pub mod view;
 /// Web view and engine components.
 #[cfg(widgets_unstripped)]
 pub mod web;

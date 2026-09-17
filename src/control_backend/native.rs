@@ -515,6 +515,66 @@ impl ControlBackend for NativeControlBackend {
     fn create_chart(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         get_platform().create_panel(parent, x, y, width, height)
     }
+    fn create_radar_chart(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_panel(parent, x, y, width, height)
+    }
+    fn create_kanban_board(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_panel(parent, x, y, width, height)
+    }
+    fn create_cascader(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_panel(parent, x, y, width, height)
+    }
+    fn create_query_builder(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_panel(parent, x, y, width, height)
+    }
+    fn create_emoji_picker(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_panel(parent, x, y, width, height)
+    }
+    fn create_mention(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_panel(parent, x, y, width, height)
+    }
     fn create_toggle_button(
         &self,
         parent: ObjectId,
@@ -761,97 +821,12 @@ impl ControlBackend for NativeControlBackend {
         width: u32,
         height: u32,
     ) -> ObjectId {
-        get_platform().create_panel(parent, x, y, width, height)
-    }
-    fn create_web_engine_page(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        get_platform().create_panel(parent, x, y, width, height)
-    }
-    fn create_web_engine_settings(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        get_platform().create_panel(parent, x, y, width, height)
-    }
-    fn create_web_engine_download_item(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        get_platform().create_panel(parent, x, y, width, height)
-    }
-    fn create_web_engine_cookie_store(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        get_platform().create_panel(parent, x, y, width, height)
-    }
-    fn create_web_engine_web_channel(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        get_platform().create_panel(parent, x, y, width, height)
-    }
-    fn create_web_engine_find_text_result(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        get_platform().create_panel(parent, x, y, width, height)
-    }
-    fn create_web_engine_notification(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        get_platform().create_panel(parent, x, y, width, height)
-    }
-    fn create_web_engine_script_dialog(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        get_platform().create_panel(parent, x, y, width, height)
-    }
-    fn create_web_engine_context_menu_request(
-        &self,
-        parent: ObjectId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> ObjectId {
-        get_platform().create_panel(parent, x, y, width, height)
+        // No platform in this crate exposes a native web view, so the honest
+        // answer is "nothing to mount". Returning the panel the previous version
+        // built would give the caller an id that addresses a control of the wrong
+        // kind, which is worse than `0`: `0` is the documented "refused".
+        let _ = (parent, x, y, width, height);
+        0
     }
     fn create_action(
         &self,

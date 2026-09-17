@@ -513,7 +513,7 @@ pub trait Draw {
 - `Slider`, `ProgressBar`, `ScrollBar`, `Spinner`, `Meter`, `Arc`, `Roller`
 - `ImageView`, `MiniCanvas`, `MiniChart`, `Line`, `LCDNumber`
 - `GroupBox`, `ScrollArea`, `Splitter`, `TabWidget`, `StackedWidget`
-- `TileView`, `CollapsiblePane`, `DockWidget`, `MdiArea`, `ToolBox`
+- `CollapsiblePane`, `DockWidget`, `MdiArea`, `ToolBox`
 - `Window`
 - `ToggleButton`, `Switch`（新控件）
 - `Calendar`, `DateEdit`, `TimeEdit`, `DateTimeEdit`, `Dial`
@@ -576,7 +576,6 @@ pub trait Draw {
 |---|---|---|
 | `GroupBox`（又名 `Panel`） | 分组容器 | 始终可用 |
 | `ScrollArea` | 可滚动视口 | 始终可用 |
-| `TileView` | 平铺容器 | 始终可用 |
 | `CollapsiblePane` | 可折叠节 | *(非 mini)* |
 | `DockWidget`（又名 `DockPanel`） | 可停靠面板 | *(非 mini)* |
 | `MdiArea` | MDI 容器 | *(非 mini)* |
@@ -634,7 +633,7 @@ pub trait Draw {
 | `misc_widgets/` | `Avatar`, `BarcodeScanner`, `BezierCurveEditor`, `DateRangePicker`, `MobileDatePicker`, `QRCode`, `SegmentedButton` |
 | `input_widgets/`（扩展） | `AutoCompleteEdit`, `EditableComboBox`, `ImePreedit`, `InplaceEditor`, `MaskedEdit`, `MultiSelectComboBox`, `RangeSlider`, `SearchBar`, `SearchBox`, `ShortcutEditor`, `TagInput` |
 | `display_widgets/`（扩展） | `Badge`, `ColorHistory`, `ColorWell`, `Divider`, `EmptyState`, `FloatingLabel`, `FontPreview`, `Icon`, `ProgressCircle`, `Rating`, `SkeletonLoader`, `Switch` |
-| `container_widgets/`（扩展） | `Carousel`, `MasonryLayout`, `PagerPageView`, `SafeArea`, `Stepper` |
+| `container_widgets/`（扩展） | `Carousel`, `MasonryLayout`, `SafeArea`, `Stepper` |
 | `dialog/`（扩展） | `BottomSheet`, `FindReplaceDialog`, `ModalBottomSheet`, `Popover`, `Tooltip`, `WizardDialog` |
 | `menu_toolbar/`（扩展） | `DropdownMenu`, `MenuButton` |
 | `view_widgets/`（扩展） | `ImageGallery`, `PropertiesPanel`, `PropertyGrid` |

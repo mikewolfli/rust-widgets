@@ -68,7 +68,7 @@
 | `capability.rs` | WidgetCapability, WidgetFactory, generic property read/write |
 | `draw.rs` | Draw trait (custom rendering) |
 | `image.rs` | Image struct + ImageFormat |
-| `kind.rs` | WidgetKind enum (174 variants) |
+| `kind.rs` | WidgetKind enum (169 variants) |
 | `mod.rs` | Re-exports + type aliases |
 | `registry.rs` | SimpleRegistry for child forwarding |
 | `widget_trait.rs` | Widget trait (geometry, style, signals, CSS, a11y) |
@@ -81,7 +81,7 @@
 |-----------|-------|-------------|
 | `base_widgets/` | 6 | Button, CheckBox, Frame, Label, RadioButton, ToggleButton |
 | `input_widgets/` | 18 | ComboBox, Dropdown, Keyboard, LineEdit, ListBox, SpinBox, TextArea, TextEdit, AutoCompleteEdit, CommandLink, EditableComboBox, FontComboBox, ImePreedit, InplaceEditor, MaskedEdit, MultiSelectComboBox, RangeSlider, RichEdit, SearchBar, SearchBox, ShortcutEditor, TagInput |
-| `container_widgets/` | 14 | Carousel, CollapsiblePane, DockWidget, GroupBox, MasonryLayout, MdiArea, PagerPageView, SafeArea, ScrollArea, Splitter, StackedWidget, Stepper, TabWidget, TileView, ToolBox |
+| `container_widgets/` | 13 | Carousel, CollapsiblePane, DockWidget, GroupBox, MasonryLayout, MdiArea, SafeArea, ScrollArea, Splitter, StackedWidget, Stepper, TabWidget, ToolBox |
 | `display_widgets/` | 20 | Arc, Badge, ColorHistory, ColorWell, Divider, EmptyState, FloatingLabel, FontPreview, Icon, ImageView, LCDNumber, Line, Meter, MiniCanvas, MiniChart, ProgressBar, ProgressCircle, Rating, Roller, ScrollBar, SkeletonLoader, Slider, Spinner, Switch |
 | `nav_widgets/` | 7 | AdaptiveScaffold, AppBar, BottomNavigationBar, NavigationDrawer, NavigationStack, TabView |
 | `dialog/` | 12 | BottomSheet, ColorDialog, FileDialog, FindReplaceDialog, FontDialog, InputDialog, MessageBox, ModalBottomSheet, Popover, PopupWindow, ProgressDialog, Tooltip, WizardDialog |
@@ -312,7 +312,7 @@ Axis 3: Capabilities (arbitrary composition)
 
 ---
 
-## 6. WidgetKind→Module Mapping (174 variants)
+## 6. WidgetKind→Module Mapping (169 variants)
 
 | WidgetKind | Module Path | Type |
 |-----------|-------------|------|

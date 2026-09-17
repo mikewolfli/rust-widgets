@@ -182,6 +182,18 @@ pub(crate) fn group_box_capability() -> WidgetCapability {
 }
 
 #[cfg(not(alloc_frugal))]
+pub(crate) fn frame_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Frame,
+        canonical_name: "frame",
+        aliases: &["frame_widget"],
+        properties: FRAME_PROPERTIES,
+        events: &[],
+        commands: &["set_frame_shape", "set_frame_shadow", "set_line_width"],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
 pub(crate) fn splitter_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Splitter,
@@ -1169,9 +1181,33 @@ pub(crate) fn switch_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Switch,
         canonical_name: "switch",
-        // `cupertino_switch` is the `WidgetKind::CupertinoSwitch` spelling, which the
-        // iOS-styled switch reports. The kind is not a separate control.
-        aliases: &["switch_widget", "toggle_switch", "cupertino_switch"],
+        // `cupertino_switch` is deliberately *not* an alias here. It names the
+        // `WidgetKind::CupertinoSwitch` variant, which has its own capability
+        // below; listing it as an alias of `switch` made the alias table answer
+        // for the variant while the variant itself stayed unconstructible, so
+        // `create_cupertino_switch(..)` produced id `0`.
+        aliases: &["switch_widget", "toggle_switch"],
+        properties: SWITCH_PROPERTIES,
+        events: &["toggled"],
+        commands: &["set_checked", "toggle"],
+    }
+}
+
+/// `CupertinoSwitch` is the iOS-styled sibling of `Switch`.
+///
+/// # Why it has its own capability rather than being an alias
+///
+/// It reports `WidgetKind::CupertinoSwitch`, so the factory must register that
+/// kind for `capability_by_kind(CupertinoSwitch)` to resolve — an alias row on
+/// `switch` answers the *name* lookup but never the *kind* lookup, which is the
+/// one `mount_widget_of_kind` uses. The property schema is shared with `Switch`
+/// rather than duplicated, so the two cannot drift.
+#[cfg(not(alloc_frugal))]
+pub(crate) fn cupertino_switch_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::CupertinoSwitch,
+        canonical_name: "cupertino_switch",
+        aliases: &["ios_switch"],
         properties: SWITCH_PROPERTIES,
         events: &["toggled"],
         commands: &["set_checked", "toggle"],
@@ -1197,6 +1233,104 @@ pub(crate) fn meter_capability() -> WidgetCapability {
         properties: METER_PROPERTIES,
         events: &["changed"],
         commands: &["set_value", "set_range"],
+    }
+}
+
+/// `RadarChart` — series plotted over shared dimension axes.
+///
+/// Not registered as a `chart_type` token: the data model differs (see the
+/// module docs), so it is its own control rather than a style of `ChartWidget`.
+#[cfg(not(alloc_frugal))]
+pub(crate) fn radar_chart_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::RadarChart,
+        canonical_name: "radar_chart",
+        aliases: &["radar", "spider_chart"],
+        properties: RADAR_CHART_PROPERTIES,
+        events: &["series_clicked", "axis_hovered"],
+        commands: &["set_axes", "set_series", "add_series"],
+    }
+}
+
+/// `Mention` — completes `@`-mentions from a candidate list.
+///
+/// Registered separately from `auto_complete_edit`: the completion model differs
+/// (token before the caret, many mentions per field), which is the plan's §三 A2
+/// judgment.
+#[cfg(not(alloc_frugal))]
+pub(crate) fn mention_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Mention,
+        canonical_name: "mention",
+        aliases: &["mention_edit", "at_mention"],
+        properties: MENTION_PROPERTIES,
+        events: &["mention_inserted", "popup_toggled", "text_changed"],
+        commands: &["set_candidates", "set_trigger", "complete", "open_popup"],
+    }
+}
+
+/// `EmojiPicker` — a shell for choosing a caller-supplied glyph.
+///
+/// Registered as a control with no glyph data: the table arrives through
+/// `set_glyphs`, which is the whole point of the shell/data split.
+#[cfg(not(alloc_frugal))]
+pub(crate) fn emoji_picker_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::EmojiPicker,
+        canonical_name: "emoji_picker",
+        aliases: &["emojipicker", "emoji"],
+        properties: EMOJI_PICKER_PROPERTIES,
+        events: &["glyph_chosen"],
+        commands: &["set_glyphs", "set_categories", "set_search", "choose"],
+    }
+}
+
+/// `QueryBuilder` — edits a recursive `FilterExpr` as condition rows.
+///
+/// Registered separately from `data_grid`: the model is shared (both produce a
+/// `FilterExpr`) but the rendering is not, which is exactly the case the plan's
+/// §四 B5 describes.
+#[cfg(not(alloc_frugal))]
+pub(crate) fn query_builder_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::QueryBuilder,
+        canonical_name: "query_builder",
+        aliases: &["querybuilder", "filter_builder"],
+        properties: QUERY_BUILDER_PROPERTIES,
+        events: &["query_changed"],
+        commands: &["set_fields", "add_row", "remove_row", "toggle_conjunction"],
+    }
+}
+
+/// `Cascader` — walks a path down a tree of options.
+///
+/// Not an alias of `dropdown`: the selection is a path of varying depth, not an
+/// index (see the module docs).
+#[cfg(not(alloc_frugal))]
+pub(crate) fn cascader_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Cascader,
+        canonical_name: "cascader",
+        aliases: &["cascade", "multi_level_select"],
+        properties: CASCADER_PROPERTIES,
+        events: &["selection_changed"],
+        commands: &["set_options", "set_selected_path", "expand", "collapse"],
+    }
+}
+
+/// `KanbanBoard` — columns of draggable cards.
+///
+/// The first control built on `event::dnd`: its own `DropTarget` impl is the
+/// acceptance path a dragged card resolves through.
+#[cfg(not(alloc_frugal))]
+pub(crate) fn kanban_board_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::KanbanBoard,
+        canonical_name: "kanban_board",
+        aliases: &["kanban", "board"],
+        properties: KANBAN_BOARD_PROPERTIES,
+        events: &["card_moved", "card_activated"],
+        commands: &["add_column", "add_card", "move_card", "cancel_drag"],
     }
 }
 
@@ -1233,18 +1367,6 @@ pub(crate) fn mini_canvas_capability() -> WidgetCapability {
     }
 }
 
-pub(crate) fn tile_view_capability() -> WidgetCapability {
-    WidgetCapability {
-        kind: WidgetKind::TileView,
-        canonical_name: "tile_view",
-        aliases: &["tileview", "page_view"],
-        properties: TILE_VIEW_PROPERTIES,
-        events: &["page_changed"],
-        commands: &["set_current_page", "set_page_count"],
-    }
-}
-
-#[cfg(not(alloc_frugal))]
 pub(crate) fn date_time_edit_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::DateTimePicker,
@@ -1964,18 +2086,6 @@ pub(crate) fn swipe_to_dismiss_capability() -> WidgetCapability {
         properties: SWIPE_TO_DISMISS_PROPERTIES,
         events: &["dismissed"],
         commands: &[],
-    }
-}
-
-#[cfg(not(alloc_frugal))]
-pub(crate) fn pager_page_view_capability() -> WidgetCapability {
-    WidgetCapability {
-        kind: WidgetKind::PagerPageView,
-        canonical_name: "pager_page_view",
-        aliases: &["pagerpageview", "pager_view", "page_view"],
-        properties: PAGER_PAGE_VIEW_PROPERTIES,
-        events: &["page_changed"],
-        commands: &["set_current_page"],
     }
 }
 

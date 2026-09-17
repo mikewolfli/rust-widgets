@@ -31,7 +31,7 @@
 | 特性 | 自绘（本库） | 原生控件 |
 |---|---|---|
 | 外观 | **跨 OS 完全一致** | 随各 OS 工具包与版本变化 |
-| 控件数量 | **174 种，全平台可用** | 仅限该 OS 工具包提供的 |
+| 控件数量 | **169 种，全平台可用** | 仅限该 OS 工具包提供的 |
 | 依赖体积 | **不链接任何 GUI 工具包** | GTK / AppKit / Win32 / Android SDK |
 | 无头与嵌入式 | **无 OS 也能运行**（`mini`、SVG） | 不可能 |
 | 测试确定性 | **像素／序列化快照** | 需要真实显示器 |
@@ -91,9 +91,9 @@
 
 | Profile | 控件集 | 注册表 | 自绘控件托管 | GPU | i18n |
 |---------|-------|:------:|:-----------:|:---:|:----:|
-| `desktop` | **174 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
-| `tablet` | **174 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
-| `mobile` | **174 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
+| `desktop` | **169 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
+| `tablet` | **169 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
+| `mobile` | **169 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
 | `embedded` | 精简核心集 | — | — | — 软件 | — |
 | `mini` | 精简核心集 | — | — | — 软件 | — |
 
@@ -103,7 +103,7 @@
 
 精简集（`embedded`／`mini`）包含：Window、Button、CheckBox、RadioButton、Label、
 LineEdit、ComboBox、SpinBox、ListBox、ProgressBar、Slider、ScrollBar、ScrollArea、
-Panel、Frame、GroupBox、TileView、Line、Meter、MiniChart、ImageView、MiniCanvas、
+Panel、Frame、GroupBox、Line、Meter、MiniChart、ImageView、MiniCanvas、
 Arc、Spinner、Roller、Dropdown、TextArea、Keyboard、Switch。
 
 ### 3. 「支持」在两表中的含义
@@ -121,9 +121,11 @@ Arc、Spinner、Roller、Dropdown、TextArea、Keyboard、Switch。
 
 ---
 
-174 种控件全部为自绘。其中 **169 种**以自身名称注册进工厂（含别名共 **447** 个可解析名称）；
-其余为别名 kind（`pub type`）、基类/子项 kind，或可选的 WebEngine 系列 ——
-**174 种全部有归类**，且新增 kind 若未归类，`tools/check_widget_registration_fidelity.sh` 会直接失败；
+169 种控件全部为自绘。每一种都能通过 `factory_name_for_kind` 解析出构造器
+（含别名共 **456** 个可解析名称）；
+新增 kind 若无法归类、或解析不出任何构造器，`tools/check_widget_registration_fidelity.sh`
+会直接失败 —— 后者已捕获 4 类 `create_*` 永远返回 id `0` 的缺陷
+（`Frame`、`DockPanel`、`CupertinoSwitch` 与 9 个 WebEngine 名称），而当时其余门禁全绿；
 平台能力矩阵
 （`docs/plans/platform_capability_matrix.md`）由源码机械派生，并在 CI 中设有防脱节门禁。
 
@@ -370,13 +372,13 @@ cargo check --no-default-features --features "tablet,macos"
 
 ## 控件库
 
-### 桌面/平板/手机（174 种控件）
+### 桌面/平板/手机（169 种控件）
 
 **核心**：Window、Dialog、MessageBox、FileDialog、ColorDialog、FontDialog、InputDialog、ProgressDialog、PopupWindow、Button、CheckBox、RadioButton、Label、LineEdit、TextEdit、RichEdit、ComboBox、SpinBox、ListBox、ListView、TreeView、ProgressBar、Slider、ScrollBar、ScrollArea、TabWidget、Splitter、GroupBox、MenuBar、Menu、MenuItem、ContextMenu、ToolBar、StatusBar、Canvas、Table、Grid、Chart、ToggleButton
 
 **日期与时间**：Calendar、DateEdit、TimeEdit、DateTimeEdit、DatePicker、TimePicker、DateTimePicker、CupertinoDatePicker、DateRangePicker、MobileDatePicker
 
-**容器**：CollapsiblePane、DockWidget、MdiArea、StackedWidget、ToolBox、TabBar、NavigationStack、PagerPageView、Carousel、BottomSheet、ModalBottomSheet
+**容器**：CollapsiblePane、DockWidget、MdiArea、StackedWidget、ToolBox、TabBar、NavigationStack、Carousel、BottomSheet、ModalBottomSheet
 
 **移动端**：BottomNavigationBar、NavigationDrawer、AppBar、SafeArea、PullToRefresh、RefreshControl、SearchBar、CupertinoSwitch、CupertinoSlider、CupertinoNavigationBar、CupertinoSegmentedControl、AdaptiveScaffold
 
@@ -394,7 +396,7 @@ cargo check --no-default-features --features "tablet,macos"
 
 ### Mini / Embedded（精简核心控件集）
 
-Window、Button、CheckBox、RadioButton、Label、LineEdit、ComboBox、SpinBox、ListBox、ProgressBar、Slider、ScrollBar、ScrollArea、Panel、Frame、GroupBox、TileView、Line、Meter、MiniChart、ImageView、MiniCanvas、Arc、Spinner、Roller、Dropdown、TextArea、Keyboard、Switch
+Window、Button、CheckBox、RadioButton、Label、LineEdit、ComboBox、SpinBox、ListBox、ProgressBar、Slider、ScrollBar、ScrollArea、Panel、Frame、GroupBox、Line、Meter、MiniChart、ImageView、MiniCanvas、Arc、Spinner、Roller、Dropdown、TextArea、Keyboard、Switch
 
 ---
 

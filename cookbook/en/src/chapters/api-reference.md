@@ -519,7 +519,7 @@ pub trait Draw {
 - `Slider`, `ProgressBar`, `ScrollBar`, `Spinner`, `Meter`, `Arc`, `Roller`
 - `ImageView`, `MiniCanvas`, `MiniChart`, `Line`, `LCDNumber`
 - `GroupBox`, `ScrollArea`, `Splitter`, `TabWidget`, `StackedWidget`
-- `TileView`, `CollapsiblePane`, `DockWidget`, `MdiArea`, `ToolBox`
+- `CollapsiblePane`, `DockWidget`, `MdiArea`, `ToolBox`
 - `Window`
 - `ToggleButton`, `Switch` (new widgets)
 - `Calendar`, `DateEdit`, `TimeEdit`, `DateTimeEdit`, `Dial`
@@ -582,7 +582,6 @@ Container types:
 |---|---|---|
 | `GroupBox` (a.k.a. `Panel`) | Grouped container | Always available |
 | `ScrollArea` | Scrollable viewport | Always available |
-| `TileView` | Tile container | Always available |
 | `CollapsiblePane` | Collapsible section | *(non-mini)* |
 | `DockWidget` (a.k.a. `DockPanel`) | Dockable panel | *(non-mini)* |
 | `MdiArea` | MDI container | *(non-mini)* |
@@ -640,7 +639,7 @@ Widgets from the former `new_widgets` module have been reclassified into dedicat
 | `misc_widgets/` | `Avatar`, `BarcodeScanner`, `BezierCurveEditor`, `DateRangePicker`, `MobileDatePicker`, `QRCode`, `SegmentedButton` |
 | `input_widgets/` (extended) | `AutoCompleteEdit`, `EditableComboBox`, `ImePreedit`, `InplaceEditor`, `MaskedEdit`, `MultiSelectComboBox`, `RangeSlider`, `SearchBar`, `SearchBox`, `ShortcutEditor`, `TagInput` |
 | `display_widgets/` (extended) | `Badge`, `ColorHistory`, `ColorWell`, `Divider`, `EmptyState`, `FloatingLabel`, `FontPreview`, `Icon`, `ProgressCircle`, `Rating`, `SkeletonLoader`, `Switch` |
-| `container_widgets/` (extended) | `Carousel`, `MasonryLayout`, `PagerPageView`, `SafeArea`, `Stepper` |
+| `container_widgets/` (extended) | `Carousel`, `MasonryLayout`, `SafeArea`, `Stepper` |
 | `dialog/` (extended) | `BottomSheet`, `FindReplaceDialog`, `ModalBottomSheet`, `Popover`, `Tooltip`, `WizardDialog` |
 | `menu_toolbar/` (extended) | `DropdownMenu`, `MenuButton` |
 | `view_widgets/` (extended) | `ImageGallery`, `PropertiesPanel`, `PropertyGrid` |

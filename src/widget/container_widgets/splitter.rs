@@ -3,6 +3,7 @@
 
 //! Splitter widget.
 use crate::core::{Orientation, Rect};
+use crate::event::{DragPayload, DragSession};
 use crate::layout::{splitter::SplitterLayout, Layout};
 use crate::object::ObjectId;
 use crate::render::RenderContext;
@@ -17,13 +18,38 @@ use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-/// State captured when a splitter handle drag begins.
-struct DragState {
+// ── Handle dragging, expressed through `event::dnd` ─────────────────────────
+//
+// The press/move/release machine used to be hand-written here: a `DragState`
+// struct holding the start position, a `MouseMove` arm recomputing the delta, and
+// a `MouseRelease` arm clearing it. That is the same shape 28 files in this crate
+// had, so the state now lives in `DragSession` and this control only supplies the
+// domain decisions — which handle was grabbed, and what a new ratio should be.
+
+/// What a splitter drag is carrying.
+///
+/// The payload identifies the *handle* being dragged rather than a data item, so a
+/// future drop target (a "snap this pane's size to that preset" zone, say) can tell
+/// which divider the drag came from.
+const SPLITTER_DRAG_TYPE: &str = "splitter_handle";
+
+/// The distance a press must travel before it counts as a handle drag rather than
+/// a click on the divider.
+///
+/// Two pixels: the handle is only five wide, so a larger threshold would make the
+/// first few pixels of every drag feel unresponsive.
+const SPLITTER_DRAG_THRESHOLD: i32 = 2;
+
+/// The pane ratios captured when a handle drag began, plus the handle index.
+///
+/// Kept beside the session rather than inside the payload because it is the
+/// splitter's own layout, not something a drop target would ever read.
+#[derive(Debug, Clone)]
+struct HandleDrag {
     /// Index of the handle (the gap between pane `idx` and `idx+1`).
     handle_index: usize,
-    /// Cursor position along the primary axis at drag start.
-    start_pos: f32,
-    /// Pane ratios at drag start (snapshot).
+    /// Pane ratios at drag start (snapshot), so the move rule is absolute rather
+    /// than accumulating rounding error across frames.
     start_ratios: Vec<f32>,
 }
 
@@ -40,7 +66,10 @@ pub struct Splitter {
     /// with the new orientation.
     pub orientation_changed: Signal1<Orientation>,
     registry: Option<Rc<RefCell<SimpleRegistry>>>,
-    drag_state: Option<DragState>,
+    /// The shared drag state machine, active only while a handle is being dragged.
+    drag_session: Option<DragSession>,
+    /// The splitter-specific snapshot a drag started with.
+    drag_state: Option<HandleDrag>,
     active_pane: Option<usize>,
 }
 impl Splitter {
@@ -52,6 +81,7 @@ impl Splitter {
             pane_layout_changed: Signal1::new(),
             orientation_changed: Signal1::new(),
             registry: None,
+            drag_session: None,
             drag_state: None,
             active_pane: None,
         }
@@ -245,92 +275,19 @@ impl crate::event::EventHandler for Splitter {
         if !self.base.is_enabled() {
             return;
         }
-        // Use ratio-based handle dragging
-        let rect = self.base.geometry();
-        let handle_width = 5.0;
         match event {
             crate::event::Event::MousePress { pos, button }
                 if *button == 1 && self.pane_count() > 1 =>
             {
-                if let Some(index) = self.pane_rects().iter().position(|(_, pane)| {
-                    pos.x >= pane.x
-                        && pos.x < pane.x + pane.width as i32
-                        && pos.y >= pane.y
-                        && pos.y < pane.y + pane.height as i32
-                }) {
-                    self.active_pane = Some(index);
-                }
-                let total = if self.orientation() == Orientation::Horizontal {
-                    rect.width as f32
-                } else {
-                    rect.height as f32
-                };
-                let pos_primary = if self.orientation() == Orientation::Horizontal {
-                    pos.x as f32 - rect.x as f32
-                } else {
-                    pos.y as f32 - rect.y as f32
-                };
-                let mut acc = 0.0;
-                for i in 0..self.pane_count() - 1 {
-                    if let Some(r) = self.ratio(i) {
-                        acc += r * total;
-                    }
-                    if (pos_primary - acc).abs() <= handle_width / 2.0 {
-                        // Begin drag for handle at index `i`
-                        self.drag_state = Some(DragState {
-                            handle_index: i,
-                            start_pos: pos_primary,
-                            start_ratios: self.layout.ratios().to_vec(),
-                        });
-                        break;
-                    }
-                }
+                self.begin_handle_drag(*pos);
             }
-            crate::event::Event::MouseMove { pos } if self.drag_state.is_some() => {
-                if let Some(ref ds) = self.drag_state {
-                    let total = if self.orientation() == Orientation::Horizontal {
-                        rect.width as f32
-                    } else {
-                        rect.height as f32
-                    };
-                    let pos_primary = if self.orientation() == Orientation::Horizontal {
-                        pos.x as f32 - rect.x as f32
-                    } else {
-                        pos.y as f32 - rect.y as f32
-                    };
-                    let delta = pos_primary - ds.start_pos;
-                    let i = ds.handle_index;
-                    // Retrieve the two adjacent start ratios
-                    let left = ds.start_ratios.get(i).copied().unwrap_or(0.0);
-                    let right = ds.start_ratios.get(i + 1).copied().unwrap_or(0.0);
-                    // Convert delta from pixels to ratio units: delta / total
-                    let ratio_delta = delta / total;
-                    let new_left = (left + ratio_delta).max(0.0);
-                    let new_right = (right - ratio_delta).max(0.0);
-                    // Re-normalize so the pair keeps the same combined weight relative
-                    // to the unchanged total of all original ratios.
-                    let pair_sum = left + right;
-                    if pair_sum > 0.0 {
-                        let scale = pair_sum / (new_left + new_right);
-                        let adjusted_left = new_left * scale;
-                        let adjusted_right = new_right * scale;
-                        self.layout.set_ratio(i, adjusted_left);
-                        self.layout.set_ratio(i + 1, adjusted_right);
-                        if self.pane_layout_changed.slot_count() > 0 {
-                            self.pane_layout_changed.emit(self.layout.ratios().to_vec());
-                        }
-                    }
-                }
+            crate::event::Event::MouseMove { pos } if self.drag_session.is_some() => {
+                self.update_handle_drag(*pos);
             }
-            crate::event::Event::MouseRelease { pos: _, button } if *button == 1 => {
-                // Drag ended - clear drag state and normalize
-                self.drag_state = None;
-                self.layout.normalize_ratios();
-                if self.pane_layout_changed.slot_count() > 0 {
-                    self.pane_layout_changed.emit(self.layout.ratios().to_vec());
-                }
+            crate::event::Event::MouseRelease { button, .. } if *button == 1 => {
+                self.end_handle_drag();
             }
-            _ => { /* Other events are not relevant */ }
+            _ => {}
         }
         if let Some(ref reg) = self.registry {
             let target = match event {
@@ -355,10 +312,164 @@ impl crate::event::EventHandler for Splitter {
     }
 }
 
+impl Splitter {
+    /// The splitter's extent along the axis its handles travel, in pixels.
+    ///
+    /// A horizontal splitter divides width; a vertical one divides height. Named
+    /// once so the three drag helpers cannot disagree about which dimension a
+    /// handle moves in.
+    fn primary_extent(&self) -> f32 {
+        let rect = self.base.geometry();
+        if self.orientation() == Orientation::Horizontal {
+            rect.width as f32
+        } else {
+            rect.height as f32
+        }
+    }
+
+    /// The pointer's position along the handle axis, relative to the widget.
+    fn primary_offset(&self, pos: crate::core::Point) -> f32 {
+        let rect = self.base.geometry();
+        if self.orientation() == Orientation::Horizontal {
+            pos.x as f32 - rect.x as f32
+        } else {
+            pos.y as f32 - rect.y as f32
+        }
+    }
+
+    /// Starts a handle drag when `pos` lands on a divider.
+    ///
+    /// Opens a [`DragSession`] — the shared state machine — and records the
+    /// splitter-specific snapshot beside it. Pressing away from any divider leaves
+    /// no session, so a subsequent move does not resize anything.
+    fn begin_handle_drag(&mut self, pos: crate::core::Point) {
+        const HANDLE_WIDTH: f32 = 5.0;
+
+        if let Some(index) = self.pane_rects().iter().position(|(_, pane)| {
+            pos.x >= pane.x
+                && pos.x < pane.x + pane.width as i32
+                && pos.y >= pane.y
+                && pos.y < pane.y + pane.height as i32
+        }) {
+            self.active_pane = Some(index);
+        }
+
+        let total = self.primary_extent();
+        let pos_primary = self.primary_offset(pos);
+        let mut accumulated = 0.0;
+        for index in 0..self.pane_count().saturating_sub(1) {
+            if let Some(ratio) = self.ratio(index) {
+                accumulated += ratio * total;
+            }
+            if (pos_primary - accumulated).abs() <= HANDLE_WIDTH / 2.0 {
+                // The payload names the handle, so a future drop target can tell
+                // which divider the drag came from.
+                let payload =
+                    DragPayload::new(SPLITTER_DRAG_TYPE, index.to_string()).with_origin(pos);
+                self.drag_session = Some(DragSession::begin(payload, pos));
+                self.drag_state = Some(HandleDrag {
+                    handle_index: index,
+                    start_ratios: self.layout.ratios().to_vec(),
+                });
+                break;
+            }
+        }
+    }
+
+    /// Applies a move to the ratios of the handle currently being dragged.
+    ///
+    /// The delta is measured from the **session's** start, not from the previous
+    /// frame, so the rule is absolute: a move that is replayed (a coalesced event,
+    /// a re-delivery) produces the same layout rather than doubling the change.
+    fn update_handle_drag(&mut self, pos: crate::core::Point) {
+        // The session is touched first, then dropped: the ratio update needs
+        // `self.layout` mutably, so holding a borrow of `self.drag_session` across
+        // it would not compile. Reading what is needed up front also makes the
+        // function's inputs explicit.
+        let (is_active, start) = {
+            let Some(session) = self.drag_session.as_mut() else {
+                return;
+            };
+            // The drag only becomes active past the threshold; before that the
+            // gesture is still a candidate click and must not resize anything.
+            session.update(pos, SPLITTER_DRAG_THRESHOLD);
+            (session.is_active(), session.start())
+        };
+        if !is_active {
+            return;
+        }
+        let Some(snapshot) = self.drag_state.clone() else {
+            return;
+        };
+
+        let total = self.primary_extent();
+        if total <= 0.0 {
+            return;
+        }
+        // Delta is taken from the session's recorded start, so a caller cannot
+        // invent one and so a re-delivered move is idempotent.
+        let delta = self.primary_offset(pos) - self.primary_offset(start);
+        let index = snapshot.handle_index;
+        let left = snapshot.start_ratios.get(index).copied().unwrap_or(0.0);
+        let right = snapshot.start_ratios.get(index + 1).copied().unwrap_or(0.0);
+
+        // Convert pixels to ratio units, clamp both sides at zero so a handle can
+        // reach its neighbour's edge but not cross it, then rescale the pair back
+        // to the weight it started with. That rescale is what keeps the *other*
+        // panes exactly as they were: only the two adjacent ratios move.
+        let ratio_delta = delta / total;
+        let new_left = (left + ratio_delta).max(0.0);
+        let new_right = (right - ratio_delta).max(0.0);
+        let pair_sum = left + right;
+        if pair_sum <= 0.0 {
+            return;
+        }
+        let new_pair_sum = new_left + new_right;
+        // Both sides pinned at zero (a zero-width pane pair) has no scale to
+        // recover; leaving the ratios alone is the honest answer rather than
+        // dividing by zero.
+        if new_pair_sum <= 0.0 {
+            return;
+        }
+        let scale = pair_sum / new_pair_sum;
+        self.layout.set_ratio(index, new_left * scale);
+        self.layout.set_ratio(index + 1, new_right * scale);
+        if self.pane_layout_changed.slot_count() > 0 {
+            self.pane_layout_changed.emit(self.layout.ratios().to_vec());
+        }
+    }
+
+    /// Ends the handle drag, normalising the ratios and clearing the session.
+    ///
+    /// The normalisation is what keeps the ratios summing to one after a series of
+    /// rescaled pairs, so a later `ratio(i)` reads a meaningful fraction rather
+    /// than an unnormalised weight.
+    fn end_handle_drag(&mut self) {
+        if self.drag_session.take().is_none() {
+            return;
+        }
+        self.drag_state = None;
+        self.layout.normalize_ratios();
+        if self.pane_layout_changed.slot_count() > 0 {
+            self.pane_layout_changed.emit(self.layout.ratios().to_vec());
+        }
+    }
+
+    /// Whether a handle drag is currently in progress.
+    ///
+    /// Public so a caller (or a test) can observe the drag state without reading
+    /// the private session, which is what lets the drag be asserted rather than
+    /// inferred from the ratios it produced.
+    pub fn is_dragging_handle(&self) -> bool {
+        self.drag_session.is_some()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::{Orientation, Rect};
+    use crate::event::EventHandler as _;
     use crate::object::ObjectId;
 
     #[test]
@@ -386,5 +497,160 @@ mod tests {
         let mut sp = Splitter::new(Rect::new(0, 0, 300, 200));
         sp.set_orientation(Orientation::Vertical);
         assert_eq!(sp.orientation(), Orientation::Vertical);
+    }
+
+    // ── A-3: the handle drag now runs on `DragSession` ─────────────────────
+
+    /// Two equal panes across a 300px horizontal splitter.
+    fn two_pane_splitter() -> Splitter {
+        let mut sp = Splitter::new(Rect::new(0, 0, 300, 200));
+        sp.add_pane(1, 1);
+        sp.add_pane(2, 1);
+        sp
+    }
+
+    /// The x coordinate of the divider between two equal panes.
+    ///
+    /// Derived from the layout rather than hard-coded, so the test keeps describing
+    /// "the divider" if the layout rule changes.
+    fn divider_x(sp: &Splitter) -> i32 {
+        let total = sp.geometry().width as f32;
+        (sp.ratio(0).unwrap_or(0.0) * total).round() as i32 + sp.geometry().x
+    }
+
+    #[test]
+    fn splitter_drag_opens_and_closes_a_session() {
+        let mut sp = two_pane_splitter();
+        assert!(!sp.is_dragging_handle());
+
+        sp.handle_event(&crate::event::Event::mouse_press(divider_x(&sp), 100, 1));
+        assert!(sp.is_dragging_handle(), "pressing the divider opens a drag session");
+
+        sp.handle_event(&crate::event::Event::mouse_release(50, 100, 1));
+        assert!(!sp.is_dragging_handle(), "releasing closes it");
+    }
+
+    #[test]
+    fn splitter_press_away_from_a_divider_opens_no_session() {
+        let mut sp = two_pane_splitter();
+        // x=20 is inside the first pane, nowhere near the divider.
+        sp.handle_event(&crate::event::Event::mouse_press(20, 100, 1));
+        assert!(!sp.is_dragging_handle());
+    }
+
+    #[test]
+    fn splitter_drag_moves_the_ratio_towards_the_pointer() {
+        let mut sp = two_pane_splitter();
+        let before = sp.ratio(0).expect("ratio 0");
+        let divider = divider_x(&sp);
+
+        sp.handle_event(&crate::event::Event::mouse_press(divider, 100, 1));
+        // Drag 60px to the right: the first pane must grow.
+        sp.handle_event(&crate::event::Event::mouse_move(divider + 60, 100));
+        let during = sp.ratio(0).expect("ratio 0");
+
+        assert!(during > before, "a rightward drag grows the leading pane: {before} -> {during}");
+    }
+
+    #[test]
+    fn splitter_drag_below_the_threshold_does_not_resize() {
+        let mut sp = two_pane_splitter();
+        let before = sp.ratio(0).expect("ratio 0");
+        let divider = divider_x(&sp);
+
+        sp.handle_event(&crate::event::Event::mouse_press(divider, 100, 1));
+        // One pixel is under the 2px drag threshold: still a click.
+        sp.handle_event(&crate::event::Event::mouse_move(divider + 1, 100));
+        assert_eq!(
+            sp.ratio(0).expect("ratio 0"),
+            before,
+            "a sub-threshold move must not resize anything"
+        );
+    }
+
+    #[test]
+    fn splitter_drag_cannot_invert_the_pane_pair() {
+        let mut sp = two_pane_splitter();
+        let divider = divider_x(&sp);
+        // The two panes start with equal weights; the pair's total is what a drag
+        // must preserve.
+        let start_pair_sum = sp.ratio(0).expect("ratio 0") + sp.ratio(1).expect("ratio 1");
+
+        sp.handle_event(&crate::event::Event::mouse_press(divider, 100, 1));
+        // Drag far past the far edge: the first pane may reach the whole weight but
+        // the second may not become negative.
+        sp.handle_event(&crate::event::Event::mouse_move(divider + 500, 100));
+        let first = sp.ratio(0).expect("ratio 0");
+        let second = sp.ratio(1).expect("ratio 1");
+        assert!(first >= 0.0, "a ratio cannot go negative: {first}");
+        assert!(second >= 0.0, "a ratio cannot go negative: {second}");
+        assert_eq!(second, 0.0, "dragging past the edge collapses the trailing pane");
+        // The *weights* are preserved during the drag; `normalize_ratios` on
+        // release is what turns them into fractions. A drag that broke this would
+        // silently change the split of every other pane in the widget.
+        assert!(
+            (first + second - start_pair_sum).abs() < 0.01,
+            "a drag preserves the pair's total weight: {first} + {second} vs {start_pair_sum}"
+        );
+
+        // And releasing normalises them, so a later read is a real fraction.
+        sp.handle_event(&crate::event::Event::mouse_release(divider + 500, 100, 1));
+        let first = sp.ratio(0).expect("ratio 0");
+        let second = sp.ratio(1).expect("ratio 1");
+        assert!(
+            (first + second - 1.0).abs() < 0.01,
+            "releasing normalises the pair to one: {first} + {second} = {}",
+            first + second
+        );
+        assert!(first > 0.99, "the leading pane took the whole width: {first}");
+    }
+
+    #[test]
+    fn splitter_orientation_selects_which_axis_a_handle_moves_on() {
+        let mut sp = Splitter::new(Rect::new(0, 0, 300, 200));
+        sp.set_orientation(Orientation::Vertical);
+        sp.add_pane(1, 1);
+        sp.add_pane(2, 1);
+
+        let total = sp.geometry().height as f32;
+        let divider_y = (sp.ratio(0).expect("ratio 0") * total).round() as i32;
+        let before = sp.ratio(0).expect("ratio 0");
+
+        sp.handle_event(&crate::event::Event::mouse_press(100, divider_y, 1));
+        sp.handle_event(&crate::event::Event::mouse_move(100, divider_y + 40));
+        assert!(sp.ratio(0).expect("ratio 0") > before, "a vertical splitter's handle moves on y");
+    }
+
+    #[test]
+    fn splitter_disabled_ignores_a_drag() {
+        let mut sp = two_pane_splitter();
+        let before = sp.ratio(0).expect("ratio 0");
+        let divider = divider_x(&sp);
+        sp.set_enabled(false);
+
+        sp.handle_event(&crate::event::Event::mouse_press(divider, 100, 1));
+        assert!(!sp.is_dragging_handle(), "a disabled splitter must not start a drag");
+        sp.handle_event(&crate::event::Event::mouse_move(divider + 60, 100));
+        assert_eq!(sp.ratio(0).expect("ratio 0"), before);
+    }
+
+    #[test]
+    fn splitter_repeated_move_is_idempotent() {
+        // The delta is measured from the session start, so delivering the same move
+        // twice must not double the resize. This is the property that makes a
+        // coalesced or re-delivered event harmless.
+        let mut sp = two_pane_splitter();
+        let divider = divider_x(&sp);
+
+        sp.handle_event(&crate::event::Event::mouse_press(divider, 100, 1));
+        sp.handle_event(&crate::event::Event::mouse_move(divider + 40, 100));
+        let once = sp.ratio(0).expect("ratio 0");
+        sp.handle_event(&crate::event::Event::mouse_move(divider + 40, 100));
+        let twice = sp.ratio(0).expect("ratio 0");
+
+        assert!(
+            (once - twice).abs() < f32::EPSILON,
+            "a re-delivered move must be a no-op: {once} vs {twice}"
+        );
     }
 }

@@ -790,18 +790,6 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(alloc_frugal))]
-        fn create_pager_page_view(
-            &self,
-            parent: ObjectId,
-            x: i32,
-            y: i32,
-            width: u32,
-            height: u32,
-        ) -> ObjectId {
-            self.mount_widget_of_kind(WidgetKind::PagerPageView, parent, "", x, y, width, height)
-        }
-
-        #[cfg(not(alloc_frugal))]
         fn create_pie_chart(
             &self,
             parent: ObjectId,
@@ -1169,18 +1157,6 @@ macro_rules! impl_modern_widgets {
             self.mount_widget_of_kind(WidgetKind::TextArea, parent, "", x, y, width, height)
         }
 
-        fn create_tile_view(
-            &self,
-            parent: ObjectId,
-            x: i32,
-            y: i32,
-            width: u32,
-            height: u32,
-        ) -> ObjectId {
-            self.mount_widget_of_kind(WidgetKind::TileView, parent, "", x, y, width, height)
-        }
-
-        #[cfg(not(alloc_frugal))]
         fn create_tooltip(
             &self,
             parent: ObjectId,

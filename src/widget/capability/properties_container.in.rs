@@ -23,6 +23,23 @@ macro_rules! impl_properties_container {
         ];
 
         #[cfg(not(alloc_frugal))]
+        pub(crate) const FRAME_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::enumerated(
+                "frame_shape",
+                true,
+                true,
+                &["no_frame", "box", "panel", "styled_panel", "hline", "vline", "win_panel"],
+            ),
+            PropertySchema::enumerated("frame_shadow", true, true, &["plain", "raised", "sunken"]),
+            PropertySchema::new("line_width", PropertyValueKind::Float, true, true),
+            PropertySchema::new("mid_line_width", PropertyValueKind::Float, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        #[cfg(not(alloc_frugal))]
         pub(crate) const SPLITTER_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::enumerated("orientation", true, true, &["horizontal", "vertical"]),
             PropertySchema::new("pane_count", PropertyValueKind::UInt, true, false),
@@ -59,6 +76,10 @@ macro_rules! impl_properties_container {
             ),
             PropertySchema::new("scroll_position_x", PropertyValueKind::Int, false, false),
             PropertySchema::new("scroll_position_y", PropertyValueKind::Int, false, false),
+            // The sticky list is written through `add_sticky_region` /
+            // `clear_sticky_regions`; the count is what the property layer reports,
+            // following the same convention as `Meter`'s threshold bands.
+            PropertySchema::new("sticky_region_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -130,15 +151,6 @@ macro_rules! impl_properties_container {
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
-        pub(crate) const TILE_VIEW_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema::new("current_page", PropertyValueKind::UInt, true, true),
-            PropertySchema::new("page_count", PropertyValueKind::UInt, true, true),
-            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
-            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
-            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
-            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
-        ];
-
         #[cfg(not(alloc_frugal))]
         pub(crate) const STEPPER_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("value", PropertyValueKind::Int, true, true),
@@ -175,22 +187,27 @@ macro_rules! impl_properties_container {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const CAROUSEL_PROPERTIES: &[PropertySchema] = &[
-            // The page index, the derived page count, and the current page's title.
-            // These are the names the control's own contract publishes; `page_count`
-            // alone would leave `current_index` and the title unreachable and the
-            // count spelled differently from the contract.
+            // The page position, the derived page count, the visible page's title,
+            // wrap-around, the autoplay interval, and the two indicator enums.
             PropertySchema::new("current_index", PropertyValueKind::UInt, true, true),
             PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("current_page_title", PropertyValueKind::String, true, false),
-            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
-            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
-            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
-            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
-        ];
-
-        #[cfg(not(alloc_frugal))]
-        pub(crate) const PAGER_PAGE_VIEW_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema::new("current_page", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("loop", PropertyValueKind::Bool, true, true),
+            // Milliseconds; `null` means autoplay is off, which is why this is not
+            // split into a bool and an interval that could contradict each other.
+            PropertySchema::new("autoplay_interval", PropertyValueKind::UInt, true, true),
+            PropertySchema::enumerated(
+                "indicator_style",
+                true,
+                true,
+                &["dots", "bars", "numeric", "hidden"],
+            ),
+            PropertySchema::enumerated(
+                "indicator_position",
+                true,
+                true,
+                &["bottom", "top", "left", "right"],
+            ),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
