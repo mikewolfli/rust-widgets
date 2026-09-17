@@ -35,6 +35,10 @@
 //! - **PDF**: PDF uses bottom-left origin, converted from screen coordinates when rendering
 //! - **SVG**: Uses same top-left origin as screen coordinates, no conversion needed
 //! - **Widgets**: All widget positioning uses screen coordinates
+//!
+//! # Reachability
+//!
+//! **State:** Production callers: `src/lib.rs:1`; 372 files reference it (every module imports `Rect`, `Color` or `ObjectId` from here).
 mod alignment;
 mod color;
 /// Coordinate conversions and transforms between the screen, Cartesian, and

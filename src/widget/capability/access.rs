@@ -482,6 +482,18 @@ pub fn default_widget_property_default_value(
             "focused_row" => CapabilityValue::Null,
             "selection_mode" => CapabilityValue::String("single".to_string()),
             "view_mode" => CapabilityValue::String("list".to_string()),
+            // The names below belong to the capabilities that share this kind
+            // (`command_palette`, `notification_center`). Defaults are keyed by
+            // kind, so the arm must answer for every capability that reports it;
+            // each control's own `get` answers its real value.
+            "query" => CapabilityValue::String(String::new()),
+            "entry_count" => CapabilityValue::UInt(0),
+            "filtered_count" => CapabilityValue::UInt(0),
+            "highlighted_index" => CapabilityValue::Null,
+            "item_count" => CapabilityValue::UInt(0),
+            "unread_count" => CapabilityValue::UInt(0),
+            "selected_index" => CapabilityValue::Null,
+            "row_height" => CapabilityValue::UInt(24),
             _ => return None,
         },
         WidgetKind::TreeView => match property_name {
@@ -516,6 +528,12 @@ pub fn default_widget_property_default_value(
             "sort_specs" => CapabilityValue::String(String::new()),
             "filters" => CapabilityValue::String(String::new()),
             "visible_window" => CapabilityValue::String("0:0:0:0".to_string()),
+            // `diff_viewer` shares this kind; see the `ListView` note above.
+            "left_text" => CapabilityValue::String(String::new()),
+            "right_text" => CapabilityValue::String(String::new()),
+            "line_count" => CapabilityValue::UInt(0),
+            "change_count" => CapabilityValue::UInt(0),
+            "selected_index" => CapabilityValue::Null,
             _ => return None,
         },
         WidgetKind::DataView => match property_name {
@@ -525,6 +543,57 @@ pub fn default_widget_property_default_value(
             "row_height" => CapabilityValue::UInt(20),
             "overscan" => CapabilityValue::UInt(2),
             "selected_row" => CapabilityValue::Null,
+            _ => return None,
+        },
+        WidgetKind::GridTable => match property_name {
+            "has_data_source" => CapabilityValue::Bool(false),
+            "row_count" => CapabilityValue::UInt(0),
+            "column_count" => CapabilityValue::UInt(0),
+            "scroll_row" => CapabilityValue::UInt(0),
+            "scroll_column" => CapabilityValue::UInt(0),
+            "row_height" => CapabilityValue::UInt(24),
+            "selection_mode" => CapabilityValue::String("cell".to_string()),
+            "sort_spec_count" => CapabilityValue::UInt(0),
+            "selected_cell" => CapabilityValue::Null,
+            _ => return None,
+        },
+        WidgetKind::NumberPicker => match property_name {
+            "value" => CapabilityValue::Int(0),
+            "minimum" => CapabilityValue::Int(0),
+            "maximum" => CapabilityValue::Int(100),
+            "step" => CapabilityValue::Int(1),
+            "wrap" => CapabilityValue::Bool(false),
+            "suffix" => CapabilityValue::String(String::new()),
+            "row_count" => CapabilityValue::UInt(101),
+            "selected_row" => CapabilityValue::UInt(0),
+            "row_height" => CapabilityValue::UInt(28),
+            _ => return None,
+        },
+        WidgetKind::OtpInput => match property_name {
+            "value" => CapabilityValue::String(String::new()),
+            "length" => CapabilityValue::UInt(6),
+            "masked" => CapabilityValue::Bool(false),
+            "separator" => CapabilityValue::String(String::new()),
+            "focused_index" => CapabilityValue::UInt(0),
+            "is_complete" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
+        WidgetKind::Banner => match property_name {
+            "text" => CapabilityValue::String(String::new()),
+            "severity" => CapabilityValue::String("info".to_string()),
+            "dismissible" => CapabilityValue::Bool(true),
+            "dismissed" => CapabilityValue::Bool(false),
+            "action_count" => CapabilityValue::UInt(0),
+            _ => return None,
+        },
+        WidgetKind::Pagination => match property_name {
+            "total" => CapabilityValue::UInt(0),
+            "page_size" => CapabilityValue::UInt(10),
+            "page" => CapabilityValue::UInt(0),
+            "page_count" => CapabilityValue::UInt(1),
+            "last_page" => CapabilityValue::UInt(0),
+            "sibling_count" => CapabilityValue::UInt(1),
+            "show_nav_buttons" => CapabilityValue::Bool(true),
             _ => return None,
         },
         WidgetKind::Menu => match property_name {
@@ -566,6 +635,12 @@ pub fn default_widget_property_default_value(
             "cursor_line" => CapabilityValue::UInt(0),
             "cursor_column" => CapabilityValue::UInt(0),
             "marker_count" => CapabilityValue::UInt(0),
+            // `rich_edit` and `code_editor` share this kind; see the `ListView` note.
+            "read_only" => CapabilityValue::Bool(false),
+            // `markdown_editor` shares this kind; see the `ListView` note above.
+            "preview_mode" => CapabilityValue::Bool(false),
+            "word_count" => CapabilityValue::UInt(0),
+            "heading_count" => CapabilityValue::UInt(0),
             _ => return None,
         },
         WidgetKind::Chart => match property_name {
@@ -574,6 +649,14 @@ pub fn default_widget_property_default_value(
             "selected_marker_id" => CapabilityValue::Null,
             "viewport_start" => CapabilityValue::Int(0),
             "viewport_end" => CapabilityValue::Int(100),
+            // `timeline_widget` shares this kind; see the `ListView` note above.
+            "item_count" => CapabilityValue::UInt(0),
+            "selected_index" => CapabilityValue::Null,
+            "row_height" => CapabilityValue::UInt(24),
+            // `chart` shares this kind; see the `ListView` note above.
+            "chart_type" => CapabilityValue::String("bar".to_string()),
+            "point_count" => CapabilityValue::UInt(0),
+            "label_count" => CapabilityValue::UInt(0),
             _ => return None,
         },
         WidgetKind::TextEdit => match property_name {
@@ -587,7 +670,12 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
 
+        // `Canvas` and `MapView` share `WidgetKind::Canvas`; defaults are keyed by
+        // kind, so this arm answers for both controls.
         WidgetKind::Canvas => match property_name {
+            // `canvas`
+            "command_count" => CapabilityValue::UInt(0),
+            // `map_view`
             "center_x" => CapabilityValue::Float(0.0),
             "center_y" => CapabilityValue::Float(0.0),
             "zoom" => CapabilityValue::Float(1.0),
@@ -766,6 +854,10 @@ pub fn default_widget_property_default_value(
         WidgetKind::PopupWindow => match property_name {
             "title" => CapabilityValue::String(String::new()),
             "has_content" => CapabilityValue::Bool(false),
+            // `toast_stack` shares this kind; see the `ListView` note above.
+            "toast_count" => CapabilityValue::UInt(0),
+            "selected_id" => CapabilityValue::Null,
+            "row_height" => CapabilityValue::UInt(30),
             _ => return None,
         },
         // ── Container widgets ───────────────────────────────

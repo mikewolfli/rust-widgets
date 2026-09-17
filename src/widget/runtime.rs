@@ -621,6 +621,26 @@ pub fn mounted_count() -> usize {
     MOUNTED.try_with(|map| map.borrow().len()).unwrap_or(0)
 }
 
+/// Runs `f` against every widget mounted on this thread.
+///
+/// # Why this exists
+///
+/// Some operations change a *global* fact rather than one control — switching the
+/// active theme, or toggling the high-contrast override — and those have to reach
+/// the controls that already exist, not just the ones created afterwards.
+/// Enumerating here keeps the registry's internals private: a caller asks for the
+/// sweep rather than reaching into the map.
+///
+/// The visit order is unspecified, and `f` must not mount or unmount widgets (the
+/// map is borrowed for the duration).
+pub fn for_each_mounted_widget<R>(mut f: impl FnMut(ObjectId, &mut dyn Widget) -> R) {
+    let _ = MOUNTED.try_with(|map| {
+        for (id, entry) in map.borrow_mut().iter_mut() {
+            f(*id, entry.widget.as_mut());
+        }
+    });
+}
+
 /// Returns the geometry of a mounted widget, or `None` when it is not mounted.
 pub fn geometry_of(id: ObjectId) -> Option<Rect> {
     MOUNTED

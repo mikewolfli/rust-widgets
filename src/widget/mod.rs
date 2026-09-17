@@ -35,6 +35,10 @@
 //! `full_widgets` alone. Code that must build everywhere should depend only on
 //! [`Widget`] plus the capability layer, and refer to concrete kinds by name at
 //! the factory instead of by type.
+//!
+//! # Reachability
+//!
+//! **State:** Production callers: `src/lib.rs:1`; 73 files reference it (the entire control library).
 
 // Base widget types
 /// The shared state block every widget embeds: id, kind, geometry, visibility,
@@ -142,6 +146,7 @@ pub use input_widgets::{
     inplace_editor::InplaceEditor,
     masked_edit::MaskedEdit,
     multi_select_combo_box::{MultiSelectComboBox, MultiSelectItem},
+    otp_input::OtpInput,
     range_slider::{RangeSlider, RangeSliderOrientation},
     rich_edit::RichEdit,
     search_bar::SearchBar,
@@ -156,6 +161,7 @@ pub use input_widgets::{
     keyboard::Keyboard,
     lineedit::{EchoMode, LineEdit},
     listbox::{ListBox, SelectionMode},
+    number_picker::NumberPicker,
     spinbox::SpinBox,
     textarea::TextArea,
 };
@@ -251,6 +257,8 @@ pub use nav_widgets::navigation_stack::NavigationEvent;
 #[cfg(full_widgets)]
 pub use nav_widgets::navigation_stack::NavigationStack;
 #[cfg(full_widgets)]
+pub use nav_widgets::pagination::Pagination;
+#[cfg(full_widgets)]
 pub use nav_widgets::tab_view::TabPage;
 #[cfg(full_widgets)]
 pub use nav_widgets::tab_view::TabView;
@@ -279,6 +287,8 @@ pub use media_widgets::rive_widget::{RiveInput, RiveInputValue, RiveWidget};
 #[cfg(full_widgets)]
 pub use media_widgets::video_player::VideoPlayer;
 // Re-export overlay widgets
+#[cfg(full_widgets)]
+pub use overlay_widgets::banner::Banner;
 #[cfg(full_widgets)]
 pub use overlay_widgets::fab::FAB;
 #[cfg(full_widgets)]

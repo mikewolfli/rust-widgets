@@ -78,6 +78,7 @@ public final class RustWidgetsJNI {
 
     public static native void nativeShowWidget(long widgetId);
     public static native void nativeHideWidget(long widgetId);
+    public static native void nativeDestroyWidget(long widgetId);
     public static native void nativeSetWidgetText(long widgetId, String text);
     public static native String nativeGetWidgetText(long widgetId);
     public static native void nativeSetWidgetEnabled(long widgetId, boolean enabled);

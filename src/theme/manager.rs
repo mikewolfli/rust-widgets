@@ -460,8 +460,16 @@ pub fn global_theme_manager() -> MutexGuard<'static, ThemeManager> {
 /// would race and see each other's writes. Existing precedent: the embedded
 /// profile's `embedded_test_guard`, added for the same reason. Compiled only for
 /// tests, so it costs a release build nothing.
-#[cfg(test)]
-pub(crate) fn theme_test_guard() -> std::sync::MutexGuard<'static, ()> {
+/// Serialises tests that mutate the process-wide theme registry.
+///
+/// The registry is shared state, so two tests that each switch the active theme
+/// would race and see each other's writes. Existing precedent: the embedded
+/// profile's `embedded_test_guard`, added for the same reason.
+///
+/// Public rather than `#[cfg(test)]` because integration tests are separate crates
+/// and cannot see crate-test-only items, yet they exercise the same registry. Not
+/// for production use — an application has no other tests to race against.
+pub fn theme_test_guard() -> std::sync::MutexGuard<'static, ()> {
     static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
     GUARD.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }

@@ -7,7 +7,11 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Notification severity level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -192,6 +196,21 @@ impl NotificationCenter {
         let index = ((pos.y - rect.y) / self.row_height as i32) as usize;
         (index < self.items.len()).then_some(index)
     }
+
+    /// Returns the height of one notification row, in logical pixels.
+    pub fn row_height(&self) -> u32 {
+        self.row_height
+    }
+
+    /// Sets the height of one notification row, in logical pixels.
+    ///
+    /// Clamped to at least one pixel so a row can never collapse to zero height
+    /// and become unclickable.
+    pub fn set_row_height(&mut self, row_height: u32) {
+        self.row_height = row_height.max(1);
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
 }
 
 impl Widget for NotificationCenter {
@@ -207,6 +226,61 @@ impl Widget for NotificationCenter {
         crate::core::Size::new(300, 400)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `NotificationCenter`'s property contract.
+///
+/// `unread_count` and `item_count` are derived from the live list, and
+/// `selected_index` is read-only because selection emits `notification_selected`
+/// — the counts would go stale if the list were mutated behind the signals.
+impl WidgetProperties for NotificationCenter {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "item_count" => Ok(CapabilityValue::UInt(self.items().len() as u64)),
+            "unread_count" => Ok(CapabilityValue::UInt(self.unread_count() as u64)),
+            "selected_index" => {
+                let index = self
+                    .items()
+                    .iter()
+                    .position(|item| Some(item.id.as_str()) == self.selected_id());
+                match index {
+                    Some(index) => Ok(CapabilityValue::UInt(index as u64)),
+                    None => Ok(CapabilityValue::Null),
+                }
+            }
+            "row_height" => Ok(CapabilityValue::UInt(self.row_height() as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "row_height" => match value {
+                CapabilityValue::UInt(height) => {
+                    let height =
+                        u32::try_from(height).map_err(|_| CapabilityAccessError::TypeMismatch)?;
+                    self.set_row_height(height);
+                    Ok(())
+                }
+                _ => Err(CapabilityAccessError::TypeMismatch),
+            },
+            "item_count" | "unread_count" | "selected_index" => {
+                Err(CapabilityAccessError::ReadOnlyProperty)
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![
+            "item_count",
+            "unread_count",
+            "selected_index",
+            "row_height",
+            BASE_PROPERTY_NAMES
+        ]
+    }
 }
 
 impl EventHandler for NotificationCenter {

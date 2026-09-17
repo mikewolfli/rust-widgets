@@ -10,12 +10,30 @@
 //! - `ThemeManager` is an ordinary value: a registry of themes and a selector
 //!   over them. A caller may own one for an isolated preview.
 //! - `global_theme_manager` is the process-wide registry that makes a theme
-//!   *apply*. The JSON loader merges `resolved_theme_style` under each node's own
-//!   style, and `crate::style::global_stylesheet_manager` layers CSS on top, giving
-//!   the documented precedence: theme → stylesheet → explicit style.
+//!   *apply*.
 //!
-//! Without the global accessor the registry was unreachable from the rest of the
-//! crate, and every control kept the colours its constructor hardcoded.
+//! # How a control picks the theme up
+//!
+//! Every widget created through the library goes through one of two funnels —
+//! `crate::mount_widget_object` (used by the C ABI and the window API) and
+//! `CustomPaintControlBackend::mount_widget_of_kind` — and both call
+//! `apply::apply_active_theme`, so a control is themed whichever way it was created.
+//! The JSON loader additionally merges `resolved_theme_style` per node so a node's
+//! `class` can select a role.
+//!
+//! Precedence everywhere: **explicit style → theme → the widget's own default**.
+//! `crate::style::global_stylesheet_manager` layers CSS on top of that, giving
+//! theme → stylesheet → explicit style for the declarative path.
+//!
+//! Applying the theme only in the JSON loader -- which has no production callers --
+//! meant a theme switch did nothing for the controls an application actually
+//! creates through the C ABI.
+//!
+//! # Reachability
+//!
+//! **State:** Exposed over the C ABI (`rw_set_theme`, `rw_theme_names`, `rw_set_high_contrast`). Also applied automatically by both creation funnels.
+mod apply;
+pub(crate) use apply::apply_active_theme;
 mod manager;
 mod types;
 
@@ -26,8 +44,16 @@ mod types;
 /// path instead of two.
 pub use crate::style::HighContrastMode;
 /// Serialises tests that switch the process-wide theme; see its own docs.
-#[cfg(test)]
-pub(crate) use manager::theme_test_guard;
+///
+/// Exported (not `#[cfg(test)]`) because integration tests live in **separate
+/// crates** and therefore cannot see a crate-test-only item. Those tests exercise
+/// the same process-wide registry, so they need the same guard — hiding it behind
+/// `cfg(test)` left them with no way to serialise at all, which is how one test's
+/// theme leaked into another's assertion.
+///
+/// Not intended for production use: an application does not have "other tests" to
+/// race against, and holding this would only couple unrelated code.
+pub use manager::theme_test_guard;
 pub use manager::{
     global_high_contrast, global_theme_manager, resolved_theme_style, set_global_high_contrast,
     ThemeManager,

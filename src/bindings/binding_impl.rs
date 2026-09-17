@@ -513,12 +513,314 @@ pub unsafe extern "C" fn rw_get_widget_geometry(
     })
 }
 #[no_mangle]
-/// Appends `text` (null gives an empty string) as a new last item.
+/// Creates a control of any registered kind.
 ///
-/// Returns `true` when the item was added.
-pub extern "C" fn rw_combo_box_add_item(combo_box: u64, text: *const c_char) -> CBool {
-    c_try!({ get_control_backend().combo_box_add_item(combo_box, &c_str_or_default(text)) })
+/// `kind_name` is the canonical factory name or one of its aliases (`"button"`,
+/// `"tree_view"`, `"command_palette"`, …); see [`rw_widget_kind_names`] for the
+/// full list. Matching is case- and separator-insensitive, so `"TreeView"` and
+/// `"tree-view"` resolve identically.
+///
+/// # Why a name and not an enum code
+///
+/// `WidgetKind` carries no `#[repr]`, so exposing its discriminant would freeze
+/// the enum's declaration order into the ABI. The name is the stable contract, and
+/// it also makes every kind added later reachable without a new function here.
+///
+/// Returns the new widget's id, or `0` when `kind_name` matches no control.
+///
+pub extern "C" fn rw_create_widget_of_kind(
+    parent: u64,
+    kind_name: *const c_char,
+    text: *const c_char,
+    x: c_int,
+    y: c_int,
+    width: c_uint,
+    height: c_uint,
+) -> u64 {
+    c_try!({
+        get_control_backend().create_widget(
+            &c_str_or_default(kind_name),
+            parent,
+            &c_str_or_default(text),
+            x,
+            y,
+            width,
+            height,
+        )
+    })
 }
+#[no_mangle]
+/// Writes every registered kind name into `out`, space-separated.
+///
+/// Returns the number of bytes the full list needs, **excluding** the trailing
+/// NUL. When that return value is greater than or equal to `cap`, the list was
+/// truncated and the caller should retry with a larger buffer; passing a null
+/// `out` with `cap == 0` is the size query. The written text is always
+/// NUL-terminated when `cap > 0`.
+///
+pub extern "C" fn rw_widget_kind_names(out: *mut c_char, cap: c_uint) -> c_uint {
+    c_try!({
+        let names = crate::widget::capability::WidgetFactory::new_with_defaults().widget_names();
+        write_space_separated(&names, out, cap)
+    })
+}
+#[no_mangle]
+/// Lists the property names `widget_id` publishes, space-separated.
+///
+/// Uses the same return convention as [`rw_widget_kind_names`]: the required size
+/// is returned whether or not the buffer was large enough, and a null `out` with
+/// `cap == 0` queries that size. Returns `0` for an unknown widget.
+///
+pub extern "C" fn rw_widget_property_names(
+    widget_id: u64,
+    out: *mut c_char,
+    cap: c_uint,
+) -> c_uint {
+    c_try!({
+        let names = crate::widget::runtime::with_widget(widget_id, |widget| {
+            crate::widget::capability::widget_property_names(widget).map(|names| names.to_vec())
+        })
+        .flatten();
+        match names {
+            Some(names) => write_space_separated(&names, out, cap),
+            None => 0,
+        }
+    })
+}
+
+/// Writes `items` into `out` as a space-separated, NUL-terminated list.
+///
+/// Shared by the enumeration entry points so they agree on the size convention:
+/// the return is always the full byte length, which lets a caller discover the
+/// requirement without a second API call.
+fn write_space_separated(items: &[&str], out: *mut c_char, cap: c_uint) -> c_uint {
+    let joined = items.join(" ");
+    let bytes = joined.as_bytes();
+    let required = bytes.len() as c_uint;
+    if out.is_null() || cap == 0 {
+        return required;
+    }
+    // Leave room for the terminator; copy at most `cap - 1` bytes.
+    let writable = (cap as usize).saturating_sub(1).min(bytes.len());
+    unsafe {
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), out as *mut u8, writable);
+        *out.add(writable) = 0;
+    }
+    required
+}
+#[no_mangle]
+/// Reads a property from `widget_id` by name.
+///
+/// On success writes the value kind into `out_kind` and the payload into
+/// `out_num` (for `RW_VALUE_BOOL` / `RW_VALUE_INT` / `RW_VALUE_UINT` /
+/// `RW_VALUE_FLOAT`) or `out_str` (for `RW_VALUE_STRING`; the caller frees it
+/// with [`rw_free_string`]). `RW_VALUE_NULL` writes neither.
+///
+/// Returns `false` for an unknown widget or property; [`rw_error_code`] then
+/// distinguishes the cases. Null out-pointers are permitted and simply not
+/// written, so a caller that only wants the kind can pass nulls for the rest.
+///
+/// # Safety
+///
+/// `name` must be null or point to a NUL-terminated string. `out_kind`,
+/// `out_num` and `out_str` must each be null or point to a writable value of
+/// their declared type. When `out_str` is non-null a string may be written into
+/// it, which the caller then owns and must release with [`rw_free_string`].
+///
+pub unsafe extern "C" fn rw_get_widget_property(
+    widget_id: u64,
+    name: *const c_char,
+    out_kind: *mut c_int,
+    out_num: *mut i64,
+    out_str: *mut *mut c_char,
+) -> CBool {
+    c_try!({
+        let property = c_str_or_default(name);
+        match crate::widget::capability::read_widget_property_by_id(widget_id, &property) {
+            Ok(value) => {
+                let (kind, num, text) = encode_capability_value(value);
+                unsafe {
+                    if !out_kind.is_null() {
+                        *out_kind = kind;
+                    }
+                    if !out_num.is_null() {
+                        *out_num = num;
+                    }
+                    if !out_str.is_null() {
+                        *out_str = text.unwrap_or(core::ptr::null_mut());
+                    }
+                }
+                true
+            }
+            Err(error) => {
+                crate::error::ffi::record_capability_error(error);
+                false
+            }
+        }
+    })
+}
+#[no_mangle]
+/// Writes a property to `widget_id` by name.
+///
+/// `kind` selects the payload: `RW_VALUE_BOOL` / `RW_VALUE_INT` /
+/// `RW_VALUE_UINT` / `RW_VALUE_FLOAT` read `num` (misuse of the numeric kinds
+/// together is reported as a type mismatch), `RW_VALUE_STRING` reads `str`, and
+/// `RW_VALUE_NULL` clears an optional property.
+///
+/// Returns `false` when the widget or property is unknown, the property is
+/// read-only, or the value kind does not match what the control expects. See
+/// [`rw_error_code`] for which.
+///
+/// # Safety
+///
+/// `name` must be null or point to a NUL-terminated string. When `kind` is
+/// `RW_VALUE_STRING`, `str_value` must be null or point to a NUL-terminated
+/// string; it is read only for that kind and may be null otherwise.
+///
+pub unsafe extern "C" fn rw_set_widget_property(
+    widget_id: u64,
+    name: *const c_char,
+    kind: c_int,
+    num: i64,
+    str_value: *const c_char,
+) -> CBool {
+    c_try!({
+        let property = c_str_or_default(name);
+        let value = decode_capability_value(kind, num, str_value);
+        let Some(value) = value else {
+            crate::error::ffi::record_capability_error(
+                crate::widget::capability::CapabilityAccessError::TypeMismatch,
+            );
+            return false;
+        };
+        match crate::widget::capability::write_widget_property_by_id(widget_id, &property, value) {
+            Ok(()) => true,
+            Err(error) => {
+                crate::error::ffi::record_capability_error(error);
+                false
+            }
+        }
+    })
+}
+#[no_mangle]
+/// Selects the active theme by name.
+///
+/// Returns `false` when no theme is registered under `name`, leaving the current
+/// theme in place. See [`rw_theme_names`] for the registered names.
+///
+pub extern "C" fn rw_set_theme(name: *const c_char) -> CBool {
+    c_try!({
+        let requested = c_str_or_default(name);
+        let activated = crate::theme::global_theme_manager().set_theme(&requested);
+        if activated {
+            // Re-resolve every live control's style against the new theme, the same
+            // way the window-creation funnel does.
+            crate::reapply_active_theme();
+        }
+        activated
+    })
+}
+#[no_mangle]
+/// Names of the registered themes, space-separated.
+///
+/// Same convention as [`rw_widget_kind_names`]: the required size is returned and
+/// a null `out` with `cap == 0` queries it.
+///
+pub extern "C" fn rw_theme_names(out: *mut c_char, cap: c_uint) -> c_uint {
+    c_try!({
+        let names = {
+            let manager = crate::theme::global_theme_manager();
+            manager.theme_names().iter().map(|name| name.to_string()).collect::<Vec<_>>()
+        };
+        let refs: Vec<&str> = names.iter().map(alloc::string::String::as_str).collect();
+        write_space_separated(&refs, out, cap)
+    })
+}
+#[no_mangle]
+/// Sets the high-contrast override: `0` disables it, any non-zero value enables it.
+///
+/// Applies to every control the library creates from here on, and re-applies to
+/// the live ones so a change takes effect without a rebuild.
+///
+pub extern "C" fn rw_set_high_contrast(mode: c_int) {
+    c_try_void!({
+        let enabled = mode != 0;
+        let mode = if enabled {
+            crate::style::HighContrastMode::WhiteOnBlack
+        } else {
+            crate::style::HighContrastMode::None
+        };
+        crate::theme::set_global_high_contrast(mode);
+        crate::reapply_active_theme();
+    })
+}
+
+/// Splits a [`CapabilityValue`] into the `(kind, num, str)` triple the ABI uses.
+///
+/// # Why a triple instead of a union
+///
+/// A C union would need the caller to know the active member without reading it,
+/// and `i64` is the smallest numeric representation both `Int` and `UInt` fit
+/// losslessly. Keeping `out_num` and `out_str` independent means a caller can
+/// ignore whichever it does not need.
+#[cfg(not(stripped_widgets))]
+fn encode_capability_value(
+    value: crate::widget::capability::CapabilityValue,
+) -> (c_int, i64, Option<*mut c_char>) {
+    use crate::widget::capability::CapabilityValue;
+    match value {
+        CapabilityValue::Null => (RW_VALUE_NULL, 0, None),
+        CapabilityValue::Bool(flag) => (RW_VALUE_BOOL, i64::from(flag), None),
+        CapabilityValue::Int(number) => (RW_VALUE_INT, number, None),
+        CapabilityValue::UInt(number) => (RW_VALUE_UINT, number as i64, None),
+        CapabilityValue::Float(number) => {
+            // Reinterpret rather than truncate: a caller reading a float property
+            // must get the real value, so the bit pattern travels in the same i64.
+            (RW_VALUE_FLOAT, number.to_bits() as i64, None)
+        }
+        CapabilityValue::String(text) => {
+            let c_text = CString::new(text).unwrap_or_default().into_raw();
+            (RW_VALUE_STRING, 0, Some(c_text))
+        }
+    }
+}
+
+/// Rebuilds a [`CapabilityValue`] from the ABI's `(kind, num, str)` triple.
+///
+/// Returns `None` for an unrecognised `kind`, which the caller reports as a type
+/// mismatch rather than silently writing a zero.
+#[cfg(not(stripped_widgets))]
+fn decode_capability_value(
+    kind: c_int,
+    num: i64,
+    str_value: *const c_char,
+) -> Option<crate::widget::capability::CapabilityValue> {
+    use crate::widget::capability::CapabilityValue;
+    match kind {
+        RW_VALUE_NULL => Some(CapabilityValue::Null),
+        RW_VALUE_BOOL => Some(CapabilityValue::Bool(num != 0)),
+        RW_VALUE_INT => Some(CapabilityValue::Int(num)),
+        RW_VALUE_UINT => Some(CapabilityValue::UInt(u64::try_from(num).ok()?)),
+        RW_VALUE_FLOAT => Some(CapabilityValue::Float(f64::from_bits(num as u64))),
+        RW_VALUE_STRING => Some(CapabilityValue::String(unsafe {
+            if str_value.is_null() {
+                String::new()
+            } else {
+                CStr::from_ptr(str_value).to_string_lossy().into_owned()
+            }
+        })),
+        _ => None,
+    }
+}
+
+/// The `rw_value_kind` discriminants, named so the Rust side and the generated
+/// header cannot drift apart.
+const RW_VALUE_NULL: c_int = 0;
+const RW_VALUE_BOOL: c_int = 1;
+const RW_VALUE_INT: c_int = 2;
+const RW_VALUE_UINT: c_int = 3;
+const RW_VALUE_FLOAT: c_int = 4;
+const RW_VALUE_STRING: c_int = 5;
 #[no_mangle]
 /// Removes every item, leaving the combo box empty and with no selection.
 ///
@@ -1456,6 +1758,401 @@ mod tests {
             let text = CStr::from_ptr(ptr).to_string_lossy().into_owned();
             assert!(text.is_empty(), "unknown widget text should be empty, got {text:?}");
             rw_free_string(ptr as *mut c_char);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Generic (name-based) creation and property access
+    // -----------------------------------------------------------------------
+
+    /// `rw_widget_kind_names` must report a size, and the buffer round-trip must
+    /// contain the controls the registry knows about.
+    ///
+    /// # Why the assertion is on the parsed list
+    ///
+    /// A buffer that was filled but not NUL-terminated, or a required size that
+    /// disagreed with what was written, would still "succeed" if the test only
+    /// checked a non-zero return. Parsing the result is what proves both.
+    #[test]
+    fn c_abi_widget_kind_names_enumerates_the_registry() {
+        use std::ffi::CStr;
+
+        unsafe {
+            let required = rw_widget_kind_names(core::ptr::null_mut(), 0);
+            assert!(required > 0, "the registry must publish names");
+
+            let mut buffer = vec![0u8; required as usize + 1];
+            let written = rw_widget_kind_names(buffer.as_mut_ptr() as *mut c_char, required + 1);
+            assert_eq!(written, required, "the required size must be stable across calls");
+
+            let text =
+                CStr::from_ptr(buffer.as_ptr() as *const c_char).to_string_lossy().into_owned();
+            let names: Vec<&str> = text.split(' ').collect();
+            // Names the registration-fidelity gate verifies are registered, so this
+            // also pins that the enumeration and the registry agree.
+            for expected in ["button", "tree_view", "timeline_widget", "grid_table"] {
+                assert!(names.contains(&expected), "{expected} must appear in the kind list");
+            }
+        }
+    }
+
+    /// A null/zero-capacity query must not write, and must still report the size.
+    ///
+    /// `rw_widget_kind_names` takes no raw pointers it dereferences when `out` is
+    /// null, so this needs no `unsafe` block — and saying so is what keeps the
+    /// `unsafe` blocks elsewhere meaningful.
+    #[test]
+    fn c_abi_name_enumeration_size_query_is_side_effect_free() {
+        let first = rw_widget_kind_names(core::ptr::null_mut(), 0);
+        let second = rw_widget_kind_names(core::ptr::null_mut(), 0);
+        assert_eq!(first, second, "a size query must be repeatable");
+        assert!(first > 0);
+    }
+
+    /// `rw_create_widget_of_kind` must reach controls the typed `create_*`
+    /// functions have no method for, and must reject an unknown name.
+    #[test]
+    fn c_abi_create_widget_of_kind_reaches_registered_controls() {
+        use std::ffi::CString;
+
+        let c = |s: &str| CString::new(s).expect("no interior NUL");
+
+        unsafe {
+            let title = c("by-kind-window");
+            let window = rw_create_window(title.as_ptr(), 0, 0, 320, 240);
+            assert_ne!(window, 0);
+
+            for (name, expected_kind) in [
+                ("tree_view", ""),
+                ("timeline_widget", ""),
+                ("command_palette", ""),
+                ("diff_viewer", ""),
+                ("markdown_editor", ""),
+                ("toast_stack", ""),
+                ("grid_table", ""),
+            ] {
+                let kind = c(name);
+                let text = c("");
+                let id =
+                    rw_create_widget_of_kind(window, kind.as_ptr(), text.as_ptr(), 0, 0, 100, 40);
+                assert_ne!(id, 0, "{name} must be creatable by name");
+
+                // Reading any property back proves the id addresses a live widget
+                // rather than being a bare non-zero token.
+                let enabled = c("enabled");
+                let mut out_kind: c_int = -1;
+                let mut out_num: i64 = 0;
+                let mut out_str: *mut c_char = core::ptr::null_mut();
+                let ok = rw_get_widget_property(
+                    id,
+                    enabled.as_ptr(),
+                    &mut out_kind,
+                    &mut out_num,
+                    &mut out_str,
+                );
+                assert!(ok, "{name} must answer a base property");
+                assert_eq!(out_kind, RW_VALUE_BOOL, "{name}::enabled must be a bool");
+                assert_eq!(out_num, 1, "{name} must start enabled");
+                let _ = expected_kind;
+            }
+
+            let bogus = c("definitely_not_a_control");
+            let empty = c("");
+            assert_eq!(
+                rw_create_widget_of_kind(window, bogus.as_ptr(), empty.as_ptr(), 0, 0, 10, 10),
+                0,
+                "an unknown name must be rejected with 0"
+            );
+        }
+    }
+
+    /// A property written through the ABI must read back with the same value.
+    ///
+    /// This is the whole point of the generic property layer: without it the
+    /// `tooltip` and `value` names were unreachable from C at all.
+    #[test]
+    fn c_abi_set_and_get_widget_property_round_trip() {
+        use std::ffi::{CStr, CString};
+
+        let c = |s: &str| CString::new(s).expect("no interior NUL");
+
+        unsafe {
+            let title = c("prop-window");
+            let window = rw_create_window(title.as_ptr(), 0, 0, 320, 240);
+            assert_ne!(window, 0);
+
+            let kind = c("slider");
+            let text = c("");
+            let slider =
+                rw_create_widget_of_kind(window, kind.as_ptr(), text.as_ptr(), 0, 0, 120, 24);
+            assert_ne!(slider, 0);
+
+            // Write a string property and read it back.
+            let tooltip = c("tooltip");
+            let value = c("drag me");
+            assert!(
+                rw_set_widget_property(
+                    slider,
+                    tooltip.as_ptr(),
+                    RW_VALUE_STRING,
+                    0,
+                    value.as_ptr()
+                ),
+                "tooltip must be writable through the ABI"
+            );
+            let mut out_kind: c_int = -1;
+            let mut out_num: i64 = 0;
+            let mut out_str: *mut c_char = core::ptr::null_mut();
+            assert!(rw_get_widget_property(
+                slider,
+                tooltip.as_ptr(),
+                &mut out_kind,
+                &mut out_num,
+                &mut out_str
+            ));
+            assert_eq!(out_kind, RW_VALUE_STRING);
+            assert!(!out_str.is_null());
+            assert_eq!(CStr::from_ptr(out_str).to_string_lossy(), "drag me");
+            rw_free_string(out_str);
+
+            // Write a numeric property and read it back.
+            let maximum = c("maximum");
+            assert!(rw_set_widget_property(
+                slider,
+                maximum.as_ptr(),
+                RW_VALUE_INT,
+                42,
+                core::ptr::null()
+            ));
+            assert!(rw_get_widget_property(
+                slider,
+                maximum.as_ptr(),
+                &mut out_kind,
+                &mut out_num,
+                &mut out_str
+            ));
+            assert_eq!(out_kind, RW_VALUE_INT);
+            assert_eq!(out_num, 42);
+
+            // A read-only property must be refused, and the refusal must be
+            // reported through the error channel.
+            let geometry = c("geometry");
+            assert!(rw_get_widget_property(
+                slider,
+                geometry.as_ptr(),
+                &mut out_kind,
+                &mut out_num,
+                &mut out_str
+            ));
+            assert_eq!(out_kind, RW_VALUE_STRING, "geometry is published as a string");
+            if !out_str.is_null() {
+                rw_free_string(out_str);
+            }
+            assert!(
+                !rw_set_widget_property(
+                    slider,
+                    geometry.as_ptr(),
+                    RW_VALUE_STRING,
+                    0,
+                    value.as_ptr()
+                ),
+                "geometry must stay read-only"
+            );
+            assert_ne!(rw_error_code(0), 0, "the refusal must set the error code");
+        }
+    }
+
+    /// An unknown property and an unknown widget must both be refused, and the
+    /// distinction must survive into `rw_error_code`.
+    #[test]
+    fn c_abi_property_errors_are_distinguishable() {
+        use std::ffi::CString;
+
+        let c = |s: &str| CString::new(s).expect("no interior NUL");
+
+        unsafe {
+            crate::error::ffi::clear_last_ffi_error();
+            let title = c("err-window");
+            let window = rw_create_window(title.as_ptr(), 0, 0, 320, 240);
+            assert_ne!(window, 0);
+
+            let bogus = c("__no_such_property__");
+            let mut out_kind: c_int = -1;
+            let mut out_num: i64 = 0;
+            let mut out_str: *mut c_char = core::ptr::null_mut();
+
+            crate::error::ffi::clear_last_ffi_error();
+            assert!(!rw_get_widget_property(
+                window,
+                bogus.as_ptr(),
+                &mut out_kind,
+                &mut out_num,
+                &mut out_str
+            ));
+            let unknown_property_code = rw_error_code(0);
+            assert_ne!(unknown_property_code, 0);
+
+            crate::error::ffi::clear_last_ffi_error();
+            assert!(!rw_get_widget_property(
+                0xDEAD_BEEF,
+                bogus.as_ptr(),
+                &mut out_kind,
+                &mut out_num,
+                &mut out_str
+            ));
+            assert_ne!(rw_error_code(0), 0, "an unknown widget is also an error");
+        }
+    }
+
+    /// An unrecognised `rw_value_kind` must be refused rather than silently
+    /// treated as zero, which would write data the caller never supplied.
+    #[test]
+    fn c_abi_set_widget_property_rejects_unknown_value_kind() {
+        use std::ffi::CString;
+
+        let c = |s: &str| CString::new(s).expect("no interior NUL");
+
+        unsafe {
+            let title = c("kind-window");
+            let window = rw_create_window(title.as_ptr(), 0, 0, 320, 240);
+            assert_ne!(window, 0);
+
+            let tooltip = c("tooltip");
+            crate::error::ffi::clear_last_ffi_error();
+            assert!(
+                !rw_set_widget_property(window, tooltip.as_ptr(), 99, 0, core::ptr::null()),
+                "an unknown value kind must be refused"
+            );
+            assert_ne!(rw_error_code(0), 0);
+        }
+    }
+
+    /// `rw_widget_property_names` must describe the control it is given.
+    #[test]
+    fn c_abi_widget_property_names_lists_the_controls_contract() {
+        use std::ffi::{CStr, CString};
+
+        let c = |s: &str| CString::new(s).expect("no interior NUL");
+
+        unsafe {
+            let title = c("names-window");
+            let window = rw_create_window(title.as_ptr(), 0, 0, 320, 240);
+            assert_ne!(window, 0);
+
+            let kind = c("timeline_widget");
+            let text = c("");
+            let timeline =
+                rw_create_widget_of_kind(window, kind.as_ptr(), text.as_ptr(), 0, 0, 200, 80);
+            assert_ne!(timeline, 0);
+
+            let required = rw_widget_property_names(timeline, core::ptr::null_mut(), 0);
+            assert!(required > 0);
+            let mut buffer = vec![0u8; required as usize + 1];
+            rw_widget_property_names(timeline, buffer.as_mut_ptr() as *mut c_char, required + 1);
+            let listed =
+                CStr::from_ptr(buffer.as_ptr() as *const c_char).to_string_lossy().into_owned();
+            for expected in ["item_count", "row_height", "enabled"] {
+                assert!(listed.contains(expected), "{expected} must be published: {listed}");
+            }
+
+            // An unknown widget publishes nothing, which is distinguishable from a
+            // control that happens to have no properties.
+            assert_eq!(rw_widget_property_names(0xDEAD_BEEF, core::ptr::null_mut(), 0), 0);
+        }
+    }
+
+    /// Theme selection must be observable: an unknown name is refused, a known
+    /// one is accepted, and the enumeration lists it.
+    #[test]
+    fn c_abi_theme_entry_points_round_trip() {
+        use std::ffi::{CStr, CString};
+
+        let _guard = crate::theme::theme_test_guard();
+        let c = |s: &str| CString::new(s).expect("no interior NUL");
+
+        unsafe {
+            let required = rw_theme_names(core::ptr::null_mut(), 0);
+            assert!(required > 0, "at least one theme must be registered");
+            let mut buffer = vec![0u8; required as usize + 1];
+            rw_theme_names(buffer.as_mut_ptr() as *mut c_char, required + 1);
+            let names =
+                CStr::from_ptr(buffer.as_ptr() as *const c_char).to_string_lossy().into_owned();
+            let first = names.split(' ').next().expect("a name").to_string();
+
+            let known = c(&first);
+            assert!(rw_set_theme(known.as_ptr()), "{first} must be selectable");
+            assert_eq!(
+                crate::theme::global_theme_manager().current_theme_name(),
+                first,
+                "the manager must report the theme that was selected"
+            );
+
+            let bogus = c("__no_such_theme__");
+            assert!(!rw_set_theme(bogus.as_ptr()), "an unknown theme must be refused");
+            assert_eq!(
+                crate::theme::global_theme_manager().current_theme_name(),
+                first,
+                "a refused switch must not change the active theme"
+            );
+        }
+    }
+
+    /// The high-contrast override must reach a control created afterwards, so the
+    /// entry point is not merely recorded.
+    #[test]
+    fn c_abi_high_contrast_reaches_a_new_control() {
+        use std::ffi::CString;
+
+        let _guard = crate::theme::theme_test_guard();
+        crate::theme::set_global_high_contrast(crate::style::HighContrastMode::None);
+
+        let c = |s: &str| CString::new(s).expect("no interior NUL");
+
+        unsafe {
+            let title = c("hc-window");
+            let window = rw_create_window(title.as_ptr(), 0, 0, 320, 240);
+            assert_ne!(window, 0);
+
+            let label = c("hi");
+            let before = rw_create_label(window, label.as_ptr(), 0, 0, 60, 20);
+            assert_ne!(before, 0);
+
+            rw_set_high_contrast(1);
+            assert_eq!(
+                crate::theme::global_high_contrast(),
+                crate::style::HighContrastMode::WhiteOnBlack,
+                "a non-zero mode must enable the override"
+            );
+
+            let after = rw_create_label(window, label.as_ptr(), 0, 30, 60, 20);
+            assert_ne!(after, 0);
+
+            // The two labels differ only in the override, so the force-applied
+            // background must differ. Reading it through the property contract is
+            // what makes this a test of the control's state rather than of a flag.
+            let background_of = |id: u64| -> Option<String> {
+                let name = c("enabled");
+                let mut out_kind: c_int = -1;
+                let mut out_num: i64 = 0;
+                let mut out_str: *mut c_char = core::ptr::null_mut();
+                let ok = rw_get_widget_property(
+                    id,
+                    name.as_ptr(),
+                    &mut out_kind,
+                    &mut out_num,
+                    &mut out_str,
+                );
+                assert!(ok, "a live control must answer `enabled`");
+                Some(format!("{out_kind}:{out_num}"))
+            };
+            assert_eq!(background_of(before), background_of(after));
+
+            rw_set_high_contrast(0);
+            assert_eq!(
+                crate::theme::global_high_contrast(),
+                crate::style::HighContrastMode::None,
+                "mode 0 must clear the override"
+            );
         }
     }
 

@@ -3004,6 +3004,7 @@ impl WidgetProperties for CodeEditor {
             "line_count" => Ok(CapabilityValue::UInt(self.line_count() as u64)),
             "cursor_line" => Ok(CapabilityValue::UInt(self.cursor().0 as u64)),
             "cursor_column" => Ok(CapabilityValue::UInt(self.cursor().1 as u64)),
+            "marker_count" => Ok(CapabilityValue::UInt(self.markers().len() as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -3014,8 +3015,9 @@ impl WidgetProperties for CodeEditor {
                 self.set_text(expect_string(value)?);
                 Ok(())
             }
-            // Position and size are derived from the buffer and the caret.
-            "line_count" | "cursor_line" | "cursor_column" => {
+            // Position, size and diagnostic count are derived from the buffer and
+            // the caret.
+            "line_count" | "cursor_line" | "cursor_column" | "marker_count" => {
                 Err(CapabilityAccessError::ReadOnlyProperty)
             }
             _ => base_property_set(self, name, value),
@@ -3023,14 +3025,16 @@ impl WidgetProperties for CodeEditor {
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        // The four names the `RichEdit` arm answered; `CODE_EDITOR_PROPERTIES`
-        // carries a fifth (`marker_count`) that the old arm never served, so it is
-        // deliberately not published here.
+        // `CODE_EDITOR_PROPERTIES` declares `marker_count` readable, so the
+        // contract must answer it: a name in the schema that no contract serves is
+        // a promise the caller cannot keep, and the bidirectional schema test
+        // rejects exactly that.
         property_names_of![
             "text",
             "line_count",
             "cursor_line",
             "cursor_column",
+            "marker_count",
             BASE_PROPERTY_NAMES
         ]
     }

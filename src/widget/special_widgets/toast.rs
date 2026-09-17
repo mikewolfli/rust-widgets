@@ -7,7 +7,11 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Toast severity level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,6 +188,49 @@ impl Widget for ToastStack {
         crate::core::Size::new(300, 48)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `ToastStack`'s property contract.
+///
+/// `toast_count` and `selected_id` describe the live stack. `row_height` is the
+/// one writable name here: the stack lays its toasts out bottom-up from the
+/// geometry it was given, so its row height must stay adjustable when a host
+/// changes density.
+impl WidgetProperties for ToastStack {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "toast_count" => Ok(CapabilityValue::UInt(self.toasts().len() as u64)),
+            "selected_id" => match self.selected_id() {
+                Some(id) => Ok(CapabilityValue::String(id.to_string())),
+                None => Ok(CapabilityValue::Null),
+            },
+            "row_height" => Ok(CapabilityValue::UInt(self.row_height as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "row_height" => match value {
+                CapabilityValue::UInt(height) => {
+                    let height =
+                        u32::try_from(height).map_err(|_| CapabilityAccessError::TypeMismatch)?;
+                    self.row_height = height.max(1);
+                    self.base.request_layout();
+                    self.base.request_redraw();
+                    Ok(())
+                }
+                _ => Err(CapabilityAccessError::TypeMismatch),
+            },
+            "toast_count" | "selected_id" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["toast_count", "selected_id", "row_height", BASE_PROPERTY_NAMES]
+    }
 }
 
 impl EventHandler for ToastStack {

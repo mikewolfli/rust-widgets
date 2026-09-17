@@ -27,6 +27,10 @@
 //! types (`RwLock`, `Mutex`, `Instant`, `RwLock`-guarded `Condvar` paths, and the
 //! `std::sync::mpsc` re-export). Do not read the presence of a `no_std`-shaped
 //! alias here as evidence that its `alloc_frugal` arm is `no_std`-clean.
+//!
+//! # Reachability
+//!
+//! **State:** Production callers: `src/widget/base.rs:43` (`crate::compat::MiniVec<ObjectId>`), `src/widget/base.rs:47` (`crate::compat::MiniString`). 63 files reference the `alloc`/`std` boundary through this module.
 
 // ── core re-exports (exported unconditionally, always available) ──
 pub use core::any::Any;

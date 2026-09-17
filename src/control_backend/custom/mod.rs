@@ -95,7 +95,6 @@ impl CustomPaintControlBackend {
         }
         #[cfg(full_widgets)]
         {
-            let rect = crate::core::Rect::new(x, y, width, height);
             let name = kind_factory_name(kind);
             if name.is_empty() {
                 log::warn!(
@@ -104,61 +103,106 @@ impl CustomPaintControlBackend {
                 );
                 return 0;
             }
-            let Some(mut widget) =
-                crate::widget::WidgetFactory::new_with_defaults().create(name, rect, text)
-            else {
+            self.mount_named_widget(name, parent, text, x, y, width, height)
+        }
+    }
+
+    /// Mounts the control registered under `name`, which the factory resolves.
+    ///
+    /// # Why this takes a name rather than a kind
+    ///
+    /// Several controls share one `WidgetKind` (`chart`, `timeline_widget` and
+    /// `gantt_widget` all report `WidgetKind::Chart`). Resolving a kind back to a
+    /// name can only ever answer with one of them, so a caller that asked for
+    /// `timeline_widget` would silently receive `chart`. Taking the name keeps the
+    /// caller's choice intact; `mount_widget_of_kind` is the kind-addressed spelling
+    /// for the typed `create_*` methods, where the kind *is* the whole request.
+    ///
+    /// Returns `0` when the name is unknown, when the parent is not a live
+    /// container, or when the factory produced no widget.
+    #[cfg(full_widgets)]
+    pub(crate) fn mount_named_widget(
+        &self,
+        name: &str,
+        parent: crate::core::ObjectId,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> crate::core::ObjectId {
+        let rect = crate::core::Rect::new(x, y, width, height);
+        let factory = crate::widget::WidgetFactory::new_with_defaults();
+        let Some(capability) = factory.capability(name) else {
+            log::warn!(
+                "custom backend: no control is registered under the name {name:?}; returning 0"
+            );
+            return 0;
+        };
+        let kind = capability.kind;
+        let Some(mut widget) =
+            crate::widget::WidgetFactory::new_with_defaults().create(name, rect, text)
+        else {
+            log::warn!(
+                "custom backend: the factory lists {name:?} but produced no widget; returning 0"
+            );
+            return 0;
+        };
+        // A window is a root; anything else must name an existing parent. `0` is the
+        // "no parent" id the API uses, so a non-window with parent `0` is a caller
+        // error — and so is an id that addresses nothing. Rejecting both here keeps
+        // the C ABI's documented contract ("an unknown parent is rejected with 0")
+        // true, which it could not be while creation did not check the parent.
+        if kind != crate::widget::WidgetKind::Window {
+            if parent == 0 || !crate::widget::runtime::is_mounted(parent) {
                 log::warn!(
-                    "custom backend: the factory lists {name:?} but produced no widget for \
-                     {kind:?}; returning 0"
+                    "custom backend: refusing to create {name:?} under parent {parent}, which \
+                     addresses no live container"
                 );
                 return 0;
-            };
-            // A window is a root; anything else must name an existing parent. `0` is the
-            // "no parent" id the API uses, so a non-window with parent `0` is a caller
-            // error — and so is an id that addresses nothing. Rejecting both here keeps
-            // the C ABI's documented contract ("an unknown parent is rejected with 0")
-            // true, which it could not be while creation did not check the parent.
-            if kind != crate::widget::WidgetKind::Window {
-                if parent == 0 || !crate::widget::runtime::is_mounted(parent) {
-                    log::warn!(
-                        "custom backend: refusing to create {kind:?} under parent {parent}, which \
-                         addresses no live container"
-                    );
-                    return 0;
-                }
-                widget.set_parent(Some(parent));
             }
-            let id = crate::widget::runtime::register(widget).unwrap_or(0);
-            if id == 0 {
-                return 0;
-            }
-
-            // A window is not only a painted widget: it needs a host object for
-            // the platform to draw into, and that is what `mount_surface` resolves
-            // a parent through. Creating it here — on the one creation path — is
-            // what links the widget id the caller holds to the id the platform
-            // knows, instead of leaving two unreachable id spaces.
-            //
-            // A backend without host windows (state-only, e.g. no display) returns
-            // 0 and no association is recorded, so mounting onto that window is
-            // still refused honestly rather than appearing to succeed.
-            if kind == crate::widget::WidgetKind::Window {
-                // `text` carries the window's title, the same spelling the factory
-                // was given above for this kind.
-                let host = crate::platform::get_platform().create_window(text, x, y, width, height);
-                if host != 0 {
-                    crate::widget::runtime::set_host_window(id, host);
-                } else {
-                    log::debug!(
-                        "custom backend: backend '{}' built no host window for {id}; controls \
-                         cannot be mounted onto it",
-                        crate::platform::backend_name()
-                    );
-                }
-            }
-
-            id
+            widget.set_parent(Some(parent));
         }
+        // Apply the active theme before registering, matching the crate-root
+        // funnel (`mount_widget_object`). Both must do it: a control created
+        // through the C ABI and one mounted onto a window take different code
+        // paths, so a theme applied on only one of them would make appearance
+        // depend on how the control was created.
+        //
+        // The call is unconditional and the body is gated (see
+        // `crate::apply_active_theme`), so this block carries no `cfg` of its
+        // own to drift out of step with the theme module's gate.
+        crate::apply_active_theme(&mut widget);
+        let id = crate::widget::runtime::register(widget).unwrap_or(0);
+        if id == 0 {
+            return 0;
+        }
+
+        // A window is not only a painted widget: it needs a host object for
+        // the platform to draw into, and that is what `mount_surface` resolves
+        // a parent through. Creating it here — on the one creation path — is
+        // what links the widget id the caller holds to the id the platform
+        // knows, instead of leaving two unreachable id spaces.
+        //
+        // A backend without host windows (state-only, e.g. no display) returns
+        // 0 and no association is recorded, so mounting onto that window is
+        // still refused honestly rather than appearing to succeed.
+        if kind == crate::widget::WidgetKind::Window {
+            // `text` carries the window's title, the same spelling the factory
+            // was given above for this kind.
+            let host = crate::platform::get_platform().create_window(text, x, y, width, height);
+            if host != 0 {
+                crate::widget::runtime::set_host_window(id, host);
+            } else {
+                log::debug!(
+                    "custom backend: backend '{}' built no host window for {id}; controls \
+                     cannot be mounted onto it",
+                    crate::platform::backend_name()
+                );
+            }
+        }
+
+        id
     }
 
     /// Runs `f` against the live widget registered under `widget_id`.

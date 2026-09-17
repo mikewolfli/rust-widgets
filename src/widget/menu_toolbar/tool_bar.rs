@@ -379,6 +379,7 @@ impl WidgetProperties for ToolBar {
             "icon_size" => Ok(CapabilityValue::Float(self.icon_size() as f64)),
             "floatable" => Ok(CapabilityValue::Bool(self.is_floatable())),
             "movable" => Ok(CapabilityValue::Bool(self.is_movable())),
+            "item_count" => Ok(CapabilityValue::UInt(self.items().len() as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -401,12 +402,22 @@ impl WidgetProperties for ToolBar {
                 self.set_orientation(expect_toolbar_orientation(value)?);
                 Ok(())
             }
+            // Derived from the item list, which is mutated through `add_action` /
+            // `add_separator` rather than by assigning a count.
+            "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["orientation", "icon_size", "movable", "floatable", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "orientation",
+            "icon_size",
+            "movable",
+            "floatable",
+            "item_count",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 

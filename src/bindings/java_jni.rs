@@ -313,6 +313,15 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeHideWidget(
 }
 
 #[no_mangle]
+pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeDestroyWidget(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    widget_id: jlong,
+) {
+    crate::bindings::rw_destroy_widget(widget_id as u64);
+}
+
+#[no_mangle]
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeSetWidgetText(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,

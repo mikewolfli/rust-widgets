@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 //! PDF generation, parsing, and document manipulation.
+//!
+//! # Reachability
+//!
+//! **State:** Reserved: a complete PDF renderer/export path with no production consumer. Build it only under `--features pdf`. Removal condition: when export is dropped from the product scope.
 
 /// Annotation dictionaries attached to pages (links, notes, markup).
 pub mod annotation;

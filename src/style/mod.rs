@@ -34,6 +34,10 @@
 //! Each step is one call to `WidgetStyle::merge`, which cannot overwrite a value
 //! an earlier (more specific) layer already set. `crate::json` performs exactly this
 //! sequence; see `json::loader::apply_declared_styles`.
+//!
+//! # Reachability
+//!
+//! **State:** Production callers: `src/theme/mod.rs:1` (the theme resolves into `WidgetStyle`); 27 files reference it.
 /// Time-varying style values: a styled property that is evaluated at a point in
 /// time rather than being a constant.
 pub mod animation;

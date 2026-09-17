@@ -510,6 +510,19 @@ public final class RustWidgets {
     }
 
     /**
+     * Destroy a widget and release every resource it owns.
+     *
+     * <p>Unlike {@link #hideWidget(long)} this is not reversible: the widget ID
+     * must not be used again afterwards.
+     *
+     * @param widgetId target widget ID
+     */
+    public static void destroyWidget(long widgetId) {
+        checkWidgetId(widgetId);
+        nativeDestroyWidget(widgetId);
+    }
+
+    /**
      * Set the text of a widget (label, button, line-edit, etc.).
      *
      * @param widgetId target widget ID
@@ -907,6 +920,7 @@ public final class RustWidgets {
     // Widget manipulation
     private static native void nativeShowWidget(long widgetId);
     private static native void nativeHideWidget(long widgetId);
+    private static native void nativeDestroyWidget(long widgetId);
     private static native void nativeSetWidgetText(long widgetId, String text);
     private static native String nativeGetWidgetText(long widgetId);
     private static native void nativeSetWidgetEnabled(long widgetId, boolean enabled);

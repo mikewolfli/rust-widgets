@@ -7,7 +7,11 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Single command entry displayed in command palette.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -255,6 +259,64 @@ impl Widget for CommandPalette {
         crate::core::Size::new(400, 300)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `CommandPalette`'s property contract.
+///
+/// `query` writes go through `set_query` so the filtered result set and the
+/// `query_changed` signal stay consistent with the stored string. The counts are
+/// derived from that filtered set and are therefore read-only.
+impl WidgetProperties for CommandPalette {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "query" => Ok(CapabilityValue::String(self.query().to_string())),
+            "entry_count" => Ok(CapabilityValue::UInt(self.entries().len() as u64)),
+            "filtered_count" => Ok(CapabilityValue::UInt(self.filtered_count() as u64)),
+            "highlighted_index" => match self.highlighted_index() {
+                Some(index) => Ok(CapabilityValue::UInt(index as u64)),
+                None => Ok(CapabilityValue::Null),
+            },
+            "row_height" => Ok(CapabilityValue::UInt(self.row_height() as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "query" => match value {
+                CapabilityValue::String(query) => {
+                    self.set_query(query);
+                    Ok(())
+                }
+                _ => Err(CapabilityAccessError::TypeMismatch),
+            },
+            "row_height" => match value {
+                CapabilityValue::UInt(height) => {
+                    let height =
+                        u32::try_from(height).map_err(|_| CapabilityAccessError::TypeMismatch)?;
+                    self.set_row_height(height);
+                    Ok(())
+                }
+                _ => Err(CapabilityAccessError::TypeMismatch),
+            },
+            "entry_count" | "filtered_count" | "highlighted_index" => {
+                Err(CapabilityAccessError::ReadOnlyProperty)
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![
+            "query",
+            "entry_count",
+            "filtered_count",
+            "highlighted_index",
+            "row_height",
+            BASE_PROPERTY_NAMES
+        ]
+    }
 }
 
 impl EventHandler for CommandPalette {

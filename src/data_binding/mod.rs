@@ -38,6 +38,10 @@
 //! name.set("Rust".to_string());
 //! assert_eq!(name.get(), "Rust");
 //! ```
+//!
+//! # Reachability
+//!
+//! **State:** Reserved: a declarative data-binding layer with no production consumer; no example and no binding uses it. Removal condition: when the declarative JSON path adopts it, or when it is confirmed redundant with the property contract.
 
 mod binding;
 mod computed;

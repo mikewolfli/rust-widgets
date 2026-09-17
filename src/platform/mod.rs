@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 //! Platform abstraction for desktop/embedded/mobile families.
+//!
+//! # Reachability
+//!
+//! **State:** Production callers: `src/control_backend/custom/mod.rs:1` and 41 files (every backend capability is resolved through the `Platform` trait).
 
 // Platform backend implementations (one per target)
 /// Android platform backend (state-driven, JNI bridge behind `android-jni`).

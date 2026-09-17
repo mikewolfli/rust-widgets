@@ -324,6 +324,9 @@ impl WidgetProperties for VirtualTable {
             "column_width",
             "overscan_rows",
             "overscan_columns",
+            // `get` answers this name; leaving it out of the list made the schema
+            // declare a readable property no contract published.
+            "visible_window",
             BASE_PROPERTY_NAMES
         ]
     }

@@ -28,7 +28,7 @@ There is no `CreateWindowExW`/`NSButton`/`gtk_button_new`/`android.widget.Button
 | Property | Self-drawn (this library) | Native controls |
 |---|---|---|
 | Appearance | **Identical on every OS** | Differs per OS toolkit and version |
-| Widget count | **167 kinds, all platforms** | Only what the OS toolkit offers |
+| Widget count | **171 kinds, all platforms** | Only what the OS toolkit offers |
 | Dependency weight | **No GUI toolkit linked** | GTK / AppKit / Win32 / Android SDK |
 | Headless & embedded | **Runs with no OS at all** (`mini`, SVG) | Impossible |
 | Deterministic tests | **Pixel/serialise snapshots** | Needs a real display |
@@ -45,21 +45,27 @@ A backend that cannot supply even a surface (for example a bare framebuffer) sti
 
 > **Migrating from 1.x?** Native control creation was removed from all ten backends in 2.0.0. See [`CHANGELOG.md`](CHANGELOG.md) and [`docs/MIGRATION_GUIDE.md`](docs/MIGRATION_GUIDE.md).
 
-All 167 widget kinds are registered in the factory and each publishes its own
-property contract; the platform capability matrix
+All 171 widget kinds are self-drawn. 166 of them are registered in the factory under
+their own name (plus 436 accepted names in total, counting aliases); the remainder are
+alias kinds (`pub type`), base/child kinds, or the optional WebEngine series — every one
+of the 171 is classified, and `tools/check_widget_registration_fidelity.sh` fails if a
+new kind is added without an answer. See
+[`docs/plans/blue16.md`](docs/plans/blue16.md) §12 for the per-kind audit. The platform
+capability matrix
 ([`docs/plans/platform_capability_matrix.md`](docs/plans/platform_capability_matrix.md))
 is generated from source and gated for drift in CI.
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.1.0-blue)]()
+[![version](https://img.shields.io/badge/version-2.2.0-blue)]()
 [![tests](https://img.shields.io/badge/tests-4000%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
-**Verified in 2.1.0:** `4127` lib tests pass on `desktop` (`1490` on `embedded`, `1411` on
-`mini`), clippy is clean under `-D warnings` for `--all-features --all-targets`, and the
-cross targets **build with 0 warnings**: `wasm32-unknown-unknown` and
-`x86_64-pc-windows-gnu` (both including `--all-targets`), `aarch64-apple-ios` ± simulator,
-and the three linkable OpenHarmony triples. See [`CHANGELOG.md`](CHANGELOG.md).
+**Verified in 2.2.0:** `4232` lib tests pass on `desktop` (`1534` on `embedded`, `1455` on
+`mini`), `35` doc tests pass, clippy is clean under `-D warnings` for
+`--all-features --all-targets`, and the cross targets **build with 0 warnings**:
+`wasm32-unknown-unknown` and `x86_64-pc-windows-gnu` (both including `--all-targets`),
+`aarch64-apple-ios` ± simulator, and the three linkable OpenHarmony triples.
+See [`CHANGELOG.md`](CHANGELOG.md).
 
 <p align="center">
   <a href="README.zh-CN.md">
@@ -242,9 +248,9 @@ what the OS can draw.
 
 | Profile | Widget set | Registry | Custom-painted controls | GPU | i18n |
 |---------|-----------|:--------:|:-----------------------:|:---:|:----:|
-| `desktop` | **167 kinds** (full) | ✅ | ✅ | ✅ wgpu | ✅ |
-| `tablet` | **167 kinds** (full) | ✅ | ✅ | ✅ wgpu | ✅ |
-| `mobile` | **167 kinds** (full) | ✅ | ✅ | ✅ wgpu | ✅ |
+| `desktop` | **171 kinds** (full) | ✅ | ✅ | ✅ wgpu | ✅ |
+| `tablet` | **171 kinds** (full) | ✅ | ✅ | ✅ wgpu | ✅ |
+| `mobile` | **171 kinds** (full) | ✅ | ✅ | ✅ wgpu | ✅ |
 | `embedded` | reduced core set | — | — | — software | — |
 | `mini` | reduced core set | — | — | — software | — |
 
@@ -322,9 +328,55 @@ per profile, and it renders the same everywhere.
 - `StyleSheetManager` — global stylesheet registration
 - `CssWatcher` — polling-based CSS hot-reload
 
-### Partial Refresh
-- `DirtyRegionTracker` with rectangle merging
-- `render_dirty_regions()` — clip-based partial redraw via `push_clip/pop_clip`
+### Theme System
+- `ThemeManager` — named themes, light/dark switching, JSON load/save
+- Semantic tokens (colours, fonts, spacing, borders) resolved per widget role
+- `HighContrastMode` — forced background/foreground pair with a measurable contrast ratio
+- Applied automatically to every control the library creates
+
+### Declarative JSON UI (library API only)
+- `JsonLoader` — build a widget tree from a JSON description
+- Property application routed through each control's own property contract
+- Optional per-node `class` / `css` for stylesheet-driven appearance
+- **Not exposed over the C ABI** — the loader has no generated entry point
+
+> **C ABI coverage.** The C ABI (`include/rw_generated.h`, 113 `rw_*` functions)
+> covers window management, widget creation, per-widget properties and theme
+> selection. Creation and property access are **generic**:
+> `rw_create_widget_of_kind(parent, "tree_view", ...)` reaches every registered
+> control (`rw_widget_kind_names` lists them), and
+> `rw_set_widget_property(id, "tooltip", ...)` reaches every published property
+> (`rw_widget_property_names` lists those). Themes are reachable through
+> `rw_set_theme` / `rw_theme_names` / `rw_set_high_contrast`.
+>
+> Two things remain Rust-only: the **JSON layout loader** (no generated entry
+> point) and **CSS stylesheets as documents** (individual style properties are
+> settable per widget, but there is no ABI for shipping a stylesheet).
+
+### C ABI, by capability
+
+| Capability | Entry points |
+|---|---|
+| Window lifecycle | `rw_create_window`, `rw_run`, `rw_quit` |
+| Generic creation | `rw_create_widget_of_kind`, `rw_widget_kind_names` |
+| Typed creation | `rw_create_button`, `rw_create_slider`, … |
+| Lifetime | `rw_destroy_widget`, `rw_show_widget`, `rw_hide_widget` |
+| Generic properties | `rw_get_widget_property`, `rw_set_widget_property`, `rw_widget_property_names` |
+| Text & geometry | `rw_set_widget_text`, `rw_get_widget_text`, `rw_set_widget_geometry` |
+| Collections | `rw_list_box_add_item`, `rw_combo_box_add_item`, … |
+| Theme | `rw_set_theme`, `rw_theme_names`, `rw_set_high_contrast` |
+| Errors | `rw_error_code`, `rw_error_message` |
+
+Every binding under `bindings/` is checked against this list by
+`tools/check_binding_symbol_coverage.sh`, so a function added to the ABI cannot
+silently stay unreachable from a language.
+
+### Partial Refresh (library API only, not wired into the frame loop)
+- `DirtyRegionTracker` with rectangle merging, and `render_dirty_regions()` for
+  clip-based partial redraw via `push_clip` / `pop_clip`
+- **Not used by `render_frame`**, which always repaints the whole widget. The
+  tracker is available to a host that drives its own paint loop, but nothing in
+  this crate calls it, so do not expect partial repaints out of the box.
 
 ### Internationalization
 - `tr!()` macro for compile-time key-based translation
@@ -336,7 +388,7 @@ per profile, and it renders the same everywhere.
 
 ## Widget Library
 
-### Desktop/Tablet/Mobile (167 widget kinds)
+### Desktop/Tablet/Mobile (171 widget kinds)
 
 **Core**: Window, Dialog, MessageBox, FileDialog, ColorDialog, FontDialog, InputDialog, ProgressDialog, PopupWindow, Button, CheckBox, RadioButton, Label, LineEdit, TextEdit, RichEdit, ComboBox, SpinBox, ListBox, ListView, TreeView, ProgressBar, Slider, ScrollBar, ScrollArea, TabWidget, Splitter, GroupBox, MenuBar, Menu, MenuItem, ContextMenu, ToolBar, StatusBar, Canvas, Table, Grid, Chart, ToggleButton
 

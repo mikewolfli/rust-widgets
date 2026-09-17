@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 //! Test infrastructure and utilities.
+//!
+//! # Reachability
+//!
+//! **State:** Reserved: shared test scaffolding exported so integration tests in separate crates can use it. Not part of the library's runtime surface. Removal condition: none; it is the deliberate test-support surface.
 /// The in-process test harness: widget mounting, event injection, and
 /// teardown assertions.
 pub mod harness;

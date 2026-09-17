@@ -55,6 +55,41 @@ jobs:
           chmod +x tools/check_abi.sh
           ./tools/check_abi.sh
 
+      # The C ABI header is the contract every binding compiles against, so a
+      # symbol that exists in Rust but not in a binding is an unreachable
+      # capability (principle #71).
+      - name: Run binding symbol coverage gate
+        shell: bash
+        run: |
+          chmod +x tools/check_binding_symbol_coverage.sh
+          ./tools/check_binding_symbol_coverage.sh
+
+      - name: Run JNI signature gate
+        shell: bash
+        run: |
+          chmod +x tools/check_jni_signatures.sh
+          ./tools/check_jni_signatures.sh
+
+      # Every `WidgetKind` must be registered, aliased, or explicitly marked a
+      # base/child kind. Six fully implemented controls had no registration row at
+      # all, so they were unreachable from the name-based API and invisible to CSS
+      # selectors while every other gate stayed green.
+      - name: Run widget registration fidelity gate
+        shell: bash
+        run: |
+          chmod +x tools/check_widget_registration_fidelity.sh
+          ./tools/check_widget_registration_fidelity.sh
+
+      # Every `pub mod` must state whether it has production callers, is exposed
+      # over the C ABI, or is a deliberate experiment. Without this, a module with
+      # no consumer is indistinguishable from one whose consumer was deleted, and
+      # nothing in a diff reveals it.
+      - name: Run module reachability gate
+        shell: bash
+        run: |
+          chmod +x tools/check_module_reachability.sh
+          ./tools/check_module_reachability.sh
+
       - name: Run documentation count consistency gate
         shell: bash
         run: |

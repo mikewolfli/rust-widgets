@@ -63,6 +63,62 @@ pub enum DeclarativeLayoutKind {
         /// Outer inset in logical pixels on all four sides.
         margin: u32,
     },
+    /// Flow layout: children run along an axis and wrap when the line is full.
+    Flow {
+        /// Gap in logical pixels between adjacent children.
+        spacing: i32,
+        /// Padding in logical pixels around the content.
+        padding: i32,
+        /// Whether children run horizontally (the default) or vertically.
+        orientation: Orientation,
+    },
+    /// Wrap layout: like flow, with an explicit cross-axis alignment.
+    Wrap {
+        /// Gap in logical pixels between adjacent children.
+        spacing: i32,
+        /// Padding in logical pixels around the content.
+        padding: i32,
+        /// Whether children run horizontally (the default) or vertically.
+        orientation: Orientation,
+    },
+    /// Uniform grid: every cell is the same size, unlike [`Self::Grid`].
+    UniformGrid {
+        /// Number of rows.
+        rows: u32,
+        /// Number of columns.
+        columns: u32,
+        /// Gap in logical pixels between cells.
+        spacing: u32,
+        /// Outer inset in logical pixels on all four sides.
+        margin: u32,
+    },
+    /// Flex layout: main/cross-axis distribution and alignment.
+    Flex {
+        /// Gap in logical pixels between adjacent children.
+        gap: u32,
+    },
+}
+
+impl DeclarativeLayoutKind {
+    /// The JSON type tokens that select this kind.
+    ///
+    /// Exposed so a diagnostic (and the tests) can enumerate what is supported
+    /// without duplicating the list, which is how the previous error message drifted
+    /// out of step with the parser.
+    pub const SUPPORTED_TYPES: &'static [&'static str] = &[
+        "hbox",
+        "horizontal",
+        "vbox",
+        "vertical",
+        "grid",
+        "uniform_grid",
+        "stack",
+        "splitter",
+        "form",
+        "flow",
+        "wrap",
+        "flex",
+    ];
 }
 
 // ── Thread-local layout storage ──────────────────────────────
@@ -191,6 +247,11 @@ pub fn parse_layout_kind(value: &Value) -> Result<DeclarativeLayoutKind, String>
             let columns = obj.get("columns").and_then(|v| v.as_u64()).unwrap_or(2) as u32;
             Ok(DeclarativeLayoutKind::Grid { columns, spacing, margin })
         }
+        "uniform_grid" | "uniformGrid" | "uniform-grid" => {
+            let rows = obj.get("rows").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let columns = obj.get("columns").and_then(|v| v.as_u64()).unwrap_or(2) as u32;
+            Ok(DeclarativeLayoutKind::UniformGrid { rows, columns, spacing, margin })
+        }
         "stack" | "Stack" => Ok(DeclarativeLayoutKind::Stack { spacing }),
         "splitter" | "Splitter" => {
             let orientation = match obj.get("orientation").and_then(|v| v.as_str()) {
@@ -200,10 +261,46 @@ pub fn parse_layout_kind(value: &Value) -> Result<DeclarativeLayoutKind, String>
             Ok(DeclarativeLayoutKind::Splitter { orientation, margin })
         }
         "form" | "Form" => Ok(DeclarativeLayoutKind::Form { spacing, margin }),
+        "flow" | "Flow" => {
+            // `flow` and `wrap` take signed gaps: the layout accepts a negative
+            // spacing (children overlap), so reading these as `u64` would reject a
+            // value the layout can honour.
+            let spacing = obj.get("spacing").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let padding = obj.get("padding").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            Ok(DeclarativeLayoutKind::Flow {
+                spacing,
+                padding,
+                orientation: parse_axis(obj.get("orientation")),
+            })
+        }
+        "wrap" | "Wrap" => {
+            let spacing = obj.get("spacing").and_then(|v| v.as_i64()).unwrap_or(8) as i32;
+            let padding = obj.get("padding").and_then(|v| v.as_i64()).unwrap_or(8) as i32;
+            Ok(DeclarativeLayoutKind::Wrap {
+                spacing,
+                padding,
+                orientation: parse_axis(obj.get("orientation")),
+            })
+        }
+        "flex" | "Flex" => {
+            let gap = obj.get("gap").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            Ok(DeclarativeLayoutKind::Flex { gap })
+        }
         _ => Err(format!(
-            "unknown layout type '{type_str}'; supported types are hbox, vbox, grid, \
-             stack, splitter and form"
+            "unknown layout type '{type_str}'; supported types are {}",
+            DeclarativeLayoutKind::SUPPORTED_TYPES.join(", ")
         )),
+    }
+}
+
+/// Parse a flow/wrap axis from the JSON `orientation` field.
+///
+/// Horizontal is the default because that is what both layouts default to, so an
+/// omitted field and an explicit `"horizontal"` produce the same layout.
+fn parse_axis(value: Option<&Value>) -> Orientation {
+    match value.and_then(|v| v.as_str()) {
+        Some("vertical" | "v" | "V" | "column") => Orientation::Vertical,
+        _ => Orientation::Horizontal,
     }
 }
 
@@ -225,12 +322,60 @@ pub fn create_layout_from_kind(kind: &DeclarativeLayoutKind) -> Box<dyn Layout> 
         DeclarativeLayoutKind::Grid { columns, spacing, margin } => {
             Box::new(GridLayout::new(1, columns, spacing, margin))
         }
+        DeclarativeLayoutKind::UniformGrid { rows, columns, spacing, margin } => {
+            // Unlike `Grid`, a uniform grid fixes both dimensions: every cell is the
+            // same size, which is the whole point of the kind.
+            Box::new(crate::layout::UniformGridLayout::new(rows, columns, spacing, margin))
+        }
         DeclarativeLayoutKind::Stack { .. } => Box::new(StackLayout::new()),
         DeclarativeLayoutKind::Splitter { orientation, .. } => {
             Box::new(SplitterLayout::new(orientation, 0))
         }
         DeclarativeLayoutKind::Form { spacing, margin } => {
             Box::new(FormLayout::new(spacing, margin))
+        }
+        DeclarativeLayoutKind::Flow { spacing, padding, orientation } => {
+            let config = crate::layout::FlowLayoutConfig {
+                direction: match orientation {
+                    Orientation::Horizontal => crate::layout::FlowDirection::Horizontal,
+                    Orientation::Vertical => crate::layout::FlowDirection::Vertical,
+                },
+                spacing,
+                padding,
+                // A flow layout that does not wrap would overflow a narrow parent
+                // instead of reflowing, which is the whole reason to choose `flow`
+                // over `wrap` in the first place. `wrap: false` behaviour is
+                // reachable through the flex layout's no-wrap mode.
+                wrap: true,
+                ..Default::default()
+            };
+            Box::new(crate::layout::FlowLayout::with_config(config))
+        }
+        DeclarativeLayoutKind::Wrap { spacing, padding, orientation } => {
+            let direction = match orientation {
+                Orientation::Horizontal => crate::layout::WrapDirection::Horizontal,
+                Orientation::Vertical => crate::layout::WrapDirection::Vertical,
+            };
+            Box::new(crate::layout::WrapLayout::new(
+                direction,
+                crate::layout::WrapAlignment::Start,
+                spacing,
+                padding,
+            ))
+        }
+        DeclarativeLayoutKind::Flex { gap } => {
+            // `with_params` is the constructor that takes a gap; the default
+            // `new()` has no gap parameter. The alignment arguments are the enum
+            // defaults restated, so a JSON `flex` with only a `gap` behaves like the
+            // programmatic default.
+            Box::new(crate::layout::FlexLayout::with_params(
+                crate::layout::FlexDirection::Row,
+                crate::layout::FlexWrap::NoWrap,
+                crate::layout::JustifyContent::FlexStart,
+                crate::layout::AlignItems::Stretch,
+                gap as i32,
+                0,
+            ))
         }
     }
 }
@@ -508,5 +653,175 @@ mod tests {
         let json: Value = serde_json::from_str(r#"{"type": "Form"}"#).unwrap();
         let kind = parse_layout_kind(&json).unwrap();
         assert_eq!(kind, DeclarativeLayoutKind::Form { spacing: 0, margin: 0 });
+    }
+
+    // ── Layout kinds added after the initial six ────────────────────────────
+    //
+    // The library ships 14 layout managers; the parser used to accept six, so a
+    // layout the engine could perform was not expressible in a declaration.
+
+    #[test]
+    fn parse_flow_layout() {
+        let json: Value =
+            serde_json::from_str(r#"{"type": "flow", "spacing": 6, "padding": 3}"#).unwrap();
+        let kind = parse_layout_kind(&json).unwrap();
+        assert_eq!(
+            kind,
+            DeclarativeLayoutKind::Flow {
+                spacing: 6,
+                padding: 3,
+                orientation: Orientation::Horizontal
+            }
+        );
+    }
+
+    /// Flow and wrap take **signed** gaps: those layouts honour a negative spacing by
+    /// overlapping children, so reading the field as unsigned would reject a value the
+    /// layout supports.
+    #[test]
+    fn flow_layout_accepts_a_negative_spacing() {
+        let json: Value = serde_json::from_str(r#"{"type": "flow", "spacing": -4}"#).unwrap();
+        let kind = parse_layout_kind(&json).unwrap();
+        match kind {
+            DeclarativeLayoutKind::Flow { spacing, .. } => assert_eq!(spacing, -4),
+            other => panic!("expected a flow layout, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_flow_layout_vertical() {
+        let json: Value =
+            serde_json::from_str(r#"{"type": "flow", "orientation": "vertical"}"#).unwrap();
+        let kind = parse_layout_kind(&json).unwrap();
+        match kind {
+            DeclarativeLayoutKind::Flow { orientation, .. } => {
+                assert_eq!(orientation, Orientation::Vertical)
+            }
+            other => panic!("expected a flow layout, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_wrap_layout_defaults_to_an_8px_gap() {
+        let json: Value = serde_json::from_str(r#"{"type": "wrap"}"#).unwrap();
+        let kind = parse_layout_kind(&json).unwrap();
+        assert_eq!(
+            kind,
+            DeclarativeLayoutKind::Wrap {
+                spacing: 8,
+                padding: 8,
+                orientation: Orientation::Horizontal
+            }
+        );
+    }
+
+    #[test]
+    fn parse_uniform_grid_layout() {
+        let json: Value = serde_json::from_str(
+            r#"{"type": "uniform_grid", "rows": 3, "columns": 4, "spacing": 2, "margin": 1}"#,
+        )
+        .unwrap();
+        let kind = parse_layout_kind(&json).unwrap();
+        assert_eq!(
+            kind,
+            DeclarativeLayoutKind::UniformGrid { rows: 3, columns: 4, spacing: 2, margin: 1 }
+        );
+    }
+
+    #[test]
+    fn parse_flex_layout() {
+        let json: Value = serde_json::from_str(r#"{"type": "flex", "gap": 5}"#).unwrap();
+        let kind = parse_layout_kind(&json).unwrap();
+        assert_eq!(kind, DeclarativeLayoutKind::Flex { gap: 5 });
+    }
+
+    /// Every newly accepted kind also builds a real layout object.
+    #[test]
+    fn the_added_kinds_build_a_layout() {
+        for type_str in ["flow", "wrap", "flex", "uniform_grid"] {
+            let json: Value =
+                serde_json::from_str(&format!(r#"{{"type": "{type_str}"}}"#)).unwrap();
+            let kind = parse_layout_kind(&json)
+                .unwrap_or_else(|error| panic!("{type_str} must parse: {error}"));
+            // Building must not panic and must produce a usable layout: laying out a
+            // rect exercises the implementation rather than only the constructor.
+            let layout = create_layout_from_kind(&kind);
+            layout.update(Rect::new(0, 0, 100, 100), &mut |_id, _rect| {});
+        }
+    }
+
+    /// The error message lists exactly the supported types, so it cannot drift out of
+    /// step with the parser (it used to name a subset).
+    #[test]
+    fn the_unknown_type_error_lists_every_supported_type() {
+        let json: Value = serde_json::from_str(r#"{"type": "bogus"}"#).unwrap();
+        let error = parse_layout_kind(&json).expect_err("an unknown type must be rejected");
+        for supported in DeclarativeLayoutKind::SUPPORTED_TYPES {
+            assert!(error.contains(supported), "the error must name {supported:?}: {error}");
+        }
+    }
+
+    /// Every required type in the list is actually accepted, checked by parsing it.
+    #[test]
+    fn every_listed_supported_type_parses() {
+        for type_str in DeclarativeLayoutKind::SUPPORTED_TYPES {
+            let json: Value =
+                serde_json::from_str(&format!(r#"{{"type": "{type_str}"}}"#)).unwrap();
+            assert!(
+                parse_layout_kind(&json).is_ok(),
+                "{type_str} is listed as supported but does not parse"
+            );
+        }
+    }
+
+    /// The added kinds perform a real layout, not merely construct.
+    ///
+    /// Asserting only that `update` does not panic would pass for a layout that
+    /// assigned every child the whole rectangle. This checks the geometry the flow
+    /// layout actually produces: with three children in a box narrower than two of
+    /// them, wrapping must put them on distinct rows.
+    #[test]
+    fn flow_layout_really_wraps() {
+        let json: Value =
+            serde_json::from_str(r#"{"type": "flow", "spacing": 0, "padding": 0}"#).unwrap();
+        let kind = parse_layout_kind(&json).unwrap();
+        let mut layout = create_layout_from_kind(&kind);
+        for id in 1..=3u64 {
+            layout.add_widget(id, 0);
+        }
+
+        let mut rects: Vec<(u64, Rect)> = Vec::new();
+        layout.update(Rect::new(0, 0, 90, 200), &mut |id, rect| rects.push((id, rect)));
+
+        assert_eq!(rects.len(), 3, "every child must be placed");
+        let rows: std::collections::HashSet<i32> = rects.iter().map(|(_, rect)| rect.y).collect();
+        assert!(
+            rows.len() >= 2,
+            "flow must wrap in a box narrower than its children; got rows {rows:?} from {rects:?}"
+        );
+    }
+
+    /// A uniform grid fixes both dimensions, unlike the plain grid which grows rows.
+    #[test]
+    fn uniform_grid_places_children_in_a_fixed_grid() {
+        let json: Value = serde_json::from_str(
+            r#"{"type": "uniform_grid", "rows": 2, "columns": 2, "spacing": 0, "margin": 0}"#,
+        )
+        .unwrap();
+        let kind = parse_layout_kind(&json).unwrap();
+        let mut layout = create_layout_from_kind(&kind);
+        for id in 1..=4u64 {
+            layout.add_widget(id, 0);
+        }
+
+        let mut rects: Vec<(u64, Rect)> = Vec::new();
+        layout.update(Rect::new(0, 0, 100, 100), &mut |id, rect| rects.push((id, rect)));
+
+        assert_eq!(rects.len(), 4, "all four cells must be filled");
+        // Four cells in a 2x2 grid over 100x100: two distinct x and two distinct y.
+        let xs: std::collections::HashSet<i32> = rects.iter().map(|(_, rect)| rect.x).collect();
+        let ys: std::collections::HashSet<i32> = rects.iter().map(|(_, rect)| rect.y).collect();
+        assert_eq!(xs.len(), 2, "two columns: {rects:?}");
+        assert_eq!(ys.len(), 2, "two rows: {rects:?}");
     }
 }

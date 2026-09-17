@@ -13,7 +13,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::coercion::expect_usize;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 use super::data_source::IncrementalTableDataSource;
 
@@ -500,6 +505,107 @@ impl Widget for GridTableWidget {
         Size::new(w, h)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `GridTableWidget`'s property contract.
+///
+/// `selection_mode` publishes the shared lower-case tokens (`none`, `cell`,
+/// `row`, `column`) rather than the type's `Debug` spelling, so a consumer can
+/// treat it exactly like every other selection mode in the library. The counts
+/// are derived from the data source and stay read-only.
+impl WidgetProperties for GridTableWidget {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "has_data_source" => Ok(CapabilityValue::Bool(self.data_source.is_some())),
+            "row_count" => Ok(CapabilityValue::UInt(self.row_count() as u64)),
+            "column_count" => Ok(CapabilityValue::UInt(self.column_count() as u64)),
+            "scroll_row" => Ok(CapabilityValue::UInt(self.scroll_row() as u64)),
+            "scroll_column" => Ok(CapabilityValue::UInt(self.scroll_column() as u64)),
+            "row_height" => Ok(CapabilityValue::UInt(self.row_height as u64)),
+            "selection_mode" => Ok(CapabilityValue::String(
+                grid_table_selection_mode_to_str(self.selection_mode).to_string(),
+            )),
+            "sort_spec_count" => Ok(CapabilityValue::UInt(self.sort_specs().len() as u64)),
+            "selected_cell" => match self.selected_cell() {
+                Some((row, column)) => Ok(CapabilityValue::String(format!("{row},{column}"))),
+                None => Ok(CapabilityValue::Null),
+            },
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "scroll_row" => {
+                self.set_scroll_row(expect_usize(value)?);
+                Ok(())
+            }
+            "scroll_column" => {
+                self.set_scroll_column(expect_usize(value)?);
+                Ok(())
+            }
+            "row_height" => match value {
+                CapabilityValue::UInt(height) => {
+                    let height =
+                        u32::try_from(height).map_err(|_| CapabilityAccessError::TypeMismatch)?;
+                    self.set_row_height(height);
+                    Ok(())
+                }
+                _ => Err(CapabilityAccessError::TypeMismatch),
+            },
+            "selection_mode" => {
+                self.set_selection_mode(expect_grid_table_selection_mode(value)?);
+                Ok(())
+            }
+            // Counts and the selected cell are derived from the data source and
+            // the live selection; there is no meaningful assignment for them.
+            "has_data_source" | "row_count" | "column_count" | "sort_spec_count"
+            | "selected_cell" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![
+            "has_data_source",
+            "row_count",
+            "column_count",
+            "scroll_row",
+            "scroll_column",
+            "row_height",
+            "selection_mode",
+            "sort_spec_count",
+            "selected_cell",
+            BASE_PROPERTY_NAMES
+        ]
+    }
+}
+
+/// Publishes `GridTableSelectionMode` as the shared lower-case token.
+fn grid_table_selection_mode_to_str(mode: GridTableSelectionMode) -> &'static str {
+    match mode {
+        GridTableSelectionMode::None => "none",
+        GridTableSelectionMode::Cell => "cell",
+        GridTableSelectionMode::Row => "row",
+        GridTableSelectionMode::Column => "column",
+    }
+}
+
+/// Parses the shared lower-case token back, rejecting anything else.
+fn expect_grid_table_selection_mode(
+    value: CapabilityValue,
+) -> Result<GridTableSelectionMode, CapabilityAccessError> {
+    match value {
+        CapabilityValue::String(token) => match token.as_str() {
+            "none" => Ok(GridTableSelectionMode::None),
+            "cell" => Ok(GridTableSelectionMode::Cell),
+            "row" => Ok(GridTableSelectionMode::Row),
+            "column" => Ok(GridTableSelectionMode::Column),
+            _ => Err(CapabilityAccessError::TypeMismatch),
+        },
+        _ => Err(CapabilityAccessError::TypeMismatch),
+    }
 }
 
 // ---------------------------------------------------------------------------

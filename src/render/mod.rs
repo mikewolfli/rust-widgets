@@ -34,6 +34,10 @@
 //! | **pipeline** | `pipeline/` | Visual command pipeline for all widget types (controls, containers, dialogs, special, etc.) |
 //! | **web** | `web/` | Web engine and web view rendering |
 //! | **quality** | `quality/` | Adaptive rendering quality management |
+//!
+//! # Reachability
+//!
+//! **State:** Production callers: `src/widget/widget_trait.rs:1`; 181 files reference it (every control's `Draw` implementation).
 
 // ─── Sub-module declarations ─────────────────────────────────────────────────
 

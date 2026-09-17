@@ -231,6 +231,11 @@ impl WidgetProperties for WizardDialog {
             "title" => Ok(CapabilityValue::String(self.title().to_string())),
             "step_count" => Ok(CapabilityValue::UInt(self.step_count() as u64)),
             "current_step" => Ok(CapabilityValue::UInt(self.current_step() as u64)),
+            // `can_go_back` / `can_go_forward` are the schema's names for the same
+            // facts `is_first` / `is_last` express; publishing the negations keeps
+            // the schema's wording while reading the real state.
+            "can_go_back" => Ok(CapabilityValue::Bool(!self.is_first())),
+            "can_go_forward" => Ok(CapabilityValue::Bool(!self.is_last())),
             _ => base_property_get(self, name),
         }
     }
@@ -242,14 +247,24 @@ impl WidgetProperties for WizardDialog {
                 Ok(())
             }
             // Moving between steps is navigation, not an assignment: it is driven
-            // by `next_step` / `previous_step`, which emit `step_changed`.
-            "step_count" | "current_step" => Err(CapabilityAccessError::ReadOnlyProperty),
+            // by `next` / `previous`, which emit `step_changed`. The `can_go_*`
+            // pair is derived from the current position.
+            "step_count" | "current_step" | "can_go_back" | "can_go_forward" => {
+                Err(CapabilityAccessError::ReadOnlyProperty)
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["title", "step_count", "current_step", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "title",
+            "step_count",
+            "current_step",
+            "can_go_back",
+            "can_go_forward",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 

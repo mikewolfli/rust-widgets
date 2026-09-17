@@ -77,6 +77,42 @@ pub fn clear_last_ffi_error() {
     }
 }
 
+/// Records a capability-layer refusal as the last FFI error.
+///
+/// # Why this mapping exists
+///
+/// The property ABI returns a plain `bool`, so "no such property" and "that
+/// property is read-only" are indistinguishable from the return value alone.
+/// `rw_error_code` / `rw_error_message` are how a binding tells them apart, and
+/// they read this slot — so a capability error has to be translated into an
+/// [`super::RwError`] rather than dropped.
+///
+/// The property name is not included: the capability error already says which
+/// *kind* of refusal it is, and the caller knows the name it passed. Keeping the
+/// message stable also makes it safe for a binding to match on.
+pub fn record_capability_error(error: crate::widget::capability::types::CapabilityAccessError) {
+    use crate::widget::capability::types::CapabilityAccessError;
+    let (id, message) = match error {
+        CapabilityAccessError::UnknownWidget => {
+            (super::ErrorId::INVALID_ARGUMENT, "no widget is registered under that id")
+        }
+        CapabilityAccessError::UnknownProperty => (
+            super::ErrorId::INVALID_ARGUMENT,
+            "the widget does not publish a property by that name",
+        ),
+        CapabilityAccessError::ReadOnlyProperty => {
+            (super::ErrorId::INVALID_ARGUMENT, "the property is read-only")
+        }
+        CapabilityAccessError::TypeMismatch => {
+            (super::ErrorId::INVALID_ARGUMENT, "the property does not accept that value kind")
+        }
+        CapabilityAccessError::UnsupportedOnWidget => {
+            (super::ErrorId::INVALID_ARGUMENT, "the property is not meaningful for this widget")
+        }
+    };
+    record_last_ffi_error(super::RwError::new(id, message));
+}
+
 /// Trait for C‑ABI‑safe types that provide a safe fallback value.
 pub trait CAbiSafe {
     /// Returns the value `c_try!` yields when the wrapped body panics: zero for

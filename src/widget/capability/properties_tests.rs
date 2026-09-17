@@ -660,6 +660,7 @@ fn schema_and_contract_publish_the_same_names() {
     let factory = WidgetFactory::new_with_defaults();
 
     let mut missing = alloc::vec::Vec::new();
+    let mut undeclared = alloc::vec::Vec::new();
     for capability in factory.capabilities() {
         let Some(widget) = factory.create(capability.canonical_name, Rect::new(0, 0, 64, 48), "x")
         else {
@@ -670,9 +671,29 @@ fn schema_and_contract_publish_the_same_names() {
         };
         let declared: alloc::vec::Vec<&str> =
             capability.properties.iter().map(|schema| schema.name).collect();
+
+        // Forward: the control must not publish a name its schema omits.
         for name in published {
             if !declared.contains(name) {
                 missing.push((capability.canonical_name, name));
+            }
+        }
+
+        // Reverse (principle #77): the schema must not declare a name the control
+        // does not answer. Without this direction a `readable: true` entry nothing
+        // implements survives forever — the caller sees the name in
+        // `rw_widget_property_names` and gets `UnknownProperty` when it asks for it.
+        //
+        // Entries marked neither readable nor writable are the deliberate
+        // placeholder for a name a *sibling* control owns (see the `TextEdit`
+        // module docs); they promise nothing, so they are not a lie and are
+        // excluded here.
+        for schema in capability.properties {
+            if !schema.readable && !schema.writable {
+                continue;
+            }
+            if !published.contains(&schema.name) {
+                undeclared.push((capability.canonical_name, schema.name));
             }
         }
     }
@@ -681,6 +702,11 @@ fn schema_and_contract_publish_the_same_names() {
         missing.is_empty(),
         "these controls publish properties their registered schema does not declare, so the \
          schema and the contract disagree about what exists (widget, property): {missing:?}"
+    );
+    assert!(
+        undeclared.is_empty(),
+        "these controls have schema entries no contract answers, so the schema promises \
+         properties that cannot be read or written (widget, property): {undeclared:?}"
     );
 }
 

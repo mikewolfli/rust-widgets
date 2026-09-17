@@ -2,6 +2,28 @@
 // SPDX-License-Identifier: MIT
 
 //! Performance monitoring and optimization utilities, including dirty region tracking, update batching, and profiling.
+//!
+//! # Reachability
+//!
+//! **State:** Reserved. Two distinct findings, because the earlier statement here
+//! ("superseded by `gpu::performance`") was wrong and is corrected rather than
+//! deleted:
+//!
+//! * `frame_timer` / `profiler` / `batcher` — a frame-timing and batching toolkit
+//!   with no production caller. These genuinely overlap `gpu::performance`
+//!   (`AdaptivePerformanceMonitor`, `PerformanceStats`), which *is* consumed by
+//!   `src/gpu/adapter.rs`. Removal condition for this group: once
+//!   `gpu::performance` is confirmed to cover frame timing too.
+//! * `dirty` / `region` / `render_dirty` — **not duplicated anywhere**: this is the
+//!   only damage-region implementation in the crate, and `README.md` advertises
+//!   "Partial Refresh" on the strength of it. It is unreachable because the live
+//!   render loop (`widget::runtime::render_frame`) always paints the whole frame
+//!   and never consults a damage tracker. Removal condition: either the render
+//!   loop adopts it, or the README stops claiming the feature.
+//!
+//! So this module is not simply dead weight: one third of it is an advertised,
+//! implemented, unwired feature. Deleting it without deciding that question would
+//! silently drop the capability the README promises.
 /// Coalesces repaint requests so a burst of invalidations costs one frame.
 pub mod batcher;
 /// Tracks the union of regions that need repainting.

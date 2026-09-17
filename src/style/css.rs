@@ -413,6 +413,28 @@ impl CssParser {
                     style.font = Some(font);
                 }
             }
+            // ── Gradient, shadow, touch target ──────────────────────────
+            // `WidgetStyle` carries these three and CSS could not set any of them,
+            // so a stylesheet could not express the whole style record. Covered here
+            // so the CSS surface and the style type agree on what is settable.
+            "background-gradient" => {
+                style.background_gradient = Some(Self::parse_gradient(&decl.value)?);
+            }
+            "shadow" => {
+                // `none` is a meaningful value, not an omission: it clears a shadow
+                // the theme or a lower-priority sheet supplied.
+                if decl.value.trim().eq_ignore_ascii_case("none") {
+                    style.shadow = None;
+                } else {
+                    style.shadow = Some(Self::parse_shadow(&decl.value)?);
+                }
+            }
+            "touch-target" | "touch-target-size" => {
+                // Order is `width height`, matching the two-value CSS shorthand the
+                // spacing properties already use.
+                let vals = Self::parse_space_separated_lengths(&decl.value, 2)?;
+                style.touch_target = Some(crate::core::Size::new(vals[0], vals[1]));
+            }
             "font-family" => {
                 let family = decl.value.trim().trim_matches('"').trim_matches('\'').to_string();
                 if let Some(font) = &mut style.font {
@@ -548,11 +570,160 @@ impl CssParser {
             parts.iter().map(|p| Self::parse_length(p)).collect::<Result<Vec<_>, _>>()?;
         match parsed.len() {
             1 => Ok(vec![parsed[0]; count]),
+            2 if count == 2 => Ok(parsed),
             2 => Ok(vec![parsed[0], parsed[1], parsed[0], parsed[1]]),
             3 => Ok(vec![parsed[0], parsed[1], parsed[2], parsed[1]]),
             4 => Ok(parsed),
             _ => Err(format!("Expected 1-4 values for spacing, got {}", parts.len())),
         }
+    }
+
+    /// Parse a gradient value.
+    ///
+    /// The accepted syntax is a deliberately small subset of CSS's:
+    ///
+    /// ```text
+    /// linear(<angle>deg, <color> [<position>], <color> [<position>], ...)
+    /// ```
+    ///
+    /// Only the **linear** geometry is supported, because that is the one the
+    /// render layer can paint without a centre or radius to resolve: a radial or
+    /// conic ramp needs geometry CSS does not carry. Rejecting them by name is
+    /// better than accepting the syntax and silently painting a linear ramp.
+    ///
+    /// A stop without an explicit position is distributed evenly, matching how a
+    /// caller would read the declaration.
+    fn parse_gradient(value: &str) -> Result<crate::style::Gradient, String> {
+        let v = value.trim();
+        if v.eq_ignore_ascii_case("none") {
+            return Err(
+                "'none' is not a gradient; omit the declaration to leave a background colour, or \
+                 write `background-color: transparent`"
+                    .to_string(),
+            );
+        }
+
+        let inner = v
+            .strip_prefix("linear-gradient(")
+            .or_else(|| v.strip_prefix("linear("))
+            .and_then(|rest| rest.strip_suffix(')'))
+            .ok_or_else(|| {
+                format!(
+                    "unsupported gradient '{v}': only `linear-gradient(<angle>deg, <color> [<pos>], \
+                     ...)` is supported (radial and conic ramps need geometry the theme schema does \
+                     not carry)"
+                )
+            })?;
+
+        let mut parts = inner.split(',').map(str::trim).filter(|p| !p.is_empty());
+
+        // Optional leading angle. `to bottom` and friends are not supported: they
+        // describe a box-relative direction the widget tree does not resolve here.
+        let mut angle = 180.0_f32;
+        let mut stops: Vec<crate::style::GradientStop> = Vec::new();
+        let mut pending: Vec<(crate::core::Color, Option<f32>)> = Vec::new();
+
+        for part in parts.by_ref() {
+            if let Some(deg) = part.strip_suffix("deg") {
+                angle = deg.trim().parse::<f32>().map_err(|_| {
+                    format!("invalid gradient angle in '{v}': '{part}' is not a number of degrees")
+                })?;
+                continue;
+            }
+            // `<color> [<position>]`
+            let mut tokens = part.split_whitespace();
+            let color_token =
+                tokens.next().ok_or_else(|| format!("gradient stop in '{v}' has no colour"))?;
+            let color = Self::parse_color(color_token)?;
+            let position = match tokens.next() {
+                Some(raw) => Some(Self::parse_stop_position(raw)?),
+                None => None,
+            };
+            pending.push((color, position));
+        }
+
+        if pending.len() < 2 {
+            return Err(format!(
+                "gradient '{v}' needs at least two colour stops, found {}",
+                pending.len()
+            ));
+        }
+
+        // Distribute the stops that did not state a position evenly between the
+        // fixed ones, which is how the ramp in a declaration is read.
+        let last = pending.len() - 1;
+        for (index, (color, position)) in pending.into_iter().enumerate() {
+            let resolved = position.unwrap_or(index as f32 / last as f32);
+            stops.push(crate::style::GradientStop::new(resolved, color));
+        }
+
+        Ok(crate::style::Gradient::linear(
+            crate::core::Point::new(0, 0),
+            crate::core::Point::new(0, 0),
+        )
+        .with_stops(stops)
+        .with_angle(angle))
+    }
+
+    /// Parse a gradient stop position: a fraction (`0.5`) or a percentage (`50%`).
+    fn parse_stop_position(value: &str) -> Result<f32, String> {
+        let v = value.trim();
+        let fraction = if let Some(percent) = v.strip_suffix('%') {
+            percent.trim().parse::<f32>().map_err(|_| {
+                format!("invalid gradient stop position '{value}': not a percentage")
+            })? / 100.0
+        } else {
+            v.parse::<f32>().map_err(|_| {
+                format!("invalid gradient stop position '{value}': not a number or percentage")
+            })?
+        };
+        Ok(fraction.clamp(0.0, 1.0))
+    }
+
+    /// Parse a shadow value: `<offset-x> <offset-y> <blur> <color>`.
+    ///
+    /// The four parts are required, because a shadow with a missing colour would
+    /// have to invent one and a shadow with a missing extent is not a shadow. The
+    /// colour may be written first or last, matching the two orders CSS accepts.
+    fn parse_shadow(value: &str) -> Result<crate::style::Shadow, String> {
+        let v = value.trim();
+        let parts: Vec<&str> = v.split_whitespace().collect();
+        if parts.len() != 4 {
+            return Err(format!(
+                "shadow '{v}' must be `<offset-x> <offset-y> <blur> <color>`, found {} part(s)",
+                parts.len()
+            ));
+        }
+
+        // The colour may lead or trail; the three lengths keep their relative order.
+        let (color, lengths): (crate::core::Color, &[&str]) =
+            if let Ok(color) = Self::parse_color(parts[3]) {
+                (color, &parts[..3])
+            } else if let Ok(color) = Self::parse_color(parts[0]) {
+                (color, &parts[1..])
+            } else {
+                return Err(format!(
+                    "shadow '{v}' has no recognisable colour; expected a #RGB/#RRGGBB/#RRGGBBAA \
+                     literal or a named colour"
+                ));
+            };
+
+        let offset_x = Self::parse_signed_length(lengths[0])?;
+        let offset_y = Self::parse_signed_length(lengths[1])?;
+        let blur = Self::parse_length(lengths[2])?;
+        Ok(crate::style::Shadow { x: offset_x, y: offset_y, blur, color })
+    }
+
+    /// Parse a length that may be negative.
+    ///
+    /// [`Self::parse_length`] clamps to `>= 0`, which is right for a size and wrong
+    /// for a shadow offset: `-2px 2px` is a perfectly ordinary shadow, and clamping
+    /// it would silently move the shadow instead of reporting the input.
+    fn parse_signed_length(value: &str) -> Result<i32, String> {
+        let v = value.trim();
+        let num_str = v.trim_end_matches("px").trim_end_matches("pt").trim_end_matches("em").trim();
+        let f: f32 = num_str.parse().map_err(|_| format!("Invalid length: {value}"))?;
+        Ok(f.round() as i32)
     }
 
     fn skip_whitespace_and_comments(chars: &[char], mut pos: usize) -> usize {
@@ -972,6 +1143,132 @@ mod tests {
         let sheet = CssParser::parse(css).expect("the sheet parses");
         let kinds: Vec<_> = sheet.rules().iter().map(|rule| rule.selector.clone()).collect();
         assert_eq!(kinds, vec![Selector::Kind(WidgetKind::Button)], "only the known rule lands");
+    }
+
+    /// Every field of `WidgetStyle` that a stylesheet should be able to set is
+    /// settable. `background_gradient`, `shadow` and `touch_target` were defined on
+    /// the style record but unreachable from CSS, so a stylesheet could not express
+    /// the whole style. This test is the guard against a future field being added
+    /// without a property.
+    #[test]
+    fn the_style_fields_a_stylesheet_should_set_are_settable() {
+        let declarations = [
+            CssDeclaration {
+                property: "background-gradient".into(),
+                value: "linear-gradient(90deg, #ff0000, #0000ff)".into(),
+            },
+            CssDeclaration { property: "shadow".into(), value: "2px 3px 4px #112233".into() },
+            CssDeclaration { property: "touch-target".into(), value: "44px 44px".into() },
+        ];
+        let mut style = WidgetStyle::default();
+        CssParser::apply_declarations(&declarations, &mut style).expect("all three must apply");
+
+        let gradient = style.background_gradient.expect("a gradient must be set");
+        assert_eq!(gradient.stops.len(), 2, "two stops, evenly distributed");
+        assert_eq!(gradient.stops[0].color, Color::rgba(255, 0, 0, 255));
+        assert_eq!(gradient.stops[1].color, Color::rgba(0, 0, 255, 255));
+        assert_eq!(gradient.stops[0].position, 0.0);
+        assert_eq!(gradient.stops[1].position, 1.0);
+
+        let shadow = style.shadow.expect("a shadow must be set");
+        assert_eq!((shadow.x, shadow.y, shadow.blur), (2, 3, 4));
+        assert_eq!(shadow.color, Color::rgba(0x11, 0x22, 0x33, 255));
+
+        assert_eq!(style.touch_target, Some(crate::core::Size::new(44, 44)));
+    }
+
+    /// A gradient stop may carry an explicit position, as a fraction or a percentage.
+    #[test]
+    fn gradient_stop_positions_are_honoured() {
+        let decl = CssDeclaration {
+            property: "background-gradient".into(),
+            value: "linear-gradient(#ff0000 0%, #00ff00 25%, #0000ff)".into(),
+        };
+        let mut style = WidgetStyle::default();
+        CssParser::apply_declarations(&[decl], &mut style).expect("apply");
+
+        let stops = style.background_gradient.expect("gradient").stops;
+        assert_eq!(stops.len(), 3);
+        assert_eq!(stops[0].position, 0.0);
+        assert_eq!(stops[1].position, 0.25);
+        // A stop with no position takes the evenly-spaced slot, which for the last
+        // of three stops is 1.0.
+        assert_eq!(stops[2].position, 1.0);
+    }
+
+    /// `shadow: none` clears a shadow rather than being rejected, so a higher-priority
+    /// sheet can remove one a lower-priority sheet installed.
+    #[test]
+    fn shadow_none_clears_a_shadow() {
+        let mut style = WidgetStyle::default();
+        let set = CssDeclaration { property: "shadow".into(), value: "1px 1px 2px #000000".into() };
+        CssParser::apply_declarations(&[set], &mut style).expect("apply");
+        assert!(style.shadow.is_some());
+
+        let clear = CssDeclaration { property: "shadow".into(), value: "none".into() };
+        CssParser::apply_declarations(&[clear], &mut style).expect("apply");
+        assert_eq!(style.shadow, None, "`none` must clear the shadow");
+    }
+
+    /// A negative shadow offset is legal and must survive, not be clamped to zero.
+    #[test]
+    fn a_negative_shadow_offset_is_preserved() {
+        let decl =
+            CssDeclaration { property: "shadow".into(), value: "-2px 2px 4px #000000".into() };
+        let mut style = WidgetStyle::default();
+        CssParser::apply_declarations(&[decl], &mut style).expect("apply");
+        let shadow = style.shadow.expect("shadow");
+        assert_eq!(shadow.x, -2, "a negative offset must not be clamped to 0");
+        assert_eq!(shadow.y, 2);
+    }
+
+    /// A shadow written with the colour first is accepted too; CSS allows both orders.
+    #[test]
+    fn a_shadow_may_lead_with_its_colour() {
+        let decl =
+            CssDeclaration { property: "shadow".into(), value: "#000000 1px 2px 3px".into() };
+        let mut style = WidgetStyle::default();
+        CssParser::apply_declarations(&[decl], &mut style).expect("apply");
+        let shadow = style.shadow.expect("shadow");
+        assert_eq!((shadow.x, shadow.y, shadow.blur), (1, 2, 3));
+        assert_eq!(shadow.color, Color::rgba(0, 0, 0, 255));
+    }
+
+    /// Malformed values are reported rather than silently ignored.
+    #[test]
+    fn malformed_gradient_and_shadow_values_are_reported() {
+        let cases = [
+            ("background-gradient", "radial-gradient(#ff0000, #0000ff)"),
+            ("background-gradient", "linear-gradient(#ff0000)"),
+            ("background-gradient", "not a gradient"),
+            ("shadow", "1px 2px #000000"),
+            ("shadow", "1px 2px 3px not-a-colour"),
+        ];
+        for (property, value) in cases {
+            let decl = CssDeclaration { property: property.into(), value: value.into() };
+            let mut style = WidgetStyle::default();
+            assert!(
+                CssParser::apply_declarations(&[decl], &mut style).is_err(),
+                "{property}: {value:?} should be rejected, not silently ignored"
+            );
+        }
+    }
+
+    /// An unsupported geometry is refused *by name*, so a caller using a radial ramp
+    /// is told why rather than getting a linear one painted instead.
+    #[test]
+    fn an_unsupported_gradient_geometry_says_so() {
+        let decl = CssDeclaration {
+            property: "background-gradient".into(),
+            value: "radial-gradient(#ff0000, #0000ff)".into(),
+        };
+        let mut style = WidgetStyle::default();
+        let error = CssParser::apply_declarations(&[decl], &mut style).expect_err("must reject");
+        assert!(error.contains("linear-gradient"), "{error}");
+        assert!(
+            error.contains("radial") || error.contains("geometry"),
+            "the message must name the unsupported geometry: {error}"
+        );
     }
 
     // ── Declaration registry ──────────────────────────────────────────────

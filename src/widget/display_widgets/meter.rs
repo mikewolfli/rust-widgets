@@ -76,6 +76,32 @@ impl Meter {
         self.base.request_redraw();
     }
 
+    /// Returns the lower bound of the range.
+    ///
+    /// The capability layer publishes `minimum`, so the accessor has to exist on
+    /// its own rather than only as half of [`Self::set_range`].
+    pub fn minimum(&self) -> u32 {
+        self.min
+    }
+
+    /// Sets the lower bound, keeping it at or below [`Self::maximum`].
+    ///
+    /// Delegates to `set_range` so the value is re-clamped exactly once and the
+    /// two bounds can never end up inverted.
+    pub fn set_minimum(&mut self, minimum: u32) {
+        self.set_range(minimum, self.max);
+    }
+
+    /// Returns the upper bound of the range.
+    pub fn maximum(&self) -> u32 {
+        self.max
+    }
+
+    /// Sets the upper bound, keeping it at or above [`Self::minimum`].
+    pub fn set_maximum(&mut self, maximum: u32) {
+        self.set_range(self.min, maximum);
+    }
+
     /// Sets the number of tick marks drawn along the arc.
     pub fn set_tick_count(&mut self, count: u32) {
         self.tick_count = count.max(2);
@@ -115,6 +141,8 @@ impl WidgetProperties for Meter {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "value" => Ok(CapabilityValue::UInt(self.value() as u64)),
+            "minimum" => Ok(CapabilityValue::UInt(self.minimum() as u64)),
+            "maximum" => Ok(CapabilityValue::UInt(self.maximum() as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -125,12 +153,20 @@ impl WidgetProperties for Meter {
                 self.set_value(expect_u32(value)?);
                 Ok(())
             }
+            "minimum" => {
+                self.set_minimum(expect_u32(value)?);
+                Ok(())
+            }
+            "maximum" => {
+                self.set_maximum(expect_u32(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["value", BASE_PROPERTY_NAMES]
+        property_names_of!["value", "minimum", "maximum", BASE_PROPERTY_NAMES]
     }
 }
 

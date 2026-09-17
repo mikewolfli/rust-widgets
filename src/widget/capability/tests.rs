@@ -688,3 +688,232 @@ fn test_read_property_unregistered_widget_returns_error() {
     let result = factory.read_property(widget.as_ref(), "__bogus_prop__");
     assert_eq!(result, Err(CapabilityAccessError::UnknownProperty));
 }
+
+// ---------------------------------------------------------------------------
+// Controls that had a complete implementation but were never registered
+// ---------------------------------------------------------------------------
+
+/// The six controls that used to be constructible only by naming their Rust
+/// type must now resolve through the factory by every name they advertise.
+///
+/// # Why the assertion is on `create`, not on `capability`
+///
+/// Declaring a capability and registering a constructor are separate statements,
+/// and the defect being fixed was exactly a control that had the former and not
+/// the latter. Only `create` proves both are present.
+#[test]
+fn unregistered_controls_are_constructible_by_canonical_name_and_alias() {
+    let factory = WidgetFactory::new_with_defaults();
+    let rect = Rect::new(0, 0, 240, 160);
+
+    let cases: &[(&str, &str, WidgetKind)] = &[
+        ("timeline_widget", "timeline", WidgetKind::Chart),
+        ("timeline_view", "timeline_view", WidgetKind::Chart),
+        ("command_palette", "command_box", WidgetKind::ListView),
+        ("notification_center", "notifications", WidgetKind::ListView),
+        ("diff_viewer", "diff", WidgetKind::Table),
+        ("markdown_editor", "md_editor", WidgetKind::RichEdit),
+        ("toast_stack", "toasts", WidgetKind::PopupWindow),
+        ("grid_table", "gridtable", WidgetKind::GridTable),
+    ];
+
+    for (name, alias, kind) in cases {
+        let widget = factory
+            .create(name, rect, "")
+            .unwrap_or_else(|| panic!("{name} must be constructible through the factory"));
+        assert_eq!(widget.kind(), *kind, "{name} reported the wrong kind");
+
+        let via_alias = factory
+            .create(alias, rect, "")
+            .unwrap_or_else(|| panic!("{alias} must resolve to the same control as {name}"));
+        assert_eq!(via_alias.kind(), *kind, "{alias} reported the wrong kind");
+    }
+}
+
+/// A registered control must also be reachable through its own property
+/// contract, and the factory must resolve it back to *its own* capability.
+///
+/// # Why the read is asserted, not just the registration
+///
+/// Three of these controls share a `WidgetKind` with an existing one
+/// (`command_palette`/`notification_center` with `list_view`, `diff_viewer` with
+/// `table_widget`, `markdown_editor` with `rich_edit`, `timeline_widget` with
+/// `chart`, `toast_stack` with `popup_window`). Registering without a type-based
+/// tie-break makes the lookup fall through to an empty schema, so the control
+/// answers `UnknownWidget` for a property it really has — the exact failure this
+/// test exists to catch.
+#[test]
+fn unregistered_controls_publish_their_own_properties() {
+    let factory = WidgetFactory::new_with_defaults();
+    let rect = Rect::new(0, 0, 240, 160);
+
+    let cases: &[(&str, &str)] = &[
+        ("timeline_widget", "item_count"),
+        ("command_palette", "filtered_count"),
+        ("notification_center", "unread_count"),
+        ("diff_viewer", "change_count"),
+        ("markdown_editor", "word_count"),
+        ("toast_stack", "toast_count"),
+        ("grid_table", "row_count"),
+    ];
+
+    for (name, property) in cases {
+        let widget = factory
+            .create(name, rect, "")
+            .unwrap_or_else(|| panic!("{name} must be constructible through the factory"));
+        let value = factory.read_property(widget.as_ref(), property).unwrap_or_else(|error| {
+            panic!("{name} must answer its own property {property}, got {error:?}")
+        });
+        assert_eq!(
+            value,
+            CapabilityValue::UInt(0),
+            "{name}::{property} should start empty on a freshly created control"
+        );
+    }
+}
+
+/// Writing through the contract must reach the control's real state, so the
+/// registered name is not merely a constructor alias.
+///
+/// # Why a round trip is the evidence
+///
+/// A write that returns `Ok` but stores nothing would satisfy a weaker test. The
+/// assertion is that a subsequent read reports the written value, which can only
+/// happen if the setter ran the control's own method.
+#[test]
+fn unregistered_controls_round_trip_writable_properties() {
+    let factory = WidgetFactory::new_with_defaults();
+    let rect = Rect::new(0, 0, 240, 160);
+
+    let mut timeline = factory.create("timeline_widget", rect, "").expect("timeline");
+    factory
+        .write_property(timeline.as_mut(), "row_height", CapabilityValue::UInt(32))
+        .expect("timeline row_height should be writable");
+    assert_eq!(
+        factory.read_property(timeline.as_ref(), "row_height"),
+        Ok(CapabilityValue::UInt(32))
+    );
+
+    let mut palette = factory.create("command_palette", rect, "").expect("palette");
+    factory
+        .write_property(palette.as_mut(), "query", CapabilityValue::String("open".to_string()))
+        .expect("palette query should be writable");
+    assert_eq!(
+        factory.read_property(palette.as_ref(), "query"),
+        Ok(CapabilityValue::String("open".to_string()))
+    );
+
+    let mut diff = factory.create("diff_viewer", rect, "").expect("diff");
+    factory
+        .write_property(diff.as_mut(), "left_text", CapabilityValue::String("a".to_string()))
+        .expect("diff left_text should be writable");
+    factory
+        .write_property(diff.as_mut(), "right_text", CapabilityValue::String("b".to_string()))
+        .expect("diff right_text should be writable");
+    assert_eq!(
+        factory.read_property(diff.as_ref(), "left_text"),
+        Ok(CapabilityValue::String("a".to_string()))
+    );
+    assert_eq!(
+        factory.read_property(diff.as_ref(), "right_text"),
+        Ok(CapabilityValue::String("b".to_string()))
+    );
+
+    let mut markdown = factory.create("markdown_editor", rect, "").expect("markdown editor");
+    factory
+        .write_property(markdown.as_mut(), "preview_mode", CapabilityValue::Bool(true))
+        .expect("markdown preview_mode should be writable");
+    assert_eq!(
+        factory.read_property(markdown.as_ref(), "preview_mode"),
+        Ok(CapabilityValue::Bool(true))
+    );
+
+    let mut toasts = factory.create("toast_stack", rect, "").expect("toast stack");
+    factory
+        .write_property(toasts.as_mut(), "row_height", CapabilityValue::UInt(48))
+        .expect("toast row_height should be writable");
+    assert_eq!(factory.read_property(toasts.as_ref(), "row_height"), Ok(CapabilityValue::UInt(48)));
+
+    let mut grid_table = factory.create("grid_table", rect, "").expect("grid table");
+    factory
+        .write_property(grid_table.as_mut(), "row_height", CapabilityValue::UInt(36))
+        .expect("grid table row_height should be writable");
+    assert_eq!(
+        factory.read_property(grid_table.as_ref(), "row_height"),
+        Ok(CapabilityValue::UInt(36))
+    );
+    factory
+        .write_property(
+            grid_table.as_mut(),
+            "selection_mode",
+            CapabilityValue::String("row".to_string()),
+        )
+        .expect("grid table selection_mode should be writable");
+    assert_eq!(
+        factory.read_property(grid_table.as_ref(), "selection_mode"),
+        Ok(CapabilityValue::String("row".to_string()))
+    );
+}
+
+/// Reversed bounds must not produce an inverted viewport.
+///
+/// `TimelineWidget::set_viewport` raises `end` above `start`, so writing an
+/// `end` below the live `start` must clamp rather than store a negative span — a
+/// span that would otherwise make the projection divide by a non-positive range.
+#[test]
+fn timeline_viewport_write_never_inverts_the_range() {
+    let factory = WidgetFactory::new_with_defaults();
+    let mut timeline = factory
+        .create("timeline_widget", Rect::new(0, 0, 240, 160), "")
+        .expect("timeline must be constructible");
+
+    factory
+        .write_property(timeline.as_mut(), "viewport_start", CapabilityValue::Int(50))
+        .expect("viewport_start should be writable");
+    factory
+        .write_property(timeline.as_mut(), "viewport_end", CapabilityValue::Int(10))
+        .expect("viewport_end should be writable");
+
+    let start = match factory.read_property(timeline.as_ref(), "viewport_start") {
+        Ok(CapabilityValue::Int(value)) => value,
+        other => panic!("viewport_start must read back as Int, got {other:?}"),
+    };
+    let end = match factory.read_property(timeline.as_ref(), "viewport_end") {
+        Ok(CapabilityValue::Int(value)) => value,
+        other => panic!("viewport_end must read back as Int, got {other:?}"),
+    };
+    assert!(end > start, "an inverted write must be clamped: start={start}, end={end}");
+}
+
+/// Read-only names must answer `ReadOnlyProperty` rather than accepting a write.
+///
+/// # Why this is asserted per control
+///
+/// `selected_index` / derived counts have no setter, so accepting a write would
+/// silently discard the caller's value while reporting success.
+#[test]
+fn derived_names_reject_writes_on_newly_registered_controls() {
+    let factory = WidgetFactory::new_with_defaults();
+    let rect = Rect::new(0, 0, 240, 160);
+
+    let cases: &[(&str, &str, CapabilityValue)] = &[
+        ("timeline_widget", "item_count", CapabilityValue::UInt(1)),
+        ("command_palette", "filtered_count", CapabilityValue::UInt(1)),
+        ("notification_center", "unread_count", CapabilityValue::UInt(1)),
+        ("diff_viewer", "change_count", CapabilityValue::UInt(1)),
+        ("markdown_editor", "word_count", CapabilityValue::UInt(1)),
+        ("toast_stack", "toast_count", CapabilityValue::UInt(1)),
+        ("grid_table", "row_count", CapabilityValue::UInt(1)),
+    ];
+
+    for (name, property, value) in cases {
+        let mut widget = factory
+            .create(name, rect, "")
+            .unwrap_or_else(|| panic!("{name} must be constructible through the factory"));
+        assert_eq!(
+            factory.write_property(widget.as_mut(), property, value.clone()),
+            Err(CapabilityAccessError::ReadOnlyProperty),
+            "{name}::{property} must be declared read-only"
+        );
+    }
+}

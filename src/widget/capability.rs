@@ -90,6 +90,8 @@ use super::{Widget, WidgetKind};
 #[cfg(full_widgets)]
 use crate::widget::base_widgets::toggle_button::ToggleButton;
 #[cfg(full_widgets)]
+use crate::widget::dialog::popup_window::PopupWindow;
+#[cfg(full_widgets)]
 use crate::widget::input_widgets::rich_edit::RichEdit;
 #[cfg(full_widgets)]
 use crate::widget::input_widgets::textedit::TextEdit;
@@ -104,11 +106,19 @@ use crate::widget::special_widgets::chart::ChartWidget;
 #[cfg(full_widgets)]
 use crate::widget::special_widgets::code_editor::CodeEditor;
 #[cfg(full_widgets)]
+use crate::widget::special_widgets::command_palette::CommandPalette;
+#[cfg(full_widgets)]
+use crate::widget::special_widgets::diff_viewer::DiffViewer;
+#[cfg(full_widgets)]
 use crate::widget::special_widgets::gantt_widget::GanttWidget;
 #[cfg(full_widgets)]
 use crate::widget::special_widgets::map_view::MapView;
 #[cfg(full_widgets)]
+use crate::widget::special_widgets::markdown_editor::MarkdownEditor;
+#[cfg(full_widgets)]
 use crate::widget::special_widgets::media_player::MediaPlayer;
+#[cfg(full_widgets)]
+use crate::widget::special_widgets::notification_center::NotificationCenter;
 #[cfg(full_widgets)]
 use crate::widget::special_widgets::segmented_control::SegmentedControl;
 #[cfg(full_widgets)]
@@ -118,7 +128,13 @@ use crate::widget::special_widgets::split_button::SplitButton;
 #[cfg(full_widgets)]
 use crate::widget::special_widgets::terminal_view::TerminalView;
 #[cfg(full_widgets)]
+use crate::widget::special_widgets::timeline_widget::TimelineWidget;
+#[cfg(full_widgets)]
+use crate::widget::special_widgets::toast::ToastStack;
+#[cfg(full_widgets)]
 use crate::widget::view_widgets::data_grid::DataGrid;
+#[cfg(full_widgets)]
+use crate::widget::view_widgets::list_view::ListView;
 #[cfg(full_widgets)]
 use crate::widget::view_widgets::table_widget::TableWidget;
 #[cfg(full_widgets)]
@@ -715,18 +731,29 @@ impl WidgetFactory {
             "data_grid" => self::coercion::widget_as::<DataGrid>(widget).is_some(),
             "virtual_table" => self::coercion::widget_as::<VirtualTable>(widget).is_some(),
             "table_widget" => self::coercion::widget_as::<TableWidget>(widget).is_some(),
+            "diff_viewer" => self::coercion::widget_as::<DiffViewer>(widget).is_some(),
             // `WidgetKind::TreeView`
             "tree_table" => self::coercion::widget_as::<TreeTable>(widget).is_some(),
             "tree_view" => self::coercion::widget_as::<TreeView>(widget).is_some(),
             // `WidgetKind::ToggleButton`
             "segmented_control" => self::coercion::widget_as::<SegmentedControl>(widget).is_some(),
             "toggle_button" => self::coercion::widget_as::<ToggleButton>(widget).is_some(),
+            // `WidgetKind::ListView`. `list_view` shares the kind with
+            // `command_palette` and `notification_center`, so all three need a row:
+            // without one the lookup falls through to an empty schema and the
+            // control reports `UnknownWidget` for its own properties.
+            "list_view" => self::coercion::widget_as::<ListView>(widget).is_some(),
+            "command_palette" => self::coercion::widget_as::<CommandPalette>(widget).is_some(),
+            "notification_center" => {
+                self::coercion::widget_as::<NotificationCenter>(widget).is_some()
+            }
             // `WidgetKind::TextEdit`
             "text_edit" => self::coercion::widget_as::<TextEdit>(widget).is_some(),
             "terminal_view" => self::coercion::widget_as::<TerminalView>(widget).is_some(),
             // `WidgetKind::RichEdit`
             "rich_edit" => self::coercion::widget_as::<RichEdit>(widget).is_some(),
             "code_editor" => self::coercion::widget_as::<CodeEditor>(widget).is_some(),
+            "markdown_editor" => self::coercion::widget_as::<MarkdownEditor>(widget).is_some(),
             // `WidgetKind::StatusBar`
             "status_bar" => self::coercion::widget_as::<StatusBar>(widget).is_some(),
             "snackbar" => self::coercion::widget_as::<Snackbar>(widget).is_some(),
@@ -736,12 +763,16 @@ impl WidgetFactory {
             // `WidgetKind::Chart`
             "chart" => self::coercion::widget_as::<ChartWidget>(widget).is_some(),
             "gantt_widget" => self::coercion::widget_as::<GanttWidget>(widget).is_some(),
+            "timeline_widget" => self::coercion::widget_as::<TimelineWidget>(widget).is_some(),
             // `WidgetKind::WebEngineView`
             "web_view" => self::coercion::widget_as::<WebView>(widget).is_some(),
             "media_player" => self::coercion::widget_as::<MediaPlayer>(widget).is_some(),
             // `WidgetKind::ToolButton`
             "tool_button" => self::coercion::widget_as::<ToolButton>(widget).is_some(),
             "split_button" => self::coercion::widget_as::<SplitButton>(widget).is_some(),
+            // `WidgetKind::PopupWindow`
+            "popup_window" => self::coercion::widget_as::<PopupWindow>(widget).is_some(),
+            "toast_stack" => self::coercion::widget_as::<ToastStack>(widget).is_some(),
             // A name this table does not know is not evidence of a match.
             _ => false,
         }

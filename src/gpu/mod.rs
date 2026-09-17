@@ -31,6 +31,10 @@
 //!     println!("Mode: {:?}", manager.operation_mode());
 //! }
 //! ```
+//!
+//! # Reachability
+//!
+//! **State:** Production callers: `src/render/gpu/mod.rs:1` (the software renderer reads the GPU capability report).
 pub mod adapter;
 /// Backend degradation ladder (`Primary` → OpenGL ES → software).
 ///

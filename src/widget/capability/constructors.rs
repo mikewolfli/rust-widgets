@@ -380,6 +380,78 @@ pub fn create_grid(geometry: Rect, text: &str) -> Box<dyn Widget> {
 }
 
 #[cfg(full_widgets)]
+/// Creates a timeline with no items. `text` is applied as the control's label.
+pub fn create_timeline_widget(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(TimelineWidget::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates a command palette with no entries. `text` is applied as the control's
+/// label.
+pub fn create_command_palette(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(CommandPalette::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates a notification center with no notifications. `text` is applied as the
+/// control's label.
+pub fn create_notification_center(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(NotificationCenter::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates a diff viewer with both snapshots empty. `text` is applied as the
+/// control's label.
+pub fn create_diff_viewer(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(DiffViewer::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates an empty markdown editor. `text` is applied as the control's label.
+pub fn create_markdown_editor(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(MarkdownEditor::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates an empty toast stack. `text` is applied as the control's label.
+pub fn create_toast_stack(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(ToastStack::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates a grid table with no data source attached. `text` is applied as the
+/// control's label.
+pub fn create_grid_table(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(GridTableWidget::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates a number picker over `0..=100`. `text` is applied as the control's
+/// label.
+pub fn create_number_picker(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(NumberPicker::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates a six-box OTP input. `text` seeds the code via the `value` property.
+pub fn create_otp_input(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(OtpInput::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates an informational banner with an empty message.
+pub fn create_banner(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(Banner::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates a pagination bar over no items. `text` is applied as the control's
+/// label.
+pub fn create_pagination(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(Pagination::new(geometry)))
+}
+
+#[cfg(full_widgets)]
 /// Creates a free-form shape widget drawn as a rounded rectangle with a corner
 /// radius of 8 pixels. `text` is applied as the control's label.
 pub fn create_freeform_shape(geometry: Rect, text: &str) -> Box<dyn Widget> {

@@ -247,6 +247,12 @@ impl WidgetProperties for GridWidget {
             "rows" => Ok(CapabilityValue::UInt(self.rows() as u64)),
             "columns" => Ok(CapabilityValue::UInt(self.columns() as u64)),
             "spacing" => Ok(CapabilityValue::UInt(self.spacing() as u64)),
+            "line_color" => Ok(match self.line_color() {
+                Some(color) => CapabilityValue::String(color.to_hex_rgba()),
+                None => CapabilityValue::Null,
+            }),
+            "cell_width" => Ok(CapabilityValue::UInt(self.cell_width() as u64)),
+            "cell_height" => Ok(CapabilityValue::UInt(self.cell_height() as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -278,12 +284,23 @@ impl WidgetProperties for GridWidget {
                 }
                 Ok(())
             }
+            // Cell extents are recomputed from the geometry and the row/column
+            // counts, so they are derived reads rather than assignments.
+            "cell_width" | "cell_height" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["rows", "columns", "spacing", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "rows",
+            "columns",
+            "spacing",
+            "line_color",
+            "cell_width",
+            "cell_height",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 

@@ -231,6 +231,7 @@ impl WidgetProperties for ColorPicker {
         match name {
             "hex_rgba" => Ok(CapabilityValue::String(self.hex_rgba())),
             "show_alpha" => Ok(CapabilityValue::Bool(self.show_alpha())),
+            "preset_count" => Ok(CapabilityValue::UInt(self.preset_count() as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -250,12 +251,15 @@ impl WidgetProperties for ColorPicker {
                 self.set_show_alpha(expect_bool(value)?);
                 Ok(())
             }
+            // The preset palette is fixed at construction and applied by index
+            // through `apply_preset`, so the count is a derived read.
+            "preset_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["hex_rgba", "show_alpha", BASE_PROPERTY_NAMES]
+        property_names_of!["hex_rgba", "show_alpha", "preset_count", BASE_PROPERTY_NAMES]
     }
 }
 

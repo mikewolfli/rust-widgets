@@ -5,9 +5,11 @@
 use crate::core::HorizontalAlignment;
 use crate::core::Rect;
 use crate::impl_widget_property_hooks;
+use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::undo::{TextSnapshotCommand, UndoStack};
+use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -266,15 +268,33 @@ impl Widget for RichEdit {
 /// control's, which is the honest answer the property layer asks for.
 impl WidgetProperties for RichEdit {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
-        base_property_get(self, name)
+        match name {
+            "text" => Ok(CapabilityValue::String(self.text().to_string())),
+            "line_count" => Ok(CapabilityValue::UInt(self.text().lines().count() as u64)),
+            "read_only" => Ok(CapabilityValue::Bool(self.read_only)),
+            _ => base_property_get(self, name),
+        }
     }
 
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
-        base_property_set(self, name, value)
+        match name {
+            "text" => {
+                self.set_text(expect_string(value)?);
+                Ok(())
+            }
+            "read_only" => {
+                self.read_only = expect_bool(value)?;
+                self.base.request_redraw();
+                Ok(())
+            }
+            // Derived from the document body.
+            "line_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        crate::widget::capability::properties_trait::BASE_PROPERTY_NAMES
+        property_names_of!["text", "line_count", "read_only", BASE_PROPERTY_NAMES]
     }
 }
 impl Draw for RichEdit {

@@ -140,15 +140,55 @@ impl Widget for ChartWidget {
 /// contract inherits the shared four and owns nothing beyond them.
 impl WidgetProperties for ChartWidget {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
-        base_property_get(self, name)
+        match name {
+            "chart_type" => {
+                Ok(CapabilityValue::String(chart_type_to_str(self.chart_type()).to_string()))
+            }
+            "point_count" => Ok(CapabilityValue::UInt(self.data().len() as u64)),
+            "label_count" => Ok(CapabilityValue::UInt(self.labels().len() as u64)),
+            _ => base_property_get(self, name),
+        }
     }
 
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
-        base_property_set(self, name, value)
+        match name {
+            "chart_type" => {
+                self.set_chart_type(expect_chart_type(value)?);
+                Ok(())
+            }
+            // Both counts are derived from the series the caller supplied through
+            // `set_data` / `set_labels`.
+            "point_count" | "label_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of![BASE_PROPERTY_NAMES]
+        property_names_of!["chart_type", "point_count", "label_count", BASE_PROPERTY_NAMES]
+    }
+}
+
+/// Publishes `ChartType` as the shared lower-case token.
+fn chart_type_to_str(chart_type: ChartType) -> &'static str {
+    match chart_type {
+        ChartType::Bar => "bar",
+        ChartType::Line => "line",
+        ChartType::Pie => "pie",
+        ChartType::Scatter => "scatter",
+    }
+}
+
+/// Parses the shared lower-case token back, rejecting anything else.
+fn expect_chart_type(value: CapabilityValue) -> Result<ChartType, CapabilityAccessError> {
+    match value {
+        CapabilityValue::String(token) => match token.as_str() {
+            "bar" => Ok(ChartType::Bar),
+            "line" => Ok(ChartType::Line),
+            "pie" => Ok(ChartType::Pie),
+            "scatter" => Ok(ChartType::Scatter),
+            _ => Err(CapabilityAccessError::TypeMismatch),
+        },
+        _ => Err(CapabilityAccessError::TypeMismatch),
     }
 }
 

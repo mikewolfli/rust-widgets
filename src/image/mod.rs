@@ -13,6 +13,10 @@
 //! Encoding is implemented for PNG, JPEG, BMP, GIF, TIFF, QOI, Farbfeld,
 //! PNM and SVG (SVG embeds a base64 PNG). WebP/AVIF/ICO encoding returns
 //! `Err`.
+//!
+//! # Reachability
+//!
+//! **State:** Production callers: `src/widget/display_widgets/image_view.rs:7` (`use crate::image::{Image, ImageFormat}`).
 
 mod color;
 pub mod decoder;

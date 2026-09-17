@@ -635,6 +635,298 @@ macro_rules! impl_properties_other {
             },
         ];
 
+        // `TimelineWidget` publishes the shared four plus its own viewport and row
+        // metrics. `item_count` / `selected_index` / `viewport_start` / `viewport_end` /
+        // `row_height` are all answered by its `WidgetProperties` impl; `selected_index`
+        // is deliberately read-only because selecting is a command-shaped operation
+        // (`select_index(i)` returns whether the index was in range) rather than an
+        // assignment a caller can undo by writing a different number.
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const TIMELINE_WIDGET_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema {
+                name: "item_count",
+                value_kind: PropertyValueKind::UInt,
+                readable: true,
+                writable: false,
+            },
+            PropertySchema {
+                name: "selected_index",
+                value_kind: PropertyValueKind::UInt,
+                readable: true,
+                writable: false,
+            },
+            PropertySchema {
+                name: "viewport_start",
+                value_kind: PropertyValueKind::Int,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "viewport_end",
+                value_kind: PropertyValueKind::Int,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "row_height",
+                value_kind: PropertyValueKind::UInt,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
+        ];
+
+        // `CommandPalette` is a queryable command list: the filtered result set,
+        // not the raw entry list, is what a consumer can act on, so it publishes
+        // the filter state rather than the entries themselves (those are added
+        // through `set_entries`).
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const COMMAND_PALETTE_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema {
+                name: "query",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "entry_count",
+                value_kind: PropertyValueKind::UInt,
+                readable: true,
+                writable: false,
+            },
+            PropertySchema {
+                name: "filtered_count",
+                value_kind: PropertyValueKind::UInt,
+                readable: true,
+                writable: false,
+            },
+            PropertySchema {
+                name: "highlighted_index",
+                value_kind: PropertyValueKind::UInt,
+                readable: true,
+                writable: false,
+            },
+            PropertySchema {
+                name: "row_height",
+                value_kind: PropertyValueKind::UInt,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
+        ];
+
+        // `NotificationCenter` publishes its unread state and selection. The item
+        // list itself is reachable through `push` / `clear` / `set_read`; these
+        // names report the derived state a badge or list header needs.
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const NOTIFICATION_CENTER_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema {
+                name: "item_count",
+                value_kind: PropertyValueKind::UInt,
+                readable: true,
+                writable: false,
+            },
+            PropertySchema {
+                name: "unread_count",
+                value_kind: PropertyValueKind::UInt,
+                readable: true,
+                writable: false,
+            },
+            PropertySchema {
+                name: "selected_index",
+                value_kind: PropertyValueKind::UInt,
+                readable: true,
+                writable: false,
+            },
+            PropertySchema {
+                name: "row_height",
+                value_kind: PropertyValueKind::UInt,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
+        ];
+
+        // `DiffViewer` compares two snapshots. Both texts are readable and
+        // writable (writing either recomputes the diff), and `change_count` /
+        // `line_count` report the result. `selected_index` stays read-only for the
+        // same reason as the timeline's.
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const DIFF_VIEWER_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema {
+                name: "left_text",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "right_text",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "line_count",
+                value_kind: PropertyValueKind::UInt,
+                readable: true,
+                writable: false,
+            },
+            PropertySchema {
+                name: "change_count",
+                value_kind: PropertyValueKind::UInt,
+                readable: true,
+                writable: false,
+            },
+            PropertySchema {
+                name: "selected_index",
+                value_kind: PropertyValueKind::UInt,
+                readable: true,
+                writable: false,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
+        ];
+
+        // `ToastStack` publishes the stack depth and the selected toast id. The
+        // id is a string because that is what `selected_id()` returns and what the
+        // `toast_activated` / `toast_dismissed` signals carry.
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const TOAST_STACK_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema {
+                name: "toast_count",
+                value_kind: PropertyValueKind::UInt,
+                readable: true,
+                writable: false,
+            },
+            PropertySchema {
+                name: "selected_id",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: false,
+            },
+            PropertySchema {
+                name: "row_height",
+                value_kind: PropertyValueKind::UInt,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
+        ];
+
         #[cfg(not(alloc_frugal))]
         pub(crate) const GRID_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
@@ -978,24 +1270,19 @@ macro_rules! impl_properties_other {
         ];
 
         #[cfg(not(alloc_frugal))]
+        // `Canvas` is a command-recording drawing surface: the caller pushes
+        // `RenderCommand`s and the control replays them. Its one piece of state a
+        // consumer can inspect is how many commands are queued, so that is what it
+        // publishes. It previously carried the *map view* schema (`center_x`,
+        // `zoom`, ...) — a copy of `MAP_VIEW_PROPERTIES` — because both report
+        // `WidgetKind::Canvas`; the schema described a control this type is not.
+        #[cfg(not(alloc_frugal))]
         pub(crate) const CANVAS_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
-                name: "center_x",
-                value_kind: PropertyValueKind::Float,
+                name: "command_count",
+                value_kind: PropertyValueKind::UInt,
                 readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "center_y",
-                value_kind: PropertyValueKind::Float,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "zoom",
-                value_kind: PropertyValueKind::Float,
-                readable: true,
-                writable: true,
+                writable: false,
             },
             PropertySchema {
                 name: "enabled",
@@ -1024,10 +1311,25 @@ macro_rules! impl_properties_other {
         ];
 
         #[cfg(not(alloc_frugal))]
+        // `ChartWidget` holds a numeric series plus its labels. It previously carried
+        // only `selected_marker_id` — a leftover from a marker concept this type
+        // never had — so a caller could discover the control but not read its data.
         pub(crate) const CHART_PROPERTIES: &[PropertySchema] = &[
             PropertySchema {
-                name: "selected_marker_id",
-                value_kind: PropertyValueKind::String,
+                name: "chart_type",
+                value_kind: PropertyValueKind::Enum,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "point_count",
+                value_kind: PropertyValueKind::UInt,
+                readable: true,
+                writable: false,
+            },
+            PropertySchema {
+                name: "label_count",
+                value_kind: PropertyValueKind::UInt,
                 readable: true,
                 writable: false,
             },

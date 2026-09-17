@@ -4,6 +4,31 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 
+## 2.2.0 (2026-09-17) — Reachability: Everything Implemented Is Now Constructible
+
+Backward compatible. Seven C ABI functions were added; no existing signature changed.
+Seven controls that were implemented but unconstructible by name are now registered, and
+every language binding reaches the whole published ABI.
+
+See [docs/reports/CHANGELOG.md](docs/reports/CHANGELOG.md) for the full list.
+
+### Added
+
+- Seven C ABI entry points (106 → 113 functions): `rw_create_widget_of_kind`,
+  `rw_widget_kind_names`, `rw_get_widget_property`, `rw_set_widget_property`,
+  `rw_widget_property_names`, `rw_set_theme` / `rw_theme_names`, `rw_set_high_contrast`.
+- Seven controls registered so they are constructible by name: `timeline_widget`,
+  `command_palette`, `notification_center`, `diff_viewer`, `markdown_editor`,
+  `toast_stack`, `grid_table` (factory names 155 → 161).
+
+### Fixed
+
+- `include/rw_generated.h` was four functions behind the ABI, including the only
+  destructor `rw_destroy_widget`.
+- Every language binding was missing `rw_destroy_widget`.
+- Eighteen schema-declared properties were answered by no contract.
+- `rw_errors.h` and `rw_generated.h` disagreed about `rw_error_message`'s return type.
+
 ## 2.1.0 (2026-09-17) — HarmonyOS Made Real, Error Messages Audited, Cross-Target `--all-targets` Fixed
 
 Makes the cross-target claims falsifiable. No public API changed and no capability was

@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 //! Audio module — format detection, decoding, encoding, sample processing, and normalization.
+//!
+//! # Reachability
+//!
+//! **State:** Reserved: a complete audio subsystem with no production consumer and no example. Build it only under `--features audio`. Removal condition: when no audio backend is planned, or when a consumer wires it to a playback pipeline.
 
 pub mod decoder;
 pub mod encoder;

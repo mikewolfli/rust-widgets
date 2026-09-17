@@ -29,6 +29,10 @@ pub mod masked_edit;
 #[cfg(widgets_unstripped)]
 pub mod multi_select_combo_box;
 #[cfg(widgets_unstripped)]
+pub mod number_picker;
+#[cfg(widgets_unstripped)]
+pub mod otp_input;
+#[cfg(widgets_unstripped)]
 pub mod range_slider;
 #[cfg(widgets_unstripped)]
 pub mod rich_edit;
@@ -66,6 +70,10 @@ pub use listbox::{ListBox, SelectionMode};
 pub use masked_edit::MaskedEdit;
 #[cfg(widgets_unstripped)]
 pub use multi_select_combo_box::{MultiSelectComboBox, MultiSelectItem};
+#[cfg(widgets_unstripped)]
+pub use number_picker::NumberPicker;
+#[cfg(widgets_unstripped)]
+pub use otp_input::OtpInput;
 #[cfg(widgets_unstripped)]
 pub use range_slider::{RangeSlider, RangeSliderOrientation};
 #[cfg(widgets_unstripped)]

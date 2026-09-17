@@ -7,7 +7,11 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// One timeline entry with inclusive start/end time units.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -200,6 +204,74 @@ impl Widget for TimelineWidget {
         crate::core::Size::new(600, 200)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `TimelineWidget`'s property contract.
+///
+/// `selected_index` has no setter on purpose: selection is a command-shaped
+/// operation (`select_index` reports whether the index was in range and emits
+/// `item_selected`), so assigning a number here would silently diverge from the
+/// signal. Callers that mean to select invoke the command.
+impl WidgetProperties for TimelineWidget {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "item_count" => Ok(CapabilityValue::UInt(self.items().len() as u64)),
+            "selected_index" => match self.selected_index() {
+                Some(index) => Ok(CapabilityValue::UInt(index as u64)),
+                None => Ok(CapabilityValue::Null),
+            },
+            "viewport_start" => Ok(CapabilityValue::Int(self.viewport().0)),
+            "viewport_end" => Ok(CapabilityValue::Int(self.viewport().1)),
+            "row_height" => Ok(CapabilityValue::UInt(self.row_height() as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            // Writing one viewport bound must not invert the range, so the value
+            // is combined with the *other* live bound rather than stored blind.
+            "viewport_start" => match value {
+                CapabilityValue::Int(start) => {
+                    let end = self.viewport().1;
+                    self.set_viewport(start, end);
+                    Ok(())
+                }
+                _ => Err(CapabilityAccessError::TypeMismatch),
+            },
+            "viewport_end" => match value {
+                CapabilityValue::Int(end) => {
+                    let start = self.viewport().0;
+                    self.set_viewport(start, end);
+                    Ok(())
+                }
+                _ => Err(CapabilityAccessError::TypeMismatch),
+            },
+            "row_height" => match value {
+                CapabilityValue::UInt(height) => {
+                    let height =
+                        u32::try_from(height).map_err(|_| CapabilityAccessError::TypeMismatch)?;
+                    self.set_row_height(height);
+                    Ok(())
+                }
+                _ => Err(CapabilityAccessError::TypeMismatch),
+            },
+            "item_count" | "selected_index" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![
+            "item_count",
+            "selected_index",
+            "viewport_start",
+            "viewport_end",
+            "row_height",
+            BASE_PROPERTY_NAMES
+        ]
+    }
 }
 
 impl EventHandler for TimelineWidget {

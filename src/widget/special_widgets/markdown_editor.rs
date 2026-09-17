@@ -8,7 +8,11 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::undo::{TextSnapshotCommand, UndoStack};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -202,6 +206,62 @@ impl Widget for MarkdownEditor {
         crate::core::Size::new(500, 300)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `MarkdownEditor`'s property contract.
+///
+/// `text` writes go through `set_text`, which keeps the undo stack and the
+/// emitted `text_changed` signal in step with the stored document; writing the
+/// field directly would make the editor's own history wrong. `cursor_line` is
+/// read-only because the editor owns caret placement.
+impl WidgetProperties for MarkdownEditor {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "text" => Ok(CapabilityValue::String(self.text().to_string())),
+            "preview_mode" => Ok(CapabilityValue::Bool(self.preview_mode())),
+            "line_count" => Ok(CapabilityValue::UInt(self.line_count() as u64)),
+            "word_count" => Ok(CapabilityValue::UInt(self.word_count() as u64)),
+            "heading_count" => Ok(CapabilityValue::UInt(self.heading_count() as u64)),
+            "cursor_line" => Ok(CapabilityValue::UInt(self.cursor_line() as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "text" => match value {
+                CapabilityValue::String(text) => {
+                    self.set_text(text);
+                    Ok(())
+                }
+                _ => Err(CapabilityAccessError::TypeMismatch),
+            },
+            "preview_mode" => match value {
+                CapabilityValue::Bool(enabled) => {
+                    self.set_preview_mode(enabled);
+                    Ok(())
+                }
+                _ => Err(CapabilityAccessError::TypeMismatch),
+            },
+            "line_count" | "word_count" | "heading_count" | "cursor_line" => {
+                Err(CapabilityAccessError::ReadOnlyProperty)
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![
+            "text",
+            "preview_mode",
+            "line_count",
+            "word_count",
+            "heading_count",
+            "cursor_line",
+            BASE_PROPERTY_NAMES
+        ]
+    }
 }
 
 impl EventHandler for MarkdownEditor {

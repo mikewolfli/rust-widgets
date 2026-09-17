@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 //! Object system and identity management.
+//!
+//! # Reachability
+//!
+//! **State:** Production callers: `src/widget/base.rs:1` (every `BaseWidget` owns an `Object` identity).
 mod object_base;
 mod properties;
 pub use crate::core::ObjectId;

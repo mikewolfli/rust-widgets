@@ -22,6 +22,9 @@ pub enum WidgetKind {
     #[cfg(widgets_unstripped)]
     FileDialog,
     /// Modal dialog with a color wheel, swatches and RGBA value entry for picking a color.
+    ///
+    /// kind-role: base — the control registered for this kind is `color_picker`;
+    /// the kind name itself has no factory entry (see `color_dialog` alias).
     #[cfg(widgets_unstripped)]
     ColorDialog,
     /// Modal dialog for browsing installed typefaces and picking a font.
@@ -75,6 +78,9 @@ pub enum WidgetKind {
     /// Plain rectangular container used for grouping child widgets.
     Panel,
     /// Container that draws a border or 3D frame around its child.
+    ///
+    /// kind-role: base — a `Frame` is the drawing shell specialised controls
+    /// embed; it publishes no capability of its own.
     Frame,
     /// Dockable container that arranges child panels into docked regions.
     #[cfg(widgets_unstripped)]
@@ -97,6 +103,9 @@ pub enum WidgetKind {
     #[cfg(widgets_unstripped)]
     Menu,
     /// Individual item inside a menu.
+    ///
+    /// kind-role: child — `MenuItem` rows are created by their owning `Menu`,
+    /// never constructed directly from a factory name.
     #[cfg(widgets_unstripped)]
     MenuItem,
     /// Menu opened at the pointer position in response to a secondary click.
@@ -187,33 +196,46 @@ pub enum WidgetKind {
     #[cfg(widgets_unstripped)]
     FontComboBox,
     /// Web engine view widget for displaying web content.
+    ///
+    /// kind-role: base — the `WebEngine*` variants name one optional backend's
+    /// internal handle types, not independent controls. Only `WebEngineView` is
+    /// reachable, through the `web_view` capability.
     #[cfg(widgets_unstripped)]
     WebEngineView,
     /// Web engine page widget for managing web content.
+    /// kind-role: base
     #[cfg(widgets_unstripped)]
     WebEnginePage,
     /// Web engine settings widget for configuring web engine behavior.
+    /// kind-role: base
     #[cfg(widgets_unstripped)]
     WebEngineSettings,
     /// Web engine download item widget for managing downloads.
+    /// kind-role: base
     #[cfg(widgets_unstripped)]
     WebEngineDownloadItem,
     /// Web engine cookie store widget for managing cookies.
+    /// kind-role: base
     #[cfg(widgets_unstripped)]
     WebEngineCookieStore,
     /// Web engine web channel widget for JavaScript communication.
+    /// kind-role: base
     #[cfg(widgets_unstripped)]
     WebEngineWebChannel,
     /// Web engine find text result widget for text search results.
+    /// kind-role: base
     #[cfg(widgets_unstripped)]
     WebEngineFindTextResult,
     /// Web engine notification widget for web notifications.
+    /// kind-role: base
     #[cfg(widgets_unstripped)]
     WebEngineNotification,
     /// Web engine script dialog widget for JavaScript dialogs.
+    /// kind-role: base
     #[cfg(widgets_unstripped)]
     WebEngineScriptDialog,
     /// Web engine context menu request widget for context menu handling.
+    /// kind-role: base
     #[cfg(widgets_unstripped)]
     WebEngineContextMenuRequest,
     /// Action widget for menu and toolbar actions.
@@ -330,6 +352,9 @@ pub enum WidgetKind {
     #[cfg(widgets_unstripped)]
     MasonryLayout,
     /// CupertinoSwitch — iOS-style switch (alias for Switch with iOS coloring).
+    ///
+    /// kind-role: base — the kind is reported by the `switch` control when it is
+    /// configured with iOS styling; there is no separate constructor.
     #[cfg(widgets_unstripped)]
     CupertinoSwitch,
     /// MaterialSnackbar — Material Design snackbar notification.
@@ -482,4 +507,24 @@ pub enum WidgetKind {
     /// GridTable — feature-rich virtualized table with grid lines, headers, sorting, and selection.
     #[cfg(widgets_unstripped)]
     GridTable,
+    /// NumberPicker — vertically scrolling digit wheel for numeric selection.
+    ///
+    /// Distinct from `SpinBox`, which is a typed field with step buttons: a picker
+    /// keeps a scroll offset and shows its neighbours, so its interaction is a
+    /// drag or a flick rather than a click per increment.
+    #[cfg(widgets_unstripped)]
+    NumberPicker,
+    /// OtpInput — segmented single-character code entry that advances per keystroke.
+    #[cfg(widgets_unstripped)]
+    OtpInput,
+    /// Banner — persistent full-width notice that stays until the user dismisses it.
+    #[cfg(widgets_unstripped)]
+    Banner,
+    /// Pagination — numbered page navigation bar for paged content.
+    ///
+    /// Holds no content itself, unlike `PagerPageView` which contains the pages and
+    /// changes which one is visible. This is the index for content another control
+    /// owns.
+    #[cfg(widgets_unstripped)]
+    Pagination,
 }

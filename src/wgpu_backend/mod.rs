@@ -4,6 +4,10 @@
 //! Optional WGPU-based GPU renderer backend.
 //!
 //! Enable with Cargo feature: `gpu-wgpu`.
+//!
+//! # Reachability
+//!
+//! **State:** Production callers: `src/render/backend/scene.rs:12` (`use crate::wgpu_backend::WgpuRenderer`). Built only under `--features gpu-wgpu`.
 mod commands;
 mod raster;
 mod renderer;

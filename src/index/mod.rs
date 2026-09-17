@@ -5,6 +5,10 @@
 //!
 //! Provides a `WidgetRegistry` that maps `ObjectId` → metadata for
 //! runtime widget introspection, cross-module lookup, and debugging.
+//!
+//! # Reachability
+//!
+//! **State:** Reserved: an id-indexed widget lookup whose only consumers are this repository's tests. Removal condition: when the runtime registry fully subsumes it, or when the tests are retired.
 
 mod registry;
 

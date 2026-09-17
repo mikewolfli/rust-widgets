@@ -3,6 +3,10 @@
 
 //! Memory management utilities: pool allocator, arena allocator, stack allocator,
 //! and memory monitoring with pressure handling.
+//!
+//! # Reachability
+//!
+//! **State:** Production callers: `src/lib.rs:1`; the pool and allocator wrappers back the widget registry.
 
 mod pool;
 pub use pool::*;

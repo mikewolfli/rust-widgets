@@ -31,7 +31,7 @@
 | 特性 | 自绘（本库） | 原生控件 |
 |---|---|---|
 | 外观 | **跨 OS 完全一致** | 随各 OS 工具包与版本变化 |
-| 控件数量 | **167 种，全平台可用** | 仅限该 OS 工具包提供的 |
+| 控件数量 | **171 种，全平台可用** | 仅限该 OS 工具包提供的 |
 | 依赖体积 | **不链接任何 GUI 工具包** | GTK / AppKit / Win32 / Android SDK |
 | 无头与嵌入式 | **无 OS 也能运行**（`mini`、SVG） | 不可能 |
 | 测试确定性 | **像素／序列化快照** | 需要真实显示器 |
@@ -91,9 +91,9 @@
 
 | Profile | 控件集 | 注册表 | 自绘控件托管 | GPU | i18n |
 |---------|-------|:------:|:-----------:|:---:|:----:|
-| `desktop` | **167 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
-| `tablet` | **167 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
-| `mobile` | **167 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
+| `desktop` | **171 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
+| `tablet` | **171 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
+| `mobile` | **171 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
 | `embedded` | 精简核心集 | — | — | — 软件 | — |
 | `mini` | 精简核心集 | — | — | — 软件 | — |
 
@@ -121,17 +121,20 @@ Arc、Spinner、Roller、Dropdown、TextArea、Keyboard、Switch。
 
 ---
 
-全部 167 种控件均已注册进工厂，且各自发布独立属性契约；平台能力矩阵
+171 种控件全部为自绘。其中 **166 种**以自身名称注册进工厂（含别名共 **447** 个可解析名称）；
+其余为别名 kind（`pub type`）、基类/子项 kind，或可选的 WebEngine 系列 ——
+**171 种全部有归类**，且新增 kind 若未归类，`tools/check_widget_registration_fidelity.sh` 会直接失败；
+平台能力矩阵
 （`docs/plans/platform_capability_matrix.md`）由源码机械派生，并在 CI 中设有防脱节门禁。
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.1.0-blue)]()
+[![version](https://img.shields.io/badge/version-2.2.0-blue)]()
 [![tests](https://img.shields.io/badge/tests-4000%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
-**2.1.0 实测：** `desktop` 档 **4127** 个库测试全通过（`embedded` **1490**、`mini` **1411**）；
-`--all-features --all-targets` 在 `-D warnings` 下 clippy 干净；交叉目标**均 0 warning 构建**：
-`wasm32-unknown-unknown` 与 `x86_64-pc-windows-gnu`（含 `--all-targets`）、
+**2.2.0 实测：** `desktop` 档 **4232** 个库测试全通过（`embedded` **1534**、`mini` **1455**）、
+文档测试 **35** 个全通过；`--all-features --all-targets` 在 `-D warnings` 下 clippy 干净；
+交叉目标**均 0 warning 构建**：`wasm32-unknown-unknown` 与 `x86_64-pc-windows-gnu`（含 `--all-targets`）、
 `aarch64-apple-ios` 真机与模拟器、以及三个可构建的鸿蒙 target。详见
 [`CHANGELOG.md`](CHANGELOG.md)（中文版见 [`docs/reports/CHANGELOG.md`](docs/reports/CHANGELOG.md)）。
 
@@ -309,9 +312,49 @@ cargo check --no-default-features --features "tablet,macos"
 - `StyleSheetManager` — 全局样式表注册
 - `CssWatcher` — 轮询式 CSS 热加载
 
-### 局部刷新
-- `DirtyRegionTracker` 脏矩形追踪与合并
-- `render_dirty_regions()` — 基于裁剪区域的局部重绘
+### 主题系统
+- `ThemeManager` — 具名主题、明暗切换、JSON 存取
+- 语义令牌（颜色、字体、间距、边框）按控件角色解析
+- `HighContrastMode` — 强制前景/背景配对，对比度可实测
+- 对所有由本库创建的控件**自动生效**
+
+### 声明式 JSON UI（仅库 API）
+- `JsonLoader` — 由 JSON 描述构建控件树
+- 属性应用走控件**自身**的属性契约
+- 节点可选 `class` / `css`，由样式表驱动外观
+- **不经 C ABI 暴露** —— 加载器没有生成的入口点
+
+> **C ABI 覆盖范围。** C ABI（`include/rw_generated.h`，113 个 `rw_*` 函数）
+> 覆盖窗口管理、控件创建、逐控件属性与主题选择。创建与属性访问都是**通用**的：
+> `rw_create_widget_of_kind(parent, "tree_view", ...)` 可触及每一个已注册控件
+> （`rw_widget_kind_names` 列出全部），`rw_set_widget_property(id, "tooltip", ...)`
+> 可触及每一个已发布属性（`rw_widget_property_names` 列出这些名称）。
+> 主题经 `rw_set_theme` / `rw_theme_names` / `rw_set_high_contrast` 可达。
+>
+> 仍为仅 Rust 的两项：**JSON 布局加载器**（无生成入口），以及
+> **作为文档的 CSS 样式表**（单个样式属性可按控件设置，但没有传递样式表的 ABI）。
+
+### C ABI 能力一览
+
+| 能力 | 入口 |
+|---|---|
+| 窗口生命周期 | `rw_create_window`、`rw_run`、`rw_quit` |
+| 通用创建 | `rw_create_widget_of_kind`、`rw_widget_kind_names` |
+| 逐类型创建 | `rw_create_button`、`rw_create_slider` … |
+| 生命周期 | `rw_destroy_widget`、`rw_show_widget`、`rw_hide_widget` |
+| 通用属性 | `rw_get_widget_property`、`rw_set_widget_property`、`rw_widget_property_names` |
+| 文本与几何 | `rw_set_widget_text`、`rw_get_widget_text`、`rw_set_widget_geometry` |
+| 集合 | `rw_list_box_add_item`、`rw_combo_box_add_item` … |
+| 主题 | `rw_set_theme`、`rw_theme_names`、`rw_set_high_contrast` |
+| 错误 | `rw_error_code`、`rw_error_message` |
+
+`bindings/` 下的每个绑定都由 `tools/check_binding_symbol_coverage.sh` 按此清单校验，
+因此新增的 ABI 函数不会在某个语言中静默地不可达。
+
+### 局部刷新（仅库 API，未接入帧循环）
+- `DirtyRegionTracker` 脏矩形追踪与合并；`render_dirty_regions()` 基于 `push_clip` / `pop_clip` 的局部重绘
+- **`render_frame` 不使用它** —— 后者总是整帧重绘。该追踪器可供自行驱动绘制循环的宿主使用，
+  但本库内无任何调用者，因此不要预期开箱即得的局部重绘。
 
 ### 国际化（i18n）
 - `tr!()` 宏实现编译期键值翻译
@@ -323,7 +366,7 @@ cargo check --no-default-features --features "tablet,macos"
 
 ## 控件库
 
-### 桌面/平板/手机（167 种控件）
+### 桌面/平板/手机（171 种控件）
 
 **核心**：Window、Dialog、MessageBox、FileDialog、ColorDialog、FontDialog、InputDialog、ProgressDialog、PopupWindow、Button、CheckBox、RadioButton、Label、LineEdit、TextEdit、RichEdit、ComboBox、SpinBox、ListBox、ListView、TreeView、ProgressBar、Slider、ScrollBar、ScrollArea、TabWidget、Splitter、GroupBox、MenuBar、Menu、MenuItem、ContextMenu、ToolBar、StatusBar、Canvas、Table、Grid、Chart、ToggleButton
 

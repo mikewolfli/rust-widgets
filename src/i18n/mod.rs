@@ -18,6 +18,10 @@
 //! // Load translations from a JSON file
 //! // manager.load_translations("path/to/en.json").unwrap();
 //! ```
+//!
+//! # Reachability
+//!
+//! **State:** Production callers: `src/widget/base.rs:252` (`crate::i18n::translate` via the `tr!()` macro), `src/platform/profile.rs:436` (`crate::i18n::init`).
 mod global;
 mod macros;
 mod manager;

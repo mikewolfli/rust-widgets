@@ -5,6 +5,10 @@
 //!
 //! This module provides automatic feature detection based on hardware capabilities,
 //! while allowing users to override settings.
+//!
+//! # Reachability
+//!
+//! **State:** Reserved: a menu-configuration helper with no production consumer; `menu_toolbar` covers the runtime menu model. Removal condition: when a consumer needs file-driven menu definitions.
 mod config;
 mod dialog;
 mod manager;

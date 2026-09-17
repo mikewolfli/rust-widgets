@@ -17,6 +17,10 @@
 //! assert!(QualityLevel::Low < QualityLevel::Medium);
 //! assert!(QualityLevel::Medium < QualityLevel::High);
 //! ```
+//!
+//! # Reachability
+//!
+//! **State:** Production callers: `src/gpu/adapter.rs:273` (adaptive renderer selection reads the quality profile).
 mod config;
 mod level;
 mod manager;

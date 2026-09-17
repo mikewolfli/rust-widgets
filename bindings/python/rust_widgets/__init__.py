@@ -18,6 +18,7 @@ import ctypes
 import ctypes.util
 import os
 import platform as _sys_platform
+import struct
 import sys
 from pathlib import Path
 from typing import Any, Callable, Optional, Tuple
@@ -33,11 +34,62 @@ __all__ = [
     "RustWidgets",
     "find_library",
     "LibraryNotFoundError",
+    "RW_VALUE_NULL",
+    "RW_VALUE_BOOL",
+    "RW_VALUE_INT",
+    "RW_VALUE_UINT",
+    "RW_VALUE_FLOAT",
+    "RW_VALUE_STRING",
 ]
+
+# ---------------------------------------------------------------------------
+# Property value kinds (mirror `rw_value_kind` in the C header)
+# ---------------------------------------------------------------------------
+
+RW_VALUE_NULL = 0
+RW_VALUE_BOOL = 1
+RW_VALUE_INT = 2
+RW_VALUE_UINT = 3
+RW_VALUE_FLOAT = 4
+RW_VALUE_STRING = 5
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _f64_from_bits(bits: int) -> float:
+    """Rebuild a float from the bit pattern the C ABI transports.
+
+    ``rw_get_widget_property`` carries a float in the same ``int64_t`` as the
+    integer kinds instead of widening the interface with a second output, so the
+    caller has to reinterpret rather than convert.
+    """
+    return struct.unpack("<d", struct.pack("<Q", bits))[0]
+
+
+def _encode_property_value(value):
+    """Map a Python value onto the ``(kind, num, text)`` triple the ABI expects.
+
+    Returns ``(None, kind, num, text)``; the first element is unused by the
+    caller and exists only to keep the tuple shape obvious at the call site.
+    """
+    if value is None:
+        return None, RW_VALUE_NULL, 0, None
+    if isinstance(value, bool):
+        # Checked before `int`, because `bool` is a subclass of `int` in Python.
+        return None, RW_VALUE_BOOL, 1 if value else 0, None
+    if isinstance(value, int):
+        if value < 0:
+            return None, RW_VALUE_INT, value, None
+        return None, RW_VALUE_UINT, value, None
+    if isinstance(value, float):
+        bits = struct.unpack("<Q", struct.pack("<d", value))[0]
+        return None, RW_VALUE_FLOAT, bits, None
+    if isinstance(value, str):
+        return None, RW_VALUE_STRING, 0, value.encode("utf-8")
+    raise TypeError(f"unsupported property value type: {type(value).__name__}")
 
 _LIB_NAMES: dict[str, list[str]] = {
     "linux": ["librust_widgets.so"],
@@ -343,6 +395,50 @@ class RustWidgets:
 
         L.rw_hide_widget.argtypes = [c_uint64]
         L.rw_hide_widget.restype = None
+
+        L.rw_destroy_widget.argtypes = [c_uint64]
+        L.rw_destroy_widget.restype = None
+
+        # ------------------------------------------------------------------ #
+        # Generic (name-based) creation and property access                  #
+        # ------------------------------------------------------------------ #
+        L.rw_create_widget_of_kind.argtypes = [
+            c_uint64,
+            c_char_p,
+            c_char_p,
+            c_int,
+            c_int,
+            c_uint,
+            c_uint,
+        ]
+        L.rw_create_widget_of_kind.restype = c_uint64
+
+        L.rw_widget_kind_names.argtypes = [c_char_p, c_uint]
+        L.rw_widget_kind_names.restype = c_uint
+
+        L.rw_widget_property_names.argtypes = [c_uint64, c_char_p, c_uint]
+        L.rw_widget_property_names.restype = c_uint
+
+        L.rw_get_widget_property.argtypes = [
+            c_uint64,
+            c_char_p,
+            POINTER(c_int),
+            POINTER(c_int64),
+            POINTER(c_char_p),
+        ]
+        L.rw_get_widget_property.restype = c_bool
+
+        L.rw_set_widget_property.argtypes = [c_uint64, c_char_p, c_int, c_int64, c_char_p]
+        L.rw_set_widget_property.restype = c_bool
+
+        L.rw_set_theme.argtypes = [c_char_p]
+        L.rw_set_theme.restype = c_bool
+
+        L.rw_theme_names.argtypes = [c_char_p, c_uint]
+        L.rw_theme_names.restype = c_uint
+
+        L.rw_set_high_contrast.argtypes = [c_int]
+        L.rw_set_high_contrast.restype = None
 
         L.rw_set_widget_text.argtypes = [c_uint64, c_char_p]
         L.rw_set_widget_text.restype = None
@@ -875,6 +971,123 @@ class RustWidgets:
     def hide_widget(self, widget_id: int) -> None:
         """Hide a widget."""
         self.lib.rw_hide_widget(widget_id)
+
+    def destroy_widget(self, widget_id: int) -> None:
+        """Destroy ``widget_id`` and release every resource it owns."""
+        self.lib.rw_destroy_widget(widget_id)
+
+    # ------------------------------------------------------------------ #
+    # Generic (name-based) creation and property access                   #
+    # ------------------------------------------------------------------ #
+
+    def create_widget_of_kind(
+        self,
+        parent: int,
+        kind_name: str,
+        text: str = "",
+        x: int = 0,
+        y: int = 0,
+        width: int = 100,
+        height: int = 30,
+    ) -> int:
+        """Create a control of any registered kind by name.
+
+        ``kind_name`` is a canonical factory name or alias (``"button"``,
+        ``"tree_view"``, ``"command_palette"``, ...). See
+        :meth:`widget_kind_names` for the full list. Returns the new widget id,
+        or ``0`` when the name matches no control.
+        """
+        return self.lib.rw_create_widget_of_kind(
+            parent,
+            self._encode(kind_name),
+            self._encode(text),
+            x,
+            y,
+            width,
+            height,
+        )
+
+    def widget_kind_names(self) -> list[str]:
+        """Every control name the library can create."""
+        return self._read_name_list(self.lib.rw_widget_kind_names, b"")
+
+    def widget_property_names(self, widget_id: int) -> list[str]:
+        """The property names ``widget_id`` publishes."""
+        return self._read_name_list(self.lib.rw_widget_property_names, widget_id)
+
+    def get_widget_property(self, widget_id: int, name: str):
+        """Read a property by name; ``None`` when the widget or name is unknown.
+
+        Returns a Python ``bool`` / ``int`` / ``float`` / ``str`` matching the
+        property's declared type, or ``None`` for a null value.
+        """
+        kind = ctypes.c_int(0)
+        num = ctypes.c_int64(0)
+        text = ctypes.c_char_p()
+        ok = self.lib.rw_get_widget_property(
+            widget_id,
+            self._encode(name),
+            ctypes.byref(kind),
+            ctypes.byref(num),
+            ctypes.byref(text),
+        )
+        if not ok:
+            return None
+        if kind.value == RW_VALUE_NULL:
+            return None
+        if kind.value == RW_VALUE_BOOL:
+            return bool(num.value)
+        if kind.value == RW_VALUE_INT:
+            return int(num.value)
+        if kind.value == RW_VALUE_UINT:
+            return int(num.value)
+        if kind.value == RW_VALUE_FLOAT:
+            return _f64_from_bits(num.value & 0xFFFFFFFFFFFFFFFF)
+        if kind.value == RW_VALUE_STRING:
+            return self._decode_and_free(self.lib, text.value)
+        return None
+
+    def set_widget_property(self, widget_id: int, name: str, value) -> bool:
+        """Write a property by name.
+
+        ``value`` may be ``None``, ``bool``, ``int``, ``float`` or ``str``; the
+        matching ``rw_value_kind`` is chosen from its Python type. Returns
+        ``False`` when the widget or property is unknown, the property is
+        read-only, or the type does not match.
+        """
+        encoded, kind, num, text = _encode_property_value(value)
+        del encoded
+        return bool(
+            self.lib.rw_set_widget_property(
+                widget_id, self._encode(name), kind, num, text
+            )
+        )
+
+    def set_theme(self, name: str) -> bool:
+        """Select the active theme by name; ``False`` when it is not registered."""
+        return bool(self.lib.rw_set_theme(self._encode(name)))
+
+    def theme_names(self) -> list[str]:
+        """Names of the registered themes."""
+        return self._read_name_list(self.lib.rw_theme_names, b"")
+
+    def set_high_contrast(self, enabled: bool) -> None:
+        """Enable or disable the high-contrast override for every control."""
+        self.lib.rw_set_high_contrast(1 if enabled else 0)
+
+    def _read_name_list(self, func, first_arg) -> list[str]:
+        """Calls a ``(out, cap) -> required`` enumerator and splits the result.
+
+        The ABI always reports the full byte length, so one size query followed
+        by one read is enough; a name list that grew between the two calls would
+        simply be truncated on the second, which the next call would correct.
+        """
+        required = func(first_arg, None, 0)
+        if required == 0:
+            return []
+        buffer = ctypes.create_string_buffer(required + 1)
+        func(first_arg, buffer, required + 1)
+        return buffer.value.decode("utf-8").split()
 
     def set_widget_text(self, widget_id: int, text: str) -> None:
         """Set the text content of a widget."""

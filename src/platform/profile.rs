@@ -279,8 +279,10 @@ pub const fn host_name() -> &'static str {
 /// exists, and whether the alloc-frugal caps apply — but before this table those
 /// two facts were re-derived at every call site that needed a budget: buffer size,
 /// texture cap, font cache, event queue. Each derivation was a fresh chance to
-/// disagree, and the four answers below were previously four separate `if`s in
-/// `src/embedded/flags.rs` reading two unrelated atomic flags.
+/// disagree, and the answers below were previously derived in
+/// `src/embedded/flags.rs` by reading two unrelated atomic flags. That forwarding
+/// layer has since been deleted (BLUE16 Phase C-2): this table was the truth
+/// source it forwarded to, and had real consumers while the layer had none.
 ///
 /// Encoding the whole policy once means a new profile is a new row here, and a
 /// caller that needs a budget asks this table instead of testing a feature name

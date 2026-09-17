@@ -44,6 +44,59 @@ impl ControlBackend for super::CustomPaintControlBackend {
     impl_other_widgets!();
     #[cfg(not(embedded_surface))]
     impl_modern_widgets!();
+
+    /// Creates a widget by factory name, reaching every registered control.
+    ///
+    /// # Why this override exists
+    ///
+    /// The trait's default returns `0`, and the typed `create_*` methods only
+    /// cover the kinds somebody wrote a method for. A caller holding a *name* — a
+    /// binding layer, a config file, the capability matrix — had no way to reach
+    /// the other 130-odd controls. Resolving through `WidgetFactory` makes the name
+    /// list the single source of truth: registration is the only step needed to
+    /// make a control reachable, which is what
+    /// `tools/check_widget_registration_fidelity.sh` enforces.
+    ///
+    /// The name is normalized by the factory (case- and separator-insensitive), so
+    /// `"TreeView"`, `"tree_view"` and `"treeview"` all resolve, and aliases such
+    /// as `"nav_breadcrumb"` work without a table here.
+    fn create_widget(
+        &self,
+        kind: &str,
+        parent: ObjectId,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        #[cfg(full_widgets)]
+        {
+            let factory = crate::widget::WidgetFactory::new_with_defaults();
+            let Some(capability) = factory.capability(kind) else {
+                log::warn!(
+                    "custom backend: no control is registered under the name {kind:?}; returning 0"
+                );
+                return 0;
+            };
+            // Mount by the *matched name*, not by the kind. Several controls share
+            // a kind (`chart` / `timeline_widget` / `gantt_widget` all report
+            // `WidgetKind::Chart`), and `mount_widget_of_kind` resolves a kind back
+            // to a single canonical name — so going through the kind would build
+            // whichever of the siblings registered first, and the caller would get a
+            // different control than the one it named.
+            self.mount_named_widget(capability.canonical_name, parent, text, x, y, width, height)
+        }
+        #[cfg(not(full_widgets))]
+        {
+            let _ = (kind, parent, text, x, y, width, height);
+            log::warn!(
+                "custom backend: name-based creation is unavailable in this profile (no \
+                 constructor registry is compiled in); returning 0"
+            );
+            0
+        }
+    }
     // The route-matrix generator derives `create_qrcode` from `WidgetKind::QRCode`
     // (camel-to-snake of "QRCode" yields "qrcode"), whereas the canonical API name
     // is `create_qr_code`. Provide both; the alias delegates to the canonical one.

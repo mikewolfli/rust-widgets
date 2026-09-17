@@ -21,6 +21,7 @@ class FunctionDecl:
 TYPE_MAP = {
     "u64": "uint64_t",
     "u8": "uint8_t",
+    "i64": "int64_t",
     "c_int": "int",
     "c_uint": "unsigned int",
     "c_float": "float",
@@ -31,7 +32,9 @@ TYPE_MAP = {
     "*mut u64": "uint64_t*",
     "*const u8": "const uint8_t*",
     "*mut u8": "uint8_t*",
+    "*mut i64": "int64_t*",
     "*mut *mut u8": "uint8_t**",
+    "*mut *mut c_char": "char**",
 }
 
 

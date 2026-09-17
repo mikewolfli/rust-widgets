@@ -7,7 +7,11 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Diff line state.
 ///
@@ -144,6 +148,65 @@ impl Widget for DiffViewer {
         crate::core::Size::new(500, 300)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `DiffViewer`'s property contract.
+///
+/// Both texts are writable, but each name must be written through
+/// `set_texts` — which recomputes the diff and emits `compared` — rather than
+/// stored directly, so a reader never sees stale `line_count` / `change_count`
+/// after a text write.
+impl WidgetProperties for DiffViewer {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "left_text" => Ok(CapabilityValue::String(self.left.clone())),
+            "right_text" => Ok(CapabilityValue::String(self.right.clone())),
+            "line_count" => Ok(CapabilityValue::UInt(self.lines().len() as u64)),
+            "change_count" => Ok(CapabilityValue::UInt(self.change_count() as u64)),
+            "selected_index" => match self.selected_index() {
+                Some(index) => Ok(CapabilityValue::UInt(index as u64)),
+                None => Ok(CapabilityValue::Null),
+            },
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "left_text" => match value {
+                CapabilityValue::String(text) => {
+                    let right = self.right.clone();
+                    self.set_texts(text, right);
+                    Ok(())
+                }
+                _ => Err(CapabilityAccessError::TypeMismatch),
+            },
+            "right_text" => match value {
+                CapabilityValue::String(text) => {
+                    let left = self.left.clone();
+                    self.set_texts(left, text);
+                    Ok(())
+                }
+                _ => Err(CapabilityAccessError::TypeMismatch),
+            },
+            "line_count" | "change_count" | "selected_index" => {
+                Err(CapabilityAccessError::ReadOnlyProperty)
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![
+            "left_text",
+            "right_text",
+            "line_count",
+            "change_count",
+            "selected_index",
+            BASE_PROPERTY_NAMES
+        ]
+    }
 }
 
 impl EventHandler for DiffViewer {

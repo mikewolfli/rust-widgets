@@ -5,6 +5,10 @@
 //!
 //! This module provides keyboard shortcut registration, conflict detection,
 //! and dispatching for menu items across the application.
+//!
+//! # Reachability
+//!
+//! **State:** Production callers: `src/platform/types.rs:43` (`compile_target_shortcut_style`), `src/platform/types.rs:497` (`format_shortcut`). 15 files reference it.
 mod manager;
 #[cfg(test)]
 mod tests;

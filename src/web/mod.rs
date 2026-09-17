@@ -3,6 +3,10 @@
 
 //! Web capabilities module — provides web view, web engine, navigation, history,
 //! JavaScript bridge, privacy controls, and plugin management.
+//!
+//! # Reachability
+//!
+//! **State:** Production callers: `src/widget/web_widgets/web_engine.rs:1` (`BoaJsEngine` / `WebEngineViewEnhanced` are used by the web view control).
 mod history;
 mod js_engine;
 mod navigation;

@@ -14,6 +14,10 @@
 //!   C/C++ callers receive a stable numeric error code.
 //! - **`catch_panic`** must be used at every `extern "C" fn` entry
 //!   point to prevent unwinding across the FFI boundary (UB).
+//!
+//! # Reachability
+//!
+//! **State:** Production callers: `src/bindings/binding_impl.rs:1` (`rw_error_code` / `rw_error_message` read `error::ffi`).
 
 use std::fmt;
 

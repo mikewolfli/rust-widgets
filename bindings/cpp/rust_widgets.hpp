@@ -147,6 +147,35 @@ uint64_t     rw_embedded_engine_button_count(void);
 /* Memory */
 void rw_free_rust_string(char* s);
 
+/*
+ * `rw_destroy_widget` is declared by the generated ABI header, which is the only
+ * place a `rw_*` signature may live. It used to be repeated here as returning
+ * `void` while the generated header said `bool`, so a translation unit that
+ * included both could not compile.
+ */
+
+/* Generic (name-based) creation and property access */
+
+/*
+ * Value kinds for the property ABI. A `kind` selects which of `num` / `str` a
+ * call reads or writes, so a caller never has to guess which member is live.
+ *
+ * This enum lives here rather than in the generated header because the generator
+ * describes `extern "C" fn` signatures and has no way to see a Rust type that is
+ * only ever written as a plain `c_int` on the ABI. The per-function
+ * declarations are NOT repeated here: they are all declared by
+ * `rw_generated.h`, and a second copy is how this header previously disagreed
+ * with the generated one about `rw_destroy_widget`'s return type.
+ */
+typedef enum {
+    RW_VALUE_NULL = 0,
+    RW_VALUE_BOOL = 1,
+    RW_VALUE_INT = 2,
+    RW_VALUE_UINT = 3,
+    RW_VALUE_FLOAT = 4,
+    RW_VALUE_STRING = 5,
+} rw_value_kind;
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif
@@ -276,6 +305,19 @@ public:
 
     void show() const { rw_show_widget(id_); }
     void hide() const { rw_hide_widget(id_); }
+    void destroy() const { rw_destroy_widget(id_); }
+
+    /// Reads a property by name. `false` when the widget or name is unknown.
+    bool get_property(const char* name, int* out_kind, int64_t* out_num,
+                      char** out_str) const {
+        return rw_get_widget_property(id_, name, out_kind, out_num, out_str);
+    }
+
+    /// Writes a property by name; see `rw_value_kind` for the payload selector.
+    bool set_property(const char* name, int kind, int64_t num = 0,
+                      const char* str_value = nullptr) const {
+        return rw_set_widget_property(id_, name, kind, num, str_value);
+    }
 
     void set_text(const std::string& text) const {
         rw_set_widget_text(id_, text.c_str());

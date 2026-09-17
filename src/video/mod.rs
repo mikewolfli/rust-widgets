@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 //! Video module — container format detection, metadata reading, frame extraction, and playback control.
+//!
+//! # Reachability
+//!
+//! **State:** Reserved: a video pipeline with no production consumer and no example. Build it only under `--features video`. Removal condition: when no video backend is planned, or when a consumer wires it to a decoder.
 
 /// Codec-agnostic decoder interface plus the built-in MJPEG and
 /// frame-buffer decoders.

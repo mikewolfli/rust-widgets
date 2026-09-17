@@ -96,6 +96,24 @@ impl WidgetFactory {
             self.register(segmented_control_capability(), create_segmented_control);
             self.register(chip_capability(), create_chip);
             self.register(grid_capability(), create_grid);
+            // Controls that existed with a complete implementation but were never
+            // registered. Without these rows the factory could not construct them by
+            // name, so they were unreachable from declarative JSON and invisible to
+            // CSS selectors even though a Rust caller could build them directly.
+            self.register(timeline_widget_capability(), create_timeline_widget);
+            self.register(command_palette_capability(), create_command_palette);
+            self.register(notification_center_capability(), create_notification_center);
+            self.register(diff_viewer_capability(), create_diff_viewer);
+            self.register(markdown_editor_capability(), create_markdown_editor);
+            self.register(toast_stack_capability(), create_toast_stack);
+            // `grid_table` was found by the registration-fidelity gate rather than by
+            // hand: `GridTableWidget` is a complete virtualised table that had no
+            // capability at all.
+            self.register(grid_table_capability(), create_grid_table);
+            self.register(number_picker_capability(), create_number_picker);
+            self.register(otp_input_capability(), create_otp_input);
+            self.register(banner_capability(), create_banner);
+            self.register(pagination_capability(), create_pagination);
             self.register(progress_dialog_capability(), create_progress_dialog);
             self.register(popup_window_capability(), create_popup_window);
 

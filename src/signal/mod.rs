@@ -34,6 +34,10 @@
 //! All signal types are `Send + Sync`. Slots must be `FnMut + Send + Sync + 'static`.
 //! Emitting from multiple threads concurrently is safe; slot execution order across
 //! threads is not guaranteed beyond priority ordering within a single emit call.
+//!
+//! # Reachability
+//!
+//! **State:** Production callers: `src/widget/base.rs:1`; 147 files reference it (every control's public signals).
 mod core_signal;
 mod generic_signal;
 mod hub;

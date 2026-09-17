@@ -13,7 +13,6 @@ bool rw_attach_menu_bar_to_window(uint64_t window, uint64_t menu_bar);
 const char* rw_backend_name(void);
 bool rw_begin_drag(uint64_t source, const char* mime_type, const uint8_t* payload, unsigned int payload_len);
 unsigned int rw_bindings_api_version(void);
-bool rw_combo_box_add_item(uint64_t combo_box, const char* text);
 bool rw_combo_box_clear_items(uint64_t combo_box);
 int rw_combo_box_current_index(uint64_t combo_box);
 unsigned int rw_combo_box_item_count(uint64_t combo_box);
@@ -42,6 +41,7 @@ uint64_t rw_create_slider(uint64_t parent, int x, int y, unsigned int width, uns
 uint64_t rw_create_spin_box(uint64_t parent, int x, int y, unsigned int width, unsigned int height);
 uint64_t rw_create_status_bar(uint64_t parent, const char* text, int x, int y, unsigned int width, unsigned int height);
 uint64_t rw_create_tool_bar(uint64_t parent, int x, int y, unsigned int width, unsigned int height);
+uint64_t rw_create_widget_of_kind(uint64_t parent, const char* kind_name, const char* text, int x, int y, unsigned int width, unsigned int height);
 uint64_t rw_create_window(const char* title, int x, int y, unsigned int width, unsigned int height);
 bool rw_destroy_widget(uint64_t widget_id);
 uint64_t rw_embedded_engine_button_count(void);
@@ -59,6 +59,7 @@ unsigned int rw_get_embedded_target_fps(void);
 unsigned int rw_get_render_aa_samples_per_axis(void);
 const char* rw_get_widget_accessibility_name(uint64_t widget_id);
 bool rw_get_widget_geometry(uint64_t widget_id, int* x_out, int* y_out, unsigned int* width_out, unsigned int* height_out);
+bool rw_get_widget_property(uint64_t widget_id, const char* name, int* out_kind, int64_t* out_num, char** out_str);
 const char* rw_get_widget_text(uint64_t widget_id);
 bool rw_harmony_bind_node(uint64_t node_handle, uint64_t widget_id);
 void rw_harmony_clear_node_bindings(void);
@@ -106,15 +107,21 @@ void rw_quit(void);
 void rw_run(void);
 bool rw_set_clipboard_text(const char* text);
 unsigned int rw_set_embedded_target_fps(unsigned int fps);
+void rw_set_high_contrast(int mode);
 unsigned int rw_set_render_aa_samples_per_axis(unsigned int samples);
+bool rw_set_theme(const char* name);
 bool rw_set_widget_accessibility_name(uint64_t widget_id, const char* name);
 void rw_set_widget_enabled(uint64_t widget_id, bool enabled);
 void rw_set_widget_geometry(uint64_t widget_id, int x, int y, unsigned int width, unsigned int height);
 bool rw_set_widget_ime_enabled(uint64_t widget_id, bool enabled);
+bool rw_set_widget_property(uint64_t widget_id, const char* name, int kind, int64_t num, const char* str_value);
 void rw_set_widget_text(uint64_t widget_id, const char* text);
 void rw_set_widget_visible(uint64_t widget_id, bool visible);
 void rw_show_widget(uint64_t widget_id);
 uint64_t rw_submit_embedded_noop_task(const char* label);
+unsigned int rw_theme_names(char* out, unsigned int cap);
+unsigned int rw_widget_kind_names(char* out, unsigned int cap);
+unsigned int rw_widget_property_names(uint64_t widget_id, char* out, unsigned int cap);
 
 #ifdef __cplusplus
 }

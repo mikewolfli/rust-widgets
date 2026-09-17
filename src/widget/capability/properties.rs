@@ -485,7 +485,10 @@ pub(crate) fn color_picker_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ColorDialog,
         canonical_name: "color_picker",
-        aliases: &["colorpicker"],
+        // `color_dialog` is the `WidgetKind::ColorDialog` spelling. The kind is
+        // deliberately not a separate registration — it names this same control —
+        // so the alias is what makes the kind reachable by its own name.
+        aliases: &["colorpicker", "color_dialog"],
         properties: COLOR_PICKER_PROPERTIES,
         events: &["color_changed", "hex_changed"],
         commands: &["set_hex", "apply_preset"],
@@ -573,6 +576,168 @@ pub(crate) fn breadcrumb_capability() -> WidgetCapability {
         properties: BREADCRUMB_PROPERTIES,
         events: &["segment_activated"],
         commands: &["set_segments", "push_segment", "clear_segments"],
+    }
+}
+
+// The six capabilities below describe controls that were implemented but never
+// registered, so nothing could construct them by name (no JSON node, no CSS
+// selector target, no factory lookup). Registration is the whole fix; the
+// `commands` lists name only methods that actually exist on each type, because a
+// command name a consumer cannot invoke is the same defect shape as an
+// unreachable control.
+#[cfg(not(alloc_frugal))]
+pub(crate) fn timeline_widget_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Chart,
+        canonical_name: "timeline_widget",
+        aliases: &["timeline", "timeline_view"],
+        properties: TIMELINE_WIDGET_PROPERTIES,
+        events: &["item_selected"],
+        commands: &["set_items", "set_viewport", "zoom", "select_index"],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn command_palette_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::ListView,
+        canonical_name: "command_palette",
+        aliases: &["command_box"],
+        properties: COMMAND_PALETTE_PROPERTIES,
+        events: &["command_activated", "query_changed"],
+        commands: &[
+            "set_entries",
+            "set_query",
+            "clear_query",
+            "move_highlight",
+            "activate_highlighted",
+        ],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn notification_center_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::ListView,
+        canonical_name: "notification_center",
+        aliases: &["notifications"],
+        properties: NOTIFICATION_CENTER_PROPERTIES,
+        events: &["notification_selected", "notification_activated", "unread_count_changed"],
+        commands: &[
+            "push",
+            "clear",
+            "set_read",
+            "mark_all_read",
+            "select_index",
+            "activate_selected",
+        ],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn diff_viewer_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Table,
+        canonical_name: "diff_viewer",
+        aliases: &["diff"],
+        properties: DIFF_VIEWER_PROPERTIES,
+        events: &["compared"],
+        commands: &["set_texts", "select_index"],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn markdown_editor_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::RichEdit,
+        canonical_name: "markdown_editor",
+        aliases: &["md_editor"],
+        properties: MARKDOWN_EDITOR_PROPERTIES,
+        events: &["text_changed", "preview_mode_changed"],
+        commands: &["set_text", "append_line", "toggle_preview_mode", "set_preview_mode", "undo"],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn toast_stack_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::PopupWindow,
+        canonical_name: "toast_stack",
+        aliases: &["toasts"],
+        properties: TOAST_STACK_PROPERTIES,
+        events: &["toast_activated", "toast_dismissed"],
+        commands: &["push", "clear", "select_index", "activate_selected", "dismiss_selected"],
+    }
+}
+
+// Found by the registration-fidelity gate rather than by hand: `GridTableWidget`
+// is a complete virtualised table that was exported but never registered, so it
+// joins the six above as a seventh接线-only fix. It reports `WidgetKind::GridTable`,
+// which no other capability claims.
+#[cfg(not(alloc_frugal))]
+pub(crate) fn otp_input_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::OtpInput,
+        canonical_name: "otp_input",
+        aliases: &["otpinput", "otp"],
+        properties: OTP_INPUT_PROPERTIES,
+        events: &["value_changed", "completed"],
+        commands: &["insert_char", "backspace", "paste", "clear"],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn banner_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Banner,
+        canonical_name: "banner",
+        aliases: &["notice"],
+        properties: BANNER_PROPERTIES,
+        events: &["action_clicked", "dismissed"],
+        commands: &["dismiss", "show", "set_actions", "activate_action"],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn pagination_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Pagination,
+        canonical_name: "pagination",
+        aliases: &["pager", "page_numbers"],
+        properties: PAGINATION_PROPERTIES,
+        events: &["page_changed"],
+        commands: &["next_page", "previous_page", "set_page", "set_total"],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn number_picker_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::NumberPicker,
+        canonical_name: "number_picker",
+        aliases: &["numberpicker", "picker"],
+        properties: NUMBER_PICKER_PROPERTIES,
+        events: &["value_changed"],
+        commands: &["scroll_rows", "set_value", "set_range", "set_step"],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn grid_table_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::GridTable,
+        canonical_name: "grid_table",
+        aliases: &["gridtable"],
+        properties: GRID_TABLE_WIDGET_PROPERTIES,
+        events: &["cell_selected", "cell_double_clicked", "sort_changed", "header_clicked"],
+        commands: &[
+            "set_data_source",
+            "clear_data_source",
+            "set_scroll_row",
+            "set_scroll_column",
+            "toggle_sort_column",
+            "clear_selection",
+        ],
     }
 }
 
@@ -950,7 +1115,9 @@ pub(crate) fn switch_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Switch,
         canonical_name: "switch",
-        aliases: &["switch_widget", "toggle_switch"],
+        // `cupertino_switch` is the `WidgetKind::CupertinoSwitch` spelling, which the
+        // iOS-styled switch reports. The kind is not a separate control.
+        aliases: &["switch_widget", "toggle_switch", "cupertino_switch"],
         properties: SWITCH_PROPERTIES,
         events: &["toggled"],
         commands: &["set_checked", "toggle"],

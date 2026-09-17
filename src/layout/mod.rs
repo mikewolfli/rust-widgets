@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 //! Layout managers.
+//!
+//! # Reachability
+//!
+//! **State:** Production callers: `src/widget/capability/constructors.rs:1` and `src/json/loader.rs:1` (both resolve layout kinds through `layout::`).
 /// Positions each child at explicit absolute coordinates, ignoring the parent
 /// rect apart from the origin it offsets from.
 pub mod absolute;

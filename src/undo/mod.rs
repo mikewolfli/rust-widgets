@@ -3,6 +3,10 @@
 
 //! Undo/Redo framework — generic undo stack supporting commands, grouping,
 //! and cross-widget undo/redo operations.
+//!
+//! # Reachability
+//!
+//! **State:** Production callers: `src/widget/input_widgets/rich_edit.rs:1` (text edits push onto the undo stack); 18 files reference it.
 
 mod command;
 mod stack;

@@ -110,15 +110,29 @@ extern "C" {
 
 
 /* ------------------------------------------------------------------ */
+/* Function declarations                                               */
+/* ------------------------------------------------------------------ */
+
+/*
+ * `rw_error_message` / `rw_error_code` are declared by the generated ABI header,
+ * which is the single source of truth for every `rw_*` signature. They used to be
+ * repeated here with `const char*` / `int32_t`, which contradicts the generated
+ * `char*` / `int`; including both headers then failed to compile, so a C++ or C
+ * caller could not use the error codes and the ABI together at all. Including the
+ * generated header keeps the signatures in one place.
+ */
+#include <rw_generated.h>
+
+/* ------------------------------------------------------------------ */
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
 
-/// Convert an `RwError` to a human‑readable string.  Returns a pointer
-/// that MUST be freed with `rw_free_string()`.
-const char* rw_error_message(uint64_t handle);
-
-/// Return the numeric error code from an `RwError` handle.
-int32_t rw_error_code(uint64_t handle);
+/*
+ * Reading an error:
+ *
+ *   rw_error_code(handle)     -> the RW_ERROR_* value, or RW_ERROR_SUCCESS
+ *   rw_error_message(handle)  -> a string the caller frees with rw_free_string
+ */
 
 #ifdef __cplusplus
 }

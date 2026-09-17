@@ -7,6 +7,10 @@
 //! raw touch events (`TouchBegin`/`TouchEnd`/`TouchMove`) into
 //! semantic gesture events (`Tap`, `DoubleTap`, `LongPress`, `Swipe`,
 //! `Pinch`, `Rotate`).
+//!
+//! # Reachability
+//!
+//! **State:** Production callers: `src/event/loop.rs:196` (`gesture_engine.process(...)`).
 
 pub mod engine;
 pub mod pinch;

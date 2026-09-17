@@ -46,8 +46,6 @@ pub mod core;
 /// Reactive data binding system — Model → View automatic synchronization.
 pub mod data_binding;
 /// Embedded system optimizations and support.
-#[cfg(embedded_surface)]
-pub mod embedded;
 /// Unified error system (ErrorId, RwError, c_try!).
 pub mod error;
 /// Event types and dispatch helpers.
@@ -612,14 +610,68 @@ pub fn supports_surfaces() -> bool {
 /// window it created. Without it the library's own windows could not carry the
 /// library's own controls, because the two id spaces never met.
 ///
+/// Applies the active theme to a widget that is about to be registered.
+///
+/// # Why this shim exists at the crate root
+///
+/// Both creation funnels (`mount_widget_object` here and
+/// `CustomPaintControlBackend::mount_widget_of_kind`) must apply the theme, and
+/// neither may carry its own `#[cfg]` — a call-site gate is exactly where the
+/// condition drifts away from the module's own gate. That drift broke the
+/// `embedded` build twice: once for the JSON loader, once here.
+///
+/// So the call is unconditional and the *body* is gated, which means the condition
+/// is written once, next to the module it describes.
+#[cfg(not(alloc_frugal))]
+fn apply_active_theme(widget: &mut Box<dyn widget::Widget>) {
+    #[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
+    {
+        crate::theme::apply_active_theme(&mut **widget);
+    }
+    #[cfg(not(any(feature = "desktop", feature = "tablet", feature = "mobile")))]
+    {
+        // No theme module in this profile, so there is nothing to apply. Naming the
+        // parameter keeps the signature identical in every build.
+        let _ = widget;
+    }
+}
+
+/// Applies the active theme to every widget that already exists.
+///
+/// # Why a sweep is needed
+///
+/// A theme switch is a global change: applying it only inside the creation funnels
+/// would mean the controls on screen keep the previous palette until they are
+/// rebuilt. This walks the live registry and re-runs the same merge a newly created
+/// control gets, so an explicit per-control style still wins (see `theme::apply`).
+///
+/// A profile without a theme module has nothing to apply and does nothing.
+#[cfg(not(alloc_frugal))]
+pub fn reapply_active_theme() {
+    #[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
+    {
+        widget::runtime::for_each_mounted_widget(|_id, widget| {
+            crate::theme::apply_active_theme(widget);
+        });
+    }
+}
+
 /// Returns `Ok(id)` with the widget live in the registry, or `Err(reason)`.
 #[cfg(not(alloc_frugal))]
 fn mount_widget_object(
     parent: crate::core::ObjectId,
-    widget: Box<dyn widget::Widget>,
+    mut widget: Box<dyn widget::Widget>,
     rect: crate::core::Rect,
 ) -> Result<crate::core::ObjectId, widget::runtime::SurfaceMountError> {
     use widget::runtime::SurfaceMountError;
+
+    // Apply the active theme before the widget becomes visible. This is one of the
+    // two funnels every created control passes through (the other is
+    // `CustomPaintControlBackend::mount_widget_of_kind`), which is what makes a
+    // theme switch affect controls created through the C ABI and not only those the
+    // JSON loader builds. An explicit style the caller or the constructor already
+    // set is preserved; see `theme::apply`.
+    apply_active_theme(&mut widget);
 
     // Register first: the backend looks the widget up by id on every repaint.
     let id = widget::runtime::register(widget).ok_or(SurfaceMountError::NoRegistryOnThread)?;
@@ -1591,6 +1643,17 @@ pub use platform::{
 /// deprecation warning — the caller is told the name changed rather than being
 /// broken by it (principle #21).
 #[allow(deprecated)]
+/// # Reachability
+///
+/// **State:** Reserved: the compatibility shim for APIs replaced in earlier
+/// rounds; it exists so old call sites keep compiling. Removal condition: on the
+/// next major version.
+///
+/// Deprecated aliases for APIs renamed in earlier rounds.
+///
+/// Every function here forwards to its replacement and carries a `#[deprecated]`
+/// note naming that replacement, so a caller gets a compiler warning that says
+/// what to use instead.
 pub mod deprecated {
     /// Deprecated alias of [`crate::mount_surface`].
     #[deprecated(

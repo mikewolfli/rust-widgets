@@ -55,6 +55,28 @@
 //!   }
 //! }
 //! ```
+//!
+//! # Reachability
+//!
+//! **State:** Reserved: a complete declarative loader (162 registered kind names,
+//! 10 layouts, property access routed through each control's contract, and CSS
+//! integration) whose consumers are this repository's own tests and benchmark.
+//! Retained deliberately rather than deleted, because removing it is an
+//! irreversible narrowing of scope and this module is the only consumer of three
+//! pieces of infrastructure at once: the property contract (`properties.rs`), the
+//! layout kinds (`layout.rs`) and the name-to-handle binding (`element.rs`). Its
+//! maintenance surface is already near zero: it no longer hand-writes per-control
+//! setters or keeps its own kind table — unknown names go to the widget factory.
+//!
+//! Not duplicated by CSS. `src/style` defines *appearance* (colour, borders,
+//! fonts); this module defines *structure* (which controls exist, how they nest).
+//! `grep -c "children\|layout" src/style/css.rs` is `0`. The dependency runs one
+//! way — this module calls `CssParser` through `Widget::apply_css` — so CSS
+//! survives its removal rather than being replaced by it.
+//!
+//! Removal condition: no JSON-layout consumer appears by the time the declarative
+//! path is re-evaluated, and `src/layout/inspector.rs` (the other caller of the
+//! structures this module builds) is retired too.
 
 mod element;
 mod events;

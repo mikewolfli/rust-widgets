@@ -20,6 +20,7 @@ const uint64 = ref.types.uint64;
 const int8 = ref.types.int8;
 const int16 = ref.types.int16;
 const int32 = ref.types.int32;
+const int64 = ref.types.int64;
 const int = ref.types.int;
 const uint = ref.types.uint;
 const cfloat = ref.types.float;
@@ -31,6 +32,7 @@ const char_t = ref.types.char;
 const charPtr = ref.refType(char_t);
 const uint64Ptr = ref.refType(uint64);
 const intPtr = ref.refType(int);
+const int64Ptr = ref.refType(int64);
 const uintPtr = ref.refType(uint);
 const bytePtr = ref.refType(uint8);
 const bytePtrPtr = ref.refType(bytePtr);
@@ -64,6 +66,86 @@ function readAndFreeString(lib, ptr) {
 // ---------------------------------------------------------------------------
 function allocOut(type) {
   return ref.alloc(type);
+}
+
+// ---------------------------------------------------------------------------
+// Property value kinds (mirror `rw_value_kind` in the C header)
+// ---------------------------------------------------------------------------
+const RW_VALUE_NULL = 0;
+const RW_VALUE_BOOL = 1;
+const RW_VALUE_INT = 2;
+const RW_VALUE_UINT = 3;
+const RW_VALUE_FLOAT = 4;
+const RW_VALUE_STRING = 5;
+
+/**
+ * Read an int64 out-parameter, which ffi-napi may expose as a Buffer.
+ *
+ * The float kind is transported as a bit pattern in the same int64, so this has
+ * to preserve every bit; `Number()` on a Buffer would not.
+ */
+function readInt64(value) {
+  if (Buffer.isBuffer(value)) {
+    return value.readBigInt64LE(0);
+  }
+  if (typeof value === 'bigint') return value;
+  return BigInt(value === undefined || value === null ? 0 : value);
+}
+
+/** Rebuild a float from the bit pattern the C ABI transports. */
+function f64FromBits(bits) {
+  const buffer = Buffer.alloc(8);
+  buffer.writeBigUInt64LE(BigInt.asUintN(64, BigInt(bits)));
+  return buffer.readDoubleLE(0);
+}
+
+/**
+ * Map a JS value onto the `(kind, num, text)` triple the ABI expects.
+ *
+ * `null`/`undefined` mean "clear an optional property" rather than "error",
+ * which is what the `RW_VALUE_NULL` kind exists for.
+ */
+function encodePropertyValue(value) {
+  if (value === null || value === undefined) {
+    return [RW_VALUE_NULL, 0n, ref.NULL];
+  }
+  if (typeof value === 'boolean') {
+    return [RW_VALUE_BOOL, value ? 1n : 0n, ref.NULL];
+  }
+  if (typeof value === 'number') {
+    if (!Number.isInteger(value)) {
+      const buffer = Buffer.alloc(8);
+      buffer.writeDoubleLE(value);
+      return [RW_VALUE_FLOAT, buffer.readBigInt64LE(0), ref.NULL];
+    }
+    if (value < 0) return [RW_VALUE_INT, BigInt(value), ref.NULL];
+    return [RW_VALUE_UINT, BigInt(value), ref.NULL];
+  }
+  if (typeof value === 'string') {
+    return [RW_VALUE_STRING, 0n, value];
+  }
+  throw new TypeError(`unsupported property value type: ${typeof value}`);
+}
+
+/**
+ * Calls a `(out, cap) -> required` enumerator and splits the result.
+ *
+ * The ABI always reports the full byte length, so one size query followed by one
+ * read suffices; a list that grew in between is simply truncated, and the next
+ * call corrects it.
+ */
+function readNameList(lib, symbol, custom) {
+  const required = custom
+    ? custom(lib, ref.NULL, 0)
+    : lib[symbol](ref.NULL, 0);
+  if (!required) return [];
+  const buffer = Buffer.alloc(required + 1);
+  if (custom) {
+    custom(lib, buffer, required + 1);
+  } else {
+    lib[symbol](buffer, required + 1);
+  }
+  return buffer.toString('utf8').split(' ').filter(Boolean);
 }
 
 // ---------------------------------------------------------------------------
@@ -178,6 +260,25 @@ function loadFunctions(libName) {
     // ── Widget manipulation ────────────────────────────────────────────
     rw_show_widget: [void_t, [uint64]],
     rw_hide_widget: [void_t, [uint64]],
+    rw_destroy_widget: [void_t, [uint64]],
+    // ── Generic (name-based) creation and property access ───────────────
+    rw_create_widget_of_kind: [
+      uint64,
+      [uint64, "string", "string", int, int, uint, uint],
+    ],
+    rw_widget_kind_names: [uint, [charPtr, uint]],
+    rw_widget_property_names: [uint, [uint64, charPtr, uint]],
+    rw_get_widget_property: [
+      cbool,
+      [uint64, "string", intPtr, int64Ptr, charPtrPtr],
+    ],
+    rw_set_widget_property: [
+      cbool,
+      [uint64, "string", int, int64, "string"],
+    ],
+    rw_set_theme: [cbool, ["string"]],
+    rw_theme_names: [uint, [charPtr, uint]],
+    rw_set_high_contrast: [void_t, [int]],
     rw_set_widget_text: [void_t, [uint64, "string"]],
     rw_get_widget_text: [charPtr, [uint64]],
     rw_set_widget_enabled: [void_t, [uint64, cbool]],
@@ -625,6 +726,10 @@ class RustWidgets {
     this._lib.rw_hide_widget(widgetId);
   }
 
+  destroyWidget(widgetId) {
+    this._lib.rw_destroy_widget(widgetId);
+  }
+
   setWidgetText(widgetId, text) {
     this._lib.rw_set_widget_text(widgetId, text);
   }
@@ -680,6 +785,118 @@ class RustWidgets {
 
   setWidgetImeEnabled(widgetId, enabled) {
     return this._lib.rw_set_widget_ime_enabled(widgetId, enabled);
+  }
+
+  // ── Generic (name-based) creation and property access ─────────────
+
+  /**
+   * Create a control of any registered kind by name.
+   *
+   * `kindName` is a canonical factory name or alias (`"button"`,
+   * `"tree_view"`, `"command_palette"`, ...); see `widgetKindNames()`.
+   * Returns the new widget id, or 0 when the name matches no control.
+   */
+  createWidgetOfKind(
+    parent,
+    kindName,
+    text = "",
+    x = 0,
+    y = 0,
+    width = 100,
+    height = 30,
+  ) {
+    return readUint64(
+      this._lib.rw_create_widget_of_kind(
+        parent,
+        kindName,
+        text,
+        x,
+        y,
+        width,
+        height,
+      ),
+    );
+  }
+
+  /** Every control name the library can create. */
+  widgetKindNames() {
+    return readNameList(this._lib, "rw_widget_kind_names", null);
+  }
+
+  /** The property names `widgetId` publishes. */
+  widgetPropertyNames(widgetId) {
+    return readNameList(this._lib, "rw_widget_property_names", (lib, out, cap) =>
+      lib.rw_widget_property_names(widgetId, out, cap),
+    );
+  }
+
+  /**
+   * Read a property by name.
+   *
+   * Returns a JS boolean / number / string matching the property's declared
+   * type, `null` for a null value, and `undefined` when the widget or property
+   * is unknown.
+   */
+  getWidgetProperty(widgetId, name) {
+    const kindOut = allocOut(int);
+    const numOut = allocOut(int64);
+    const strOut = allocOut(charPtr);
+    const ok = this._lib.rw_get_widget_property(
+      widgetId,
+      name,
+      kindOut,
+      numOut,
+      strOut,
+    );
+    if (!ok) return undefined;
+
+    const kind = kindOut.deref();
+    const num = readInt64(numOut.deref());
+    if (kind === RW_VALUE_NULL) return null;
+    if (kind === RW_VALUE_BOOL) return num !== 0;
+    if (kind === RW_VALUE_INT || kind === RW_VALUE_UINT) return num;
+    if (kind === RW_VALUE_FLOAT) return f64FromBits(num);
+    if (kind === RW_VALUE_STRING) {
+      const ptr = strOut.deref();
+      if (!ptr || ptr.isNull()) return "";
+      const text = ptr.readCString();
+      this._lib.rw_free_string(ptr);
+      return text;
+    }
+    return undefined;
+  }
+
+  /**
+   * Write a property by name.
+   *
+   * `value` may be `null`, a boolean, a number or a string; the matching
+   * `rw_value_kind` is chosen from its JS type. Returns false when the widget
+   * or property is unknown, the property is read-only, or the type differs.
+   */
+  setWidgetProperty(widgetId, name, value) {
+    const [kind, num, text] = encodePropertyValue(value);
+    return this._lib.rw_set_widget_property(
+      widgetId,
+      name,
+      kind,
+      num,
+      text,
+    );
+  }
+
+  /** Select the active theme by name; false when it is not registered. */
+  setTheme(name) {
+    return this._lib.rw_set_theme(name);
+  }
+
+  /** Names of the registered themes. */
+  themeNames() {
+    return readNameList(this._lib, "rw_theme_names", null);
+  }
+
+  /** Enable or disable the high-contrast override for every control. */
+  setHighContrast(enabled) {
+    this._lib.rw_set_high_contrast(enabled ? 1 : 0);
   }
 
   isWidgetImeEnabled(widgetId) {
@@ -1075,4 +1292,10 @@ module.exports = {
   WidgetGeometry,
   DropEvent,
   TriggerEvent,
+  RW_VALUE_NULL,
+  RW_VALUE_BOOL,
+  RW_VALUE_INT,
+  RW_VALUE_UINT,
+  RW_VALUE_FLOAT,
+  RW_VALUE_STRING,
 };

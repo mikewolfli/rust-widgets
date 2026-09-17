@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 //! Action/shortcut/command framework.
+//!
+//! # Reachability
+//!
+//! **State:** Production callers: `src/widget/capability/properties.rs:1` (the `action` capability's property contract).
 mod app;
 mod manager;
 mod types;

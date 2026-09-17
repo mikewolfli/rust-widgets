@@ -203,15 +203,23 @@ impl Widget for Canvas {
 /// so this contract inherits the shared four and owns nothing beyond them.
 impl WidgetProperties for Canvas {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
-        base_property_get(self, name)
+        match name {
+            "command_count" => Ok(CapabilityValue::UInt(self.command_count() as u64)),
+            _ => base_property_get(self, name),
+        }
     }
 
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
-        base_property_set(self, name, value)
+        match name {
+            // Derived from the recorded command list, which is mutated through the
+            // drawing methods rather than by assigning a count.
+            "command_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of![BASE_PROPERTY_NAMES]
+        property_names_of!["command_count", BASE_PROPERTY_NAMES]
     }
 }
 

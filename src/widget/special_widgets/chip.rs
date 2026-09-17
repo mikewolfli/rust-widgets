@@ -220,6 +220,11 @@ impl WidgetProperties for Chip {
         match name {
             "item_count" => Ok(CapabilityValue::UInt(self.items().len() as u64)),
             "multi_select" => Ok(CapabilityValue::Bool(self.multi_select())),
+            "focused_index" => match self.focused_index() {
+                Some(index) => Ok(CapabilityValue::UInt(index as u64)),
+                None => Ok(CapabilityValue::Null),
+            },
+            "selected_count" => Ok(CapabilityValue::UInt(self.selected_ids().len() as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -230,14 +235,22 @@ impl WidgetProperties for Chip {
                 self.set_multi_select(expect_bool(value)?);
                 Ok(())
             }
-            // Derived from the item list.
-            "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            // Derived from the item list and the live selection.
+            "item_count" | "focused_index" | "selected_count" => {
+                Err(CapabilityAccessError::ReadOnlyProperty)
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["item_count", "multi_select", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "item_count",
+            "multi_select",
+            "focused_index",
+            "selected_count",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 

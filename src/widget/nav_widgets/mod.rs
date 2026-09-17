@@ -13,6 +13,8 @@ pub mod bottom_navigation_bar;
 pub mod navigation_drawer;
 #[cfg(not(alloc_frugal))]
 pub mod navigation_stack;
+#[cfg(widgets_unstripped)]
+pub mod pagination;
 pub mod tab_view;
 
 // Re-exports
@@ -30,5 +32,7 @@ pub use navigation_drawer::NavigationDrawer;
 pub use navigation_stack::NavigationEvent;
 #[cfg(not(alloc_frugal))]
 pub use navigation_stack::NavigationStack;
+#[cfg(widgets_unstripped)]
+pub use pagination::Pagination;
 pub use tab_view::TabPage;
 pub use tab_view::TabView;

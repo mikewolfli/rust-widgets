@@ -1,6 +1,6 @@
 [package]
 name = "rust_widgets"
-version = "2.1.0"
+version = "2.2.0"
 edition = "2021"
 description = "Pure Rust cross-platform native GUI library with hardware-adaptive rendering, 60+ widgets, touch/gesture support, i18n, and SVG-pipeline-accurate output"
 license = "MIT"
@@ -542,3 +542,11 @@ required-features = ["desktop"]
 [[example]]
 name = "control_creation_is_single_mechanism"
 required-features = ["desktop"]
+
+# Emits the factory's resolved widget names as JSON so
+# `tools/check_widget_registration_fidelity.sh` classifies every `WidgetKind`
+# against the live registry rather than a source grep. Needs `serde_json` to
+# print the report, which the device profiles carry.
+[[example]]
+name = "widget_reachability"
+required-features = ["desktop", "serde_json"]
