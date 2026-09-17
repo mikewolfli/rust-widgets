@@ -9,6 +9,7 @@
 - [事件系統](chapters/event-system.md)
 - [渲染系統](chapters/rendering-system.md)
 - [樣式與主題](chapters/styling-theming.md)
+- [宣告式檢視層](chapters/declarative-view.md)
 - [平台支援](chapters/platform-support.md)
 - [語言繫結](chapters/language-bindings.md)
 - [國際化](chapters/i18n.md)

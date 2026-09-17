@@ -26,15 +26,21 @@
 //! write was still being refused. The assertion is on the end state; the chain that
 //! produced it appears in the failure message, so a regression still says where it
 //! broke.
+//!
+//! # Why the whole file is `desktop`-gated
+//!
+//! It drives `crate::view`, which is compiled only for a device profile with
+//! unstripped widgets (BLUE18 rule #92). A stripped profile has no `view` module to
+//! test, so the file is skipped rather than failing to build — the same gate the
+//! library uses, written at the top level so the imports below never need one.
+#![cfg(feature = "desktop")]
 
 use rust_widgets::core::{ObjectId, Rect};
-use rust_widgets::data_binding::{Binding, FnListener};
-use rust_widgets::view::{Node, View, ViewEngine};
+use rust_widgets::data_binding::Binding;
+use rust_widgets::view::{Node, ReactiveHost, View, ViewEngine};
 use rust_widgets::widget::capability::properties_trait::widget_property_get;
 use rust_widgets::widget::capability::CapabilityValue;
 use rust_widgets::widget::{runtime, Widget, WidgetFactory};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 
 /// A view of one label whose text comes from shared state.
 ///
@@ -50,7 +56,7 @@ struct LabelState<'a> {
 
 impl View for LabelState<'_> {
     fn build(&self) -> Node {
-        Node::new("panel").key("root").child(
+        Node::new("group_box").key("root").child(
             Node::new("label")
                 .key("greeting")
                 .prop("text", CapabilityValue::String(self.text.get())),
@@ -64,28 +70,22 @@ impl View for LabelState<'_> {
 /// chooses between stubs and the real thing. This one chooses the real thing: a
 /// stub id would let the test pass while `apply`'s property write was being
 /// refused, because nothing would be there to hold the value.
-struct RealCreator {
-    factory: WidgetFactory,
-}
-
-impl RealCreator {
-    fn new() -> Self {
-        Self { factory: WidgetFactory::new_with_defaults() }
-    }
-
-    fn creator(&self) -> impl Fn(&Node) -> Option<ObjectId> + '_ {
-        move |node: &Node| {
-            // Return `None` rather than a stub when the factory does not know the
-            // name: an unknown name is a defect in this test's own view, and `None`
-            // makes the engine report `UnknownWidgetType` rather than mount a
-            // fabricated tree that would make the assertions below meaningless.
-            let widget: Box<dyn Widget> = self.factory.create(
-                &node.widget,
-                Rect::new(0, 0, 120, 32),
-                node.key_str().unwrap_or("anon"),
-            )?;
-            runtime::register(widget)
-        }
+///
+/// The factory is moved **into** the returned closure rather than borrowed, because
+/// [`ReactiveHost`] stores the constructor and therefore needs it to be `'static`.
+fn real_creator() -> impl Fn(&Node) -> Option<ObjectId> {
+    let factory = WidgetFactory::new_with_defaults();
+    move |node: &Node| {
+        // Return `None` rather than a stub when the factory does not know the name:
+        // an unknown name is a defect in this test's own view, and `None` makes the
+        // engine report `UnknownWidgetType` rather than mount a fabricated tree that
+        // would make the assertions below meaningless.
+        let widget: Box<dyn Widget> = factory.create(
+            &node.widget,
+            Rect::new(0, 0, 120, 32),
+            node.key_str().unwrap_or("anon"),
+        )?;
+        runtime::register(widget)
     }
 }
 
@@ -102,50 +102,44 @@ fn live_text(id: ObjectId) -> Option<String> {
 
 /// `Binding::set(value)` must reach the live control's `text` property.
 ///
-/// # Why the listener is a counter and the UI work happens after it
+/// # Why this goes through `ReactiveHost`
 ///
-/// `BindingListener` requires `Send` (a binding may be set from any thread), while
-/// `ViewEngine` and every control are `!Send` — `runtime.rs`'s registry is
-/// thread-local. A listener therefore **cannot** hold the engine. That is the
-/// contract, not an obstacle, and the shape it forces — a thread-safe notification,
-/// then work on the UI thread — is how a real host uses the pair. This test drives
-/// exactly that shape and keeps its assertion on the live control.
+/// The direct version of this test — subscribe a counter, then call
+/// `engine.update` by hand — proves the engine writes properties, but it does
+/// **not** prove the listener *drives* the update, which is the claim (BLUE18 D-2).
+/// [`ReactiveHost`] is the production wiring for that: the binding's listener is the
+/// only thing that triggers work, and it runs on whichever thread called `set`.
+///
+/// The assertion stays on the live control. The chain that produced it appears in
+/// the failure message, so a regression still says where it broke.
 #[test]
 fn binding_set_reaches_the_live_control_through_the_view_engine() {
     let text = Binding::new(String::from("first"));
-    let creator = RealCreator::new();
-    let mut engine = ViewEngine::new();
+    let mut host = ReactiveHost::new(LabelState { text: &text }, Box::new(real_creator()));
 
     // Mount: the control starts at the binding's initial value.
-    let mounted = engine.mount(&LabelState { text: &text }, &creator.creator());
+    let mounted = host.mount();
     assert!(
         mounted.widgets_created >= 2 && mounted.errors.is_empty(),
-        "mount must create a real panel and label with no refused writes: {mounted:?}"
+        "mount must create a real group box and label with no refused writes: {mounted:?}"
     );
 
-    let label_id = engine.id_at(&[0]).expect("the label is the first child of the root");
+    let label_id = host.engine().id_at(&[0]).expect("the label is the first child");
     assert_eq!(live_text(label_id).as_deref(), Some("first"));
 
-    // A `Send` notification the UI thread can observe.
-    let notifications = Arc::new(AtomicUsize::new(0));
-    let counter = Arc::clone(&notifications);
-    text.subscribe(
-        "engine",
-        Box::new(FnListener::new(move |_key, _operation| {
-            counter.fetch_add(1, Ordering::SeqCst);
-        })),
-    );
+    // The subscription is the only producer of work from here on.
+    host.subscribe(&text);
 
-    // ── The state change, then the UI thread's response to it. ──
+    // ── The state change. Everything downstream of this line is the listener. ──
     text.set(String::from("second"));
-    engine.update(&LabelState { text: &text }, &creator.creator());
+    let rebuilds = host.pump();
 
     assert_eq!(
         live_text(label_id).as_deref(),
         Some("second"),
         "after Binding::set the live control must hold the new value \
-         (notifications delivered={}, listeners={})",
-        notifications.load(Ordering::SeqCst),
+         (rebuilds={rebuilds}, notifications={}, listeners={})",
+        host.notifications(),
         text.listener_count()
     );
 }
@@ -160,9 +154,9 @@ fn binding_set_reaches_the_live_control_through_the_view_engine() {
 #[test]
 fn a_binding_driven_update_keeps_the_unchanged_control_identity() {
     let text = Binding::new(String::from("v1"));
-    let creator = RealCreator::new();
+    let creator = real_creator();
     let mut engine = ViewEngine::new();
-    engine.mount(&LabelState { text: &text }, &creator.creator());
+    engine.mount(&LabelState { text: &text }, &creator);
 
     let root_before = engine.id_at(&[]).expect("root mounted");
     let label_before = engine.id_at(&[0]).expect("label mounted");
@@ -170,7 +164,7 @@ fn a_binding_driven_update_keeps_the_unchanged_control_identity() {
     // Two updates, each changing only the label's text.
     for value in ["v2", "v3"] {
         text.set(String::from(value));
-        let report = engine.update(&LabelState { text: &text }, &creator.creator());
+        let report = engine.update(&LabelState { text: &text }, &creator);
         assert!(
             report.replaced_subtrees == 0,
             "a text-only change must not replace any subtree: {report:?}"

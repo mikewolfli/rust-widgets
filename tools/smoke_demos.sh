@@ -68,6 +68,8 @@ run_example_smoke "demo_code_editor"
 run_example_smoke "demo_terminal"
 run_example_smoke "demo_media_player"
 run_example_smoke "demo_map_view"
+# The declarative-retained loop (BLUE18 Phase F-1): state change -> one patch.
+run_example_smoke "view_counter"
 
 # ---------------------------------------------------------------------------
 # [2] Embedded profile demos

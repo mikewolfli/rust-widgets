@@ -232,6 +232,7 @@
 | `undo/` | UndoStack, UndoCommand, grouped undo/redo |
 | `util/` | Utility functions |
 | `video/` | VideoEngine, decoder, frame, playback |
+| `view/` | Declarative-retained view layer: `Node`, `diff`, `Patch`, `apply`, `View`, `ViewEngine`. **Device profiles only** — absent on `mini`/`embedded` (BLUE18 rule #92) |
 | `web/` | Web engine, web view |
 | `wgpu_backend/` | WGPU initialization + surface management |
 

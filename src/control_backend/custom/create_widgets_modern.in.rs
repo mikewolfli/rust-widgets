@@ -1146,6 +1146,7 @@ macro_rules! impl_modern_widgets {
             self.mount_widget_of_kind(WidgetKind::TagInput, parent, "", x, y, width, height)
         }
 
+        #[cfg(not(alloc_frugal))]
         fn create_text_area(
             &self,
             parent: ObjectId,
@@ -1157,6 +1158,7 @@ macro_rules! impl_modern_widgets {
             self.mount_widget_of_kind(WidgetKind::TextArea, parent, "", x, y, width, height)
         }
 
+        #[cfg(widgets_unstripped)]
         fn create_tooltip(
             &self,
             parent: ObjectId,

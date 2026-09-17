@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+# SPDX-License-Identifier: MIT
+#
 # ============================================================================
 # check_view_platform_gate.sh — BLUE18 rules #92 / #94
 # ============================================================================

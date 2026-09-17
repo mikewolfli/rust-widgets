@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+# SPDX-License-Identifier: MIT
 """Declarative key-uniqueness gate (BLUE18 rule #88).
 
 # What the rule is

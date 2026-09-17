@@ -1,12 +1,13 @@
 # BLUE18 — 声明式保留混合架构（声明式视图 + 保留式控件树 + 最小 diff + 多平台门控）
 
-> 状态：**架构已落地（Phase A–E 主体完成），本轮聚焦「多平台分层门控」**
-> 完成率：**取证 100% · Phase A–E 执行 ~85% · 多平台门控 0%**
-> 原则依据：[`docs/plans/principle.md`](principle.md)（继承 BLUE1–BLUE17 全部规则，含 #1–#84）
+> 状态：**已完成（Phase A–F 全部 100%，含 Phase E′）**
+> 完成率：**取证 100% · Phase A–F 100% · 多平台门控 100%**
+> 执行日志：[`docs/log/log-20260917-4.md`](../log/log-20260917-4.md)（第 29 轮：Phase E′ + E/F 收尾，含反向注入）
+> 原则依据：[`docs/plans/principle.md`](principle.md)（继承 BLUE1–BLUE18 全部规则，含 #1–#94）
 > 上轮计划：[`docs/plans/blue17.md`](blue17.md)
 > 上轮日志：[`docs/log/log-20260917-3.md`](../log/log-20260917-3.md)
-> 目标基线（本轮实跑）：`WidgetKind` **171** 个、门禁脚本 **35** 个、
-> `cargo test --lib` **4758** passed
+> 目标基线（本轮实跑）：`WidgetKind` **169** 个（第 29 轮删除 `PagerPageView`/`TileView` 后）、
+> 门禁脚本 **30** 个、`cargo test --lib` **4751** passed
 >
 > 本文件是执行计划，不是完成报告。
 > **取证纪律（原则 #64）**：§二、§三 的每条「存在/缺失」都在当前工作树上实跑取得，
@@ -158,10 +159,10 @@ test result: ok. 1486 passed; 0 failed
 | G2 | ✅ **已闭合** | 声明树 diff | `src/view/diff.rs:189` `pub fn diff(..)`；`grep -rn "fn diff" src/view/` 命中 1 处 | 已可最小差异 |
 | G3 | ✅ **已闭合** | patch 应用到已 mount 的控件树 | `src/view/apply.rs:148` `pub fn apply(..)` | 不必整树重建 |
 | G4 | ✅ **已闭合** | `BoundJsonLayout` 树化 | `src/json/element.rs:60` 已有 `root` / `parent_of` / `children_of` / `kind_of` / `key_of` 五个新字段，`name_map` 原样保留 | 可回答「父子/第几个孩子」 |
-| G5 | 🟡 **部分** | `data_binding` 的通知无人消费 | `ViewEngine::update` 已可被订阅者调用，但**尚无仓库内的端到端订阅示例/demo**（`ls examples/ \| grep -i "view\|declarative"` → **0 命中**） | 响应式层仍缺一个「活」的用例 |
-| G6 | 🟡 **部分** | `json/mod.rs` 声称 hot-reload | `src/json/mod.rs:11` 仍写「supports hot-reload」；`ViewEngine::update` 已是实现入口，但**该文档未指向它**（规则 #91 待收尾） | 文档与实现未对齐 |
-| G7 | 🆕 🔴 **未闭合** | **`view` 的多平台门控未经验证** | `src/lib.rs:117` 用的是 `cfg(all(any(desktop,tablet,mobile), widgets_unstripped))`，与 `src/lib.rs:69` 的 `json` 一致 —— **写法正确**，但 `tools/check_profiles.sh`（35 个门禁之一）里**没有任何一条断言 `view` 在 mini/embedded 下不参与编译**（`grep -c view tools/check_profiles.sh` → **0**） | 门控正确性靠「读者目视」，一次重构即可静默破坏 |
-| G8 | 🆕 🔴 **未闭合** | **`check_view_keys_are_unique` 门禁不存在** | `ls tools/check_view*` → **No such file or directory**，而 `src/view/node.rs:124` 的文档**已经引用**了这个门禁名 | 规则 #88 只有「报告能力」没有「门禁」；文档引用了不存在的工具（违反规则 #91 精神） |
+| G5 | ✅ **已闭合** | `data_binding` 的通知无人消费 | `src/view/reactive.rs`（`ReactiveHost`）把 `Binding` 的通知接到 `ViewEngine::update`；`tests/view_data_binding_closure_test.rs` + `examples/view_counter.rs` | ✅ 第 29 轮闭合 |
+| G6 | ✅ **已闭合** | `json/mod.rs` 声称 hot-reload | 已改为「# Reloading a layout」并指向 `ViewEngine::mount`/`update` | ✅ 第 29 轮闭合 |
+| G7 | ✅ **已闭合** | **`view` 的多平台门控未经验证** | `tools/check_view_platform_gate.sh` 已建（6 项断言：3 正向 + 3 反向 + 源码判据）；已并入 `check_profiles.sh` 第 [8/9] 步 | ✅ 第 29 轮闭合 |
+| G8 | ✅ **已闭合** | **`check_view_keys_are_unique` 门禁不存在** | `tools/check_view_keys_are_unique.{py,sh}` 已建，扫描 130 条 builder 链；反向注入实测 FAIL | ✅ 第 29 轮闭合 |
 
 ### 2.4 G4 曾经是拦路石（留档：为什么当初不能直接 diff JSON 字符串）
 
@@ -288,7 +289,9 @@ sequenceDiagram
     W->>W: 仅被 patch 的节点变化<br/>焦点/滚动/其他字段存活
 ```
 
-🟡 该闭环的**每一环都已存在**，但**缺少一个把它们串起来的可运行示例**（G5）。
+✅ 该闭环的每一环都已存在，并已由 `src/view/reactive.rs`（`ReactiveHost`）串成可运行的接线：
+`Binding::set` → 监听器入队（`Send` 安全）→ `ReactiveHost::pump()`（UI 线程）→ `ViewEngine::update`。
+端到端用例见 `tests/view_data_binding_closure_test.rs`，可运行示例见 `examples/view_counter.rs`。
 
 ---
 
@@ -389,43 +392,43 @@ pub mod view;
 | C-4 | 未 patch 的节点仍持有同一 `ObjectId` | ✅ `engine.rs` `update_commits_the_new_tree_even_when_a_write_is_refused` 等 |
 | C-5 | ⭐ 保留式收益断言（规则 #90） | ✅ 见 D-5；`a_head_insert_with_keys_leaves_the_other_ids_alone` 断言身份不变 |
 
-### Phase D — `View` 层与闭环（G1/G5）🟡 **主体完成，闭环用例待补**
+### Phase D — `View` 层与闭环（G1/G5）✅ **已完成**
 
 | 步骤 | 内容 | 验收 |
 |---|---|---|
 | D-1 | `View` trait + `ViewEngine::update` | ✅ `engine.rs:42/152` |
-| D-2 | 接 `data_binding`：`Binding<T>` 的监听器驱动 `update` | 🟡 **本轮待补**：需一条端到端测试 |
-| D-3 | 一个 demo（新增文件，带 2 行版权头），展示 state 变更 → 自动 patch | 🔴 **本轮待补**：`examples/` 下无任何 view demo |
+| D-2 | 接 `data_binding`：`Binding<T>` 的监听器驱动 `update` | ✅ **已完成**：新增生产接线 `src/view/reactive.rs`（`ReactiveHost`）——`BindingListener: Send` 与 `ViewEngine: !Send` 的矛盾由「监听器只入队、UI 线程 `pump()` 做引擎工作」解决（`event::queue::BlockingQueue`）。5 条单测（含**跨线程**用例）+ `tests/view_data_binding_closure_test.rs` 两条端到端；**3 次反向注入**均实测 FAIL |
+| D-3 | 一个 demo（新增文件，带 2 行版权头），展示 state 变更 → 自动 patch | ✅ **已完成**：`examples/view_counter.rs`（实测输出 `1 patch(es): SetProperty(text)`） |
 | D-4 | ⭐ 性能门禁：patch 一个属性**不新增任何注册控件** | ✅ `repeated_updates_do_not_grow_the_layout` |
-| D-5 | 多轮 `update` 稳定性（100 次） | ✅ 同 D-4 用例 |
+| D-5 | 多轮 `update` 稳定性（**100** 次） | ✅ 同 D-4 用例（本轮由 50 次**修正为 100 次**，并加断言 `replaced_subtrees == 0` 与父子 id 不变） |
 
-### Phase E — 门禁与文档（规则 #88/#91）🟡 **部分完成**
+### Phase E — 门禁与文档（规则 #88/#91）✅ **已完成**
 
 | 步骤 | 内容 | 状态 |
 |---|---|---|
-| E-1 | `tools/check_view_keys_are_unique.py` + `.sh`（规则 #88） | 🔴 **不存在**（G8）；`node.rs:124` 已引用该名字 |
-| E-2 | `tools/check_docs_claims.sh` + 修 `json/mod.rs:11`（规则 #91） | 🟡 门禁未建；`json/mod.rs:11` 仍写 hot-reload 未指向 `ViewEngine::update`（G6） |
-| E-3 | `src/view/mod.rs` 模块文档四件事（#85/#86/#49/何时不用） | ✅ 已完成（`mod.rs:7-55`） |
-| E-4 | 同步 `README.md` / `README.zh-CN.md`（新增架构一节） | 🟡 待核对 |
-| E-5 | 回写完成率到 `docs/log/` | 🔴 待办 |
+| E-1 | `tools/check_view_keys_are_unique.py` + `.sh`（规则 #88） | ✅ **已建**（`tools/check_view_keys_are_unique.{py,sh}`）；反向注入实测 FAIL |
+| E-2 | `tools/check_docs_claims.sh` + 修 `json/mod.rs:11`（规则 #91） | ✅ `json/mod.rs` 已改为指向 `ViewEngine::update`；`check_docs.sh` 三档 + all-features 均 0 错 |
+| E-3 | `src/view/mod.rs` 模块文档四件事（#85/#86/#49/何时不用） | ✅ 已完成，另加 §4.3 平台契约表 |
+| E-4 | 同步 `README.md` / `README.zh-CN.md`（新增架构一节） | ✅ 已完成（含 profile 可用性表）；`codemap.md` 同步 |
+| E-5 | 回写完成率到 `docs/log/` | ✅ `log-20260917-4.md` |
 
-### 🎯 Phase E′ — 多平台门控（**本轮核心，规则 #92 / #94**）
+### 🎯 Phase E′ — 多平台门控（**本轮核心，规则 #92 / #94**）✅ **已完成**
 
 | 步骤 | 内容 | 验收（必须实跑） |
 |---|---|---|
-| **E′-1** | `tools/check_view_platform_gate.sh`：断言 `mini` / `embedded` 的编译单元**不含任何 `crate::view` 符号**；断言 `desktop`/`tablet`/`mobile` **含** `crate::view` | ① 三档正向：`cargo doc --no-deps` 或 `rustc --print cfg` 之外，用**可执行判据** —— 在 `src/view/mod.rs` 加 `#[cfg(test)] mod gate_probe` 提供 `pub const VIEW_GATE_PROBE: &str`，stripped 下不存在；② 两档反向：`cargo check --no-default-features --features mini/embedded` 时该常量不可见。门禁必须在**故意把门控写成 `any(desktop,tablet,mobile)`**（漏掉 `widgets_unstripped`）时 **FAIL** |
-| **E′-2** | 门禁纳入 `check_profiles.sh` 的 8 步流程（现为 `[1/8]…[8/8]`），扩为 9 步 | 实跑输出含新步骤且 PASS；门禁计数 35 → **36** |
+| **E′-1** | `tools/check_view_platform_gate.sh`：断言 `mini` / `embedded` 的编译单元**不含任何 `crate::view` 符号**；断言 `desktop`/`tablet`/`mobile` **含** `crate::view` | ✅ 已建。判据为**名字解析**：探针 `tools/view_platform_gate_probe.rs` 命名 `rust_widgets::view::VIEW_GATE_PROBE`，能解析 ⟺ 模块在编译单元里。6 项断言：3 档正向 + `mini`/`embedded`/无 profile 三档反向 + 源码判据。<br>📌 **对计划的一处修正（必读）**：计划写的 `#[cfg(test)] mod gate_probe` **不可用** —— `#[cfg(test)]` 项只在库**自身**的单测编译中出现，外部 test 目标链接的是**未开 `cfg(test)`** 的库，因此根本看不见它，判据将永远无法断言。故改为 `#[doc(hidden)] pub const VIEW_GATE_PROBE`（非 `cfg(test)`，外部可见）。 |
+| **E′-2** | 门禁纳入 `check_profiles.sh`，扩为 9 步 | ✅ 已并入第 `[8/9]` 步，`EXIT=0`。门禁计数：计划写「35 → 36」，**实测基线为 30 个 `.sh` 门禁**（计划的 35 是把 11 个 `.py` 重复计入的旧数字，而其中 9 个已有 `.sh` 包装，只有 `check_cookbook_api_names` / `check_error_messages` 是独立 Python 单元 → 32 个可运行单元）。本轮 **30 → 32**（新增 `check_view_platform_gate` + `check_view_keys_are_unique`）。 |
 | **E′-3** | §4.3「各 profile 架构契约」写进 `src/view/mod.rs` 模块文档 | 文档含表格；且 `mini`/`embedded` 读者能从文档里明确知道「本 profile 无此模块」 |
 | **E′-4** | `docs/plans/codemap.md` / `README*` 标注 `view` 的 profile 可用性 | 三处一致，无一处声称嵌入式可用 |
-| **E′-5** | 反向注入 | 故意把 `src/lib.rs:117` 改成 `#[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]`（漏 `widgets_unstripped`），E′-1 必须 **FAIL**；恢复后 PASS |
+| **E′-5** | 反向注入 | ✅ 实测：把 `src/lib.rs:117` 改成 `#[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]` 后 `GATE_EXIT=1`（第 [4] 步报 ❌）；恢复后 `GATE_EXIT=0`。<br>📌 **重要发现**：**仅靠行为探针的版本不会 FAIL** —— 因为 `widgets_unstripped` 与「有设备 profile」在**所有合法单档构建上等价**（设备档永不 stripped；`mini`/`embedded` 不含设备 feature），两者只在 `desktop,mini` 混合档分歧，而那是规则 #48 禁止的配置。故门禁增设第 [4] 步**源码判据**，并在注释中如实说明它是源码检查、其保护的行为不可观测。 |
 
-### Phase F — 闭环用例收尾（G5/G6，可并行）
+### Phase F — 闭环用例收尾（G5/G6）✅ **已完成**
 
 | 步骤 | 内容 | 验收 |
 |---|---|---|
-| F-1 | `examples/demo_declarative_view.rs`（2 行版权头，`required-features` 挂 `desktop`） | `tools/smoke_demos.sh` 通过；demo 演示「改 state → 只产生 1 个 `SetProperty`」 |
-| F-2 | 端到端 `data_binding` 用例：`binding.set(v)` → `update` → 控件属性变化 | 一条 `#[test]`，**不分步断言** |
-| F-3 | `json/mod.rs:11` 改为指向 `ViewEngine::update`（规则 #91「补实现」一侧） | 文档与实现一一对应 |
+| F-1 | `examples/view_counter.rs`（2 行版权头，`required-features` 挂 `desktop`） | ✅ 实测输出「bump counter: 1 patch(es): SetProperty(text)」；已接入 `tools/smoke_demos.sh` |
+| F-2 | 端到端 `data_binding` 用例：`binding.set(v)` → `update` → 控件属性变化 | ✅ `tests/view_data_binding_closure_test.rs`，**2 条断言不分步**；反向注入实测 FAIL |
+| F-3 | `json/mod.rs:11` 改为指向 `ViewEngine::update`（规则 #91「补实现」一侧） | ✅ 已改为「# Reloading a layout」并指向 `ViewEngine::mount`/`update` |
 
 ---
 

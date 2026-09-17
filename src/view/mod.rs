@@ -101,11 +101,13 @@ mod apply;
 mod diff;
 mod engine;
 mod node;
+mod reactive;
 
 pub use apply::{apply, ApplyReport, ViewError};
 pub use diff::{diff, DiffReport, Patch};
 pub use engine::{View, ViewEngine};
 pub use node::Node;
+pub use reactive::ReactiveHost;
 
 /// A compile-time probe for the platform gate (BLUE18 rule #92 / #94).
 ///

@@ -57,15 +57,16 @@ capability matrix
 is generated from source and gated for drift in CI.
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.2.0-blue)]()
-[![tests](https://img.shields.io/badge/tests-4000%2B-brightgreen)]()
+[![version](https://img.shields.io/badge/version-2.3.0-blue)]()
+[![tests](https://img.shields.io/badge/tests-4900%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
-**Verified in 2.2.0:** `4301` lib tests pass on `desktop` (`1516` on `embedded`, `1455` on
-`mini`), `35` doc tests pass, clippy is clean under `-D warnings` for
-`--all-features --all-targets`, and the cross targets **build with 0 warnings**:
-`wasm32-unknown-unknown` and `x86_64-pc-windows-gnu` (both including `--all-targets`),
-`aarch64-apple-ios` ± simulator, and the three linkable OpenHarmony triples.
+**Verified in 2.3.0:** `4756` lib tests pass on `desktop` (`1538` on `embedded`, `1477` on
+`mini`), `4923` across all test binaries, clippy is clean under `-D warnings` for
+`--all-targets`, `cargo doc --no-deps` reports no warnings, and all five profiles
+(`desktop`/`tablet`/`mobile`/`mini`/`embedded`) build. 30 gates run, of which 4 are
+host-gated or pre-existing (documented in
+[`docs/log/log-20260917-4.md`](docs/log/log-20260917-4.md) §8.3).
 See [`CHANGELOG.md`](CHANGELOG.md).
 
 <p align="center">
@@ -340,6 +341,45 @@ per profile, and it renders the same everywhere.
 - Property application routed through each control's own property contract
 - Optional per-node `class` / `css` for stylesheet-driven appearance
 - **Not exposed over the C ABI** — the loader has no generated entry point
+
+### Declarative-retained view layer (`view`, device profiles)
+
+The library is **retained**: a control is a long-lived object with an `ObjectId`, and
+mutating it is the normal way to change the UI. `view` adds the **declarative** half
+without giving that up — React, Flutter and SwiftUI are all declarative *and*
+retained; the two are orthogonal axes.
+
+```rust
+use rust_widgets::view::{Node, View, ViewEngine};
+
+impl View for Counter {
+    fn build(&self) -> Node {
+        Node::new("group_box").key("root").child(
+            Node::new("label").key("count").prop("text", /* ... */),
+        )
+    }
+}
+
+engine.update(&state, &create);   // diffs, then applies only the differences
+```
+
+- `Node` — a declarative tree: a widget name, an optional `key`, properties, children
+- `diff` — pure function over two trees, producing `Patch`es (`SetProperty`, `Insert`,
+  `Remove`, `Move`, `Replace`); reports `positional_matches` so a missing `key` is
+  visible rather than silent
+- `apply` — the only place that mutates the retained tree, through the same property
+  contract the JSON loader uses
+- **Additive**: it changes no control, no `WidgetKind`, no factory, no property
+  contract. A tree can still be built by hand with `add_child`
+
+| Profile | Declarative view layer |
+|---|---|
+| `desktop` / `tablet` / `mobile` | ✅ compiled — declarative and imperative may be mixed |
+| `mini` / `embedded` | ❌ **absent** — imperative `add_child` only (allocation budget + no per-frame re-evaluation caller) |
+
+`tools/check_view_platform_gate.sh` asserts both directions of that table.
+
+> **Not exposed over the C ABI** — like the JSON loader, the view layer is Rust-only.
 
 > **C ABI coverage.** The C ABI (`include/rw_generated.h`, 128 `rw_*` functions)
 > covers window management, widget creation, per-widget properties and theme

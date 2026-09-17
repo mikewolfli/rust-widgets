@@ -1,6 +1,6 @@
 [package]
 name = "rust_widgets"
-version = "2.2.0"
+version = "2.3.0"
 edition = "2021"
 description = "Pure Rust cross-platform native GUI library with hardware-adaptive rendering, 60+ widgets, touch/gesture support, i18n, and SVG-pipeline-accurate output"
 license = "MIT"
@@ -496,6 +496,15 @@ harness = false
 [[bench]]
 name = "signal_bench"
 harness = false
+
+# Demonstrates the declarative-retained loop end to end (BLUE18 Phase F-1): change
+# state, and the engine reports the single patch it applied rather than rebuilding
+# the tree. Needs no window — `ViewEngine` takes its constructor as an injected
+# closure — so it runs on a headless CI host. Gated on the same expression
+# `crate::view` uses, which is why a stripped profile skips it instead of failing.
+[[example]]
+name = "view_counter"
+path = "examples/view_counter.rs"
 
 # Compile-time probe for the declarative-layer platform gate.
 #

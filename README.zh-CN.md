@@ -130,14 +130,16 @@ Arc、Spinner、Roller、Dropdown、TextArea、Keyboard、Switch。
 （`docs/plans/platform_capability_matrix.md`）由源码机械派生，并在 CI 中设有防脱节门禁。
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.2.0-blue)]()
-[![tests](https://img.shields.io/badge/tests-4000%2B-brightgreen)]()
+[![version](https://img.shields.io/badge/version-2.3.0-blue)]()
+[![tests](https://img.shields.io/badge/tests-4900%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
-**2.2.0 实测：** `desktop` 档 **4301** 个库测试全通过（`embedded` **1516**、`mini` **1455**）、
-文档测试 **35** 个全通过；`--all-features --all-targets` 在 `-D warnings` 下 clippy 干净；
-交叉目标**均 0 warning 构建**：`wasm32-unknown-unknown` 与 `x86_64-pc-windows-gnu`（含 `--all-targets`）、
-`aarch64-apple-ios` 真机与模拟器、以及三个可构建的鸿蒙 target。详见
+**2.3.0 实测：** `desktop` 档 **4756** 个库测试全通过（`embedded` **1538**、`mini` **1477**）、
+全部测试二进制共 **4923** 个；`--all-targets` 在 `-D warnings` 下 clippy 干净，
+`cargo doc --no-deps` 0 warning，五个档位（`desktop`/`tablet`/`mobile`/`mini`/`embedded`）
+均可构建。共 **30** 个门禁，其中 4 个为主机门控或先存问题
+（取证见 [`docs/log/log-20260917-4.md`](docs/log/log-20260917-4.md) §8.3）。
+详见
 [`CHANGELOG.md`](CHANGELOG.md)（中文版见 [`docs/reports/CHANGELOG.md`](docs/reports/CHANGELOG.md)）。
 
 <p align="center">
@@ -325,6 +327,29 @@ cargo check --no-default-features --features "tablet,macos"
 - 属性应用走控件**自身**的属性契约
 - 节点可选 `class` / `css`，由样式表驱动外观
 - **不经 C ABI 暴露** —— 加载器没有生成的入口点
+
+### 声明式保留视图层（`view`，设备档位）
+
+本库是**保留式**的：控件是带 `ObjectId` 的长期对象，直接改它就是常规改 UI 的方式。
+`view` 在此之上加上**声明式**的一半 —— React、Flutter、SwiftUI 都是「声明式 **且**保留式」，
+两者是正交的两根轴。
+
+- `Node` —— 声明树：控件名、可选 `key`、属性、子节点
+- `diff` —— 对两棵树求差的纯函数，产出 `Patch`（`SetProperty` / `Insert` / `Remove` /
+  `Move` / `Replace`）；会报告 `positional_matches`，让「忘了写 key」可见而非静默降级
+- `apply` —— **唯一**改动保留树的地方，走的是与 JSON 加载器相同的属性契约
+- **纯加法**：不改任何控件、`WidgetKind`、工厂或属性契约；`add_child` 手工建树仍然可用
+- 加载器只解析**一份** JSON 并实例化**一次**，没有上一棵树可比，因此无法跨更新保留身份；
+  重载路径是 `ViewEngine::mount` + `ViewEngine::update`
+
+| 档位 | 声明式视图层 |
+|---|---|
+| `desktop` / `tablet` / `mobile` | ✅ 编译 —— 声明式与命令式可混用 |
+| `mini` / `embedded` | ❌ **不存在** —— 仅命令式 `add_child`（分配预算 + 无逐帧重求值调用方） |
+
+`tools/check_view_platform_gate.sh` 对该表**双向断言**。
+
+> **不经 C ABI 暴露** —— 与 JSON 加载器一样，视图层仅 Rust 可用。
 
 > **C ABI 覆盖范围。** C ABI（`include/rw_generated.h`，128 个 `rw_*` 函数）
 > 覆盖窗口管理、控件创建、逐控件属性与主题选择。创建与属性访问都是**通用**的：

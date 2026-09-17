@@ -3,10 +3,14 @@
 > 状态：**已完成**；现状取证（§二）**已完成并逐条实跑**
 > 完成率：**取证 100% · Phase A 100% · Phase B 100% · Phase C 100% · Phase D 100% · Phase E 100% · Phase F 100%**
 > 执行日志：[`docs/log/log-20260917-3.md`](../log/log-20260917-3.md)（第 28 轮主体执行）
-> 复核日志：[`docs/log/log-20260917-4.md`](../log/log-20260917-4.md)（第 29 轮独立复核 + B1-2/B1-4 补完，含 3 次反向注入）
+> 复核日志：[`docs/log/log-20260917-4.md`](../log/log-20260917-4.md)（第 29 轮独立复核 + B1-2/B1-4 补完 + `PagerPageView`/`TileView` 删除，含 6 次反向注入）
 > 原则依据：[`docs/plans/principle.md`](principle.md)（继承 BLUE1–BLUE16 全部规则，含 #1–#77）
 > 上轮计划：[`docs/plans/blue16.md`](blue16.md)（Phase F 已 100%）
 > 目标基线：`rust_widgets v2.2.0`（`WidgetKind` **171** 个、门禁脚本 **28** 个）
+>
+> 📌 **第 29 轮更新**：`PagerPageView` / `TileView` 已按用户要求**彻底删除**（全链路：
+> 文件 / kind / 工厂 / 属性 / CSS / JSON / a11y / 文档），故 `WidgetKind` 由 **171 → 169**。
+> 同时本轮新增 2 个门禁（**28 → 30**）。证据见 [`log-20260917-4.md`](../log/log-20260917-4.md) §2。
 >
 > ⚠️ **基线已变**：执行中删除了 9 个孤儿 `WebEngine*` kind，并新增了
 > `RadarChart`、`KanbanBoard`、`Cascader`、`QueryBuilder`、`EmojiPicker`、`Mention`，
@@ -259,7 +263,7 @@ new page_count set_page_count current_page set_current_page next_page(priv) prev
 
 | 步骤 | 内容 | 验收 |
 |---|---|---|
-| B1-0 | **收敛判定**：写一段模块文档说明 `Carousel` / `PagerPageView` / `TileView` 的分工；若判定 `PagerPageView` 应被 `Carousel` 吸收，则改为**别名登记**（`Panel = GroupBox` 先例）并删除重复实现 | 文档段落 + 门禁仍 PASS |
+| B1-0 | **收敛判定**：写一段模块文档说明 `Carousel` / `PagerPageView` / `TileView` 的分工；若判定 `PagerPageView` 应被 `Carousel` 吸收，则改为**别名登记**（`Panel = GroupBox` 先例）并删除重复实现 | 文档段落 + 门禁仍 PASS ✅ **第 29 轮：按用户要求直接物理删除这两个控件，而非别名登记** |
 | B1-1 | **内容槽位**：`set_page_content(index, Box<dyn WidgetAndDraw>)`，绘制时按当前页绘制（复用 `PagerPageView::content_rect` + `swipe_to_dismiss.rs` 的 offset 绘制手法） | 测试：放置子控件后，`current_index` 切换时子控件几何随之更新 |
 | B1-2 | **滑动翻页**：接 `MousePress` → `MouseMove` → `MouseRelease`，松手按**位移阈值 + 速度**决定前进/回退/吸附；与 B1-1 的内容事件转发的**冲突必须解决**（滑动与「点内容」的判定边界） | 像素断言：滑过 50% 宽度后松手，落到相邻页；⭐ **速度判据**（第 29 轮补完）：`swipe_direction_at(offset, velocity)`，400px/s 击发 + 2% 防抖下限，反向注入已证可失败 |
 | B1-3 | **自动播放 + 循环**：`set_autoplay(Option<Duration>)` / `set_loop(bool)`；暂停条件（指针悬停、按下、不可见、`is_enabled() == false`） | 测试：autoplay 开启时 hover **不**推进；`loop` 为 false 时末页停住 |
@@ -423,7 +427,7 @@ pub struct ColumnFilter { pub column: usize, pub query: String }
 > | 阶段 | 状态 | 说明 |
 > |---|---|---|
 > | **A** 拖放基础设施 | ✅ **100%**（A-1~A-4） | `src/event/dnd.rs` 已建；`splitter` 已迁移并反向注入验证；`KanbanBoard` 已接入并绘制插入预览 |
-> | **B** `Carousel` 能力补齐 | ✅ **100%**（B1-0~B1-6） | 内容槽/滑动/自动播放/循环/指示器/属性契约/空转修复全部完成；**第 29 轮补完 B1-2 的速度判据与 B1-4 的 `Numeric`** |
+> | **B** `Carousel` 能力补齐 | ✅ **100%**（B1-0~B1-6） | 内容槽/滑动/自动播放/循环/指示器/属性契约/空转修复全部完成；**第 29 轮补完 B1-2 的速度判据与 B1-4 的 `Numeric`**；`PagerPageView`/`TileView` 已按用户要求物理删除 |
 > | **C** 既有可视化控件扩展 | ✅ **100%**（C-1~C-5） | 多序列模型 + 图表 4→9 变体 + `Meter` 色带 + `ScrollArea` 吸顶 |
 | **D** 新控件 | ✅ **100%**（D-1 ~ D-6） | `KanbanBoard` + `RadarChart` + `Cascader` + `QueryBuilder` + `EmojiPicker` + `Mention` |
 | **E** 新控件的强制同步 | ✅ **100%** | 四条门禁全 PASS（171/171 constructible） |

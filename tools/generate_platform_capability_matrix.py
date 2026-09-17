@@ -434,7 +434,20 @@ Additional facts to keep the matrix consistent with `src/widget/kind.rs`:
 - `ToolBox` is not a `WidgetKind` variant (only `Toolbox` is); the duplicate row was removed.
 - `WebView` is not a `WidgetKind` variant either — the `WebView`/`WebViewEnhanced`
   aliases live at the handle/render layer and map onto `WidgetKind::WebEngineView`.
-  The matrix therefore lists only the WebEngine rows.
+- **The `WebEngine*` rows after `WebEngineView` are not `WidgetKind` variants.**
+  `WebEnginePage`, `WebEngineSettings`, `WebEngineDownloadItem`,
+  `WebEngineCookieStore`, `WebEngineWebChannel`, `WebEngineFindTextResult`,
+  `WebEngineNotification`, `WebEngineScriptDialog` and `WebEngineContextMenuRequest`
+  are Rust **wrapper types** over the one registered view: each forwards
+  `Widget::base()` to what it wraps, so `kind()` answers `WebEngineView` for all of
+  them. They were previously `WidgetKind` variants marked `kind-role: base`, which
+  made them orphans (rule #22) — nothing could produce them, and because
+  `factory_name_for_kind` resolves through `capability_by_kind`,
+  `create_web_engine_page(..)` silently produced id `0`. They remain listed here
+  because they are real render-pipeline symbols worth tracking, but they are
+  **categories of `WebEngineView`**, not kinds of their own.
+  `tests/blue9_r6_platform_capability_test.rs` therefore compares matrix rows to
+  `WidgetKind` variants modulo exactly this documented set.
 - `MessageBox`/`FileDialog`/`ColorDialog`/`FontDialog` are 🟦 (self-drawn) on
   Windows/Linux/Wayland because the **default** runtime of those platform impls
   creates a state/surrogate handle (Windows: `Panel` surrogate; Linux/Wayland:

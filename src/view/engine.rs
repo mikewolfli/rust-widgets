@@ -559,14 +559,29 @@ mod tests {
 
     #[test]
     fn repeated_updates_do_not_grow_the_layout() {
-        // The stability property from Phase D-5: an update must replace, not accumulate.
+        // The stability property from Phase D-4/D-5: an update must replace, not
+        // accumulate, and the identity of the nodes it does not touch must survive.
+        //
+        // 100 rounds is the count the plan names. The value matters because a leak
+        // that adds one node per update is invisible at 5 rounds and obvious at 100,
+        // and because it is enough iterations for an "occasionally duplicates" bug to
+        // show up rather than needing to be lucky.
         let mut engine = ViewEngine::new();
         let ids = Ids::new(10);
         engine.mount(&Text("0".into()), &ids.creator());
         let baseline = engine.layout().node_count();
-        for i in 0..50 {
-            engine.update(&Text(i.to_string()), &ids.creator());
+        let root = engine.id_at(&[]);
+        let child = engine.id_at(&[0]);
+
+        for i in 0..100 {
+            let report = engine.update(&Text(i.to_string()), &ids.creator());
             assert_eq!(engine.layout().node_count(), baseline, "the layout grew on update {i}");
+            assert_eq!(
+                report.replaced_subtrees, 0,
+                "a text-only change must not replace a subtree (update {i})"
+            );
+            assert_eq!(engine.id_at(&[]), root, "the root id drifted on update {i}");
+            assert_eq!(engine.id_at(&[0]), child, "the label id drifted on update {i}");
         }
     }
 

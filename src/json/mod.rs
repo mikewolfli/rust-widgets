@@ -8,9 +8,27 @@
 //! declarative UI strategy:
 //!
 //! - **PC path (this module)**: JSON runtime loading via `serde_json`,
-//!   supports hot-reload, dynamic UI, and design tool integration.
+//!   dynamic UI, and design tool integration.
 //! - **Embedded path (future)**: Procedural macros at compile time,
 //!   zero runtime overhead for MCU/RTOS targets.
+//!
+//! # Reloading a layout
+//!
+//! This module parses **one** document and instantiates it **once**. It has no
+//! previous tree to compare against, so it cannot preserve a control's identity
+//! across an edit — loading the same JSON twice creates two independent trees.
+//!
+//! The reload path is [`crate::view`]: [`ViewEngine::mount`] attaches a declarative
+//! tree, and [`ViewEngine::update`] rebuilds it, diffs the result against the
+//! previous tree and applies only the differences. Editing the JSON and calling
+//! `update` therefore leaves untouched controls' focus, scroll offsets and internal
+//! state alive, which is what a designer's edit-reload loop needs.
+//!
+//! (`crate::view` is compiled for `desktop`/`tablet`/`mobile`; this module and that
+//! one share the same platform gate.)
+//!
+//! [`ViewEngine::mount`]: crate::view::ViewEngine::mount
+//! [`ViewEngine::update`]: crate::view::ViewEngine::update
 //!
 //! # Architecture
 //!

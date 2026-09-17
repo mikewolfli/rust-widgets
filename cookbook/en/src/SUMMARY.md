@@ -9,6 +9,7 @@
 - [Event System](chapters/event-system.md)
 - [Rendering System](chapters/rendering-system.md)
 - [Styling & Theming](chapters/styling-theming.md)
+- [Declarative View Layer](chapters/declarative-view.md)
 - [Platform Support](chapters/platform-support.md)
 - [Language Bindings](chapters/language-bindings.md)
 - [Internationalization](chapters/i18n.md)

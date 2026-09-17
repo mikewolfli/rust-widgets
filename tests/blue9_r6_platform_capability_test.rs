@@ -217,36 +217,99 @@ fn all_widget_kinds_have_non_empty_debug_repr() {
 
 #[test]
 fn widget_kind_variants_are_exhaustive() {
-    // The capability matrix must list exactly the same widget set as the
-    // WidgetKind enum source. Rather than hard-coding a fragile count (the
-    // enum grew from 82 to 167 variants over time), both sides are derived
-    // dynamically: unit variants are lines of the form `    VariantName,`.
+    // The capability matrix must cover the same widget set as the `WidgetKind`
+    // enum source. Both sides are derived dynamically rather than from a count,
+    // because a count drifts silently: the enum grew 82 -> 167 -> 169 over time,
+    // and a hard-coded number would have been "updated" rather than investigated.
+    //
+    // # The one documented difference
+    //
+    // The matrix lists the `WebEngine*` **wrapper types** as well as
+    // `WebEngineView`. They are real render-pipeline symbols over the one
+    // registered view — each forwards `Widget::base()` to what it wraps, so
+    // `kind()` answers `WebEngineView` for all of them. They were once
+    // `WidgetKind` variants marked `kind-role: base`, which made them orphans
+    // (principle #22): nothing could produce them, and `create_web_engine_page(..)`
+    // produced id `0` because `factory_name_for_kind` resolves through
+    // `capability_by_kind`.
+    //
+    // So the comparison is: every `WidgetKind` variant has a matrix row, and every
+    // matrix row is either a variant or one of the documented wrapper names. The
+    // assertion stays exact in both directions — it is the *set* that is allowed
+    // to be larger, not the count that is loosened.
+    const WEB_ENGINE_WRAPPERS: &[&str] = &[
+        "WebEnginePage",
+        "WebEngineSettings",
+        "WebEngineDownloadItem",
+        "WebEngineCookieStore",
+        "WebEngineWebChannel",
+        "WebEngineFindTextResult",
+        "WebEngineNotification",
+        "WebEngineScriptDialog",
+        "WebEngineContextMenuRequest",
+    ];
+
     let kind_src =
         std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/widget/kind.rs"))
             .expect("failed to read src/widget/kind.rs");
-    let kind_variants = kind_src
+    let kind_variants: std::collections::BTreeSet<String> = kind_src
         .lines()
         .filter(|line| {
             let trimmed = line.trim();
             trimmed.ends_with(',') && trimmed.chars().next().is_some_and(|c| c.is_ascii_uppercase())
         })
-        .count();
+        .map(|line| line.trim().trim_end_matches(',').to_string())
+        .collect();
 
     let matrix_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("docs")
         .join("plans")
         .join("platform_capability_matrix.md");
     let content = std::fs::read_to_string(&matrix_path).expect("failed to read capability matrix");
-    let matrix_rows = content.lines().filter(|line| line.starts_with("| **")).count();
+    let matrix_rows: std::collections::BTreeSet<String> = content
+        .lines()
+        .filter(|line| line.starts_with("| **"))
+        .filter_map(|line| {
+            let rest = line.strip_prefix("| **")?;
+            let end = rest.find("**")?;
+            Some(rest[..end].to_string())
+        })
+        .collect();
 
     assert!(
-        kind_variants >= 100,
-        "kind.rs unit-variant extraction looks wrong: got {kind_variants}"
+        kind_variants.len() >= 100,
+        "kind.rs unit-variant extraction looks wrong: got {}",
+        kind_variants.len()
     );
-    assert_eq!(
-        matrix_rows, kind_variants,
-        "capability matrix rows ({matrix_rows}) must match WidgetKind source variants ({kind_variants})"
+    assert!(!matrix_rows.is_empty(), "the capability matrix has no widget rows");
+
+    // Every kind must be documented.
+    let undocumented: Vec<&String> = kind_variants.difference(&matrix_rows).collect();
+    assert!(
+        undocumented.is_empty(),
+        "these WidgetKind variants have no capability-matrix row: {undocumented:?}"
     );
+
+    // And every row must be a kind or a documented wrapper — no invented rows.
+    let unexplained: Vec<&String> = matrix_rows
+        .difference(&kind_variants)
+        .filter(|name| !WEB_ENGINE_WRAPPERS.contains(&name.as_str()))
+        .collect();
+    assert!(
+        unexplained.is_empty(),
+        "these capability-matrix rows are neither a WidgetKind variant nor a \
+         documented WebEngine wrapper, so the matrix documents something that does \
+         not exist: {unexplained:?}"
+    );
+
+    // The wrapper list must not silently rot: each name has to be a row.
+    for wrapper in WEB_ENGINE_WRAPPERS {
+        assert!(
+            matrix_rows.contains(*wrapper),
+            "{wrapper} is excused as a WebEngine wrapper but has no matrix row; if it \
+             was deleted, drop it from WEB_ENGINE_WRAPPERS too"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
