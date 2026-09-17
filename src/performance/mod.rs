@@ -16,10 +16,16 @@
 //!   `gpu::performance` is confirmed to cover frame timing too.
 //! * `dirty` / `region` / `render_dirty` — **not duplicated anywhere**: this is the
 //!   only damage-region implementation in the crate, and `README.md` advertises
-//!   "Partial Refresh" on the strength of it. It is unreachable because the live
-//!   render loop (`widget::runtime::render_frame`) always paints the whole frame
-//!   and never consults a damage tracker. Removal condition: either the render
-//!   loop adopts it, or the README stops claiming the feature.
+//!   "Partial Refresh" on the strength of it. **Now wired** (BLUE16 phase F):
+//!   `widget::runtime` holds a per-widget `DirtyRegionTracker`, `mark_dirty_rect`
+//!   records damage, and `render_frame_incremental` consumes it through
+//!   `render_dirty_regions`. The wire is opt-in via `widget::runtime::RepaintMode`,
+//!   so the default remains a full paint and no existing caller's behaviour changed.
+//!
+//!   The earlier note here said the loop "never consults a damage tracker", which
+//!   was true and is why the README's claim was once softened. The claim can now
+//!   stand again, with the caveat that damage tracking is a *choice*: a caller that
+//!   leaves the mode at `Full` gets exactly the old behaviour.
 //!
 //! So this module is not simply dead weight: one third of it is an advertised,
 //! implemented, unwired feature. Deleting it without deciding that question would
@@ -115,7 +121,10 @@ mod tests {
 
     #[test]
     fn test_render_dirty_regions_too_many() {
-        // More than 16 regions should fall back to bounding rect
+        // Twenty tiny regions covering 1.25% of the frame must each get their own
+        // pass. The rule used to be "more than 16 regions falls back", which made
+        // this input collapse to a single full-frame clip — repainting 40,000 pixels
+        // to show 500.
         let mut tracker = DirtyRegionTracker::new();
         for i in 0..20 {
             tracker.add(Rect::new(i * 10, 0, 5, 5));
@@ -128,8 +137,31 @@ mod tests {
         render_dirty_regions(&mut tracker, &mut ctx, |_ctx| {
             call_count += 1;
         });
-        // Should use bounding rect fallback: 1 call
-        assert_eq!(call_count, 1, "too many regions should fall back to bounding rect (1 call)");
+        assert_eq!(
+            call_count, 20,
+            "many small regions stay separate; only covered area decides the fallback"
+        );
+        assert!(tracker.is_empty());
+        backend.end_frame();
+    }
+
+    /// The replacement for the count rule must still fall back when the damage is
+    /// genuinely large, or the optimisation would repaint pixel-by-pixel region
+    /// clips over a frame that changed entirely.
+    #[test]
+    fn test_render_dirty_regions_large_damage_falls_back() {
+        let mut tracker = DirtyRegionTracker::new();
+        // Two regions whose union is most of the frame, but which do not overlap.
+        tracker.add(Rect::new(0, 0, 200, 100));
+        tracker.add(Rect::new(0, 100, 200, 100));
+        let mut backend = crate::render::SoftwarePaintBackend::new(Size::new(200, 200), 1.0);
+        backend.begin_frame(Color::WHITE);
+        let mut ctx = crate::render::RenderContext::new(&mut backend);
+        let mut call_count = 0;
+        render_dirty_regions(&mut tracker, &mut ctx, |_ctx| {
+            call_count += 1;
+        });
+        assert_eq!(call_count, 1, "frame-sized damage collapses to one pass");
         assert!(tracker.is_empty());
         backend.end_frame();
     }

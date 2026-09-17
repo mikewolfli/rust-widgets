@@ -31,7 +31,7 @@
 | 特性 | 自绘（本库） | 原生控件 |
 |---|---|---|
 | 外观 | **跨 OS 完全一致** | 随各 OS 工具包与版本变化 |
-| 控件数量 | **171 种，全平台可用** | 仅限该 OS 工具包提供的 |
+| 控件数量 | **174 种，全平台可用** | 仅限该 OS 工具包提供的 |
 | 依赖体积 | **不链接任何 GUI 工具包** | GTK / AppKit / Win32 / Android SDK |
 | 无头与嵌入式 | **无 OS 也能运行**（`mini`、SVG） | 不可能 |
 | 测试确定性 | **像素／序列化快照** | 需要真实显示器 |
@@ -91,9 +91,9 @@
 
 | Profile | 控件集 | 注册表 | 自绘控件托管 | GPU | i18n |
 |---------|-------|:------:|:-----------:|:---:|:----:|
-| `desktop` | **171 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
-| `tablet` | **171 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
-| `mobile` | **171 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
+| `desktop` | **174 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
+| `tablet` | **174 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
+| `mobile` | **174 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
 | `embedded` | 精简核心集 | — | — | — 软件 | — |
 | `mini` | 精简核心集 | — | — | — 软件 | — |
 
@@ -121,9 +121,9 @@ Arc、Spinner、Roller、Dropdown、TextArea、Keyboard、Switch。
 
 ---
 
-171 种控件全部为自绘。其中 **166 种**以自身名称注册进工厂（含别名共 **447** 个可解析名称）；
+174 种控件全部为自绘。其中 **169 种**以自身名称注册进工厂（含别名共 **447** 个可解析名称）；
 其余为别名 kind（`pub type`）、基类/子项 kind，或可选的 WebEngine 系列 ——
-**171 种全部有归类**，且新增 kind 若未归类，`tools/check_widget_registration_fidelity.sh` 会直接失败；
+**174 种全部有归类**，且新增 kind 若未归类，`tools/check_widget_registration_fidelity.sh` 会直接失败；
 平台能力矩阵
 （`docs/plans/platform_capability_matrix.md`）由源码机械派生，并在 CI 中设有防脱节门禁。
 
@@ -132,7 +132,7 @@ Arc、Spinner、Roller、Dropdown、TextArea、Keyboard、Switch。
 [![tests](https://img.shields.io/badge/tests-4000%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
-**2.2.0 实测：** `desktop` 档 **4232** 个库测试全通过（`embedded` **1534**、`mini` **1455**）、
+**2.2.0 实测：** `desktop` 档 **4301** 个库测试全通过（`embedded` **1516**、`mini` **1455**）、
 文档测试 **35** 个全通过；`--all-features --all-targets` 在 `-D warnings` 下 clippy 干净；
 交叉目标**均 0 warning 构建**：`wasm32-unknown-unknown` 与 `x86_64-pc-windows-gnu`（含 `--all-targets`）、
 `aarch64-apple-ios` 真机与模拟器、以及三个可构建的鸿蒙 target。详见
@@ -324,7 +324,7 @@ cargo check --no-default-features --features "tablet,macos"
 - 节点可选 `class` / `css`，由样式表驱动外观
 - **不经 C ABI 暴露** —— 加载器没有生成的入口点
 
-> **C ABI 覆盖范围。** C ABI（`include/rw_generated.h`，113 个 `rw_*` 函数）
+> **C ABI 覆盖范围。** C ABI（`include/rw_generated.h`，126 个 `rw_*` 函数）
 > 覆盖窗口管理、控件创建、逐控件属性与主题选择。创建与属性访问都是**通用**的：
 > `rw_create_widget_of_kind(parent, "tree_view", ...)` 可触及每一个已注册控件
 > （`rw_widget_kind_names` 列出全部），`rw_set_widget_property(id, "tooltip", ...)`
@@ -344,17 +344,21 @@ cargo check --no-default-features --features "tablet,macos"
 | 生命周期 | `rw_destroy_widget`、`rw_show_widget`、`rw_hide_widget` |
 | 通用属性 | `rw_get_widget_property`、`rw_set_widget_property`、`rw_widget_property_names` |
 | 文本与几何 | `rw_set_widget_text`、`rw_get_widget_text`、`rw_set_widget_geometry` |
-| 集合 | `rw_list_box_add_item`、`rw_combo_box_add_item` … |
+| 集合 | `rw_widget_list_add`、`rw_widget_list_clear`、`rw_widget_list_count`、`rw_list_box_add_item`、`rw_combo_box_add_item` … |
+| 滚动 | `rw_widget_set_scroll_position`、`rw_widget_scroll_to` |
 | 主题 | `rw_set_theme`、`rw_theme_names`、`rw_set_high_contrast` |
 | 错误 | `rw_error_code`、`rw_error_message` |
 
 `bindings/` 下的每个绑定都由 `tools/check_binding_symbol_coverage.sh` 按此清单校验，
 因此新增的 ABI 函数不会在某个语言中静默地不可达。
 
-### 局部刷新（仅库 API，未接入帧循环）
+### 局部刷新（可选接入，已连进帧循环）
 - `DirtyRegionTracker` 脏矩形追踪与合并；`render_dirty_regions()` 基于 `push_clip` / `pop_clip` 的局部重绘
-- **`render_frame` 不使用它** —— 后者总是整帧重绘。该追踪器可供自行驱动绘制循环的宿主使用，
-  但本库内无任何调用者，因此不要预期开箱即得的局部重绘。
+- **由 `widget::runtime::RepaintMode` 驱动**：`mark_dirty_rect` 记录损坏区域，
+  `render_frame_incremental` 只重绘受损区域，其余部分沿用上一帧
+- **默认关闭，需显式选用。** `RepaintMode::Full` 是默认值，行为与以前完全一致；
+  `Dirty` 只重绘损坏区域；`Adaptive` 在损坏面积接近整屏时自动退回整帧重绘，
+  使动画场景不为无收益的区域合并付出开销
 
 ### 国际化（i18n）
 - `tr!()` 宏实现编译期键值翻译
@@ -366,7 +370,7 @@ cargo check --no-default-features --features "tablet,macos"
 
 ## 控件库
 
-### 桌面/平板/手机（171 种控件）
+### 桌面/平板/手机（174 种控件）
 
 **核心**：Window、Dialog、MessageBox、FileDialog、ColorDialog、FontDialog、InputDialog、ProgressDialog、PopupWindow、Button、CheckBox、RadioButton、Label、LineEdit、TextEdit、RichEdit、ComboBox、SpinBox、ListBox、ListView、TreeView、ProgressBar、Slider、ScrollBar、ScrollArea、TabWidget、Splitter、GroupBox、MenuBar、Menu、MenuItem、ContextMenu、ToolBar、StatusBar、Canvas、Table、Grid、Chart、ToggleButton
 

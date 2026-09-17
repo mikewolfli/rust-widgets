@@ -126,6 +126,20 @@ jobs:
           chmod +x tools/check_cookbook.sh
           ./tools/check_cookbook.sh
 
+      # `check_cookbook.sh` verifies the cookbook's *Rust* declarations and builds
+      # the books, but it deliberately does not compile prose code blocks, and
+      # `check_abi.sh` reads the header rather than the cookbook. So the C a reader
+      # is told to write was checked by nothing — which is how a called-but-absent
+      # `rw_combo_box_add_item`, a non-existent `rust_widgets.h`, and a block of
+      # Harmony signatures that disagreed with the header all survived in the
+      # prose. This gate compiles every ```c block and checks every `rw_*` name in
+      # it against the published header.
+      - name: Run C code example gate
+        shell: bash
+        run: |
+          chmod +x tools/check_c_code_examples.sh
+          ./tools/check_c_code_examples.sh
+
       # `missing_docs` is denied crate-wide and intra-doc links are checked under
       # `-D warnings`. Broken links are invisible in normal builds (rustdoc renders
       # them as plain text), so they need their own gate — it already caught links

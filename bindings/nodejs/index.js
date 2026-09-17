@@ -279,6 +279,19 @@ function loadFunctions(libName) {
     rw_set_theme: [cbool, ["string"]],
     rw_theme_names: [uint, [charPtr, uint]],
     rw_set_high_contrast: [void_t, [int]],
+    rw_widget_set_scroll_position: [cbool, [uint64, int, int]],
+    rw_widget_scroll_to: [cbool, [uint64, int]],
+    rw_widget_list_add: [uint, [uint64, "string"]],
+    rw_widget_list_clear: [cbool, [uint64]],
+    rw_widget_list_count: [uint, [uint64]],
+    rw_widget_set_style: [cbool, [uint64, "string"]],
+    rw_widget_set_layout: [cbool, [uint64, "string", int, int]],
+    rw_widget_layout_add: [cbool, [uint64, uint64, uint]],
+    rw_widget_layout_add_spacer: [cbool, [uint64, uint]],
+    rw_widget_layout_remove: [cbool, [uint64, uint64]],
+    rw_widget_layout_clear: [cbool, [uint64]],
+    rw_widget_layout_apply: [uint, [uint64, int, int, uint, uint]],
+    rw_widget_layout_child_count: [uint, [uint64]],
     rw_set_widget_text: [void_t, [uint64, "string"]],
     rw_get_widget_text: [charPtr, [uint64]],
     rw_set_widget_enabled: [void_t, [uint64, cbool]],
@@ -897,6 +910,96 @@ class RustWidgets {
   /** Enable or disable the high-contrast override for every control. */
   setHighContrast(enabled) {
     this._lib.rw_set_high_contrast(enabled ? 1 : 0);
+  }
+
+  /**
+   * Scroll a control to `(x, y)`, clamped to its content extent.
+   * Returns false when the control does not scroll.
+   */
+  setScrollPosition(widgetId, x, y) {
+    return this._lib.rw_widget_set_scroll_position(widgetId, x, y);
+  }
+
+  /**
+   * Scroll a control to an edge: `'top'`, `'bottom'`, `'left'` or `'right'`.
+   * An unrecognised name throws rather than silently defaulting to an edge.
+   */
+  scrollTo(widgetId, where) {
+    const codes = {top: 0, bottom: 1, left: 2, right: 3};
+    if (!(where in codes)) {
+      throw new RangeError(
+        `unknown scroll destination ${where}; expected one of ${Object.keys(codes)}`,
+      );
+    }
+    return this._lib.rw_widget_scroll_to(widgetId, codes[where]);
+  }
+
+  /** Append an item to a list-like control; returns the new count (0 if refused). */
+  listAdd(widgetId, item) {
+    return this._lib.rw_widget_list_add(widgetId, item);
+  }
+
+  /** Remove every item from a list-like control; false if it holds no items. */
+  listClear(widgetId) {
+    return this._lib.rw_widget_list_clear(widgetId);
+  }
+
+  /** How many items a list-like control holds. */
+  listCount(widgetId) {
+    return this._lib.rw_widget_list_count(widgetId);
+  }
+
+  /**
+   * Apply one style declaration written as `'property: value'`.
+   *
+   * Same property names and value syntax as a stylesheet, so
+   * `'background-color: #FF0000'` works here as it would in CSS. Returns false when
+   * the widget is unknown, the declaration is malformed, or the property is not one
+   * the style layer knows — a misspelled property is refused, not ignored.
+   */
+  setWidgetStyle(widgetId, declaration) {
+    return this._lib.rw_widget_set_style(widgetId, declaration);
+  }
+
+  /**
+   * Create a layout for `parent`: 'hbox'/'vbox'/'grid'/'stack'/… Returns false for
+   * an unknown kind, so a misspelling fails rather than arranging differently.
+   */
+  setWidgetLayout(parent, kind, spacing = 0, margin = 0) {
+    return this._lib.rw_widget_set_layout(parent, kind, spacing, margin);
+  }
+
+  /** Add `child` to `parent`'s layout. `stretch` below 1 is raised to 1. */
+  layoutAdd(parent, child, stretch = 1) {
+    return this._lib.rw_widget_layout_add(parent, child, Math.max(1, stretch));
+  }
+
+  /** Add a stretchable gap — no placeholder widget needed. */
+  layoutAddSpacer(parent, stretch = 1) {
+    return this._lib.rw_widget_layout_add_spacer(parent, Math.max(1, stretch));
+  }
+
+  /** Stop laying `child` out inside `parent`. */
+  layoutRemove(parent, child) {
+    return this._lib.rw_widget_layout_remove(parent, child);
+  }
+
+  /** Discard `parent`'s layout; false when there was none. */
+  layoutClear(parent) {
+    return this._lib.rw_widget_layout_clear(parent);
+  }
+
+  /**
+   * Recompute the layout inside the rectangle and move its children.
+   * Returns how many children were positioned.
+   */
+  layoutApply(parent, x, y, width, height) {
+    return this._lib.rw_widget_layout_apply(parent, x, y, width, height);
+  }
+
+  /** How many children `parent`'s layout holds, without applying it. */
+  layoutChildCount(parent) {
+    return this._lib.rw_widget_layout_child_count(parent);
   }
 
   isWidgetImeEnabled(widgetId) {

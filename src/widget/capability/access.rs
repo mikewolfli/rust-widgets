@@ -586,6 +586,24 @@ pub fn default_widget_property_default_value(
             "action_count" => CapabilityValue::UInt(0),
             _ => return None,
         },
+        WidgetKind::Toast => match property_name {
+            "message" => CapabilityValue::String(String::new()),
+            "level" => CapabilityValue::String("info".to_string()),
+            // Matches `Toast::new`, which is the value a caller gets without asking:
+            // a default that disagreed with the constructor would make a schema read
+            // describe a control that cannot be built.
+            "ttl_ms" => CapabilityValue::UInt(3000),
+            "dismissible" => CapabilityValue::Bool(true),
+            _ => return None,
+        },
+        WidgetKind::SplashScreen => match property_name {
+            "title" => CapabilityValue::String(String::new()),
+            "subtitle" => CapabilityValue::String(String::new()),
+            // `Null` is the indeterminate state, matching `SplashScreen::new`.
+            "progress" => CapabilityValue::Null,
+            "skippable" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
         WidgetKind::Pagination => match property_name {
             "total" => CapabilityValue::UInt(0),
             "page_size" => CapabilityValue::UInt(10),
@@ -624,6 +642,15 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::ColorDialog => match property_name {
+            "current_color" => CapabilityValue::String("#FFFFFFFF".to_string()),
+            "modal" => CapabilityValue::Bool(true),
+            "options_alpha" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
+        // `ColorPicker` declares its own kind since BLUE16 phase E-6. The defaults
+        // match the dialog's picker because both describe the same picker geometry:
+        // the difference between them is the host window, not the control.
+        WidgetKind::ColorPicker => match property_name {
             "hex_rgba" => CapabilityValue::String("#FF0000FF".to_string()),
             "show_alpha" => CapabilityValue::Bool(true),
             "preset_count" => CapabilityValue::UInt(6),

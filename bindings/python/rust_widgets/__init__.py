@@ -440,6 +440,45 @@ class RustWidgets:
         L.rw_set_high_contrast.argtypes = [c_int]
         L.rw_set_high_contrast.restype = None
 
+        L.rw_widget_set_scroll_position.argtypes = [c_uint64, c_int, c_int]
+        L.rw_widget_set_scroll_position.restype = c_bool
+
+        L.rw_widget_scroll_to.argtypes = [c_uint64, c_int]
+        L.rw_widget_scroll_to.restype = c_bool
+
+        L.rw_widget_list_add.argtypes = [c_uint64, c_char_p]
+        L.rw_widget_list_add.restype = c_uint
+
+        L.rw_widget_list_clear.argtypes = [c_uint64]
+        L.rw_widget_list_clear.restype = c_bool
+
+        L.rw_widget_list_count.argtypes = [c_uint64]
+        L.rw_widget_list_count.restype = c_uint
+
+        L.rw_widget_set_style.argtypes = [c_uint64, c_char_p]
+        L.rw_widget_set_style.restype = c_bool
+
+        L.rw_widget_set_layout.argtypes = [c_uint64, c_char_p, c_int, c_int]
+        L.rw_widget_set_layout.restype = c_bool
+
+        L.rw_widget_layout_add.argtypes = [c_uint64, c_uint64, c_uint]
+        L.rw_widget_layout_add.restype = c_bool
+
+        L.rw_widget_layout_add_spacer.argtypes = [c_uint64, c_uint]
+        L.rw_widget_layout_add_spacer.restype = c_bool
+
+        L.rw_widget_layout_remove.argtypes = [c_uint64, c_uint64]
+        L.rw_widget_layout_remove.restype = c_bool
+
+        L.rw_widget_layout_clear.argtypes = [c_uint64]
+        L.rw_widget_layout_clear.restype = c_bool
+
+        L.rw_widget_layout_apply.argtypes = [c_uint64, c_int, c_int, c_uint, c_uint]
+        L.rw_widget_layout_apply.restype = c_uint
+
+        L.rw_widget_layout_child_count.argtypes = [c_uint64]
+        L.rw_widget_layout_child_count.restype = c_uint
+
         L.rw_set_widget_text.argtypes = [c_uint64, c_char_p]
         L.rw_set_widget_text.restype = None
 
@@ -1074,6 +1113,103 @@ class RustWidgets:
     def set_high_contrast(self, enabled: bool) -> None:
         """Enable or disable the high-contrast override for every control."""
         self.lib.rw_set_high_contrast(1 if enabled else 0)
+
+    def set_scroll_position(self, widget_id: int, x: int, y: int) -> bool:
+        """Scroll ``widget_id`` to ``(x, y)``, clamped to its content extent.
+
+        Returns ``False`` when the control does not scroll, so a caller can tell
+        "scrolled" from "this control has no offset".
+        """
+        return bool(self.lib.rw_widget_set_scroll_position(widget_id, x, y))
+
+    def scroll_to(self, widget_id: int, where: str) -> bool:
+        """Scroll ``widget_id`` to an edge: ``top``/``bottom``/``left``/``right``.
+
+        An unrecognised destination raises rather than silently defaulting to an
+        edge, because a typo that scrolls somewhere is worse than a typo that
+        fails.
+        """
+        codes = {
+            "top": 0,
+            "bottom": 1,
+            "left": 2,
+            "right": 3,
+        }
+        try:
+            code = codes[where]
+        except KeyError:
+            raise ValueError(
+                f"unknown scroll destination {where!r}; expected one of {sorted(codes)}"
+            ) from None
+        return bool(self.lib.rw_widget_scroll_to(widget_id, code))
+
+    def list_add(self, widget_id: int, item: str) -> int:
+        """Append ``item`` to a list-like control; returns the new count.
+
+        Returns ``0`` when the control does not hold items.
+        """
+        return int(self.lib.rw_widget_list_add(widget_id, self._encode(item)))
+
+    def list_clear(self, widget_id: int) -> bool:
+        """Remove every item from a list-like control.
+
+        Returns ``False`` when the control does not hold items.
+        """
+        return bool(self.lib.rw_widget_list_clear(widget_id))
+
+    def list_count(self, widget_id: int) -> int:
+        """How many items a list-like control holds; ``0`` when it holds none."""
+        return int(self.lib.rw_widget_list_count(widget_id))
+
+    def set_widget_style(self, widget_id: int, declaration: str) -> bool:
+        """Apply one style declaration written as ``"property: value"``.
+
+        Uses the same property names and value syntax as a stylesheet, so
+        ``"background-color: #FF0000"`` works here exactly as it would in CSS.
+
+        Returns ``False`` when the widget is unknown, the declaration is malformed,
+        or the property is not one the style layer knows. A misspelled property is
+        refused rather than ignored, because this call names exactly one property:
+        silently doing nothing would let a typo pass as success.
+        """
+        return bool(self.lib.rw_widget_set_style(widget_id, self._encode(declaration)))
+
+    def set_widget_layout(
+        self, parent: int, kind: str, spacing: int = 0, margin: int = 0
+    ) -> bool:
+        """Create a layout for ``parent``: ``hbox``/``vbox``/``grid``/``stack``/...
+
+        Returns ``False`` for an unknown layout kind or an unknown widget, so a
+        misspelling fails rather than silently producing a different arrangement.
+        """
+        return bool(self.lib.rw_widget_set_layout(parent, self._encode(kind), spacing, margin))
+
+    def layout_add(self, parent: int, child: int, stretch: int = 1) -> bool:
+        """Add ``child`` to ``parent``'s layout. ``stretch`` below 1 is raised to 1."""
+        return bool(self.lib.rw_widget_layout_add(parent, child, max(1, stretch)))
+
+    def layout_add_spacer(self, parent: int, stretch: int = 1) -> bool:
+        """Add a stretchable gap — no placeholder widget needed."""
+        return bool(self.lib.rw_widget_layout_add_spacer(parent, max(1, stretch)))
+
+    def layout_remove(self, parent: int, child: int) -> bool:
+        """Stop laying ``child`` out inside ``parent``."""
+        return bool(self.lib.rw_widget_layout_remove(parent, child))
+
+    def layout_clear(self, parent: int) -> bool:
+        """Discard ``parent``'s layout; ``False`` when there was none."""
+        return bool(self.lib.rw_widget_layout_clear(parent))
+
+    def layout_apply(self, parent: int, x: int, y: int, width: int, height: int) -> int:
+        """Recompute the layout inside the given rectangle and move its children.
+
+        Returns how many children were positioned.
+        """
+        return int(self.lib.rw_widget_layout_apply(parent, x, y, width, height))
+
+    def layout_child_count(self, parent: int) -> int:
+        """How many children ``parent``'s layout holds, without applying it."""
+        return int(self.lib.rw_widget_layout_child_count(parent))
 
     def _read_name_list(self, func, first_arg) -> list[str]:
         """Calls a ``(out, cap) -> required`` enumerator and splits the result.

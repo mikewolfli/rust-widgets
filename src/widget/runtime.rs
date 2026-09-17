@@ -205,6 +205,11 @@ pub fn unregister(id: ObjectId) -> bool {
             capture.release_capture();
         }
     });
+    // The cached frame and any pending damage describe this widget, so both must go
+    // with it: a reused id would otherwise start from the previous control's pixels,
+    // and a stale damage rect would repaint a region that no longer exists.
+    forget_cached_frame(id);
+    let _ = REPAINT.try_with(|map| map.borrow_mut().remove(&id));
     MOUNTED.try_with(|map| map.borrow_mut().remove(&id).is_some()).unwrap_or(false)
 }
 
@@ -748,6 +753,329 @@ pub fn request_repaint(id: ObjectId) {
     crate::invalidate_surface(id);
 }
 
+/// How much of a frame the render loop repaints.
+///
+/// # Why this is a policy rather than a switch
+///
+/// Damage tracking is not unconditionally faster. It wins when a few controls
+/// change and the window is large, and it *loses* when the whole surface is moving
+/// — an animation, a scroll, a video — because then the union of damage rects grows
+/// to the full frame while the tracker still pays to merge and clip regions. A
+/// boolean would force every caller to know which case it is in; this type lets the
+/// library decide, and lets `Adaptive` learn from what actually happened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RepaintMode {
+    /// Repaint the whole surface every frame, ignoring damage. The historical
+    /// behaviour, and the default.
+    #[default]
+    Full,
+    /// Repaint only the damage regions, merging overlapping ones.
+    Dirty,
+    /// Start in [`Self::Dirty`] and fall back to [`Self::Full`] for a frame whose
+    /// damage covers most of the surface.
+    ///
+    /// The fallback is per-frame rather than sticky: a window that animates for a
+    /// second and then settles returns to damage-tracked repaints on its own,
+    /// which a one-way latch could not do.
+    Adaptive,
+}
+
+/// Damage tracked since the last frame, and the policy that decides how to use it.
+///
+/// Held per mounted widget, beside the widget itself, so a damage region cannot
+/// outlive the control it describes.
+struct RepaintState {
+    mode: RepaintMode,
+    tracker: crate::performance::DirtyRegionTracker,
+}
+
+impl RepaintState {
+    fn new() -> Self {
+        Self {
+            mode: RepaintMode::default(),
+            tracker: crate::performance::DirtyRegionTracker::new(),
+        }
+    }
+}
+
+thread_local! {
+    /// Per-widget repaint state, keyed by the same id as `MOUNTED`.
+    ///
+    /// A separate cell rather than a field on `Mounted` so the damage tracker can
+    /// be mutated while a widget is borrowed mutably — the render path holds a
+    /// `&mut dyn Widget` across the whole draw, and would otherwise deadlock.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static REPAINT: RefCell<HashMap<ObjectId, RepaintState>> = RefCell::new(HashMap::new());
+
+    /// The most recently rendered frame per widget, so an incremental repaint has
+    /// something to carry forward.
+    ///
+    /// # Why this lives here rather than in each backend
+    ///
+    /// Every backend that draws a mounted widget needs the previous frame to seed a
+    /// partial repaint, and all three would otherwise keep their own copy — three
+    /// caches answering the same question, each free to forget to invalidate on a
+    /// resize. Keeping it beside the damage tracker means the frame and the damage it
+    /// describes cannot get out of step.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static LAST_FRAME: RefCell<HashMap<ObjectId, (Size, Vec<u8>)>> = RefCell::new(HashMap::new());
+}
+
+/// Sets the repaint policy for a mounted widget.
+///
+/// Returns `false` when `id` is not mounted, so a caller can tell "policy set" from
+/// "there was nothing to set it on". Switching to [`RepaintMode::Full`] clears any
+/// accumulated damage, so a later switch back to [`RepaintMode::Dirty`] does not
+/// repaint a region that stopped being interesting several frames ago.
+pub fn set_repaint_mode(id: ObjectId, mode: RepaintMode) -> bool {
+    let mounted = MOUNTED.try_with(|m| m.borrow().contains_key(&id)).unwrap_or(false);
+    if !mounted {
+        return false;
+    }
+    let _ = REPAINT.try_with(|map| {
+        let mut map = map.borrow_mut();
+        let state = map.entry(id).or_insert_with(RepaintState::new);
+        state.mode = mode;
+        if mode == RepaintMode::Full {
+            state.tracker.clear();
+        }
+    });
+    true
+}
+
+/// The repaint policy in force for `id`.
+///
+/// A widget with no recorded policy reports [`RepaintMode::Full`], which is what it
+/// actually gets, rather than a "not configured" state a caller would have to
+/// translate.
+pub fn repaint_mode(id: ObjectId) -> RepaintMode {
+    REPAINT
+        .try_with(|map| map.borrow().get(&id).map(|state| state.mode))
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+}
+
+/// Marks `rect` as needing repaint on the next frame.
+///
+/// A no-op for a widget in [`RepaintMode::Full`], because that mode repaints
+/// everything anyway and accumulating rects it will never read would be waste.
+///
+/// # It also tells the platform
+///
+/// Tracking damage and repainting it are two halves of one feature. The tracker says
+/// *what* to redraw when the library renders the frame; the platform call says *when*
+/// to redraw at all. Without the second half a caller would record damage that nothing
+/// ever asked to be shown.
+///
+/// The platform call is [`crate::platform::Platform::invalidate_surface_rect`], which
+/// narrows the repaint when the backend can. When it cannot — and the default cannot —
+/// the whole control is invalidated instead, because a correct repaint is worth more
+/// than a narrow one.
+///
+/// Returns `true` when the damage was recorded.
+pub fn mark_dirty_rect(id: ObjectId, rect: Rect) -> bool {
+    let recorded = REPAINT
+        .try_with(|map| {
+            let mut map = map.borrow_mut();
+            let Some(state) = map.get_mut(&id) else {
+                return false;
+            };
+            if state.mode == RepaintMode::Full {
+                return false;
+            }
+            state.tracker.add(rect);
+            true
+        })
+        .ok()
+        .unwrap_or(false);
+
+    if recorded {
+        // Narrow when the backend can express it; otherwise fall back to invalidating
+        // the whole control. `request_repaint` is the same call the `Full` path uses,
+        // so the fallback needs no special handling here.
+        if !crate::invalidate_surface_rect(id, rect) {
+            crate::invalidate_surface(id);
+        }
+    }
+    recorded
+}
+
+/// The damage accumulated for `id` since the last frame, as rectangles.
+///
+/// Exposed so a backend can hand the regions to its own compositor instead of
+/// using `render_frame_incremental` — a GPU backend wants scissor rects, not a
+/// software repaint.
+pub fn dirty_rects(id: ObjectId) -> Vec<Rect> {
+    let mut tracker = REPAINT
+        .try_with(|map| {
+            map.borrow().get(&id).map(|state| {
+                let mut copy = crate::performance::DirtyRegionTracker::new();
+                for region in state.tracker.regions() {
+                    copy.add(region.rect);
+                }
+                copy
+            })
+        })
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    tracker.merge();
+    tracker.regions().iter().map(|region| region.rect).collect()
+}
+
+/// Renders one frame, repainting only the damage when the policy allows it.
+///
+/// # Why the full frame is still returned
+///
+/// The return value is a complete `size.width * size.height * 4` buffer in every
+/// mode, because a caller presents a frame and cannot present a rectangle. The
+/// saving is in what is *drawn*, not in what is *returned*: in `Dirty` mode only the
+/// damaged area is re-rasterised, and the untouched pixels are whatever the previous
+/// frame left. Rebuilding the whole buffer per frame would give up that saving,
+/// so `previous` carries the last frame in.
+///
+/// `previous` must be a buffer from an earlier call for the same widget and size.
+/// Passing `None` forces a full paint, which is the honest answer when there is no
+/// frame to preserve.
+pub fn render_frame_incremental(
+    id: ObjectId,
+    size: Size,
+    clear: crate::core::Color,
+    previous: Option<&[u8]>,
+) -> Option<Vec<u8>> {
+    if size.width == 0 || size.height == 0 {
+        return None;
+    }
+
+    let mode = repaint_mode(id);
+    let expected = size.width as usize * size.height as usize * 4;
+    // A buffer of the wrong size cannot be carried forward, so treat it as absent
+    // rather than reading past its end.
+    let carried = previous.filter(|buffer| buffer.len() == expected);
+
+    let use_dirty = mode != RepaintMode::Full && carried.is_some() && !dirty_rects(id).is_empty();
+    if mode == RepaintMode::Full || carried.is_none() {
+        if let Some(frame) = render_frame(id, size, clear) {
+            let _ = REPAINT.try_with(|map| {
+                if let Some(state) = map.borrow_mut().get_mut(&id) {
+                    state.tracker.clear();
+                }
+            });
+            return Some(frame);
+        }
+        return None;
+    }
+
+    if !use_dirty {
+        // Nothing was damaged: the previous frame is still correct, and redrawing
+        // it would be work for no visible change.
+        return Some(carried?.to_vec());
+    }
+
+    let mut backend = SoftwarePaintBackend::new(size, 1.0);
+    // Seed the backend with the previous frame so the regions this pass does not
+    // touch keep their pixels.
+    backend.seed_from(carried?);
+    let mut tracker = REPAINT
+        .try_with(|map| {
+            map.borrow_mut().get_mut(&id).map(|state| {
+                let mut taken = crate::performance::DirtyRegionTracker::new();
+                for region in state.tracker.regions() {
+                    taken.add(region.rect);
+                }
+                state.tracker.clear();
+                taken
+            })
+        })
+        .ok()
+        .flatten()?;
+    tracker.merge();
+
+    let painted = with_widget_mut(id, |widget| {
+        let Some(drawable) = widget.as_draw_mut() else {
+            return false;
+        };
+        {
+            let mut context = RenderContext::new(&mut backend);
+            crate::performance::render_dirty_regions(&mut tracker, &mut context, |ctx| {
+                drawable.draw(ctx);
+            });
+        }
+        // Present the back buffer this pass drew into. Without this the frame read
+        // below comes from the front buffer, which still holds the *pre-seed* state
+        // — the seed went into `back`, so the untouched regions would read as blank
+        // instead of as the previous frame.
+        backend.end_frame();
+        true
+    })?;
+    if !painted {
+        return None;
+    }
+    Some(backend.frame_rgba().to_vec())
+}
+
+/// Renders the next frame of a mounted widget, reusing the previous one when the
+/// repaint policy allows.
+///
+/// This is the entry point a backend's paint callback should call, and it is the one
+/// that makes [`RepaintMode`] reach the screen. It differs from
+/// [`render_frame_incremental`] in owning the previous frame: the caller passes only
+/// the widget and the size, and this function remembers what it last produced.
+///
+/// # Why the cache is keyed by size
+///
+/// A frame of the wrong size cannot seed a repaint — it would be copied into a larger
+/// surface leaving the tail untouched, or truncated. Storing the size beside the frame
+/// means a resize is detected here and turns into a full paint automatically, without
+/// the caller having to remember to tell anyone.
+///
+/// # Return value
+///
+/// The complete frame, always. A backend presents a frame and cannot present a
+/// rectangle, so the saving is in what is *drawn*, not in what is returned. Returns
+/// `None` when the widget is unmounted, has no `Draw` impl, or the size is empty.
+pub fn render_frame_cached(id: ObjectId, size: Size, clear: crate::core::Color) -> Option<Vec<u8>> {
+    if size.width == 0 || size.height == 0 {
+        return None;
+    }
+
+    // Clone the previous frame only when one of the right size exists; a mismatch is
+    // treated as absent so the callee falls back to a full paint.
+    let previous = LAST_FRAME
+        .try_with(|map| {
+            map.borrow()
+                .get(&id)
+                .filter(|(stored, _)| *stored == size)
+                .map(|(_, frame)| frame.clone())
+        })
+        .ok()
+        .flatten();
+
+    let frame = render_frame_incremental(id, size, clear, previous.as_deref())?;
+
+    let _ = LAST_FRAME.try_with(|map| {
+        map.borrow_mut().insert(id, (size, frame.clone()));
+    });
+    Some(frame)
+}
+
+/// Forgets the cached frame for `id`.
+///
+/// Called when a widget is unmounted, so a frame cannot outlive the control it
+/// describes — and so its id, if reused, does not start from someone else's pixels.
+pub fn forget_cached_frame(id: ObjectId) {
+    let _ = LAST_FRAME.try_with(|map| map.borrow_mut().remove(&id));
+}
+
+/// The size of the cached frame for `id`, if one is held.
+///
+/// Exposed so a backend can tell "I have a frame for this size" from "the next paint
+/// will be full", which is what a resize handler needs to know.
+pub fn cached_frame_size(id: ObjectId) -> Option<Size> {
+    LAST_FRAME.try_with(|map| map.borrow().get(&id).map(|(size, _)| *size)).ok().flatten()
+}
+
 /// Renders one frame of a mounted widget at `size` and returns the RGBA bytes.
 ///
 /// `bytes.len() == size.width * size.height * 4`, top-down, straight (non
@@ -822,6 +1150,209 @@ mod tests {
     #[test]
     fn unregister_unknown_id_is_false() {
         assert!(!unregister(0xDEAD_BEEF));
+    }
+
+    /// A widget defaults to `Full`, so adopting damage tracking is opt-in and no
+    /// existing caller's behaviour changes without asking.
+    #[test]
+    fn repaint_defaults_to_full() {
+        let id = register(sample_editor("fn main() {}")).expect("registry");
+        assert_eq!(repaint_mode(id), RepaintMode::Full);
+        unregister(id);
+    }
+
+    /// Setting a policy on something that is not mounted must report the failure
+    /// rather than silently succeeding on a key that addresses nothing.
+    #[test]
+    fn set_repaint_mode_rejects_an_unmounted_id() {
+        assert!(!set_repaint_mode(0xDEAD_BEEF, RepaintMode::Dirty));
+    }
+
+    /// Damage is only recorded in the modes that read it, so a `Full` widget does
+    /// not accumulate rects it will never consume.
+    #[test]
+    fn damage_is_recorded_only_when_a_mode_will_read_it() {
+        let id = register(sample_editor("fn main() {}")).expect("registry");
+        let rect = Rect::new(10, 10, 40, 20);
+
+        assert!(!mark_dirty_rect(id, rect), "Full mode must not accumulate damage");
+        assert!(dirty_rects(id).is_empty());
+
+        assert!(set_repaint_mode(id, RepaintMode::Dirty));
+        assert!(mark_dirty_rect(id, rect), "Dirty mode must record the damage");
+        assert_eq!(dirty_rects(id), vec![rect]);
+
+        unregister(id);
+    }
+
+    /// Recording damage must also ask the platform to repaint, or the damage would be
+    /// tracked and never shown.
+    ///
+    /// # How this is observed
+    ///
+    /// The test backend records its invalidations, so the assertion is on what the
+    /// backend was asked to do — not on a return value. A `mark_dirty_rect` that only
+    /// updated the tracker would leave the invalidation log empty and fail here.
+    #[test]
+    fn recording_damage_asks_the_platform_to_repaint() {
+        use crate::platform::RecordingInvalidations;
+
+        let id = register(sample_editor("fn main() {}")).expect("registry");
+        // `Box::leak` because the override holds a `&'static dyn Platform`: it must
+        // outlive the call, and a test process is short-lived, so the leak is bounded
+        // by the number of tests that install one.
+        let log: &'static RecordingInvalidations =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(RecordingInvalidations::new()));
+        assert!(set_repaint_mode(id, RepaintMode::Dirty));
+
+        let rect = Rect::new(4, 8, 16, 16);
+        let recorded =
+            crate::platform::with_recorded_invalidations(log, || mark_dirty_rect(id, rect));
+
+        assert!(recorded, "the damage must still be recorded");
+        assert_eq!(
+            log.calls(),
+            vec![(id, Some(rect))],
+            "the platform must be told about the damage, narrowed to the rect when it can"
+        );
+
+        // `Full` mode records nothing, so it must not invalidate either — the caller is
+        // expected to drive a whole-frame repaint itself.
+        assert!(set_repaint_mode(id, RepaintMode::Full));
+        log.clear();
+        assert!(!crate::platform::with_recorded_invalidations(log, || {
+            mark_dirty_rect(id, rect)
+        }));
+        assert!(log.calls().is_empty(), "a refused mark must not reach the platform");
+
+        unregister(id);
+    }
+
+    /// A backend that cannot narrow must still be told to repaint, or the fallback
+    /// would leave the surface stale.
+    ///
+    /// The recorder is asked to refuse narrowing, and the assertion is that a
+    /// whole-surface invalidation arrived instead — so this pins the fallback itself,
+    /// not merely that some call was made.
+    #[test]
+    fn a_backend_that_cannot_narrow_gets_a_whole_surface_repaint() {
+        use crate::platform::RecordingInvalidations;
+
+        let id = register(sample_editor("fn main() {}")).expect("registry");
+        assert!(set_repaint_mode(id, RepaintMode::Dirty));
+
+        let log: &'static RecordingInvalidations = alloc::boxed::Box::leak(alloc::boxed::Box::new(
+            RecordingInvalidations::refusing_narrowing(),
+        ));
+        let rect = Rect::new(2, 2, 8, 8);
+        assert!(crate::platform::with_recorded_invalidations(log, || mark_dirty_rect(id, rect)));
+
+        assert_eq!(
+            log.calls(),
+            vec![(id, None)],
+            "a backend that refuses narrowing must receive a whole-surface invalidation"
+        );
+
+        unregister(id);
+    }
+
+    /// Switching back to `Full` drops stale damage: a region that stopped mattering
+    /// several frames ago must not be repainted when `Dirty` is re-selected.
+    #[test]
+    fn switching_to_full_forgets_accumulated_damage() {
+        let id = register(sample_editor("fn main() {}")).expect("registry");
+        assert!(set_repaint_mode(id, RepaintMode::Dirty));
+        assert!(mark_dirty_rect(id, Rect::new(0, 0, 10, 10)));
+        assert_eq!(dirty_rects(id).len(), 1);
+
+        assert!(set_repaint_mode(id, RepaintMode::Full));
+        assert!(dirty_rects(id).is_empty(), "Full must clear what it will not replay");
+
+        unregister(id);
+    }
+
+    /// A frame rendered with no damage must return the previous frame's pixels
+    /// unchanged, which is the whole saving: no draw calls, same result.
+    #[test]
+    fn an_undamaged_frame_returns_the_previous_pixels() {
+        let id = register(sample_editor("fn main() {}")).expect("registry");
+        let size = Size::new(64, 48);
+
+        let first = render_frame(id, size, Color::rgb(10, 20, 30)).expect("first frame");
+        assert!(set_repaint_mode(id, RepaintMode::Dirty));
+
+        // No damage recorded, so the second frame is the first frame.
+        let second = render_frame_incremental(id, size, Color::rgb(10, 20, 30), Some(&first))
+            .expect("second frame");
+        assert_eq!(second, first, "an undamaged frame must not change any pixel");
+
+        unregister(id);
+    }
+
+    /// Without a previous frame there is nothing to preserve, so the call falls back
+    /// to a full paint rather than returning a buffer it cannot fill.
+    #[test]
+    fn a_missing_previous_frame_forces_a_full_paint() {
+        let id = register(sample_editor("fn main() {}")).expect("registry");
+        let size = Size::new(64, 48);
+        assert!(set_repaint_mode(id, RepaintMode::Dirty));
+        assert!(mark_dirty_rect(id, Rect::new(0, 0, 8, 8)));
+
+        let frame = render_frame_incremental(id, size, Color::rgb(1, 2, 3), None)
+            .expect("a frame is still produced");
+        assert_eq!(frame.len(), size.width as usize * size.height as usize * 4);
+
+        unregister(id);
+    }
+
+    /// A previous frame of the wrong size cannot be carried forward; the call must
+    /// still return a correct, fully sized frame instead of a half-stale one.
+    #[test]
+    fn a_wrongly_sized_previous_frame_is_ignored() {
+        let id = register(sample_editor("fn main() {}")).expect("registry");
+        let size = Size::new(64, 48);
+        assert!(set_repaint_mode(id, RepaintMode::Dirty));
+        assert!(mark_dirty_rect(id, Rect::new(0, 0, 8, 8)));
+
+        let wrong = vec![0u8; 7];
+        let frame = render_frame_incremental(id, size, Color::rgb(1, 2, 3), Some(&wrong))
+            .expect("a frame is still produced");
+        assert_eq!(
+            frame.len(),
+            size.width as usize * size.height as usize * 4,
+            "a mismatched previous frame must not resize the output"
+        );
+
+        unregister(id);
+    }
+
+    /// Dirty repaint must leave the untouched region holding the previous frame's
+    /// pixels, not the clear colour: that is the observable difference between a
+    /// partial repaint and a full one.
+    #[test]
+    fn a_dirty_repaint_preserves_pixels_outside_the_damage() {
+        let id = register(sample_editor("fn main() {}")).expect("registry");
+        let size = Size::new(80, 60);
+        let clear = Color::rgb(200, 30, 40);
+
+        let first = render_frame(id, size, clear).expect("first frame");
+        assert!(set_repaint_mode(id, RepaintMode::Dirty));
+
+        // Damage a region in the top-left only, then repaint with a different clear
+        // colour. A full paint would fill the whole frame with the new colour; a
+        // dirty paint must leave the far corner alone.
+        assert!(mark_dirty_rect(id, Rect::new(0, 0, 8, 8)));
+        let second = render_frame_incremental(id, size, Color::rgb(0, 0, 0), Some(&first))
+            .expect("second frame");
+
+        let last_pixel = second.len() - 4;
+        assert_eq!(
+            &second[last_pixel..],
+            &first[last_pixel..],
+            "the far corner is outside the damage and must keep its pixels"
+        );
+
+        unregister(id);
     }
 
     #[test]

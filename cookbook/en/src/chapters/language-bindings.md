@@ -61,7 +61,7 @@ macro_rules! c_try {
 ### Complete C Example
 
 ```c
-#include "rust_widgets.h"
+#include "rw_generated.h"
 #include <stdio.h>
 
 int main(void) {
@@ -734,21 +734,23 @@ pub extern "C" fn rw_platform_capabilities(caps: *mut u32) {
 The C ABI includes HarmonyOS-specific functions for NAPI bridge integration:
 
 ```c
+#include "rw_generated.h"
+
 // Widget trigger injection (Harmony event bridge)
-void rw_harmony_on_menu_item(ObjectId widget_id);
-void rw_harmony_on_click(ObjectId widget_id);
-void rw_harmony_on_value_changed(ObjectId widget_id);
-void rw_harmony_on_widget_event(ObjectId widget_id, int trigger_kind);
+bool rw_harmony_on_menu_item(uint64_t menu_item_id);
+bool rw_harmony_on_click(uint64_t widget_id);
+bool rw_harmony_on_value_changed(uint64_t widget_id);
+bool rw_harmony_on_widget_event(uint64_t widget_id, unsigned int kind_code);
 
 // Node binding registry
-void rw_harmony_bind_node(ObjectId widget_id, const char* node_id);
-void rw_harmony_unbind_node(ObjectId widget_id);
+bool rw_harmony_bind_node(uint64_t node_handle, uint64_t widget_id);
+bool rw_harmony_unbind_node(uint64_t node_handle);
 
 // Typed node events (harmony)
-void rw_harmony_on_node_click(ObjectId widget_id, const char* node_id);
-void rw_harmony_on_node_value_changed(ObjectId widget_id, const char* node_id);
-void rw_harmony_on_node_widget_event(ObjectId widget_id,
-    const char* node_id, int trigger_kind);
+bool rw_harmony_on_node_click(uint64_t node_handle);
+bool rw_harmony_on_node_value_changed(uint64_t node_handle);
+bool rw_harmony_on_node_widget_event(uint64_t node_handle, unsigned int kind_code);
+bool rw_harmony_on_node_menu_item(uint64_t node_handle);
 ```
 
 ---

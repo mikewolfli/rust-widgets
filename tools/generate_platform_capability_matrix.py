@@ -11,6 +11,7 @@ Usage:
 
 import argparse
 import os
+import pathlib
 import re
 from typing import Dict, List, Tuple
 
@@ -185,6 +186,7 @@ WIDGETS: Dict[str, Tuple[str, List[str]]] = {
     "Avatar": ("Avatar", CELLS),
     "Badge": ("Badge", CELLS),
     "BarChart": ("BarChart", CELLS),
+    "Banner": ("Banner", CELLS),
     "BarcodeScanner": ("BarcodeScanner", CELLS),
     "BezierCurveEditor": ("BezierCurveEditor", CELLS),
     "BottomNavigationBar": ("BottomNavigationBar", CELLS),
@@ -193,6 +195,7 @@ WIDGETS: Dict[str, Tuple[str, List[str]]] = {
     "Carousel": ("Carousel", CELLS),
     "Chip": ("Chip", CELLS),
     "ColorHistory": ("ColorHistory", CELLS),
+    "ColorPicker": ("ColorPicker", CELLS),
     "ColorWell": ("ColorWell", CELLS),
     "CupertinoAlertDialog": ("CupertinoAlertDialog", CELLS),
     "CupertinoDatePicker": ("CupertinoDatePicker", CELLS),
@@ -212,6 +215,11 @@ WIDGETS: Dict[str, Tuple[str, List[str]]] = {
     "FontPreview": ("FontPreview", CELLS),
     "Frame": ("Frame", CELLS),
     "GridTable": ("GridTable", CELLS),
+    "NumberPicker": ("NumberPicker", CELLS),
+    "OtpInput": ("OtpInput", CELLS),
+    "Pagination": ("Pagination", CELLS),
+    "SplashScreen": ("SplashScreen", CELLS),
+    "Toast": ("Toast", CELLS),
     "HeroAnimation": ("HeroAnimation", CELLS),
     "Icon": ("Icon", CELLS),
     "ImageGallery": ("ImageGallery", CELLS),
@@ -498,6 +506,52 @@ DEGRADATION_NOTES = (
 )
 
 
+def _abi_constructible_kinds() -> set[str]:
+    """Kinds a C caller can construct, derived from the exported ABI.
+
+    # Why this is derived rather than listed
+
+    The question "can a C caller create this control?" has exactly one source of
+    truth: the exported bindings. Writing the answer as a table here would let it
+    drift from `binding_impl.rs` the moment a function is added — which is the
+    failure this column exists to make visible, not to reproduce.
+
+    # How the derivation works
+
+    Each exported `rw_create_*` function forwards to a backend `create_*` whose name
+    mirrors the widget's kind (`rw_create_line_edit` -> `create_line_edit` ->
+    `LineEdit`). The generic `rw_create_widget_of_kind` is deliberately *not* treated
+    as covering everything: it takes a name at run time, so which kinds it can reach
+    is not knowable from the signature, and claiming it here would make the column
+    say "every kind" and therefore say nothing.
+    """
+    bindings = pathlib.Path("src/bindings/binding_impl.rs")
+    if not bindings.exists():
+        return set()
+    text = bindings.read_text(encoding="utf-8")
+    kinds: set[str] = set()
+    for match in re.finditer(r'pub\s+(?:unsafe\s+)?extern\s+"C"\s+fn\s+rw_create_([a-z0-9_]+)', text):
+        suffix = match.group(1)
+        # `create_line_edit` -> `LineEdit`
+        kinds.add("".join(part.capitalize() for part in suffix.split("_")))
+    # Spelling differences between a kind and its ABI function name, each of which is
+    # visible in the bindings' own test data. Kept explicit so a rename shows up here
+    # rather than silently dropping a row's marker.
+    aliases = {
+        "Checkbox": "CheckBox",
+        "ColorDialog": "ColorDialog",
+        "Toolbar": "ToolBar",
+        "Statusbar": "StatusBar",
+        "Menubar": "MenuBar",
+        "Textedit": "TextEdit",
+        "Listbox": "ListBox",
+        "Treeview": "TreeView",
+        "Dataview": "DataView",
+        "Gridtable": "GridTable",
+    }
+    return {aliases.get(kind, kind) for kind in kinds}
+
+
 def generate_matrix() -> str:
     """Generate the full markdown document."""
     lines = []
@@ -509,6 +563,11 @@ def generate_matrix() -> str:
     lines.append(
         "> **Legend:** ✅ Primitive-mapped · 🟦 Custom-painted (functional) · 🔶 Limited · "
         "⬜ Placeholder · ➖ N/A"
+    )
+    lines.append(
+        "> **C**: ✅ when a typed `rw_create_*` function exists for the kind, "
+        "⬜ when the only route is the generic `rw_create_widget_of_kind(name)`. "
+        "Derived from `src/bindings/binding_impl.rs`, never hand-maintained."
     )
     lines.append(
         "> A few ✅ cells are compile-verified only; see "
@@ -524,9 +583,11 @@ def generate_matrix() -> str:
     lines.append("## Matrix")
     lines.append("")
 
+    abi_kinds = _abi_constructible_kinds()
+
     # Header
-    header = "| Widget | " + " | ".join(PLATFORMS) + " |"
-    sep = "| " + "--- |" * (len(PLATFORMS) + 1)
+    header = "| Widget | " + " | ".join(PLATFORMS) + " | C |"
+    sep = "| " + "--- |" * (len(PLATFORMS) + 2)
 
     lines.append(header)
     lines.append(sep)
@@ -534,7 +595,9 @@ def generate_matrix() -> str:
     # Rows
     for key in SORTED_KEYS:
         display_name, levels = WIDGETS[key]
-        row = f"| **{display_name}** | " + " | ".join(levels) + " |"
+        # The key is the `WidgetKind` variant name; `WIDGETS` uses the variant spelling.
+        abi_cell = "✅" if key in abi_kinds else "⬜"
+        row = f"| **{display_name}** | " + " | ".join(levels) + f" | {abi_cell} |"
         lines.append(row)
 
     lines.append("")
@@ -542,6 +605,12 @@ def generate_matrix() -> str:
     lines.append("")
     lines.append(
         f"Total widgets: {len(WIDGETS)} (matches {len(WIDGETS)} WidgetKind variants)"
+    )
+    lines.append("")
+    lines.append(
+        f"C-ABI typed constructors: {len(abi_kinds & set(WIDGETS))} of {len(WIDGETS)} "
+        "kinds. The remainder are reachable through `rw_create_widget_of_kind`, which "
+        "takes a factory name at run time."
     )
     lines.append("")
     lines.append("---")

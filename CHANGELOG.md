@@ -6,28 +6,49 @@ This root-level file exists for tools and release automation that expect `CHANGE
 
 ## 2.2.0 (2026-09-17) — Reachability: Everything Implemented Is Now Constructible
 
-Backward compatible. Seven C ABI functions were added; no existing signature changed.
-Seven controls that were implemented but unconstructible by name are now registered, and
-every language binding reaches the whole published ABI.
+Backward compatible. Twelve C ABI functions were added (106 → 118); no existing signature
+changed. Eleven controls that were implemented but unconstructible by name are now
+registered, and every language binding reaches the whole published ABI.
 
-See [docs/reports/CHANGELOG.md](docs/reports/CHANGELOG.md) for the full list.
+The theme of this release is **reachability**: controls, properties and modules that were
+fully implemented but had no way to be reached — by name, over the C ABI, or by any
+caller at all. Each gap was invisible because nothing failed; the code simply was not
+there for the people it was written for.
 
 ### Added
 
-- Seven C ABI entry points (106 → 113 functions): `rw_create_widget_of_kind`,
-  `rw_widget_kind_names`, `rw_get_widget_property`, `rw_set_widget_property`,
-  `rw_widget_property_names`, `rw_set_theme` / `rw_theme_names`, `rw_set_high_contrast`.
-- Seven controls registered so they are constructible by name: `timeline_widget`,
-  `command_palette`, `notification_center`, `diff_viewer`, `markdown_editor`,
-  `toast_stack`, `grid_table` (factory names 155 → 161).
+- **Twelve C ABI entry points** (106 → 118 functions):
+  - Generic creation and reflection: `rw_create_widget_of_kind`, `rw_widget_kind_names`,
+    `rw_get_widget_property`, `rw_set_widget_property`, `rw_widget_property_names`.
+  - Collections, which have no settable count: `rw_widget_list_add`,
+    `rw_widget_list_clear`, `rw_widget_list_count`.
+  - Scrolling, which is an action rather than an assignment:
+    `rw_widget_set_scroll_position`, `rw_widget_scroll_to`.
+  - Theme: `rw_set_theme`, `rw_theme_names`, `rw_set_high_contrast`.
+- **Eleven newly registered controls.** Seven already existed with complete
+  implementations (`timeline_widget`, `command_palette`, `notification_center`,
+  `diff_viewer`, `markdown_editor`, `toast_stack`, `grid_table`) and were merely never
+  wired into the factory. Four are new: `number_picker`, `otp_input`, `banner`,
+  `pagination`. Factory names: 155 → **166**. `WidgetKind`: 167 → **171**.
 
 ### Fixed
 
 - `include/rw_generated.h` was four functions behind the ABI, including the only
   destructor `rw_destroy_widget`.
 - Every language binding was missing `rw_destroy_widget`.
-- Eighteen schema-declared properties were answered by no contract.
-- `rw_errors.h` and `rw_generated.h` disagreed about `rw_error_message`'s return type.
+- Eighteen schema-declared properties were answered by no contract; `canvas` was serving
+  the *map view* schema, and `chart` a marker concept it never had.
+- `rw_errors.h` and `rw_generated.h` disagreed about `rw_error_message`'s return type, so
+  a translation unit including both could not compile.
+- `src/embedded` (1,861 lines) was a forwarding layer over `platform::profile`, which is
+  the layer with real consumers; the layer itself had none.
+
+### Gates
+
+Four new checks, each verified to fail before being trusted:
+`check_binding_symbol_coverage.sh`, `check_widget_registration_fidelity.sh`,
+`check_module_reachability.sh`, and a bidirectional schema↔contract test. The last of
+those is what found the eighteen phantom properties.
 
 ## 2.1.0 (2026-09-17) — HarmonyOS Made Real, Error Messages Audited, Cross-Target `--all-targets` Fixed
 

@@ -44,4 +44,4 @@ pub use snackbar::Snackbar;
 pub use split_button::{SplitAction, SplitButton};
 pub use terminal_view::TerminalView;
 pub use timeline_widget::{TimelineItem, TimelineWidget};
-pub use toast::{ToastItem, ToastLevel, ToastStack};
+pub use toast::{Toast, ToastItem, ToastLevel, ToastStack};

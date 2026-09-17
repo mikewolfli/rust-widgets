@@ -87,6 +87,11 @@ pub struct TabBar {
     tab_shape: TabShape,
     closable: bool,
     movable: bool,
+    /// Index of the tab a drag started on, when a move gesture is in progress.
+    ///
+    /// Tracked so a release can complete a move that began with a press: without
+    /// it a drag has no origin, and `tab_moved` has nothing to report.
+    dragging_from: Option<usize>,
     tab_min_width: u32,
     tab_max_width: u32,
     /// Emitted when the current tab index changes.
@@ -109,6 +114,7 @@ impl TabBar {
             tab_shape: TabShape::Rounded,
             closable: false,
             movable: false,
+            dragging_from: None,
             tab_min_width: TAB_MIN_WIDTH,
             tab_max_width: TAB_MAX_WIDTH,
             current_changed: Signal1::new(),
@@ -315,6 +321,51 @@ impl TabBar {
     /// Sets whether tabs can be moved via drag-and-drop.
     pub fn set_movable(&mut self, movable: bool) {
         self.movable = movable;
+    }
+
+    /// Moves the tab at `from` so that it sits at `to`, and emits
+    /// [`Self::tab_moved`] with `(from, to)`.
+    ///
+    /// # Why this is the only way to reorder
+    ///
+    /// `tab_moved` was declared but nothing emitted it, so a caller could see the
+    /// signal, connect a handler, and wait forever. The fix is not to emit from
+    /// somewhere convenient but to give reordering a real entry point: this is that
+    /// entry point, and the drag gesture calls it.
+    ///
+    /// # Why `to` is clamped rather than rejected
+    ///
+    /// A drag reports positions from pointer coordinates, which can land one past
+    /// the last tab. Clamping to `tabs.len() - 1` treats "dropped past the end" as
+    /// "moved to the end" — the intent — while an out-of-range `from` is a caller
+    /// bug and is rejected without emitting.
+    ///
+    /// Returns `true` when a move happened.
+    pub fn move_tab(&mut self, from: usize, to: usize) -> bool {
+        if from >= self.tabs.len() {
+            return false;
+        }
+        let to = to.min(self.tabs.len() - 1);
+        if to == from {
+            return false;
+        }
+
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(to, tab);
+
+        // The selection follows the *tab*, not the slot: dragging the current tab
+        // must not silently move the selection to whichever tab took its index.
+        if let Some(current) = self.current_index {
+            self.current_index = Some(match current {
+                c if c == from => to,
+                c if from < c && c <= to => c - 1,
+                c if to <= c && c < from => c + 1,
+                c => c,
+            });
+        }
+
+        self.tab_moved.emit((from, to));
+        true
     }
 
     // ---------------------------------------------------------------------------
@@ -633,6 +684,22 @@ impl EventHandler for TabBar {
                 if let Some(index) = self.tab_at_position(*pos) {
                     if self.tabs[index].enabled {
                         self.set_current_index(index);
+                        // A press on a movable tab arms a drag; the release decides
+                        // whether it moved. Arming on press rather than on the first
+                        // move means a click that happens to jitter by a pixel still
+                        // behaves as a click.
+                        if self.movable {
+                            self.dragging_from = Some(index);
+                        }
+                    }
+                }
+            }
+            Event::MouseRelease { pos, .. } => {
+                // Completing the move on release, and only on release, is what makes
+                // `movable` mean "drag to reorder" rather than "reorder on click".
+                if let Some(from) = self.dragging_from.take() {
+                    if let Some(to) = self.tab_at_position(*pos) {
+                        self.move_tab(from, to);
                     }
                 }
             }

@@ -2,6 +2,7 @@
 
 > **Auto-generated** by `tools/generate_platform_capability_matrix.py`
 > **Legend:** ✅ Primitive-mapped · 🟦 Custom-painted (functional) · 🔶 Limited · ⬜ Placeholder · ➖ N/A
+> **C**: ✅ when a typed `rw_create_*` function exists for the kind, ⬜ when the only route is the generic `rw_create_widget_of_kind(name)`. Derived from `src/bindings/binding_impl.rs`, never hand-maintained.
 > A few ✅ cells are compile-verified only; see [✅ cells not yet verified on a real device](#-cells-not-yet-verified-on-a-real-device未经真机验证的--单元格) under Degradation notes.
 
 ## Symbol semantics（符号语义）
@@ -33,179 +34,188 @@
 
 ## Matrix
 
-| Widget | Windows | Linux/X11 | macOS | Wayland | Mobile | Harmony | Embedded/Stub |
-| --- |--- |--- |--- |--- |--- |--- |--- |
-| **Action** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **ActivityIndicator** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **AdaptiveScaffold** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **AnimatedImage** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **AppBar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **Arc** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **AudioVisualizer** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **AutoCompleteEdit** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **Avatar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **Badge** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **BarChart** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **BarcodeScanner** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **BezierCurveEditor** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **BottomNavigationBar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **BottomSheet** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **Button** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **Calendar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **CameraPreview** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **Canvas** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **Carousel** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **Chart** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **CheckBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **CheckListBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **Chip** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **CollapsiblePane** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **ColorDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **ColorHistory** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **ColorWell** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **ColumnView** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **ComboBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **CommandLink** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **ContextMenu** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **CupertinoAlertDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **CupertinoDatePicker** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **CupertinoNavigationBar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **CupertinoSegmentedControl** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **CupertinoSlider** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **CupertinoSwitch** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **DataView** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **DatePicker** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **DateRangePicker** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **DateTimePicker** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **Dial** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **Dialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **DirectoryDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **Divider** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **DockPanel** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **DockWidget** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **DoubleSpinBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **Dropdown** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **DropdownMenu** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **EditableComboBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **EmptyState** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **FAB** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **FileDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **FindReplaceDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **FloatingLabel** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **FontComboBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **FontDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **FontPreview** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **Frame** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **FreeformShape** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **Grid** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **GridTable** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **GroupBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **HeroAnimation** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **Icon** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **ImageGallery** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **ImageView** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **ImePreedit** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **InplaceEditor** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **InputDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **Keyboard** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **LCDNumber** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **Label** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **Line** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **LineChart** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **LineEdit** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **ListBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **ListView** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **LottieWidget** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **MaskedEdit** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **MasonryLayout** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **MaterialNavigationRail** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **MaterialSnackbar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **MdiArea** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **Menu** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **MenuBar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **MenuButton** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **MenuItem** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **MessageBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **Meter** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **MiniCanvas** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **MiniChart** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **MobileDatePicker** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **ModalBottomSheet** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **MultiSelectComboBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **NavigationDrawer** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **NavigationStack** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **PagerPageView** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **Panel** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **PieChart** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **PieMenu** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **Popover** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **PopupWindow** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **ProgressBar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **ProgressCircle** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **ProgressDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **PropertiesPanel** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **PropertyGrid** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **QRCode** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **RadioButton** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **RangeSlider** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **Rating** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **RefreshControl** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **RibbonBar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **RichEdit** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **RiveWidget** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **Roller** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **SafeArea** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **ScrollArea** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **ScrollBar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **SearchBar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **SearchBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **SegmentedButton** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **ShortcutEditor** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **SkeletonLoader** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **Slider** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **Sparkline** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **SpinBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **Spinner** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **Splitter** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **StackedWidget** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **StatusBar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **Stepper** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **SwipeToDismiss** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **Switch** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **TabBar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **TabView** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **TabWidget** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **Table** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **TagInput** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **TextArea** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **TextEdit** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **TileView** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **TimePicker** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **ToggleButton** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **ToolBar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **ToolButton** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **Toolbox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **Tooltip** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **TreeView** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **UndoView** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **VideoPlayer** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **WebEngineContextMenuRequest** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **WebEngineCookieStore** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **WebEngineDownloadItem** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **WebEngineFindTextResult** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **WebEngineNotification** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **WebEnginePage** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **WebEngineScriptDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **WebEngineSettings** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **WebEngineView** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **WebEngineWebChannel** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **Window** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **Wizard** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
-| **WizardDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 |
+| Widget | Windows | Linux/X11 | macOS | Wayland | Mobile | Harmony | Embedded/Stub | C |
+| --- |--- |--- |--- |--- |--- |--- |--- |--- |
+| **Action** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **ActivityIndicator** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **AdaptiveScaffold** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **AnimatedImage** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **AppBar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Arc** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **AudioVisualizer** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **AutoCompleteEdit** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Avatar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Badge** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Banner** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **BarChart** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **BarcodeScanner** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **BezierCurveEditor** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **BottomNavigationBar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **BottomSheet** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Button** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
+| **Calendar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **CameraPreview** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Canvas** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Carousel** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Chart** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **CheckBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
+| **CheckListBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Chip** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **CollapsiblePane** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **ColorDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
+| **ColorHistory** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **ColorPicker** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **ColorWell** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **ColumnView** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **ComboBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
+| **CommandLink** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **ContextMenu** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **CupertinoAlertDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **CupertinoDatePicker** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **CupertinoNavigationBar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **CupertinoSegmentedControl** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **CupertinoSlider** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **CupertinoSwitch** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **DataView** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **DatePicker** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **DateRangePicker** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **DateTimePicker** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Dial** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Dialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **DirectoryDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Divider** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **DockPanel** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **DockWidget** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **DoubleSpinBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Dropdown** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **DropdownMenu** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **EditableComboBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **EmptyState** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **FAB** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **FileDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
+| **FindReplaceDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **FloatingLabel** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **FontComboBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **FontDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
+| **FontPreview** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Frame** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **FreeformShape** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Grid** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **GridTable** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **GroupBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **HeroAnimation** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Icon** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **ImageGallery** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **ImageView** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **ImePreedit** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **InplaceEditor** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **InputDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Keyboard** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **LCDNumber** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Label** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
+| **Line** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **LineChart** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **LineEdit** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
+| **ListBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
+| **ListView** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
+| **LottieWidget** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **MaskedEdit** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **MasonryLayout** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **MaterialNavigationRail** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **MaterialSnackbar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **MdiArea** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Menu** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
+| **MenuBar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
+| **MenuButton** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **MenuItem** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **MessageBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
+| **Meter** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **MiniCanvas** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **MiniChart** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **MobileDatePicker** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **ModalBottomSheet** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **MultiSelectComboBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **NavigationDrawer** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **NavigationStack** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **NumberPicker** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **OtpInput** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **PagerPageView** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Pagination** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Panel** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
+| **PieChart** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **PieMenu** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Popover** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **PopupWindow** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **ProgressBar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
+| **ProgressCircle** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **ProgressDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **PropertiesPanel** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **PropertyGrid** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **QRCode** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **RadioButton** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
+| **RangeSlider** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Rating** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **RefreshControl** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **RibbonBar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **RichEdit** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **RiveWidget** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Roller** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **SafeArea** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **ScrollArea** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
+| **ScrollBar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **SearchBar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **SearchBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **SegmentedButton** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **ShortcutEditor** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **SkeletonLoader** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Slider** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
+| **Sparkline** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **SpinBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
+| **Spinner** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **SplashScreen** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Splitter** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **StackedWidget** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **StatusBar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
+| **Stepper** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **SwipeToDismiss** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Switch** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **TabBar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **TabView** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **TabWidget** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Table** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **TagInput** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **TextArea** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **TextEdit** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **TileView** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **TimePicker** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Toast** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **ToggleButton** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **ToolBar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
+| **ToolButton** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Toolbox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Tooltip** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **TreeView** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **UndoView** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **VideoPlayer** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **WebEngineContextMenuRequest** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **WebEngineCookieStore** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **WebEngineDownloadItem** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **WebEngineFindTextResult** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **WebEngineNotification** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **WebEnginePage** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **WebEngineScriptDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **WebEngineSettings** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **WebEngineView** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **WebEngineWebChannel** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Window** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
+| **Wizard** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **WizardDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 
 ---
 
-Total widgets: 167 (matches 167 WidgetKind variants)
+Total widgets: 174 (matches 174 WidgetKind variants)
+
+C-ABI typed constructors: 22 of 174 kinds. The remainder are reachable through `rw_create_widget_of_kind`, which takes a factory name at run time.
 
 ---
 

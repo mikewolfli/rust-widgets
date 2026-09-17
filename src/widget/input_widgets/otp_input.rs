@@ -76,7 +76,7 @@ pub struct OtpInput {
 }
 
 impl OtpInput {
-    /// Creates an empty, unmasked control with [`DEFAULT_LENGTH`] boxes.
+    /// Creates an empty, unmasked control with the default number of boxes.
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::OtpInput, geometry, "OtpInput"),

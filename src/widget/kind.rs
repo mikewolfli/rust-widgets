@@ -527,4 +527,24 @@ pub enum WidgetKind {
     /// owns.
     #[cfg(widgets_unstripped)]
     Pagination,
+    /// ColorPicker — an inline HSVA colour picker.
+    ///
+    /// Distinct from `ColorDialog`, which is the modal window that *hosts* a
+    /// picker. Conflating the two made the accessibility role, the factory lookup
+    /// and the CSS selector all answer "dialog" for a control that is embedded in
+    /// a form.
+    #[cfg(widgets_unstripped)]
+    ColorPicker,
+    /// Toast — a single transient notification message.
+    ///
+    /// `ToastStack` is the container that queues and lays out toasts; this is one
+    /// message, which is what a `toast("saved")` call actually creates.
+    #[cfg(widgets_unstripped)]
+    Toast,
+    /// SplashScreen — the startup screen shown while an application initialises.
+    ///
+    /// Carries a logo, a title and an optional progress indicator, and is dismissed
+    /// when the application is ready rather than by user action.
+    #[cfg(widgets_unstripped)]
+    SplashScreen,
 }

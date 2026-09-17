@@ -65,7 +65,13 @@ pub struct WebViewCore {
     pub loading_progress: Signal1<u8>,
     pub title_changed: Signal1<String>,
     pub url_changed: Signal1<String>,
-    pub _error_occurred: Signal1<String>,
+    /// Emitted when a load fails, through [`WebEngine::report_error`].
+    ///
+    /// Was named `_error_occurred`, which marked it as unused while it was still a
+    /// `pub` field: a leading underscore on a public item tells readers the wrong
+    /// thing and hides the field from a search for `error_occurred`. The name is now
+    /// the one callers would look for.
+    pub error_occurred: Signal1<String>,
     pub navigation_state_changed: Signal1<(bool, bool)>,
     pub console_message: Signal1<(String, u32, String)>,
     pub content: String,
@@ -103,7 +109,7 @@ impl WebViewCore {
             loading_progress: Signal1::new(),
             title_changed: Signal1::new(),
             url_changed: Signal1::new(),
-            _error_occurred: Signal1::new(),
+            error_occurred: Signal1::new(),
             navigation_state_changed: Signal1::new(),
             console_message: Signal1::new(),
             content: String::new(),
@@ -193,9 +199,14 @@ impl WebViewCore {
             && !url.starts_with("https://")
             && !url.starts_with("file://")
         {
-            log::error!(
-                "[web] Invalid URL scheme: '{url}' — must start with http://, https://, or file://"
+            // Reported through the signal as well as the log: a log line is invisible
+            // to a caller, and a rejected navigation that produced no event left the
+            // host waiting for a load that was never going to start.
+            let message = format!(
+                "Invalid URL scheme for '{url}' \u{2014} must start with http://, https://, or file://"
             );
+            log::error!("[web] {message}");
+            self.error_occurred.emit(message);
             return;
         }
 

@@ -64,6 +64,9 @@ impl Platform for MacOSPlatform {
     fn invalidate_surface(&self, id: ObjectId) -> bool {
         self.invalidate_surface_impl(id)
     }
+    fn invalidate_surface_rect(&self, id: ObjectId, rect: crate::core::Rect) -> bool {
+        self.invalidate_surface_rect_impl(id, rect)
+    }
     fn family(&self) -> PlatformFamily {
         PlatformFamily::Desktop
     }

@@ -70,7 +70,16 @@ pub(crate) fn mount_canvas(
     area.connect_draw(move |widget, context| {
         let width = widget.allocated_width().max(1) as u32;
         let height = widget.allocated_height().max(1) as u32;
-        match crate::widget::runtime::render_frame(id, Size::new(width, height), Color::WHITE) {
+        // `render_frame_cached` rather than `render_frame`: it remembers the previous
+        // frame and repaints only the damage, so a widget in `RepaintMode::Dirty`
+        // (or `Adaptive` below its area threshold) does not re-rasterise the whole
+        // surface on every expose. The returned frame is complete either way, because
+        // `blit_rgba` presents a whole surface — the saving is in what was drawn.
+        match crate::widget::runtime::render_frame_cached(
+            id,
+            Size::new(width, height),
+            Color::WHITE,
+        ) {
             Some(frame) => {
                 blit_rgba(context, width, height, &frame);
             }
@@ -227,6 +236,43 @@ pub(crate) fn repaint_canvas(platform: &LinuxPlatform, id: ObjectId) -> bool {
         return false;
     };
     area.queue_draw();
+    true
+}
+
+/// Queues a redraw of one rectangle of a mounted canvas.
+///
+/// # Why GTK can narrow this and the caller still must check the answer
+///
+/// `queue_draw_area` takes widget-local coordinates, and this function converts from
+/// the caller's surface-local rectangle. The conversion is why this returns `false`
+/// for a rectangle that lies wholly outside the widget: GTK would accept any numbers,
+/// but a redraw request for a region that does not intersect the widget draws
+/// nothing, and reporting `true` would tell the caller its damage had been delivered
+/// when nothing was invalidated. An out-of-bounds rectangle means the caller's
+/// coordinate space and this widget's disagree, which is worth surfacing.
+pub(crate) fn repaint_canvas_rect(platform: &LinuxPlatform, id: ObjectId, rect: Rect) -> bool {
+    let native = platform.native.lock_guard();
+    let Some(area) = native.canvases.get(&id) else {
+        return false;
+    };
+
+    let allocation = area.allocation();
+    let local =
+        Rect::new(rect.x - allocation.x(), rect.y - allocation.y(), rect.width, rect.height);
+    if local.width == 0 || local.height == 0 {
+        return false;
+    }
+    // Reject a rectangle wholly outside the widget rather than queueing a redraw
+    // that cannot draw anything. `GTK` does not check this itself.
+    if local.x >= allocation.width()
+        || local.y >= allocation.height()
+        || local.x + local.width as i32 <= 0
+        || local.y + local.height as i32 <= 0
+    {
+        return false;
+    }
+
+    area.queue_draw_area(local.x, local.y, local.width as i32, local.height as i32);
     true
 }
 

@@ -360,6 +360,98 @@ impl CssParser {
         Ok(())
     }
 
+    /// Applies one declaration written as `"property: value"`.
+    ///
+    /// # Why this takes text rather than a parsed declaration
+    ///
+    /// Callers that hold a ``"background-color: #FFF"`` string — the C ABI and the
+    /// JSON path both do — should not have to construct a [`CssDeclaration`], which
+    /// would mean either exposing the struct or duplicating the `":"` split. Taking
+    /// the text keeps one parser for both.
+    ///
+    /// # Why an unparseable declaration is an error
+    ///
+    /// A string with no `":"`, or with an empty side, is rejected rather than
+    /// ignored. The stylesheet path deliberately skips such lines, because a
+    /// hand-written stylesheet may carry comments and half-finished edits; a
+    /// programmatic single-property write has no such excuse, and silently doing
+    /// nothing would leave the caller believing the style applied.
+    ///
+    /// # Why this cannot report an unknown property
+    ///
+    /// `Self::apply_one` ignores unknown properties, which is what the CSS spec
+    /// requires of a *stylesheet* — a sheet written for one renderer must load in
+    /// another that supports fewer properties. That tolerance is right for a sheet and
+    /// wrong for a single programmatic write, where the caller typed one property and
+    /// nothing else: a misspelling there is a bug, and reporting it as success hides
+    /// it. The ABI therefore checks the property name against this parser's vocabulary
+    /// before applying, using [`Self::is_known_property`].
+    pub fn apply_declaration_text(text: &str, style: &mut WidgetStyle) -> Result<(), String> {
+        let (property, value) = Self::split_declaration(text)?;
+        Self::apply_one(
+            &CssDeclaration { property: property.to_string(), value: value.to_string() },
+            style,
+        )
+    }
+
+    /// Splits `"property: value"`, rejecting the shapes that cannot be a declaration.
+    fn split_declaration(text: &str) -> Result<(&str, &str), String> {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return Err("empty style declaration".to_string());
+        }
+        let Some(index) = trimmed.find(':') else {
+            return Err(format!(
+                "style declaration {trimmed:?} has no ':' separator; expected \"property: value\""
+            ));
+        };
+        let property = trimmed[..index].trim();
+        let value = trimmed[index + 1..].trim();
+        if property.is_empty() {
+            return Err(format!("style declaration {trimmed:?} has an empty property name"));
+        }
+        if value.is_empty() {
+            return Err(format!(
+                "style declaration {trimmed:?} has an empty value for property {property:?}"
+            ));
+        }
+        Ok((property, value))
+    }
+
+    /// Whether `property` is one this parser acts on.
+    ///
+    /// # Why this is a list and not a second match
+    ///
+    /// The alternative was to make `Self::apply_one` return whether it matched, but
+    /// that would tempt a caller to treat the unknown case as an error everywhere —
+    /// including in the stylesheet path, where ignoring is correct. Naming the
+    /// vocabulary separately keeps the two policies independent, and the test
+    /// `known_property_list_matches_what_apply_one_handles` fails if this list and
+    /// `apply_one`'s arms ever disagree.
+    pub fn is_known_property(property: &str) -> bool {
+        const KNOWN: &[&str] = &[
+            "color",
+            "text-color",
+            "foreground",
+            "background",
+            "background-color",
+            "border-color",
+            "border-width",
+            "border-style",
+            "border-radius",
+            "font-size",
+            "font-weight",
+            "font-family",
+            "padding",
+            "margin",
+            "opacity",
+            "background-gradient",
+            "shadow",
+            "touch-target",
+        ];
+        KNOWN.iter().any(|known| known.eq_ignore_ascii_case(property))
+    }
+
     /// Apply a single CSS declaration to a WidgetStyle.
     fn apply_one(decl: &CssDeclaration, style: &mut WidgetStyle) -> Result<(), String> {
         match decl.property.as_str() {
@@ -1332,5 +1424,67 @@ mod tests {
         let retrieved = get_declarations(name).expect("both entries found");
         assert_eq!(retrieved[0].value, "#aaaaaa");
         assert_eq!(retrieved[1].value, "#bbbbbb");
+    }
+
+    /// `is_known_property` must accept exactly what `apply_one` acts on, and reject
+    /// everything else.
+    ///
+    /// # Why this test is the point of the two lists
+    ///
+    /// `apply_one` silently ignores an unknown property, so a name this list claims but
+    /// `apply_one` does not handle would be reported as applied while changing nothing
+    /// — the exact failure mode the list exists to prevent. Checking it by *behaviour*
+    /// rather than by reading the source means adding a property to `apply_one` without
+    /// adding it here fails here, not in a user's program.
+    #[test]
+    fn known_property_list_matches_what_apply_one_handles() {
+        // Every name the list claims must actually modify a style.
+        for property in [
+            "color",
+            "background-color",
+            "border-color",
+            "border-width",
+            "border-radius",
+            "font-size",
+            "padding",
+            "margin",
+            "opacity",
+            "background-gradient",
+            "shadow",
+            "touch-target",
+        ] {
+            assert!(CssParser::is_known_property(property), "{property} should be known");
+            let before = WidgetStyle::default();
+            let mut after = before.clone();
+            let value = match property {
+                "color" | "background-color" | "border-color" => "#123456",
+                "border-radius" | "font-size" | "opacity" => "4",
+                "padding" | "margin" | "touch-target" => "2 2",
+                "border-width" => "1",
+                "background-gradient" => "linear-gradient(90deg, #FFF, #000)",
+                "shadow" => "0 1 2 #000",
+                _ => unreachable!(),
+            };
+            CssParser::apply_declaration_text(&format!("{property}: {value}"), &mut after)
+                .unwrap_or_else(|error| panic!("{property} should parse, got: {error}"));
+            assert_ne!(
+                format!("{after:?}"),
+                format!("{before:?}"),
+                "{property} is listed as known but applying it changed nothing"
+            );
+        }
+
+        // A misspelling must be rejected rather than reported as applied.
+        assert!(!CssParser::is_known_property("backgrond-color"));
+        let mut style = WidgetStyle::default();
+        let error = CssParser::apply_declaration_text("not-a-declaration", &mut style)
+            .expect_err("a declaration with no ':' must be refused");
+        assert!(error.contains("':'"), "the error should name the missing separator: {error}");
+
+        let error = CssParser::apply_declaration_text("background-color:", &mut style)
+            .expect_err("an empty value must be refused");
+        assert!(error.contains("empty value"), "the error should say the value is empty: {error}");
+
+        assert!(CssParser::apply_declaration_text("  ", &mut style).is_err());
     }
 }

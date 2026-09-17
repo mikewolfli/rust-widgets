@@ -376,9 +376,10 @@ extern "C" fn draw_rect(this: &Object, _cmd: Sel, rect: NSRect) {
                 log::error!("[macos] canvas: drawRect: on a view with no associated widget id");
                 return;
             };
-            let width = rect.size.width.round().max(1.0) as u32;
-            let height = rect.size.height.round().max(1.0) as u32;
-            let Some(frame) = crate::widget::runtime::render_frame(
+            let bounds: NSRect = msg_send![view, bounds];
+            let width = bounds.size.width.round().max(1.0) as u32;
+            let height = bounds.size.height.round().max(1.0) as u32;
+            let Some(frame) = crate::widget::runtime::render_frame_cached(
                 widget_id,
                 Size::new(width, height),
                 Color::WHITE,
@@ -593,6 +594,58 @@ impl MacOSPlatform {
         // setNeedsDisplay: is a valid NSView selector.
         unsafe {
             let _: () = msg_send![view, setNeedsDisplay: YES];
+        }
+        true
+    }
+
+    /// Marks one rectangle of the canvas view as needing display.
+    ///
+    /// # Why AppKit can narrow this
+    ///
+    /// `setNeedsDisplayInRect:` exists on `NSView` and takes a rectangle in the view's
+    /// own coordinate space, which for a non-flipped view has its origin at the
+    /// bottom-left. The caller's rectangle is in the library's top-down space, so the
+    /// y coordinate is mirrored here — passing it through unchanged would invalidate a
+    /// band the same distance from the *other* edge.
+    ///
+    /// Returns `false` off the main thread, for an unknown id, or for an empty
+    /// rectangle, so the caller falls back to invalidating the whole view.
+    pub(crate) fn invalidate_surface_rect_impl(&self, id: ObjectId, rect: Rect) -> bool {
+        let Some(view) = view_for(id) else {
+            return false;
+        };
+        if !macos_types::is_main_thread() {
+            log::error!("[macos] invalidate_surface_rect: refused off the AppKit main thread");
+            return false;
+        }
+        if rect.width == 0 || rect.height == 0 {
+            return false;
+        }
+
+        // SAFETY: `view` came from the side table populated by mount_surface_impl.
+        // `bounds` and `isFlipped` are valid NSView getters; the former returns an
+        // `NSRect`, which cocoa's binding represents as the same four CGFloats AppKit
+        // uses.
+        let (bounds_height, view_is_flipped) = unsafe {
+            let bounds: NSRect = msg_send![view, bounds];
+            let flipped: cocoa::base::BOOL = msg_send![view, isFlipped];
+            (bounds.size.height, flipped != cocoa::base::NO)
+        };
+
+        let y = if view_is_flipped {
+            rect.y as f64
+        } else {
+            bounds_height - (rect.y as f64 + rect.height as f64)
+        };
+
+        let target = NSRect::new(
+            NSPoint::new(rect.x as f64, y),
+            NSSize::new(rect.width as f64, rect.height as f64),
+        );
+        // SAFETY: `target` is a valid NSRect for the duration of the call, and
+        // setNeedsDisplayInRect: is a valid NSView selector taking one NSRect by value.
+        unsafe {
+            let _: () = msg_send![view, setNeedsDisplayInRect: target];
         }
         true
     }

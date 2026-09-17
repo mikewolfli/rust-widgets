@@ -161,10 +161,14 @@ pub use input_widgets::{
     keyboard::Keyboard,
     lineedit::{EchoMode, LineEdit},
     listbox::{ListBox, SelectionMode},
-    number_picker::NumberPicker,
     spinbox::SpinBox,
     textarea::TextArea,
 };
+// `NumberPicker` needs the full property registry (it publishes a contract and is
+// constructed by the factory), so a stripped profile compiles it out. The export
+// carries the same gate as the module, not the looser `full_widgets` one.
+#[cfg(widgets_unstripped)]
+pub use input_widgets::number_picker::NumberPicker;
 // Re-export container widgets
 #[cfg(widgets_unstripped)]
 pub use container_widgets::collapsible_pane::CollapsiblePane;
@@ -293,6 +297,8 @@ pub use overlay_widgets::banner::Banner;
 pub use overlay_widgets::fab::FAB;
 #[cfg(full_widgets)]
 pub use overlay_widgets::refresh_control::RefreshControl;
+#[cfg(full_widgets)]
+pub use overlay_widgets::splash_screen::SplashScreen;
 /// Alias for [`RefreshControl`], naming it after the gesture it implements.
 #[cfg(full_widgets)]
 pub type PullToRefresh = RefreshControl;
@@ -410,7 +416,7 @@ pub use special_widgets::{
     FreeformShapeWidget, GanttTask, GanttWidget, GridWidget, MapMarker, MapView, MarkdownEditor,
     MarkerSeverity, MediaPlayer, NotificationCenter, NotificationItem, NotificationLevel,
     SegmentItem, SegmentedControl, Snackbar, SplitAction, SplitButton, TerminalView, TimelineItem,
-    TimelineWidget, ToastItem, ToastLevel, ToastStack,
+    TimelineWidget, Toast, ToastItem, ToastLevel, ToastStack,
 };
 /// Alias for [`ProgressBar`], naming an indicator use case.
 /// This is a plain progress bar: it does not animate on its own.

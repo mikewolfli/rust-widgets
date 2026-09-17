@@ -433,6 +433,31 @@ pub trait Platform: Send + Sync {
         false
     }
 
+    /// Marks a *rectangle* of a mounted surface as needing a repaint.
+    ///
+    /// # Why this is a separate method rather than a parameter
+    ///
+    /// `invalidate_surface` is implemented by every backend and is the one path every
+    /// host goes through; changing its signature would touch ten backends for a
+    /// capability most of them cannot express. A window toolkit that only offers
+    /// "this control is dirty" (no sub-rectangle) is not broken by this method
+    /// existing — it simply does not override it.
+    ///
+    /// # Return value
+    ///
+    /// `true` when the backend narrowed the repaint to `rect`.
+    ///
+    /// `false` — **including the default** — means "I could not narrow it", and the
+    /// caller must then fall back to [`Self::invalidate_surface`], which repaints the
+    /// whole control. Returning `false` rather than repainting inside this method is
+    /// deliberate: a caller that ignored the answer would still get a correct frame,
+    /// because the fallback is the call it already had. A backend that silently did
+    /// nothing here would produce a stale surface instead, which is a much worse bug
+    /// than an unused optimisation.
+    fn invalidate_surface_rect(&self, _id: ObjectId, _rect: crate::core::Rect) -> bool {
+        false
+    }
+
     /// Returns `true` when this backend can host library-painted widgets.
     ///
     /// Backends report `true` only once [`Platform::mount_surface`] is

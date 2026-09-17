@@ -109,6 +109,31 @@ impl SoftwarePaintBackend {
     pub fn render_config(&self) -> SoftwareRenderConfig {
         self.surface.render_config()
     }
+
+    /// Seeds the back buffer with a previously rendered frame.
+    ///
+    /// # Why this is needed for partial repaint
+    ///
+    /// `begin_frame` clears — that is what a full-frame render wants. A partial
+    /// repaint must instead start from the previous frame and overwrite only the
+    /// damaged pixels, so it needs a way to load that frame without clearing. This is
+    /// that way.
+    ///
+    /// # Why the length is checked rather than trusted
+    ///
+    /// A caller can hand in a frame rendered at a different size — the widget was
+    /// resized between frames, or the buffer came from somewhere else. Copying a
+    /// short buffer would leave the tail of the surface holding whatever the clear
+    /// left, so a mismatch is reported instead of silently producing a frame that is
+    /// half stale. Returns `false` and leaves the surface untouched.
+    pub fn seed_from(&mut self, frame: &[u8]) -> bool {
+        let target = &mut self.surface.buffer.back;
+        if frame.len() != target.len() {
+            return false;
+        }
+        target.copy_from_slice(frame);
+        true
+    }
 }
 impl PaintBackend for SoftwarePaintBackend {
     fn begin_frame(&mut self, clear: Color) {

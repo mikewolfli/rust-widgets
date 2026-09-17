@@ -993,6 +993,90 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(alloc_frugal))]
+        fn create_number_picker(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::NumberPicker, parent, "", x, y, width, height)
+        }
+
+        #[cfg(not(alloc_frugal))]
+        fn create_otp_input(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::OtpInput, parent, "", x, y, width, height)
+        }
+
+        #[cfg(not(alloc_frugal))]
+        fn create_pagination(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::Pagination, parent, "", x, y, width, height)
+        }
+
+        #[cfg(not(alloc_frugal))]
+        fn create_banner(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::Banner, parent, "", x, y, width, height)
+        }
+
+        #[cfg(not(alloc_frugal))]
+        fn create_color_picker(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::ColorPicker, parent, "", x, y, width, height)
+        }
+
+        #[cfg(not(alloc_frugal))]
+        fn create_toast(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::Toast, parent, "", x, y, width, height)
+        }
+
+        #[cfg(not(alloc_frugal))]
+        fn create_splash_screen(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::SplashScreen, parent, "", x, y, width, height)
+        }
+
+        #[cfg(not(alloc_frugal))]
         fn create_sparkline(
             &self,
             parent: ObjectId,

@@ -35,7 +35,7 @@ impl ColorPicker {
     /// Creates a color picker.
     pub fn new(geometry: Rect) -> Self {
         let mut picker = Self {
-            base: BaseWidget::new(WidgetKind::ColorDialog, geometry, "ColorPicker"),
+            base: BaseWidget::new(WidgetKind::ColorPicker, geometry, "ColorPicker"),
             color: Color::rgb(255, 0, 0),
             hue: 0,
             saturation: 255,
@@ -226,6 +226,11 @@ impl Widget for ColorPicker {
 /// contract belongs here, next to the fields it reads. Read/write semantics are
 /// carried over unchanged from `access_read_dialog.in.rs` /
 /// `access_write_dialog.in.rs`.
+///
+/// Since BLUE16 phase E-6 the control declares `WidgetKind::ColorPicker` instead,
+/// so it no longer shares the dialog's kind. The history above is kept because the
+/// contract was written under the old key and the semantics still come from there;
+/// what changed is *which kind answers*, not what the properties mean.
 impl WidgetProperties for ColorPicker {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {

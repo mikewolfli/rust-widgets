@@ -212,10 +212,20 @@ impl InputDialog {
         self.base.request_redraw();
     }
     /// Sets the free-text value and repaints. Overwrites rather than appends, so
-    /// it cannot be used for incremental typing; it emits no change signal.
+    /// it cannot be used for incremental typing.
+    ///
+    /// Emits [`Self::text_value_changed`] when the value actually differs. The
+    /// signal is named `_changed`, so emitting on a no-op write would be a lie: a
+    /// caller using it to drive an expensive downstream update would run that
+    /// update for a write that changed nothing.
     pub fn set_text_value(&mut self, v: impl Into<String>) {
-        self.text_value = v.into();
+        let value = v.into();
+        if value == self.text_value {
+            return;
+        }
+        self.text_value = value;
         self.base.request_redraw();
+        self.text_value_changed.emit(self.text_value.clone());
     }
     /// Replaces the item list and repaints.
     ///
@@ -228,15 +238,38 @@ impl InputDialog {
     }
     /// Sets the whole-number value, clamped into the current
     /// `int_min`/`int_max` range, and repaints.
+    ///
+    /// Emits [`Self::int_value_changed`] when the *stored* value changes, so a
+    /// request that was clamped back to what was already there is not reported as
+    /// a change.
     pub fn set_int_value(&mut self, v: i64) {
-        self.int_value = v.clamp(self.int_min, self.int_max);
+        let clamped = v.clamp(self.int_min, self.int_max);
+        if clamped == self.int_value {
+            return;
+        }
+        self.int_value = clamped;
         self.base.request_redraw();
+        self.int_value_changed.emit(self.int_value);
     }
+
     /// Sets the floating-point value, clamped into the current
     /// `double_min`/`double_max` range, and repaints.
+    ///
+    /// A `NaN` is rejected without touching the stored value: it cannot be clamped
+    /// into a range (every comparison is false), so accepting it would leave the
+    /// control outside its own declared bounds. Emits
+    /// [`Self::double_value_changed`] on a real change.
     pub fn set_double_value(&mut self, v: f64) {
-        self.double_value = v.clamp(self.double_min, self.double_max);
+        if v.is_nan() {
+            return;
+        }
+        let clamped = v.clamp(self.double_min, self.double_max);
+        if clamped == self.double_value {
+            return;
+        }
+        self.double_value = clamped;
         self.base.request_redraw();
+        self.double_value_changed.emit(self.double_value);
     }
     /// Whether the dialog blocks interaction with its owner while open.
     ///

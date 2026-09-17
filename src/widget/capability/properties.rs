@@ -483,13 +483,40 @@ pub(crate) fn ribbon_bar_capability() -> WidgetCapability {
 #[cfg(not(alloc_frugal))]
 pub(crate) fn color_picker_capability() -> WidgetCapability {
     WidgetCapability {
-        kind: WidgetKind::ColorDialog,
+        // `ColorPicker`, not `ColorDialog`: since BLUE16 phase E-6 the inline picker
+        // declares its own kind instead of borrowing the dialog's. Before that, the
+        // factory lookup, the accessibility role and the CSS selector all answered
+        // "dialog" for a control with no window.
+        kind: WidgetKind::ColorPicker,
         canonical_name: "color_picker",
-        // `color_dialog` is the `WidgetKind::ColorDialog` spelling. The kind is
-        // deliberately not a separate registration — it names this same control —
-        // so the alias is what makes the kind reachable by its own name.
-        aliases: &["colorpicker", "color_dialog"],
+        aliases: &["colorpicker"],
         properties: COLOR_PICKER_PROPERTIES,
+        events: &["color_changed", "hex_changed"],
+        commands: &["set_hex", "apply_preset"],
+    }
+}
+
+/// The modal colour dialog — a window that *hosts* a picker.
+///
+/// # Why this is separate from `color_picker`
+///
+/// `ColorDialog` is a `WidgetKind` of its own (it has a window, a title, and
+/// accept/reject) and `ColorPicker` is the inline control inside it. Before phase
+/// E-6 one capability served both, which is why `color_dialog` was an *alias* of
+/// `color_picker` — and why the dialog's kind had no canonical name of its own.
+/// Splitting the picker onto its own kind therefore requires the dialog to get a
+/// registration too, or `kind_factory_name(ColorDialog)` resolves to nothing and
+/// `create_color_dialog` returns 0.
+///
+/// `color_dialog` is no longer an alias of the picker, so the two names now address
+/// two different controls rather than one control under two names.
+#[cfg(not(alloc_frugal))]
+pub(crate) fn color_dialog_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::ColorDialog,
+        canonical_name: "color_dialog",
+        aliases: &["colour_dialog"],
+        properties: COLOR_DIALOG_PROPERTIES,
         events: &["color_changed", "hex_changed"],
         commands: &["set_hex", "apply_preset"],
     }
@@ -695,6 +722,33 @@ pub(crate) fn banner_capability() -> WidgetCapability {
         properties: BANNER_PROPERTIES,
         events: &["action_clicked", "dismissed"],
         commands: &["dismiss", "show", "set_actions", "activate_action"],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn toast_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Toast,
+        canonical_name: "toast",
+        aliases: &["notification", "toast_message"],
+        properties: TOAST_PROPERTIES,
+        events: &["dismissed"],
+        commands: &["dismiss", "set_message", "set_level"],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn splash_screen_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::SplashScreen,
+        canonical_name: "splash_screen",
+        aliases: &["splash"],
+        properties: SPLASH_SCREEN_PROPERTIES,
+        // Dismissal is by the program, so the events are lifecycle rather than
+        // interaction: `finished` when initialisation completes, `skipped` when the
+        // user takes the optional skip affordance.
+        events: &["finished", "skipped"],
+        commands: &["finish", "set_progress", "set_title"],
     }
 }
 

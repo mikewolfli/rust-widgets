@@ -132,6 +132,15 @@ impl Platform for LinuxPlatform {
     fn invalidate_surface(&self, id: crate::core::ObjectId) -> bool {
         super::canvas::repaint_canvas(self, id)
     }
+    /// Queue a redraw of one rectangle of the canvas's `DrawingArea`.
+    ///
+    /// Gated exactly like [`Self::invalidate_surface`]: without `gtk-native` there are
+    /// no canvases to invalidate, so the trait default (`false`) is the honest answer
+    /// and the caller falls back to a whole-surface repaint.
+    #[cfg(all(target_os = "linux", feature = "gtk-native", widgets_unstripped))]
+    fn invalidate_surface_rect(&self, id: crate::core::ObjectId, rect: crate::core::Rect) -> bool {
+        super::canvas::repaint_canvas_rect(self, id, rect)
+    }
     fn init(&self) {
         self.runtime.initialized.store(true, Ordering::SeqCst);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]

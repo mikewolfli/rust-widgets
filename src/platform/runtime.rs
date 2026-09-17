@@ -9,6 +9,13 @@
 
 #[cfg(not(alloc_frugal))]
 use crate::compat::OnceLock;
+// `lock_guard` is an extension trait, so it has to be in scope for the recorder's
+// `Mutex` to be usable without an `unwrap` on every call. Gated with the recorder:
+// the alloc-frugal profile compiles no recorder, so the trait would be unused there.
+#[cfg(not(alloc_frugal))]
+use crate::core::MutexExt as _;
+// The recorder implements `Platform`, so the trait must be nameable here. Gated with
+// the recorder itself: `mini` compiles this module but not the desktop backend set.
 #[cfg(all(target_os = "android", not(alloc_frugal), not(embedded_surface)))]
 use crate::platform::android::AndroidPlatform;
 #[cfg(all(
@@ -59,6 +66,8 @@ use crate::platform::wayland::WaylandPlatform;
     not(feature = "harmony")
 ))]
 use crate::platform::windows::WindowsPlatform;
+#[cfg(not(alloc_frugal))]
+use crate::platform::Platform;
 
 // ---------------------------------------------------------------------------
 // Linux runtime auto-detection: Wayland vs X11/GTK
@@ -250,9 +259,164 @@ fn create_native_platform() -> Box<dyn Platform> {
 static PLATFORM: OnceLock<Box<dyn Platform>> = OnceLock::new();
 
 /// Returns the process-global platform backend instance.
+///
+/// A thread-local override installed by [`with_recorded_invalidations`] takes
+/// precedence, so a test can observe what the runtime asked a backend to do without
+/// swapping the process-global singleton.
 #[cfg(not(alloc_frugal))]
 pub fn get_platform() -> &'static dyn Platform {
+    if let Some(overridden) = PLATFORM_OVERRIDE.try_with(|slot| *slot.borrow()).ok().flatten() {
+        return overridden;
+    }
     PLATFORM.get_or_init(create_native_platform).as_ref()
+}
+
+/// A platform override that records what it was asked to invalidate.
+///
+/// # Why this exists
+///
+/// Whether the damage tracker actually *told the platform* about a region is the whole
+/// question the partial-repaint wiring has to answer, and it is invisible from outside:
+/// the tracker's state says what was recorded, not what the backend was asked to do.
+/// The process-global platform is a `OnceLock`, so it cannot be swapped out per test,
+/// and a test that reached the real backend would either do nothing (no window) or
+/// touch a display.
+///
+/// So the override is thread-local and consulted by [`get_platform`] before the
+/// singleton. It is `#[cfg(test)]` in effect — the type is public because the runtime
+/// tests live in a different module, but nothing outside tests installs one.
+///
+/// Gated with the trait it implements: the alloc-frugal profile has no `Platform` to
+/// implement, and no invalidation path to record.
+#[cfg(not(alloc_frugal))]
+pub struct RecordingInvalidations {
+    calls:
+        crate::compat::Mutex<alloc::vec::Vec<(crate::core::ObjectId, Option<crate::core::Rect>)>>,
+    /// Whether to claim the narrowed repaint succeeded.
+    ///
+    /// `true` models a backend that can narrow (`GTK`'s `queue_draw_area`); `false`
+    /// models one that cannot, which must drive the caller's fallback.
+    narrows: core::sync::atomic::AtomicBool,
+}
+
+#[cfg(not(alloc_frugal))]
+impl RecordingInvalidations {
+    /// A recorder that accepts narrowed repaints.
+    pub fn new() -> Self {
+        Self {
+            calls: crate::compat::Mutex::new(alloc::vec::Vec::new()),
+            narrows: core::sync::atomic::AtomicBool::new(true),
+        }
+    }
+
+    /// A recorder that refuses narrowed repaints, modelling a backend without them.
+    pub fn refusing_narrowing() -> Self {
+        Self {
+            calls: crate::compat::Mutex::new(alloc::vec::Vec::new()),
+            narrows: core::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// What the backend was asked to invalidate, in order.
+    ///
+    /// An entry with `Some(rect)` is a narrowed repaint; `None` is a whole-surface
+    /// one. Recording both in one list is what lets a test distinguish "narrowed" from
+    /// "fell back".
+    pub fn calls(&self) -> alloc::vec::Vec<(crate::core::ObjectId, Option<crate::core::Rect>)> {
+        self.calls.lock_guard().clone()
+    }
+
+    /// Forgets every recorded call.
+    pub fn clear(&self) {
+        self.calls.lock_guard().clear();
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+impl Default for RecordingInvalidations {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+impl Platform for RecordingInvalidations {
+    fn backend_name(&self) -> &'static str {
+        "recording-test-backend"
+    }
+
+    fn family(&self) -> crate::core::PlatformFamily {
+        crate::core::PlatformFamily::Desktop
+    }
+
+    fn init(&self) {}
+
+    fn run(&self) {}
+
+    fn quit(&self) {}
+
+    fn create_window(
+        &self,
+        _title: &str,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> crate::core::ObjectId {
+        0
+    }
+
+    fn invalidate_surface(&self, id: crate::core::ObjectId) -> bool {
+        self.calls.lock_guard().push((id, None));
+        true
+    }
+
+    fn invalidate_surface_rect(&self, id: crate::core::ObjectId, rect: crate::core::Rect) -> bool {
+        if !self.narrows.load(core::sync::atomic::Ordering::SeqCst) {
+            // The contract: `false` means "I did not narrow it", and the caller falls
+            // back. Recording nothing is deliberate — a backend that claims to fail
+            // must not also have queued a repaint.
+            return false;
+        }
+        self.calls.lock_guard().push((id, Some(rect)));
+        true
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+thread_local! {
+    /// Per-thread platform override installed by [`with_recorded_invalidations`].
+    #[allow(clippy::missing_const_for_thread_local)]
+    static PLATFORM_OVERRIDE: core::cell::RefCell<Option<&'static dyn Platform>> =
+        core::cell::RefCell::new(None);
+}
+
+/// Runs `f` with `recorder` as the active platform.
+///
+/// Restores the previous override even when `f` panics, so a failing test cannot leak
+/// its recorder into whatever runs next on the same thread.
+#[cfg(not(alloc_frugal))]
+pub fn with_recorded_invalidations<R>(
+    recorder: &'static RecordingInvalidations,
+    f: impl FnOnce() -> R,
+) -> R {
+    struct Restore(Option<&'static dyn Platform>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let previous = self.0;
+            let _ = PLATFORM_OVERRIDE.try_with(|slot| *slot.borrow_mut() = previous);
+        }
+    }
+
+    let previous = PLATFORM_OVERRIDE
+        .try_with(|slot| {
+            let previous = *slot.borrow();
+            *slot.borrow_mut() = Some(recorder);
+            previous
+        })
+        .unwrap_or(None);
+    let _restore = Restore(previous);
+    f()
 }
 
 /// Initializes the platform backend.

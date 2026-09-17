@@ -292,6 +292,16 @@ pub fn create_color_picker(geometry: Rect, text: &str) -> Box<dyn Widget> {
 }
 
 #[cfg(full_widgets)]
+/// Creates a modal colour dialog. `text` is applied as the control's label.
+///
+/// Distinct from [`create_color_picker`]: the dialog is the window that hosts a
+/// picker and carries accept/reject, so it is a different control rather than a
+/// differently-named picker.
+pub fn create_color_dialog(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(ColorDialog::new(geometry)))
+}
+
+#[cfg(full_widgets)]
 /// Creates a code editor with no document loaded. `text` becomes the editor's
 /// initial contents.
 pub fn create_code_editor(geometry: Rect, text: &str) -> Box<dyn Widget> {
@@ -449,6 +459,18 @@ pub fn create_banner(geometry: Rect, text: &str) -> Box<dyn Widget> {
 /// label.
 pub fn create_pagination(geometry: Rect, text: &str) -> Box<dyn Widget> {
     label(geometry, text, Box::new(Pagination::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates a single toast showing `text` at informational level.
+pub fn create_toast(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(Toast::new(geometry, text)))
+}
+
+#[cfg(full_widgets)]
+/// Creates a splash screen titled `text` with indeterminate progress.
+pub fn create_splash_screen(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(SplashScreen::new(geometry, text)))
 }
 
 #[cfg(full_widgets)]

@@ -132,6 +132,13 @@ impl JsonLoader {
             let layout_parent = parent_id
                 .ok_or_else(|| format!("'{widget_type}' layout must be a child of a widget"))?;
 
+            // Stored *before* the children are instantiated, because registering a
+            // child needs the layout to exist (`add_widget_to_layout` is a no-op
+            // otherwise). Storing it afterwards — which this code used to do — left the
+            // layout empty, so `apply_layout` computed an arrangement for no children
+            // and no widget ever moved.
+            store_layout(layout_parent, layout);
+
             // Process children
             if let Some(children) = obj.get("children").and_then(|v| v.as_array()) {
                 for child_value in children {
@@ -157,19 +164,20 @@ impl JsonLoader {
 
                             if child_id != 0 {
                                 let attrs = ChildLayoutAttrs::from_value(child_val);
-                                add_widget_to_layout(
-                                    layout.as_ref(),
-                                    child_id,
-                                    attrs.stretch,
-                                    layout_parent,
-                                );
+                                // The layout must already be stored for this to reach
+                                // it: `add_widget_to_layout` is a no-op when the parent
+                                // has none. `store_layout` used to run *after* this
+                                // loop, so every child was added to nothing and the
+                                // layout was empty when it was applied — which is why
+                                // a declarative layout could compute geometries that no
+                                // widget ever received.
+                                add_widget_to_layout(child_id, attrs.stretch, layout_parent);
                             }
                         }
                     }
                 }
             }
 
-            store_layout(layout_parent, layout);
             apply_layout(layout_parent, json_geometry(obj));
             return Ok(layout_parent);
         }
@@ -359,6 +367,11 @@ impl JsonLoader {
             let kind = parse_layout_kind(layout_val)?;
             let layout = create_layout_from_kind(&kind);
 
+            // Stored before the children below are registered, for the same reason as
+            // the `"layout"` pseudo-widget branch: a child added before the layout
+            // exists is added to nothing.
+            store_layout(widget_id, layout);
+
             // Process layout children from the layout object
             if let Some(layout_obj) = layout_val.as_object() {
                 if let Some(children) = layout_obj.get("children").and_then(|v| v.as_array()) {
@@ -387,12 +400,11 @@ impl JsonLoader {
 
                                 if child_id != 0 {
                                     let attrs = ChildLayoutAttrs::from_value(child_val);
-                                    add_widget_to_layout(
-                                        layout.as_ref(),
-                                        child_id,
-                                        attrs.stretch,
-                                        widget_id,
-                                    );
+                                    // See the note on the other `add_widget_to_layout`
+                                    // call: the layout has to be stored before its
+                                    // children are registered, or they are added to
+                                    // nothing.
+                                    add_widget_to_layout(child_id, attrs.stretch, widget_id);
                                 }
                             }
                         }
@@ -400,7 +412,6 @@ impl JsonLoader {
                 }
             }
 
-            store_layout(widget_id, layout);
             apply_layout(widget_id, json_geometry(obj));
         }
 
@@ -1329,6 +1340,12 @@ fn infer_kind(widget_type: &str) -> WidgetKind {
         "meter" => WidgetKind::Meter,
         "minicanvas" => WidgetKind::MiniCanvas,
         "minichart" => WidgetKind::MiniChart,
+        #[cfg(not(alloc_frugal))]
+        "colorpicker" => WidgetKind::ColorPicker,
+        #[cfg(not(alloc_frugal))]
+        "toast" => WidgetKind::Toast,
+        #[cfg(not(alloc_frugal))]
+        "splashscreen" => WidgetKind::SplashScreen,
         "panel" => WidgetKind::Panel,
         "progressbar" => WidgetKind::ProgressBar,
         "radiobutton" => WidgetKind::RadioButton,
@@ -1471,6 +1488,115 @@ mod tests {
         assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
         let layout = result.unwrap();
         assert!(layout.id("btn").is_some());
+    }
+
+    /// A declarative layout must actually *arrange* its children, not merely parse.
+    ///
+    /// # Why this test exists
+    ///
+    /// `store_layout` used to run after the child loop, so every child was registered
+    /// against a layout that did not exist yet (`add_widget_to_layout` is a no-op in
+    /// that case). The array parsed, the layout was built, `apply_layout` ran and
+    /// returned nothing, and two children stayed at their declared overlapping
+    /// positions — with no error anywhere. Every existing test passed, because they all
+    /// asserted that loading succeeded rather than where the widgets ended up.
+    ///
+    /// # Why this asserts the applied geometries
+    ///
+    /// An earlier version of this test read `preview_layout` and passed even with the
+    /// old ordering restored, because the layout still ended up stored — just too late
+    /// to hear about its children, and therefore empty. `preview_layout` on an empty
+    /// layout answers with an empty list, which is what `apply_layout` returned too,
+    /// so the assertion has to be on the geometry the layout *computed for the children
+    /// it was given*: two entries, stacked.
+    #[test]
+    fn a_vbox_layout_positions_its_children_below_one_another() {
+        let json = r#"{"window": {"id": "w", "title": "W", "width": 400, "height": 300,
+            "layout": {"type": "vbox", "spacing": 4, "children": [
+                {"label": {"id": "first", "text": "one", "width": 100, "height": 20}},
+                {"label": {"id": "second", "text": "two", "width": 100, "height": 20}}
+            ]}}}"#;
+        let loaded = JsonLoader::load(json).expect("the document must load");
+        let window = loaded.id("w").expect("the window");
+        let first = loaded.id("first").expect("the first label");
+        let second = loaded.id("second").expect("the second label");
+
+        let geometries =
+            crate::layout::declarative::preview_layout(window, Rect::new(0, 0, 400, 300));
+        assert_eq!(
+            geometries.len(),
+            2,
+            "both children must reach the layout; an empty list means they were added \
+             before it existed"
+        );
+
+        let rect_of = |id| {
+            geometries
+                .iter()
+                .find(|(child, _)| *child == id)
+                .map(|(_, rect)| *rect)
+                .unwrap_or_else(|| panic!("child {id} was never laid out"))
+        };
+        let first_rect = rect_of(first);
+        let second_rect = rect_of(second);
+
+        assert!(
+            second_rect.y > first_rect.y,
+            "a vbox must stack its children: first at {first_rect:?}, second at {second_rect:?}"
+        );
+        assert_eq!(
+            first_rect.x, second_rect.x,
+            "a vbox keeps one column: {first_rect:?} vs {second_rect:?}"
+        );
+
+        crate::layout::declarative::forget_layout(window);
+    }
+
+    /// The sibling of the above for `hbox`: side by side, same row.
+    ///
+    /// A single orientation test could pass with the axes swapped, so both directions
+    /// are pinned.
+    #[test]
+    fn an_hbox_layout_positions_its_children_side_by_side() {
+        let json = r#"{"window": {"id": "w", "title": "W", "width": 400, "height": 300,
+            "layout": {"type": "hbox", "spacing": 4, "children": [
+                {"label": {"id": "left", "text": "L", "width": 60, "height": 20}},
+                {"label": {"id": "right", "text": "R", "width": 60, "height": 20}}
+            ]}}}"#;
+        let loaded = JsonLoader::load(json).expect("the document must load");
+        let window = loaded.id("w").expect("the window");
+        let left = loaded.id("left").expect("the left label");
+        let right = loaded.id("right").expect("the right label");
+
+        let geometries =
+            crate::layout::declarative::preview_layout(window, Rect::new(0, 0, 400, 100));
+        assert_eq!(
+            geometries.len(),
+            2,
+            "both children must reach the layout; an empty list means they were added \
+             before it existed"
+        );
+
+        let rect_of = |id| {
+            geometries
+                .iter()
+                .find(|(child, _)| *child == id)
+                .map(|(_, rect)| *rect)
+                .unwrap_or_else(|| panic!("child {id} was never laid out"))
+        };
+        let left_rect = rect_of(left);
+        let right_rect = rect_of(right);
+
+        assert!(
+            right_rect.x > left_rect.x,
+            "an hbox must place children left to right: {left_rect:?} then {right_rect:?}"
+        );
+        assert_eq!(
+            left_rect.y, right_rect.y,
+            "an hbox keeps one row: {left_rect:?} vs {right_rect:?}"
+        );
+
+        crate::layout::declarative::forget_layout(window);
     }
 
     #[test]

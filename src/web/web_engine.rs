@@ -30,11 +30,10 @@ use crate::widget::{Widget, WidgetKind};
 pub struct WebEngineViewEnhanced {
     core: WebViewCore,
     /// Emitted when the engine rejects a site certificate, carrying the
-    /// description of the failure. Nothing in this widget emits it yet; it exists
-    /// for backends that surface a certificate callback.
+    /// description of the failure, through [`Self::report_certificate_error`].
     pub certificate_error: Signal1<String>,
-    /// Emitted when a navigation asks to download rather than to display,
-    /// carrying the URL of the download. Nothing in this widget emits it yet.
+    /// Emitted when a navigation asks to download rather than to display, carrying
+    /// the URL of the download, through [`Self::request_download`].
     pub download_requested: Signal1<String>,
     /// Real engine when the backend provides one, `None` for the simulated path.
     webkit_backend: Option<Box<dyn NativeWebEngine>>,
@@ -124,6 +123,26 @@ impl WebEngineViewEnhanced {
     /// This view's cookie jar, mutably.
     pub fn cookies_mut(&mut self) -> &mut super::privacy::CookieJar {
         self.core.cookies_mut()
+    }
+
+    /// Reports a certificate rejection, emitting [`Self::certificate_error`].
+    ///
+    /// Called by a backend that surfaces a certificate callback, or by a host whose
+    /// real engine reports through a channel of its own. This widget cannot detect
+    /// one itself: it holds no TLS stack, and inventing a failure would report it at
+    /// a moment unrelated to anything the user did.
+    pub fn report_certificate_error(&mut self, message: impl Into<String>) {
+        self.certificate_error.emit(message.into());
+    }
+
+    /// Reports that a navigation wants to download rather than display, emitting
+    /// [`Self::download_requested`] with the URL.
+    ///
+    /// Nothing is fetched or written. The signal is the whole feature at this layer:
+    /// deciding where a download lands, and whether to allow it at all, belongs to
+    /// the host.
+    pub fn request_download(&mut self, url: impl Into<String>) {
+        self.download_requested.emit(url.into());
     }
     /// The tracking-protection state, including the blocked-request count.
     pub fn privacy(&self) -> &super::privacy::TrackingProtection {

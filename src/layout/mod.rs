@@ -18,6 +18,10 @@ pub mod box_layout;
 pub mod center;
 /// Min/max size limits and expansion weights attached to layout items.
 pub mod constraint;
+/// Runtime storage and application for declarative layouts, shared by the JSON
+/// loader and the C ABI. See the module docs for why it is separate from the
+/// `serde_json`-facing translation in `json::layout`.
+pub mod declarative;
 /// CSS-Flexbox-style layout combining direction, wrap, and flex factors.
 pub mod flex;
 /// Wraps children into rows or columns, moving to the next line when full.

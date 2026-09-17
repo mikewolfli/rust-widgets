@@ -1,14 +1,23 @@
 #ifndef RW_GENERATED_H
 #define RW_GENERATED_H
 
+/* Auto-generated from src/bindings/binding_impl.rs. Do not edit. */
+
 #include <stdbool.h>
 #include <stdint.h>
+
+/*
+ * `ObjectId` is the handle type every creation and query function speaks.
+ * It is a typedef rather than a bare `uint64_t` because the cookbook's C
+ * examples use the name, and a header that omits it makes every one of them
+ * fail to compile for a reader who copies them.
+ */
+typedef uint64_t ObjectId;
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* Auto-generated from src/bindings/binding_impl.rs */
 bool rw_attach_menu_bar_to_window(uint64_t window, uint64_t menu_bar);
 const char* rw_backend_name(void);
 bool rw_begin_drag(uint64_t source, const char* mime_type, const uint8_t* payload, unsigned int payload_len);
@@ -121,7 +130,20 @@ void rw_show_widget(uint64_t widget_id);
 uint64_t rw_submit_embedded_noop_task(const char* label);
 unsigned int rw_theme_names(char* out, unsigned int cap);
 unsigned int rw_widget_kind_names(char* out, unsigned int cap);
+bool rw_widget_layout_add(uint64_t parent, uint64_t child, unsigned int stretch);
+bool rw_widget_layout_add_spacer(uint64_t parent, unsigned int stretch);
+unsigned int rw_widget_layout_apply(uint64_t parent, int x, int y, unsigned int width, unsigned int height);
+unsigned int rw_widget_layout_child_count(uint64_t parent);
+bool rw_widget_layout_clear(uint64_t parent);
+bool rw_widget_layout_remove(uint64_t parent, uint64_t child);
+unsigned int rw_widget_list_add(uint64_t widget_id, const char* text);
+bool rw_widget_list_clear(uint64_t widget_id);
+unsigned int rw_widget_list_count(uint64_t widget_id);
 unsigned int rw_widget_property_names(uint64_t widget_id, char* out, unsigned int cap);
+bool rw_widget_scroll_to(uint64_t widget_id, int where_);
+bool rw_widget_set_layout(uint64_t parent, const char* kind_name, int spacing, int margin);
+bool rw_widget_set_scroll_position(uint64_t widget_id, int x, int y);
+bool rw_widget_set_style(uint64_t widget_id, const char* declaration);
 
 #ifdef __cplusplus
 }

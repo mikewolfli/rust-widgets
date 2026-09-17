@@ -113,6 +113,25 @@ pub fn record_capability_error(error: crate::widget::capability::types::Capabili
     record_last_ffi_error(super::RwError::new(id, message));
 }
 
+/// Records a failure whose text comes from a parser rather than from an enum.
+///
+/// # Why the message is passed through rather than replaced
+///
+/// `record_capability_error` deliberately uses fixed text, because a capability
+/// refusal says what *kind* of thing went wrong and the caller already knows the
+/// name it passed. A style declaration is the opposite: the caller handed over a
+/// string, and the useful answer names the part of it that did not parse —
+/// `"has no ':' separator"`, `"unknown property 'backgrond-color'"`. Substituting a
+/// generic message would throw away the only diagnostic the parser produced.
+///
+/// Leaked rather than owned because the slot holds a `&'static str`; this runs only
+/// on the error path, so the leak is bounded by the number of failed calls a process
+/// makes.
+pub fn record_message_error(message: &str) {
+    let owned: &'static str = alloc::boxed::Box::leak(message.to_string().into_boxed_str());
+    record_last_ffi_error(super::RwError::new(super::ErrorId::INVALID_ARGUMENT, owned));
+}
+
 /// Trait for C‑ABI‑safe types that provide a safe fallback value.
 pub trait CAbiSafe {
     /// Returns the value `c_try!` yields when the wrapped body panics: zero for

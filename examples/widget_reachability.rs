@@ -198,6 +198,9 @@ fn all_kinds() -> Vec<WidgetKind> {
         OtpInput,
         Banner,
         Pagination,
+        ColorPicker,
+        Toast,
+        SplashScreen,
     ];
     kinds
 }
@@ -385,6 +388,9 @@ fn exhaustive(kind: WidgetKind) -> &'static str {
         OtpInput => "OtpInput",
         Banner => "Banner",
         Pagination => "Pagination",
+        ColorPicker => "ColorPicker",
+        Toast => "Toast",
+        SplashScreen => "SplashScreen",
     }
 }
 
@@ -432,7 +438,7 @@ mod tests {
     /// mutually visible.
     #[test]
     fn kind_list_is_exhaustive() {
-        assert_eq!(super::all_kinds().len(), 171);
+        assert_eq!(super::all_kinds().len(), 174);
     }
 
     /// The `match` in `exhaustive` and the `vec!` in `all_kinds` must agree.

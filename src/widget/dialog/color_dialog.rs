@@ -8,7 +8,12 @@ use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::tr;
 
+use crate::widget::capability::coercion::expect_bool;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 /// Color dialog for picking RGBA colors.
 ///
 /// # Not a full picker
@@ -174,6 +179,52 @@ impl Widget for ColorDialog {
         crate::core::Size::new(400, 300)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `ColorDialog`'s property contract.
+///
+/// # Why the dialog needed its own
+///
+/// Until BLUE16 phase E-6 the picker *was* the dialog's implementation, so one
+/// contract served both: `color_picker_capability` carried `WidgetKind::ColorDialog`
+/// and the dialog itself declared no contract at all. Splitting the kinds made that
+/// gap visible — a test caught `color_dialog` as "constructible but exposing no
+/// contract" — so the dialog now publishes the properties that describe *it*: the
+/// colour it is editing, plus the two flags that are the dialog's own business
+/// (modality and the alpha option). The picker keeps the rest.
+impl WidgetProperties for ColorDialog {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "current_color" => Ok(CapabilityValue::String(self.current_color.to_hex_rgba())),
+            "modal" => Ok(CapabilityValue::Bool(self.modal)),
+            "options_alpha" => Ok(CapabilityValue::Bool(self.options_alpha)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "modal" => {
+                self.set_modal(expect_bool(value)?);
+                Ok(())
+            }
+            "options_alpha" => {
+                self.set_options_alpha(expect_bool(value)?);
+                Ok(())
+            }
+            // The edited colour is not writable here: it changes through the picker
+            // area and through `set_current_color`, both of which emit
+            // `color_selected`. Making it writable through a generic property write
+            // would be a second path that skips that signal.
+            "current_color" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["current_color", "modal", "options_alpha", BASE_PROPERTY_NAMES]
+    }
 }
 impl EventHandler for ColorDialog {
     fn handle_event(&mut self, event: &Event) {

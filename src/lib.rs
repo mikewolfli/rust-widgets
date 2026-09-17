@@ -584,6 +584,28 @@ pub fn invalidate_surface(id: crate::core::ObjectId) -> bool {
     platform::get_platform().invalidate_surface(id)
 }
 
+/// Asks the platform to repaint one rectangle of a mounted widget.
+///
+/// Returns `true` when the backend narrowed the repaint to `rect`. `false` — including
+/// from a backend that never implemented this — means the caller should fall back to
+/// [`invalidate_surface`], which repaints the whole widget. Backends are not required
+/// to implement it, because several window toolkits offer only whole-widget
+/// invalidation.
+#[cfg(not(alloc_frugal))]
+pub fn invalidate_surface_rect(id: crate::core::ObjectId, rect: crate::core::Rect) -> bool {
+    platform::get_platform().invalidate_surface_rect(id, rect)
+}
+
+/// Asks the platform to repaint one rectangle, or reports that it cannot.
+///
+/// The alloc-frugal profile has no platform trait to forward to, so this reports
+/// `false` and the caller invalidates the whole surface instead — which is what that
+/// profile would have done anyway.
+#[cfg(alloc_frugal)]
+pub fn invalidate_surface_rect(_id: crate::core::ObjectId, _rect: crate::core::Rect) -> bool {
+    false
+}
+
 /// Returns `true` when the active backend can host library-painted widgets.
 #[cfg(not(alloc_frugal))]
 pub fn supports_surfaces() -> bool {

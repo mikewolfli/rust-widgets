@@ -5,12 +5,11 @@
 //!
 //! Converts JSON `"layout"` objects into concrete [`Layout`](crate::layout::Layout) trait objects.
 
-use crate::compat::HashMap;
-use core::cell::RefCell;
-
 use serde_json::Value;
 
-use crate::core::{Orientation, Rect};
+use crate::core::Orientation;
+#[cfg(test)]
+use crate::core::Rect;
 use crate::layout::{BoxLayout, FormLayout, GridLayout, Layout, SplitterLayout, StackLayout};
 
 // ── Layout kind enum ─────────────────────────────────────────
@@ -122,102 +121,16 @@ impl DeclarativeLayoutKind {
 }
 
 // ── Thread-local layout storage ──────────────────────────────
+//
+// The registry and the geometry application now live in `crate::layout::declarative`,
+// so the C ABI can reach them without depending on `serde_json`. These are forwards,
+// not copies: two implementations of "store a layout and move the children" would
+// eventually disagree about the spacer sentinel or the thread affinity, and the JSON
+// loader and the ABI would then lay out the same tree differently.
 
-thread_local! {
-    static LAYOUT_MAP: RefCell<HashMap<u64, Box<dyn Layout>>> = RefCell::new(HashMap::new());
-}
-
-/// Store a layout manager for a parent widget.
-///
-/// The layout is keyed by `parent_id` in a thread-local map, replacing any
-/// layout previously stored for that id. Because the map is thread-local, a
-/// layout stored on one thread is invisible to another — declarative layouts
-/// are therefore single-threaded by construction.
-pub fn store_layout(parent_id: u64, layout: Box<dyn Layout>) {
-    LAYOUT_MAP.with(|map| {
-        map.borrow_mut().insert(parent_id, layout);
-    });
-}
-
-/// Register a widget as a layout child with its stretch factor.
-///
-/// Looks the layout up by `parent_id`, ignoring `_layout` (the caller's view of
-/// the same object). Silent no-op when no layout is stored for `parent_id`. The
-/// stretch factor is stored verbatim; `0` is not a valid stretch in most layout
-/// implementations and may make the child invisible.
-pub fn add_widget_to_layout(_layout: &dyn Layout, child_id: u64, stretch: u32, parent_id: u64) {
-    LAYOUT_MAP.with(|map| {
-        let mut map = map.borrow_mut();
-        if let Some(layout_box) = map.get_mut(&parent_id) {
-            layout_box.add_widget(child_id, stretch);
-        }
-    });
-}
-
-/// Record a spacer stretch for a parent box layout.
-///
-/// Box layouts support stretchable spacers. The spacer is resolved
-/// from the stored layout for `_parent_id`.
-///
-/// Because the generic [`Layout`] trait has no spacer method, the spacer is
-/// smuggled through as a child whose id is [`u64::MAX`](u64::MAX) — the widest
-/// possible id, which no real widget can hold. A layout implementation that
-/// does not know this sentinel will treat it as a normal child; in particular
-/// the box and grid layouts used by the declarative engine will allocate it
-/// space. Silent no-op when no layout is stored for the parent.
-pub fn add_spacer_to_layout(_stretch: u32, _parent_id: u64) {
-    LAYOUT_MAP.with(|map| {
-        let mut map = map.borrow_mut();
-        if let Some(layout_box) = map.get_mut(&_parent_id) {
-            // BoxLayout subclasses have add_spacer, but through
-            // the `dyn Layout` trait we can only add widgets.
-            // Phase 2 will lift this limitation with a specialized spacer API.
-            //
-            // For now, we call add_widget with ObjectId(0) as a sentinel
-            // that signals a spacer. Layout implementations that understand
-            // this will handle it appropriately.
-            layout_box.add_widget(u64::MAX, _stretch);
-        }
-    });
-}
-
-/// Apply a stored declarative layout to its child widget geometries.
-///
-/// `rect` is the parent's own rectangle; the layout distributes it among the
-/// children and each resulting rectangle is written back through
-/// [`crate::set_widget_geometry`]. Spacer children ([`u64::MAX`](u64::MAX)) are
-/// filtered out and never written to a widget.
-///
-/// The stored layout is looked up only for this call. Silent no-op when
-/// `parent_id` has no stored layout, so applying an unknown parent is not an
-/// error. The map borrow is released before geometers are written, so a
-/// geometry callback that re-enters the layout engine will not panic on a
-/// double borrow.
-pub fn apply_layout(parent_id: u64, rect: Rect) {
-    let geometries = LAYOUT_MAP.with(|map| {
-        let map = map.borrow();
-        let Some(layout) = map.get(&parent_id) else {
-            return Vec::new();
-        };
-        let mut geometries = Vec::new();
-        layout.update(rect, &mut |child_id, child_rect| {
-            if child_id != u64::MAX {
-                geometries.push((child_id, child_rect));
-            }
-        });
-        geometries
-    });
-
-    for (child_id, child_rect) in geometries {
-        crate::set_widget_geometry(
-            child_id,
-            child_rect.x,
-            child_rect.y,
-            child_rect.width,
-            child_rect.height,
-        );
-    }
-}
+pub use crate::layout::declarative::{
+    add_spacer_to_layout, add_widget_to_layout, apply_layout, store_layout,
+};
 
 // ── Parsing ─────────────────────────────────────────────────
 

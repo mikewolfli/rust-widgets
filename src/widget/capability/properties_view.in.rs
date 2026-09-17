@@ -1001,5 +1001,167 @@ macro_rules! impl_properties_view {
                 writable: false,
             },
         ];
+
+        // `Toast` is one transient message. `ToastStack` is the container that
+        // queues them, so the properties here describe a single notification rather
+        // than a collection: there is no count and no selection.
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const TOAST_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema {
+                name: "message",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "level",
+                value_kind: PropertyValueKind::Enum,
+                readable: true,
+                writable: true,
+            },
+            // A ttl here is a *hint for the host*: this control does not schedule
+            // its own expiry, so the value is data the host reads, not behaviour it
+            // triggers. That is why it is writable but has no `expired` sibling.
+            PropertySchema {
+                name: "ttl_ms",
+                value_kind: PropertyValueKind::UInt,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "dismissible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
+        ];
+
+        // `SplashScreen` is dismissed by the program, not the user, so it publishes
+        // no `dismissed` state: `progress` is the only live value, and `Null` is the
+        // documented way to return it to indeterminate.
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const SPLASH_SCREEN_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema {
+                name: "title",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "subtitle",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "progress",
+                value_kind: PropertyValueKind::Float,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "skippable",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
+        ];
+
+        // `ColorPicker` split out of `ColorDialog` in BLUE16 phase E-6. The property
+        // set is identical to the dialog's because it describes the same picker; what
+        // differs is the host, so the schemas stay in step deliberately.
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const COLOR_DIALOG_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema {
+                name: "current_color",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: false,
+            },
+            PropertySchema {
+                name: "modal",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "options_alpha",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "enabled",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "visible",
+                value_kind: PropertyValueKind::Bool,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "tooltip",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
+                name: "geometry",
+                value_kind: PropertyValueKind::String,
+                readable: false,
+                writable: false,
+            },
+        ];
     };
 }

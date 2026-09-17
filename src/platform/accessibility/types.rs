@@ -468,6 +468,16 @@ impl From<WidgetKind> for AccessibleRole {
             | WidgetKind::InputDialog
             | WidgetKind::ProgressDialog
             | WidgetKind::DirectoryDialog => AccessibleRole::Dialog,
+            // `ColorPicker` is an inline control, so its role is the picker itself
+            // rather than `Dialog` — which is the whole point of giving it its own
+            // kind in BLUE16 phase E-6.
+            WidgetKind::ColorPicker => AccessibleRole::Group,
+            // A toast carries text a reader should announce; `StaticText` is the role
+            // this enum has for that. It is deliberately not `Dialog`: a toast takes
+            // no focus and is not modal.
+            WidgetKind::Toast => AccessibleRole::StaticText,
+            // A splash screen is a status surface that owns the whole window.
+            WidgetKind::SplashScreen => AccessibleRole::Group,
             WidgetKind::Label => AccessibleRole::StaticText,
             WidgetKind::LineEdit | WidgetKind::TextEdit | WidgetKind::RichEdit => {
                 AccessibleRole::TextField
@@ -568,6 +578,9 @@ impl From<WidgetKind> for A11yRole {
             | WidgetKind::FindReplaceDialog
             | WidgetKind::CupertinoAlertDialog
             | WidgetKind::ModalBottomSheet => A11yRole::Dialog,
+            WidgetKind::ColorPicker => A11yRole::Group,
+            WidgetKind::Toast => A11yRole::Label,
+            WidgetKind::SplashScreen => A11yRole::Group,
             WidgetKind::Label => A11yRole::Label,
             WidgetKind::LineEdit
             | WidgetKind::TextEdit

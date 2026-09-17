@@ -80,6 +80,45 @@ def pascal_to_snake(name: str) -> str:
     return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", first).lower()
 
 
+def run_example_self_checks() -> None:
+    """Run the reachability example's own tests before trusting its report.
+
+    # Why this step exists
+
+    The example carries two tests that guard the report itself: one pins the count
+    of `all_kinds`, the other asserts that its `vec!` and its exhaustive `match`
+    list the same variants. Both lived in the file but nothing ever ran them, so
+    they were documentation rather than a gate -- and three kinds were added to the
+    enum without reaching `all_kinds`, which is exactly what they are for.
+
+    Running them here closes that hole: `cargo run` above would still have produced
+    a well-formed report, just one that described 171 kinds while the enum had 174.
+    """
+    result = subprocess.run(
+        [
+            "cargo",
+            "test",
+            "--quiet",
+            "--no-default-features",
+            "--features",
+            "desktop",
+            "--example",
+            "widget_reachability",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print(
+            "The widget_reachability example's own checks failed, so its report "
+            "cannot be trusted:",
+            file=sys.stderr,
+        )
+        print(result.stdout, file=sys.stderr)
+        print(result.stderr, file=sys.stderr)
+        raise SystemExit(2)
+
+
 def load_reachability() -> dict:
     """Ask the compiled library which names the factory actually resolves.
 
@@ -160,6 +199,9 @@ def main() -> int:
         "--report", action="store_true", help="Print every kind with its state."
     )
     args = parser.parse_args()
+
+    # Before reading the report, confirm the report itself is complete.
+    run_example_self_checks()
 
     reachability = load_reachability()
     kinds: list[str] = reachability["kinds"]

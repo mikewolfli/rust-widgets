@@ -150,6 +150,9 @@ pub struct ToolBar {
     icon_size: f32,
     movable: bool,
     floatable: bool,
+    /// Whether the toolbar currently lives in its own top-level window. See
+    /// [`ToolBar::is_top_level`] for why this is not a `BaseWidget` flag.
+    top_level: bool,
     items: Vec<ToolBarItem>,
     hovered_index: Option<usize>,
     /// Emitted with the id of the item that was activated.
@@ -161,11 +164,11 @@ pub struct ToolBar {
     /// Emitted by [`ToolBar::set_orientation`] with `true` for horizontal and
     /// `false` for vertical. Not emitted when the orientation is unchanged.
     pub orientation_changed: Signal1<bool>,
-    /// Emitted when the toolbar is docked or floated. Nothing in this widget
-    /// emits it yet — [`ToolBar::is_floatable`] only records the permission.
+    /// Emitted when the toolbar is docked or floated, by
+    /// [`ToolBar::set_top_level`]. [`ToolBar::is_floatable`] separately records the
+    /// permission to float.
     pub top_level_changed: Signal1<bool>,
-    /// Emitted when the toolbar's visibility changes. Nothing in this widget
-    /// emits it yet.
+    /// Emitted when the toolbar's visibility changes, by [`ToolBar::set_visible`].
     pub visibility_changed: Signal1<bool>,
 }
 impl ToolBar {
@@ -181,6 +184,7 @@ impl ToolBar {
             icon_size: 24.0,
             movable: true,
             floatable: true,
+            top_level: false,
             items: Vec::new(),
             hovered_index: None,
             action_triggered: Signal1::new(),
@@ -205,8 +209,8 @@ impl ToolBar {
     }
     /// Whether the toolbar is allowed to be torn off into a floating window.
     ///
-    /// This is a stored preference only: nothing in this widget implements
-    /// docking or floating, and `top_level_changed` is never emitted.
+    /// This is the *permission*; the current docking state is
+    /// [`ToolBar::is_top_level`], reached through [`ToolBar::set_top_level`].
     pub fn is_floatable(&self) -> bool {
         self.floatable
     }
@@ -241,10 +245,75 @@ impl ToolBar {
     }
     /// Allows or forbids tearing the toolbar off; repaints either way.
     ///
-    /// Stored only — see [`ToolBar::is_floatable`].
+    /// Forbidding it also docks a currently-floating toolbar, so the permission and
+    /// the state cannot disagree.
     pub fn set_floatable(&mut self, v: bool) {
         self.floatable = v;
+        if !v {
+            // Docking through the setter keeps `top_level_changed` truthful: the
+            // state really did change, and a host tracking it must hear about it.
+            self.set_top_level(false);
+        }
         self.base.request_redraw();
+    }
+    /// Whether the toolbar is currently shown.
+    pub fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+    /// Shows or hides the toolbar and repaints.
+    ///
+    /// Emits `visibility_changed`, and only on a real change: a caller using the
+    /// signal to relayout a surrounding window must not do that work for a write
+    /// that changed nothing.
+    ///
+    /// This is the wrapper that makes the signal reachable. `BaseWidget` owns the
+    /// flag and knows nothing about toolbar signals, so without this method
+    /// `visibility_changed` could only be emitted from inside `BaseWidget` — where
+    /// the signal does not exist.
+    pub fn set_visible(&mut self, visible: bool) {
+        if self.base.is_visible() == visible {
+            return;
+        }
+        if visible {
+            self.base.show();
+        } else {
+            self.base.hide();
+        }
+        self.base.request_redraw();
+        self.visibility_changed.emit(visible);
+    }
+    /// Whether the toolbar is currently docked into a window (`false`) or hosted in
+    /// its own top-level window (`true`).
+    ///
+    /// This is the toolbar's own state, not a `BaseWidget` flag: whether a control
+    /// has been torn off into a separate window is a toolbar concept, and inventing
+    /// a base-level flag for it would put a toolbar-only idea in every control.
+    pub fn is_top_level(&self) -> bool {
+        self.top_level
+    }
+    /// Moves the toolbar between docked and floating, and repaints.
+    ///
+    /// Emits `top_level_changed`, and only on a real change. As with
+    /// [`Self::set_visible`], this exists so the signal has an emitter at all:
+    /// `is_floatable` records the *permission* to float, which is a different
+    /// question from whether the toolbar *is* floating, and only the latter is what
+    /// the signal reports.
+    ///
+    /// Returns `false` without emitting when the toolbar is not floatable, so a
+    /// caller cannot float a toolbar the host forbade. The refusal is silent in the
+    /// signal stream but visible in the return value, which is where a caller can
+    /// act on it.
+    pub fn set_top_level(&mut self, top_level: bool) -> bool {
+        if top_level && !self.floatable {
+            return false;
+        }
+        if self.top_level == top_level {
+            return false;
+        }
+        self.top_level = top_level;
+        self.base.request_redraw();
+        self.top_level_changed.emit(top_level);
+        true
     }
     /// Appends an action item and returns its index in [`ToolBar::items`].
     ///

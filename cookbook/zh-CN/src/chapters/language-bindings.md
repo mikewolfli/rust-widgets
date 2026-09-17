@@ -55,7 +55,7 @@ macro_rules! c_try {
 ### 完整的 C 示例
 
 ```c
-#include "rust_widgets.h"
+#include "rw_generated.h"
 #include <stdio.h>
 
 int main(void) {
@@ -722,21 +722,23 @@ pub extern "C" fn rw_platform_capabilities(caps: *mut u32) {
 C ABI 包含用于 NAPI 桥接集成的 HarmonyOS 特定函数：
 
 ```c
+#include "rw_generated.h"
+
 // 窗口部件触发注入（Harmony 事件桥接）
-void rw_harmony_on_menu_item(ObjectId widget_id);
-void rw_harmony_on_click(ObjectId widget_id);
-void rw_harmony_on_value_changed(ObjectId widget_id);
-void rw_harmony_on_widget_event(ObjectId widget_id, int trigger_kind);
+bool rw_harmony_on_menu_item(uint64_t menu_item_id);
+bool rw_harmony_on_click(uint64_t widget_id);
+bool rw_harmony_on_value_changed(uint64_t widget_id);
+bool rw_harmony_on_widget_event(uint64_t widget_id, unsigned int kind_code);
 
 // 节点绑定注册表
-void rw_harmony_bind_node(ObjectId widget_id, const char* node_id);
-void rw_harmony_unbind_node(ObjectId widget_id);
+bool rw_harmony_bind_node(uint64_t node_handle, uint64_t widget_id);
+bool rw_harmony_unbind_node(uint64_t node_handle);
 
 // 带类型的节点事件（harmony）
-void rw_harmony_on_node_click(ObjectId widget_id, const char* node_id);
-void rw_harmony_on_node_value_changed(ObjectId widget_id, const char* node_id);
-void rw_harmony_on_node_widget_event(ObjectId widget_id,
-    const char* node_id, int trigger_kind);
+bool rw_harmony_on_node_click(uint64_t node_handle);
+bool rw_harmony_on_node_value_changed(uint64_t node_handle);
+bool rw_harmony_on_node_widget_event(uint64_t node_handle, unsigned int kind_code);
+bool rw_harmony_on_node_menu_item(uint64_t node_handle);
 ```
 
 ---

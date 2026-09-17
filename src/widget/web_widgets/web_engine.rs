@@ -21,6 +21,14 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+/// First page id [`WebEngineView::create_page`] issues.
+///
+/// Deliberately not `0`: that is the "no widget" sentinel the runtime and the C ABI
+/// use, so issuing it as a page id would make an absent page indistinguishable from
+/// a real one.
+pub const FIRST_PAGE_ID: ObjectId = 1;
+
 /// Web engine view widget for web content rendering.
 pub struct WebEngineView {
     base: BaseWidget,
@@ -57,6 +65,12 @@ pub struct WebEngineView {
     pub page_destroyed: Signal1<ObjectId>,
     /// Most recently loaded HTML source (kept for inspection; no DOM layout).
     html_content: String,
+    /// Next id [`WebEngineView::create_page`] will issue.
+    ///
+    /// Starts at [`FIRST_PAGE_ID`] so a page id is never `0`: `0` is the "no widget"
+    /// sentinel the C ABI and the runtime use, and handing one out as a page id
+    /// would make an absent page indistinguishable from a real one.
+    next_page_id: ObjectId,
     /// Embedded real JavaScript engine (boa_engine) for script evaluation.
     #[cfg(feature = "js-engine")]
     js_engine: Option<crate::web::BoaJsEngine>,
@@ -308,6 +322,7 @@ impl WebEngineView {
             page_created: Signal1::new(),
             page_destroyed: Signal1::new(),
             html_content: String::new(),
+            next_page_id: FIRST_PAGE_ID,
             #[cfg(feature = "js-engine")]
             js_engine: None,
         }
@@ -530,6 +545,82 @@ impl WebEngineView {
     }
     fn update_navigation_state(&self) {
         self.navigation_state_changed.emit((self.can_go_back, self.can_go_forward));
+    }
+
+    /// Reports a load failure, emitting [`WebEngineView::error_occurred`] and ending
+    /// any load in progress.
+    ///
+    /// This widget performs no network I/O, so the failure is supplied by the host
+    /// rather than discovered here. That is deliberate: a control that invented its
+    /// own errors would report them at times unrelated to what the host actually
+    /// observed. The load is ended first so a caller that reacts by retrying sees
+    /// `loading == false` rather than a view that claims to still be loading.
+    pub fn report_error(&mut self, message: impl Into<String>) {
+        let message = message.into();
+        if self.loading {
+            self.loading = false;
+            self.pending_load = false;
+        }
+        self.base.request_redraw();
+        self.error_occurred.emit(message);
+    }
+
+    /// Reports a TLS certificate problem, emitting
+    /// [`WebEngineView::certificate_error`].
+    ///
+    /// Kept distinct from [`Self::report_error`] because the two call for different
+    /// responses: a certificate failure is something a user may be asked to override
+    /// once, while a load error is not.
+    pub fn report_certificate_error(&mut self, message: impl Into<String>) {
+        let message = message.into();
+        self.base.request_redraw();
+        self.certificate_error.emit(message);
+    }
+
+    /// Records a JavaScript console message, emitting
+    /// [`WebEngineView::console_message`] with `(message, line, source)`.
+    pub fn report_console_message(
+        &mut self,
+        message: impl Into<String>,
+        line: u32,
+        source: impl Into<String>,
+    ) {
+        self.console_message.emit((message.into(), line, source.into()));
+    }
+
+    /// Reports a download request, emitting [`WebEngineView::download_requested`]
+    /// with the URL.
+    ///
+    /// No file is fetched or written: the signal tells the host that a download was
+    /// requested so it can decide what to do, which is the only part this widget can
+    /// honestly do without an I/O stack.
+    pub fn request_download(&mut self, url: impl Into<String>) {
+        self.download_requested.emit(url.into());
+    }
+
+    /// Records that a child page was created, emitting
+    /// [`WebEngineView::page_created`] with its id.
+    ///
+    /// The returned id is issued here rather than by the platform, because this
+    /// widget models pages as bookkeeping and has no platform page objects to ask.
+    pub fn create_page(&mut self) -> ObjectId {
+        let id = self.next_page_id;
+        self.next_page_id = self.next_page_id.saturating_add(1);
+        self.page_created.emit(id);
+        id
+    }
+
+    /// Records that the page `id` was destroyed, emitting
+    /// [`WebEngineView::page_destroyed`].
+    ///
+    /// Returns `false` for an id this view never issued, so a host cannot make the
+    /// view announce the destruction of a page it does not own.
+    pub fn destroy_page(&mut self, id: ObjectId) -> bool {
+        if id < FIRST_PAGE_ID || id >= self.next_page_id {
+            return false;
+        }
+        self.page_destroyed.emit(id);
+        true
     }
 }
 impl Widget for WebEngineView {

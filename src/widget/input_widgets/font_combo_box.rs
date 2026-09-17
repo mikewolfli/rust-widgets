@@ -26,6 +26,13 @@ pub struct FontComboBox {
     fonts: Vec<String>,
     current_index: i32,
     editable: bool,
+    /// In-progress typed text while the box is editable.
+    ///
+    /// `None` means "not editing": the field shows the current font instead. It is
+    /// distinct from `Some(String::new())`, which is an edit in progress whose text
+    /// the user has erased — the two render differently, and collapsing them would
+    /// make a cleared field look like an idle one.
+    edit_buffer: Option<String>,
     max_visible_items: i32,
     expanded: bool,
     /// Emitted with the new font whenever [`FontComboBox::set_current_font`]
@@ -38,8 +45,12 @@ pub struct FontComboBox {
     /// fired from the mouse-release path, with the same index that was just
     /// passed to `set_current_index`.
     pub activated: Signal1<i32>,
-    /// Declared for an editable text path, but never emitted: the widget has no
-    /// text-entry handling. See [`FontComboBox::set_editable`].
+    /// Emitted when the user commits typed text while the combo box is editable.
+    ///
+    /// The payload is the committed family name. "Committed" rather than "every
+    /// keystroke": a font family is only meaningful once the caller acts on it, and
+    /// firing per keystroke would make a handler that loads a font reload it on
+    /// every character. Enter and the popup's own selection both commit.
     pub text_edited: Signal1<String>,
     /// Emitted when the popup list is opened.
     pub popup_shown: GenericSignal,
@@ -61,6 +72,7 @@ impl FontComboBox {
             fonts: Vec::new(),
             current_index: -1,
             editable: false,
+            edit_buffer: None,
             max_visible_items: 10,
             expanded: false,
             current_font_changed: Signal1::new(),
@@ -87,8 +99,8 @@ impl FontComboBox {
     }
     /// Returns whether the combo box is marked editable. Defaults to `false`.
     ///
-    /// This flag is stored and exposed but not yet honoured: there is no text
-    /// input handling, and `text_edited` is never emitted.
+    /// When editable, typed characters accumulate in [`Self::edit_buffer`], Enter or
+    /// [`Self::commit_edit`] emits [`Self::text_edited`], and Escape discards.
     pub fn is_editable(&self) -> bool {
         self.editable
     }
@@ -141,7 +153,40 @@ impl FontComboBox {
     /// has no behavioural effect beyond being reported. Requests a redraw.
     pub fn set_editable(&mut self, editable: bool) {
         self.editable = editable;
+        if !editable {
+            // Turning the feature off abandons any in-progress edit, so the field
+            // cannot keep showing text a non-editable box would not accept.
+            self.edit_buffer = None;
+        }
         self.base.request_redraw();
+    }
+    /// The in-progress typed text, or `None` when no edit is under way.
+    ///
+    /// `Some("")` is a real state: an edit the user has erased. See the field's own
+    /// comment for why the two are not collapsed.
+    pub fn edit_buffer(&self) -> Option<&str> {
+        self.edit_buffer.as_deref()
+    }
+    /// Commits the typed text, emitting `text_edited`.
+    ///
+    /// Committing an empty edit is refused rather than emitting an empty family
+    /// name: an empty string is not a font, and a caller that loads what the signal
+    /// names would have nothing to load. Returns `true` when a commit happened.
+    pub fn commit_edit(&mut self) -> bool {
+        let Some(text) = self.edit_buffer.take() else {
+            return false;
+        };
+        self.base.request_redraw();
+        if text.trim().is_empty() {
+            return false;
+        }
+        self.text_edited.emit(text.clone());
+        // A typed family that matches a listed font also moves the selection, so the
+        // typed path and the picker path cannot end up describing different fonts.
+        if let Some(index) = self.fonts.iter().position(|family| family == &text) {
+            self.set_current_index(index as i32);
+        }
+        true
     }
     /// Sets how many popup entries are shown, floored at `1` so the popup is
     /// never zero-height. Does not request a redraw (unlike the other setters),
@@ -286,6 +331,41 @@ impl EventHandler for FontComboBox {
             return;
         }
         match event {
+            Event::KeyPress { key, modifiers: _ } if self.editable => {
+                // Mirrors `EditableComboBox`'s key convention: 8 is backspace, 13 is
+                // Enter, 27 is Escape, and any other printable code is a character.
+                match *key {
+                    8 => {
+                        let mut buffer = self
+                            .edit_buffer
+                            .take()
+                            .unwrap_or_else(|| self.current_font().family().to_string());
+                        buffer.pop();
+                        self.edit_buffer = Some(buffer);
+                        self.base.request_redraw();
+                    }
+                    13 => {
+                        self.commit_edit();
+                    }
+                    27 => {
+                        // Escape discards the edit rather than committing it, which is
+                        // the only difference between the two exit paths and therefore
+                        // the whole reason both exist.
+                        self.edit_buffer = None;
+                        self.base.request_redraw();
+                    }
+                    _ => {
+                        if let Some(ch) = char::from_u32(*key) {
+                            if ch.is_ascii_graphic() || ch == ' ' {
+                                let mut buffer = self.edit_buffer.take().unwrap_or_default();
+                                buffer.push(ch);
+                                self.edit_buffer = Some(buffer);
+                                self.base.request_redraw();
+                            }
+                        }
+                    }
+                }
+            }
             Event::MousePress { pos: _, button } if button == &1 => {
                 // Show the dropdown list
                 self.show_popup();

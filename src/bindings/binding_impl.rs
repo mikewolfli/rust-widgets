@@ -603,7 +603,11 @@ fn write_space_separated(items: &[&str], out: *mut c_char, cap: c_uint) -> c_uin
     // Leave room for the terminator; copy at most `cap - 1` bytes.
     let writable = (cap as usize).saturating_sub(1).min(bytes.len());
     unsafe {
-        core::ptr::copy_nonoverlapping(bytes.as_ptr(), out as *mut u8, writable);
+        // `ptr::cast` rather than `as`: `c_char` is `i8` on some targets and `u8`
+        // on others, so a plain `as` cast is a no-op on the latter and clippy
+        // rejects it there under `-D warnings` (`unnecessary_cast`). Casting goes
+        // through a type the compiler cannot already consider identical.
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), out.cast::<u8>(), writable);
         *out.add(writable) = 0;
     }
     required
@@ -752,6 +756,375 @@ pub extern "C" fn rw_set_high_contrast(mode: c_int) {
         };
         crate::theme::set_global_high_contrast(mode);
         crate::reapply_active_theme();
+    })
+}
+
+/// Destination codes for [`rw_widget_scroll_to`].
+///
+/// These are a stable ABI: the numeric values are part of the contract, so a new
+/// destination must be appended rather than inserted.
+pub const RW_SCROLL_TO_TOP: c_int = 0;
+/// See [`RW_SCROLL_TO_TOP`].
+pub const RW_SCROLL_TO_BOTTOM: c_int = 1;
+/// See [`RW_SCROLL_TO_TOP`].
+pub const RW_SCROLL_TO_LEFT: c_int = 2;
+/// See [`RW_SCROLL_TO_TOP`].
+pub const RW_SCROLL_TO_RIGHT: c_int = 3;
+
+#[no_mangle]
+/// Sets the scroll offset of a scrollable control.
+///
+/// The offset is clamped to the content extent, so an out-of-range request is not
+/// an error: it scrolls as far as the content allows. Returns `false` when
+/// `widget_id` does not address a control that scrolls (an unknown id, or a
+/// control with no scroll offset) — a real "no" rather than a silent success.
+///
+/// Currently `scroll_area` answers; read the resulting offset back with
+/// [`rw_get_widget_property`] where the control publishes `scroll_x` / `scroll_y`.
+///
+/// # Why this is a downcast and not a property write
+///
+/// A scroll offset is a consequence of the content and the viewport, not a free
+/// value: `set_scroll_position` clamps it and emits `scroll_position_changed`.
+/// Routing it through the property layer would either bypass that clamping or
+/// duplicate it, so the control's own method is the single implementation.
+///
+pub extern "C" fn rw_widget_set_scroll_position(widget_id: u64, x: c_int, y: c_int) -> CBool {
+    c_try!({
+        let applied = crate::widget::runtime::with_widget_mut(widget_id, |widget| {
+            match crate::widget::capability::coercion::widget_as_mut::<crate::widget::ScrollArea>(
+                widget,
+            ) {
+                Some(area) => {
+                    area.set_scroll_position(x, y);
+                    true
+                }
+                None => false,
+            }
+        })
+        .unwrap_or(false);
+        if applied {
+            crate::widget::runtime::request_repaint(widget_id);
+        }
+        applied
+    })
+}
+
+#[no_mangle]
+/// Scrolls a control to one of the four edges.
+///
+/// `where_` is one of [`RW_SCROLL_TO_TOP`] / [`RW_SCROLL_TO_BOTTOM`] /
+/// [`RW_SCROLL_TO_LEFT`] / [`RW_SCROLL_TO_RIGHT`]; any other value is rejected
+/// (returns `false`) rather than quietly defaulting to an edge.
+///
+pub extern "C" fn rw_widget_scroll_to(widget_id: u64, where_: c_int) -> CBool {
+    c_try!({
+        let applied = crate::widget::runtime::with_widget_mut(widget_id, |widget| {
+            let Some(area) = crate::widget::capability::coercion::widget_as_mut::<
+                crate::widget::ScrollArea,
+            >(widget) else {
+                return false;
+            };
+            match where_ {
+                RW_SCROLL_TO_TOP => area.scroll_to_top(),
+                RW_SCROLL_TO_BOTTOM => area.scroll_to_bottom(),
+                RW_SCROLL_TO_LEFT => area.scroll_to_left(),
+                RW_SCROLL_TO_RIGHT => area.scroll_to_right(),
+                _ => return false,
+            }
+            true
+        })
+        .unwrap_or(false);
+        if applied {
+            crate::widget::runtime::request_repaint(widget_id);
+        }
+        applied
+    })
+}
+
+#[no_mangle]
+/// Adds one item to a list-like control.
+///
+/// Works for every control that holds strings through `append_widget_list_item`
+/// (`list_box`, `combo_box`), which is what keeps this one entry point instead of
+/// one per control. Returns the new item count, or `0` when the control does not
+/// accept items.
+///
+/// A control whose count is genuinely zero after a successful add is not
+/// distinguishable from a rejection by the return value alone; use
+/// [`rw_widget_list_count`] to confirm when that matters.
+///
+pub extern "C" fn rw_widget_list_add(widget_id: u64, text: *const c_char) -> c_uint {
+    c_try!({
+        let item = c_str_or_default(text);
+        let added = crate::widget::runtime::with_widget_mut(widget_id, |widget| {
+            crate::widget::capability::append_widget_list_item(widget, item.clone())
+        })
+        .unwrap_or(false);
+        if !added {
+            return 0;
+        }
+        crate::widget::runtime::request_repaint(widget_id);
+        rw_widget_list_count(widget_id)
+    })
+}
+
+#[no_mangle]
+/// Removes every item from a list-like control.
+///
+/// Returns `false` when the control does not hold items, so a caller can tell
+/// "cleared" from "this control has no collection to clear".
+///
+pub extern "C" fn rw_widget_list_clear(widget_id: u64) -> CBool {
+    c_try!({
+        let cleared = crate::widget::runtime::with_widget_mut(widget_id, |widget| {
+            crate::widget::capability::clear_widget_list_items(widget)
+        })
+        .unwrap_or(false);
+        if cleared {
+            crate::widget::runtime::request_repaint(widget_id);
+        }
+        cleared
+    })
+}
+
+#[no_mangle]
+/// Returns how many items a list-like control holds, or `0` when it holds none or
+/// does not hold items.
+///
+pub extern "C" fn rw_widget_list_count(widget_id: u64) -> c_uint {
+    c_try!({
+        crate::widget::runtime::with_widget(widget_id, |widget| {
+            crate::widget::capability::widget_list_item_count(widget)
+        })
+        .unwrap_or(0) as c_uint
+    })
+}
+
+#[no_mangle]
+/// Creates a layout for `parent` and stores it, replacing any previous layout.
+///
+/// `kind_name` is one of `"hbox"` / `"vbox"` / `"grid"` / `"uniform_grid"` /
+/// `"stack"` / `"form"` / `"flow"` / `"wrap"` / `"flex"` / `"splitter"`; it matches
+/// the spelling a declarative document uses, so the same name works in JSON and
+/// here. `spacing` and `margin` are applied where the kind uses them, and are
+/// ignored by the kinds that do not.
+///
+/// Returns `false` for an unknown kind or an unknown widget. An unknown kind is
+/// refused rather than defaulting: a caller that misspells `"hbox"` would otherwise
+/// get a vertical box and a layout that looks wrong for reasons it cannot see.
+///
+/// # Why a layout is stored rather than returned as a handle
+///
+/// The layout lives per-parent in the runtime registry, which is also where
+/// [`rw_widget_layout_add`] and [`rw_widget_layout_apply`] look. Handing a pointer
+/// across the ABI would make the caller responsible for a `Box<dyn Layout>` whose
+/// lifetime is tied to the parent — a contract no C API can express without a
+/// destructor and a nullability story. The parent id is the handle.
+///
+/// # Safety
+///
+/// `kind_name` must be null or point to a NUL-terminated string.
+///
+pub unsafe extern "C" fn rw_widget_set_layout(
+    parent: u64,
+    kind_name: *const c_char,
+    spacing: c_int,
+    margin: c_int,
+) -> CBool {
+    c_try!({
+        let name = c_str_or_default(kind_name);
+        if !crate::widget::runtime::is_mounted(parent) {
+            crate::error::ffi::record_capability_error(
+                crate::widget::capability::CapabilityAccessError::UnknownWidget,
+            );
+            return false;
+        }
+        let spec = serde_json::json!({
+            "type": name,
+            "spacing": spacing,
+            "margin": margin,
+        });
+        match crate::json::parse_layout_kind(&spec)
+            .map(|kind| crate::json::create_layout_from_kind(&kind))
+        {
+            Ok(layout) => {
+                crate::layout::declarative::store_layout(parent, layout);
+                true
+            }
+            Err(message) => {
+                crate::error::ffi::record_message_error(&message);
+                false
+            }
+        }
+    })
+}
+
+#[no_mangle]
+/// Adds `child` to the layout stored for `parent`, with `stretch`.
+///
+/// `stretch` is clamped to a minimum of `1`, because `0` is not a valid stretch in
+/// the layout implementations and would make the child invisible — a silent
+/// disappearance is worse than a substituted default.
+///
+/// Returns `false` when `parent` has no layout or either id is unknown, so a caller
+/// cannot believe a child was registered when it was not.
+///
+pub extern "C" fn rw_widget_layout_add(parent: u64, child: u64, stretch: c_uint) -> CBool {
+    c_try!({
+        let added = crate::layout::declarative::add_widget_to_layout(child, stretch.max(1), parent);
+        if !added {
+            crate::error::ffi::record_message_error(&format!(
+                "no layout is stored for widget {parent}; call rw_widget_set_layout first"
+            ));
+        }
+        added
+    })
+}
+
+#[no_mangle]
+/// Registers a stretchable spacer with the layout stored for `parent`.
+///
+/// See `crate::layout::declarative::SPACER_ID` for how a spacer is represented. A
+/// spacer is what makes "push these two buttons apart" expressible without an empty
+/// widget, so the ABI exposes it rather than requiring a stretch on a real control.
+///
+/// Returns `false` when `parent` has no layout.
+///
+pub extern "C" fn rw_widget_layout_add_spacer(parent: u64, stretch: c_uint) -> CBool {
+    c_try!(crate::layout::declarative::add_spacer_to_layout(stretch.max(1), parent))
+}
+
+#[no_mangle]
+/// Removes `child` from the layout stored for `parent`.
+///
+/// Returns `false` when `parent` has no layout. Removing a child that is not in the
+/// layout still reports `true`: the layout was reached and told, and the caller's
+/// intent — "this child must not be laid out" — holds either way.
+///
+pub extern "C" fn rw_widget_layout_remove(parent: u64, child: u64) -> CBool {
+    c_try!(crate::layout::declarative::remove_widget_from_layout(child, parent))
+}
+
+#[no_mangle]
+/// Discards the layout stored for `parent`.
+///
+/// Returns `false` when there was none. A host unmounting a container should call
+/// this, or the registry keeps a layout whose children no longer exist.
+///
+pub extern "C" fn rw_widget_layout_clear(parent: u64) -> CBool {
+    c_try!(crate::layout::declarative::forget_layout(parent))
+}
+
+#[no_mangle]
+/// Recomputes the layout for `parent` inside `x`, `y`, `width`, `height`, and moves
+/// its children accordingly.
+///
+/// Returns how many children were positioned. `0` when no layout is stored, or when
+/// the layout has no children — up to the caller which of those it was.
+///
+/// # Why the caller supplies the rectangle
+///
+/// A layout positions children *within* a rectangle. Taking it from the parent's own
+/// geometry would be wrong for a container that is being laid out by an enclosing
+/// layout, and unknowable for one that is not mounted yet.
+///
+pub extern "C" fn rw_widget_layout_apply(
+    parent: u64,
+    x: c_int,
+    y: c_int,
+    width: c_uint,
+    height: c_uint,
+) -> c_uint {
+    c_try!({
+        let rect = crate::core::Rect::new(x, y, width, height);
+        let applied = crate::layout::declarative::apply_layout(parent, rect);
+        if !applied.is_empty() {
+            crate::widget::runtime::request_repaint(parent);
+        }
+        applied.len() as c_uint
+    })
+}
+
+#[no_mangle]
+/// Counts the children in the layout stored for `parent`, or `0` when there is none.
+///
+/// Lets a caller confirm registration without applying it, which is what a host needs
+/// while it is still building the tree.
+///
+pub extern "C" fn rw_widget_layout_child_count(parent: u64) -> c_uint {
+    c_try!({
+        crate::layout::declarative::preview_layout(parent, crate::core::Rect::new(0, 0, 0, 0)).len()
+            as c_uint
+    })
+}
+
+#[no_mangle]
+/// Applies one style declaration to a widget, written as `"property: value"`.
+///
+/// Uses the same property names and value syntax as a stylesheet —
+/// `"background-color: #FF0000"`, `"border-radius: 4"`, `"font-size: 14"` — and
+/// routes through the same parser, so a value accepted here is accepted in CSS and
+/// vice versa. That is the whole point: a second parser would eventually disagree
+/// with the first.
+///
+/// Returns `false` when the widget is unknown, the declaration is malformed, or the
+/// value cannot be parsed for that property. `rw_error_message` carries the parser's
+/// own text, which names the offending property or value.
+///
+/// # Why this is not `rw_set_widget_property`
+///
+/// They deliberately differ. The property layer writes through each control's
+/// `WidgetProperties` contract, which describes what the control *is* — `value`,
+/// `items`, `checked`. This writes through the style pipeline, which describes how
+/// the control *looks*. A caller setting `color` wants the latter even when a control
+/// happens to expose a same-named property, so the two entry points stay separate
+/// rather than one guessing the other's intent.
+///
+/// # Safety
+///
+/// `declaration` must be null or point to a NUL-terminated string.
+///
+pub unsafe extern "C" fn rw_widget_set_style(widget_id: u64, declaration: *const c_char) -> CBool {
+    c_try!({
+        let text = c_str_or_default(declaration);
+        let applied = crate::widget::runtime::with_widget_mut(widget_id, |widget| {
+            // Reject an unknown property before applying, because `apply_one` ignores
+            // one by design (the CSS spec requires a stylesheet to tolerate properties
+            // it does not know). A single programmatic write has no such excuse: the
+            // caller typed one property, and a misspelling must not report success.
+            let property = text.split(':').next().unwrap_or("").trim();
+            if !property.is_empty() && !crate::style::CssParser::is_known_property(property) {
+                return Err(format!(
+                    "unknown style property {property:?}; see the styling chapter of the cookbook \
+                     for the accepted names"
+                ));
+            }
+            let mut style = widget.style().clone();
+            match crate::style::CssParser::apply_declaration_text(&text, &mut style) {
+                Ok(()) => {
+                    widget.set_style(style);
+                    Ok(())
+                }
+                Err(message) => Err(message),
+            }
+        });
+        match applied {
+            Some(Ok(())) => {
+                crate::widget::runtime::request_repaint(widget_id);
+                true
+            }
+            Some(Err(message)) => {
+                crate::error::ffi::record_message_error(&message);
+                false
+            }
+            None => {
+                crate::error::ffi::record_capability_error(
+                    crate::widget::capability::CapabilityAccessError::UnknownWidget,
+                );
+                false
+            }
+        }
     })
 }
 
@@ -1962,12 +2335,304 @@ mod tests {
         }
     }
 
+    /// The list entry points must change a control's real item count, not merely
+    /// report success.
+    ///
+    /// The assertions are on the count the control itself reports, so a stub that
+    /// returned a plausible number without storing anything would fail.
+    #[test]
+    fn c_abi_widget_list_entry_points_change_the_real_collection() {
+        use std::ffi::CString;
+
+        let c = |s: &str| CString::new(s).expect("no interior NUL");
+
+        let title = c("list-window");
+        let window = rw_create_window(title.as_ptr(), 0, 0, 320, 240);
+        assert_ne!(window, 0);
+
+        let kind = c("list_box");
+        let text = c("");
+        let list = rw_create_widget_of_kind(window, kind.as_ptr(), text.as_ptr(), 0, 0, 160, 120);
+        assert_ne!(list, 0);
+
+        assert_eq!(rw_widget_list_count(list), 0, "a fresh list holds nothing");
+
+        for (index, item) in ["alpha", "beta", "gamma"].iter().enumerate() {
+            let payload = c(item);
+            let count = rw_widget_list_add(list, payload.as_ptr());
+            assert_eq!(count as usize, index + 1, "adding {item} must grow the real count");
+        }
+
+        let fourth = c("delta");
+        assert_eq!(rw_widget_list_add(list, fourth.as_ptr()), 4);
+        assert_eq!(rw_widget_list_count(list), 4);
+
+        assert!(rw_widget_list_clear(list), "clearing a list_box must succeed");
+        assert_eq!(
+            rw_widget_list_count(list),
+            0,
+            "the clear must reach the control, not just report success"
+        );
+
+        // A control with no collection must refuse rather than pretend.
+        let button_kind = c("button");
+        let button =
+            rw_create_widget_of_kind(window, button_kind.as_ptr(), text.as_ptr(), 0, 0, 80, 24);
+        assert_ne!(button, 0);
+        let item = c("nope");
+        assert_eq!(
+            rw_widget_list_add(button, item.as_ptr()),
+            0,
+            "a button holds no items, so the add must be refused"
+        );
+        assert!(!rw_widget_list_clear(button), "a button has no collection to clear");
+        assert_eq!(rw_widget_list_count(button), 0);
+    }
+
+    /// The scroll entry points must move a control's real scroll offset, which is
+    /// read back from the control rather than from a return value.
+    #[test]
+    fn c_abi_scroll_entry_points_move_the_real_offset() {
+        use std::ffi::CString;
+
+        let c = |s: &str| CString::new(s).expect("no interior NUL");
+
+        let title = c("scroll-window");
+        let window = rw_create_window(title.as_ptr(), 0, 0, 320, 240);
+        assert_ne!(window, 0);
+
+        let kind = c("scroll_area");
+        let text = c("");
+        let area = rw_create_widget_of_kind(window, kind.as_ptr(), text.as_ptr(), 0, 0, 100, 100);
+        assert_ne!(area, 0);
+
+        // Give the area content larger than its viewport so scrolling is
+        // possible at all: an offset can only be non-zero when there is
+        // somewhere to scroll to.
+        crate::widget::runtime::with_widget_mut(area, |widget| {
+            if let Some(area) = crate::widget::capability::coercion::widget_as_mut::<
+                crate::widget::ScrollArea,
+            >(widget)
+            {
+                area.set_viewport(crate::core::Rect::new(0, 0, 100, 100));
+                area.set_content_size(crate::core::Size::new(300, 400));
+            }
+        });
+
+        let offset_of = || {
+            crate::widget::runtime::with_widget(area, |widget| {
+                crate::widget::capability::coercion::widget_as::<crate::widget::ScrollArea>(widget)
+                    .map(|area| area.scroll_position())
+            })
+            .flatten()
+        };
+
+        assert!(
+            rw_widget_set_scroll_position(area, 50, 70),
+            "scroll_area must accept a scroll offset"
+        );
+        assert_eq!(offset_of(), Some((50, 70)), "the offset must be stored");
+
+        assert!(rw_widget_scroll_to(area, RW_SCROLL_TO_BOTTOM));
+        assert_eq!(
+            offset_of().map(|(_, y)| y),
+            Some(300),
+            "bottom is content height minus viewport height"
+        );
+
+        assert!(rw_widget_scroll_to(area, RW_SCROLL_TO_TOP));
+        assert_eq!(offset_of().map(|(_, y)| y), Some(0));
+
+        // An out-of-range destination must be refused, not defaulted.
+        assert!(
+            !rw_widget_scroll_to(area, 99),
+            "an unknown destination must be rejected rather than defaulting"
+        );
+
+        // A control with no scroll offset must refuse rather than pretend.
+        let button_kind = c("button");
+        let button =
+            rw_create_widget_of_kind(window, button_kind.as_ptr(), text.as_ptr(), 0, 0, 80, 24);
+        assert_ne!(button, 0);
+        assert!(!rw_widget_set_scroll_position(button, 10, 10));
+        assert!(!rw_widget_scroll_to(button, RW_SCROLL_TO_TOP));
+    }
+
+    /// The style entry point must change the widget's real style record, and must
+    /// refuse what the CSS parser refuses.
+    ///
+    /// Asserted against the widget's `WidgetStyle` rather than against the return
+    /// value, so a stub that reported success without writing would fail.
+    #[test]
+    fn c_abi_set_style_reaches_the_widget_style_record() {
+        use std::ffi::CString;
+
+        let c = |s: &str| CString::new(s).expect("no interior NUL");
+
+        let title = c("style-window");
+        let window = rw_create_window(title.as_ptr(), 0, 0, 320, 240);
+        assert_ne!(window, 0);
+
+        let kind = c("button");
+        let text = c("Styled");
+        let button = rw_create_widget_of_kind(window, kind.as_ptr(), text.as_ptr(), 0, 0, 120, 32);
+        assert_ne!(button, 0);
+
+        let read_background = || {
+            crate::widget::runtime::with_widget(button, |widget| {
+                widget.style().background_color.map(|color| color.to_hex_rgba())
+            })
+            .flatten()
+        };
+        let read_radius = || {
+            crate::widget::runtime::with_widget(button, |widget| widget.style().border_radius)
+                .flatten()
+        };
+
+        // A colour write must land in the style record.
+        let red = c("background-color: #FF0000");
+        unsafe {
+            assert!(
+                rw_widget_set_style(button, red.as_ptr()),
+                "a valid declaration must be accepted"
+            );
+        }
+        assert_eq!(
+            read_background(),
+            Some("#FF0000FF".to_string()),
+            "the colour must reach the widget's style, not just be parsed"
+        );
+
+        // A numeric write must land too.
+        let radius = c("border-radius: 6");
+        unsafe {
+            assert!(rw_widget_set_style(button, radius.as_ptr()));
+        }
+        assert_eq!(read_radius(), Some(6), "the radius must be stored");
+
+        // A malformed declaration must be refused, and the parser's own text must
+        // survive into the error channel.
+        let malformed = c("not-a-declaration");
+        let ok = unsafe { rw_widget_set_style(button, malformed.as_ptr()) };
+        assert!(!ok, "a declaration with no ':' must be refused");
+        assert_ne!(rw_error_code(0), 0, "the refusal must set the error code");
+
+        // An unknown property must be refused too, rather than silently ignored.
+        let unknown = c("backgrond-color: #00FF00");
+        unsafe {
+            assert!(
+                !rw_widget_set_style(button, unknown.as_ptr()),
+                "a misspelled property must be refused rather than skipped"
+            );
+        }
+
+        // And the earlier writes must have survived the refusals.
+        assert_eq!(read_background(), Some("#FF0000FF".to_string()));
+
+        // An unknown widget must be refused as well.
+        let valid = c("background-color: #0000FF");
+        unsafe {
+            assert!(!rw_widget_set_style(0xDEAD_BEEF, valid.as_ptr()));
+        }
+    }
+
+    /// The layout entry points must move real widgets, not merely record a layout.
+    ///
+    /// Asserted against the children's `geometry()` after the apply call, so a stub
+    /// that stored a layout without arranging anything would fail.
+    #[test]
+    fn c_abi_layout_entry_points_move_the_widgets() {
+        use std::ffi::CString;
+
+        let c = |s: &str| CString::new(s).expect("no interior NUL");
+
+        let title = c("layout-window");
+        let window = rw_create_window(title.as_ptr(), 0, 0, 400, 300);
+        assert_ne!(window, 0);
+
+        // `group_box` rather than `panel`: `Panel` is a `pub type` alias for
+        // `GroupBox`, so `panel` is not a factory name — the alias exists in Rust, not
+        // in the registry.
+        let kind = c("group_box");
+        let text = c("");
+        let parent = rw_create_widget_of_kind(window, kind.as_ptr(), text.as_ptr(), 0, 0, 400, 300);
+        assert_ne!(parent, 0);
+
+        let one = rw_create_widget_of_kind(window, kind.as_ptr(), text.as_ptr(), 0, 0, 50, 50);
+        let two = rw_create_widget_of_kind(window, kind.as_ptr(), text.as_ptr(), 0, 0, 50, 50);
+        assert_ne!(one, 0);
+        assert_ne!(two, 0);
+
+        let vbox = c("vbox");
+        unsafe {
+            assert!(
+                rw_widget_set_layout(parent, vbox.as_ptr(), 4, 0),
+                "a vbox layout must be accepted on a mounted parent"
+            );
+        }
+        assert!(rw_widget_layout_add(parent, one, 1));
+        assert!(rw_widget_layout_add(parent, two, 1));
+        assert_eq!(rw_widget_layout_child_count(parent), 2, "both children must be registered");
+
+        let read_rect = |id| {
+            crate::widget::runtime::with_widget(id, |widget| widget.geometry())
+                .expect("the child must be mounted")
+        };
+        let before = (read_rect(one), read_rect(two));
+
+        let applied = rw_widget_layout_apply(parent, 0, 0, 400, 300);
+        assert_eq!(applied, 2, "both children must be positioned");
+
+        let after = (read_rect(one), read_rect(two));
+        assert_ne!(
+            (before.0.x, before.0.y, before.0.width, before.0.height),
+            (after.0.x, after.0.y, after.0.width, after.0.height),
+            "the first child's geometry must actually change: before={:?} after={:?}",
+            before.0,
+            after.0
+        );
+        assert!(
+            after.1.y > after.0.y,
+            "a vbox must place the second child below the first: {:?} then {:?}",
+            after.0,
+            after.1
+        );
+
+        // A spacer keeps a stretchable gap without needing an empty widget, and must
+        // not itself be positioned or counted as a child.
+        assert!(rw_widget_layout_add_spacer(parent, 1));
+        assert_eq!(rw_widget_layout_child_count(parent), 2, "a spacer is not a child");
+
+        // An unknown kind must be refused rather than defaulting to some layout.
+        let bogus = c("definitely_not_a_layout");
+        unsafe {
+            assert!(
+                !rw_widget_set_layout(parent, bogus.as_ptr(), 0, 0),
+                "an unknown layout kind must be refused"
+            );
+        }
+
+        // Registering a child with no layout must report failure, not silently do
+        // nothing.
+        assert!(
+            !rw_widget_layout_add(window, one, 1),
+            "a parent without a layout must refuse the child"
+        );
+
+        // Removing and clearing must both reach the registry.
+        assert!(rw_widget_layout_remove(parent, one));
+        assert!(rw_widget_layout_clear(parent));
+        assert!(
+            !rw_widget_layout_clear(parent),
+            "clearing twice must report there was nothing left"
+        );
+    }
+
     /// An unknown property and an unknown widget must both be refused, and the
     /// distinction must survive into `rw_error_code`.
     #[test]
     fn c_abi_property_errors_are_distinguishable() {
         use std::ffi::CString;
-
         let c = |s: &str| CString::new(s).expect("no interior NUL");
 
         unsafe {

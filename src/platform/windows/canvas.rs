@@ -188,7 +188,12 @@ unsafe fn paint_canvas(hwnd: HWND) {
         EndPaint(hwnd, &paint);
         return;
     };
-    let Some(frame) = crate::widget::runtime::render_frame(
+    // `render_frame_cached` rather than `render_frame`: it carries the previous frame
+    // forward and repaints only the damage, so a widget in `RepaintMode::Dirty` does
+    // not re-rasterise every pixel on each `WM_PAINT`. The returned frame is complete
+    // — the swap below still walks it — because `StretchDIBits` presents a whole
+    // bitmap; the saving is in what was drawn, not in what is converted.
+    let Some(frame) = crate::widget::runtime::render_frame_cached(
         widget_id,
         crate::core::Size::new(width, height),
         crate::core::Color::WHITE,
@@ -249,6 +254,47 @@ pub(crate) fn invalidate_canvas(hwnd: HWND) {
     unsafe {
         InvalidateRect(hwnd, std::ptr::null(), 0);
     }
+}
+
+/// Invalidates one rectangle of a canvas's client area.
+///
+/// # Why this rejects a rectangle outside the client area
+///
+/// `InvalidateRect` accepts any coordinates and simply unions them into the update
+/// region; a rectangle wholly outside the window contributes nothing but is still
+/// reported as accepted. Returning `true` for it would tell the caller its damage had
+/// been delivered when the region is unchanged — so this checks first and reports
+/// `false`, driving the caller's fallback to a whole-client invalidation.
+///
+/// Returns `false` when the rectangle is empty or lies wholly outside the client area,
+/// or when the client rect cannot be queried.
+pub(crate) fn invalidate_canvas_rect(hwnd: HWND, rect: Rect) -> bool {
+    if rect.width == 0 || rect.height == 0 {
+        return false;
+    }
+
+    let mut client: RECT = unsafe { core::mem::zeroed() };
+    // SAFETY: `client` is a valid, writable RECT for the duration of the call.
+    let have_client = unsafe { GetClientRect(hwnd, &mut client) != 0 };
+    if !have_client {
+        return false;
+    }
+
+    let x = rect.x;
+    let y = rect.y;
+    let right = rect.x.saturating_add(rect.width as i32);
+    let bottom = rect.y.saturating_add(rect.height as i32);
+    if x >= client.right || y >= client.bottom || right <= client.left || bottom <= client.top {
+        return false;
+    }
+
+    let clip = RECT { left: x, top: y, right, bottom };
+    // SAFETY: `clip` outlives the call and is a valid RECT; the HWND came from the
+    // caller's canvas table, so it addresses a live child window.
+    unsafe {
+        InvalidateRect(hwnd, &clip, 0);
+    }
+    true
 }
 
 /// Translates a Win32 mouse message into a widget event and delivers it.

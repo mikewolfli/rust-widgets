@@ -85,6 +85,7 @@ impl WidgetFactory {
             self.register(time_edit_capability(), create_time_edit);
             self.register(ribbon_bar_capability(), create_ribbon_bar);
             self.register(color_picker_capability(), create_color_picker);
+            self.register(color_dialog_capability(), create_color_dialog);
             self.register(code_editor_capability(), create_code_editor);
             self.register(gantt_widget_capability(), create_gantt_widget);
             self.register(terminal_view_capability(), create_terminal_view);
@@ -114,6 +115,8 @@ impl WidgetFactory {
             self.register(otp_input_capability(), create_otp_input);
             self.register(banner_capability(), create_banner);
             self.register(pagination_capability(), create_pagination);
+            self.register(toast_capability(), create_toast);
+            self.register(splash_screen_capability(), create_splash_screen);
             self.register(progress_dialog_capability(), create_progress_dialog);
             self.register(popup_window_capability(), create_popup_window);
 

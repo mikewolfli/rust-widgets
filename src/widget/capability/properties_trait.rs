@@ -306,6 +306,62 @@ pub fn widget_property_names(widget: &dyn Widget) -> Option<&'static [&'static s
     widget.properties_dyn().map(WidgetProperties::property_names)
 }
 
+/// Appends one item to a control that holds a list of strings.
+///
+/// # Why this is a downcast and not a property write
+///
+/// The `item_count` property is deliberately **read-only** on every control that
+/// publishes it (`list_box`, `combo_box`, `list_view`, …): a count is a
+/// consequence of the items, not a settable value, and letting a caller write it
+/// would desynchronise it from the actual collection. So the only honest way to
+/// grow a collection is the control's own method, which is what this dispatches
+/// to.
+///
+/// Returns `false` when the control is not one that holds items. That is a real
+/// "no", not a silent success: a caller adding to a `Button` should be told.
+pub fn append_widget_list_item(widget: &mut dyn Widget, item: String) -> bool {
+    use crate::widget::capability::coercion::widget_as_mut;
+    if let Some(list) = widget_as_mut::<crate::widget::ListBox>(widget) {
+        list.add_item(item);
+        return true;
+    }
+    if let Some(combo) = widget_as_mut::<crate::widget::ComboBox>(widget) {
+        combo.add_item(item);
+        return true;
+    }
+    false
+}
+
+/// Removes every item from a control that holds a list of strings.
+///
+/// Returns `false` when the control does not hold items. See
+/// [`append_widget_list_item`] for why this is not a property write.
+pub fn clear_widget_list_items(widget: &mut dyn Widget) -> bool {
+    use crate::widget::capability::coercion::widget_as_mut;
+    if let Some(list) = widget_as_mut::<crate::widget::ListBox>(widget) {
+        list.clear();
+        return true;
+    }
+    if let Some(combo) = widget_as_mut::<crate::widget::ComboBox>(widget) {
+        combo.clear();
+        return true;
+    }
+    false
+}
+
+/// Returns how many items a control holds, or `0` when it holds none or does not
+/// hold items.
+pub fn widget_list_item_count(widget: &dyn Widget) -> usize {
+    use crate::widget::capability::coercion::widget_as;
+    if let Some(list) = widget_as::<crate::widget::ListBox>(widget) {
+        return list.count();
+    }
+    if let Some(combo) = widget_as::<crate::widget::ComboBox>(widget) {
+        return combo.count();
+    }
+    0
+}
+
 /// The contract path, with no fallback.
 ///
 /// # Why there is only one path now

@@ -2965,12 +2965,16 @@ bool rw_is_widget_visible(uint64_t widget_id);
 ### Combo Box
 
 ```c
-bool rw_combo_box_add_item(uint64_t combo_box, const char* text);
+// A combo box has no dedicated add function: adding an item goes through the
+// property layer, which every control that holds items answers.
+bool rw_set_widget_property(uint64_t widget_id, const char* name,
+                            int kind, int64_t num, const char* str);
+
 bool rw_combo_box_clear_items(uint64_t combo_box);
 int rw_combo_box_current_index(uint64_t combo_box);
-bool rw_combo_box_set_current_index(uint64_t combo_box, uint32_t index);
-uint32_t rw_combo_box_item_count(uint64_t combo_box);
-const char* rw_combo_box_item_text(uint64_t combo_box, uint32_t index);
+bool rw_combo_box_set_current_index(uint64_t combo_box, unsigned int index);
+unsigned int rw_combo_box_item_count(uint64_t combo_box);
+const char* rw_combo_box_item_text(uint64_t combo_box, unsigned int index);
 ```
 
 ### List Box
@@ -2983,6 +2987,51 @@ int rw_list_box_current_index(uint64_t list_box);
 bool rw_list_box_set_current_index(uint64_t list_box, uint32_t index);
 uint32_t rw_list_box_item_count(uint64_t list_box);
 const char* rw_list_box_item_text(uint64_t list_box, uint32_t index);
+```
+
+### Layout
+
+```c
+#include "rw_generated.h"
+
+// Create a layout for `parent` and store it. `kind_name` uses the same spelling a
+// declarative document does ("hbox", "vbox", "grid", "stack", "form", "flow",
+// "wrap", "flex", "splitter"), so one name works in both places. An unknown kind
+// is refused rather than defaulted.
+bool rw_widget_set_layout(uint64_t parent, const char* kind_name,
+                          int spacing, int margin);
+
+// Register a child with the layout. `stretch` is raised to at least 1.
+bool rw_widget_layout_add(uint64_t parent, uint64_t child, unsigned int stretch);
+
+// A stretchable gap, without needing a placeholder widget.
+bool rw_widget_layout_add_spacer(uint64_t parent, unsigned int stretch);
+
+bool rw_widget_layout_remove(uint64_t parent, uint64_t child);
+bool rw_widget_layout_clear(uint64_t parent);
+
+// Recompute inside the rectangle and move the children. Returns the number of
+// children positioned; 0 when no layout is stored.
+unsigned int rw_widget_layout_apply(uint64_t parent, int x, int y,
+                                    unsigned int width, unsigned int height);
+
+// How many children the layout holds, without applying it.
+unsigned int rw_widget_layout_child_count(uint64_t parent);
+```
+
+### Style
+
+```c
+#include "rw_generated.h"
+
+// Apply one style declaration written as "property: value", using the same
+// property names and value syntax as a stylesheet: "background-color: #FF0000",
+// "border-radius: 4", "font-size: 14".
+//
+// Unlike a stylesheet — which by the CSS spec ignores properties it does not
+// know — a misspelled property here is refused, because this call names exactly
+// one property and silence would let the typo pass as success.
+bool rw_widget_set_style(uint64_t widget_id, const char* declaration);
 ```
 
 ### Menu

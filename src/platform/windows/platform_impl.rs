@@ -372,6 +372,12 @@ impl Platform for WindowsPlatform {
             None => false,
         }
     }
+    fn invalidate_surface_rect(&self, id: ObjectId, rect: crate::core::Rect) -> bool {
+        match super::canvas::hwnd_for_widget(id) {
+            Some(hwnd) => super::canvas::invalidate_canvas_rect(hwnd, rect),
+            None => false,
+        }
+    }
     fn family(&self) -> PlatformFamily {
         PlatformFamily::Desktop
     }

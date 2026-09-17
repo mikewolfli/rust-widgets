@@ -259,8 +259,7 @@ impl NumberPicker {
         // A smaller y (drag upward) must advance the value, hence the negation:
         // moving the reel up reveals higher numbers, matching every platform's
         // picker.
-        let rows = -(delta as i64) / self.row_height.max(1) as i64;
-        rows
+        -(delta as i64) / self.row_height.max(1) as i64
     }
 
     /// Rows visible on each side of the centre row.

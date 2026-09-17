@@ -119,9 +119,19 @@ fn factory_creates_registered_widgets_by_alias() {
     let ribbon = factory.create("ribbon", rect, "").expect("ribbon bar must be created via alias");
     assert_eq!(ribbon.kind(), WidgetKind::RibbonBar);
 
+    // `colorpicker` is the same control as `color_picker`, so it reports the picker's
+    // own kind since BLUE16 phase E-6. It used to report `ColorDialog` because the
+    // picker had no kind of its own; the test is updated rather than the behaviour,
+    // because reporting "dialog" for a control with no window was the bug.
     let color_picker =
         factory.create("colorpicker", rect, "").expect("color picker must be created via alias");
-    assert_eq!(color_picker.kind(), WidgetKind::ColorDialog);
+    assert_eq!(color_picker.kind(), WidgetKind::ColorPicker);
+
+    // The dialog is a separate control reached by its own name, and it still reports
+    // `ColorDialog`.
+    let color_dialog =
+        factory.create("color_dialog", rect, "").expect("colour dialog must be registered");
+    assert_eq!(color_dialog.kind(), WidgetKind::ColorDialog);
 
     let code_editor = factory
         .create("codeeditor", rect, "// code")
@@ -715,6 +725,13 @@ fn unregistered_controls_are_constructible_by_canonical_name_and_alias() {
         ("markdown_editor", "md_editor", WidgetKind::RichEdit),
         ("toast_stack", "toasts", WidgetKind::PopupWindow),
         ("grid_table", "gridtable", WidgetKind::GridTable),
+        // The four controls added in BLUE16 Phase E-2. Their Rust-side construction
+        // paths are order-independent, but only these rows prove the *name* a
+        // counterparty would use actually resolves.
+        ("number_picker", "picker", WidgetKind::NumberPicker),
+        ("otp_input", "otp", WidgetKind::OtpInput),
+        ("banner", "notice", WidgetKind::Banner),
+        ("pagination", "page_numbers", WidgetKind::Pagination),
     ];
 
     for (name, alias, kind) in cases {
@@ -755,6 +772,10 @@ fn unregistered_controls_publish_their_own_properties() {
         ("markdown_editor", "word_count"),
         ("toast_stack", "toast_count"),
         ("grid_table", "row_count"),
+        ("number_picker", "row_count"),
+        ("otp_input", "length"),
+        ("banner", "action_count"),
+        ("pagination", "page_count"),
     ];
 
     for (name, property) in cases {
@@ -764,10 +785,13 @@ fn unregistered_controls_publish_their_own_properties() {
         let value = factory.read_property(widget.as_ref(), property).unwrap_or_else(|error| {
             panic!("{name} must answer its own property {property}, got {error:?}")
         });
-        assert_eq!(
-            value,
-            CapabilityValue::UInt(0),
-            "{name}::{property} should start empty on a freshly created control"
+        // The point is that the name is *answered by this control*, not that every
+        // control starts at zero: `number_picker` legitimately reports the size of
+        // its default `0..=100` range. A read that resolved to a sibling's schema
+        // would fail above with `UnknownWidget`.
+        assert!(
+            matches!(value, CapabilityValue::UInt(_)),
+            "{name}::{property} must report a count, got {value:?}"
         );
     }
 }
@@ -904,6 +928,9 @@ fn derived_names_reject_writes_on_newly_registered_controls() {
         ("markdown_editor", "word_count", CapabilityValue::UInt(1)),
         ("toast_stack", "toast_count", CapabilityValue::UInt(1)),
         ("grid_table", "row_count", CapabilityValue::UInt(1)),
+        ("otp_input", "is_complete", CapabilityValue::Bool(true)),
+        ("banner", "dismissed", CapabilityValue::Bool(true)),
+        ("pagination", "page_count", CapabilityValue::UInt(1)),
     ];
 
     for (name, property, value) in cases {

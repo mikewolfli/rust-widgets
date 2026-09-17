@@ -255,6 +255,35 @@ fn main() {
                     render_to_svg(&mut w)
                 }),
             },
+            // Feedback & overlays
+            GalleryEntry {
+                name: "Toast",
+                kind: WidgetKind::Toast,
+                category: "Feedback",
+                render: Box::new(|| {
+                    let mut w = Toast::new(Rect::new(0, 0, 280, 48), "Saved");
+                    render_to_svg(&mut w)
+                }),
+            },
+            GalleryEntry {
+                name: "SplashScreen",
+                kind: WidgetKind::SplashScreen,
+                category: "Feedback",
+                render: Box::new(|| {
+                    let mut w = SplashScreen::new(Rect::new(0, 0, 320, 240), "Starting");
+                    w.set_progress(Some(0.4));
+                    render_to_svg(&mut w)
+                }),
+            },
+            GalleryEntry {
+                name: "ColorPicker",
+                kind: WidgetKind::ColorPicker,
+                category: "Input",
+                render: Box::new(|| {
+                    let mut w = ColorPicker::new(Rect::new(0, 0, 240, 160));
+                    render_to_svg(&mut w)
+                }),
+            },
         ];
 
         // Generate SVG for each widget

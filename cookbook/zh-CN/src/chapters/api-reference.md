@@ -2945,12 +2945,15 @@ bool rw_is_widget_visible(uint64_t widget_id);
 ### Combo Box
 
 ```c
-bool rw_combo_box_add_item(uint64_t combo_box, const char* text);
+// 组合框没有专用的添加函数：添加项经属性层，每个持有项的控件都会应答。
+bool rw_set_widget_property(uint64_t widget_id, const char* name,
+                            int kind, int64_t num, const char* str);
+
 bool rw_combo_box_clear_items(uint64_t combo_box);
 int rw_combo_box_current_index(uint64_t combo_box);
-bool rw_combo_box_set_current_index(uint64_t combo_box, uint32_t index);
-uint32_t rw_combo_box_item_count(uint64_t combo_box);
-const char* rw_combo_box_item_text(uint64_t combo_box, uint32_t index);
+bool rw_combo_box_set_current_index(uint64_t combo_box, unsigned int index);
+unsigned int rw_combo_box_item_count(uint64_t combo_box);
+const char* rw_combo_box_item_text(uint64_t combo_box, unsigned int index);
 ```
 
 ### List Box
@@ -2963,6 +2966,48 @@ int rw_list_box_current_index(uint64_t list_box);
 bool rw_list_box_set_current_index(uint64_t list_box, uint32_t index);
 uint32_t rw_list_box_item_count(uint64_t list_box);
 const char* rw_list_box_item_text(uint64_t list_box, uint32_t index);
+```
+
+### 布局（Layout）
+
+```c
+#include "rw_generated.h"
+
+// 为 `parent` 创建并存储布局。`kind_name` 使用与声明式文档相同的拼写
+// （"hbox"、"vbox"、"grid"、"stack"、"form"、"flow"、"wrap"、"flex"、
+// "splitter"），因此同一个名字在两处通用。未知类型会被拒绝，而非默认回退。
+bool rw_widget_set_layout(uint64_t parent, const char* kind_name,
+                          int spacing, int margin);
+
+// 将子控件注册进布局。`stretch` 最小被提升为 1。
+bool rw_widget_layout_add(uint64_t parent, uint64_t child, unsigned int stretch);
+
+// 可伸缩的空隙，无需占位控件。
+bool rw_widget_layout_add_spacer(uint64_t parent, unsigned int stretch);
+
+bool rw_widget_layout_remove(uint64_t parent, uint64_t child);
+bool rw_widget_layout_clear(uint64_t parent);
+
+// 在给定矩形内重新计算并移动子控件。返回被定位的子控件数；
+// 未存储布局时返回 0。
+unsigned int rw_widget_layout_apply(uint64_t parent, int x, int y,
+                                    unsigned int width, unsigned int height);
+
+// 布局持有多少子控件（不实际应用）。
+unsigned int rw_widget_layout_child_count(uint64_t parent);
+```
+
+### 样式（Style）
+
+```c
+#include "rw_generated.h"
+
+// 应用一条写作 "property: value" 的样式声明，属性名与取值语法
+// 与样式表一致："background-color: #FF0000"、"border-radius: 4"、"font-size: 14"。
+//
+// 与样式表不同——按 CSS 规范，样式表会忽略不认识的属性——此处拼错的属性
+// 会被拒绝，因为这次调用明确只指定了一个属性，静默会让拼写错误被当作成功。
+bool rw_widget_set_style(uint64_t widget_id, const char* declaration);
 ```
 
 ### 菜单

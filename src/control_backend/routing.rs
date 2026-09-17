@@ -35,7 +35,19 @@ mod tests {
     /// the array below is the routing table's coverage list, and comparing its
     /// length to this constant fails the build's tests when a variant is added
     /// without a routing decision.
-    const EXPECTED_WIDGET_KIND_COUNT: usize = 167;
+    ///
+    /// # Why this is a hand-maintained copy
+    ///
+    /// The copy is deliberate — it is what makes "a variant was added without a
+    /// routing decision" a test failure rather than a silent default — but it
+    /// means the constant and the array must be updated *together*, and it drifted:
+    /// `NumberPicker`, `OtpInput`, `Pagination` and `Banner` were added to the enum
+    /// (167 → 171) and to the factory, while this constant and array stayed at 167.
+    /// The test below could not catch that, because it compares the array to the
+    /// constant rather than to `kind.rs`; `check_widget_kind_count.sh` could not
+    /// either, because it compares prose numbers to each other. See BLUE16 §十二
+    /// E-2 and the `check_kind_reachability.sh` gate it adds.
+    const EXPECTED_WIDGET_KIND_COUNT: usize = 174;
 
     /// Every widget kind must be routed to the library.
     ///
@@ -219,6 +231,15 @@ mod tests {
             WidgetKind::BarcodeScanner,
             // Data table widgets
             WidgetKind::GridTable,
+            // Input and navigation widgets added in BLUE16 phase E-2
+            WidgetKind::NumberPicker,
+            WidgetKind::OtpInput,
+            WidgetKind::Pagination,
+            WidgetKind::Banner,
+            // Controls split out of an overloaded kind, or added in BLUE16 phase E-6
+            WidgetKind::ColorPicker,
+            WidgetKind::Toast,
+            WidgetKind::SplashScreen,
         ];
 
         assert_eq!(
