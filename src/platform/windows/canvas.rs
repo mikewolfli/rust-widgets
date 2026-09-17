@@ -30,11 +30,13 @@ use winapi::um::wingdi::{
     StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, SRCCOPY,
 };
 use winapi::um::winuser::{
-    BeginPaint, CreateWindowExW, DefWindowProcW, EndPaint, GetClientRect, InvalidateRect,
-    LoadCursorW, RegisterClassW, SetFocus, SetWindowPos, TrackMouseEvent, UpdateWindow, CS_HREDRAW,
-    CS_OWNDC, CS_VREDRAW, IDC_ARROW, PAINTSTRUCT, SWP_NOACTIVATE, SWP_NOZORDER, TME_LEAVE,
-    TRACKMOUSEEVENT, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSELEAVE,
-    WM_MOUSEMOVE, WM_PAINT, WM_SIZE, WNDCLASSW, WS_CHILD, WS_TABSTOP, WS_VISIBLE,
+    BeginPaint, CloseTouchInputHandle, CreateWindowExW, DefWindowProcW, EndPaint, GetClientRect,
+    GetTouchInputInfo, InvalidateRect, LoadCursorW, RegisterClassW, RegisterTouchWindow, SetFocus,
+    SetWindowPos, TrackMouseEvent, UpdateWindow, CS_HREDRAW, CS_OWNDC, CS_VREDRAW, IDC_ARROW,
+    PAINTSTRUCT, SWP_NOACTIVATE, SWP_NOZORDER, TME_LEAVE, TOUCHEVENTF_DOWN, TOUCHEVENTF_MOVE,
+    TOUCHEVENTF_UP, TOUCHINPUT, TRACKMOUSEEVENT, TWF_WANTPALM, WM_ERASEBKGND, WM_KEYDOWN,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSELEAVE, WM_MOUSEMOVE, WM_PAINT, WM_SIZE, WM_TOUCH,
+    WNDCLASSW, WS_CHILD, WS_TABSTOP, WS_VISIBLE,
 };
 
 /// Child-window class name used for every self-drawn canvas.
@@ -146,6 +148,10 @@ unsafe extern "system" fn canvas_wnd_proc(
             // the previously hovered control would otherwise stay highlighted.
             crate::widget::runtime::clear_hover(Point::new(0, 0));
             invalidate_canvas(hwnd);
+            0
+        }
+        WM_TOUCH => {
+            forward_touch(hwnd, wparam, lparam);
             0
         }
         WM_KEYDOWN => {
@@ -339,6 +345,94 @@ unsafe fn forward_mouse(hwnd: HWND, lparam: LPARAM, phase: MousePhase) {
     }
 }
 
+/// Translates a `WM_TOUCH` message into widget touch events and delivers them.
+///
+/// # Why this exists
+///
+/// Without it the gesture engine never sees a `TouchBegin`: `is_touch()` accepts only
+/// `Touch*` and gesture variants, so `GestureEngine::process` was never called with real
+/// input and all eleven recognizers were reachable only from unit tests. Win32 reports
+/// finger contacts as `WM_TOUCH` carrying *screen* coordinates and its own per-contact
+/// ids; both are translated here.
+///
+/// # One message, several contacts
+///
+/// A single `WM_TOUCH` can describe multiple simultaneous fingers — that is how the
+/// backend feeds the two independent contacts `Pinch`/`Rotate` need. Each contact is
+/// dispatched separately so the recognizers see one event per finger, which is the
+/// shape their state machines expect.
+///
+/// # Coordinate space
+///
+/// `TOUCHINPUT` carries coordinates in *hundredths of a pixel* in *screen* space. They
+/// are converted to whole pixels relative to this window, then offset by the canvas
+/// origin to reach the absolute space the widget tree uses — the same space
+/// `forward_mouse` produces, so a touch and a click at the same place agree.
+unsafe fn forward_touch(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
+    let input_count = (wparam & 0xFFFF) as u32;
+    if input_count == 0 {
+        return;
+    }
+    let mut inputs: Vec<TOUCHINPUT> = vec![std::mem::zeroed(); input_count as usize];
+    let size = std::mem::size_of::<TOUCHINPUT>() as i32;
+    if GetTouchInputInfo(lparam as *mut _, input_count, inputs.as_mut_ptr(), size) == 0 {
+        // The handle must still be closed, or Win32 leaks it — but only on the path
+        // where we are not going to inspect the contacts.
+        CloseTouchInputHandle(lparam as *mut _);
+        return;
+    }
+
+    let Some(widget_id) = widget_id_of(hwnd) else {
+        CloseTouchInputHandle(lparam as *mut _);
+        return;
+    };
+    let (origin_x, origin_y) = canvas_origin(hwnd);
+    let mut delivered = false;
+
+    for input in inputs.iter().take(input_count as usize) {
+        // Hundredths of a pixel, screen-relative. `round()` rather than truncation so
+        // a contact 1.6 px into a control is reported inside it, matching the pixel a
+        // mouse click at the same place would hit.
+        let local_x = (input.x as f32 / 100.0).round() as i32;
+        let local_y = (input.y as f32 / 100.0).round() as i32;
+        // `TOUCHINPUT` is in screen coordinates, so the canvas origin has to be added
+        // before the window-relative conversion. `ScreenToClient` needs the point in
+        // screen space, which is what we already have.
+        let mut screen_point = winapi::shared::windef::POINT { x: local_x, y: local_y };
+        if winapi::um::winuser::ScreenToClient(hwnd, &mut screen_point) == 0 {
+            continue;
+        }
+        let position = Point::new(origin_x + screen_point.x, origin_y + screen_point.y);
+
+        // `dwID` is Win32's per-contact identifier; it is stable for the whole
+        // contact, which is exactly what `TouchId` must be for the recognizers to
+        // track fingers across move/end.
+        let touch_id = input.dwID as u64;
+        let flags = input.dwFlags;
+        let event = if flags & TOUCHEVENTF_DOWN != 0 {
+            Event::TouchBegin { pos: position, touch_id }
+        } else if flags & TOUCHEVENTF_UP != 0 {
+            Event::TouchEnd { pos: position, touch_id }
+        } else if flags & TOUCHEVENTF_MOVE != 0 {
+            Event::TouchMove { pos: position, touch_id }
+        } else {
+            // Neither down, up nor move — nothing this layer can express.
+            continue;
+        };
+        if crate::platform::platform_facts().route_pointer_event(widget_id, &event, position) {
+            delivered = true;
+        }
+    }
+
+    // The touch handle is owned by the caller of the window procedure, so it is
+    // released exactly once, after every contact has been read from it.
+    CloseTouchInputHandle(lparam as *mut _);
+
+    if delivered {
+        invalidate_canvas(hwnd);
+    }
+}
+
 /// Translates a Win32 key message into a widget event and delivers it.
 ///
 /// Tab is consumed here to move focus, matching the other backends: it is not a
@@ -437,6 +531,18 @@ pub(crate) fn mount_canvas(parent: HWND, id: ObjectId, rect: Rect) -> Option<HWN
             .lock()
             .expect("windows canvas origin lock poisoned")
             .insert(hwnd as usize, (rect.x, rect.y));
+        // Opt in to `WM_TOUCH`. Win32 delivers finger contacts only to windows that
+        // asked, and the call is what makes the touch path above reachable. A failure
+        // is not fatal: a machine with no digitiser simply keeps using mouse input, so
+        // it is logged rather than treated as a mount error.
+        // `TWF_WANTPALM` suppresses the default press-and-hold "palm check" delay,
+        // which would otherwise make a tap take ~1s to be delivered.
+        if RegisterTouchWindow(hwnd, TWF_WANTPALM) == 0 {
+            log::debug!(
+                "[windows] mount_surface: RegisterTouchWindow declined for hwnd {hwnd:p}; \
+                 touch input will not be delivered to this canvas"
+            );
+        }
         invalidate_canvas(hwnd);
         UpdateWindow(hwnd);
         Some(hwnd)

@@ -6,7 +6,9 @@
 use crate::core::Point;
 use crate::event::{Event, TouchId};
 
-use super::{distance, GestureRecognizer, LONG_PRESS_MAX_MOVE, LONG_PRESS_MIN_MS};
+use super::{
+    distance, GestureRecognizer, LONG_PRESS_MAX_MOVE, LONG_PRESS_MIN_MS, PAN_MIN_DISTANCE,
+};
 
 // ────────────────────────────────────────────
 // LongPressGesture
@@ -98,24 +100,41 @@ crate::impl_default_via_new!(LongPressGesture);
 /// slider drag operations.
 ///
 /// ## State machine
-/// - `Idle` — waiting for touch
-/// - `Tracking` — finger down, emitting Drag on every move
+/// - `Idle` — waiting for touch, or moved less than `PAN_MIN_DISTANCE` so far
+/// - `Tracking` — past the threshold, emitting Drag on every move
+///
+/// ## Why there is a threshold
+///
+/// A recogniser that emits `Drag` on the very first `TouchMove` cannot be told
+/// apart from a tap by its consumer: `ScrollArea` scrolls on `Drag::delta`, so a
+/// finger that lands and jitters by one pixel — or a swipe that merely *starts*
+/// stationary — would scroll the content before the gesture was known. Waiting for
+/// `PAN_MIN_DISTANCE` of total travel makes the first emitted `Drag` mean "this is
+/// a drag", not "this is a touch".
+///
+/// The threshold is measured against the **touch-down** point rather than the
+/// previous move, so a slow drift cannot accumulate past it one pixel at a time and
+/// still be reported as a drag from the first step.
 ///
 /// ## Events consumed
 /// - `TouchBegin { pos, touch_id }` → starts tracking
-/// - `TouchMove { pos, touch_id }` → emits Drag with delta
+/// - `TouchMove { pos, touch_id }` → emits Drag with delta once past the threshold
 /// - `TouchEnd { pos, touch_id }` → stops tracking (no event emitted)
 #[derive(Debug, Clone)]
 pub struct PanGesture {
     active: bool,
     touch_id: Option<TouchId>,
     last_pos: Option<Point>,
+    /// Where the finger went down, kept as the threshold's origin.
+    start_pos: Option<Point>,
+    /// Set once total travel exceeds `PAN_MIN_DISTANCE`; from then on every move emits.
+    dragging: bool,
 }
 
 impl PanGesture {
     /// Creates a recognizer that is not tracking any touch.
     pub fn new() -> Self {
-        Self { active: false, touch_id: None, last_pos: None }
+        Self { active: false, touch_id: None, last_pos: None, start_pos: None, dragging: false }
     }
 }
 
@@ -126,17 +145,31 @@ impl GestureRecognizer for PanGesture {
                 self.active = true;
                 self.touch_id = Some(*touch_id);
                 self.last_pos = Some(*pos);
+                self.start_pos = Some(*pos);
+                self.dragging = false;
                 None
             }
             Event::TouchMove { pos, touch_id }
                 if self.active && Some(*touch_id) == self.touch_id =>
             {
+                // Track the position even before the threshold is crossed, so the
+                // first emitted `delta` covers the whole travel since touch-down
+                // rather than only the step that happened to cross the threshold.
                 let delta = if let Some(last) = self.last_pos {
                     Point::new(pos.x - last.x, pos.y - last.y)
                 } else {
                     Point::new(0, 0)
                 };
                 self.last_pos = Some(*pos);
+
+                if !self.dragging {
+                    let travelled = super::distance(self.start_pos?, *pos);
+                    if travelled < PAN_MIN_DISTANCE {
+                        return None;
+                    }
+                    self.dragging = true;
+                }
+
                 Some(Event::Drag { pos: *pos, touch_id: *touch_id, delta })
             }
             Event::TouchEnd { pos: _, touch_id } if Some(*touch_id) == self.touch_id => {
@@ -151,6 +184,8 @@ impl GestureRecognizer for PanGesture {
         self.active = false;
         self.touch_id = None;
         self.last_pos = None;
+        self.start_pos = None;
+        self.dragging = false;
     }
 }
 

@@ -455,6 +455,12 @@ class RustWidgets:
         L.rw_widget_list_count.argtypes = [c_uint64]
         L.rw_widget_list_count.restype = c_uint
 
+        L.rw_widget_list_item.argtypes = [c_uint64, c_uint, c_char_p, c_uint]
+        L.rw_widget_list_item.restype = c_uint
+
+        L.rw_widget_property_tokens.argtypes = [c_uint64, c_char_p, c_char_p, c_uint]
+        L.rw_widget_property_tokens.restype = c_uint
+
         L.rw_widget_set_style.argtypes = [c_uint64, c_char_p]
         L.rw_widget_set_style.restype = c_bool
 
@@ -1161,6 +1167,38 @@ class RustWidgets:
         """How many items a list-like control holds; ``0`` when it holds none."""
         return int(self.lib.rw_widget_list_count(widget_id))
 
+    def list_item(self, widget_id: int, index: int) -> str:
+        """The text of item ``index`` in a list-like control.
+
+        Returns ``""`` when the control holds no items or ``index`` is past the
+        last one. Compare against :meth:`list_count` to tell those apart.
+
+        Without this, items were write-only from Python: ``list_add`` and
+        ``list_count`` let you build a list but never read back what you put in.
+        """
+        return self._read_string(
+            self.lib.rw_widget_list_item,
+            widget_id,
+            index,
+        )
+
+    def property_tokens(self, widget_id: int, name: str) -> "list[str]":
+        """The accepted spellings for an enum property, or ``[]``.
+
+        An empty list means the property declares no fixed set of values, which
+        covers both a non-enum property and a name the control does not publish.
+
+        Useful for validating a value before writing it, or for presenting the
+        legal choices in a UI — the list comes from the control's own schema, so
+        it cannot drift from what the property actually accepts.
+        """
+        tokens = self._read_name_list(
+            self.lib.rw_widget_property_tokens,
+            widget_id,
+            self._encode(name),
+        )
+        return tokens
+
     def set_widget_style(self, widget_id: int, declaration: str) -> bool:
         """Apply one style declaration written as ``"property: value"``.
 
@@ -1211,19 +1249,38 @@ class RustWidgets:
         """How many children ``parent``'s layout holds, without applying it."""
         return int(self.lib.rw_widget_layout_child_count(parent))
 
-    def _read_name_list(self, func, first_arg) -> list[str]:
+    def _read_name_list(self, func, first_arg, second_arg=None) -> list[str]:
         """Calls a ``(out, cap) -> required`` enumerator and splits the result.
 
         The ABI always reports the full byte length, so one size query followed
         by one read is enough; a name list that grew between the two calls would
         simply be truncated on the second, which the next call would correct.
+
+        ``second_arg`` carries the extra leading argument the two-argument
+        enumerators need (``rw_widget_property_tokens`` takes the property name
+        before ``out``/``cap``); the one-argument callers leave it ``None``.
         """
-        required = func(first_arg, None, 0)
+        prefix = (first_arg,) if second_arg is None else (first_arg, second_arg)
+        required = func(*prefix, None, 0)
         if required == 0:
             return []
         buffer = ctypes.create_string_buffer(required + 1)
-        func(first_arg, buffer, required + 1)
+        func(*prefix, buffer, required + 1)
         return buffer.value.decode("utf-8").split()
+
+    def _read_string(self, func, widget_id, index) -> str:
+        """Calls a ``(widget, index, out, cap) -> required`` reader once sized.
+
+        Same two-call convention as :meth:`_read_name_list`, but the result is a
+        single string that may contain spaces, so it is returned whole rather
+        than split.
+        """
+        required = func(widget_id, index, None, 0)
+        if required == 0:
+            return ""
+        buffer = ctypes.create_string_buffer(required + 1)
+        func(widget_id, index, buffer, required + 1)
+        return buffer.value.decode("utf-8")
 
     def set_widget_text(self, widget_id: int, text: str) -> None:
         """Set the text content of a widget."""

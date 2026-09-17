@@ -787,13 +787,43 @@ pub enum RepaintMode {
 struct RepaintState {
     mode: RepaintMode,
     tracker: crate::performance::DirtyRegionTracker,
+    /// Consecutive frames whose damage covered too much of the surface to be worth
+    /// regioning, while the mode was [`RepaintMode::Adaptive`].
+    ///
+    /// # What this counter is for
+    ///
+    /// `Adaptive` and `Dirty` are not the same policy, and before this counter they
+    /// behaved identically: both delegated to `render_dirty_regions`, which decides
+    /// per frame whether to fall back. The difference is what each mode knows.
+    ///
+    /// `Dirty` means the caller has already decided that damage tracking is worth it,
+    /// so every frame is measured against the damage. `Adaptive` means the caller does
+    /// not know, and expects the library to work it out — so a run of frames whose
+    /// damage covers the surface is evidence that regioning cannot pay off *here*, and
+    /// measuring each of them again is work whose answer is already known.
+    ///
+    /// After [`ADAPTIVE_LARGE_DAMAGE_RUN`] such frames the next frame skips the
+    /// regioning entirely and paints whole. One frame with small damage resets the
+    /// counter, so settling back into a few changing controls returns to regioning on
+    /// its own rather than staying latched.
+    large_damage_run: u32,
 }
+
+/// Consecutive over-threshold frames in [`RepaintMode::Adaptive`] before it stops
+/// measuring and paints whole.
+///
+/// Three, because two could be a coincidence — a resize legitimately damages
+/// everything once or twice — while a fourth measurement of the same answer is pure
+/// overhead. The counter is reset by any frame whose damage is small, so the cost of
+/// guessing wrong here is one extra full paint.
+pub const ADAPTIVE_LARGE_DAMAGE_RUN: u32 = 3;
 
 impl RepaintState {
     fn new() -> Self {
         Self {
             mode: RepaintMode::default(),
             tracker: crate::performance::DirtyRegionTracker::new(),
+            large_damage_run: 0,
         }
     }
 }
@@ -960,6 +990,10 @@ pub fn render_frame_incremental(
             let _ = REPAINT.try_with(|map| {
                 if let Some(state) = map.borrow_mut().get_mut(&id) {
                     state.tracker.clear();
+                    // A full paint is not "large damage" evidence: it may be the first
+                    // frame, or a resize. Resetting here keeps `Adaptive` from reading
+                    // its own fallbacks as proof that damage tracking is hopeless.
+                    state.large_damage_run = 0;
                 }
             });
             return Some(frame);
@@ -967,9 +1001,65 @@ pub fn render_frame_incremental(
         return None;
     }
 
+    // Measured *before* the regions are handed to `render_dirty_regions`, which clears
+    // the tracker as it paints. Both the `Adaptive` decision and the run counter need
+    // this frame's coverage, and after the call there is nothing left to measure.
+    let covered_too_much = {
+        let frame_area = u64::from(size.width) * u64::from(size.height);
+        let covered: u64 =
+            dirty_rects(id).iter().map(|rect| u64::from(rect.width) * u64::from(rect.height)).sum();
+        frame_area == 0
+            || (covered as f32)
+                >= (frame_area as f32) * crate::performance::render_dirty::FULL_REPAINT_AREA_RATIO
+    };
+
+    // `Adaptive` decides for itself whether measuring is worth it.
+    //
+    // This is the whole difference between `Adaptive` and `Dirty`. `Dirty` means the
+    // caller has already decided, so every frame is measured. `Adaptive` means the
+    // caller does not know, so a run of frames whose damage covers the surface is
+    // taken as evidence that regioning cannot pay off here.
+    //
+    // # Why the run is checked *and* this frame's damage is measured
+    //
+    // The first version skipped regioning whenever the run was full, without looking
+    // at the current frame — so a single small change after three large ones still
+    // painted whole, and the run could never be cleared because the code that clears
+    // it was never reached. The mode latched. Checking both conditions means the run
+    // is only trusted while it is still true: as soon as a frame's damage is small,
+    // that frame is measured (and resets the run), and the next frame regions again.
+    if mode == RepaintMode::Adaptive {
+        let learned = REPAINT
+            .try_with(|map| {
+                map.borrow()
+                    .get(&id)
+                    .is_some_and(|state| state.large_damage_run >= ADAPTIVE_LARGE_DAMAGE_RUN)
+            })
+            .unwrap_or(false);
+        if learned && covered_too_much {
+            if let Some(frame) = render_frame(id, size, clear) {
+                let _ = REPAINT.try_with(|map| {
+                    if let Some(state) = map.borrow_mut().get_mut(&id) {
+                        state.tracker.clear();
+                    }
+                });
+                return Some(frame);
+            }
+            return None;
+        }
+    }
+
     if !use_dirty {
         // Nothing was damaged: the previous frame is still correct, and redrawing
         // it would be work for no visible change.
+        //
+        // This is also the reset point for the `Adaptive` run: a frame with no damage
+        // is proof the surface has settled.
+        let _ = REPAINT.try_with(|map| {
+            if let Some(state) = map.borrow_mut().get_mut(&id) {
+                state.large_damage_run = 0;
+            }
+        });
         return Some(carried?.to_vec());
     }
 
@@ -977,9 +1067,19 @@ pub fn render_frame_incremental(
     // Seed the backend with the previous frame so the regions this pass does not
     // touch keep their pixels.
     backend.seed_from(carried?);
+
     let mut tracker = REPAINT
         .try_with(|map| {
             map.borrow_mut().get_mut(&id).map(|state| {
+                // Feed the `Adaptive` run counter — **only** in `Adaptive`. Updating it
+                // in `Dirty` too was the first version of this code, and it made the two
+                // modes observably identical again from the outside: `Dirty` reported a
+                // growing run while its contract says it never learns. The counter is
+                // `Adaptive`'s memory, so only `Adaptive` may write it.
+                if mode == RepaintMode::Adaptive {
+                    state.large_damage_run =
+                        if covered_too_much { state.large_damage_run.saturating_add(1) } else { 0 };
+                }
                 let mut taken = crate::performance::DirtyRegionTracker::new();
                 for region in state.tracker.regions() {
                     taken.add(region.rect);
@@ -1074,6 +1174,24 @@ pub fn forget_cached_frame(id: ObjectId) {
 /// will be full", which is what a resize handler needs to know.
 pub fn cached_frame_size(id: ObjectId) -> Option<Size> {
     LAST_FRAME.try_with(|map| map.borrow().get(&id).map(|(size, _)| *size)).ok().flatten()
+}
+
+/// How many consecutive over-threshold frames [`RepaintMode::Adaptive`] has seen.
+///
+/// # Why this is public
+///
+/// `Adaptive` differs from `Dirty` only in this memory, so it is the only way to tell
+/// the two policies apart from outside — and a policy that cannot be observed cannot
+/// be tested. A host can also read it to decide whether to switch a widget to `Full`
+/// itself, which is the honest use of the number.
+///
+/// Zero for a widget in any other mode, and for one that is not mounted.
+pub fn adaptive_large_damage_run(id: ObjectId) -> u32 {
+    REPAINT
+        .try_with(|map| map.borrow().get(&id).map(|state| state.large_damage_run))
+        .ok()
+        .flatten()
+        .unwrap_or(0)
 }
 
 /// Renders one frame of a mounted widget at `size` and returns the RGBA bytes.
@@ -1301,6 +1419,162 @@ mod tests {
         let frame = render_frame_incremental(id, size, Color::rgb(1, 2, 3), None)
             .expect("a frame is still produced");
         assert_eq!(frame.len(), size.width as usize * size.height as usize * 4);
+
+        unregister(id);
+    }
+
+    /// `render_frame_cached` must remember the frame it produced, so the next call
+    /// can carry it forward instead of asking the caller to.
+    ///
+    /// This is the property that makes `RepaintMode` reach the screen: a backend's
+    /// paint callback passes only the widget and the size, so if nothing remembered
+    /// the previous frame every paint would fall back to full.
+    #[test]
+    fn the_cached_renderer_remembers_its_frame() {
+        let id = register(sample_editor("fn main() {}")).expect("registry");
+        let size = Size::new(64, 48);
+
+        assert_eq!(cached_frame_size(id), None, "nothing is cached before a first paint");
+
+        let first = render_frame_cached(id, size, Color::rgb(9, 9, 9)).expect("first frame");
+        assert_eq!(
+            cached_frame_size(id),
+            Some(size),
+            "the frame must be remembered, keyed by the size it was rendered at"
+        );
+
+        // A second paint with no damage returns the remembered frame byte for byte.
+        assert!(set_repaint_mode(id, RepaintMode::Dirty));
+        let second = render_frame_cached(id, size, Color::rgb(9, 9, 9)).expect("second frame");
+        assert_eq!(second, first, "an undamaged repaint must not change a pixel");
+
+        unregister(id);
+        assert_eq!(cached_frame_size(id), None, "unmounting must drop the frame");
+    }
+
+    /// A cached frame of the wrong size must not be used, or a resize would leave part
+    /// of the surface holding the previous layout's pixels.
+    #[test]
+    fn a_resize_discards_the_cached_frame() {
+        let id = register(sample_editor("fn main() {}")).expect("registry");
+        let small = Size::new(32, 24);
+        let large = Size::new(96, 72);
+
+        render_frame_cached(id, small, Color::rgb(1, 1, 1)).expect("small frame");
+        assert_eq!(cached_frame_size(id), Some(small));
+
+        let resized = render_frame_cached(id, large, Color::rgb(1, 1, 1)).expect("large frame");
+        assert_eq!(
+            resized.len(),
+            large.width as usize * large.height as usize * 4,
+            "a resize must produce a frame of the new size"
+        );
+        assert_eq!(
+            cached_frame_size(id),
+            Some(large),
+            "the cache must follow the resize rather than keep the old frame"
+        );
+
+        unregister(id);
+    }
+
+    /// Damage recorded on a removed widget must not survive it: a reused id would
+    /// otherwise repaint a region that no longer exists.
+    #[test]
+    fn unmounting_drops_the_damage_too() {
+        let id = register(sample_editor("fn main() {}")).expect("registry");
+        assert!(set_repaint_mode(id, RepaintMode::Dirty));
+        assert!(mark_dirty_rect(id, Rect::new(0, 0, 4, 4)));
+        assert_eq!(dirty_rects(id).len(), 1);
+
+        unregister(id);
+        assert!(dirty_rects(id).is_empty(), "the damage must go with the widget");
+    }
+
+    /// `Adaptive` and `Dirty` must not be the same policy.
+    ///
+    /// # What separates them
+    ///
+    /// `Dirty` means the caller has already decided damage tracking is worth it, so
+    /// every frame is measured. `Adaptive` means the caller does not know, so a run of
+    /// frames whose damage covers the surface is taken as evidence that regioning
+    /// cannot pay off here — and from then on it paints whole instead of measuring the
+    /// same answer again.
+    ///
+    /// Asserting on the run counter is asserting on that decision, because the counter
+    /// *is* the mode's memory. A version that treated the two modes alike would leave
+    /// it at zero forever, which is exactly what this test fails on.
+    #[test]
+    fn adaptive_learns_from_a_run_of_large_damage_but_dirty_does_not() {
+        let size = Size::new(200, 200);
+        // Damage covering the whole frame, so every frame is over the ratio.
+        let whole = Rect::new(0, 0, 200, 200);
+
+        // `Dirty`: measured every frame, never accumulates a run.
+        let dirty_id = register(sample_editor("fn main() {}")).expect("registry");
+        assert!(set_repaint_mode(dirty_id, RepaintMode::Dirty));
+        let mut frame = render_frame(dirty_id, size, Color::rgb(1, 1, 1)).expect("first frame");
+        for _ in 0..(ADAPTIVE_LARGE_DAMAGE_RUN + 2) {
+            assert!(mark_dirty_rect(dirty_id, whole));
+            frame = render_frame_incremental(dirty_id, size, Color::rgb(1, 1, 1), Some(&frame))
+                .expect("frame");
+        }
+        assert_eq!(
+            adaptive_large_damage_run(dirty_id),
+            0,
+            "Dirty must not learn: the caller already decided, so every frame is measured"
+        );
+        unregister(dirty_id);
+
+        // `Adaptive`: the same input accumulates the run.
+        let adaptive_id = register(sample_editor("fn main() {}")).expect("registry");
+        assert!(set_repaint_mode(adaptive_id, RepaintMode::Adaptive));
+        let mut frame = render_frame(adaptive_id, size, Color::rgb(1, 1, 1)).expect("first frame");
+        assert_eq!(
+            adaptive_large_damage_run(adaptive_id),
+            0,
+            "a full paint is not evidence either way"
+        );
+
+        for expected in 1..=(ADAPTIVE_LARGE_DAMAGE_RUN as usize) {
+            assert!(mark_dirty_rect(adaptive_id, whole));
+            frame = render_frame_incremental(adaptive_id, size, Color::rgb(1, 1, 1), Some(&frame))
+                .expect("frame");
+            assert_eq!(
+                adaptive_large_damage_run(adaptive_id) as usize,
+                expected,
+                "each over-threshold frame must advance the run"
+            );
+        }
+        unregister(adaptive_id);
+    }
+
+    /// A frame with small damage resets the `Adaptive` run, so the mode settles back
+    /// into regioning after an animation ends instead of staying latched.
+    #[test]
+    fn adaptive_recovers_when_the_damage_shrinks() {
+        let size = Size::new(200, 200);
+        let id = register(sample_editor("fn main() {}")).expect("registry");
+        assert!(set_repaint_mode(id, RepaintMode::Adaptive));
+        let mut frame = render_frame(id, size, Color::rgb(1, 1, 1)).expect("first frame");
+
+        for _ in 0..ADAPTIVE_LARGE_DAMAGE_RUN {
+            assert!(mark_dirty_rect(id, Rect::new(0, 0, 200, 200)));
+            frame = render_frame_incremental(id, size, Color::rgb(1, 1, 1), Some(&frame))
+                .expect("frame");
+        }
+        assert_eq!(adaptive_large_damage_run(id), ADAPTIVE_LARGE_DAMAGE_RUN);
+
+        // One small-damage frame is proof the surface settled. Its output is the frame
+        // for the *next* call, so it is carried rather than discarded.
+        assert!(mark_dirty_rect(id, Rect::new(0, 0, 4, 4)));
+        let _settled =
+            render_frame_incremental(id, size, Color::rgb(1, 1, 1), Some(&frame)).expect("frame");
+        assert_eq!(
+            adaptive_large_damage_run(id),
+            0,
+            "a small-damage frame must clear the run, or the mode would latch"
+        );
 
         unregister(id);
     }

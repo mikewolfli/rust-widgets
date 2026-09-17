@@ -588,6 +588,56 @@ pub extern "C" fn rw_widget_property_names(
     })
 }
 
+/// Writes the accepted spellings of an `Enum` property into `out`.
+///
+/// # Why this entry point exists
+///
+/// An enum property's legal values were undiscoverable from outside the library. A
+/// caller driving the property API (a C host, a Python binding, a JSON-tree editor)
+/// could read a property's *name* and *kind* but not the tokens `set` would accept, so
+/// the only way to present a choice was to hard-code a copy of the list — a copy that
+/// silently went stale when the control changed.
+///
+/// Returns the bytes the full list needs, exactly like
+/// [`rw_widget_property_names`], so a caller can size its buffer with one zero-cap call.
+///
+/// # Reading the result
+///
+/// A **zero** return means "this property declares no fixed set of values", which is
+/// the honest answer both for a non-enum property and for a name the control does not
+/// publish. It is not an error: most properties are not enums, and the C surface has no
+/// error channel for a query that simply has nothing to say. A caller that needs to
+/// distinguish "not an enum" from "no such property" should consult
+/// [`rw_widget_property_names`] first.
+///
+/// # Safety
+///
+/// `name` must be null or point to a NUL-terminated string. `out` must be null or point
+/// to a writable buffer of at least `cap` bytes.
+#[cfg(not(stripped_widgets))]
+#[no_mangle]
+pub unsafe extern "C" fn rw_widget_property_tokens(
+    widget_id: u64,
+    name: *const c_char,
+    out: *mut c_char,
+    cap: c_uint,
+) -> c_uint {
+    c_try!({
+        if name.is_null() {
+            return 0;
+        }
+        let name = c_str_or_default(name);
+        let tokens = crate::widget::runtime::with_widget(widget_id, |widget| {
+            crate::widget::capability::properties_trait::widget_property_tokens(widget, &name)
+                .to_vec()
+        });
+        match tokens {
+            Some(tokens) => write_space_separated(&tokens, out, cap),
+            None => 0,
+        }
+    })
+}
+
 /// Writes `items` into `out` as a space-separated, NUL-terminated list.
 ///
 /// Shared by the enumeration entry points so they agree on the size convention:
@@ -902,6 +952,71 @@ pub extern "C" fn rw_widget_list_count(widget_id: u64) -> c_uint {
 }
 
 #[no_mangle]
+/// Returns the number of bytes item `index` needs, writing its text into `out`.
+///
+/// # Why this exists
+///
+/// `item_count` was the only collection fact a caller could read across the C ABI. A
+/// host could add items, count them and clear them but never read back what it had
+/// added, so a list's *contents* were write-only. This is the read side.
+///
+/// # Reading the result
+///
+/// Follows the same two-call convention as the other enumeration entry points: call
+/// with `out = NULL` or `cap = 0` to learn the required length, then again with a
+/// buffer. The return is always the full byte length.
+///
+/// A **zero** return means "no item at this index", which covers an out-of-range
+/// index and a control that holds no items. It is not distinguishable from an empty
+/// string here; a caller that needs to tell them apart compares against
+/// [`rw_widget_list_count`].
+///
+pub extern "C" fn rw_widget_list_item(
+    widget_id: u64,
+    index: c_uint,
+    out: *mut c_char,
+    cap: c_uint,
+) -> c_uint {
+    c_try!({
+        let text = crate::widget::runtime::with_widget(widget_id, |widget| {
+            crate::widget::capability::widget_list_item(widget, index as usize)
+        })
+        .flatten();
+        match text {
+            Some(text) => write_c_string(&text, out, cap),
+            None => 0,
+        }
+    })
+}
+
+/// Writes `text` into `out` as a NUL-terminated string, returning the length it needs.
+///
+/// Shared shape with [`write_space_separated`]: a null or zero-capacity `out` reports the
+/// requirement without writing, so a caller can size a buffer in one extra call. A
+/// shorter buffer is truncated rather than allowed to overrun, and the return still
+/// reports the full length.
+///
+/// Kept private for the same reason as the caller: a public `extern "C"` function that
+/// dereferences a raw pointer trips `clippy::not_unsafe_ptr_arg_deref`, and marking the
+/// exported ABI `unsafe` would force every caller to reason about a contract the two-call
+/// convention already documents.
+fn write_c_string(text: &str, out: *mut c_char, cap: c_uint) -> c_uint {
+    let bytes = text.as_bytes();
+    let required = bytes.len() as c_uint;
+    if out.is_null() || cap == 0 {
+        return required;
+    }
+    let writable = (cap as usize).saturating_sub(1).min(bytes.len());
+    unsafe {
+        // `cast` rather than `as`, for the reason documented on
+        // `write_space_separated`: `c_char` is not the same signedness everywhere.
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), out.cast::<u8>(), writable);
+        *out.add(writable) = 0;
+    }
+    required
+}
+
+#[no_mangle]
 /// Creates a layout for `parent` and stores it, replacing any previous layout.
 ///
 /// `kind_name` is one of `"hbox"` / `"vbox"` / `"grid"` / `"uniform_grid"` /
@@ -1155,6 +1270,29 @@ fn encode_capability_value(
             let c_text = CString::new(text).unwrap_or_default().into_raw();
             (RW_VALUE_STRING, 0, Some(c_text))
         }
+        // Colours and rectangles travel as their CSS-style string form, which is the
+        // spelling the style layer already accepts. They keep distinct `kind`s so a
+        // caller can tell a colour from free text without guessing, and so the value
+        // is re-parseable into a real `Color`/`Rect` rather than a loose string.
+        //
+        // `to_hex_rgba` always emits `#RRGGBBAA`, which `CssParser::parse_color`
+        // accepts, so encode/decode round-trips exactly (see
+        // `capability_values_round_trip_through_the_abi`).
+        CapabilityValue::Color(color) => {
+            let c_text = CString::new(color.to_hex_rgba()).unwrap_or_default();
+            (RW_VALUE_COLOR, 0, Some(c_text.into_raw()))
+        }
+        CapabilityValue::Rect(rect) => {
+            let text = alloc::format!(
+                "{},{},{},{}",
+                rect.x,
+                rect.y,
+                rect.width as i32,
+                rect.height as i32
+            );
+            let c_text = CString::new(text).unwrap_or_default();
+            (RW_VALUE_RECT, 0, Some(c_text.into_raw()))
+        }
     }
 }
 
@@ -1182,8 +1320,47 @@ fn decode_capability_value(
                 CStr::from_ptr(str_value).to_string_lossy().into_owned()
             }
         })),
+        // Parsing happens here rather than being deferred, so a malformed string is
+        // refused at the ABI boundary. `None` becomes a type mismatch at the caller,
+        // which is the honest answer: the caller passed something this property's
+        // declared kind cannot represent.
+        RW_VALUE_COLOR => Some(CapabilityValue::Color(
+            crate::style::CssParser::parse_color(&unsafe { read_c_string(str_value) }).ok()?,
+        )),
+        RW_VALUE_RECT => {
+            Some(CapabilityValue::Rect(parse_rect_string(&unsafe { read_c_string(str_value) })?))
+        }
         _ => None,
     }
+}
+
+/// Reads a NUL-terminated C string, treating null as empty.
+///
+/// # Safety
+///
+/// `value` must be null or point to a NUL-terminated string.
+unsafe fn read_c_string(value: *const c_char) -> String {
+    if value.is_null() {
+        String::new()
+    } else {
+        CStr::from_ptr(value).to_string_lossy().into_owned()
+    }
+}
+
+/// Parses `"x,y,w,h"` into a [`crate::core::Rect`].
+///
+/// Returns `None` unless all four components are present and parse, so a truncated
+/// or malformed rectangle is refused rather than silently becoming a zero-sized one.
+fn parse_rect_string(text: &str) -> Option<crate::core::Rect> {
+    let mut parts = text.split(',');
+    let x: i32 = parts.next()?.trim().parse().ok()?;
+    let y: i32 = parts.next()?.trim().parse().ok()?;
+    let width: u32 = parts.next()?.trim().parse().ok()?;
+    let height: u32 = parts.next()?.trim().parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(crate::core::Rect::new(x, y, width, height))
 }
 
 /// The `rw_value_kind` discriminants, named so the Rust side and the generated
@@ -1194,6 +1371,10 @@ const RW_VALUE_INT: c_int = 2;
 const RW_VALUE_UINT: c_int = 3;
 const RW_VALUE_FLOAT: c_int = 4;
 const RW_VALUE_STRING: c_int = 5;
+// Appended after `RW_VALUE_STRING` so the earlier discriminants keep the values any
+// existing binding already uses; a C caller that knows only 0..=5 is unaffected.
+const RW_VALUE_COLOR: c_int = 6;
+const RW_VALUE_RECT: c_int = 7;
 #[no_mangle]
 /// Removes every item, leaving the combo box empty and with no selection.
 ///
@@ -2067,6 +2248,77 @@ pub unsafe extern "C" fn rw_free_rust_string(s: *mut c_char) {
 mod tests {
     use super::*;
 
+    /// Every `CapabilityValue` variant must survive encode → decode unchanged.
+    ///
+    /// # Why a round-trip test and not "it compiles"
+    ///
+    /// `encode_capability_value` and `decode_capability_value` are the only path a
+    /// property value takes across the C ABI, and they are two separate `match` blocks
+    /// over the same enum. A variant added to one and forgotten in the other is exactly
+    /// the kind of defect that compiles, passes a smoke test, and corrupts a value for
+    /// the one caller that uses it. Comparing every pair pins both sides at once.
+    ///
+    /// The `Float` case is the sharpest: it travels as a bit pattern in an `i64`, so a
+    /// truncating encode would pass a casual test and fail here.
+    ///
+    /// Strings are freed before the assertion so the test also proves the encoder
+    /// hands back an owned pointer the caller is expected to release.
+    #[test]
+    fn capability_values_round_trip_through_the_abi() {
+        use crate::widget::capability::CapabilityValue;
+
+        let cases = [
+            CapabilityValue::Null,
+            CapabilityValue::Bool(true),
+            CapabilityValue::Bool(false),
+            CapabilityValue::Int(-42),
+            CapabilityValue::UInt(7),
+            CapabilityValue::Float(core::f64::consts::PI),
+            CapabilityValue::String("hello".to_string()),
+            CapabilityValue::Color(crate::core::Color::rgba(0x0A, 0x1B, 0x2C, 0x7D)),
+            CapabilityValue::Rect(crate::core::Rect::new(1, 2, 300, 400)),
+        ];
+
+        for original in cases {
+            let (kind, num, text) = encode_capability_value(original.clone());
+            let raw = text.map_or(core::ptr::null(), |owned| owned as *const c_char);
+            let decoded = decode_capability_value(kind, num, raw)
+                .unwrap_or_else(|| panic!("kind {kind} must decode, but did not"));
+
+            assert_eq!(
+                decoded, original,
+                "a {original:?} must survive the ABI round-trip, got {decoded:?}"
+            );
+
+            // Reclaim the string the encoder allocated, as `rw_free_string` would.
+            if !raw.is_null() {
+                unsafe { drop(CString::from_raw(raw as *mut c_char)) };
+            }
+        }
+    }
+
+    /// A malformed colour or rectangle must be refused, not defaulted.
+    ///
+    /// The decoder parses these from the string the caller passed, so the failure mode
+    /// to guard is a bad string silently becoming black or an empty rectangle.
+    #[test]
+    fn malformed_color_and_rect_are_refused() {
+        for bad in ["not-a-color", "#12", "rgb(1,2)", ""] {
+            let text = CString::new(bad).expect("no interior NUL");
+            assert!(
+                decode_capability_value(RW_VALUE_COLOR, 0, text.as_ptr()).is_none(),
+                "{bad:?} is not a colour and must not decode to one"
+            );
+        }
+        for bad in ["1,2,3", "a,b,c,d", "1,2,3,4,5", "", "1,2,-3,-4"] {
+            let text = CString::new(bad).expect("no interior NUL");
+            assert!(
+                decode_capability_value(RW_VALUE_RECT, 0, text.as_ptr()).is_none(),
+                "{bad:?} is not a rectangle and must not decode to one"
+            );
+        }
+    }
+
     /// Exercise the core C ABI round-trip through the real `extern "C"` entry
     /// points: create a window and child controls, mutate text/geometry/
     /// visibility/enabled, read text back, then free the returned string.
@@ -2387,6 +2639,78 @@ mod tests {
         );
         assert!(!rw_widget_list_clear(button), "a button has no collection to clear");
         assert_eq!(rw_widget_list_count(button), 0);
+    }
+
+    /// Items written through the ABI must be readable back through it.
+    ///
+    /// # Why this is a separate test from the add/count one
+    ///
+    /// The add/count test proves writes land. It cannot prove reads exist, and before
+    /// `rw_widget_list_item` a caller could add items, count them and clear them while
+    /// never being able to read what it had added — the collection's *contents* were
+    /// write-only across the whole declarative surface. Only a read-back assertion
+    /// catches that, because every other entry point keeps working.
+    #[test]
+    fn c_abi_widget_list_items_can_be_read_back() {
+        use std::ffi::{CStr, CString};
+
+        let c = |s: &str| CString::new(s).expect("no interior NUL");
+
+        let title = c("list-read-window");
+        let window = rw_create_window(title.as_ptr(), 0, 0, 320, 240);
+        assert_ne!(window, 0);
+
+        let kind = c("list_box");
+        let text = c("");
+        let list = rw_create_widget_of_kind(window, kind.as_ptr(), text.as_ptr(), 0, 0, 160, 120);
+        assert_ne!(list, 0);
+
+        let expected = ["alpha", "beta", "gamma"];
+        for item in expected {
+            let payload = c(item);
+            rw_widget_list_add(list, payload.as_ptr());
+        }
+
+        // The two-call convention: a null buffer reports the size without writing.
+        for (index, want) in expected.iter().enumerate() {
+            let required = rw_widget_list_item(list, index as c_uint, std::ptr::null_mut(), 0);
+            assert_eq!(
+                required as usize,
+                want.len(),
+                "a null buffer must report the byte length of item {index}"
+            );
+
+            // `c_char` is signed on some targets and unsigned on others (Harmony is
+            // `u8`), so the buffer is typed by the alias rather than by `i8`.
+            let mut buffer = vec![0 as c_char; want.len() + 1];
+            let written = rw_widget_list_item(
+                list,
+                index as c_uint,
+                buffer.as_mut_ptr(),
+                buffer.len() as c_uint,
+            );
+            assert_eq!(written, required, "the writing call must report the same length");
+            let got = unsafe { CStr::from_ptr(buffer.as_ptr()) }.to_str().expect("ASCII fixtures");
+            assert_eq!(got, *want, "item {index} must read back as it was added");
+        }
+
+        // Out of range is "no item", not a panic and not a stale value.
+        assert_eq!(
+            rw_widget_list_item(list, expected.len() as c_uint, std::ptr::null_mut(), 0),
+            0,
+            "an index past the last item must report no item"
+        );
+
+        // A control with no collection answers the same way.
+        let button_kind = c("button");
+        let button =
+            rw_create_widget_of_kind(window, button_kind.as_ptr(), text.as_ptr(), 0, 0, 80, 24);
+        assert_ne!(button, 0);
+        assert_eq!(
+            rw_widget_list_item(button, 0, std::ptr::null_mut(), 0),
+            0,
+            "a button holds no items to read"
+        );
     }
 
     /// The scroll entry points must move a control's real scroll offset, which is

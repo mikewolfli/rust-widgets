@@ -40,6 +40,28 @@ pub enum CapabilityValue {
     /// A string, for text properties and for enumerated values, which travel as
     /// their token spelling (see [`PropertyValueKind::Enum`]).
     String(String),
+    /// An RGBA colour.
+    ///
+    /// Colours used to travel as strings, which meant every caller had to agree on a
+    /// spelling (`#rrggbbaa`? `rgb(..)`? a named colour?) and a typo became a silently
+    /// wrong colour instead of a refused write. Carrying the parsed value makes the
+    /// declared kind enforceable: a write of anything else is a `TypeMismatch`.
+    Color(crate::core::Color),
+    /// A rectangle in logical pixels.
+    ///
+    /// Geometry used to travel as a `"x,y,w,h"` string, which is worse than the
+    /// colour case because it is not a type at all — the components had to be split
+    /// and re-parsed by every consumer, and a malformed string was indistinguishable
+    /// from a valid one until it was too late to report.
+    ///
+    /// # Scope
+    ///
+    /// A widget's *own* geometry is still read-only and still set through the
+    /// dedicated geometry entry point, because a control's placement is the layout's
+    /// business rather than a property. This variant exists for properties that are
+    /// genuinely rectangles of their own — a plot area, a clipping region, a source
+    /// image crop.
+    Rect(crate::core::Rect),
 }
 
 /// Why a capability-based property read or write did not happen.
@@ -68,6 +90,21 @@ pub enum CapabilityAccessError {
     /// operation the widget's interaction model cannot honour is reported here
     /// rather than being accepted and ignored.
     UnsupportedOnWidget,
+    /// The property was found and the value was the right type, but the value itself
+    /// addresses nothing — an index past the end of the collection, or a position that
+    /// does not exist.
+    ///
+    /// # Why this is distinct from [`CapabilityAccessError::UnsupportedOnWidget`]
+    ///
+    /// The two say opposite things to the caller. `UnsupportedOnWidget` means "stop
+    /// asking, this control will never do that", so a caller should not retry. This one
+    /// means "this control does that, but not at *that* index", so the caller's mistake
+    /// is the argument and the same call with a valid index succeeds.
+    ///
+    /// Reporting an out-of-range index as `UnsupportedOnWidget` sent callers to look for
+    /// a different control when the real mistake was in their own argument, and it made
+    /// the error indistinguishable from a genuine capability gap in logs.
+    OutOfRange,
 }
 
 /// Primitive property value kinds used by capability metadata.
@@ -95,6 +132,10 @@ pub enum PropertyValueKind {
     /// rather than its ordinal; an unrecognised token is a parse failure, not a
     /// different variant.
     Enum,
+    /// An RGBA colour, carried as [`CapabilityValue::Color`].
+    Color,
+    /// A rectangle in logical pixels, carried as [`CapabilityValue::Rect`].
+    Rect,
 }
 
 /// Metadata for one readable/writable property.
@@ -115,6 +156,60 @@ pub struct PropertySchema {
     /// read-only property, and a write answers
     /// [`CapabilityAccessError::ReadOnlyProperty`].
     pub writable: bool,
+    /// The accepted spellings for a [`PropertyValueKind::Enum`] property, in the order
+    /// they should be offered to a user. Empty for every other kind.
+    ///
+    /// # Why this is a field and not a lookup elsewhere
+    ///
+    /// An enum property's legal values were previously undiscoverable from outside: the
+    /// tokens existed only as string literals inside each control's `set` arm, so a
+    /// caller driving the property API could not present a choice without duplicating
+    /// that knowledge — and nothing made the duplicate fail when the control changed.
+    /// Carrying the list in the schema makes the control's own declaration the single
+    /// source, reachable through `rw_widget_property_tokens`.
+    ///
+    /// # How existing entries stay valid
+    ///
+    /// This field is filled by [`PropertySchema::new`] and the `bool`/`number`/
+    /// `text`/`enum` constructors. The 1200-odd struct literals in this crate were
+    /// written before this field existed, so they are migrated to the constructors
+    /// rather than hand-edited — see the note on each constructor.
+    pub accepted_tokens: &'static [&'static str],
+}
+
+impl PropertySchema {
+    /// A schema entry with no accepted-token list.
+    ///
+    /// The constructor to use for every non-enum property: it keeps `accepted_tokens`
+    /// empty, which is the correct answer for a value whose legal inputs are not a fixed
+    /// set.
+    pub const fn new(
+        name: &'static str,
+        value_kind: PropertyValueKind,
+        readable: bool,
+        writable: bool,
+    ) -> Self {
+        Self { name, value_kind, readable, writable, accepted_tokens: &[] }
+    }
+
+    /// A [`PropertyValueKind::Enum`] entry that publishes its legal spellings.
+    ///
+    /// The tokens must be the spellings `set` actually accepts. `tokens_round_trip` in
+    /// this module's tests writes each one back, so a list that has drifted from the
+    /// control's parser fails rather than misleading a caller.
+    pub const fn enumerated(
+        name: &'static str,
+        readable: bool,
+        writable: bool,
+        accepted_tokens: &'static [&'static str],
+    ) -> Self {
+        Self { name, value_kind: PropertyValueKind::Enum, readable, writable, accepted_tokens }
+    }
+
+    /// The accepted spellings, or an empty slice for a non-enum property.
+    pub const fn accepted_tokens(&self) -> &'static [&'static str] {
+        self.accepted_tokens
+    }
 }
 
 /// Capability metadata for a widget kind.

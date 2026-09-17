@@ -80,6 +80,27 @@ jobs:
           chmod +x tools/check_widget_registration_fidelity.sh
           ./tools/check_widget_registration_fidelity.sh
 
+      # Every control must have at least one test that builds it. `Toast` shipped
+      # with none while every other gate passed: it was registered, had a contract,
+      # was reachable from JSON, CSS and the C ABI, and had a matrix row — and none
+      # of those asks whether anything ever mounts the control.
+      - name: Run control test coverage gate
+        shell: bash
+        run: |
+          chmod +x tools/check_control_has_tests.sh
+          ./tools/check_control_has_tests.sh
+
+      # Every gesture event must have a production construction site. `DoubleTap`
+      # shipped unreachable: the engine returned on the first recognizer that fired,
+      # and `TapGesture` sits earlier in the chain and satisfies every second tap.
+      # The recognizer was correct and its own tests passed — because they drove it
+      # directly instead of through the engine.
+      - name: Run event producer gate
+        shell: bash
+        run: |
+          chmod +x tools/check_event_producers.sh
+          ./tools/check_event_producers.sh
+
       # Every `pub mod` must state whether it has production callers, is exposed
       # over the C ABI, or is a deliberate experiment. Without this, a module with
       # no consumer is indistinguishable from one whose consumer was deleted, and

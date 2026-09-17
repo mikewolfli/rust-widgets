@@ -348,7 +348,10 @@ impl WidgetProperties for TreeTable {
                     if self.select_row(row) || self.row_count() == 0 {
                         Ok(())
                     } else {
-                        Err(CapabilityAccessError::UnsupportedOnWidget)
+                        // `select_row` answers `false` for a row past the last one;
+                        // the empty-table case is already accepted above, so what
+                        // remains is an out-of-range index.
+                        Err(CapabilityAccessError::OutOfRange)
                     }
                 }
             },
@@ -491,6 +494,27 @@ mod tests {
             let id = path.iter().map(|part| part.to_string()).collect::<Vec<_>>().join("/");
             Some(format!("{}:{}", id, column))
         }
+    }
+
+    #[test]
+    fn out_of_range_row_is_reported_as_out_of_range_not_unsupported() {
+        // Same misreport as `list_view`/`tree_view`: the empty-table case is already
+        // accepted, so the only remaining `false` is a row past the last visible one —
+        // an argument fault, not a capability gap.
+        use crate::widget::capability::types::CapabilityAccessError;
+
+        let mut table = TreeTable::new(Rect::new(0, 0, 200, 120));
+        table.set_model(std::sync::Arc::new(SampleTreeTableModel));
+        assert!(table.row_count() > 0, "the fixture must have rows to be out of range of");
+
+        assert_eq!(
+            table.set("selected_row", CapabilityValue::UInt(9999)),
+            Err(CapabilityAccessError::OutOfRange),
+            "a row past the last visible one is the caller's argument"
+        );
+        // A valid row still works, which is what separates the two errors.
+        assert_eq!(table.set("selected_row", CapabilityValue::UInt(0)), Ok(()));
+        assert_eq!(table.selected_row(), Some(0));
     }
 
     #[test]

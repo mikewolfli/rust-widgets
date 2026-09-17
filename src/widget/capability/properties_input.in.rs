@@ -7,943 +7,203 @@
 macro_rules! impl_properties_input {
     () => {
         pub(crate) const SLIDER_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "minimum",
-                value_kind: PropertyValueKind::Int,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "maximum",
-                value_kind: PropertyValueKind::Int,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "value",
-                value_kind: PropertyValueKind::Int,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "single_step",
-                value_kind: PropertyValueKind::Int,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "page_step",
-                value_kind: PropertyValueKind::Int,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "orientation",
-                value_kind: PropertyValueKind::Enum,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tick_position",
-                value_kind: PropertyValueKind::Enum,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tick_interval",
-                value_kind: PropertyValueKind::Int,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tracking",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "slider_position",
-                value_kind: PropertyValueKind::Int,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
+            PropertySchema::new("minimum", PropertyValueKind::Int, true, true),
+            PropertySchema::new("maximum", PropertyValueKind::Int, true, true),
+            PropertySchema::new("value", PropertyValueKind::Int, true, true),
+            PropertySchema::new("single_step", PropertyValueKind::Int, true, true),
+            PropertySchema::new("page_step", PropertyValueKind::Int, true, true),
+            PropertySchema::enumerated("orientation", true, true, &["horizontal", "vertical"]),
+            PropertySchema::enumerated("tick_position", true, true, &["noticks", "left", "right", "ticksbothsides"]),
+            PropertySchema::new("tick_interval", PropertyValueKind::Int, true, true),
+            PropertySchema::new("tracking", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("slider_position", PropertyValueKind::Int, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
         pub(crate) const PROGRESS_BAR_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "minimum",
-                value_kind: PropertyValueKind::Int,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "maximum",
-                value_kind: PropertyValueKind::Int,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "value",
-                value_kind: PropertyValueKind::Int,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "text_visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "orientation",
-                value_kind: PropertyValueKind::Enum,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "inverted_appearance",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "progress",
-                value_kind: PropertyValueKind::Float,
-                readable: true,
-                writable: false,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
+            PropertySchema::new("minimum", PropertyValueKind::Int, true, true),
+            PropertySchema::new("maximum", PropertyValueKind::Int, true, true),
+            PropertySchema::new("value", PropertyValueKind::Int, true, true),
+            PropertySchema::new("text_visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::enumerated("orientation", true, true, &["horizontal", "vertical"]),
+            PropertySchema::new("inverted_appearance", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("progress", PropertyValueKind::Float, true, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
         pub(crate) const SCROLL_BAR_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "minimum",
-                value_kind: PropertyValueKind::Int,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "maximum",
-                value_kind: PropertyValueKind::Int,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "value",
-                value_kind: PropertyValueKind::Int,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "single_step",
-                value_kind: PropertyValueKind::Int,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "page_step",
-                value_kind: PropertyValueKind::Int,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "orientation",
-                value_kind: PropertyValueKind::Enum,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "slider_size",
-                value_kind: PropertyValueKind::Float,
-                readable: true,
-                writable: false,
-            },
-            PropertySchema {
-                name: "slider_position",
-                value_kind: PropertyValueKind::Float,
-                readable: true,
-                writable: false,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
+            PropertySchema::new("minimum", PropertyValueKind::Int, true, true),
+            PropertySchema::new("maximum", PropertyValueKind::Int, true, true),
+            PropertySchema::new("value", PropertyValueKind::Int, true, true),
+            PropertySchema::new("single_step", PropertyValueKind::Int, true, true),
+            PropertySchema::new("page_step", PropertyValueKind::Int, true, true),
+            PropertySchema::enumerated("orientation", true, true, &["horizontal", "vertical"]),
+            PropertySchema::new("slider_size", PropertyValueKind::Float, true, false),
+            PropertySchema::new("slider_position", PropertyValueKind::Float, true, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
         pub(crate) const LIST_BOX_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "item_count",
-                value_kind: PropertyValueKind::UInt,
-                readable: true,
-                writable: false,
-            },
-            PropertySchema {
-                name: "selection_mode",
-                value_kind: PropertyValueKind::Enum,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "current_row",
-                value_kind: PropertyValueKind::UInt,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "item_height",
-                value_kind: PropertyValueKind::Float,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "selected_count",
-                value_kind: PropertyValueKind::UInt,
-                readable: true,
-                writable: false,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
+            PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::enumerated("selection_mode", true, true, &["none", "single", "multi", "extended"]),
+            PropertySchema::new("current_row", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("item_height", PropertyValueKind::Float, true, true),
+            PropertySchema::new("selected_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
         pub(crate) const SPIN_BOX_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "minimum",
-                value_kind: PropertyValueKind::Int,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "maximum",
-                value_kind: PropertyValueKind::Int,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "value",
-                value_kind: PropertyValueKind::Int,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "single_step",
-                value_kind: PropertyValueKind::Int,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "prefix",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "suffix",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "special_value_text",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "wrapping",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
+            PropertySchema::new("minimum", PropertyValueKind::Int, true, true),
+            PropertySchema::new("maximum", PropertyValueKind::Int, true, true),
+            PropertySchema::new("value", PropertyValueKind::Int, true, true),
+            PropertySchema::new("single_step", PropertyValueKind::Int, true, true),
+            PropertySchema::new("prefix", PropertyValueKind::String, true, true),
+            PropertySchema::new("suffix", PropertyValueKind::String, true, true),
+            PropertySchema::new("special_value_text", PropertyValueKind::String, true, true),
+            PropertySchema::new("wrapping", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
         pub(crate) const COMBO_BOX_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "item_count",
-                value_kind: PropertyValueKind::UInt,
-                readable: true,
-                writable: false,
-            },
-            PropertySchema {
-                name: "current_index",
-                value_kind: PropertyValueKind::UInt,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "current_text",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "editable",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "max_visible_items",
-                value_kind: PropertyValueKind::UInt,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
+            PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("current_index", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("current_text", PropertyValueKind::String, true, true),
+            PropertySchema::new("editable", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("max_visible_items", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const DIAL_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "minimum",
-                value_kind: PropertyValueKind::Int,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "maximum",
-                value_kind: PropertyValueKind::Int,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "value",
-                value_kind: PropertyValueKind::Int,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "single_step",
-                value_kind: PropertyValueKind::Int,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "page_step",
-                value_kind: PropertyValueKind::Int,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "notches_visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "notch_target",
-                value_kind: PropertyValueKind::Float,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "wrapping",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
+            PropertySchema::new("minimum", PropertyValueKind::Int, true, true),
+            PropertySchema::new("maximum", PropertyValueKind::Int, true, true),
+            PropertySchema::new("value", PropertyValueKind::Int, true, true),
+            PropertySchema::new("single_step", PropertyValueKind::Int, true, true),
+            PropertySchema::new("page_step", PropertyValueKind::Int, true, true),
+            PropertySchema::new("notches_visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("notch_target", PropertyValueKind::Float, true, true),
+            PropertySchema::new("wrapping", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const COMMAND_LINK_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "text",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "description",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
+            PropertySchema::new("text", PropertyValueKind::String, true, true),
+            PropertySchema::new("description", PropertyValueKind::String, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const FONT_COMBO_BOX_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "current_font_family",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: false,
-            },
-            PropertySchema {
-                name: "item_count",
-                value_kind: PropertyValueKind::Int,
-                readable: true,
-                writable: false,
-            },
-            PropertySchema {
-                name: "current_index",
-                value_kind: PropertyValueKind::Int,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "editable",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "max_visible_items",
-                value_kind: PropertyValueKind::Int,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
+            PropertySchema::new("current_font_family", PropertyValueKind::String, true, false),
+            PropertySchema::new("item_count", PropertyValueKind::Int, true, false),
+            PropertySchema::new("current_index", PropertyValueKind::Int, true, true),
+            PropertySchema::new("editable", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("max_visible_items", PropertyValueKind::Int, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
         pub(crate) const LINE_EDIT_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "text",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "placeholder_text",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "max_length",
-                value_kind: PropertyValueKind::UInt,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "read_only",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "cursor_position",
-                value_kind: PropertyValueKind::UInt,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
+            PropertySchema::new("text", PropertyValueKind::String, true, true),
+            PropertySchema::new("placeholder_text", PropertyValueKind::String, true, true),
+            PropertySchema::new("max_length", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("read_only", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("cursor_position", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const TEXT_EDIT_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "text",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
-            PropertySchema {
-                name: "placeholder_text",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
-            PropertySchema {
-                name: "max_length",
-                value_kind: PropertyValueKind::UInt,
-                readable: false,
-                writable: false,
-            },
-            PropertySchema {
-                name: "read_only",
-                value_kind: PropertyValueKind::Bool,
-                readable: false,
-                writable: false,
-            },
-            PropertySchema {
-                name: "line_wrap",
-                value_kind: PropertyValueKind::Bool,
-                readable: false,
-                writable: false,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
+            PropertySchema::new("text", PropertyValueKind::String, false, false),
+            PropertySchema::new("placeholder_text", PropertyValueKind::String, false, false),
+            PropertySchema::new("max_length", PropertyValueKind::UInt, false, false),
+            PropertySchema::new("read_only", PropertyValueKind::Bool, false, false),
+            PropertySchema::new("line_wrap", PropertyValueKind::Bool, false, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
         pub(crate) const SPINNER_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "active",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "thickness",
-                value_kind: PropertyValueKind::UInt,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "speed",
-                value_kind: PropertyValueKind::Float,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "size_ratio",
-                value_kind: PropertyValueKind::Float,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
+            PropertySchema::new("active", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("thickness", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("speed", PropertyValueKind::Float, true, true),
+            PropertySchema::new("size_ratio", PropertyValueKind::Float, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
         pub(crate) const ROLLER_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "selected_index",
-                value_kind: PropertyValueKind::UInt,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible_count",
-                value_kind: PropertyValueKind::UInt,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "item_count",
-                value_kind: PropertyValueKind::UInt,
-                readable: true,
-                writable: false,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
+            PropertySchema::new("selected_index", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("visible_count", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
         pub(crate) const DROPDOWN_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "text",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: false,
-            },
-            PropertySchema {
-                name: "selected_index",
-                value_kind: PropertyValueKind::UInt,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "item_count",
-                value_kind: PropertyValueKind::UInt,
-                readable: true,
-                writable: false,
-            },
-            PropertySchema {
-                name: "expanded",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
+            PropertySchema::new("text", PropertyValueKind::String, true, false),
+            PropertySchema::new("selected_index", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("expanded", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
         pub(crate) const TEXT_AREA_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "text",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "placeholder",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "read_only",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
+            PropertySchema::new("text", PropertyValueKind::String, true, true),
+            PropertySchema::new("placeholder", PropertyValueKind::String, true, true),
+            PropertySchema::new("read_only", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
         pub(crate) const KEYBOARD_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "layout",
-                value_kind: PropertyValueKind::Enum,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "lowercase",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
+            PropertySchema::enumerated("layout", true, true, &["qwerty", "numeric"]),
+            PropertySchema::new("lowercase", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
         // `MarkdownEditor`'s own names are the document state and its derived
@@ -951,757 +211,187 @@ macro_rules! impl_properties_input {
         // reversible assignment; `cursor_line` is not, because the editor owns
         // where the caret sits in response to edits.
         pub(crate) const MARKDOWN_EDITOR_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "text",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "preview_mode",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "line_count",
-                value_kind: PropertyValueKind::UInt,
-                readable: true,
-                writable: false,
-            },
-            PropertySchema {
-                name: "word_count",
-                value_kind: PropertyValueKind::UInt,
-                readable: true,
-                writable: false,
-            },
-            PropertySchema {
-                name: "heading_count",
-                value_kind: PropertyValueKind::UInt,
-                readable: true,
-                writable: false,
-            },
-            PropertySchema {
-                name: "cursor_line",
-                value_kind: PropertyValueKind::UInt,
-                readable: true,
-                writable: false,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
+            PropertySchema::new("text", PropertyValueKind::String, true, true),
+            PropertySchema::new("preview_mode", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("line_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("word_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("heading_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("cursor_line", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
         pub(crate) const SWITCH_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "checked",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
+            PropertySchema::new("checked", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const SEARCH_BOX_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "text",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "placeholder",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
+            PropertySchema::new("text", PropertyValueKind::String, true, true),
+            PropertySchema::new("placeholder", PropertyValueKind::String, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const TAG_INPUT_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "tags",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: false,
-            },
-            PropertySchema {
-                name: "placeholder",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
+            PropertySchema::new("tags", PropertyValueKind::String, true, false),
+            PropertySchema::new("placeholder", PropertyValueKind::String, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const IME_PREEDIT_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "text",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "cursor_position",
-                value_kind: PropertyValueKind::UInt,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
+            PropertySchema::new("text", PropertyValueKind::String, true, true),
+            PropertySchema::new("cursor_position", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const INPLACE_EDITOR_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "text",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "editing",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
+            PropertySchema::new("text", PropertyValueKind::String, true, true),
+            PropertySchema::new("editing", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const CUPERTINO_SLIDER_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "value",
-                value_kind: PropertyValueKind::Float,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "min",
-                value_kind: PropertyValueKind::Float,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "max",
-                value_kind: PropertyValueKind::Float,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
+            PropertySchema::new("value", PropertyValueKind::Float, true, true),
+            PropertySchema::new("min", PropertyValueKind::Float, true, true),
+            PropertySchema::new("max", PropertyValueKind::Float, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const MASKED_EDIT_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "text",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "mask",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
+            PropertySchema::new("text", PropertyValueKind::String, true, true),
+            PropertySchema::new("mask", PropertyValueKind::String, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const AUTO_COMPLETE_EDIT_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "text",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "suggestion_count",
-                value_kind: PropertyValueKind::UInt,
-                readable: true,
-                writable: false,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
+            PropertySchema::new("text", PropertyValueKind::String, true, true),
+            PropertySchema::new("suggestion_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const MULTI_SELECT_COMBO_BOX_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "selected_count",
-                value_kind: PropertyValueKind::UInt,
-                readable: true,
-                writable: false,
-            },
-            PropertySchema {
-                name: "expanded",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
+            PropertySchema::new("selected_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("expanded", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const RANGE_SLIDER_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "min_value",
-                value_kind: PropertyValueKind::Float,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "max_value",
-                value_kind: PropertyValueKind::Float,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "lower",
-                value_kind: PropertyValueKind::Float,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "upper",
-                value_kind: PropertyValueKind::Float,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
+            PropertySchema::new("min_value", PropertyValueKind::Float, true, true),
+            PropertySchema::new("max_value", PropertyValueKind::Float, true, true),
+            PropertySchema::new("lower", PropertyValueKind::Float, true, true),
+            PropertySchema::new("upper", PropertyValueKind::Float, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const FLOATING_LABEL_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "text",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "placeholder",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "focused",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
+            PropertySchema::new("text", PropertyValueKind::String, true, true),
+            PropertySchema::new("placeholder", PropertyValueKind::String, true, true),
+            PropertySchema::new("focused", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const CUPERTINO_SEGMENTED_CONTROL_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "selected_index",
-                value_kind: PropertyValueKind::UInt,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "segment_count",
-                value_kind: PropertyValueKind::UInt,
-                readable: true,
-                writable: false,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
+            PropertySchema::new("selected_index", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("segment_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const CUPERTINO_DATE_PICKER_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "selected_date",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
+            PropertySchema::new("selected_date", PropertyValueKind::String, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const EDITABLE_COMBO_BOX_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "text",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "item_count",
-                value_kind: PropertyValueKind::UInt,
-                readable: true,
-                writable: false,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
+            PropertySchema::new("text", PropertyValueKind::String, true, true),
+            PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const RICH_EDIT_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "text",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "line_count",
-                value_kind: PropertyValueKind::UInt,
-                readable: true,
-                writable: false,
-            },
-            PropertySchema {
-                name: "read_only",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
+            PropertySchema::new("text", PropertyValueKind::String, true, true),
+            PropertySchema::new("line_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("read_only", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const SEARCH_BAR_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "text",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "placeholder",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
+            PropertySchema::new("text", PropertyValueKind::String, true, true),
+            PropertySchema::new("placeholder", PropertyValueKind::String, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const SHORTCUT_EDITOR_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "filter_text",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
+            PropertySchema::new("filter_text", PropertyValueKind::String, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
     };
 }

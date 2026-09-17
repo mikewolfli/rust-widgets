@@ -324,7 +324,7 @@ cargo check --no-default-features --features "tablet,macos"
 - 节点可选 `class` / `css`，由样式表驱动外观
 - **不经 C ABI 暴露** —— 加载器没有生成的入口点
 
-> **C ABI 覆盖范围。** C ABI（`include/rw_generated.h`，126 个 `rw_*` 函数）
+> **C ABI 覆盖范围。** C ABI（`include/rw_generated.h`，128 个 `rw_*` 函数）
 > 覆盖窗口管理、控件创建、逐控件属性与主题选择。创建与属性访问都是**通用**的：
 > `rw_create_widget_of_kind(parent, "tree_view", ...)` 可触及每一个已注册控件
 > （`rw_widget_kind_names` 列出全部），`rw_set_widget_property(id, "tooltip", ...)`

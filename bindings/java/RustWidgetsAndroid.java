@@ -106,7 +106,9 @@ public final class RustWidgets {
      * {@code onActivityResult} / result launcher; the bridge does not intercept it.
      * Requires {@link #nativeAttachContext} to have been called with a live Context.
      *
-     * @param mimeType the MIME type filter, e.g. {@code "*/*"}
+     * @param mimeType the MIME type filter, e.g. {@code *&#47;*} (a literal slash — the
+     *                 spelling is broken with an entity because a raw separator would
+     *                 terminate this comment early and stop the file from compiling)
      * @return {@code 1} on success, {@code 0} on failure
      */
     public static native int nativeOpenDocument(String mimeType);

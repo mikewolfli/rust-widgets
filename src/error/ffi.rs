@@ -109,6 +109,9 @@ pub fn record_capability_error(error: crate::widget::capability::types::Capabili
         CapabilityAccessError::UnsupportedOnWidget => {
             (super::ErrorId::INVALID_ARGUMENT, "the property is not meaningful for this widget")
         }
+        CapabilityAccessError::OutOfRange => {
+            (super::ErrorId::INVALID_ARGUMENT, "the value is out of range for this property")
+        }
     };
     record_last_ffi_error(super::RwError::new(id, message));
 }

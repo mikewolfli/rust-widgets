@@ -378,7 +378,10 @@ impl WidgetProperties for ListView {
                     if self.set_focused_row(row) {
                         Ok(())
                     } else {
-                        Err(CapabilityAccessError::UnsupportedOnWidget)
+                        // `set_focused_row` answers `false` only when `row` is past the
+                        // last row, so the caller's index is the mistake — not the
+                        // control's capability. See `CapabilityAccessError::OutOfRange`.
+                        Err(CapabilityAccessError::OutOfRange)
                     }
                 }
             },
@@ -508,6 +511,30 @@ mod tests {
                 _ => None,
             }
         }
+    }
+
+    #[test]
+    fn out_of_range_row_is_reported_as_out_of_range_not_unsupported() {
+        // Regression guard for a misreported error. `set_focused_row` answers `false`
+        // only for an index past the last row, and the property layer used to translate
+        // that into `UnsupportedOnWidget` — telling the caller this control can never do
+        // it, when the truth was that their index was wrong. A caller acting on the old
+        // error would go looking for a different control instead of fixing the index.
+        use crate::widget::capability::types::CapabilityAccessError;
+
+        let mut view = ListView::new(Rect::new(0, 0, 100, 80));
+        view.set_model(Arc::new(StaticListModel));
+        assert_eq!(view.row_count(), 2, "the fixture must have rows to be out of range of");
+
+        assert_eq!(
+            view.set("focused_row", CapabilityValue::UInt(99)),
+            Err(CapabilityAccessError::OutOfRange),
+            "an index past the last row is the caller's argument, not a capability gap"
+        );
+        // The same call with a valid index must still work, which is what distinguishes
+        // `OutOfRange` from `UnsupportedOnWidget`.
+        assert_eq!(view.set("focused_row", CapabilityValue::UInt(1)), Ok(()));
+        assert_eq!(view.focused_row(), Some(1));
     }
 
     #[test]

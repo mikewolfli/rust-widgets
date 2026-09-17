@@ -143,6 +143,12 @@ crate::impl_default_via_new!(DoubleTapGesture);
 
 const TWO_FINGER_TAP_TIMEOUT_MS: u64 = 150;
 const TWO_FINGER_TAP_DURATION_MS: u64 = 300;
+/// How many fingers make a two-finger gesture.
+///
+/// Named rather than inlined because the recogniser previously omitted this check
+/// entirely; a bare `2` reads like an arithmetic detail instead of the gesture's
+/// defining precondition.
+const TWO_FINGER_COUNT: usize = 2;
 
 /// Two-finger tap recognizer.
 ///
@@ -196,13 +202,25 @@ impl GestureRecognizer for TwoFingerTapGesture {
             }
             Event::TouchEnd { pos: _, touch_id } => {
                 if let Some(idx) = self.touches.iter().position(|(_, _, id, _)| *id == *touch_id) {
-                    let first_time = self.touches[0].3;
+                    // Read the start time by identity, *before* the removal below: indexing
+                    // `touches[0]` afterwards is only valid while another finger remains,
+                    // so the single-finger case would have panicked on an empty list.
+                    let first_time = self.touches[idx].3;
                     let elapsed = now_ms.saturating_sub(first_time);
                     // Store the end position for centroid calculation
                     let end_pos = self.touches[idx].1;
                     self.touches.remove(idx);
                     self.touch_ends.push(end_pos);
-                    if self.touches.is_empty() && elapsed <= TWO_FINGER_TAP_DURATION_MS {
+                    // A *two-finger* tap requires that two fingers were actually seen.
+                    // Testing only `touches.is_empty()` accepted a single finger, because
+                    // one finger lifting also empties the list — so every ordinary tap was
+                    // also reported as `TwoFingerTap`. Counting the recorded lift
+                    // positions is what distinguishes "both fingers came and went" from
+                    // "one finger came and went".
+                    if self.touches.is_empty()
+                        && self.touch_ends.len() == TWO_FINGER_COUNT
+                        && elapsed <= TWO_FINGER_TAP_DURATION_MS
+                    {
                         // Compute centroid from all stored end positions
                         let centroid = Point::from_f32(
                             self.touch_ends.iter().map(|p| p.x).sum::<i32>() as f32
@@ -212,6 +230,12 @@ impl GestureRecognizer for TwoFingerTapGesture {
                         );
                         self.reset();
                         return Some(Event::TwoFingerTap { pos: centroid });
+                    }
+                    // Fewer than two fingers: this is not a two-finger gesture at all.
+                    // Clear the partial record so a later single tap cannot combine with
+                    // this one to reach the count.
+                    if self.touches.is_empty() {
+                        self.reset();
                     }
                 }
                 None

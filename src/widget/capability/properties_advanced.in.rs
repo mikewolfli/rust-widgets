@@ -8,420 +8,95 @@ macro_rules! impl_properties_advanced {
     () => {
         #[cfg(not(alloc_frugal))]
         pub(crate) const TAB_BAR_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "tab_count",
-                value_kind: PropertyValueKind::UInt,
-                readable: true,
-                writable: false,
-            },
-            PropertySchema {
-                name: "current_index",
-                value_kind: PropertyValueKind::UInt,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "closable",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "movable",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tab_min_width",
-                value_kind: PropertyValueKind::UInt,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tab_max_width",
-                value_kind: PropertyValueKind::UInt,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
-            ];
+            PropertySchema::new("tab_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("current_index", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("closable", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("movable", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tab_min_width", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("tab_max_width", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const CALENDAR_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "selected_date",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "minimum_date",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "maximum_date",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "first_day_of_week",
-                value_kind: PropertyValueKind::Enum,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "grid_visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "navigation_bar_visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "horizontal_header_visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "vertical_header_visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "date_format",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
-            ];
+            PropertySchema::new("selected_date", PropertyValueKind::String, true, true),
+            PropertySchema::new("minimum_date", PropertyValueKind::String, true, true),
+            PropertySchema::new("maximum_date", PropertyValueKind::String, true, true),
+            PropertySchema::enumerated("first_day_of_week", true, true, &["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]),
+            PropertySchema::new("grid_visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("navigation_bar_visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("horizontal_header_visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("vertical_header_visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("date_format", PropertyValueKind::String, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const DATE_EDIT_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "date",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "minimum_date",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "maximum_date",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "display_format",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "calendar_popup",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
-            ];
+            PropertySchema::new("date", PropertyValueKind::String, true, true),
+            PropertySchema::new("minimum_date", PropertyValueKind::String, true, true),
+            PropertySchema::new("maximum_date", PropertyValueKind::String, true, true),
+            PropertySchema::new("display_format", PropertyValueKind::String, true, true),
+            PropertySchema::new("calendar_popup", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const TIME_EDIT_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "time",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "minimum_time",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "maximum_time",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "display_format",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
-            ];
+            PropertySchema::new("time", PropertyValueKind::String, true, true),
+            PropertySchema::new("minimum_time", PropertyValueKind::String, true, true),
+            PropertySchema::new("maximum_time", PropertyValueKind::String, true, true),
+            PropertySchema::new("display_format", PropertyValueKind::String, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const RIBBON_BAR_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "tab_count",
-                value_kind: PropertyValueKind::UInt,
-                readable: true,
-                writable: false,
-            },
-            PropertySchema {
-                name: "current_tab",
-                value_kind: PropertyValueKind::UInt,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "expanded",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "minimized",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
-            ];
+            PropertySchema::new("tab_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("current_tab", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("expanded", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("minimized", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const PIE_MENU_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "item_count",
-                value_kind: PropertyValueKind::UInt,
-                readable: false,
-                writable: false,
-            },
-            PropertySchema {
-                name: "radius",
-                value_kind: PropertyValueKind::Float,
-                readable: false,
-                writable: false,
-            },
-            PropertySchema {
-                name: "inner_radius",
-                value_kind: PropertyValueKind::Float,
-                readable: false,
-                writable: false,
-            },
-            PropertySchema {
-                name: "current_index",
-                value_kind: PropertyValueKind::UInt,
-                readable: false,
-                writable: false,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
-            ];
+            PropertySchema::new("item_count", PropertyValueKind::UInt, false, false),
+            PropertySchema::new("radius", PropertyValueKind::Float, false, false),
+            PropertySchema::new("inner_radius", PropertyValueKind::Float, false, false),
+            PropertySchema::new("current_index", PropertyValueKind::UInt, false, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const DATE_TIME_EDIT_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema {
-                name: "datetime",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
-            PropertySchema {
-                name: "display_format",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
-            PropertySchema {
-                name: "calendar_popup",
-                value_kind: PropertyValueKind::Bool,
-                readable: false,
-                writable: false,
-            },
-            PropertySchema {
-                name: "minimum",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
-            PropertySchema {
-                name: "maximum",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
-            PropertySchema {
-                name: "enabled",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "visible",
-                value_kind: PropertyValueKind::Bool,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "tooltip",
-                value_kind: PropertyValueKind::String,
-                readable: true,
-                writable: true,
-            },
-            PropertySchema {
-                name: "geometry",
-                value_kind: PropertyValueKind::String,
-                readable: false,
-                writable: false,
-            },
-            ];
+            PropertySchema::new("datetime", PropertyValueKind::String, false, false),
+            PropertySchema::new("display_format", PropertyValueKind::String, false, false),
+            PropertySchema::new("calendar_popup", PropertyValueKind::Bool, false, false),
+            PropertySchema::new("minimum", PropertyValueKind::String, false, false),
+            PropertySchema::new("maximum", PropertyValueKind::String, false, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
     };
 }

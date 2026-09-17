@@ -29,6 +29,26 @@ impl RotateGesture {
         let dy = (b.y - a.y) as f32;
         dy.atan2(dx)
     }
+
+    /// Wraps an angle difference into `(-pi, pi]`.
+    ///
+    /// [`Self::angle_between`] returns `atan2`, whose range is `(-pi, pi]`. Naively
+    /// subtracting two such angles therefore produces a discontinuity at the
+    /// boundary: a real rotation of 0.05 rad across it yields a raw delta near
+    /// `-2*pi`, which passes the significance threshold and is reported as a
+    /// full-turn twist. Wrapping first keeps every emitted `Rotate::angle` equal to
+    /// the shortest signed rotation that actually happened.
+    fn normalize_angle_delta(delta: f32) -> f32 {
+        use core::f32::consts::{PI, TAU};
+        let wrapped = (delta + PI).rem_euclid(TAU) - PI;
+        // `rem_euclid` maps `+pi` to `-pi`; the documented range is `(-pi, pi]`, so
+        // restore the positive end rather than reporting a half-turn as negative.
+        if wrapped == -PI {
+            PI
+        } else {
+            wrapped
+        }
+    }
 }
 
 impl GestureRecognizer for RotateGesture {
@@ -52,7 +72,7 @@ impl GestureRecognizer for RotateGesture {
                     let current_angle =
                         Self::angle_between(self.touches[0].pos, self.touches[1].pos);
                     if let Some(prev) = self.previous_angle {
-                        let delta = current_angle - prev;
+                        let delta = Self::normalize_angle_delta(current_angle - prev);
                         // Only emit if change is significant (> 0.05 rad ≈ 3°)
                         if delta.abs() > 0.05 {
                             self.previous_angle = Some(current_angle);

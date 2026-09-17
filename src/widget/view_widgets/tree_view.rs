@@ -235,7 +235,9 @@ impl WidgetProperties for TreeView {
                     if self.set_focused_node(node) {
                         Ok(())
                     } else {
-                        Err(CapabilityAccessError::UnsupportedOnWidget)
+                        // `set_focused_node` answers `false` when `node` is not a live
+                        // node index — an argument fault, not a capability gap.
+                        Err(CapabilityAccessError::OutOfRange)
                     }
                 }
             },
@@ -345,6 +347,27 @@ mod tests {
                 _ => None,
             }
         }
+    }
+
+    #[test]
+    fn out_of_range_node_is_reported_as_out_of_range_not_unsupported() {
+        // Same misreport as `list_view` (see the guard there): an index that addresses
+        // no node is the caller's argument, and saying "unsupported on this widget"
+        // would send them looking for a different control.
+        use crate::widget::capability::types::CapabilityAccessError;
+
+        let mut view = TreeView::new(Rect::new(0, 0, 120, 100));
+        view.set_model(Arc::new(StaticTreeModel));
+        assert_eq!(view.node_count(), 2, "the fixture must have nodes to be out of range of");
+
+        assert_eq!(
+            view.set("focused_node", CapabilityValue::UInt(99)),
+            Err(CapabilityAccessError::OutOfRange),
+            "an index past the last node is the caller's argument, not a capability gap"
+        );
+        // A valid index still works, which is what separates the two errors.
+        assert_eq!(view.set("focused_node", CapabilityValue::UInt(1)), Ok(()));
+        assert_eq!(view.focused_node(), Some(1));
     }
 
     #[test]

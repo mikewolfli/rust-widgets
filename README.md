@@ -340,7 +340,7 @@ per profile, and it renders the same everywhere.
 - Optional per-node `class` / `css` for stylesheet-driven appearance
 - **Not exposed over the C ABI** — the loader has no generated entry point
 
-> **C ABI coverage.** The C ABI (`include/rw_generated.h`, 126 `rw_*` functions)
+> **C ABI coverage.** The C ABI (`include/rw_generated.h`, 128 `rw_*` functions)
 > covers window management, widget creation, per-widget properties and theme
 > selection. Creation and property access are **generic**:
 > `rw_create_widget_of_kind(parent, "tree_view", ...)` reaches every registered

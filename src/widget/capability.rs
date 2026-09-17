@@ -161,9 +161,9 @@ pub use types::*;
 pub mod properties_trait;
 pub use properties_trait::{
     append_widget_list_item, base_property_get, base_property_set, clear_widget_list_items,
-    geometry_to_value, read_widget_property_by_name, widget_list_item_count, widget_property_get,
-    widget_property_names, widget_property_set, write_widget_property_by_name, WidgetProperties,
-    BASE_PROPERTY_NAMES,
+    geometry_to_value, read_widget_property_by_name, widget_list_item, widget_list_item_count,
+    widget_property_get, widget_property_names, widget_property_set, write_widget_property_by_name,
+    WidgetProperties, BASE_PROPERTY_NAMES,
 };
 
 /// The id-level property accessors, re-exported so a backend can read and write a

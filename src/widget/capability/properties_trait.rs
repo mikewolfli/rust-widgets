@@ -191,6 +191,26 @@ pub trait WidgetProperties {
     /// Controls therefore return `property_names_of!["own", .., BASE_PROPERTY_NAMES..]`
     /// — see [`crate::property_names_of`] for the const-compatible way to compose the two.
     fn property_names(&self) -> &'static [&'static str];
+
+    /// The accepted spellings for an `Enum` property, or an empty slice.
+    ///
+    /// # Why this has a default
+    ///
+    /// Most controls publish no enum property, and many that do rely on the
+    /// `impl_widget_property_hooks!` macro's own `*_PROPERTIES` table rather than writing
+    /// this by hand. The default answers "no fixed set of values", which is correct for
+    /// a non-enum property and is also the safe answer for an enum whose author has not
+    /// listed tokens yet — it does not claim a set the control would then reject.
+    ///
+    /// # What an override must guarantee
+    ///
+    /// The tokens must be exactly the spellings `set` accepts. `widget_property_tokens`
+    /// is the public reader; `capability::properties_tests` writes each returned token
+    /// back through `set` and fails if any is refused, so a list that drifts from the
+    /// control's parser is caught rather than shipped.
+    fn property_tokens(&self, _name: &str) -> &'static [&'static str] {
+        &[]
+    }
 }
 
 /// Returns a `&'static [&'static str]` naming the given properties.
@@ -306,6 +326,36 @@ pub fn widget_property_names(widget: &dyn Widget) -> Option<&'static [&'static s
     widget.properties_dyn().map(WidgetProperties::property_names)
 }
 
+/// Returns the accepted spellings for an `Enum` property, or an empty slice.
+///
+/// # Why a caller needs this
+///
+/// An enum property is written as one of a fixed set of tokens (`"single"`,
+/// `"multiple"`, `"ascending"` …), but those tokens were only discoverable by reading
+/// the control's source. A caller building a property editor or validating user input
+/// had to hard-code its own copy of the list, and nothing failed when the control's
+/// parser changed — the copy just silently went stale.
+///
+/// The answer comes from the control's own [`PropertySchema`], so it cannot drift from
+/// what `set` accepts without the control's declaration changing too.
+///
+/// # Empty is a real answer
+///
+/// An empty slice means "this property declares no fixed set of values". That covers
+/// both a non-enum property and an enum whose author has not listed its tokens yet. It
+/// is not an error: most properties are not enums.
+///
+/// # Which schema
+///
+/// Looked up through the same registry path as the other reflection entry points, so a
+/// control in a profile without the capability registry answers empty rather than
+/// failing.
+///
+/// [`PropertySchema`]: crate::widget::capability::types::PropertySchema
+pub fn widget_property_tokens(widget: &dyn Widget, name: &str) -> &'static [&'static str] {
+    widget.properties_dyn().map_or(&[], |props| props.property_tokens(name))
+}
+
 /// Appends one item to a control that holds a list of strings.
 ///
 /// # Why this is a downcast and not a property write
@@ -360,6 +410,30 @@ pub fn widget_list_item_count(widget: &dyn Widget) -> usize {
         return combo.count();
     }
     0
+}
+
+/// Reads one item's text out of a control that holds a list of strings.
+///
+/// # The gap this closes
+///
+/// `item_count` was the only collection fact readable through the property surface.
+/// A caller could `add` items, count them and clear them, but could never read back
+/// what it had added — so a control's contents were write-only across the whole
+/// declarative API, and a test asserting "the items are what I set" was impossible to
+/// write without downcasting to the concrete type.
+///
+/// Returns `None` in three cases, all of which are honestly "no value": the control
+/// does not hold items, `index` is past the last item, or the item at `index` holds no
+/// text. A caller that needs to tell them apart asks [`widget_list_item_count`] first.
+pub fn widget_list_item(widget: &dyn Widget, index: usize) -> Option<String> {
+    use crate::widget::capability::coercion::widget_as;
+    if let Some(list) = widget_as::<crate::widget::ListBox>(widget) {
+        return list.item(index).map(str::to_string);
+    }
+    if let Some(combo) = widget_as::<crate::widget::ComboBox>(widget) {
+        return combo.item(index).map(str::to_string);
+    }
+    None
 }
 
 /// The contract path, with no fallback.

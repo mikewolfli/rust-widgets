@@ -112,6 +112,16 @@ fn to_capability_value(
         Some(PropertyValueKind::String) | Some(PropertyValueKind::Enum) => {
             value.as_str().map(|s| CapabilityValue::String(s.to_string()))
         }
+        // A colour is written as its CSS spelling ("#rrggbb", "rgb(..)", a named
+        // colour). A string that does not parse is refused rather than defaulted, so a
+        // typo in a JSON tree is an error the author sees instead of a wrong colour.
+        Some(PropertyValueKind::Color) => value
+            .as_str()
+            .and_then(|s| crate::style::CssParser::parse_color(s).ok())
+            .map(CapabilityValue::Color),
+        // A rectangle is written as "x,y,w,h", or as a 4-element array, which is the
+        // natural shape in JSON and avoids asking authors to build a string.
+        Some(PropertyValueKind::Rect) => rect_from_json(value).map(CapabilityValue::Rect),
         None => match value {
             Value::Null => Some(CapabilityValue::Null),
             Value::Bool(b) => Some(CapabilityValue::Bool(*b)),
@@ -131,6 +141,44 @@ fn to_capability_value(
             Value::Array(_) | Value::Object(_) => None,
         },
     }
+}
+
+/// Converts a JSON value into a rectangle for a `Rect`-declared property.
+///
+/// Accepts both spellings the format allows, because they serve different authors: a
+/// `"x,y,w,h"` string matches what the C ABI carries and what CSS-ish tooling emits,
+/// while a 4-element array is what a JSON author naturally writes. Accepting only one
+/// would make the same value legal in one entry point and illegal in the other.
+fn rect_from_json(value: &Value) -> Option<crate::core::Rect> {
+    let components: [i64; 4] = match value {
+        Value::String(text) => {
+            let mut parts = text.split(',');
+            let mut parsed = [0i64; 4];
+            for slot in parsed.iter_mut() {
+                *slot = parts.next()?.trim().parse().ok()?;
+            }
+            if parts.next().is_some() {
+                return None;
+            }
+            parsed
+        }
+        Value::Array(items) => {
+            if items.len() != 4 {
+                return None;
+            }
+            let mut parsed = [0i64; 4];
+            for (slot, item) in parsed.iter_mut().zip(items) {
+                *slot = item.as_i64()?;
+            }
+            parsed
+        }
+        _ => return None,
+    };
+    // Negative extents are refused rather than cast to a huge unsigned size, which is
+    // what `as u32` alone would produce.
+    let width = u32::try_from(components[2]).ok()?;
+    let height = u32::try_from(components[3]).ok()?;
+    Some(crate::core::Rect::new(components[0] as i32, components[1] as i32, width, height))
 }
 
 /// Look up the declared value kind for a property from the factory schema.

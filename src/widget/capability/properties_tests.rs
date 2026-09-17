@@ -768,3 +768,73 @@ fn every_shared_kind_has_a_tie_break() {
          (kind, created-as, resolved-as): {ambiguous:?}"
     );
 }
+
+/// Every published enum token must actually be accepted by the control.
+///
+/// # Why this test is what makes the token lists trustworthy
+///
+/// `PropertySchema::accepted_tokens` is a *claim* about what `set` accepts, written by
+/// hand next to a parser written by hand. A claim that is never tested drifts: a token
+/// gets renamed in the parser, the list keeps the old spelling, and a caller that reads
+/// the list and writes it back gets a `TypeMismatch` for a value the schema itself
+/// advertised. That is worse than publishing no list at all, because it looks
+/// authoritative.
+///
+/// So each token is written back through the real `set`. A refusal fails here.
+///
+/// # Only writable properties are exercised
+///
+/// A read-only enum still publishes its tokens — they are the vocabulary the *reader*
+/// returns, which is useful to a caller formatting a value. Writing to it is expected
+/// to fail, so those entries are skipped rather than asserted. Writing to them was an
+/// earlier version's mistake: it reported every read-only enum as a defect, which would
+/// have pushed the fix in the wrong direction (deleting correct token lists).
+///
+/// # What it does not claim
+///
+/// It does not require the list to be *complete* — a control may accept more spellings
+/// than it advertises (aliases), and this test does not try to enumerate them. It only
+/// refuses the harmful direction: advertising something a caller cannot write.
+#[test]
+fn published_enum_tokens_are_accepted_by_their_control() {
+    let factory = WidgetFactory::new_with_defaults();
+    let mut rejected: alloc::vec::Vec<(&str, &str, &str)> = alloc::vec::Vec::new();
+    let mut published_count = 0usize;
+
+    for capability in factory.capabilities() {
+        for schema in capability.properties {
+            if schema.accepted_tokens.is_empty() || !schema.writable {
+                continue;
+            }
+            let Some(mut widget) =
+                factory.create(capability.canonical_name, Rect::new(0, 0, 64, 48), "x")
+            else {
+                continue;
+            };
+            for token in schema.accepted_tokens {
+                published_count += 1;
+                let write = CapabilityValue::String((*token).to_string());
+                if crate::widget::capability::properties_trait::widget_property_set(
+                    widget.as_mut(),
+                    schema.name,
+                    write,
+                )
+                .is_err()
+                {
+                    rejected.push((capability.canonical_name, schema.name, token));
+                }
+            }
+        }
+    }
+
+    assert!(
+        published_count > 0,
+        "no writable property publishes accepted tokens, so this test proves nothing — \
+         the schema field or its wiring has stopped reaching the property layer"
+    );
+    assert!(
+        rejected.is_empty(),
+        "a published token was refused by the control that published it, so the schema \
+         advertises a value the caller cannot write (control, property, token): {rejected:?}"
+    );
+}

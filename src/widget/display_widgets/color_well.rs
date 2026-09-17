@@ -12,7 +12,6 @@ use crate::core::{Color, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
-use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -92,7 +91,10 @@ impl Widget for ColorWell {
 impl WidgetProperties for ColorWell {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
-            "color" => Ok(CapabilityValue::String(self.color().to_hex_rgba())),
+            // The property's declared kind is `Color`, so it is read back as one. It
+            // previously travelled as a `String`, which meant a caller had to know the
+            // spelling and could not tell the value's type from the schema.
+            "color" => Ok(CapabilityValue::Color(self.color())),
             _ => base_property_get(self, name),
         }
     }
@@ -100,9 +102,20 @@ impl WidgetProperties for ColorWell {
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         match name {
             "color" => {
-                let raw = expect_string(value)?;
-                let Some(color) = Color::parse_hex(&raw) else {
-                    return Err(CapabilityAccessError::TypeMismatch);
+                // Accept only the declared kind. A string is still accepted because the
+                // C ABI and JSON surfaces carry colours as CSS text, and both parse it
+                // into `Color` before it reaches here; a bare string arriving means a
+                // caller reached past those layers, and refusing it would break code
+                // that has not migrated yet.
+                let color = match value {
+                    CapabilityValue::Color(color) => color,
+                    CapabilityValue::String(raw) => {
+                        let Some(color) = Color::parse_hex(&raw) else {
+                            return Err(CapabilityAccessError::TypeMismatch);
+                        };
+                        color
+                    }
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
                 };
                 self.set_color(color);
                 Ok(())

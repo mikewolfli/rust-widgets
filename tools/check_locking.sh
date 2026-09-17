@@ -103,6 +103,12 @@ def strip_test_modules(text: str) -> str:
     out: list[str] = []
     index = 0
     while index < len(lines):
+        if is_file_level_gate(lines[index]):
+            # An inner attribute applies to the file, not to the next item, so
+            # everything after it is test code. Stopping here is both correct and the
+            # only terminating answer: `skip_gated_items` looks for the item the
+            # attribute gates, and a file-level gate has no such item.
+            break
         if is_test_gate(lines[index]):
             index = skip_gated_items(lines, index)
             continue
@@ -112,12 +118,40 @@ def strip_test_modules(text: str) -> str:
 
 
 def is_test_gate(line: str) -> bool:
-    """Whether an attribute line enables the `test` cfg predicate."""
+    """Whether an attribute line enables the `test` cfg predicate.
+
+    Handles both outer (`#[cfg(test)]`) and inner (`#![cfg(test)]`) attributes. The
+    inner form is how a test module declared as a separate file gates itself —
+    `widget/special_widgets/toast/tests.rs` carries `#![cfg(test)]` because the
+    `#[cfg(test)] mod tests;` in `mod.rs` is not in this file, so a text scan of it
+    would otherwise see no gate and report its test helpers' `Mutex` as production
+    locking. Accepting only the outer form made this gate wrong about every split-out
+    test module.
+
+    # Why an inner attribute ends the scan
+
+    `#![cfg(test)]` applies to the file, not to the next item, so everything after it is
+    test code. `skip_gated_items` implements the *outer* attribute's rule (consume the
+    next item, and every following `impl`/block-less item gated the same way); applying
+    that rule to an inner attribute made it consume the file looking for an item, which
+    is both wrong and unbounded. The caller therefore treats a file-level gate as "skip
+    the rest", which is what the attribute means.
+    """
     stripped = line.strip()
+    if stripped.startswith("#!["):
+        return "cfg" in stripped and re.search(r"\btest\b", stripped) is not None
     if not stripped.startswith("#[") or "cfg" not in stripped:
         return False
     # Whole-word `test`, so `#[cfg(feature = "latest")]` is not a test gate.
     return re.search(r"\btest\b", stripped) is not None
+
+
+def is_file_level_gate(line: str) -> bool:
+    """Whether the line is an inner `#![cfg(test)]`, which gates the whole file."""
+    stripped = line.strip()
+    return stripped.startswith("#![") and "cfg" in stripped and re.search(
+        r"\btest\b", stripped
+    ) is not None
 
 
 def depth_delta(line: str, block: list[object]) -> int:

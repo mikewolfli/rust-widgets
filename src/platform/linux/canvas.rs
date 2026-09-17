@@ -100,7 +100,8 @@ pub(crate) fn mount_canvas(
             | gdk::EventMask::BUTTON_RELEASE_MASK
             | gdk::EventMask::POINTER_MOTION_MASK
             | gdk::EventMask::KEY_PRESS_MASK
-            | gdk::EventMask::SCROLL_MASK,
+            | gdk::EventMask::SCROLL_MASK
+            | gdk::EventMask::TOUCH_MASK,
     );
     // The area must be able to take keyboard focus for the editor to be usable.
     area.set_can_focus(true);
@@ -155,6 +156,36 @@ pub(crate) fn mount_canvas(
     area.connect_leave_notify_event(move |widget, _| {
         crate::widget::runtime::clear_hover(Point::new(0, 0));
         widget.queue_draw();
+        glib::Propagation::Proceed
+    });
+
+    // Touch: GDK reports finger contacts as their own event type, not as button
+    // presses, so without this the gesture engine never saw a `TouchBegin` and all
+    // eleven recognisers were reachable only from unit tests.
+    area.connect_touch_event(move |widget, event| {
+        let translated = match event.event_type() {
+            gdk::EventType::TouchBegin => TouchPhase::Begin,
+            gdk::EventType::TouchUpdate => TouchPhase::Update,
+            // Both an end and a cancel terminate the contact. A cancel reported as
+            // nothing would leave `PinchGesture` holding a phantom finger forever.
+            gdk::EventType::TouchEnd | gdk::EventType::TouchCancel => TouchPhase::End,
+            _ => return glib::Propagation::Proceed,
+        };
+        let position = Point::new(event.position().0 as i32, event.position().1 as i32);
+        let absolute = Point::new(origin.x + position.x, origin.y + position.y);
+        // `GdkEventSequence` identifies the contact for its whole lifetime, which is
+        // what the recognisers need to follow one finger across move and end. Its
+        // pointer is used as the `TouchId`: it is only ever compared, never
+        // dereferenced, and is stable while the contact lasts.
+        let touch_id = event.event_sequence().map(|sequence| sequence.as_ptr() as u64).unwrap_or(0);
+        let widget_event = match translated {
+            TouchPhase::Begin => Event::TouchBegin { pos: absolute, touch_id },
+            TouchPhase::Update => Event::TouchMove { pos: absolute, touch_id },
+            TouchPhase::End => Event::TouchEnd { pos: absolute, touch_id },
+        };
+        if forward_pointer_to_platform(id, &widget_event, absolute) {
+            widget.queue_draw();
+        }
         glib::Propagation::Proceed
     });
 
@@ -422,6 +453,18 @@ const KEY_TAB: u32 = 0xFF09;
 /// surface sits in the window, and therefore which widget the point lands on. Calling
 /// into `platform_facts()` here — rather than importing a concrete backend — keeps
 /// this module free of per-target branching (BLUE15 rules #35/#36).
+/// Which touch event GDK reported, normalised to the widget layer's three phases.
+///
+/// GDK has four touch types and the widget layer has three: a cancelled contact is a
+/// termination exactly like a lifted one, so both map to `End`.
+#[derive(Clone, Copy)]
+enum TouchPhase {
+    Begin,
+    Update,
+    End,
+}
+
+/// Translates a GDK key event into a widget [`Event`].
 fn forward_pointer_to_platform(id: ObjectId, event: &Event, absolute: Point) -> bool {
     crate::platform::platform_facts().route_pointer_event(id, event, absolute)
 }

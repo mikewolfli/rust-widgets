@@ -106,6 +106,25 @@ fn canvas_view_class() -> *const Class {
                 update_tracking_areas as extern "C" fn(&Object, Sel),
             );
             decl.add_method(sel!(keyDown:), key_down as extern "C" fn(&Object, Sel, id));
+            // Touch: AppKit delivers finger contacts through these responder methods
+            // rather than the mouse path. Without them the gesture engine never saw a
+            // `TouchBegin`, so all eleven recognisers were reachable only from tests.
+            decl.add_method(
+                sel!(touchesBeganWithEvent:),
+                touches_began as extern "C" fn(&Object, Sel, id),
+            );
+            decl.add_method(
+                sel!(touchesMovedWithEvent:),
+                touches_moved as extern "C" fn(&Object, Sel, id),
+            );
+            decl.add_method(
+                sel!(touchesEndedWithEvent:),
+                touches_ended as extern "C" fn(&Object, Sel, id),
+            );
+            decl.add_method(
+                sel!(touchesCancelledWithEvent:),
+                touches_cancelled as extern "C" fn(&Object, Sel, id),
+            );
             decl.add_method(
                 sel!(acceptsFirstResponder),
                 accepts_first_responder as extern "C" fn(&Object, Sel) -> cocoa::base::BOOL,
@@ -249,6 +268,117 @@ enum MousePhase {
     Drag,
 }
 
+/// Which touch responder method AppKit called.
+#[derive(Clone, Copy)]
+enum TouchPhase {
+    Began,
+    Moved,
+    Ended,
+}
+
+/// `-touchesBeganWithEvent:` — one or more fingers landed on the canvas.
+extern "C" fn touches_began(this: &Object, _cmd: Sel, event: id) {
+    forward_touches(this, event, TouchPhase::Began);
+}
+
+/// `-touchesMovedWithEvent:` — a tracked finger moved.
+extern "C" fn touches_moved(this: &Object, _cmd: Sel, event: id) {
+    forward_touches(this, event, TouchPhase::Moved);
+}
+
+/// `-touchesEndedWithEvent:` — a tracked finger lifted.
+extern "C" fn touches_ended(this: &Object, _cmd: Sel, event: id) {
+    forward_touches(this, event, TouchPhase::Ended);
+}
+
+/// `-touchesCancelledWithEvent:` — AppKit withdrew the contact.
+///
+/// Reported as an end, because the recognisers need a terminator for every begin: a
+/// `TouchBegin` with no matching `TouchEnd` leaves `PinchGesture` holding a phantom
+/// finger forever, and the next real pinch then measures against it.
+extern "C" fn touches_cancelled(this: &Object, _cmd: Sel, event: id) {
+    forward_touches(this, event, TouchPhase::Ended);
+}
+
+/// Translates AppKit touches into widget touch events and delivers them.
+///
+/// # Why the gesture engine needs this
+///
+/// `is_touch()` accepts only `Touch*` and gesture variants, so with no backend emitting
+/// `TouchBegin` the engine's `process` was never reached by real input and all eleven
+/// recognisers were exercised only by unit tests. AppKit reports finger contacts here
+/// rather than through `mouseDown:`.
+///
+/// # Coordinates
+///
+/// `NSTouch` reports a *normalized* position in `0.0..=1.0` relative to the view, which
+/// is resolution-independent and unaffected by the view's backing scale. It is scaled by
+/// the view's bounds and then offset by the canvas origin, so a touch and a click at the
+/// same place resolve to the same absolute point.
+///
+/// # Identity
+///
+/// `NSTouch.identity` is a stable per-contact object, which is exactly what `TouchId`
+/// must be for the recognisers to follow a finger across move and end. Its pointer is
+/// used as the id: AppKit guarantees it identifies the contact for its whole lifetime,
+/// and the address is only ever compared for equality.
+fn forward_touches(this: &Object, event: id, phase: TouchPhase) {
+    let outcome = std::panic::catch_unwind(|| {
+        // SAFETY: `this` is the live canvas view; `event` is the NSEvent AppKit passed
+        // to the selector, valid for the duration of this call.
+        unsafe {
+            let view = this as *const Object as id;
+            if event == nil {
+                return;
+            }
+            let Some(widget_id) = widget_id_of(view) else { return };
+            let origin = view_origin(view);
+            let bounds: NSRect = msg_send![view, bounds];
+
+            // `touchesBeganWithEvent:` carries the new contacts in the event's touch
+            // set; the moved/ended variants report the same contacts, so all three read
+            // the event's set rather than a per-phase selector.
+            let all_touches: id = msg_send![event, touchesMatchingPhase: 0u64 inView: view];
+            if all_touches == nil {
+                return;
+            }
+            let count: u64 = msg_send![all_touches, count];
+            let mut delivered = false;
+            for index in 0..count {
+                let touch: id = msg_send![all_touches, objectAtIndex: index];
+                if touch == nil {
+                    continue;
+                }
+                let normalized: NSPoint = msg_send![touch, normalizedPosition];
+                let local_x = (normalized.x * bounds.size.width).round() as i32;
+                let local_y = (normalized.y * bounds.size.height).round() as i32;
+                // The touch id is the contact's identity pointer. `TouchId` is a u64,
+                // and the recognisers only compare it, never dereference it.
+                let identity: id = msg_send![touch, identity];
+                let touch_id = identity as u64;
+                let position = Point::new(origin.x + local_x, origin.y + local_y);
+                let translated = match phase {
+                    TouchPhase::Began => Event::TouchBegin { pos: position, touch_id },
+                    TouchPhase::Moved => Event::TouchMove { pos: position, touch_id },
+                    TouchPhase::Ended => Event::TouchEnd { pos: position, touch_id },
+                };
+                if crate::platform::platform_facts().route_pointer_event(
+                    widget_id,
+                    &translated,
+                    position,
+                ) {
+                    delivered = true;
+                }
+            }
+            if delivered {
+                let _: () = msg_send![view, setNeedsDisplay: YES];
+            }
+        }
+    });
+    if outcome.is_err() {
+        log::error!("[macos] canvas: panic while forwarding a touch event");
+    }
+}
 /// Translates an AppKit mouse event into a widget [`Event`] and delivers it.
 ///
 /// Routing goes through the platform's hit test so a click on a widget nested inside
@@ -376,6 +506,17 @@ extern "C" fn draw_rect(this: &Object, _cmd: Sel, rect: NSRect) {
                 log::error!("[macos] canvas: drawRect: on a view with no associated widget id");
                 return;
             };
+            // The size comes from `bounds`, not from `rect`: AppKit passes the *dirty*
+            // rectangle to `drawRect:`, which for a partial invalidation is smaller
+            // than the view. Sizing the frame from it would render the view into a
+            // buffer the size of the damaged band, and the image would then be drawn
+            // stretched into the wrong place.
+            //
+            // `render_frame_cached` rather than `render_frame`: it carries the previous
+            // frame forward and repaints only the damage, so a widget in
+            // `RepaintMode::Dirty` does not re-rasterise the whole view for a small
+            // `setNeedsDisplayInRect:`. The returned frame is complete because
+            // `CGContextDrawImage` presents a whole image.
             let bounds: NSRect = msg_send![view, bounds];
             let width = bounds.size.width.round().max(1.0) as u32;
             let height = bounds.size.height.round().max(1.0) as u32;

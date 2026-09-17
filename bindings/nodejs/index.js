@@ -284,6 +284,8 @@ function loadFunctions(libName) {
     rw_widget_list_add: [uint, [uint64, "string"]],
     rw_widget_list_clear: [cbool, [uint64]],
     rw_widget_list_count: [uint, [uint64]],
+    rw_widget_list_item: [uint, [uint64, uint, charPtr, uint]],
+    rw_widget_property_tokens: [uint, [uint64, charPtr, charPtr, uint]],
     rw_widget_set_style: [cbool, [uint64, "string"]],
     rw_widget_set_layout: [cbool, [uint64, "string", int, int]],
     rw_widget_layout_add: [cbool, [uint64, uint64, uint]],
@@ -947,6 +949,38 @@ class RustWidgets {
   /** How many items a list-like control holds. */
   listCount(widgetId) {
     return this._lib.rw_widget_list_count(widgetId);
+  }
+
+  /**
+   * The text of item `index` in a list-like control.
+   *
+   * Returns `''` when the control holds no items or `index` is past the last one;
+   * compare against {@link listCount} to tell those apart. Without this, items were
+   * write-only from Node: `listAdd` and `listCount` let you build a list but never
+   * read back what you put in.
+   */
+  listItem(widgetId, index) {
+    // Two-call convention: a null buffer reports the byte length without writing.
+    const required = this._lib.rw_widget_list_item(widgetId, index, null, 0);
+    if (required === 0) {
+      return '';
+    }
+    const buffer = Buffer.alloc(required + 1);
+    this._lib.rw_widget_list_item(widgetId, index, buffer, required + 1);
+    return buffer.toString('utf8', 0, required);
+  }
+
+  /**
+   * The accepted spellings for an enum property, or `[]`.
+   *
+   * An empty array means the property declares no fixed set of values, which covers
+   * both a non-enum property and a name the control does not publish. The list comes
+   * from the control's own schema, so it cannot drift from what the property accepts.
+   */
+  propertyTokens(widgetId, name) {
+    return readNameList(this._lib, 'rw_widget_property_tokens', (lib, out, cap) =>
+      lib.rw_widget_property_tokens(widgetId, name, out, cap),
+    );
   }
 
   /**

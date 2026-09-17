@@ -1,7 +1,7 @@
 # BLUE16 — 从「全自绘」到「对外可用且无死重」：三条线的闭环 + 全仓可达性收敛
 
-> 状态：**Phase A / B / C-1 / D 已完成；Phase E-1、E-3、E-4 已完成；Phase E-2 / C-2 未执行**
-> 完成率：**Phase A 100% · Phase B 100% · Phase C-1 100% · Phase D 100% · Phase E 80%（E-1/E-3/E-4 完成，E-2 未做）**
+> 状态：**Phase A / B / C-1 / D 已完成；Phase E-1、E-3、E-4 已完成；Phase E-2 / C-2 未执行；Phase F（B-5a/B-5b/B-5c/B-5d）已完成**
+> 完成率：**Phase A 100% · Phase B 100% · Phase C-1 100% · Phase D 100% · Phase E 80%（E-1/E-3/E-4 完成，E-2 未做）· Phase F 100%（B-5a–d 全部完成）**
 > 执行日志：[`docs/log/log-20260917-2.md`](log-20260917-2.md)
 > 目标基线：`rust_widgets v2.1.0`（`f451a15` + 第 19–21 轮未提交改动）；执行后版本 **2.2.0**
 > 原则依据：[`docs/plans/principle.md`](principle.md)（继承 BLUE1–BLUE15 全部规则，含 #1–#69）
@@ -810,6 +810,35 @@ if event.is_touch() {           // ← is_touch() 只认 Touch*/手势变体，*
 | B-5b | **平台层产生触摸事件**：各后端把指针事件补上 `TouchBegin/Move/End`（或明确决定“桌面无触摸”，并交 `is_touch()` 改判） |
 | B-5c | **新增门禁 `check_event_producers.sh`**（规则 #75）：每个 `Event` 变体必须有非测试构造点，否则 FAIL |
 | B-5d | 为 9 个未测识别器补测试（含双指场景与环绕边界） |
+
+**执行结果（2026-09-17，见 `log-20260917-2.md` §83–§91）**：**B-5a / B-5b / B-5c / B-5d 全部完成**。
+用户拍板选 **① 真触摸**（三个后端都写）。
+
+计划本身有 2 处判定不准，已就地更正（原则 #64）：
+
+| 计划原文 | 复跑结论 |
+|---|---|
+| “缺陷 2 `PanGesture` 吞掉 Swipe/Fling” | ❌ **部分推翻**。`Swipe` **确实会发出**（`TouchEnd` 时），被吞掉的不是 Swipe 而是**用户的意图**：`PanGesture` 在**第一次** `TouchMove` 就发 `Drag`（`delta` 可达整段位移），而 `ScrollArea` 按 `Drag::delta` 滚动，于是“按下即滚”与“滑动”无法区分 |
+| “11 个识别器仅在单测中可达” | ⚠️ **修正为 10 个手势事件 + 3 个后端**。可达性缺口是“事件无生产者”，不是“识别器不可达”；按事件计数才是可门禁的判据 |
+
+**追加发现的第 4 个缺陷**（计划未列，由新测试抓出）：
+`TwoFingerTapGesture` 用 `self.touches.is_empty()` 判定“两指都起来了”，但**单指抬起也会使列表为空**，
+且从未校验手指数 → **每一次普通单指点击都会被同时报成 `TwoFingerTap`**。修复为补 `touch_ends.len() == 2` 校验，
+并顺带修掉 `self.touches[0]` 在移除后索引的潜在 panic（改为按 id 取起始时间）。
+
+#### B-5b 各后端的实测状态（区分已实跑与未实跑）
+
+| 后端 | 接入的 API | 本机验证程度 |
+|---|---|---|
+| **Linux / GTK3** | `connect_touch_event` + `TOUCH_MASK` + `GdkEventSequence` 作 `TouchId` | ✅ `cargo check` + `clippy -D warnings` |
+| **Windows** | `WM_TOUCH` + `RegisterTouchWindow` + `TOUCHINPUT.dwID` 作 `TouchId` | ✅ 交叉编译 `x86_64-pc-windows-msvc` + `clippy -D warnings` |
+| **macOS** | `touchesBegan/Moved/Ended/CancelledWithEvent:` + `NSTouch.identity` 作 `TouchId` | ✅ 交叉编译 `aarch64-apple-darwin` + `clippy -D warnings` + `check_apple_thread_safety` |
+| **实机触摸输入** | — | ❌ **未验证**（本机 Linux 且无触摸设备，且 GTK 后端需有触摸屏才生效）|
+
+> 必须写清楚：**三个后端都“能编译且逻辑有测试”，但没有任何一个在真实触摸硬件上跑过。**
+> 多指路径的正确性由 `two_independent_contacts_reach_pinch` / `..._reach_rotate` 两条测试证明
+> （它们用后端会产生的 `touch_id` 形态驱动引擎，得到 `Pinch { scale: 1.6 }` 与 `Rotate { angle: 1.5707963 }`）。
+> **这证明了「识别器收到了两个独立触点后能正确工作」，不等于「Windows/macOS 的触摸后端在实机上正确」。**
 
 **决策点（需用户拍板）**：B-5b 有两条路：
 - **① 真触摸**：逐后端接 OS 触摸 API（Windows `WM_TOUCH`/`POINTER`、macOS `NSTouch`、GTK `GtkGesture`）。工作量大，但双指手势（Pinch/Rotate）需要它才可能工作。
