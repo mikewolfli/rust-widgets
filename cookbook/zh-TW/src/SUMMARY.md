@@ -14,6 +14,7 @@
 - [語言繫結](chapters/language-bindings.md)
 - [國際化](chapters/i18n.md)
 - [圖表與資料視覺化](chapters/charts.md)
+- [金融與行情控件](chapters/finance.md)
 - [PDF與列印](chapters/pdf-printing.md)
 - [效能與品質](chapters/performance-quality.md)
 - [記憶體管理](chapters/memory-management.md)

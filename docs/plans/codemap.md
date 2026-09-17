@@ -68,7 +68,7 @@
 | `capability.rs` | WidgetCapability, WidgetFactory, generic property read/write |
 | `draw.rs` | Draw trait (custom rendering) |
 | `image.rs` | Image struct + ImageFormat |
-| `kind.rs` | WidgetKind enum (169 variants) |
+| `kind.rs` | WidgetKind enum (175 variants) |
 | `mod.rs` | Re-exports + type aliases |
 | `registry.rs` | SimpleRegistry for child forwarding |
 | `widget_trait.rs` | Widget trait (geometry, style, signals, CSS, a11y) |
@@ -313,7 +313,7 @@ Axis 3: Capabilities (arbitrary composition)
 
 ---
 
-## 6. WidgetKind→Module Mapping (169 variants)
+## 6. WidgetKind→Module Mapping (175 variants)
 
 | WidgetKind | Module Path | Type |
 |-----------|-------------|------|

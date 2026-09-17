@@ -466,6 +466,24 @@ pub enum WidgetKind {
     /// BarChart — a vertical bar chart for categorical data visualization.
     #[cfg(widgets_unstripped)]
     BarChart,
+    /// CandlestickChart — a K-line chart of OHLC bars with indicator overlays.
+    #[cfg(widgets_unstripped)]
+    CandlestickChart,
+    /// VolumeChart — a volume histogram, aligned to a CandlestickChart's bars.
+    #[cfg(widgets_unstripped)]
+    VolumeChart,
+    /// DepthChart — a cumulative bid/ask depth curve.
+    #[cfg(widgets_unstripped)]
+    DepthChart,
+    /// OrderBook — a live bid/ask ladder with sizes at each level.
+    #[cfg(widgets_unstripped)]
+    OrderBook,
+    /// QuoteBoard — a table of instruments with price, change and volume.
+    #[cfg(widgets_unstripped)]
+    QuoteBoard,
+    /// IndicatorChart — a technical-indicator pane (MACD, RSI, KDJ).
+    #[cfg(widgets_unstripped)]
+    IndicatorChart,
     /// FindReplaceDialog — a find/replace dialog with text input, toggles, and action buttons.
     #[cfg(widgets_unstripped)]
     FindReplaceDialog,

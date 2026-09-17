@@ -1065,6 +1065,78 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(alloc_frugal))]
+        fn create_candlestick_chart(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::CandlestickChart, parent, "", x, y, width, height)
+        }
+
+        #[cfg(not(alloc_frugal))]
+        fn create_volume_chart(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::VolumeChart, parent, "", x, y, width, height)
+        }
+
+        #[cfg(not(alloc_frugal))]
+        fn create_depth_chart(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::DepthChart, parent, "", x, y, width, height)
+        }
+
+        #[cfg(not(alloc_frugal))]
+        fn create_order_book(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::OrderBook, parent, "", x, y, width, height)
+        }
+
+        #[cfg(not(alloc_frugal))]
+        fn create_quote_board(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::QuoteBoard, parent, "", x, y, width, height)
+        }
+
+        #[cfg(not(alloc_frugal))]
+        fn create_indicator_chart(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::IndicatorChart, parent, "", x, y, width, height)
+        }
+
+        #[cfg(not(alloc_frugal))]
         fn create_sparkline(
             &self,
             parent: ObjectId,

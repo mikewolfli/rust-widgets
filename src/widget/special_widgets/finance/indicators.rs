@@ -282,8 +282,7 @@ pub fn bollinger_bands(
             continue;
         }
         let mean = middle[index];
-        let variance =
-            window.iter().map(|v| (v - mean) * (v - mean)).sum::<f64>() / period as f64;
+        let variance = window.iter().map(|v| (v - mean) * (v - mean)).sum::<f64>() / period as f64;
         let deviation = variance.sqrt();
         lower[index] = mean - multiplier * deviation;
         upper[index] = mean + multiplier * deviation;
@@ -319,20 +318,23 @@ pub fn stochastic(
     if period == 0 {
         return (vec![f64::NAN; length], vec![f64::NAN; length]);
     }
-    for index in (period - 1)..length {
-        let window_start = index + 1 - period;
-        let window_high = &highs[window_start..=index];
-        let window_low = &lows[window_start..=index];
+    // Indexed by the close's own position, because the window extends backwards from it
+    // and the result is written back at that index; `iter_mut().enumerate()` would need a
+    // skip that obscures the alignment the whole indicator depends on.
+    for (window_start, slot) in raw_k.iter_mut().enumerate().skip(period - 1) {
+        let window_high = &highs[window_start + 1 - period..=window_start];
+        let window_low = &lows[window_start + 1 - period..=window_start];
+        let close = closes[window_start];
         if !window_high.iter().all(|v| v.is_finite())
             || !window_low.iter().all(|v| v.is_finite())
-            || !closes[index].is_finite()
+            || !close.is_finite()
         {
             continue;
         }
         let highest = window_high.iter().copied().fold(f64::NEG_INFINITY, f64::max);
         let lowest = window_low.iter().copied().fold(f64::INFINITY, f64::min);
         let range = highest - lowest;
-        raw_k[index] = if range == 0.0 { 50.0 } else { (closes[index] - lowest) / range * 100.0 };
+        *slot = if range == 0.0 { 50.0 } else { (close - lowest) / range * 100.0 };
     }
 
     let k = if k_smoothing <= 1 { raw_k } else { sma(&raw_k, k_smoothing) };
@@ -354,9 +356,8 @@ fn true_range(highs: &[f64], lows: &[f64], closes: &[f64], length: usize) -> Vec
         if !high.is_finite() || !low.is_finite() || !previous_close.is_finite() {
             continue;
         }
-        ranges[index] = (high - low)
-            .max((high - previous_close).abs())
-            .max((low - previous_close).abs());
+        ranges[index] =
+            (high - low).max((high - previous_close).abs()).max((low - previous_close).abs());
     }
     ranges
 }
@@ -504,7 +505,9 @@ pub fn vwap(
     if period == 0 || period > length {
         return out;
     }
-    for index in (period - 1)..length {
+    // Iterated through `out` so the value is written at the same position the window
+    // ends at; the index is the window's last bar, not an offset into it.
+    for (index, slot) in out.iter_mut().enumerate().skip(period - 1) {
         let window_start = index + 1 - period;
         let mut weighted = 0.0;
         let mut total_volume = 0.0;
@@ -523,7 +526,7 @@ pub fn vwap(
             total_volume += volume;
         }
         if clean && total_volume != 0.0 {
-            out[index] = weighted / total_volume;
+            *slot = weighted / total_volume;
         }
     }
     out
@@ -591,7 +594,11 @@ pub fn money_flow_index(
         let total_positive: f64 = positive_slice.iter().sum();
         let total_negative: f64 = negative_slice.iter().sum();
         out[index] = if total_negative == 0.0 {
-            if total_positive == 0.0 { 50.0 } else { 100.0 }
+            if total_positive == 0.0 {
+                50.0
+            } else {
+                100.0
+            }
         } else {
             let ratio = total_positive / total_negative;
             100.0 - (100.0 / (1.0 + ratio))
@@ -604,9 +611,20 @@ pub fn money_flow_index(
 /// down bars.
 ///
 /// Not padded — OBV is defined from its first sample, seeded with that bar's volume —
-/// because a cumulative series has no warm-up window. A non-finite sample is skipped and
-/// the total carries forward rather than resetting: the indicator counts what traded, and
-/// a missing bar contributed nothing it can know about.
+/// because a cumulative series has no warm-up window.
+///
+/// # What a missing bar does
+///
+/// A non-finite sample produces `NAN` at its own index, and the total carries forward
+/// from there. It does **not** silently count as "unchanged": whether that bar rose or
+/// fell is exactly what the missing data would have told us, so claiming it contributed
+/// nothing is a guess dressed up as data.
+///
+/// The next bar is undefined too, because its direction is measured against a close that
+/// does not exist — the same reasoning as RSI stopping at a gap. A caller with holes in
+/// its data gets holes in the indicator, which is honest, rather than a flat run that
+/// looks like a quiet market. The total carries on from the last known value once a
+/// sample **and** its predecessor are both real.
 pub fn on_balance_volume(closes: &[f64], volumes: &[f64]) -> Vec<f64> {
     let length = closes.len().min(volumes.len());
     let mut out = vec![f64::NAN; length];
@@ -616,11 +634,16 @@ pub fn on_balance_volume(closes: &[f64], volumes: &[f64]) -> Vec<f64> {
     let mut total = 0.0;
     for index in 0..length {
         if !closes[index].is_finite() || !volumes[index].is_finite() {
-            out[index] = total;
+            // The bar itself is unknown; the running total has not moved.
             continue;
         }
         if index == 0 {
             total = volumes[index];
+        } else if !closes[index - 1].is_finite() {
+            // The direction needs the previous close, and there is not one. Report the
+            // gap rather than treating a comparison against `NAN` — which is false in
+            // both directions — as "unchanged".
+            continue;
         } else if closes[index] > closes[index - 1] {
             total += volumes[index];
         } else if closes[index] < closes[index - 1] {
@@ -676,4 +699,575 @@ pub fn align_left(values: &[f64], length: usize) -> Vec<f64> {
     let offset = length - values.len();
     out[offset..].copy_from_slice(values);
     out
+}
+
+/// Test module for the indicator arithmetic.
+///
+/// # Why every assertion is against a hand-computable series
+///
+/// A recorded-output golden file would only prove the code still does what it did,
+/// including any mistake it made the first time. Each fixture here is small enough that
+/// the expected value can be checked by hand from the definition, so an assertion that
+/// passes means the arithmetic is right rather than merely unchanged.
+///
+/// # Why the edge cases dominate
+///
+/// The interesting failure modes of these functions are not the ordinary window — that
+/// is a sum — but the boundaries: a warm-up that must be `NAN` rather than zero, a gap
+/// that must not be interpolated, a flat series that must not divide by zero, and a
+/// period larger than the data. Those are what most of these tests exercise.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Asserts two values agree to well inside a price tick.
+    fn close(left: f64, right: f64) -> bool {
+        (left - right).abs() < 1e-9
+    }
+
+    /// A moving average is undefined until its window is full.
+    #[test]
+    fn a_moving_average_warms_up_over_its_window() {
+        let result = sma(&[1.0, 2.0, 3.0, 4.0, 5.0], 3);
+        assert!(result[0].is_nan(), "one sample cannot fill a 3-period window");
+        assert!(result[1].is_nan(), "two samples cannot either");
+        assert!(close(result[2], 2.0), "mean of 1,2,3");
+        assert!(close(result[3], 3.0), "mean of 2,3,4");
+        assert!(close(result[4], 4.0), "mean of 3,4,5");
+    }
+
+    /// A period longer than the input has no full window anywhere.
+    #[test]
+    fn a_moving_average_longer_than_the_series_is_all_gaps() {
+        let result = sma(&[1.0, 2.0], 5);
+        assert_eq!(result.len(), 2, "the length must always match the input");
+        assert!(result.iter().all(|value| value.is_nan()));
+    }
+
+    /// A zero period is undefined rather than a pass-through.
+    #[test]
+    fn a_zero_period_moving_average_produces_no_values() {
+        let result = sma(&[1.0, 2.0, 3.0], 0);
+        assert!(result.iter().all(|value| value.is_nan()));
+    }
+
+    /// The fast rolling sum must agree with a naive re-sum on a non-trivial series.
+    #[test]
+    fn the_rolling_sum_matches_a_naive_resum() {
+        let values: Vec<f64> =
+            (0..50).map(|index| (index as f64 * 0.37).sin() * 10.0 + 20.0).collect();
+        let rolling = sma(&values, 7);
+        for index in 6..values.len() {
+            let naive: f64 = values[index - 6..=index].iter().sum::<f64>() / 7.0;
+            assert!(close(rolling[index], naive), "index {index} must agree with a re-sum");
+        }
+    }
+
+    /// A gap in the input must produce a gap in the output, not an interpolated value.
+    #[test]
+    fn a_non_finite_sample_produces_a_gap_rather_than_a_guess() {
+        let result = sma(&[1.0, 2.0, f64::NAN, 4.0, 5.0, 6.0], 3);
+        assert!(result[4].is_nan(), "the window containing NaN is undefined");
+        assert!(result[5].is_finite(), "and recovers once the bad sample leaves");
+        assert!(close(result[5], 5.0), "mean of 4,5,6");
+    }
+
+    /// An infinate sample is a data error, not a price level.
+    #[test]
+    fn an_infinite_sample_is_treated_as_a_gap() {
+        let result = sma(&[1.0, f64::INFINITY, 3.0], 2);
+        assert!(result[1].is_nan(), "the window containing infinity is undefined");
+        assert!(result[2].is_nan(), "and the next window still contains it");
+    }
+
+    /// An EMA is defined from its first sample and holds a flat series exactly.
+    #[test]
+    fn an_exponential_average_starts_at_the_first_sample() {
+        let result = ema(&[10.0, 10.0, 10.0, 10.0], 3);
+        assert!(close(result[0], 10.0), "seeded with the first value");
+        assert!(result.iter().all(|value| close(*value, 10.0)), "a flat series stays flat");
+    }
+
+    /// The EMA moves towards a step by the conventional alpha.
+    #[test]
+    fn an_exponential_average_moves_by_its_smoothing_factor() {
+        // period 3 gives alpha = 2 / 4 = 0.5, so a step from 0 to 10 lands at 5.
+        let result = ema(&[0.0, 10.0], 3);
+        assert!(close(result[1], 5.0), "half the step, got {}", result[1]);
+    }
+
+    /// A zero-period EMA is the identity rather than a division by zero.
+    #[test]
+    fn a_zero_period_exponential_average_returns_the_input() {
+        let values = [3.0, 1.0, 4.0];
+        assert_eq!(ema(&values, 0), values.to_vec());
+    }
+
+    /// A gap breaks the EMA chain rather than smearing a value across it.
+    #[test]
+    fn a_gap_re_seeds_an_exponential_average() {
+        let result = ema(&[10.0, f64::NAN, 20.0, 20.0], 3);
+        assert!(close(result[2], 20.0), "the sample after a gap becomes the seed");
+        assert!(close(result[3], 20.0));
+    }
+
+    /// Wilder smoothing is defined immediately and approaches the input.
+    #[test]
+    fn wilder_smoothing_is_defined_immediately() {
+        let result = wilder_smooth(&[5.0, 6.0, 7.0], 3);
+        assert!(close(result[0], 5.0));
+        assert!(result[1] > 5.0 && result[1] < 6.0, "it moves towards the sample");
+        assert!(result[2] > result[1], "and keeps moving");
+    }
+
+    /// RSI on a strictly rising series saturates at 100 — there are no losses.
+    #[test]
+    fn rsi_of_a_rising_series_saturates_at_one_hundred() {
+        let values: Vec<f64> = (0..30).map(|index| 100.0 + index as f64).collect();
+        let result = rsi(&values, 14);
+        assert!(result[..14].iter().all(|value| value.is_nan()), "warm-up is undefined");
+        assert!(close(result[14], 100.0), "no losses means the maximum reading");
+        assert!(close(result[29], 100.0));
+    }
+
+    /// RSI on a strictly falling series bottoms at 0 — there are no gains.
+    #[test]
+    fn rsi_of_a_falling_series_bottoms_at_zero() {
+        let values: Vec<f64> = (0..30).map(|index| 100.0 - index as f64).collect();
+        let result = rsi(&values, 14);
+        assert!(close(result[14], 0.0), "no gains means the minimum reading");
+    }
+
+    /// A flat series has no gains and no losses, which reads neutral.
+    #[test]
+    fn rsi_of_a_flat_series_is_neutral() {
+        let result = rsi(&[50.0; 30], 14);
+        assert!(close(result[14], 50.0), "equal gains and losses is the midpoint");
+        assert!(close(result[29], 50.0));
+    }
+
+    /// RSI stays inside its published bounds on mixed data.
+    #[test]
+    fn rsi_stays_within_zero_and_one_hundred() {
+        let values: Vec<f64> = (0..200)
+            .map(|index| 100.0 + (index as f64 * 0.7).sin() * 5.0 + (index as f64 * 0.13).cos())
+            .collect();
+        for value in rsi(&values, 14).iter().filter(|value| value.is_finite()) {
+            assert!((0.0..=100.0).contains(value), "RSI out of range: {value}");
+        }
+    }
+
+    /// RSI needs strictly more samples than its period.
+    #[test]
+    fn rsi_needs_more_samples_than_its_period() {
+        assert!(rsi(&[1.0, 2.0, 3.0], 14).iter().all(|value| value.is_nan()));
+        assert!(rsi(&[1.0, 2.0, 3.0], 0).iter().all(|value| value.is_nan()));
+    }
+
+    /// A gap in the data gives a gap in the reading rather than a carried-forward value.
+    #[test]
+    fn rsi_stops_at_a_gap_rather_than_carrying_a_value_forward() {
+        let mut values: Vec<f64> =
+            (0..60).map(|index| 100.0 + (index as f64 * 0.4).sin()).collect();
+        assert!(rsi(&values, 14)[59].is_finite(), "the fixture is clean to begin with");
+        values[50] = f64::NAN;
+        let result = rsi(&values, 14);
+        assert!(result[50].is_nan(), "the window containing the gap is undefined");
+        assert!(result[59].is_nan(), "and the computation stops there rather than resuming");
+    }
+
+    /// MACD's histogram is the difference of its two lines, by definition.
+    #[test]
+    fn macd_histogram_is_the_difference_of_its_two_lines() {
+        let values: Vec<f64> =
+            (0..120).map(|index| 100.0 + (index as f64 * 0.3).sin() * 8.0).collect();
+        let (line, signal, histogram) = macd(&values, 12, 26, 9);
+        assert_eq!(line.len(), values.len());
+        assert_eq!(signal.len(), values.len());
+        assert_eq!(histogram.len(), values.len());
+        for index in 0..values.len() {
+            if line[index].is_finite() && signal[index].is_finite() {
+                assert!(
+                    close(histogram[index], line[index] - signal[index]),
+                    "index {index}: histogram must be line minus signal"
+                );
+            }
+        }
+    }
+
+    /// A faster EMA leads a slower one in an uptrend, which makes the MACD line positive.
+    #[test]
+    fn macd_is_positive_while_price_rises() {
+        let values: Vec<f64> = (0..80).map(|index| 100.0 + index as f64 * 2.0).collect();
+        let (line, _, _) = macd(&values, 12, 26, 9);
+        assert!(
+            line.last().is_some_and(|value| *value > 0.0),
+            "a steady rise gives a positive MACD"
+        );
+    }
+
+    /// A zero signal period leaves the MACD line as its own signal, so the histogram is
+    /// zero rather than undefined.
+    #[test]
+    fn macd_with_no_signal_period_has_a_zero_histogram() {
+        let values: Vec<f64> = (0..40).map(|index| 100.0 + index as f64).collect();
+        let (line, signal, histogram) = macd(&values, 3, 6, 0);
+        assert_eq!(line, signal, "a zero-period EMA is the identity");
+        assert!(
+            histogram.iter().all(|value| !value.is_finite() || close(*value, 0.0)),
+            "so the histogram collapses to zero"
+        );
+    }
+
+    /// The bands sit symmetrically around the middle band.
+    #[test]
+    fn bollinger_bands_are_symmetric_about_the_middle() {
+        let values: Vec<f64> =
+            (0..60).map(|index| 100.0 + (index as f64 * 0.5).sin() * 6.0).collect();
+        let (lower, middle, upper) = bollinger_bands(&values, 20, 2.0);
+        for index in 19..values.len() {
+            if !middle[index].is_finite() {
+                continue;
+            }
+            assert!(lower[index] < middle[index], "the lower band sits below the mean");
+            assert!(upper[index] > middle[index], "the upper band sits above it");
+            assert!(
+                close(middle[index] - lower[index], upper[index] - middle[index]),
+                "index {index}: the bands must be equidistant"
+            );
+        }
+    }
+
+    /// The band width uses the population deviation, not the sample deviation.
+    ///
+    /// At period 4 the two differ by 15%, which makes the distinction an assertion rather
+    /// than a rounding question.
+    #[test]
+    fn band_width_is_the_population_deviation() {
+        // Window [4,4,5,5]: mean 4.5, population deviation 0.5, sample deviation 0.577.
+        let values = [2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0];
+        let (lower, middle, upper) = bollinger_bands(&values, 4, 1.0);
+        assert!(close(middle[5], 4.5), "the middle band is the mean");
+        assert!(close(upper[5] - 4.5, 0.5), "population deviation is 0.5, not 0.577");
+        assert!(close(4.5 - lower[5], 0.5));
+    }
+
+    /// Bands are gaps until the window is full.
+    #[test]
+    fn bollinger_bands_are_gaps_during_warm_up() {
+        let values: Vec<f64> = (0..10).map(|index| index as f64).collect();
+        let (lower, middle, upper) = bollinger_bands(&values, 5, 2.0);
+        assert!(lower[3].is_nan() && middle[3].is_nan() && upper[3].is_nan());
+        assert!(middle[4].is_finite(), "the first full window is at index 4");
+    }
+
+    /// A flat series has zero deviation, so all three bands collapse onto one line.
+    #[test]
+    fn bollinger_bands_of_a_flat_series_collapse() {
+        let (lower, middle, upper) = bollinger_bands(&[7.0; 20], 5, 2.0);
+        assert!(close(lower[10], 7.0) && close(middle[10], 7.0) && close(upper[10], 7.0));
+    }
+
+    /// %K reads 100 at the top of the range.
+    #[test]
+    fn stochastic_reads_the_top_of_the_range() {
+        let highs = [10.0, 12.0, 14.0, 16.0, 18.0];
+        let lows = [8.0, 10.0, 12.0, 14.0, 16.0];
+        let closes = [18.0; 5];
+        let (k, _) = stochastic(&highs, &lows, &closes, 5, 1, 3);
+        assert!(close(k[4], 100.0), "a close at the high reads 100");
+    }
+
+    /// %K reads 0 at the bottom of the range.
+    #[test]
+    fn stochastic_reads_the_bottom_of_the_range() {
+        let highs = [10.0, 12.0, 14.0, 16.0, 18.0];
+        let lows = [8.0, 10.0, 12.0, 14.0, 16.0];
+        let closes = [8.0; 5];
+        let (k, _) = stochastic(&highs, &lows, &closes, 5, 1, 3);
+        assert!(close(k[4], 0.0), "a close at the low reads 0");
+    }
+
+    /// A zero-width range reads neutral instead of dividing by zero.
+    #[test]
+    fn stochastic_of_a_zero_range_reads_neutral() {
+        let (k, _) = stochastic(&[5.0; 5], &[5.0; 5], &[5.0; 5], 3, 1, 3);
+        assert!(close(k[2], 50.0), "no range at all is the midpoint");
+    }
+
+    /// A zero period produces no readings rather than a wrong one.
+    #[test]
+    fn stochastic_with_a_zero_period_produces_nothing() {
+        let (k, d) = stochastic(&[1.0; 4], &[1.0; 4], &[1.0; 4], 0, 1, 3);
+        assert!(k.iter().all(|value| value.is_nan()));
+        assert!(d.iter().all(|value| value.is_nan()));
+    }
+
+    /// The true range accounts for a gap that a plain high/low span would miss.
+    #[test]
+    fn true_range_accounts_for_gaps() {
+        // Bar 1 opens far above bar 0's close, so the gap dominates the range.
+        let ranges = true_range(&[10.0, 30.0], &[9.0, 28.0], &[9.5, 29.0], 2);
+        assert!(close(ranges[1], 20.5), "30 - 9.5, not the 30 - 28 span");
+    }
+
+    /// ATR averages the true range and is defined from index `period`.
+    #[test]
+    fn atr_is_defined_after_its_period() {
+        let highs: Vec<f64> = (0..20).map(|index| 10.0 + index as f64).collect();
+        let lows: Vec<f64> = (0..20).map(|index| 9.0 + index as f64).collect();
+        let closes: Vec<f64> = (0..20).map(|index| 9.5 + index as f64).collect();
+        let result = atr(&highs, &lows, &closes, 5);
+        assert!(result[..5].iter().all(|value| value.is_nan()), "warm-up");
+        assert!(result[5].is_finite(), "the first value is at index `period`");
+        // Each bar spans 1.0, but it also opens 1.5 above the previous close (the bars rise
+        // by 1.0 and each closes at its own midpoint), so the true range is 1.5 — not the
+        // 1.0 span. This is the whole reason `true_range` exists rather than using `high - low`.
+        assert!(close(result[5], 1.5), "got {}", result[5]);
+    }
+
+    /// ATR sees the gap that a high/low span would hide.
+    #[test]
+    fn atr_is_larger_than_the_high_low_span_when_a_gap_exists() {
+        let highs = [10.0, 30.0, 30.5];
+        let lows = [9.0, 28.0, 28.5];
+        let closes = [9.5, 29.0, 29.5];
+        let result = atr(&highs, &lows, &closes, 2);
+        // The true ranges are max(2, 20.5, 18.5) = 20.5 and max(2, 1.5, 0.5) = 2.0, so the
+        // seeding mean is (20.5 + 2.0) / 2 = 11.25 — far above the 2.0 high/low span.
+        assert!(close(result[2], 11.25), "got {}", result[2]);
+    }
+
+    /// A period longer than the series gives no ATR rather than a partial one.
+    #[test]
+    fn atr_needs_more_samples_than_its_period() {
+        let result = atr(&[1.0, 2.0], &[1.0, 2.0], &[1.0, 2.0], 5);
+        assert!(result.iter().all(|value| value.is_nan()));
+    }
+
+    /// Trailing extremes use a window, and the window moves.
+    #[test]
+    fn trailing_extremes_follow_the_window() {
+        let highs = [1.0, 5.0, 2.0, 2.0, 2.0];
+        let lows = [1.0, 4.0, 0.5, 0.5, 0.5];
+        let (upper, lower) = trailing_extremes(&highs, &lows, 2);
+        assert!(close(upper[1], 5.0), "window [1,1] includes the spike");
+        assert!(close(upper[2], 5.0), "window [1,2] still includes it");
+        assert!(close(upper[3], 2.0), "the spike has left the window");
+        assert!(close(lower[2], 0.5), "the low is picked up as it arrives");
+    }
+
+    /// The deque implementation must agree with a naive window scan everywhere.
+    #[test]
+    fn trailing_extremes_match_a_naive_scan() {
+        let highs: Vec<f64> =
+            (0..200).map(|index| 50.0 + (index as f64 * 0.31).sin() * 10.0).collect();
+        let lows: Vec<f64> = highs.iter().map(|high| high - 2.0).collect();
+        let (upper, lower) = trailing_extremes(&highs, &lows, 13);
+        for index in 12..highs.len() {
+            let expected_high =
+                highs[index - 12..=index].iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            let expected_low =
+                lows[index - 12..=index].iter().copied().fold(f64::INFINITY, f64::min);
+            assert!(close(upper[index], expected_high), "index {index} high");
+            assert!(close(lower[index], expected_low), "index {index} low");
+        }
+    }
+
+    /// A period longer than the series gives no extremes.
+    #[test]
+    fn trailing_extremes_need_a_full_window() {
+        let (upper, lower) = trailing_extremes(&[1.0, 2.0], &[1.0, 2.0], 5);
+        assert!(upper.iter().all(|value| value.is_nan()));
+        assert!(lower.iter().all(|value| value.is_nan()));
+    }
+
+    /// The Donchian middle line is the channel centre.
+    #[test]
+    fn donchian_middle_is_the_channel_centre() {
+        let highs: Vec<f64> = (0..20).map(|index| 10.0 + index as f64).collect();
+        let lows: Vec<f64> = (0..20).map(|index| index as f64).collect();
+        let (lower, middle, upper) = donchian_channel(&highs, &lows, 3);
+        assert!(close(middle[5], (upper[5] + lower[5]) / 2.0));
+        // Indices 3,4,5 hold highs 13,14,15 and lows 3,4,5.
+        assert!(close(upper[5], 15.0), "the highest of the last three highs");
+        assert!(close(lower[5], 3.0), "the lowest of the last three lows");
+    }
+
+    /// VWAP weights by volume, so it sits nearer the heavier bar.
+    #[test]
+    fn vwap_weights_by_volume() {
+        // Typical prices are 10 and 20; the second bar carries nine times the volume.
+        let result = vwap(&[10.0, 20.0], &[10.0, 20.0], &[10.0, 20.0], &[1.0, 9.0], 2);
+        assert!(close(result[1], 19.0), "got {}", result[1]);
+    }
+
+    /// A window with no volume is undefined rather than a made-up level.
+    #[test]
+    fn vwap_with_no_volume_is_undefined() {
+        let result = vwap(&[10.0], &[10.0], &[10.0], &[0.0], 1);
+        assert!(result[0].is_nan(), "no volume means no average price");
+    }
+
+    /// VWAP uses the typical price, not the close.
+    #[test]
+    fn vwap_uses_the_typical_price() {
+        // A single bar: high 30, low 6, close 12 -> typical (30 + 6 + 12) / 3 = 16.
+        let result = vwap(&[30.0], &[6.0], &[12.0], &[5.0], 1);
+        assert!(close(result[0], 16.0), "got {}", result[0]);
+    }
+
+    /// MFI saturates when every bar rises with volume.
+    #[test]
+    fn money_flow_index_saturates_on_a_pure_uptrend() {
+        let highs: Vec<f64> = (0..20).map(|index| 11.0 + index as f64).collect();
+        let lows: Vec<f64> = (0..20).map(|index| 10.0 + index as f64).collect();
+        let closes: Vec<f64> = (0..20).map(|index| 10.5 + index as f64).collect();
+        let result = money_flow_index(&highs, &lows, &closes, &[100.0; 20], 5);
+        assert!(close(result[19], 100.0), "every bar rose, so there is no negative flow");
+    }
+
+    /// MFI bottoms out when every bar falls.
+    #[test]
+    fn money_flow_index_bottoms_on_a_pure_downtrend() {
+        let highs: Vec<f64> = (0..20).map(|index| 11.0 - index as f64).collect();
+        let lows: Vec<f64> = (0..20).map(|index| 10.0 - index as f64).collect();
+        let closes: Vec<f64> = (0..20).map(|index| 10.5 - index as f64).collect();
+        let result = money_flow_index(&highs, &lows, &closes, &[100.0; 20], 5);
+        assert!(close(result[19], 0.0), "no positive flow means the minimum reading");
+    }
+
+    /// A flat series is neither, which reads neutral.
+    #[test]
+    fn money_flow_index_of_a_flat_series_is_neutral() {
+        let result = money_flow_index(&[5.0; 20], &[5.0; 20], &[5.0; 20], &[100.0; 20], 5);
+        assert!(close(result[19], 50.0), "nothing moved in either direction");
+    }
+
+    /// MFI stays inside its published bounds.
+    #[test]
+    fn money_flow_index_stays_within_its_bounds() {
+        let highs: Vec<f64> =
+            (0..120).map(|index| 20.0 + (index as f64 * 0.4).sin() * 3.0).collect();
+        let lows: Vec<f64> = highs.iter().map(|high| high - 1.0).collect();
+        let closes: Vec<f64> = highs.iter().map(|high| high - 0.5).collect();
+        let volumes: Vec<f64> = (0..120).map(|index| 100.0 + (index % 7) as f64 * 10.0).collect();
+        for value in money_flow_index(&highs, &lows, &closes, &volumes, 14)
+            .iter()
+            .filter(|value| value.is_finite())
+        {
+            assert!((0.0..=100.0).contains(value), "MFI out of range: {value}");
+        }
+    }
+
+    /// OBV adds on up bars and subtracts on down bars.
+    #[test]
+    fn on_balance_volume_accumulates_by_direction() {
+        let result = on_balance_volume(&[10.0, 11.0, 10.0, 12.0], &[100.0, 200.0, 300.0, 400.0]);
+        assert!(close(result[0], 100.0), "seeded with the first bar's volume");
+        assert!(close(result[1], 300.0), "an up bar adds");
+        assert!(close(result[2], 0.0), "a down bar subtracts");
+        assert!(close(result[3], 400.0), "and it keeps accumulating");
+    }
+
+    /// An unchanged close leaves OBV alone, which is the definition.
+    #[test]
+    fn on_balance_volume_ignores_unchanged_bars() {
+        let result = on_balance_volume(&[10.0, 10.0, 10.0], &[50.0, 50.0, 50.0]);
+        assert!(result.iter().all(|value| close(*value, 50.0)), "nothing moved, nothing changed");
+    }
+
+    /// A gap produces a gap, because the next bar's direction is unknowable.
+    ///
+    /// The first version treated the bar after a gap as "unchanged" — comparing against
+    /// `NAN` is false in both directions — which silently reported a flat market where the
+    /// data was simply missing. This asserts the honest answer instead.
+    #[test]
+    fn on_balance_volume_reports_a_gap_rather_than_assuming_no_change() {
+        let result = on_balance_volume(&[10.0, f64::NAN, 12.0], &[100.0, 200.0, 300.0]);
+        assert!(close(result[0], 100.0), "the first bar seeds the total");
+        assert!(result[1].is_nan(), "the missing bar has no value");
+        assert!(result[2].is_nan(), "and neither has the bar whose direction needs it");
+    }
+
+    /// The total resumes once a sample and its predecessor are both real.
+    #[test]
+    fn on_balance_volume_resumes_after_a_gap() {
+        let closes = [10.0, f64::NAN, 12.0, 13.0];
+        let volumes = [100.0, 200.0, 300.0, 400.0];
+        let result = on_balance_volume(&closes, &volumes);
+        assert!(result[1].is_nan() && result[2].is_nan(), "the gap and its shadow");
+        assert!(close(result[3], 500.0), "12 -> 13 is an up bar, so 100 + 400");
+    }
+
+    /// The extent ignores gaps and infinities.
+    #[test]
+    fn the_extent_ignores_gaps() {
+        let (low, high) = series_extent(&[1.0, f64::NAN, 5.0, f64::INFINITY]);
+        assert!(close(low, 1.0));
+        assert!(close(high, 5.0), "infinity is a data error, not a level");
+    }
+
+    /// An all-gap series has no extent, which reads as nothing to draw.
+    #[test]
+    fn an_all_gap_series_has_no_extent() {
+        let (low, high) = series_extent(&[f64::NAN, f64::INFINITY]);
+        assert!(low.is_nan() && high.is_nan());
+        assert!(!has_drawable_values(&[f64::NAN]));
+        assert!(has_drawable_values(&[f64::NAN, 1.0]));
+    }
+
+    /// Left alignment puts an indicator's warm-up gap at the start, where it belongs.
+    #[test]
+    fn align_left_pads_at_the_start() {
+        let aligned = align_left(&[1.0, 2.0, 3.0], 5);
+        assert_eq!(aligned.len(), 5);
+        assert!(aligned[0].is_nan() && aligned[1].is_nan(), "the gap is leading");
+        assert!(close(aligned[2], 1.0) && close(aligned[4], 3.0));
+    }
+
+    /// A series at or beyond the window length is truncated rather than padded.
+    #[test]
+    fn align_left_truncates_a_longer_series() {
+        let aligned = align_left(&[1.0, 2.0, 3.0, 4.0], 2);
+        assert_eq!(aligned, vec![1.0, 2.0], "the leading part that fits");
+    }
+
+    /// Aligning an already-correct series is the identity, so the overlay path cannot
+    /// shift data that needed no moving.
+    #[test]
+    fn align_left_is_the_identity_at_the_right_length() {
+        let values = vec![1.0, 2.0, 3.0];
+        assert_eq!(align_left(&values, 3), values);
+    }
+
+    /// Every indicator must preserve the input length, since the panes align by index.
+    ///
+    /// This is the one property the whole overlay design depends on: a series of the
+    /// wrong length would draw at the wrong bars, and nothing else in the code would
+    /// notice. Asserting it once for every function is cheaper than re-deriving the
+    /// alignment at each call site.
+    #[test]
+    fn every_indicator_preserves_the_input_length() {
+        let values: Vec<f64> = (0..40).map(|index| 10.0 + index as f64).collect();
+        let volumes = vec![1.0; 40];
+        assert_eq!(sma(&values, 5).len(), 40);
+        assert_eq!(ema(&values, 5).len(), 40);
+        assert_eq!(wilder_smooth(&values, 5).len(), 40);
+        assert_eq!(rsi(&values, 5).len(), 40);
+        let (line, signal, histogram) = macd(&values, 3, 6, 2);
+        assert!(line.len() == 40 && signal.len() == 40 && histogram.len() == 40);
+        let (lower, middle, upper) = bollinger_bands(&values, 5, 2.0);
+        assert!(lower.len() == 40 && middle.len() == 40 && upper.len() == 40);
+        let (k, d) = stochastic(&values, &values, &values, 5, 3, 3);
+        assert!(k.len() == 40 && d.len() == 40);
+        assert_eq!(atr(&values, &values, &values, 5).len(), 40);
+        let (upper, lower) = trailing_extremes(&values, &values, 5);
+        assert!(upper.len() == 40 && lower.len() == 40);
+        let (lower, middle, upper) = donchian_channel(&values, &values, 5);
+        assert!(lower.len() == 40 && middle.len() == 40 && upper.len() == 40);
+        assert_eq!(vwap(&values, &values, &values, &volumes, 5).len(), 40);
+        assert_eq!(money_flow_index(&values, &values, &values, &volumes, 5).len(), 40);
+        assert_eq!(on_balance_volume(&values, &volumes).len(), 40);
+    }
 }

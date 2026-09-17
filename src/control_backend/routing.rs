@@ -49,7 +49,7 @@ mod tests {
     /// E-2 and the `check_kind_reachability.sh` gate it adds.
     /// `PagerPageView` and `TileView` were then deleted outright (171 → 169), so the
     /// constant and the array were updated together in that change.
-    const EXPECTED_WIDGET_KIND_COUNT: usize = 169;
+    const EXPECTED_WIDGET_KIND_COUNT: usize = 175;
 
     /// Every widget kind must be routed to the library.
     ///
@@ -237,6 +237,12 @@ mod tests {
             WidgetKind::ColorPicker,
             WidgetKind::Toast,
             WidgetKind::SplashScreen,
+            WidgetKind::CandlestickChart,
+            WidgetKind::VolumeChart,
+            WidgetKind::DepthChart,
+            WidgetKind::OrderBook,
+            WidgetKind::QuoteBoard,
+            WidgetKind::IndicatorChart,
         ];
 
         assert_eq!(

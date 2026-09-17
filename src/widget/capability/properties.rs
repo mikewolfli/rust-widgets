@@ -2126,6 +2126,78 @@ pub(crate) fn bar_chart_capability() -> WidgetCapability {
 }
 
 #[cfg(not(alloc_frugal))]
+#[cfg(not(alloc_frugal))]
+pub(crate) fn candlestick_chart_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::CandlestickChart,
+        canonical_name: "candlestick_chart",
+        aliases: &["candlestick", "kline", "k_line", "k_line_chart", "ohlc_chart"],
+        properties: CANDLESTICK_CHART_PROPERTIES,
+        events: &["changed"],
+        commands: &["set_series", "add_overlay"],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn volume_chart_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::VolumeChart,
+        canonical_name: "volume_chart",
+        aliases: &["volume", "volume_histogram", "volume_bars"],
+        properties: VOLUME_CHART_PROPERTIES,
+        events: &["changed"],
+        commands: &["set_series", "add_overlay"],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn depth_chart_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::DepthChart,
+        canonical_name: "depth_chart",
+        aliases: &["market_depth", "depth_graph", "liquidity_chart"],
+        properties: DEPTH_CHART_PROPERTIES,
+        events: &["changed"],
+        commands: &["set_series", "add_overlay"],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn order_book_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::OrderBook,
+        canonical_name: "order_book",
+        aliases: &["orderbook", "book_ladder", "market_depth_ladder"],
+        properties: ORDER_BOOK_PROPERTIES,
+        events: &["changed"],
+        commands: &["set_series", "add_overlay"],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn quote_board_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::QuoteBoard,
+        canonical_name: "quote_board",
+        aliases: &["quotes", "watchlist", "quote_table", "market_watch"],
+        properties: QUOTE_BOARD_PROPERTIES,
+        events: &["changed"],
+        commands: &["set_series", "add_overlay"],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn indicator_chart_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::IndicatorChart,
+        canonical_name: "indicator_chart",
+        aliases: &["indicator", "technical_indicator", "oscillator", "macd_chart"],
+        properties: INDICATOR_CHART_PROPERTIES,
+        events: &["changed"],
+        commands: &["set_series", "add_overlay"],
+    }
+}
+
 pub(crate) fn pie_chart_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::PieChart,

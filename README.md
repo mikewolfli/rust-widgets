@@ -28,7 +28,7 @@ There is no `CreateWindowExW`/`NSButton`/`gtk_button_new`/`android.widget.Button
 | Property | Self-drawn (this library) | Native controls |
 |---|---|---|
 | Appearance | **Identical on every OS** | Differs per OS toolkit and version |
-| Widget count | **169 kinds, all platforms** | Only what the OS toolkit offers |
+| Widget count | **175 kinds, all platforms** | Only what the OS toolkit offers |
 | Dependency weight | **No GUI toolkit linked** | GTK / AppKit / Win32 / Android SDK |
 | Headless & embedded | **Runs with no OS at all** (`mini`, SVG) | Impossible |
 | Deterministic tests | **Pixel/serialise snapshots** | Needs a real display |
@@ -45,7 +45,7 @@ A backend that cannot supply even a surface (for example a bare framebuffer) sti
 
 > **Migrating from 1.x?** Native control creation was removed from all ten backends in 2.0.0. See [`CHANGELOG.md`](CHANGELOG.md) and [`docs/MIGRATION_GUIDE.md`](docs/MIGRATION_GUIDE.md).
 
-All 169 widget kinds are self-drawn. Every one of them resolves a constructor through
+All 175 widget kinds are self-drawn. Every one of them resolves a constructor through
 `factory_name_for_kind` (`456` accepted names in total, counting aliases);
 `tools/check_widget_registration_fidelity.sh` fails if a kind is added without an
 answer, or resolves to no constructor at all — the latter caught four `create_*`
@@ -57,12 +57,13 @@ capability matrix
 is generated from source and gated for drift in CI.
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.3.0-blue)]()
+[![version](https://img.shields.io/badge/version-2.3.1-blue)]()
 [![tests](https://img.shields.io/badge/tests-4900%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
-**Verified in 2.3.0:** `4756` lib tests pass on `desktop` (`1538` on `embedded`, `1477` on
-`mini`), `4923` across all test binaries, clippy is clean under `-D warnings` for
+**Verified in 2.3.1:** `4897` lib tests pass on `desktop` (`1538` on `embedded`,
+`1477` on `mini`), `5075` across all test binaries, and every demo builds and runs —
+including `demo/finance`, whose 12 tests cover the financial panel wiring.
 `--all-targets`, `cargo doc --no-deps` reports no warnings, and all five profiles
 (`desktop`/`tablet`/`mobile`/`mini`/`embedded`) build. 30 gates run, of which 4 are
 host-gated or pre-existing (documented in
@@ -250,9 +251,9 @@ what the OS can draw.
 
 | Profile | Widget set | Registry | Custom-painted controls | GPU | i18n |
 |---------|-----------|:--------:|:-----------------------:|:---:|:----:|
-| `desktop` | **169 kinds** (full) | ✅ | ✅ | ✅ wgpu | ✅ |
-| `tablet` | **169 kinds** (full) | ✅ | ✅ | ✅ wgpu | ✅ |
-| `mobile` | **169 kinds** (full) | ✅ | ✅ | ✅ wgpu | ✅ |
+| `desktop` | **175 kinds** (full) | ✅ | ✅ | ✅ wgpu | ✅ |
+| `tablet` | **175 kinds** (full) | ✅ | ✅ | ✅ wgpu | ✅ |
+| `mobile` | **175 kinds** (full) | ✅ | ✅ | ✅ wgpu | ✅ |
 | `embedded` | reduced core set | — | — | — software | — |
 | `mini` | reduced core set | — | — | — software | — |
 
@@ -408,6 +409,11 @@ worker thread reaches a live control.
 > Not exposed over the C ABI — Rust only, like the JSON loader.
 > Full guide: [cookbook/en/src/chapters/declarative-view.md](cookbook/en/src/chapters/declarative-view.md).
 
+> **Financial controls:** six self-drawn market-data controls — a K-line chart with
+> indicator overlays, a volume pane, a depth curve, an order book, a quote board and an
+> oscillator pane — plus the technical-analysis arithmetic they share. See
+> [cookbook/en/src/chapters/finance.md](cookbook/en/src/chapters/finance.md).
+
 > **C ABI coverage.** The C ABI (`include/rw_generated.h`, 128 `rw_*` functions)
 > covers window management, widget creation, per-widget properties and theme
 > selection. Creation and property access are **generic**:
@@ -472,7 +478,7 @@ silently stay unreachable from a language.
 
 ## Widget Library
 
-### Desktop/Tablet/Mobile (169 widget kinds)
+### Desktop/Tablet/Mobile (175 widget kinds)
 
 **Core**: Window, Dialog, MessageBox, FileDialog, ColorDialog, FontDialog, InputDialog, ProgressDialog, PopupWindow, Button, CheckBox, RadioButton, Label, LineEdit, TextEdit, RichEdit, ComboBox, SpinBox, ListBox, ListView, TreeView, ProgressBar, Slider, ScrollBar, ScrollArea, TabWidget, Splitter, GroupBox, MenuBar, Menu, MenuItem, ContextMenu, ToolBar, StatusBar, Canvas, Table, Grid, Chart, ToggleButton
 

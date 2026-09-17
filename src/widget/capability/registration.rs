@@ -213,6 +213,12 @@ impl WidgetFactory {
             self.register(line_chart_capability(), create_line_chart);
             self.register(sparkline_capability(), create_sparkline);
             self.register(bar_chart_capability(), create_bar_chart);
+            self.register(candlestick_chart_capability(), create_candlestick_chart);
+            self.register(volume_chart_capability(), create_volume_chart);
+            self.register(depth_chart_capability(), create_depth_chart);
+            self.register(order_book_capability(), create_order_book);
+            self.register(quote_board_capability(), create_quote_board);
+            self.register(indicator_chart_capability(), create_indicator_chart);
             self.register(pie_chart_capability(), create_pie_chart);
             self.register(animated_image_capability(), create_animated_image);
             self.register(hero_animation_capability(), create_hero_animation);

@@ -14,6 +14,7 @@
 - [Language Bindings](chapters/language-bindings.md)
 - [Internationalization](chapters/i18n.md)
 - [Charts & Data Visualization](chapters/charts.md)
+- [Financial & Market-Data Controls](chapters/finance.md)
 - [PDF & Printing](chapters/pdf-printing.md)
 - [Performance & Quality](chapters/performance-quality.md)
 - [Memory Management](chapters/memory-management.md)

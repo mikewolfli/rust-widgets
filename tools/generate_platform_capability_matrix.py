@@ -140,6 +140,12 @@ WIDGETS: Dict[str, Tuple[str, List[str]]] = {
     "Grid": ("Grid", CELLS),
     "Chart": ("Chart", CELLS),
     "RadarChart": ("RadarChart", CELLS),
+    "CandlestickChart": ("CandlestickChart", CELLS),
+    "VolumeChart": ("VolumeChart", CELLS),
+    "DepthChart": ("DepthChart", CELLS),
+    "OrderBook": ("OrderBook", CELLS),
+    "QuoteBoard": ("QuoteBoard", CELLS),
+    "IndicatorChart": ("IndicatorChart", CELLS),
     "KanbanBoard": ("KanbanBoard", CELLS),
     "Cascader": ("Cascader", CELLS),
     "QueryBuilder": ("QueryBuilder", CELLS),
@@ -621,7 +627,7 @@ def generate_matrix() -> str:
     lines.append("---")
     lines.append("")
     lines.append(
-        f"Total widgets: {len(WIDGETS)} (matches {len(WIDGETS)} WidgetKind variants)"
+        f"Total widgets: {len(WIDGETS)} ({len(WIDGETS) - 9} WidgetKind variants plus 9 documented WebEngine wrapper types)"
     )
     lines.append("")
     lines.append(

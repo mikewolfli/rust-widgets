@@ -5,6 +5,114 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 2.3.1 (2026-09-18) — The Financial Control Family, and a Running Demo
+
+Backward compatible. Adds six controls and one demo; changes no existing signature.
+
+This is a follow-up to 2.3.0, which shipped the declarative view layer. The question that
+started it was "is there a K-line control?" — and the honest answer was *a `ChartType`
+variant that draws a candlestick*, which is not the same thing as a chart a trader can read.
+The nine variants of `ChartWidget` share axes, labels and a hover hit-test; a price pane
+owes its reader four things none of them have, and those four are what this release adds.
+
+### Added
+
+- **Financial & market-data control family** (`rust_widgets::widget::special_widgets::finance`).
+  Six controls, each its own `WidgetKind` (`WidgetKind`: 169 → **175**):
+  - **`CandlestickChart`** — the K-line pane: OHLC candles with wicks and doji handling, a
+    price axis with inferred precision, a crosshair with an OHLC readout, and an overlay
+    list (moving averages, EMA, Bollinger bands, VWAP, Donchian channels). Price levels
+    draw as dashed horizontals *over* the candles, and the price extent expands to include
+    every overlay so a band is never clipped at the pane edge.
+  - **`VolumeChart`** — the volume histogram, coloured by its own bar's direction. It takes
+    the price series rather than a parallel volume vector, so a bar's colour cannot fall out
+    of step with its price.
+  - **`DepthChart`** — the cumulative bid/ask depth curve, drawn as a step function: a
+    level's quantity is constant across its price, so a smooth line would draw size that
+    does not exist at prices in between. `curve()` exposes the plotted points.
+  - **`OrderBook`** — the bid/ask ladder, both sides ordered best-first regardless of the
+    order the feed delivered them in, with size bars growing outward from the spread spine.
+  - **`QuoteBoard`** — a watchlist: configurable columns, sign-coloured change cells,
+    magnitude-suffixed volumes and four sort modes. `QuoteSort::None` restores the
+    **caller's** order rather than reversing whatever a previous sort left behind.
+  - **`IndicatorChart`** — the oscillator pane: MACD (with a signed histogram), RSI,
+    stochastic, MFI, ATR and OBV. Bounded modes get a fixed `0..=100` axis so the 30/70
+    band means the same thing in every window. `compute()` is public and `draw` calls it,
+    so the numbers a caller reads cannot disagree with the picture.
+- **`finance::indicators`** — technical analysis as pure functions over `&[f64]`:
+  `sma`, `ema`, `wilder_smooth`, `rsi`, `macd`, `bollinger_bands`, `stochastic`, `atr`,
+  `trailing_extremes`, `donchian_channel`, `vwap`, `money_flow_index`, `on_balance_volume`,
+  plus `series_extent`, `has_drawable_values` and `align_left`. Deliberately **not**
+  controls: an average has no geometry, so as functions they are testable without a window
+  (53 tests) and the drawing stays one shared concern. Every function returns a vector the
+  same length as its input, padded with `NAN` through its warm-up.
+- **`finance::types`** — the shared data model: `Bar`, `PriceSeries`, `BookLevel`,
+  `OrderBook`, `Quote`, `PriceLine`. One model rather than a per-control shape, because the
+  panes describe the same instrument at the same moments and must agree about the bar index.
+- **`finance::layout`** — `IndexAxis`, `PriceAxis`, `PlotArea`: the geometry every pane maps
+  through, so several stacked panes align structurally rather than by convention. The price
+  inversion happens in exactly one place.
+- **`demo/finance`** — a complete trading screen: the K-line chart with three overlays and
+  three price levels, a volume pane, MACD and RSI panes (all four sharing one index axis),
+  and a watchlist, ladder and depth curve built from one book. It launches on macOS/Cocoa
+  and receives real pointer events. Its 12 tests cover the sample data, the layout
+  arithmetic and the panel wiring; `every_panel_draws_with_the_demo_data` draws all seven
+  panels headlessly at their real sizes.
+- **`cookbook/{en,zh-CN,zh-TW}/src/chapters/finance.md`** — a chapter covering the data
+  model, every indicator, the panel layout and the degenerate-data behaviour, in all three
+  languages.
+
+### Fixed
+
+- **`QuoteBoard`'s sort restore produced the wrong order (found by the new demo).** The board
+  remembered the caller's order as **indices** into the live quote vector, but any sort
+  permutes that vector — so after one sort the indices named different quotes, and
+  `QuoteSort::None` produced a third order that was neither the caller's nor the sorted one.
+  It is now a snapshot of the quotes, which no sort can invalidate. The library test that was
+  supposed to cover this round-tripped through **one** sort, where the permutation happened
+  to be the identity for its fixture; it now round-trips through three, and the old
+  behaviour fails it by reverse injection.
+- **`demo/control` and `demo/code_editor` could not build at all.** Both checked-in
+  `Cargo.lock` files named `syn 2.1.019` — semver forbids a leading zero in a numeric
+  component, so cargo refused to parse the lock file (`invalid leading zero in patch
+  version number`) and reported a parse failure rather than the stale dependency it was.
+  Both locks are regenerated.
+- **`tools/view_platform_gate_probe.rs` was committed in its *forced* form,** so
+  `cargo check --all-targets` on `mini`/`embedded` — and therefore
+  `tools/check_profiles.sh` — failed permanently with `unresolved import rust_widgets::view`.
+  That reads like a source defect and was actually an artefact: the gate rewrites this file
+  to force the import, and its own comment says the committed copy `cfg`-gates it. It now
+  does, so the committed file is correct for `--all-targets` by construction, and the gate
+  still fails exactly where it should. `check_profiles.sh` goes from failing 2 of 9 steps to
+  passing all 9.
+- A stale `WidgetKind` count in four documents (`codemap.md`, `README.md`,
+  `README.zh-CN.md`), now caught by `check_widget_kind_count.sh`.
+- `tools/check_platform_capability_matrix.py` reported `Total widgets: N (matches N WidgetKind
+  variants)`, true only while the row set happened to equal the variant count. The nine
+  `WebEngine*` wrapper types are real matrix rows that are deliberately not kinds, so the
+  sentence is now accurate about both numbers instead of coincidentally so.
+- Three property-contract gaps in the new controls, each named by a different gate: a
+  constructible control with no `WidgetProperties` impl (every read reported
+  `UnsupportedOnWidget`), an enumerated schema token the control's own parser refused, and
+  a declared default the control could not produce. Wiring them also removed a
+  self-contradicting property: `rising_color` was declared readable *and* writable while
+  never accepting a write, because the colour is a crate-level constant shared with the
+  other panes. A property that can never be written is a constant with a getter, so it is
+  gone rather than left as a claim the control does not honour.
+
+### Verified in this release
+
+`4897` lib tests pass on `desktop`, `5075` across all test binaries, `0` failed;
+`clippy --all-targets -- -D warnings` and `cargo doc --no-deps` are both clean; all 5
+profiles build and `tools/check_profiles.sh` passes all 9 steps; all three demos build, and
+`demo/finance` runs on macOS/Cocoa; **30 of 32** gates pass, the two failures being
+pre-existing and unrelated to the widget set (`check_behavior_matrix` cannot compile the
+untouched `src/audio` + `src/video` against the installed ffmpeg, and `check_perf.sh` needs
+GNU `timeout`, which macOS does not ship).
+
+Every new assertion in this release was checked by **reverse injection**. See
+`docs/log/log-20260917-4.md` §15.
+
 ## 2.3.0 (2026-09-17) — Declarative-Retained View Layer, and One Paged Control Instead of Three
 
 Backward compatible for the supported API. **One deliberate removal**: the two redundant
@@ -152,10 +260,69 @@ this release is about having both.
     request runs before there is any registry id to file it against.
   - `15` new tests (11 unit + 4 end-to-end), each shown able to fail by reverse injection.
 
+- **Financial and market-data control family** (`rust_widgets::widget::special_widgets::finance`).
+  Six new controls, each its own `WidgetKind` (`WidgetKind`: 169 → **175**):
+  - **`CandlestickChart`** — the K-line pane. OHLC candles with wicks and doji handling,
+    a price axis with inferred precision, a crosshair with an OHLC readout, and an
+    overlay list: moving averages, EMA, Bollinger bands, VWAP, Donchian channels. Price
+    levels (support, resistance, previous close) draw as dashed horizontals *over* the
+    candles, and the price extent expands to include every overlay so a band is never
+    clipped at the pane edge.
+  - **`VolumeChart`** — the volume histogram, coloured by its own bar's direction. It
+    takes the price series rather than a parallel volume vector, so a bar's colour cannot
+    fall out of step with its price, and derives its index axis from the same helper the
+    K-line pane uses, so bar 17's volume always sits under bar 17's candle.
+  - **`DepthChart`** — the cumulative bid/ask depth curve, drawn as a step function (a
+    level's quantity is constant across its price, so a smooth line would draw size that
+    does not exist). Exposes the plotted `curve()` so a caller's tooltip cannot disagree
+    with the drawn shape.
+  - **`OrderBook`** — the bid/ask ladder, both sides ordered best-first regardless of the
+    order the feed delivered them in, with size bars growing outward from the spread
+    spine. Depth defaults to five, the conventional published depth.
+  - **`QuoteBoard`** — a watchlist table: configurable columns, sign-coloured change and
+    percent-change cells, magnitude-suffixed volumes, and four sort modes. Returning to
+    no sort restores the **caller's** order rather than reversing whatever a previous sort
+    left behind.
+  - **`IndicatorChart`** — the oscillator pane: MACD (with a signed histogram), RSI,
+    stochastic, MFI, ATR and OBV. Bounded modes get a fixed `0..=100` axis so the 30/70
+    band means the same thing in every window, and every mode draws its conventional
+    reference levels. `compute()` is public, so the numbers behind the picture are
+    readable without a render target — and `draw` calls it, so the two cannot disagree.
+- **`finance::indicators`** — technical analysis as pure functions over `&[f64]`: `sma`,
+  `ema`, `wilder_smooth`, `rsi`, `macd`, `bollinger_bands`, `stochastic`, `atr`,
+  `trailing_extremes`, `donchian_channel`, `vwap`, `money_flow_index`, `on_balance_volume`,
+  plus `series_extent`, `has_drawable_values` and `align_left`. Deliberately **not**
+  controls: an average has no geometry, so as functions they are testable without a window
+  and the drawing stays one shared concern (principle #24). Every function returns a vector
+  the **same length as its input**, padded with `NAN` through its warm-up — a shorter
+  vector would force every caller to re-derive the index alignment the overlays depend on.
+- **`finance::types`** — the shared data model: `Bar`, `PriceSeries`, `BookLevel`,
+  `OrderBook`, `Quote`, `PriceLine`. One model rather than a per-control shape, because
+  several panes describe the same instrument at the same moments and must agree about
+  both the bar index and the price scale.
+- **`finance::layout`** — `IndexAxis`, `PriceAxis` and `PlotArea`, the geometry every pane
+  maps through. Sharing it is what makes several stacked panes align structurally rather
+  than by convention; the price inversion happens in exactly one place.
+
 ### Fixed
 
 - A duplicate `current_page` concept and two divergent indicator implementations are gone
   with the two removed controls.
+- A stale `WidgetKind` count in four documents (`codemap.md`, `README.md`,
+  `README.zh-CN.md`), now caught by `check_widget_kind_count.sh`.
+- `tools/view_platform_gate_probe.rs` was committed in its *forced* form, so
+  `cargo check --all-targets` on `mini`/`embedded` — and therefore
+  `tools/check_profiles.sh` — failed permanently with `unresolved import
+  rust_widgets::view`. That reads like a source defect and was actually an artefact left
+  by an interrupted gate run: the gate rewrites this file to force the import, and its
+  own comment says the committed copy `cfg`-gates it. It now does, so the committed file
+  is correct for `--all-targets` by construction, and the gate still fails exactly where
+  it should. `check_profiles.sh` goes from failing on 2 of 9 steps to passing all 9.
+- `tools/check_platform_capability_matrix.py` stated its total as
+  `{len(WIDGETS)} (matches {len(WIDGETS)} WidgetKind variants)`, which was true only while
+  the row set happened to equal the variant count. The nine `WebEngine*` wrapper types are
+  real matrix rows that are deliberately *not* kinds, so the sentence is now accurate about
+  both numbers instead of coincidentally so.
 - `tools/check_view_keys_are_unique.sh` — `src/view/node.rs` referenced this gate by name
   before it existed; now it exists, scans 130 builder chains, and fails on a real
   duplicate sibling key.
@@ -177,10 +344,12 @@ this release is about having both.
 
 ### Verified in this release
 
-`4770` lib tests pass on `desktop` (`+14` for the repaint auto-decision), `1538` on
-`embedded`, `1477` on `mini`; `clippy --all-targets -- -D warnings` and
-`cargo doc --no-deps` are both clean; all 5 profiles build; 30 gates run,
-with 4 host-gated or pre-existing (documented in `docs/log/log-20260917-4.md` §8.3).
+`4897` lib tests pass on `desktop`, `5075` across all test binaries, `0` failed;
+`clippy --all-targets -- -D warnings` and `cargo doc --no-deps` are both clean; all 5
+profiles build and `tools/check_profiles.sh` passes all 9 steps; **30 of 32** gates pass,
+the two failures being pre-existing and unrelated to the widget set (`check_behavior_matrix`
+cannot compile the untouched `src/audio` + `src/video` against the installed ffmpeg, and
+`check_perf.sh` needs GNU `timeout`, which macOS does not ship).
 
 Every new assertion in this release was checked by **reverse injection** — the change it
 guards was removed and the test observed to fail — because a gate that cannot fail is not

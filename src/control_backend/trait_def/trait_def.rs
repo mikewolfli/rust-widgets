@@ -2069,6 +2069,77 @@ pub trait ControlBackend: Send + Sync {
     ) -> ObjectId {
         0
     }
+    /// Create candlestick (K-line) chart control.
+    fn create_candlestick_chart(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+
+    /// Create volume histogram control.
+    fn create_volume_chart(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+
+    /// Create market depth chart control.
+    fn create_depth_chart(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+
+    /// Create order book ladder control.
+    fn create_order_book(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+
+    /// Create quote board control.
+    fn create_quote_board(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+
+    /// Create technical indicator chart control.
+    fn create_indicator_chart(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
     /// Create sparkline control.
     fn create_sparkline(
         &self,

@@ -31,7 +31,7 @@
 | 特性 | 自绘（本库） | 原生控件 |
 |---|---|---|
 | 外观 | **跨 OS 完全一致** | 随各 OS 工具包与版本变化 |
-| 控件数量 | **169 种，全平台可用** | 仅限该 OS 工具包提供的 |
+| 控件数量 | **175 种，全平台可用** | 仅限该 OS 工具包提供的 |
 | 依赖体积 | **不链接任何 GUI 工具包** | GTK / AppKit / Win32 / Android SDK |
 | 无头与嵌入式 | **无 OS 也能运行**（`mini`、SVG） | 不可能 |
 | 测试确定性 | **像素／序列化快照** | 需要真实显示器 |
@@ -91,9 +91,9 @@
 
 | Profile | 控件集 | 注册表 | 自绘控件托管 | GPU | i18n |
 |---------|-------|:------:|:-----------:|:---:|:----:|
-| `desktop` | **169 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
-| `tablet` | **169 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
-| `mobile` | **169 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
+| `desktop` | **175 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
+| `tablet` | **175 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
+| `mobile` | **175 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
 | `embedded` | 精简核心集 | — | — | — 软件 | — |
 | `mini` | 精简核心集 | — | — | — 软件 | — |
 
@@ -121,7 +121,7 @@ Arc、Spinner、Roller、Dropdown、TextArea、Keyboard、Switch。
 
 ---
 
-169 种控件全部为自绘。每一种都能通过 `factory_name_for_kind` 解析出构造器
+175 种控件全部为自绘。每一种都能通过 `factory_name_for_kind` 解析出构造器
 （含别名共 **456** 个可解析名称）；
 新增 kind 若无法归类、或解析不出任何构造器，`tools/check_widget_registration_fidelity.sh`
 会直接失败 —— 后者已捕获 4 类 `create_*` 永远返回 id `0` 的缺陷
@@ -130,12 +130,13 @@ Arc、Spinner、Roller、Dropdown、TextArea、Keyboard、Switch。
 （`docs/plans/platform_capability_matrix.md`）由源码机械派生，并在 CI 中设有防脱节门禁。
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.3.0-blue)]()
+[![version](https://img.shields.io/badge/version-2.3.1-blue)]()
 [![tests](https://img.shields.io/badge/tests-4900%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
-**2.3.0 实测：** `desktop` 档 **4756** 个库测试全通过（`embedded` **1538**、`mini` **1477**）、
-全部测试二进制共 **4923** 个；`--all-targets` 在 `-D warnings` 下 clippy 干净，
+**2.3.1 实测：** `desktop` 档 **4897** 个库测试全通过（`embedded` **1538**、`mini` **1477**），
+全部测试二进制 **5075** 个通过，且每个 demo 均可构建运行 —— 包括 `demo/finance`，
+其 12 条测试覆盖金融面板的接线。
 `cargo doc --no-deps` 0 warning，五个档位（`desktop`/`tablet`/`mobile`/`mini`/`embedded`）
 均可构建。共 **30** 个门禁，其中 4 个为主机门控或先存问题
 （取证见 [`docs/log/log-20260917-4.md`](docs/log/log-20260917-4.md) §8.3）。
@@ -384,6 +385,10 @@ assert_eq!(report.patches.len(), 1);            // 一个 SetProperty，别无�
 > 不经 C ABI 暴露 —— 与 JSON 加载器一样仅 Rust 可用。
 > 完整指南：[cookbook/zh-CN/src/chapters/declarative-view.md](cookbook/zh-CN/src/chapters/declarative-view.md)。
 
+> **金融控件：** 六个自绘行情控件 —— 带指标叠加的 K 线图、成交量面板、深度曲线、
+> 盘口报价表、行情表与振荡指标面板 —— 以及它们共用的技术指标计算。
+> 详见 [cookbook/zh-CN/src/chapters/finance.md](cookbook/zh-CN/src/chapters/finance.md)。
+
 > **C ABI 覆盖范围。** C ABI（`include/rw_generated.h`，128 个 `rw_*` 函数）
 > 覆盖窗口管理、控件创建、逐控件属性与主题选择。创建与属性访问都是**通用**的：
 > `rw_create_widget_of_kind(parent, "tree_view", ...)` 可触及每一个已注册控件
@@ -437,7 +442,7 @@ assert_eq!(report.patches.len(), 1);            // 一个 SetProperty，别无�
 
 ## 控件库
 
-### 桌面/平板/手机（169 种控件）
+### 桌面/平板/手机（175 种控件）
 
 **核心**：Window、Dialog、MessageBox、FileDialog、ColorDialog、FontDialog、InputDialog、ProgressDialog、PopupWindow、Button、CheckBox、RadioButton、Label、LineEdit、TextEdit、RichEdit、ComboBox、SpinBox、ListBox、ListView、TreeView、ProgressBar、Slider、ScrollBar、ScrollArea、TabWidget、Splitter、GroupBox、MenuBar、Menu、MenuItem、ContextMenu、ToolBar、StatusBar、Canvas、Table、Grid、Chart、ToggleButton
 

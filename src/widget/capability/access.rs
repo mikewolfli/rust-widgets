@@ -605,6 +605,43 @@ pub fn default_widget_property_default_value(
             "dismissible" => CapabilityValue::Bool(true),
             _ => return None,
         },
+        WidgetKind::CandlestickChart => match property_name {
+            "series" => CapabilityValue::String(alloc::string::String::new()),
+            "overlay_count" => CapabilityValue::UInt(0),
+            "show_price_levels" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
+        WidgetKind::VolumeChart => match property_name {
+            "series" => CapabilityValue::String(alloc::string::String::new()),
+            "color_mode" => CapabilityValue::String(alloc::string::String::from("direction")),
+            "headroom" => CapabilityValue::Float(0.92),
+            _ => return None,
+        },
+        WidgetKind::DepthChart => match property_name {
+            "depth" => CapabilityValue::UInt(0),
+            "bid_color" => CapabilityValue::Color(crate::core::Color::rgb(38, 166, 91)),
+            "ask_color" => CapabilityValue::Color(crate::core::Color::rgb(220, 68, 70)),
+            _ => return None,
+        },
+        WidgetKind::OrderBook => match property_name {
+            "depth" => CapabilityValue::UInt(5),
+            "decimals" => CapabilityValue::Null,
+            "show_spread" => CapabilityValue::Bool(true),
+            _ => return None,
+        },
+        WidgetKind::QuoteBoard => match property_name {
+            "sort" => CapabilityValue::String(alloc::string::String::from("none")),
+            "selected_index" => CapabilityValue::Null,
+            "row_height" => CapabilityValue::UInt(22),
+            _ => return None,
+        },
+        WidgetKind::IndicatorChart => match property_name {
+            "series" => CapabilityValue::String(alloc::string::String::new()),
+            "mode" => CapabilityValue::String(alloc::string::String::from("macd")),
+            "period" => CapabilityValue::UInt(14),
+            "show_reference_levels" => CapabilityValue::Bool(true),
+            _ => return None,
+        },
         WidgetKind::SplashScreen => match property_name {
             "title" => CapabilityValue::String(String::new()),
             "subtitle" => CapabilityValue::String(String::new()),

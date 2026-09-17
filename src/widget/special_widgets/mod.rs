@@ -10,6 +10,7 @@ pub mod code_editor;
 pub mod color_picker;
 pub mod command_palette;
 pub mod diff_viewer;
+pub mod finance;
 pub mod freeform_shape;
 pub mod gantt_widget;
 pub mod grid;

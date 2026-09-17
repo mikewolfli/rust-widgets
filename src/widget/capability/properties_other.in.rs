@@ -797,5 +797,66 @@ macro_rules! impl_properties_other {
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
+        /// Property schema for `candlestick_chart`.
+        pub(crate) const CANDLESTICK_CHART_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("series", PropertyValueKind::String, true, true),
+            PropertySchema::new("overlay_count", PropertyValueKind::UInt, false, true),
+            PropertySchema::new("show_price_levels", PropertyValueKind::Bool, true, true),
+        ];
+        /// Property schema for `volume_chart`.
+        pub(crate) const VOLUME_CHART_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("series", PropertyValueKind::String, true, true),
+            PropertySchema::enumerated("color_mode", true, true, &["direction", "uniform"]),
+            PropertySchema::new("headroom", PropertyValueKind::Float, true, true),
+        ];
+        /// Property schema for `depth_chart`.
+        pub(crate) const DEPTH_CHART_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("depth", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("bid_color", PropertyValueKind::String, true, true),
+            PropertySchema::new("ask_color", PropertyValueKind::String, true, true),
+        ];
+        /// Property schema for `order_book`.
+        pub(crate) const ORDER_BOOK_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("depth", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("decimals", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("show_spread", PropertyValueKind::Bool, true, true),
+        ];
+        /// Property schema for `quote_board`.
+        pub(crate) const QUOTE_BOARD_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::enumerated("sort", true, true, &["none", "symbol", "last_descending", "change_magnitude"]),
+            PropertySchema::new("selected_index", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("row_height", PropertyValueKind::UInt, true, true),
+        ];
+        /// Property schema for `indicator_chart`.
+        pub(crate) const INDICATOR_CHART_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+            PropertySchema::new("series", PropertyValueKind::String, true, true),
+            PropertySchema::enumerated("mode", true, true, &["macd", "rsi", "stochastic", "money_flow_index", "atr", "on_balance_volume"]),
+            PropertySchema::new("period", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("show_reference_levels", PropertyValueKind::Bool, true, true),
+        ];
     };
 }

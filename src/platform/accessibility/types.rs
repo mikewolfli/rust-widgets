@@ -477,6 +477,12 @@ impl From<WidgetKind> for AccessibleRole {
             // no focus and is not modal.
             WidgetKind::Toast => AccessibleRole::StaticText,
             // A splash screen is a status surface that owns the whole window.
+            WidgetKind::CandlestickChart => AccessibleRole::Image,
+            WidgetKind::VolumeChart => AccessibleRole::Image,
+            WidgetKind::DepthChart => AccessibleRole::Image,
+            WidgetKind::OrderBook => AccessibleRole::Table,
+            WidgetKind::QuoteBoard => AccessibleRole::Table,
+            WidgetKind::IndicatorChart => AccessibleRole::Image,
             WidgetKind::SplashScreen => AccessibleRole::Group,
             WidgetKind::Label => AccessibleRole::StaticText,
             WidgetKind::LineEdit | WidgetKind::TextEdit | WidgetKind::RichEdit => {
@@ -579,6 +585,12 @@ impl From<WidgetKind> for A11yRole {
             | WidgetKind::ModalBottomSheet => A11yRole::Dialog,
             WidgetKind::ColorPicker => A11yRole::Group,
             WidgetKind::Toast => A11yRole::Label,
+            WidgetKind::CandlestickChart => A11yRole::Image,
+            WidgetKind::VolumeChart => A11yRole::Image,
+            WidgetKind::DepthChart => A11yRole::Image,
+            WidgetKind::OrderBook => A11yRole::Table,
+            WidgetKind::QuoteBoard => A11yRole::Table,
+            WidgetKind::IndicatorChart => A11yRole::Image,
             WidgetKind::SplashScreen => A11yRole::Group,
             WidgetKind::Label => A11yRole::Label,
             WidgetKind::LineEdit

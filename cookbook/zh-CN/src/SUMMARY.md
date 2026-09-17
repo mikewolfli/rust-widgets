@@ -14,6 +14,7 @@
 - [语言绑定](chapters/language-bindings.md)
 - [国际化](chapters/i18n.md)
 - [图表与数据可视化](chapters/charts.md)
+- [金融与行情控件](chapters/finance.md)
 - [PDF与打印](chapters/pdf-printing.md)
 - [性能与质量](chapters/performance-quality.md)
 - [内存管理](chapters/memory-management.md)
