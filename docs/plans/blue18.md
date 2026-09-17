@@ -418,8 +418,8 @@ pub mod view;
 |---|---|---|
 | **E′-1** | `tools/check_view_platform_gate.sh`：断言 `mini` / `embedded` 的编译单元**不含任何 `crate::view` 符号**；断言 `desktop`/`tablet`/`mobile` **含** `crate::view` | ✅ 已建。判据为**名字解析**：探针 `tools/view_platform_gate_probe.rs` 命名 `rust_widgets::view::VIEW_GATE_PROBE`，能解析 ⟺ 模块在编译单元里。6 项断言：3 档正向 + `mini`/`embedded`/无 profile 三档反向 + 源码判据。<br>📌 **对计划的一处修正（必读）**：计划写的 `#[cfg(test)] mod gate_probe` **不可用** —— `#[cfg(test)]` 项只在库**自身**的单测编译中出现，外部 test 目标链接的是**未开 `cfg(test)`** 的库，因此根本看不见它，判据将永远无法断言。故改为 `#[doc(hidden)] pub const VIEW_GATE_PROBE`（非 `cfg(test)`，外部可见）。 |
 | **E′-2** | 门禁纳入 `check_profiles.sh`，扩为 9 步 | ✅ 已并入第 `[8/9]` 步，`EXIT=0`。门禁计数：计划写「35 → 36」，**实测基线为 30 个 `.sh` 门禁**（计划的 35 是把 11 个 `.py` 重复计入的旧数字，而其中 9 个已有 `.sh` 包装，只有 `check_cookbook_api_names` / `check_error_messages` 是独立 Python 单元 → 32 个可运行单元）。本轮 **30 → 32**（新增 `check_view_platform_gate` + `check_view_keys_are_unique`）。 |
-| **E′-3** | §4.3「各 profile 架构契约」写进 `src/view/mod.rs` 模块文档 | 文档含表格；且 `mini`/`embedded` 读者能从文档里明确知道「本 profile 无此模块」 |
-| **E′-4** | `docs/plans/codemap.md` / `README*` 标注 `view` 的 profile 可用性 | 三处一致，无一处声称嵌入式可用 |
+| **E′-3** | §4.3「各 profile 架构契约」写进 `src/view/mod.rs` 模块文档 | ✅ 已写入 `src/view/mod.rs` 的 `# Platform availability` 段（含表）：三档编译、`mini`/`embedded` 明写「**absent**」，并指向 `tools/check_view_platform_gate.sh` |
+| **E′-4** | `docs/plans/codemap.md` / `README*` 标注 `view` 的 profile 可用性 | ✅ 三处已标注：`codemap.md`（「**Device profiles only** — absent on `mini`/`embedded`」）、`README.md`（`❌ **absent**`）、`README.zh-CN.md`（`❌ **不存在**`）；另加 `docs/ARCHITECTURE.md` 一节 |
 | **E′-5** | 反向注入 | ✅ 实测：把 `src/lib.rs:117` 改成 `#[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]` 后 `GATE_EXIT=1`（第 [4] 步报 ❌）；恢复后 `GATE_EXIT=0`。<br>📌 **重要发现**：**仅靠行为探针的版本不会 FAIL** —— 因为 `widgets_unstripped` 与「有设备 profile」在**所有合法单档构建上等价**（设备档永不 stripped；`mini`/`embedded` 不含设备 feature），两者只在 `desktop,mini` 混合档分歧，而那是规则 #48 禁止的配置。故门禁增设第 [4] 步**源码判据**，并在注释中如实说明它是源码检查、其保护的行为不可观测。 |
 
 ### Phase F — 闭环用例收尾（G5/G6）✅ **已完成**

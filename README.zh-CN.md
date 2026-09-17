@@ -328,28 +328,61 @@ cargo check --no-default-features --features "tablet,macos"
 - 节点可选 `class` / `css`，由样式表驱动外观
 - **不经 C ABI 暴露** —— 加载器没有生成的入口点
 
-### 声明式保留视图层（`view`，设备档位）
+### 声明式视图层（`view`，设备档位）
 
-本库是**保留式**的：控件是带 `ObjectId` 的长期对象，直接改它就是常规改 UI 的方式。
-`view` 在此之上加上**声明式**的一半 —— React、Flutter、SwiftUI 都是「声明式 **且**保留式」，
-两者是正交的两根轴。
+把控件树描述为**状态的函数**，由库算出变了什么。
 
-- `Node` —— 声明树：控件名、可选 `key`、属性、子节点
-- `diff` —— 对两棵树求差的纯函数，产出 `Patch`（`SetProperty` / `Insert` / `Remove` /
-  `Move` / `Replace`）；会报告 `positional_matches`，让「忘了写 key」可见而非静默降级
-- `apply` —— **唯一**改动保留树的地方，走的是与 JSON 加载器相同的属性契约
-- **纯加法**：不改任何控件、`WidgetKind`、工厂或属性契约；`add_child` 手工建树仍然可用
-- 加载器只解析**一份** JSON 并实例化**一次**，没有上一棵树可比，因此无法跨更新保留身份；
-  重载路径是 `ViewEngine::mount` + `ViewEngine::update`
+```rust
+use rust_widgets::view::{Node, View, ViewEngine};
+use rust_widgets::widget::capability::CapabilityValue;
 
-| 档位 | 声明式视图层 |
+struct Counter { count: i64 }
+
+impl View for Counter {
+    fn build(&self) -> Node {
+        Node::new("group_box").key("root").child(
+            Node::new("label")
+                .key("count")
+                .prop("text", CapabilityValue::String(format!("Count: {}", self.count))),
+        )
+    }
+}
+
+let mut engine = ViewEngine::new();
+engine.mount(&state, &create);                  // 建树
+// ……状态变化……
+let report = engine.update(&state, &create);    // 只施加差异
+assert_eq!(report.patches.len(), 1);            // 一个 SetProperty，别无其它
+```
+
+**为什么用它。** 没有它时，每个改状态的地方还得同时够到正确的控件、知道该设哪个属性 ——
+于是「`count == 3` 时屏幕该是什么样」在任何地方都得不到回答。有了它，这个问题只有一个答案：
+`build`。更新也随之变便宜、变局部：引擎把新树与旧树求差，只碰不同的部分，
+因此某个兄弟节点被编辑时，控件的焦点、滚动偏移与内部状态依然存活。
+
+**保留式模型不变。** 控件仍是带 `ObjectId` 的长期对象，`add_child` 仍然可用，两者可混用。
+本层增加的是对**结构**的描述，不取代任何东西。
+
+**怎么用**
+
+1. 实现 `View::build` —— 从状态返回一棵 `Node` 树。用与 JSON 加载器相同的工厂名与属性名。
+2. 提供构造器：`Fn(&Node) -> Option<ObjectId>`，通常是 `WidgetFactory::create` 加
+   `runtime::register`。它是**注入**的而非硬连，因此本层可以**无窗口**测试。
+3. 先 `engine.mount(&state, &create)` 一次，之后状态变化时 `engine.update(&state, &create)`。
+4. 给列表项加 **`key`**。key 是 diff 在重建之间认出同一控件的依据；没有 key 时匹配退化为按位置，
+   头部插入会使其后每个节点的身份漂移到错误的控件上。`report.positional_matches > 0` 即「该补 key」。
+
+**由响应式状态驱动** —— `ReactiveHost` 用 `Binding` 驱动 `update`。因为
+`BindingListener` 必须 `Send` 而引擎是 `!Send`，监听器只把变更记入队列，
+由 UI 线程的 `pump()` 做实际工作，因此工作线程里的 `Binding::set` 能抵达活控件。
+
+| 档位 | `view` |
 |---|---|
-| `desktop` / `tablet` / `mobile` | ✅ 编译 —— 声明式与命令式可混用 |
-| `mini` / `embedded` | ❌ **不存在** —— 仅命令式 `add_child`（分配预算 + 无逐帧重求值调用方） |
+| `desktop` / `tablet` / `mobile` | ✅ **默认编译**；加 `no-declarative-view` 可排除 |
+| `mini` / `embedded` | ❌ **不存在** —— 仅 `add_child`（分配预算 + 无逐帧重求值调用方） |
 
-`tools/check_view_platform_gate.sh` 对该表**双向断言**。
-
-> **不经 C ABI 暴露** —— 与 JSON 加载器一样，视图层仅 Rust 可用。
+> 不经 C ABI 暴露 —— 与 JSON 加载器一样仅 Rust 可用。
+> 完整指南：[cookbook/zh-CN/src/chapters/declarative-view.md](cookbook/zh-CN/src/chapters/declarative-view.md)。
 
 > **C ABI 覆盖范围。** C ABI（`include/rw_generated.h`，128 个 `rw_*` 函数）
 > 覆盖窗口管理、控件创建、逐控件属性与主题选择。创建与属性访问都是**通用**的：
@@ -379,13 +412,20 @@ cargo check --no-default-features --features "tablet,macos"
 `bindings/` 下的每个绑定都由 `tools/check_binding_symbol_coverage.sh` 按此清单校验，
 因此新增的 ABI 函数不会在某个语言中静默地不可达。
 
-### 局部刷新（可选接入，已连进帧循环）
+### 局部刷新（自动判定，已连进帧循环）
 - `DirtyRegionTracker` 脏矩形追踪与合并；`render_dirty_regions()` 基于 `push_clip` / `pop_clip` 的局部重绘
 - **由 `widget::runtime::RepaintMode` 驱动**：`mark_dirty_rect` 记录损坏区域，
   `render_frame_incremental` 只重绘受损区域，其余部分沿用上一帧
-- **默认关闭，需显式选用。** `RepaintMode::Full` 是默认值，行为与以前完全一致；
-  `Dirty` 只重绘损坏区域；`Adaptive` 在损坏面积接近整屏时自动退回整帧重绘，
-  使动画场景不为无收益的区域合并付出开销
+- **自动判定：由库决定是否启用。** 挂载时会经 `should_track_damage` 判定，
+  仅在区域化确实划算时才启用 `RepaintMode::Adaptive` —— 即面积够大、承载不止一个控件、
+  且确实请求过重绘。面积低于 `AUTO_REPAINT_MIN_PIXELS`（≈500×500）或无子控件的表面保持
+  `Full` 且不付任何簿记开销，因为对它们来说区域化的成本高于收益
+- damage 由 `BaseWidget::request_redraw` 记录 —— 库中每一次外观变化汇聚的唯一咽喉点，
+  因此局部重绘**由构造保证**正确，而不依赖一份变更点清单
+- `Adaptive` 会自我修正：某一帧的 damage 覆盖整个表面时该帧回退为整幅重绘，
+  待 damage 缩小后自动恢复区域重绘 —— 所以自动判定不可能产出错误的一帧，只有有界簿记开销
+- 判定可观察，不是黑盒：`should_track_damage`、`enable_damage_tracking_if_useful`、
+  `adaptive_large_damage_run`，以及可用 `set_repaint_mode` 覆盖
 
 ### 国际化（i18n）
 - `tr!()` 宏实现编译期键值翻译
@@ -507,4 +547,5 @@ MIT License — 详见 [LICENSE](LICENSE)。
 ## 支持
 
 - Issues：[GitHub Issues](https://github.com/mikewolfli/rust-widgets/issues)
-- 文档：[docs/](docs/) 目录
+- **Cookbook 手册**：[cookbook/](cookbook/) —— 主文档，提供英文（`cookbook/en/`）、
+  简体中文（`cookbook/zh-CN/`）与繁体中文（`cookbook/zh-TW/`）三个版本

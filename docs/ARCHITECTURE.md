@@ -46,9 +46,20 @@
 
 ## Key Design Decisions
 
-### Native-First, Custom-Fallback
-Each widget has a `ControlRoutePreference`: `NativePreferred` for platform-native controls
-(Button, Label, etc.) and `CustomRequired` for custom-drawn widgets (Canvas, Chart, etc.).
+### One Creation Mechanism: the Library Paints Every Control
+The host supplies a **window** and a **drawing surface**; the library paints every
+`WidgetKind` itself. `ControlRoutePreference` keeps both variants declared —
+`NativePreferred` and `CustomRequired` — so a deliberate future change is visible rather
+than impossible, but the **policy** returns `CustomRequired` for every kind, and no backend
+overrides a per-kind `create_*`. `tools/check_single_creation_mechanism.sh` fails if either
+half of that stops being true.
+
+> This section previously read "Native-First, Custom-Fallback", describing
+> `NativePreferred` for Button/Label. That described the pre-BLUE15 model, where each
+> logical widget became a real platform control. Under the self-drawn strategy that is
+> exactly the duplication BLUE15 removes, and the gate has been asserting the opposite
+> of this paragraph since. Corrected here rather than left as a description of machinery
+> that no longer exists (principle #91).
 
 ### Dual Rendering Pipeline
 Render commands flow through a unified `RenderCommand` enum but are executed by
@@ -107,9 +118,58 @@ single mechanism would have to be the weakest of all three. The cost is that the
 underlying fact ("the button was pressed") can be observed in more than one place; the
 benefit is that neither path is forced to carry the other's constraints.
 
+### Where the `rw_` Prefix Belongs
+
+The `rw_` prefix names the **C ABI** (`src/bindings/`), and stays there. A C caller gets
+flat global symbols, so `create_button` would collide with anything else in the process —
+the prefix is necessary at that boundary. Rust does not need it: a module path
+(`rust_widgets::view::Node`) already provides the namespace, and a type prefix is the C
+idiom rather than the Rust one. The prefix is therefore *confined*, not *spread*.
+
+| Layer | Naming | Example |
+|---|---|---|
+| Rust API | module path, no prefix | `rust_widgets::view::Node`, `Button`, `WidgetKind` |
+| C ABI | `rw_` prefix | `rw_create_widget_of_kind`, `rw_set_widget_property` |
+| JNI bridge | the JVM's `Java_*` form | `Java_rust_1widgets_RustWidgets_nativeInit` |
+
+`tools/check_rw_prefix_is_abi_only.sh` enforces it: no new `rw_*` **definition** outside
+`src/bindings/`, and no ABI export outside `src/bindings/` or the JNI bridge. One accepted
+exception is listed in the script with its reason (`RwError`/`RwResult`, settled public API).
+
 ### Device Profiles
-Four mutually-exclusive profiles: `desktop` (default), `tablet`, `mobile`, `embedded`.
-Interaction add-ons (`touch`, `holographic`, `projection`) compose on top.
+Five mutually-exclusive profiles: `desktop` (default), `tablet`, `mobile`, `mini`,
+`embedded`. Interaction add-ons (`touch`, `holographic`, `projection`) compose on top.
+
+`build.rs` derives seven cfg aliases from them, and a module states its gate by *intent*
+through those names rather than by re-deriving a conjunction at each call site:
+
+| Alias | Condition | Meaning |
+|---|---|---|
+| `device_profile` | `desktop\|tablet\|mobile` | is this a device build? |
+| `desktop_surface` | `desktop && !embedded` | a desktop build with a real OS runtime |
+| `full_widgets` | `device_profile && !(mini\|embedded)` | full widget set + device transport |
+| `widgets_unstripped` | `!(mini\|embedded)` | widget set not reduced |
+| `stripped_widgets` | `mini\|embedded` | reduced set |
+| `alloc_frugal` | `mini` | allocation budget applies |
+| `embedded_surface` | `embedded` | embedded drawing surface |
+| `declarative_view` | `full_widgets && !no-declarative-view` | the declarative view layer |
+
+### Declarative View Layer, and Where It Is Available
+The library is **retained**: a control is a long-lived object with an `ObjectId`. On top of
+that, `rust_widgets::view` offers a **declarative** description of the tree (`View::build`
+→ `Node` → `diff` → `Patch` → `apply`). React, Flutter and SwiftUI are declarative *and*
+retained; the two axes are orthogonal.
+
+| Profile | Declarative `view` layer |
+|---|---|
+| `desktop` / `tablet` / `mobile` | ✅ compiled **by default** — declarative and imperative may be mixed. Add `no-declarative-view` to leave it out |
+| `mini` / `embedded` | ❌ **absent** — `add_child` only (allocation budget, and no caller that re-evaluates a view per frame) |
+
+The gate is the single alias `declarative_view`, defined once in `build.rs` as
+`device_profile && !stripped && !no-declarative-view`, so `crate::view`, `crate::json`
+and `crate::app` cannot drift apart. `tools/check_view_platform_gate.sh` asserts all
+four states: present by default, absent with the opt-out, absent on a stripped profile,
+and absent on a build with no device profile.
 
 ## Module Map
 

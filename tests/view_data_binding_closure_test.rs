@@ -27,13 +27,14 @@
 //! produced it appears in the failure message, so a regression still says where it
 //! broke.
 //!
-//! # Why the whole file is `desktop`-gated
+//! # Why the whole file is `declarative_view`-gated
 //!
-//! It drives `crate::view`, which is compiled only for a device profile with
-//! unstripped widgets (BLUE18 rule #92). A stripped profile has no `view` module to
-//! test, so the file is skipped rather than failing to build — the same gate the
-//! library uses, written at the top level so the imports below never need one.
-#![cfg(feature = "desktop")]
+//! It drives `crate::view`, which is compiled only for a device profile that has not
+//! opted out with `no-declarative-view` (BLUE18 rule #92). A stripped profile — or a
+//! device build with the opt-out on — has no `view` module to test, so the file is
+//! skipped rather than failing to build. `declarative_view` is the same alias
+//! `src/lib.rs` gates the module on, so the two cannot disagree.
+#![cfg(declarative_view)]
 
 use rust_widgets::core::{ObjectId, Rect};
 use rust_widgets::data_binding::Binding;

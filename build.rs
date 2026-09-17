@@ -18,11 +18,18 @@ fn main() {
 
 /// Declares derived cfgs so gating conditions cannot drift apart.
 ///
-/// Four aliases are emitted. They answer four genuinely different questions, and
+/// Seven aliases are emitted. They answer seven genuinely different questions, and
 /// the distinctions matter — `--no-default-features --features gpu` selects no
 /// device profile at all, and `--no-default-features --features embedded` has no
 /// OS runtime, so no single `not(...)` expression substitutes for another:
 ///
+/// - `device_profile` — `desktop`, `tablet` or `mobile` is on. The question
+///   "is this a device build?", answered without repeating the three-feature
+///   `any(..)` at every site.
+/// - `desktop_surface` — a `desktop` build with a real OS runtime (not the
+///   embedded drawing surface). Names the `desktop = true && embedded_surface =
+///   false` conjunction that decided which `WidgetKind` a top-level `create_*`
+///   targets; it was hand-written ten times as an if/else pair.
 /// - `alloc_frugal` — `mini` is on. The build has no platform singleton and runs
 ///   on a tight allocation budget. Its complement (`not(feature = "mini")`) was
 ///   hand-written at ~1000 call sites.
@@ -30,11 +37,13 @@ fn main() {
 ///   deliberately reduced. This is the exact meaning of the
 ///   `not(any(feature = "mini", feature = "embedded"))` conjunction that was
 ///   hand-written at 350+ call sites.
-/// - `full_widgets` — a real device profile (`desktop`/`tablet`/`mobile`) **and**
-///   unstripped. Adds the requirement that the transport/API layer for a device
-///   exists, so modules needing `capability`/`app` are only built here.
+/// - `full_widgets` — a real device profile **and** unstripped. Adds the
+///   requirement that the transport/API layer for a device exists, so modules
+///   needing `capability`/`app`/`json`/`view` are only built here.
 /// - `stripped_widgets` — `mini` or `embedded` is on. The complement of the
 ///   second for every build that selects a profile.
+/// - `declarative_view` — `full_widgets` **and** the caller has not opted out
+///   with `no-declarative-view`. This is the gate for `crate::view`.
 ///
 /// Before these aliases existed, `widget/mod.rs` used
 /// `not(any(mini, embedded)) + any(desktop, tablet, mobile)` while several
@@ -47,23 +56,36 @@ fn main() {
 /// Writing the same conjunction at 1000+ call sites is what guarantees drift.
 fn declare_cfg_aliases() {
     // `cargo:rustc-check-cfg` keeps `--check-cfg` quiet on recent toolchains.
+    println!("cargo:rustc-check-cfg=cfg(device_profile)");
+    println!("cargo:rustc-check-cfg=cfg(desktop_surface)");
     println!("cargo:rustc-check-cfg=cfg(full_widgets)");
     println!("cargo:rustc-check-cfg=cfg(stripped_widgets)");
     println!("cargo:rustc-check-cfg=cfg(widgets_unstripped)");
     println!("cargo:rustc-check-cfg=cfg(alloc_frugal)");
     println!("cargo:rustc-check-cfg=cfg(embedded_surface)");
+    println!("cargo:rustc-check-cfg=cfg(declarative_view)");
 
     let has_profile =
         ["desktop", "tablet", "mobile"].iter().any(|feature| feature_enabled(feature));
     let is_mini = feature_enabled("mini");
     let is_embedded = feature_enabled("embedded");
+    let is_desktop = feature_enabled("desktop");
     let is_stripped = is_mini || is_embedded;
+    let view_opted_out = feature_enabled("no-declarative-view");
 
     if is_mini {
         println!("cargo:rustc-cfg=alloc_frugal");
     }
     if is_embedded {
         println!("cargo:rustc-cfg=embedded_surface");
+    }
+    if has_profile {
+        println!("cargo:rustc-cfg=device_profile");
+    }
+    // A desktop build with a real OS runtime: the pair that decides which
+    // `WidgetKind` a top-level `create_*` targets.
+    if is_desktop && !is_embedded {
+        println!("cargo:rustc-cfg=desktop_surface");
     }
     if !is_stripped {
         println!("cargo:rustc-cfg=widgets_unstripped");
@@ -74,12 +96,27 @@ fn declare_cfg_aliases() {
     if is_stripped {
         println!("cargo:rustc-cfg=stripped_widgets");
     }
+    // The declarative layer is on for a device build unless the caller opted out.
+    // Both halves are required: a stripped profile has no widget tree to carry it,
+    // and an explicit opt-out must be able to remove it from a device build.
+    if has_profile && !is_stripped && !view_opted_out {
+        println!("cargo:rustc-cfg=declarative_view");
+    }
 
     // Re-run when any of the inputs change; Cargo tracks feature changes itself,
     // but the explicit list documents the dependency and keeps `cargo build`
     // correct for out-of-tree invocations that set the env vars directly.
-    for feature in ["desktop", "tablet", "mobile", "mini", "embedded", "portable"] {
-        println!("cargo:rerun-if-env-changed=CARGO_FEATURE_{}", feature.to_uppercase());
+    //
+    // `NO_DECLARATIVE_VIEW` must be here: this script turns it into an `rustc-cfg`,
+    // so without the rerun directive toggling the feature on an already-built tree
+    // would reuse the cached aliases and appear to have no effect.
+    for feature in
+        ["desktop", "tablet", "mobile", "mini", "embedded", "portable", "no-declarative-view"]
+    {
+        println!(
+            "cargo:rerun-if-env-changed=CARGO_FEATURE_{}",
+            feature.to_uppercase().replace('-', "_")
+        );
     }
 }
 

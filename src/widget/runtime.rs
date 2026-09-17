@@ -169,6 +169,15 @@ pub fn register(widget: Box<dyn Widget>) -> Option<ObjectId> {
     if stored.is_err() {
         return None;
     }
+    // Record the widget's own id -> the registry id, so a producer that only has the
+    // former (notably `request_redraw`, called from `&self`) can address the tracker.
+    // Read through `with_widget` because the id lives on the widget, and this runs
+    // before any caller can hold a borrow.
+    if let Some(own_id) = with_widget(id, |widget| widget.base().id()) {
+        let _ = OWN_IDS.try_with(|map| {
+            map.borrow_mut().insert(own_id, id);
+        });
+    }
     // Join the tab order if the control says it is focusable. Asked of the widget
     // itself (see `Widget::is_focusable`) rather than of a table of kinds, so a
     // control the library has never heard of participates by answering `true`.
@@ -176,6 +185,16 @@ pub fn register(widget: Box<dyn Widget>) -> Option<ObjectId> {
     if focusable {
         register_focusable(id);
     }
+    // Ask the auto-decision whether regioning pays off for this control. This is the
+    // only automatic call site: `register` runs as soon as a control is mounted, so a
+    // widget reaches the auto-decision exactly once, at the moment its geometry and its
+    // children are both known — and a control that mounts *as* a child, or whose
+    // constructor mounts children, is judged again on its own mount.
+    //
+    // The cost of the question is two map probes and one thread-local geometry read;
+    // the cost of the answer is only ever paid when the answer is `yes`, because the
+    // mode it selects is the self-correcting one. See `should_track_damage`.
+    let _ = enable_damage_tracking_if_useful(id);
     Some(id)
 }
 
@@ -210,6 +229,17 @@ pub fn unregister(id: ObjectId) -> bool {
     // and a stale damage rect would repaint a region that no longer exists.
     forget_cached_frame(id);
     let _ = REPAINT.try_with(|map| map.borrow_mut().remove(&id));
+    let _ = REPAINT.try_with(|map| map.borrow_mut().remove(&id));
+    // And the own-id reverse mapping, or a later widget built with the same
+    // `BaseWidget::id()` would resolve to this dead registry id and file its damage
+    // against a widget that no longer exists.
+    let own_id = MOUNTED
+        .try_with(|map| map.borrow().get(&id).map(|mounted| mounted.widget.base().id()))
+        .ok()
+        .flatten();
+    if let Some(own_id) = own_id {
+        let _ = OWN_IDS.try_with(|map| map.borrow_mut().remove(&own_id));
+    }
     MOUNTED.try_with(|map| map.borrow_mut().remove(&id).is_some()).unwrap_or(false)
 }
 
@@ -828,7 +858,189 @@ impl RepaintState {
     }
 }
 
+/// Records that a widget asked to be repainted, resolving its registry id.
+///
+/// # Why the id needs resolving
+///
+/// A widget knows its own `BaseWidget::id()` (its `Object`'s counter), but the runtime
+/// registry keys widgets by an id it allocates in [`register`]. The two spaces are
+/// **not** the same number: a freshly built control reports `1` while the registry
+/// handed out `0x5345_4C46_0000_0001`. So a damage record keyed on the widget's own id
+/// would be filed under a widget that does not exist, be silently dropped, and leave
+/// partial repaint unreachable — which is exactly what happened before
+/// [`register`] started recording the mapping.
+///
+/// # Why a lookup rather than passing the id down
+///
+/// [`BaseWidget::request_redraw`](crate::widget::BaseWidget::request_redraw) takes
+/// `&self` and is called from ~1000 places that have no idea what the registry called
+/// them. Threading a registry id through all of them is what would make partial repaint
+/// a list someone must keep complete; resolving it here keeps the producer at one
+/// chokepoint.
+///
+/// Returns `true` when the damage was recorded (i.e. the widget opted in and is
+/// registered).
+pub(crate) fn mark_widget_damage(own_id: ObjectId, rect: Rect) -> bool {
+    let Some(registry_id) = registry_id_of(own_id) else {
+        // Not registered yet: a control being constructed, or one a test built and never
+        // mounted. There is no surface to repaint, so there is nothing to record — and
+        // nothing to remember either, because these run before `register`.
+        return false;
+    };
+    mark_dirty_rect(registry_id, rect)
+}
+
+/// The registry id for a widget that reported `own_id` as its `BaseWidget::id()`.
+///
+/// `None` when the widget was never registered. See `mark_widget_damage` for why the
+/// two id spaces exist and why this lookup is necessary.
+pub fn registry_id_of(own_id: ObjectId) -> Option<ObjectId> {
+    OWN_IDS.try_with(|map| map.borrow().get(&own_id).copied()).ok().flatten()
+}
+
+/// Enables damage-tracked repaint for `id`, returning whether it took effect.
+///
+/// # The auto-decision entry point
+///
+/// [`RepaintMode::Adaptive`] is the mode to use when you do not know whether regioning
+/// pays off: the library consults the damage each frame and stops measuring after a run
+/// of frames whose damage covers the surface — an animation, a scroll, a video — where
+/// the union of regions grows to the full frame anyway. It resumes regioning as soon as
+/// one frame reports small damage, so a window that animates briefly and then settles
+/// returns to partial repaints on its own.
+///
+/// Returns `false` when `id` is not a mounted widget, which is the same condition
+/// [`set_repaint_mode`] reports.
+pub fn set_repaint_mode_adaptive(id: ObjectId) -> bool {
+    set_repaint_mode(id, RepaintMode::Adaptive)
+}
+
+/// Whether damage-tracked repaint is worth enabling for `id` — the library's own
+/// decision, so a caller does not have to guess.
+///
+/// # The judgement, and why it is this shape
+///
+/// Damage tracking is not unconditionally faster. It wins when a few controls change in
+/// a large surface, and it *loses* on a small one: the tracker still pays to merge, sort
+/// and clip regions, and once damage covers most of the frame the clip discards work
+/// that was already done — so the regioning costs more than the pixels it saves.
+///
+/// The decision is deliberately **two-sided**:
+///
+/// * **Too few controls** — with one control, damage is that control's whole rect, which
+///   is the whole frame; regioning buys nothing and costs the bookkeeping.
+/// * **Too small a surface** — below [`AUTO_REPAINT_MIN_PIXELS`] the per-frame cost of
+///   merging and clipping regions is a meaningful fraction of just painting everything.
+///
+/// # Why it is safe to say "yes" by default
+///
+/// Saying yes selects [`RepaintMode::Adaptive`], which is **self-correcting**: a frame
+/// whose damage covers too much of the surface falls back to a whole paint for that
+/// frame, and a run of such frames stops the measurement entirely until the damage
+/// shrinks. So a wrong "yes" costs a bounded amount of bookkeeping on the frames that
+/// follow, never a wrong frame — and the pixels are identical either way, which
+/// `an_incremental_repaint_matches_a_full_repaint` asserts.
+///
+/// # Who calls it
+///
+/// [`register`] does, once per control, the moment it is mounted. That is the only
+/// automatic call site: it is the first point at which the control's geometry and its
+/// children are both known, and it costs the caller nothing. Every control on a device
+/// profile therefore answers this question exactly once, without a host having to know
+/// its own frame pattern in advance.
+///
+/// Nothing is enabled for a control the library judged not worth it: it keeps `Full`,
+/// and `mark_widget_damage` is a single map lookup that returns `false`. A host that
+/// disagrees can call [`set_repaint_mode`] directly and get exactly what it asked for,
+/// which is why the threshold is a named constant rather than a magic number.
+pub fn should_track_damage(id: ObjectId) -> bool {
+    // A record is only worth keeping for a control that ever asked to be repainted,
+    // because a surface nothing redraws gains nothing from a region clip and still pays
+    // the bookkeeping. The flag is read off the widget, not from a table keyed by
+    // registry id: a control whose constructor prepares its first frame asks *before*
+    // `register` runs, when no registry id exists to file the request against.
+    if !has_ever_requested_redraw(id) {
+        return false;
+    }
+
+    let Some(geometry) = geometry_of(id) else {
+        return false;
+    };
+    let pixels = u64::from(geometry.width) * u64::from(geometry.height);
+    if pixels < AUTO_REPAINT_MIN_PIXELS {
+        return false;
+    }
+
+    // A control with no children is one rect: damage is the whole control, so the clip
+    // cannot narrow anything. Counted through the widget rather than the tree so a
+    // caller need not build one.
+    let has_children =
+        with_widget(id, |widget| !widget.base().children().is_empty()).unwrap_or(false);
+    has_children
+}
+
+/// Pixels below which damage tracking is not offered by [`should_track_damage`].
+///
+/// A quarter megapixel — roughly 500×500. Below it the merge/sort/clip bookkeeping is a
+/// measurable share of the cost of painting the whole surface, and the surface is small
+/// enough that painting it whole is already cheap. The value is a judgement rather than a
+/// measurement, so it is named and exposed: a caller who disagrees can call
+/// [`set_repaint_mode`] directly and get exactly what it asked for.
+pub const AUTO_REPAINT_MIN_PIXELS: u64 = 250_000;
+
+/// Whether `id`'s widget has ever asked to be repainted.
+///
+/// The flag is read from the widget rather than kept in a table keyed by registry id,
+/// because a request can arrive before there is a registry id to file it against — a
+/// constructor that prepares its own first frame calls `request_redraw` while the
+/// control is still being built. A table could only be written after `register`, so such
+/// a control would be judged "silent" for the rest of its life. Asking the widget
+/// answers the same question the request actually made.
+fn has_ever_requested_redraw(id: ObjectId) -> bool {
+    with_widget(id, |widget| widget.has_ever_requested_redraw()).unwrap_or(false)
+}
+
+/// Enables damage tracking for `id` **if the library judges it worthwhile**, returning
+/// whether it did.
+///
+/// This is the one-call form of [`should_track_damage`] + [`set_repaint_mode_adaptive`],
+/// for a host that wants the benefit without analysing its own frame pattern:
+///
+/// ```no_run
+/// # use rust_widgets::widget::runtime::*;
+/// # fn example(window: rust_widgets::core::ObjectId) {
+/// if enable_damage_tracking_if_useful(window) {
+///     // partial repaints from here on; `render_frame_incremental` uses them
+/// }
+/// # }
+/// ```
+///
+/// A `false` return is not an error — it means the whole-frame path is already the right
+/// answer for this widget, so there is nothing to gain and no bookkeeping to pay for.
+pub fn enable_damage_tracking_if_useful(id: ObjectId) -> bool {
+    if !should_track_damage(id) {
+        return false;
+    }
+    set_repaint_mode_adaptive(id)
+}
+
 thread_local! {
+    /// The widget registry id for a widget's own `BaseWidget::id()`.
+    ///
+    /// # Two id spaces, one lookup
+    ///
+    /// `register` allocates a registry id and keys [`MOUNTED`] by it, while a widget's
+    /// `BaseWidget::id()` comes from its own `Object` counter. Those numbers differ (a
+    /// fresh control reports `1`; the registry hands out
+    /// `0x5345_4C46_0000_0001`), so a call that only has the widget's own id —
+    /// `request_redraw`, called from `&self` in ~1000 places — cannot address the
+    /// registry without this map.
+    ///
+    /// Kept here rather than on the widget so it cannot go stale on a move, and so a
+    /// widget that is dropped with the registry still holding it cannot be resurrected.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static OWN_IDS: RefCell<HashMap<ObjectId, ObjectId>> = RefCell::new(HashMap::new());
+
     /// Per-widget repaint state, keyed by the same id as `MOUNTED`.
     ///
     /// A separate cell rather than a field on `Mounted` so the damage tracker can
@@ -1248,10 +1460,328 @@ mod tests {
         (widget as &mut dyn std::any::Any).downcast_mut::<CodeEditor>()
     }
 
+    /// The auto-decision refuses a control too small for the bookkeeping to pay off.
+    #[test]
+    fn the_auto_decision_refuses_a_small_surface() {
+        let small = register(Box::new(CodeEditor::new(Rect::new(0, 0, 100, 100)))).expect("r");
+        let big = register(sample_editor("fn main() {}")).expect("r");
+        // Both fixtures are below the threshold; the point is that the refusal is by
+        // area, and that the threshold really is above them.
+        const { assert!(100u64 * 100 < AUTO_REPAINT_MIN_PIXELS) };
+        const { assert!(320u64 * 200 < AUTO_REPAINT_MIN_PIXELS) };
+        assert!(!should_track_damage(small), "a 100x100 surface is not worth regioning");
+        assert!(!should_track_damage(big), "320x200 is below the threshold as well");
+
+        // Above the threshold **and** carrying children, it is accepted. A bare
+        // `CodeEditor` is refused whatever its size, because it has no children and so
+        // has only one rect to damage — which is the whole surface.
+        let large = register(auto_accepted_surface()).expect("r");
+        assert!(should_track_damage(large), "800x600 with children must be accepted");
+
+        unregister(small);
+        unregister(big);
+        unregister(large);
+    }
+
+    /// A childless control is one rect, so regioning cannot narrow anything.
+    #[test]
+    fn the_auto_decision_refuses_a_control_with_no_children() {
+        let lone = register(Box::new(CodeEditor::new(Rect::new(0, 0, 800, 600)))).expect("r");
+        assert!(
+            with_widget(lone, |widget| widget.base().children().is_empty()).unwrap_or(false),
+            "the fixture must have no children"
+        );
+        assert!(
+            !should_track_damage(lone),
+            "a control with no children has one rect, which is the whole surface"
+        );
+        unregister(lone);
+    }
+
+    /// The one-call form does both halves, and reports honestly.
+    #[test]
+    fn enable_if_useful_is_a_no_op_where_it_would_not_help() {
+        let small = register(Box::new(CodeEditor::new(Rect::new(0, 0, 80, 60)))).expect("r");
+        assert!(!enable_damage_tracking_if_useful(small));
+        assert_eq!(
+            repaint_mode(small),
+            RepaintMode::Full,
+            "a refused enable must leave the mode alone"
+        );
+
+        // And an unregistered id is refused rather than silently accepted.
+        assert!(!enable_damage_tracking_if_useful(0xDEAD_BEEF));
+        unregister(small);
+    }
+
+    /// Enabling through the auto-decision really produces damage-tracked frames.
+    #[test]
+    fn a_widget_enabled_by_the_auto_decision_tracks_damage() {
+        // A surface the library accepted at mount time comes up already tracking, with
+        // no call from the host — which is the whole point of the automatic call site.
+        let id = register(auto_accepted_surface()).expect("r");
+        assert_eq!(repaint_mode(id), RepaintMode::Adaptive, "register must accept this surface");
+
+        with_widget(id, |widget| widget.base().request_redraw()).expect("widget");
+        assert_eq!(
+            dirty_rects(id).len(),
+            1,
+            "the enabled widget must record damage from request_redraw"
+        );
+
+        // And the explicit one-call form still exists for a host that wants to ask
+        // again after changing its geometry. It is refused for a control that has never
+        // asked to be repainted, and accepted once one has.
+        unregister(id);
+        let explicit = register(container_with_child()).expect("r");
+        assert!(set_geometry(explicit, Rect::new(0, 0, 800, 600)));
+        assert!(
+            !enable_damage_tracking_if_useful(explicit),
+            "a control that never asked to repaint must be refused"
+        );
+        with_widget(explicit, |widget| widget.request_redraw()).expect("widget");
+        assert!(enable_damage_tracking_if_useful(explicit));
+        assert_eq!(repaint_mode(explicit), RepaintMode::Adaptive);
+        unregister(explicit);
+    }
+
+    /// A control that never asked to repaint is left alone by the auto-decision.
+    ///
+    /// This is the cost side of the trade-off: enabling a surface that nothing redraws
+    /// would only make it pay the bookkeeping. `register` therefore refuses a control
+    /// that has not gone through `request_redraw` at least once.
+    #[test]
+    fn the_auto_decision_leaves_a_silent_control_alone() {
+        let silent = register(auto_accepted_surface()).expect("r");
+        assert_eq!(repaint_mode(silent), RepaintMode::Adaptive, "fixture sanity");
+        unregister(silent);
+
+        // With the mode cleared by hand (which is what a `Full` mode looks like), the
+        // decision refuses until the control actually asks for a repaint.
+        let id = register(container_with_child()).expect("r");
+        assert!(set_geometry(id, Rect::new(0, 0, 800, 600)));
+        assert!(set_repaint_mode(id, RepaintMode::Full));
+        assert!(!should_track_damage(id), "a silent control must not be enabled");
+
+        with_widget(id, |widget| widget.base().request_redraw()).expect("widget");
+        assert!(should_track_damage(id), "after asking for a repaint it becomes eligible");
+        unregister(id);
+    }
+
+    /// Forgetting a widget drops its auto-decision evidence with it.
+    #[test]
+    fn unregistering_clears_the_auto_decision_state() {
+        let id = register(auto_accepted_surface()).expect("r");
+        assert_eq!(repaint_mode(id), RepaintMode::Adaptive);
+        assert!(should_track_damage(id));
+
+        unregister(id);
+        assert!(!should_track_damage(id), "a dead id must not be judged as trackable");
+        assert_eq!(repaint_mode(id), RepaintMode::Full, "nor keep a stale mode");
+    }
+
+    /// The reverse mapping is cleaned up with the widget, so a recycled own-id cannot
+    /// file damage against a dead registry id.
+    #[test]
+    fn unregister_forgets_the_own_id_mapping() {
+        let id = register(sample_editor("fn main() {}")).expect("r");
+        let own = with_widget(id, |widget| widget.base().id()).expect("widget");
+        assert_eq!(registry_id_of(own), Some(id));
+
+        unregister(id);
+        assert_eq!(registry_id_of(own), None, "the reverse map must not outlive the widget");
+    }
+
+    #[test]
+    fn diag_container() {
+        let id = register(auto_accepted_surface()).expect("r");
+        let geometry = geometry_of(id).expect("geometry");
+        let kids = with_widget(id, |w| w.base().children().len()).unwrap_or(999);
+        assert_eq!(geometry.width, 800, "geometry must survive registration");
+        assert_eq!((geometry.width, geometry.height), (800, 600));
+        assert_eq!(kids, 1, "children must survive registration");
+        assert_eq!(repaint_mode(id), RepaintMode::Adaptive);
+        unregister(id);
+    }
+
+    /// The `Adaptive` run counter for a widget, for the tests that assert on *why* a
+    /// frame painted whole rather than only that it did.
+    fn large_damage_run_of(id: ObjectId) -> u32 {
+        REPAINT
+            .try_with(|map| map.borrow().get(&id).map(|state| state.large_damage_run))
+            .ok()
+            .flatten()
+            .unwrap_or(0)
+    }
+
+    /// A container large enough and structured enough for the auto-decision to accept.
+    ///
+    /// The children matter: a childless control has one rect, so regioning cannot
+    /// narrow anything and `should_track_damage` refuses it. `add_child` records the
+    /// nesting the criterion reads.
+    fn container_with_child() -> Box<dyn Widget> {
+        let mut group =
+            crate::widget::container_widgets::groupbox::GroupBox::new(Rect::new(0, 0, 320, 200));
+        group.base_mut().add_child(7);
+        Box::new(group)
+    }
+
+    /// The shape of a real window: large, with children, and it has asked to repaint.
+    ///
+    /// The third part is not incidental. `register` enables tracking for a control the
+    /// library judges worth it — but only for a control that has actually asked to be
+    /// repainted, because enabling a surface nothing redraws is pure cost. A real window
+    /// asks while its first frame is being prepared, which is before it is mounted; a
+    /// constructor that does so is modelled here by calling `request_redraw` directly.
+    fn auto_accepted_surface() -> Box<dyn Widget> {
+        let mut group =
+            crate::widget::container_widgets::groupbox::GroupBox::new(Rect::new(0, 0, 800, 600));
+        group.base_mut().add_child(7);
+        group.base_mut().request_redraw();
+        Box::new(group)
+    }
+
     fn sample_editor(text: &str) -> Box<dyn Widget> {
         let mut editor = CodeEditor::new(Rect::new(0, 0, 320, 200));
         editor.set_text(text);
         Box::new(editor)
+    }
+
+    // ── Damage producers: `request_redraw` must record damage ────────────────
+    //
+    // Before these existed, `mark_dirty_rect` had **no production caller** — the
+    // tracker, the platform invalidation and `render_frame_incremental` were all
+    // complete and reachable from tests only, so partial repaint could never happen in
+    // a real program. `request_redraw` is the single point every appearance change
+    // converges on (~1000 call sites), which is what makes recording damage *there*
+    // correct by construction rather than a list of paths someone must keep complete.
+
+    /// `request_redraw` records damage once the widget has opted in.
+    #[test]
+    fn request_redraw_records_damage_when_adaptive() {
+        let id = register(sample_editor("fn main() {}")).expect("registry");
+        assert!(set_repaint_mode_adaptive(id));
+        assert!(dirty_rects(id).is_empty(), "nothing has asked to repaint yet");
+
+        with_widget(id, |widget| widget.base().request_redraw()).expect("widget");
+
+        let damaged = dirty_rects(id);
+        assert_eq!(damaged.len(), 1, "request_redraw must record exactly one region: {damaged:?}");
+        assert_eq!(damaged[0], Rect::new(0, 0, 320, 200), "the control's own geometry");
+        unregister(id);
+    }
+
+    /// A widget that never opted in records nothing, so the producer costs it nothing.
+    #[test]
+    fn request_redraw_records_nothing_in_full_mode() {
+        let id = register(sample_editor("fn main() {}")).expect("registry");
+        assert_eq!(repaint_mode(id), RepaintMode::Full, "Full is the default");
+
+        with_widget(id, |widget| widget.base().request_redraw()).expect("widget");
+
+        assert!(dirty_rects(id).is_empty(), "Full mode must not accumulate damage");
+        unregister(id);
+    }
+
+    /// The producer is a no-op for an unregistered widget, so the transient controls
+    /// tests build (never registered) cannot panic or leak state.
+    #[test]
+    fn request_redraw_on_an_unregistered_widget_is_a_no_op() {
+        let editor = CodeEditor::new(Rect::new(0, 0, 40, 20));
+        editor.base().request_redraw();
+        assert!(dirty_rects(editor.base().id()).is_empty());
+    }
+
+    /// Every frame that repaints must clear the damage, or the next frame repaints the
+    /// same region forever and the tracker grows without bound.
+    #[test]
+    fn a_painted_frame_consumes_the_damage() {
+        let id = register(sample_editor("fn main() {}")).expect("registry");
+        assert!(set_repaint_mode_adaptive(id));
+        let size = Size::new(320, 200);
+
+        // First frame has no previous buffer, so it paints whole and clears.
+        let first = render_frame_incremental(id, size, Color::WHITE, None).expect("frame");
+        assert!(dirty_rects(id).is_empty(), "a full paint resets the damage");
+
+        with_widget(id, |widget| widget.base().request_redraw()).expect("widget");
+        assert_eq!(dirty_rects(id).len(), 1);
+
+        let second = render_frame_incremental(id, size, Color::WHITE, Some(&first)).expect("frame");
+        assert_eq!(second.len(), first.len(), "the frame keeps its size");
+        assert!(dirty_rects(id).is_empty(), "the incremental paint consumed the damage");
+        unregister(id);
+    }
+
+    /// `Adaptive` stops measuring after a run of frames whose damage covers the surface,
+    /// then resumes when the damage shrinks.
+    ///
+    /// The assertion is on `large_damage_run`, which is the mode's whole difference from
+    /// `Dirty`: a latch would keep painting whole after the animation ended, while this
+    /// returns to regioning because one small-damage frame resets the counter.
+    #[test]
+    fn adaptive_learns_from_full_surface_damage_and_recovers() {
+        let id = register(sample_editor("fn main() {}")).expect("registry");
+        assert!(set_repaint_mode_adaptive(id));
+        let size = Size::new(320, 200);
+        let full = Rect::new(0, 0, 320, 200);
+
+        // A first frame so later ones have something to carry forward.
+        let mut frame = render_frame_incremental(id, size, Color::WHITE, None).expect("frame");
+
+        // Damage covering the whole surface, repeatedly.
+        for _ in 0..ADAPTIVE_LARGE_DAMAGE_RUN {
+            assert!(mark_dirty_rect(id, full));
+            frame = render_frame_incremental(id, size, Color::WHITE, Some(&frame)).expect("frame");
+        }
+        assert_eq!(
+            large_damage_run_of(id),
+            ADAPTIVE_LARGE_DAMAGE_RUN,
+            "a run of whole-surface frames must be counted"
+        );
+
+        // One small-damage frame clears it, which is what keeps the mode from latching.
+        assert!(mark_dirty_rect(id, Rect::new(0, 0, 4, 4)));
+        let _ = render_frame_incremental(id, size, Color::WHITE, Some(&frame)).expect("frame");
+        assert_eq!(large_damage_run_of(id), 0, "small damage must reset the run");
+        unregister(id);
+    }
+
+    /// The rendered pixels must be *correct*, not merely cheap: a region-limited repaint
+    /// has to produce the same frame as a full one.
+    ///
+    /// This is the assertion that makes the feature safe to enable. A tracker that
+    /// recorded the wrong rectangle would still return `Some(frame)` and still report a
+    /// consumed region — only comparing pixels catches a partial paint that painted the
+    /// wrong part (or left a stale one).
+    #[test]
+    fn an_incremental_repaint_matches_a_full_repaint() {
+        let size = Size::new(320, 200);
+
+        // Reference: paint whole every time.
+        let full_id = register(sample_editor("fn main() {}")).expect("registry");
+        let baseline = render_frame_incremental(full_id, size, Color::WHITE, None).expect("frame");
+        let mut expected = baseline.clone();
+        let full_second =
+            render_frame_incremental(full_id, size, Color::WHITE, Some(&baseline)).expect("frame");
+        assert_eq!(full_second, baseline, "a full repaint of unchanged state is identical");
+        expected.clone_from(&full_second);
+
+        // Same control, damage-tracked.
+        let dirty_id = register(sample_editor("fn main() {}")).expect("registry");
+        assert!(set_repaint_mode_adaptive(dirty_id));
+        let first = render_frame_incremental(dirty_id, size, Color::WHITE, None).expect("frame");
+        assert!(mark_dirty_rect(dirty_id, Rect::new(8, 8, 24, 12)));
+        let second =
+            render_frame_incremental(dirty_id, size, Color::WHITE, Some(&first)).expect("frame");
+
+        assert_eq!(second.len(), expected.len());
+        assert_eq!(
+            second, expected,
+            "a region-limited repaint must produce the same pixels as a full one"
+        );
+        unregister(full_id);
+        unregister(dirty_id);
     }
 
     #[test]

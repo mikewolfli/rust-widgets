@@ -70,6 +70,24 @@ pub struct BaseWidget {
     pub layout_requested: GenericSignal,
     /// Emitted when a stateful value changes (e.g., slider value, checkbox state).
     pub changed: GenericSignal,
+    /// Whether [`Self::request_redraw`] has ever been called on this widget.
+    ///
+    /// Set once and never cleared, because it answers a question about the control's
+    /// whole life rather than about the current frame: "does this control ever ask to be
+    /// A surface that never asks keeps `RepaintMode::Full` and pays no
+    /// bookkeeping, which is the trade-off `widget::runtime::should_track_damage`
+    /// makes.
+    ///
+    /// A `Cell` rather than a plain `bool` because [`Self::request_redraw`] takes
+    /// `&self`: the flag has to be written from a shared borrow, and the alternative —
+    /// threading `&mut self` through ~1000 call sites — is exactly the churn the single
+    /// chokepoint exists to avoid. Only this one bit is interior-mutable; a write is a
+    /// non-atomic store that cannot tear, so no data race is introduced.
+    ///
+    /// Read back by `widget::runtime::should_track_damage` — a plain code span rather
+    /// than a link because that module is not compiled on `mini`, and a doc link that
+    /// resolves only on some profiles fails the doc build on the others.
+    pub(crate) ever_requested_redraw: core::cell::Cell<bool>,
 }
 impl BaseWidget {
     /// Create base widget state and core signals.
@@ -106,6 +124,7 @@ impl BaseWidget {
             redraw_requested: GenericSignal::new(),
             layout_requested: GenericSignal::new(),
             changed: GenericSignal::new(),
+            ever_requested_redraw: core::cell::Cell::new(false),
         }
     }
     // -- Base accessors --
@@ -349,13 +368,47 @@ impl BaseWidget {
     pub fn set_mouse_pressed(&mut self, pressed: bool) {
         self.mouse_pressed = pressed;
     }
-    /// Asks the host to repaint this widget by emitting the redraw signal.
+    /// Asks the host to repaint this widget, and records the damage.
     ///
     /// Takes `&self`, so it can be called from shared references. If nothing is
     /// connected to the signal the request is simply dropped — this does not queue
     /// a redraw by itself.
+    ///
+    /// # Why this also records damage
+    ///
+    /// This is the single point every appearance change converges on: the crate has
+    /// ~1000 call sites, covering a control mutating its own state, an event handler
+    /// reacting to input, and a programmatic property write. Recording the damage
+    /// *here* rather than at each mutation site is what makes partial repaint correct
+    /// by construction — there is no path that changes what a control looks like
+    /// without coming through this function.
+    ///
+    /// The record is a no-op unless the widget has opted into damage tracking (see
+    /// `RepaintMode` in `widget::runtime`), so a caller that never
+    /// asked pays one thread-local lookup and nothing else. It is also a no-op for a
+    /// widget that is not registered, which is the case for the transient controls
+    /// tests build.
+    ///
+    /// Gated with the runtime: damage tracking lives in `widget::runtime`, which `mini`
+    /// does not compile (it is `alloc_frugal` and paints whole frames by design). The
+    /// call is skipped there rather than stubbed, because there is no tracker to record
+    /// into and the signal below is what `mini` actually uses.
     pub fn request_redraw(&self) {
+        // Record the request before anything else can observe it: an observer of the
+        // signal below may re-enter the registry, and the whole point of the flag is to
+        // answer "has this control ever asked?". The write is one non-atomic store, so
+        // it is safe from a shared borrow.
+        self.ever_requested_redraw.set(true);
+        #[cfg(not(alloc_frugal))]
+        crate::widget::runtime::mark_widget_damage(self.id(), self.geometry());
         self.redraw_requested.emit();
+    }
+    /// Whether [`Self::request_redraw`] has ever been called on this widget.
+    ///
+    /// Read by `widget::runtime::should_track_damage` to tell a control that
+    /// repaints itself from one that never will.
+    pub fn has_ever_requested_redraw(&self) -> bool {
+        self.ever_requested_redraw.get()
     }
     /// Asks the host to re-run layout for this widget by emitting the layout
     /// signal.

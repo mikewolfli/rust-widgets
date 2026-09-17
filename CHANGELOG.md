@@ -62,6 +62,39 @@ this release is about having both.
   `update`) instead of claiming hot-reload without an implementation behind it.
 - **`check_profiles.sh`** verifies the declarative layer's platform gate as step `[8/9]`
   (8 → 9 steps).
+- **Platform gates are now single names, not hand-written conjunctions.** `build.rs`
+  derives three more cfg aliases — `device_profile`, `desktop_surface`,
+  `declarative_view` — so `crate::json`, `crate::app`, `crate::theme` and `crate::view`
+  each state their gate by intent:
+
+  | Before | After |
+  |---|---|
+  | `all(any(feature = "desktop", feature = "tablet", feature = "mobile"), widgets_unstripped)` ×2 | `full_widgets` |
+  | `any(feature = "desktop", feature = "tablet", feature = "mobile")` ×4 | `device_profile` |
+  | `all(not(embedded_surface), feature = "desktop")` and its negation ×5 each | `desktop_surface` / `not(desktop_surface)` |
+
+  The last one was the worst: the same fifteen-token conjunction appeared **ten times**
+  as an if/else pair choosing a `WidgetKind`. No behaviour changed — every profile builds
+  identically — but a gate can no longer drift from the others that mean the same thing.
+
+### Features
+
+- **`no-declarative-view`** (opt-out) — `rust_widgets::view` is compiled on `desktop`,
+  `tablet` and `mobile` **by default**, as before. This feature removes it from such a
+  build for callers that do not want its cost:
+
+  ```bash
+  cargo build --no-default-features --features desktop,no-declarative-view
+  ```
+
+  It is opt-**out** rather than opt-in deliberately: a Cargo feature list cannot express
+  "on unless named", so an opt-in spelling would force every existing caller to add a
+  feature to keep working. `mini`/`embedded` are unaffected — they never had the layer,
+  and that is a property of those profiles rather than a choice.
+
+  `tools/check_view_platform_gate.sh` now asserts all four states: present by default,
+  absent with the opt-out (on each of the three device profiles), absent on a stripped
+  profile, and absent on a build with no device profile.
 
 ### Removed
 
@@ -84,6 +117,41 @@ this release is about having both.
   exactly the divergence the merge exists to remove. **`Carousel` is the replacement for
   both.**
 
+- **Partial repaint now happens on its own** — and the reason it never did before was a
+  defect, not a missing feature:
+  - **Two id spaces.** `runtime::register` allocates a registry id and keys the widget
+    table by it, while a widget's `BaseWidget::id()` comes from its own `Object` counter.
+    They are different numbers (a fresh control reports `1`; the registry handed out
+    `0x5345_4C46_0000_0001`). Damage filed under the widget's own id was therefore
+    **silently dropped**. `register` now records the mapping and `unregister` removes it.
+  - **No producer.** `mark_dirty_rect` had no production caller, so the tracker, the
+    platform invalidation and `render_frame_incremental` were complete but unreachable
+    outside tests. `BaseWidget::request_redraw` now records damage — the single point
+    every appearance change converges on (~1000 call sites), which makes partial repaint
+    correct *by construction* rather than dependent on a list of mutation sites.
+  - **Two spellings of one operation.** `Widget::request_redraw`'s trait default emitted
+    the signal itself instead of routing through `BaseWidget::request_redraw`, so whether
+    damage was recorded depended on which spelling a call site used. Both emit the same
+    signal, so no test could tell them apart; the default now delegates.
+  - **The library decides, at mount time.** `register` asks `should_track_damage` and
+    enables `RepaintMode::Adaptive` where regioning pays off. The judgement is two-sided:
+    it refuses a surface below `AUTO_REPAINT_MIN_PIXELS` (250 000, ≈500×500) and one whose
+    control has no children (one rect *is* the whole surface), so a small or single-rect
+    widget keeps `Full` and pays no bookkeeping. A control that has never asked to be
+    repainted is refused too — enabling a surface nothing redraws is pure cost.
+  - `Adaptive` rather than `Dirty` is what makes an automatic *yes* safe: a frame whose
+    damage covers the surface falls back to a whole paint *for that frame*, and a run of
+    such frames stops measuring until the damage shrinks. A wrong yes costs bounded
+    bookkeeping, never a wrong frame — `an_incremental_repaint_matches_a_full_repaint`
+    compares the two byte for byte.
+  - The decision is observable rather than a black box: `adaptive_large_damage_run(id)`,
+    `should_track_damage(id)`, `enable_damage_tracking_if_useful(id)`,
+    `set_repaint_mode_adaptive(id)`, `registry_id_of(own_id)`.
+  - A control that asks to be repainted during construction is recorded too — the flag
+    lives on the widget (`BaseWidget::has_ever_requested_redraw`), because a pre-mount
+    request runs before there is any registry id to file it against.
+  - `15` new tests (11 unit + 4 end-to-end), each shown able to fail by reverse injection.
+
 ### Fixed
 
 - A duplicate `current_page` concept and two divergent indicator implementations are gone
@@ -91,11 +159,26 @@ this release is about having both.
 - `tools/check_view_keys_are_unique.sh` — `src/view/node.rs` referenced this gate by name
   before it existed; now it exists, scans 130 builder chains, and fails on a real
   duplicate sibling key.
+- `src/platform/windows/types.rs`'s window procedure was named `rw_wnd_proc`, borrowing
+  the **C ABI** prefix for an internal Win32 callback. Renamed to `wnd_proc`.
+- Added `tools/check_rw_prefix_is_abi_only.sh`: `rw_` belongs to the ABI boundary
+  (`src/bindings/`), where a flat C namespace makes a prefix necessary. Rust does not need
+  it — a module path already namespaces — so the gate fails on any new `rw_*`
+  **definition** outside that directory, and on any ABI export outside `src/bindings/`
+  and the JNI bridge. One documented exception: `RwError`/`RwResult`, which are settled
+  public API (documented in `api-reference.md`, 35 call sites); renaming them would be a
+  breaking change for a naming preference.
+
+  The check is deliberately narrowed to *definition position* rather than every token.
+  A "no `rw_` anywhere" rule produced 38 hits of which most were **correct** — doc comments
+  naming ABI entry points, and test temp-path prefixes like `/tmp/rw_spool_probe_*` whose
+  purpose is to be unlikely to collide. A gate with a 34-item allowlist gets allowlisted
+  into uselessness.
 
 ### Verified in this release
 
-`4756` lib tests pass on `desktop`, `1538` on `embedded`, `1477` on `mini`;
-`4923` across all test binaries; `clippy --all-targets -- -D warnings` and
+`4770` lib tests pass on `desktop` (`+14` for the repaint auto-decision), `1538` on
+`embedded`, `1477` on `mini`; `clippy --all-targets -- -D warnings` and
 `cargo doc --no-deps` are both clean; all 5 profiles build; 30 gates run,
 with 4 host-gated or pre-existing (documented in `docs/log/log-20260917-4.md` §8.3).
 

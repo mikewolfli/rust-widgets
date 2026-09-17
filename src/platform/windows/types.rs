@@ -8,8 +8,17 @@ use crate::platform::state::BackendState;
 use crate::platform::{Platform, WidgetTriggerEvent, WidgetTriggerKind};
 
 pub use crate::platform::windows_notify::WindowsHandleKind;
+
+/// The window procedure Win32 calls for the class this backend registers.
+///
+/// Named `wnd_proc`, not `rw_wnd_proc`: the `rw_` prefix belongs to the C ABI
+/// boundary (`src/bindings/`), where a flat global namespace makes it necessary.
+/// This function is an internal Win32 callback reached only through a class
+/// registration and a `wnd_class.lpfnWndProc` assignment, so a prefix borrowed
+/// from a different layer would suggest an ABI export that does not exist.
+/// `tools/check_rw_prefix_is_abi_only.sh` enforces the boundary.
 #[cfg(target_os = "windows")]
-pub(crate) unsafe extern "system" fn rw_wnd_proc(
+pub(crate) unsafe extern "system" fn wnd_proc(
     hwnd: HWND,
     msg: u32,
     wparam: usize,

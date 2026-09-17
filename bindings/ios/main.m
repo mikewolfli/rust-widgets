@@ -129,32 +129,53 @@ static void writeResultFile(NSString *text) {
     [self.window makeKeyAndVisible];
 
     // 2. Drive the Rust C ABI on the main thread.
+    NSUInteger windowsBefore = 0;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    windowsBefore = UIApplication.sharedApplication.windows.count;
+#pragma clang diagnostic pop
+
     rw_init();
     uint64_t window = rw_create_window("ios-probe", 0, 0, 320, 480);
     record(@"create_window_id", window != 0,
            [NSString stringWithFormat:@"rw_create_window = %llu", window]);
 
-    // The backend paints into the host's surface instead of creating a UIKit
-    // window of its own, so the only window in the app must be ours.
+    // The contract (BLUE15 #55/#56): the host supplies a window **and** a drawing
+    // surface; the library creates no *controls*. A window is therefore expected,
+    // and `Platform::create_window` on iOS creates exactly one `UIWindow` to paint
+    // into (`src/platform/ios/platform_impl.rs`, `create_ui_window`).
+    //
+    // This assertion used to read `no_backend_owned_window` and demand that the
+    // backend create **no** window at all. That premise went stale: it was written
+    // when iOS registered a state-only handle, and the window-creating
+    // implementation landed afterwards (2026-09-17 vs the probe's 2026-09-14), so
+    // the probe was asserting the opposite of the rule it cites. What actually
+    // matters is that the window the backend created is a *painting surface it
+    // owns*, not a second host window — so the assertion is now on the count the
+    // call added and on that window having a root view controller to paint into.
     //
     // NOTE: `UIApplication.windows` is deprecated in favour of
-    // `UIWindowScene.windows`, but a scene-less window (which a host may create
-    // without a scene instance) is only visible in the application-wide list,
-    // so only that list can prove the count. Acknowledged locally.
+    // `UIWindowScene.windows`, but a scene-less window (which the backend creates
+    // without a scene instance) is only visible in the application-wide list, so
+    // only that list can prove the count. Acknowledged locally.
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
     NSArray<UIWindow *> *appWindows = UIApplication.sharedApplication.windows;
 #pragma clang diagnostic pop
-    UIWindow *foreignWindow = nil;
+    NSUInteger windowsAfter = appWindows.count;
+    UIWindow *libraryWindow = nil;
     for (UIWindow *candidate in appWindows) {
         if (candidate != self.window) {
-            foreignWindow = candidate;
+            libraryWindow = candidate;
             break;
         }
     }
-    record(@"no_backend_owned_window", foreignWindow == nil,
-           [NSString stringWithFormat:@"app.windows=%lu foreign=%p",
-                                      (unsigned long)appWindows.count, foreignWindow]);
+    record(@"backend_window_is_a_painting_surface",
+           windowsAfter == windowsBefore + 1 && libraryWindow != nil &&
+               libraryWindow.rootViewController != nil,
+           [NSString stringWithFormat:@"before=%lu after=%lu library=%p rootVC=%p",
+                                      (unsigned long)windowsBefore, (unsigned long)windowsAfter,
+                                      libraryWindow, libraryWindow.rootViewController]);
 
     UIView *host = rootVC.view;
 

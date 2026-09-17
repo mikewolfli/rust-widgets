@@ -127,7 +127,7 @@ impl Platform for WindowsPlatform {
             return false;
         }
         // Win32 has no setter: the value is consumed by the `WM_GETMINMAXINFO`
-        // handler in `rw_wnd_proc`, which reads it back from this state model. That
+        // handler in `wnd_proc`, which reads it back from this state model. That
         // is why the write is recorded even for a state-only window.
         self.state.set_window_min_size(widget_id, width, height);
         // Force a recompute so a *shrink* of the constraint takes effect now

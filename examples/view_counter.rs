@@ -35,10 +35,7 @@
 //! deliberate design choice (see `src/view/engine.rs`), and it is why this demo runs
 //! in CI on hosts with no display server.
 
-#[cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#[cfg(declarative_view)]
 fn main() {
     use rust_widgets::core::{ObjectId, Rect};
     use rust_widgets::view::{Node, Patch, View, ViewEngine};
@@ -141,10 +138,7 @@ fn main() {
     );
 }
 
-#[cfg(not(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-)))]
+#[cfg(not(declarative_view))]
 fn main() {
     // The `view` module is not compiled in a stripped profile (BLUE18 rule #92), so
     // there is nothing to demonstrate. Saying so is better than a build error: the

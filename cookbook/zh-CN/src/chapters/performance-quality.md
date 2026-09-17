@@ -607,6 +607,82 @@ fn draw_all_widgets(_ctx: &mut RenderContext) {
 3. **>16 个区域** → 回退到全边界矩形重绘
 4. **渲染后** → 跟踪器被清除
 
+### 整条链路 —— 为什么你不需要接线
+
+上面三块都是**原语**。单靠它们什么也不会发生，因为总得有人先去**记录** damage，
+才有东西可跟踪。这个生产者就是 `BaseWidget::request_redraw`，
+而它之所以是对的位置，是因为库中每一次外观变化都会汇聚到它：
+
+```text
+属性写入 / 事件处理 / 控件自身状态变化
+        |
+        v
+BaseWidget::request_redraw      <-- 唯一咽喉点（约 1000 个调用点）
+        |  记录 self.geometry() 为 damage
+        v
+RepaintMode + DirtyRegionTracker  <-- 策略
+        |
+        v
+render_frame_incremental          <-- 只重新光栅化受损区域
+```
+
+没有任何路径能在不经过 `request_redraw` 的情况下改变控件外观，
+所以局部重绘是**由构造保证**正确的，而不是依赖一份必须有人维护完整的变更点清单。
+把 damage 记录在这里，也意味着声明式层无需任何特殊处理：
+`Patch::SetProperty` 落在与手写 `set_text` 同一个属性契约上，因此两者产生相同的 damage。
+
+#### 库在挂载时就替你决定
+
+宿主不必了解自己的帧模式。当一个控件被挂载时，库会询问 `should_track_damage`；
+若答案为是，就把它置为 `RepaintMode::Adaptive`：
+
+```rust
+use rust_widgets::widget::runtime::{
+    enable_damage_tracking_if_useful, set_repaint_mode, repaint_mode, RepaintMode,
+};
+
+// 无需调用任何东西：已挂载的窗口会被自动判定。
+
+// 显式询问，例如在 resize 改变了几何之后：
+if enable_damage_tracking_if_useful(window) {
+    // 从此使用局部重绘
+}
+
+// 或者覆盖库的判断，强制指定策略：
+set_repaint_mode(window, RepaintMode::Dirty);   // 始终区域化
+set_repaint_mode(window, RepaintMode::Full);    // 从不区域化
+assert_eq!(repaint_mode(window), RepaintMode::Dirty);
+```
+
+这个判定刻意是**双向**的，而且说「不」的次数并不少于说「是」：
+
+| 拒绝条件 | 为何区域化不划算 |
+|---|---|
+| 表面积低于 `AUTO_REPAINT_MIN_PIXELS`（四分之一兆像素，约 500×500） | 如此小的表面，合并/排序/裁剪区域的开销在整幅绘制成本中已占可观比例 |
+| 该控件没有子节点 | 一个矩形**就是**整个表面，裁剪无法缩小任何范围 |
+| 该控件从未请求过重绘 | 没有任何东西会重绘它，也就无像素可省，簿记纯属开销 |
+
+`AUTO_REPAINT_MIN_PIXELS` 是一个具名常量而非魔数，正是为了让不同意的调用者
+可以读到它，然后直接调用 `set_repaint_mode` 得到自己真正想要的。
+
+#### 为何自动说「是」是安全的
+
+启用的模式是 `Adaptive` 而不是 `Dirty`，这个区别正是得以在不了解应用的情况下做决定的原因：
+
+* 某一帧的 damage 覆盖整个表面时，**该帧**回退为整幅重绘。
+* 连续若干这样的帧（动画、滚动、视频）会彻底停止测量 ——
+  `adaptive_large_damage_run(id)` 就是这个计数，且它是公开的，
+  因此宿主可以**观察**这个决定，而不是去猜。
+* 一旦某一帧报告小 damage，该帧就被测量且计数归零，
+  所以一个短暂动画后归于静止的窗口会自动恢复区域重绘。
+
+因此一次错误的「是」只会让后续若干帧付出有界的簿记开销，**绝不会**产出错误的一帧：
+任何模式下像素完全相同。这个相等性由 `an_incremental_repaint_matches_a_full_repaint` 断言，
+它把增量重绘的帧与整幅重绘的帧逐字节比较。
+
+如果你写的不是软件路径而是自定义后端，`dirty_rects(id)` 会把合并后的区域作为普通矩形交给你 ——
+GPU 后端要的是 scissor rect，而不是软件重绘。
+
 ## UpdateBatcher — 基于时间和计数的合并
 
 `UpdateBatcher` 将多个更新区域合并为批次，在超时或达到计数阈值时刷新：

@@ -66,7 +66,12 @@ pub mod i18n;
 #[cfg(feature = "image")]
 pub mod image;
 /// Declarative JSON window engine (QML-like).
-#[cfg(all(any(feature = "desktop", feature = "tablet", feature = "mobile"), widgets_unstripped))]
+///
+/// Compiled for a full device build — `desktop`/`tablet`/`mobile` with an unstripped
+/// widget set. Stated as the `full_widgets` alias rather than the conjunction, so it
+/// cannot drift from `crate::app` and `crate::view`, which need exactly the same thing
+/// (BLUE15 rule #57).
+#[cfg(full_widgets)]
 pub mod json;
 /// Layout managers.
 pub mod layout;
@@ -102,7 +107,10 @@ pub mod test;
 /// (`crate::json`, itself available on `desktop`/`tablet`/`mobile`) consults, so a
 /// tablet or mobile build must have it too. Gating on `desktop` was wrong and only
 /// showed up when `tablet` was built with the JSON engine enabled.
-#[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
+///
+/// `device_profile` rather than `full_widgets`: the theme system carries no widget
+/// set, so it stays available even on a device build with stripped widgets.
+#[cfg(device_profile)]
 pub mod theme;
 /// Undo/Redo framework for undoable commands and cross-widget undo/redo.
 pub mod undo;
@@ -114,7 +122,12 @@ pub mod video;
 ///
 /// The declarative half of the hybrid architecture. Additive: it consumes the existing
 /// widget factory and property contract rather than changing them.
-#[cfg(all(any(feature = "desktop", feature = "tablet", feature = "mobile"), widgets_unstripped))]
+///
+/// Compiled for a device profile (`desktop`/`tablet`/`mobile`) unless the caller opts
+/// out with the `no-declarative-view` feature; never compiled for `mini`/`embedded`.
+/// The whole condition is the single alias `declarative_view`, so the opt-out and the
+/// stripped-profile rule cannot drift apart (BLUE15 rule #57).
+#[cfg(declarative_view)]
 pub mod view;
 /// Web view and engine components.
 #[cfg(widgets_unstripped)]
@@ -160,7 +173,9 @@ macro_rules! tr {
     }};
 }
 /// Application lifecycle wrapper and type-safe widget handles (not available in mini mode).
-#[cfg(all(any(feature = "desktop", feature = "tablet", feature = "mobile"), widgets_unstripped))]
+///
+/// Same condition as `crate::json`: `full_widgets`.
+#[cfg(full_widgets)]
 pub mod app;
 /// Index-based widget registry for runtime lookup.
 pub mod index;
@@ -253,42 +268,42 @@ fn backend_for_kind(kind: widget::WidgetKind) -> &'static dyn control_backend::C
 
 /// `WidgetKind::MenuBar` where available, else the always-present fallback.
 #[cfg(not(alloc_frugal))]
-#[cfg(all(not(embedded_surface), feature = "desktop"))]
+#[cfg(desktop_surface)]
 const KIND_MENU_BAR: widget::WidgetKind = widget::WidgetKind::MenuBar;
 #[cfg(not(alloc_frugal))]
-#[cfg(not(all(not(embedded_surface), feature = "desktop")))]
+#[cfg(not(desktop_surface))]
 const KIND_MENU_BAR: widget::WidgetKind = widget::WidgetKind::Panel;
 
 /// `WidgetKind::Menu` where available, else the always-present fallback.
 #[cfg(not(alloc_frugal))]
-#[cfg(all(not(embedded_surface), feature = "desktop"))]
+#[cfg(desktop_surface)]
 const KIND_MENU: widget::WidgetKind = widget::WidgetKind::Menu;
 #[cfg(not(alloc_frugal))]
-#[cfg(not(all(not(embedded_surface), feature = "desktop")))]
+#[cfg(not(desktop_surface))]
 const KIND_MENU: widget::WidgetKind = widget::WidgetKind::Panel;
 
 /// `WidgetKind::ToolBar` where available, else the always-present fallback.
 #[cfg(not(alloc_frugal))]
-#[cfg(all(not(embedded_surface), feature = "desktop"))]
+#[cfg(desktop_surface)]
 const KIND_TOOL_BAR: widget::WidgetKind = widget::WidgetKind::ToolBar;
 #[cfg(not(alloc_frugal))]
-#[cfg(not(all(not(embedded_surface), feature = "desktop")))]
+#[cfg(not(desktop_surface))]
 const KIND_TOOL_BAR: widget::WidgetKind = widget::WidgetKind::Panel;
 
 /// `WidgetKind::StatusBar` where available, else the always-present fallback.
 #[cfg(not(alloc_frugal))]
-#[cfg(all(not(embedded_surface), feature = "desktop"))]
+#[cfg(desktop_surface)]
 const KIND_STATUS_BAR: widget::WidgetKind = widget::WidgetKind::StatusBar;
 #[cfg(not(alloc_frugal))]
-#[cfg(not(all(not(embedded_surface), feature = "desktop")))]
+#[cfg(not(desktop_surface))]
 const KIND_STATUS_BAR: widget::WidgetKind = widget::WidgetKind::Panel;
 
 /// `WidgetKind::ListView` where available, else the always-present fallback.
 #[cfg(not(alloc_frugal))]
-#[cfg(all(not(embedded_surface), feature = "desktop"))]
+#[cfg(desktop_surface)]
 const KIND_LIST_VIEW: widget::WidgetKind = widget::WidgetKind::ListView;
 #[cfg(not(alloc_frugal))]
-#[cfg(not(all(not(embedded_surface), feature = "desktop")))]
+#[cfg(not(desktop_surface))]
 const KIND_LIST_VIEW: widget::WidgetKind = widget::WidgetKind::Panel;
 
 /// `WidgetKind::MessageBox` where available, else the always-present fallback.
@@ -652,11 +667,11 @@ pub fn supports_surfaces() -> bool {
 /// is written once, next to the module it describes.
 #[cfg(not(alloc_frugal))]
 fn apply_active_theme(widget: &mut Box<dyn widget::Widget>) {
-    #[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
+    #[cfg(device_profile)]
     {
         crate::theme::apply_active_theme(&mut **widget);
     }
-    #[cfg(not(any(feature = "desktop", feature = "tablet", feature = "mobile")))]
+    #[cfg(not(device_profile))]
     {
         // No theme module in this profile, so there is nothing to apply. Naming the
         // parameter keeps the signature identical in every build.
@@ -676,7 +691,7 @@ fn apply_active_theme(widget: &mut Box<dyn widget::Widget>) {
 /// A profile without a theme module has nothing to apply and does nothing.
 #[cfg(not(alloc_frugal))]
 pub fn reapply_active_theme() {
-    #[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
+    #[cfg(device_profile)]
     {
         widget::runtime::for_each_mounted_widget(|_id, widget| {
             crate::theme::apply_active_theme(widget);
@@ -760,11 +775,11 @@ pub fn create_widget_of_kind(
     // Prefer the caller's object; otherwise build from the factory, which is the
     // only component that knows every kind's constructor.
     let widget = widget.or_else(|| {
-        #[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
+        #[cfg(device_profile)]
         {
             widget::WidgetFactory::new_with_defaults().create(&kind_name(kind), rect, text)
         }
-        #[cfg(not(any(feature = "desktop", feature = "tablet", feature = "mobile")))]
+        #[cfg(not(device_profile))]
         {
             let _ = (text, rect);
             None

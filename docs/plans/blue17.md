@@ -437,10 +437,10 @@ pub struct ColumnFilter { pub column: usize, pub query: String }
 
 | 步骤 | 内容 | 验收 |
 |---|---|---|
-| A-1 | `src/event/dnd.rs`：`DragPayload`、`DropEffect`（Copy/Move/Link/None）、`DropTarget` trait（`can_accept` / `on_drop` / `preview_rect`） | 单元测试：被拒绝的载荷不进 `on_drop` |
-| A-2 | 接线到既有鼠标三件套（`MousePress` → `MouseMove` → `MouseRelease`）并兼容触摸 `Event::Drag` | **反向注入**：删掉 `DropTarget` 查询，看板测试必须失败 |
-| A-3 | 迁移既有拖拽实现中的**至少 1 处**（建议 `splitter`，它的拖拽状态机最小）到新抽象，证明可复用 | 该控件既有测试全绿 |
-| A-4 | `DropZone` 可视化（高亮 + 放置预览） | 像素断言（规则 #73：断言颜色而非「返回 Ok」） |
+| A-1 | `src/event/dnd.rs`：`DragPayload`、`DropEffect`（Copy/Move/Link/None）、`DropTarget` trait（`can_accept` / `on_drop` / `preview_rect`） | ✅ 单元测试：被拒绝的载荷不进 `on_drop`（14 条） |
+| A-2 | 接线到既有鼠标三件套（`MousePress` → `MouseMove` → `MouseRelease`）并兼容触摸 `Event::Drag` | ✅ **反向注入已证**：删掉 `DropTarget` 查询，看板测试失败 |
+| A-3 | 迁移既有拖拽实现中的**至少 1 处**（建议 `splitter`，它的拖拽状态机最小）到新抽象，证明可复用 | ✅ `splitter` 已迁移（6 处 `DragSession` 引用）；该控件测试全绿 |
+| A-4 | `DropZone` 可视化（高亮 + 放置预览） | ✅ 像素断言（规则 #73）：`kanban_drag_overlay_differs_from_the_resting_frame` |
 
 ### Phase B — `Carousel` 能力补齐（B1，⭐ 建议最先做）
 
@@ -454,22 +454,22 @@ pub struct ColumnFilter { pub column: usize, pub query: String }
 
 | 步骤 | 内容 |
 |---|---|
-| C-1 | `ChartWidget` 数据模型判定（§四 B2 的方案 ①/②/③，**需用户拍板**） |
-| C-2 | `ChartType` 扩展：`Area`（引擎已支持，成本最低）、`Waterfall`、`Funnel`、`Candlestick`、`BoxPlot` |
-| C-3 | `Meter` 扩展：区间色带、刻度标签、单位（B3） |
-| C-4 | `ScrollArea` 通用吸顶（B6） |
-| C-5 | `published_enum_tokens_are_accepted_by_their_control` 对全部新变体 PASS（规则 #82） |
+| C-1 | `ChartWidget` 数据模型判定（§四 B2 的方案 ①/②/③，**需用户拍板**） | ✅ 采用**方案 ②**：`set_series(Vec<Vec<f64>>)`，`Vec<f64>` 保持为单序列特例 |
+| C-2 | `ChartType` 扩展：`Area`、`Waterfall`、`Funnel`、`Candlestick`、`BoxPlot` | ✅ 4 → **9** 变体；`as_str`/`from_name`/`values_per_point` 三处同步 |
+| C-3 | `Meter` 扩展：区间色带、刻度标签、单位（B3） | ✅ `add_threshold_range` / `set_show_tick_labels` / `set_unit`（22 条测试） |
+| C-4 | `ScrollArea` 通用吸顶（B6） | ✅ `StickyRegion` + `add_sticky_region` / `pinned_sticky_bands`（8 条测试） |
+| C-5 | `published_enum_tokens_are_accepted_by_their_control` 对全部新变体 PASS（规则 #82） | ✅ 逐 token 回写并断言被接受 |
 
 ### Phase D — 新控件
 
 | 步骤 | 控件 | 关键交互 | 依赖 |
 |---|---|---|---|
-| D-1 | `KanbanBoard` | 卡片跨列拖拽 / 列内排序 / 列折叠 / WIP 上限 | Phase A |
-| D-2 | `Mention` | 字符触发 / 候选浮层 / 键盘选择 / 插入后光标定位 | `AutoCompleteEdit` |
-| D-3 | `RadarChart` | 多序列多维度轴 / hover 值提示 / 图例 | 独立（数据模型不同构） |
-| D-4 | `EmojiPicker` 外壳 | 网格 / 搜索 / 最近使用 / 分类 / 键盘导航 | 字形由调用方注入 |
-| D-5 | `Cascader` | 逐级展开 / 路径回填 / 键盘导航 / 异步加载占位 | 无（判定已完成，§四 B4） |
-| D-6 | `QueryBuilder` + `FilterExpr` | AND/OR 嵌套树编辑；产出可递归筛选模型 | 先扩 `ColumnFilter`（§四 B5） |
+| D-1 | `KanbanBoard` | 卡片跨列拖拽 / 列内排序 / 列折叠 / WIP 上限 | ✅ 34 条测试 |
+| D-2 | `Mention` | 字符触发 / 候选浮层 / 键盘选择 / 插入后光标定位 | ✅ 45 条测试 |
+| D-3 | `RadarChart` | 多序列多维度轴 / hover 值提示 / 图例 | ✅ 14 条测试 |
+| D-4 | `EmojiPicker` 外壳 | 网格 / 搜索 / 最近使用 / 分类 / 键盘导航 | ✅ 45 条测试 |
+| D-5 | `Cascader` | 逐级展开 / 路径回填 / 键盘导航 / 异步加载 | ✅ 40 条测试 |
+| D-6 | `QueryBuilder` + `FilterExpr` | AND/OR 嵌套树编辑；产出可递归筛选模型 | ✅ 41 条测试 |
 
 ### Phase E — 每个新控件的强制同步（规则 #81，**门禁已存在，会被自动追责**）
 
@@ -485,9 +485,9 @@ bash tools/check_widget_kind_count.sh                                  # 计数�
 
 | 步骤 | 内容 |
 |---|---|
-| F-1 | 同步 `WidgetKind` 计数（现 **174**）到 `README.md`、`README.zh-CN.md`、`docs/ARCHITECTURE.md` |
-| F-2 | 每个新控件补 `# Reachability` 段（规则 #72 三态） |
-| F-3 | 日志回写完成率与证据 |
+| F-1 | 同步 `WidgetKind` 计数到 `README.md`、`README.zh-CN.md`、`docs/ARCHITECTURE.md` | ✅ README ×2 同步为 169；`docs/ARCHITECTURE.md` **不含任何计数**（实测），无需改动 —— 但本轮发现并修正了它的两处架构描述错误（见下） |
+| F-2 | 每个新控件补 `# Reachability` 段（规则 #72 三态） | ✅ 六个新控件均已含（实测逐个 grep） |
+| F-3 | 日志回写完成率与证据 | ✅ `log-20260917-3.md` + `log-20260917-4.md` |
 
 ---
 

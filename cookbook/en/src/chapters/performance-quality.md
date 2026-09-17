@@ -616,6 +616,90 @@ fn draw_all_widgets(_ctx: &mut RenderContext) {
 3. **>16 regions** → fall back to full bounding-rect redraw
 4. **After rendering** → tracker is cleared
 
+### The pipeline end to end — and why you do not wire it up
+
+The three pieces above are primitives. On their own they do nothing, because somebody
+has to **record** damage before there is anything to track. That producer is
+`BaseWidget::request_redraw`, and the reason it is the right place is that every
+appearance change in the library converges there:
+
+```text
+property write / event handler / control mutating itself
+        |
+        v
+BaseWidget::request_redraw      <-- the single chokepoint (~1000 call sites)
+        |  records self.geometry() as damage
+        v
+RepaintMode + DirtyRegionTracker  <-- the policy
+        |
+        v
+render_frame_incremental          <-- re-rasterises only the damaged area
+```
+
+There is no path that changes what a control looks like without passing through
+`request_redraw`, so partial repaint is correct **by construction** rather than
+depending on a list of mutation sites somebody has to keep complete. Recording damage
+there also means the declarative layer needs no special handling: a `Patch::SetProperty`
+lands on the same property contract a hand-written `set_text` does, so both produce the
+same damage.
+
+#### The library decides, at mount time
+
+A host does not have to know its own frame pattern. When a control is mounted, the
+library asks `should_track_damage` and — if the answer is yes — puts it in
+`RepaintMode::Adaptive`:
+
+```rust
+use rust_widgets::widget::runtime::{
+    enable_damage_tracking_if_useful, set_repaint_mode, repaint_mode, RepaintMode,
+};
+
+// Nothing to call: a mounted window is judged automatically.
+
+// Ask explicitly, e.g. after a resize changed the geometry:
+if enable_damage_tracking_if_useful(window) {
+    // partial repaints from here on
+}
+
+// Or overrule the library and force a policy:
+set_repaint_mode(window, RepaintMode::Dirty);   // always region
+set_repaint_mode(window, RepaintMode::Full);    // never region
+assert_eq!(repaint_mode(window), RepaintMode::Dirty);
+```
+
+The judgement is deliberately **two-sided**, and it says no more often than yes:
+
+| Refused when | Why regioning does not pay |
+|---|---|
+| The surface is below `AUTO_REPAINT_MIN_PIXELS` (a quarter megapixel, ≈500×500) | Merging, sorting and clipping regions is a measurable share of the cost of just painting a surface that small |
+| The control has no children | One rect *is* the whole surface, so the clip cannot narrow anything |
+| The control has never asked to be repainted | Nothing redraws it, so there are no pixels to save and the bookkeeping is pure cost |
+
+`AUTO_REPAINT_MIN_PIXELS` is a named constant rather than a magic number precisely so a
+caller who disagrees can read it, and then call `set_repaint_mode` directly to get
+exactly what it asked for.
+
+#### Why an automatic yes is safe
+
+The enabled mode is `Adaptive`, not `Dirty`, and that distinction is what makes it safe
+to decide without knowing the application:
+
+* A frame whose damage covers the surface falls back to a whole paint **for that frame**.
+* A run of such frames (an animation, a scroll, a video) stops the measurement entirely —
+  `adaptive_large_damage_run(id)` is the count, and it is public so a host can observe
+  the decision rather than guess at it.
+* The moment one frame reports small damage, that frame is measured and the run resets,
+  so a window that animates briefly and then settles returns to regioning on its own.
+
+A wrong "yes" therefore costs a bounded amount of bookkeeping on the frames that follow,
+never a wrong frame: the pixels are identical in every mode. That equality is asserted
+by `an_incremental_repaint_matches_a_full_repaint`, which compares an incrementally
+repainted frame against a fully repainted one byte for byte.
+
+If you are writing a custom backend rather than using the software path, `dirty_rects(id)`
+hands you the merged regions as plain rectangles — a GPU backend wants scissor rects, not
+a software repaint.
+
 ## UpdateBatcher — Time+Count-Based Coalescing
 
 `UpdateBatcher` coalesces multiple update regions into batches, flushing on

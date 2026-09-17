@@ -128,9 +128,9 @@ check_profile() {
     absent)
       if [[ $status -eq 0 ]]; then
         echo "  ❌ $label — crate::view must NOT be compiled, but the probe resolved"
-        echo "       the declarative layer is in a stripped profile (rule #92)."
-        echo "       check that src/lib.rs's \`pub mod view\` still carries"
-        echo "       \`all(any(desktop, tablet, mobile), widgets_unstripped)\`"
+        echo "       either the layer reached a stripped profile (rule #92), or the"
+        echo "       opt-out did not take effect. Check that src/lib.rs's"
+        echo "       \`pub mod view\` is gated on the single \`declarative_view\` alias."
         ERRORS=$((ERRORS + 1))
       elif printf '%s' "$out" | grep -qE 'VIEW_GATE_PROBE|could not find .view.|unresolved import|no .view. in'; then
         echo "  ✅ $label — crate::view is ABSENT (probe cannot resolve it)"
@@ -143,18 +143,30 @@ check_profile() {
   esac
 }
 
-echo "=== [1] Device profiles must compile the declarative layer ==="
+echo "=== [1] Device profiles must compile the declarative layer by default ==="
 check_profile "desktop" present
 check_profile "tablet" present --no-default-features --features tablet
 check_profile "mobile" present --no-default-features --features mobile
 
 echo ""
-echo "=== [2] Stripped profiles must not compile it (rules #92/#93) ==="
+echo "=== [2] The 'no-declarative-view' opt-out must remove it from a device build ==="
+# The layer is on by default for a device profile but is **opt-out**, so a caller that
+# does not want its cost (a headless tool, a size-constrained device build, a program
+# that only uses `add_child`) can take it out without losing the profile. Both halves
+# are asserted: absent with the feature, present without it (step [1]).
+check_profile "desktop + opt-out" absent --no-default-features --features desktop,no-declarative-view
+check_profile "tablet + opt-out" absent --no-default-features --features tablet,no-declarative-view
+check_profile "mobile + opt-out" absent --no-default-features --features mobile,no-declarative-view
+
+echo ""
+echo "=== [3] Stripped profiles must not compile it (rules #92/#93) ==="
+# `mini`/`embedded` never have it, and the opt-out is not what decides that: these
+# profiles lack the widget tree and allocation budget the layer needs.
 check_profile "mini" absent --no-default-features --features mini
 check_profile "embedded" absent --no-default-features --features embedded
 
 echo ""
-echo "=== [3] A build with no device profile must not compile it ==="
+echo "=== [4] A build with no device profile must not compile it ==="
 # `--no-default-features --features gpu` has no device profile, so `full_widgets`
 # is false and the widget factory is not registered: the declarative layer would
 # have nothing to mount onto. This is the case a bare
@@ -163,52 +175,47 @@ echo "=== [3] A build with no device profile must not compile it ==="
 check_profile "gpu-only (no device profile)" absent --no-default-features --features gpu
 
 echo ""
-echo "=== [4] The gate expression must retain its 'widgets_unstripped' term ==="
+echo "=== [5] The gate must be stated as the single 'declarative_view' alias ==="
 #
-# WHY THIS SECOND CRITERION IS NECESSARY (measured, not assumed)
-# ---------------------------------------------------------------
-# On every *valid* single-profile build the two spellings
-# `all(any(desktop,tablet,mobile), widgets_unstripped)` and
-# `any(desktop,tablet,mobile)` behave identically:
+# WHY THIS CRITERION EXISTS, AND WHY IT IS A SOURCE CHECK
+# -------------------------------------------------------
+# The layer's gate is `declarative_view`, defined once in `build.rs` as
+# `device_profile && !stripped && !no-declarative-view`. Two failure modes are not
+# observable from a build of any single profile:
 #
-#   * a device profile (desktop/tablet/mobile) is never stripped, so
-#     `widgets_unstripped` is true and the `all` reduces to the `any`;
-#   * `mini`/`embedded` carry no device feature, so both spellings are false.
+#   * the alias is opened up to a stripped profile, which no valid build exercises;
+#   * the tern is re-spelled by hand at the call site, so the opt-out or the
+#     stripped-profile rule silently stops applying to `crate::view`.
 #
-# They differ ONLY on the mixed build `--features desktop,mini`, which is the
-# invalid configuration BLUE18 rule #48 forbids (mutually exclusive device
-# profiles). So the behavioural probes above CANNOT distinguish the two
-# spellings, and a gate that only ran them would be a gate that cannot fail —
-# which is the exact failure mode BLUE18 Phase E'-5 asks to rule out.
-#
-# This step therefore asserts the *term* is present, so a refactor that drops
-# `widgets_unstripped` is caught even though no valid build would notice it. It
-# is a source check, and it is honest about being one: it does not claim to prove
-# runtime behaviour, because the behaviour it protects is unobservable on a valid
-# build. Together with steps [1]-[3] (which prove the expression has the right
-# effect where it IS observable) the two criteria cover each other's blind spot.
+# So this step asserts the term is present and that the module uses the alias rather
+# than a hand-written conjunction. It is honest about being a source check: it does
+# not claim to prove runtime behaviour, because the behaviour it protects is a
+# property of the *feature matrix* rather than of one build.
 VIEW_GATE_LINE="$(grep -n 'pub mod view;' -B 1 src/lib.rs || true)"
-if printf '%s' "$VIEW_GATE_LINE" | grep -q 'widgets_unstripped'; then
-  echo "  ✅ src/lib.rs gates \`pub mod view\` on \`widgets_unstripped\`"
+if printf '%s' "$VIEW_GATE_LINE" | grep -q 'declarative_view'; then
+  echo "  ✅ src/lib.rs gates \`pub mod view\` on the \`declarative_view\` alias"
 else
-  echo "  ❌ src/lib.rs's \`pub mod view\` no longer mentions \`widgets_unstripped\`:"
+  echo "  ❌ src/lib.rs's \`pub mod view\` does not use the \`declarative_view\` alias:"
   printf '%s\n' "$VIEW_GATE_LINE" | sed 's/^/       /'
-  echo "       On every valid single-profile build this is undetectable (see the"
-  echo "       note above), which is why it is asserted here: it is the only"
-  echo "       spelling that also excludes the invalid mixed configuration."
+  echo "       A hand-written conjunction here can drift from build.rs, so the"
+  echo "       opt-out or the stripped-profile rule would stop applying to it."
   ERRORS=$((ERRORS + 1))
 fi
 
-# The expression must also be the multi-profile one. A `feature = \"desktop\"`
-# narrowing would silently take the declarative layer away from tablet/mobile,
-# which `src/lib.rs` already fixed once for `theme`.
-if printf '%s' "$VIEW_GATE_LINE" | grep -qE 'feature = "tablet"' && \
-   printf '%s' "$VIEW_GATE_LINE" | grep -qE 'feature = "mobile"'; then
-  echo "  ✅ the gate covers all three device profiles (desktop/tablet/mobile)"
+BUILD_ALIAS="$(grep -n 'rustc-cfg=declarative_view' build.rs || true)"
+if [[ -n "$BUILD_ALIAS" ]]; then
+  echo "  ✅ build.rs defines \`declarative_view\`"
 else
-  echo "  ❌ the \`view\` gate does not list all three device profiles — a tablet or"
-  echo "     mobile build would lose the declarative layer:"
-  printf '%s\n' "$VIEW_GATE_LINE" | sed 's/^/       /'
+  echo "  ❌ build.rs does not define the \`declarative_view\` alias"
+  ERRORS=$((ERRORS + 1))
+fi
+
+# The alias must include the opt-out, or the feature would exist and do nothing.
+if grep -q 'view_opted_out' build.rs && grep -q 'no-declarative-view' Cargo.toml; then
+  echo "  ✅ the alias honours the \`no-declarative-view\` feature"
+else
+  echo "  ❌ the \`no-declarative-view\` opt-out is not wired into the alias:"
+  echo "       build.rs must read it and Cargo.toml must declare the feature"
   ERRORS=$((ERRORS + 1))
 fi
 
@@ -216,12 +223,13 @@ echo ""
 if [[ "$ERRORS" -gt 0 ]]; then
   echo "view platform gate: FAILED ($ERRORS finding(s))" >&2
   echo "" >&2
-  echo "To confirm this gate can fail (BLUE18 Phase E'-5): drop" >&2
-  echo "\`widgets_unstripped\` from the \`pub mod view\` gate in src/lib.rs and" >&2
-  echo "re-run — step [4] must report ❌ immediately." >&2
+  echo "To confirm this gate can fail (BLUE18 Phase E'-5): re-spell the \`view\` gate" >&2
+  echo "in src/lib.rs as \`all(any(desktop, tablet, mobile), widgets_unstripped)\`" >&2
+  echo "(dropping the opt-out) and re-run — step [5] must report ❌." >&2
   exit 1
 fi
 
-echo "✅ view platform gate passed: declarative layer present on"
-echo "   desktop/tablet/mobile, absent on mini/embedded and on a profile-less build,"
-echo "   and the gate expression retains its \`widgets_unstripped\` term."
+echo "✅ view platform gate passed: the declarative layer is present by default on"
+echo "   desktop/tablet/mobile, removable through \`no-declarative-view\`, and absent"
+echo "   on mini/embedded and on a profile-less build."
+

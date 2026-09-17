@@ -342,44 +342,71 @@ per profile, and it renders the same everywhere.
 - Optional per-node `class` / `css` for stylesheet-driven appearance
 - **Not exposed over the C ABI** — the loader has no generated entry point
 
-### Declarative-retained view layer (`view`, device profiles)
+### Declarative view layer (`view`, device profiles)
 
-The library is **retained**: a control is a long-lived object with an `ObjectId`, and
-mutating it is the normal way to change the UI. `view` adds the **declarative** half
-without giving that up — React, Flutter and SwiftUI are all declarative *and*
-retained; the two are orthogonal axes.
+Describe a widget tree as a function of your state, and let the library work out what
+changed.
 
 ```rust
 use rust_widgets::view::{Node, View, ViewEngine};
+use rust_widgets::widget::capability::CapabilityValue;
+
+struct Counter { count: i64 }
 
 impl View for Counter {
     fn build(&self) -> Node {
         Node::new("group_box").key("root").child(
-            Node::new("label").key("count").prop("text", /* ... */),
+            Node::new("label")
+                .key("count")
+                .prop("text", CapabilityValue::String(format!("Count: {}", self.count))),
         )
     }
 }
 
-engine.update(&state, &create);   // diffs, then applies only the differences
+let mut engine = ViewEngine::new();
+engine.mount(&state, &create);                  // build the tree
+// ...state changes...
+let report = engine.update(&state, &create);    // only the differences are applied
+assert_eq!(report.patches.len(), 1);            // one SetProperty, nothing else
 ```
 
-- `Node` — a declarative tree: a widget name, an optional `key`, properties, children
-- `diff` — pure function over two trees, producing `Patch`es (`SetProperty`, `Insert`,
-  `Remove`, `Move`, `Replace`); reports `positional_matches` so a missing `key` is
-  visible rather than silent
-- `apply` — the only place that mutates the retained tree, through the same property
-  contract the JSON loader uses
-- **Additive**: it changes no control, no `WidgetKind`, no factory, no property
-  contract. A tree can still be built by hand with `add_child`
+**Why use it.** Without it, every place that mutates state also has to reach the right
+control and know which property to set — so "what should the screen look like when
+`count == 3`" is answered nowhere in particular. With it, that question has exactly one
+answer: `build`. Updates become cheap and local: the engine diffs the new tree against the
+old one and touches only what differs, so a control's focus, scroll offset and internal
+state survive an edit to a sibling.
 
-| Profile | Declarative view layer |
+**The retained model is unchanged.** Controls are still long-lived objects with an
+`ObjectId`, `add_child` still works, and the two can be mixed. This layer adds a
+*description* of structure; it replaces nothing.
+
+**How to use it**
+
+1. Implement `View::build` — return a `Node` tree from your state. Use the same factory
+   names and property names the JSON loader uses.
+2. Give it a constructor: `Fn(&Node) -> Option<ObjectId>`, usually `WidgetFactory::create`
+   plus `runtime::register`. Injected rather than hardwired, so the layer is testable
+   **without a window**.
+3. `engine.mount(&state, &create)` once, then `engine.update(&state, &create)` whenever
+   state changes.
+4. Give list items a **`key`**. Keys are how the diff recognises the same control across
+   rebuilds; without one, matching falls back to position and a head insert shifts every
+   later node's identity onto the wrong controls. `report.positional_matches > 0` means
+   "add keys".
+
+**From reactive state** — `ReactiveHost` drives `update` from a `Binding`. Since
+`BindingListener` must be `Send` while the engine is `!Send`, the listener records the
+change on a queue and the UI thread's `pump()` does the work, so a `Binding::set` on a
+worker thread reaches a live control.
+
+| Profile | `view` |
 |---|---|
-| `desktop` / `tablet` / `mobile` | ✅ compiled — declarative and imperative may be mixed |
-| `mini` / `embedded` | ❌ **absent** — imperative `add_child` only (allocation budget + no per-frame re-evaluation caller) |
+| `desktop` / `tablet` / `mobile` | ✅ compiled **by default**; add `no-declarative-view` to leave it out |
+| `mini` / `embedded` | ❌ **absent** — `add_child` only (allocation budget + no per-frame re-evaluation caller) |
 
-`tools/check_view_platform_gate.sh` asserts both directions of that table.
-
-> **Not exposed over the C ABI** — like the JSON loader, the view layer is Rust-only.
+> Not exposed over the C ABI — Rust only, like the JSON loader.
+> Full guide: [cookbook/en/src/chapters/declarative-view.md](cookbook/en/src/chapters/declarative-view.md).
 
 > **C ABI coverage.** The C ABI (`include/rw_generated.h`, 128 `rw_*` functions)
 > covers window management, widget creation, per-widget properties and theme
@@ -413,16 +440,27 @@ Every binding under `bindings/` is checked against this list by
 `tools/check_binding_symbol_coverage.sh`, so a function added to the ABI cannot
 silently stay unreachable from a language.
 
-### Partial Refresh (opt-in, wired into the frame loop)
+### Partial Refresh (automatic, wired into the frame loop)
 - `DirtyRegionTracker` with rectangle merging, and `render_dirty_regions()` for
   clip-based partial redraw via `push_clip` / `pop_clip`
 - **Driven by `widget::runtime::RepaintMode`**: `mark_dirty_rect` records damage and
   `render_frame_incremental` repaints only the damaged regions, carrying the rest of
   the previous frame forward
-- **Opt-in, and off by default.** `RepaintMode::Full` is the default and behaves
-  exactly as before; `Dirty` repaints only damage; `Adaptive` falls back to a full
-  paint for any frame whose damage covers most of the surface, so an animation does
-  not pay for region merging it cannot benefit from
+- **Automatic: the library decides when to enable it.** At mount time a control is
+  judged by `should_track_damage`, which enables `RepaintMode::Adaptive` only where
+  regioning can pay off — a large surface, carrying more than one control, that has
+  actually asked to be repainted. A surface below `AUTO_REPAINT_MIN_PIXELS` (≈500×500)
+  or one with no children stays in `Full` and pays no bookkeeping, because for those
+  regioning costs more than it saves
+- Damage is recorded by `BaseWidget::request_redraw`, the single point every appearance
+  change converges on, so partial repaint is correct by construction rather than
+  depending on a list of mutation sites
+- `Adaptive` is self-correcting: a frame whose damage covers the surface falls back to a
+  whole paint for that frame and resumes regioning once the damage shrinks, so the
+  automatic decision can never produce a wrong frame — only bounded bookkeeping
+- The decision is observable, not a black box: `should_track_damage`,
+  `enable_damage_tracking_if_useful`, `adaptive_large_damage_run`, and
+  `set_repaint_mode` to overrule it
 
 ### Internationalization
 - `tr!()` macro for compile-time key-based translation
@@ -591,4 +629,5 @@ MIT License — see [LICENSE](LICENSE).
 ## Support
 
 - Issues: [GitHub Issues](https://github.com/mikewolfli/rust-widgets/issues)
-- Documentation: [docs/](docs/) directory
+- **Cookbook**: [cookbook/](cookbook/) — the primary documentation, in English (`cookbook/en/`),
+  Simplified Chinese (`cookbook/zh-CN/`) and Traditional Chinese (`cookbook/zh-TW/`)

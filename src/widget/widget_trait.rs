@@ -505,9 +505,24 @@ pub trait Widget: EventHandler + Any {
     fn layout_requested_signal(&self) -> &GenericSignal {
         self.base().layout_requested_signal()
     }
+    /// Whether this widget has ever asked to be repainted.
+    ///
+    /// Delegates to [`BaseWidget::has_ever_requested_redraw`]. Used by the runtime's
+    /// repaint auto-decision to leave a surface that nothing redraws in
+    /// `RepaintMode::Full` rather than making it pay for damage tracking.
+    fn has_ever_requested_redraw(&self) -> bool {
+        self.base().has_ever_requested_redraw()
+    }
     /// Requests redraw and emits redraw signal.
+    ///
+    /// Routes through [`BaseWidget::request_redraw`] rather than emitting the signal
+    /// itself, so the one place that records damage is the one place every call site
+    /// reaches. This default and the inherent method used to emit independently, which
+    /// meant `mark_widget_damage` saw only the calls that happened to name the inherent
+    /// one — partial repaint then worked or not depending on which spelling a call site
+    /// used, and no test could tell the two apart because both emitted the same signal.
     fn request_redraw(&self) {
-        self.redraw_requested_signal().emit();
+        self.base().request_redraw();
     }
     /// Requests layout and emits layout signal.
     fn request_layout(&self) {

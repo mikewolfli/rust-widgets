@@ -134,6 +134,29 @@ mini = [
 ]
 
 
+# ── Axis 3: CAPABILITY OPT-OUTS ──
+
+## Turn off the declarative view layer on a device profile.
+##
+## `rust_widgets::view` (the declarative-retained view layer) is **compiled by
+## default** on `desktop`, `tablet` and `mobile`. It is never compiled on `mini`
+## or `embedded`, which is a property of those profiles rather than a choice.
+##
+## Enabling this feature takes `crate::view` out of a device build. Use it when
+## the layer's cost is not wanted — a headless tool, a size-constrained device
+## build, or a program that only ever uses `add_child`:
+##
+##   cargo build --no-default-features --features desktop,no-declarative-view
+##
+## `tools/check_view_platform_gate.sh` asserts both states: the layer is present
+## by default and absent when this feature is on.
+##
+## NOTE: the feature is deliberately *opt-out* rather than an `declarative-view`
+## opt-in. A Cargo feature list cannot express "on unless named", so an opt-in
+## spelling would require every existing caller to add a feature to keep working —
+## a breaking change for a capability that is on today.
+no-declarative-view = []
+
 # ── Axis 2: OS BACKENDS (composable; `os-auto` picks by target_os) ──
 
 os-auto = []

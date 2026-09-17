@@ -55,6 +55,36 @@ ALL_TARGETS=("$PRIMARY" "${LINKABLE[@]}" "$BUILD_STD_ONLY")
 if [[ -z "${OHOS_SDK_NATIVE:-}" && -n "${OHOS_SDK:-}" && -d "${OHOS_SDK}/native" ]]; then
     OHOS_SDK_NATIVE="${OHOS_SDK}/native"
 fi
+
+# # Why `HOS_SDK_HOME` and the DevEco path are also accepted
+#
+# DevEco Studio exports `HOS_SDK_HOME` pointing at the SDK **root**, not
+# `OHOS_SDK`/`OHOS_SDK_NATIVE` — so on a machine with a complete, working
+# OpenHarmony toolchain this gate reported "OHOS_SDK_NATIVE is unset" and exited 2.
+# That reads as "no SDK" when the SDK is present and the cross target links, which
+# is the misreport the `export` fix above already had to correct once for a
+# different variable name. The SDK root may also hold several API levels
+# (`Sdk/18`, `Sdk/20`, …), so the newest one containing a `native/llvm` is chosen
+# rather than assuming a single version.
+#
+# Only consulted when `OHOS_SDK_NATIVE` is genuinely unset, so an explicit setting
+# always wins.
+if [[ -z "${OHOS_SDK_NATIVE:-}" ]]; then
+    for root in "${HOS_SDK_HOME:-}" "$HOME/Library/OpenHarmony/Sdk" \
+                "$HOME/OpenHarmony/Sdk" /opt/OpenHarmony/Sdk; do
+        [[ -n "$root" && -d "$root" ]] || continue
+        # A root that *is* the native dir, or the newest API level inside it.
+        if [[ -d "$root/native/llvm" ]]; then
+            OHOS_SDK_NATIVE="$root/native"
+            break
+        fi
+        candidate="$(find "$root" -maxdepth 2 -type d -name native 2>/dev/null | sort -V | tail -1)"
+        if [[ -n "$candidate" && -d "$candidate/llvm" ]]; then
+            OHOS_SDK_NATIVE="$candidate"
+            break
+        fi
+    done
+fi
 export OHOS_SDK_NATIVE
 
 if ! rustup target list --installed 2>/dev/null | grep -q "^${PRIMARY}$"; then
