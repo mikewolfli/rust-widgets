@@ -48,6 +48,7 @@ lcov.info
 coverage/
 demo/control/target
 demo/code_editor/target
+demo/finance/target
 
 # Test outputs
 **/test_output/
