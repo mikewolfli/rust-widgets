@@ -235,7 +235,7 @@ use rust_widgets::style::stylesheet::{global_stylesheet_manager, StyleSheetManag
 
 ## `CssWatcher` — Hot-Reload CSS Files
 
-Poll-based file watcher that automatically reloads CSS into the global `StyleSheetManager` when the file changes:
+Poll-based file watcher that automatically reloads CSS into the global `StyleSheetManager` when the file changes. Reloading registers the sheet by **name**, so a reload replaces the previous rules rather than stacking a second copy.
 
 ```rust
 use rust_widgets::style::css_watcher::CssWatcher;
@@ -247,7 +247,7 @@ watcher.set_poll_interval(500);  // check every 500ms (default)
 loop {
     match watcher.poll() {
         Ok(true)  => println!("CSS reloaded — styles updated!"),
-        Ok(false) => { /* no change */ }
+        Ok(false) => { /* no change, or the file does not exist yet */ }
         Err(e)    => eprintln!("CSS watch error: {}", e),
     }
 
@@ -255,10 +255,17 @@ loop {
 
     std::thread::sleep(std::time::Duration::from_millis(16));
 }
+```
 
-// Force reload regardless of modification time
+`poll()` returns `Ok(false)` for an absent file rather than an error, so a watcher may be started before a generated stylesheet has been written. `reload()` forces a load regardless of modification time:
+
+```rust
+# use rust_widgets::style::css_watcher::CssWatcher;
+# let mut watcher = CssWatcher::new("theme.css", "main-theme");
 watcher.reload()?;
 ```
+
+A stylesheet that does not parse is reported and **not** registered, so a broken edit cannot replace a working stylesheet.
 
 ---
 
@@ -642,6 +649,44 @@ manager.register_theme(dark);
 manager.set_theme("dark");
 ```
 
+### Theme Files
+
+The built-in presets are checked in as JSON, which doubles as the format reference:
+
+```text
+themes/default.json   the light preset
+ themes/dark.json      the dark preset
+themes/generate.sh    regenerates both from the presets
+```
+
+Load one, optionally activating it in the same call:
+
+```rust
+use rust_widgets::theme::ThemeManager;
+
+let mut manager = ThemeManager::new();
+
+// Register only — the active theme is unchanged. Use this to pre-load a library
+// of themes and switch later.
+manager.load_theme("themes/default.json")?;
+
+// Register *and* activate, returning the name recorded in the file.
+let activated = manager.load_and_activate_theme("themes/dark.json")?;
+assert_eq!(activated, "dark");
+```
+
+Activation is by the name **inside** the file, not the file name, so a file may be called anything.
+
+Save the active theme back out:
+
+```rust
+# use rust_widgets::theme::ThemeManager;
+# let manager = ThemeManager::new();
+manager.save_theme("exported_theme.json")?;
+```
+
+Save and load are inverses, and the shipped fixtures are **generated** through `save_theme` rather than hand-written, so the files cannot describe a schema the code does not have. `tools/check_theme_fixtures.sh` fails if a checked-in fixture no longer round-trips or no longer matches what regeneration produces.
+
 ---
 
 ## `ThemeStateManager` — Light/Dark/Auto Mode
@@ -753,7 +798,7 @@ stateful_theme.set_transition(WidgetState::Normal, WidgetState::Pressed, 50);  /
 
 ## `HighContrastMode`
 
-Overrides all colors for accessibility:
+Forces a background/foreground pair across every resolved style:
 
 ```rust
 pub enum HighContrastMode {
@@ -764,7 +809,31 @@ pub enum HighContrastMode {
 }
 ```
 
-When a `HighContrastMode` other than `None` is active, theme color resolution ignores the theme palette and uses the forced foreground/background.
+Set it on a manager, or process-wide:
+
+```rust
+use rust_widgets::style::HighContrastMode;
+use rust_widgets::theme::{global_theme_manager, set_global_high_contrast};
+
+// Per-manager (an isolated preview):
+global_theme_manager().set_high_contrast(HighContrastMode::WhiteOnBlack);
+
+// Process-wide, for the whole application:
+set_global_high_contrast(HighContrastMode::BlackOnWhite);
+```
+
+While a mode is active, resolution replaces the background and text colour with the forced pair and clears any gradient (a gradient would defeat a flat pair). It is applied **last**, so neither a theme override nor a `:hover` state can reintroduce a low-contrast colour. Everything else — fonts, spacing, borders, radius — resolves normally, so a forced palette does not flatten the layout.
+
+The override lives on the manager rather than on a theme, so switching from light to dark does not silently drop it.
+
+`Custom` accepts any pair. To check one meets your accessibility target, measure it:
+
+```rust
+# use rust_widgets::style::HighContrastMode;
+# use rust_widgets::core::Color;
+let mode = HighContrastMode::Custom { fg: Color::BLACK, bg: Color::WHITE };
+assert!(mode.contrast_ratio().expect("a forced pair") >= 4.5);  // WCAG AA, normal text
+```
 
 ---
 

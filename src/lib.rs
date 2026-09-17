@@ -98,7 +98,13 @@ pub mod style;
 /// Test infrastructure and utilities.
 pub mod test;
 /// Desktop-only: Theme management.
-#[cfg(feature = "desktop")]
+///
+/// Gated on the device profiles rather than on `desktop` alone: a theme is part
+/// of the style resolution chain that the declarative JSON engine
+/// (`crate::json`, itself available on `desktop`/`tablet`/`mobile`) consults, so a
+/// tablet or mobile build must have it too. Gating on `desktop` was wrong and only
+/// showed up when `tablet` was built with the JSON engine enabled.
+#[cfg(any(feature = "desktop", feature = "tablet", feature = "mobile"))]
 pub mod theme;
 /// Undo/Redo framework for undoable commands and cross-widget undo/redo.
 pub mod undo;

@@ -987,6 +987,10 @@ pub fn default_widget_property_default_value(
         WidgetKind::Icon => match property_name {
             "icon_name" => CapabilityValue::String(String::new()),
             "size" => CapabilityValue::Float(24.0),
+            // An icon with no explicit colour follows the theme, so the schema
+            // default is the empty string rather than a colour literal: "unset" is
+            // the honest default, and `Icon::color` resolves what will be drawn.
+            "color" => CapabilityValue::String(String::new()),
             _ => return None,
         },
         WidgetKind::DropdownMenu => match property_name {

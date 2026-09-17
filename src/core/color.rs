@@ -353,12 +353,51 @@ impl Color {
     pub fn is_light(&self) -> bool {
         !self.is_dark()
     }
+    /// Returns the sRGB relative luminance, in `0.0..=1.0`, as WCAG 2.x defines it.
+    ///
+    /// Linearises each channel before weighting, so the result tracks perceived
+    /// brightness rather than the raw byte average. This is the figure a contrast
+    /// decision must use: [`Color::luminance`] uses the older Rec. 601 weights on
+    /// *gamma-encoded* values, which is cheaper but answers a different question.
+    /// The two disagree about which foreground is legible for a substantial band of
+    /// colours (notably saturated blues), so contrast decisions must all go through
+    /// this method or [`Color::contrast_color`].
+    pub fn relative_luminance(&self) -> f32 {
+        fn linearise(raw: u8) -> f32 {
+            let c = raw as f32 / 255.0;
+            if c <= 0.039_28 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        }
+        0.2126 * linearise(self.r) + 0.7152 * linearise(self.g) + 0.0722 * linearise(self.b)
+    }
+
+    /// Returns the WCAG contrast ratio between this colour and `other`, in
+    /// `1.0..=21.0`.
+    ///
+    /// WCAG's AA threshold for normal text is 4.5 and for large text 3.0. Exposed
+    /// so a caller can assert a pairing rather than rely on it by construction,
+    /// which is what [`Color::contrast_color`] alone cannot express.
+    pub fn contrast_ratio(&self, other: Self) -> f32 {
+        let (a, b) = (self.relative_luminance(), other.relative_luminance());
+        let (lighter, darker) = if a >= b { (a, b) } else { (b, a) };
+        (lighter + 0.05) / (darker + 0.05)
+    }
+
     /// Creates a contrasting color (black for light colors, white for dark colors).
+    ///
+    /// The choice is made on [`Color::relative_luminance`] against the WCAG 2.x
+    /// threshold of 0.179, which is where white and black text reach the same
+    /// contrast ratio against a mid-tone background. Deciding on the Rec. 601
+    /// `luminance` instead picks the *less* legible option for saturated colours,
+    /// so this method deliberately does not use it.
     pub fn contrast_color(&self) -> Self {
-        if self.is_dark() {
-            Self::WHITE
-        } else {
+        if self.relative_luminance() > 0.179 {
             Self::BLACK
+        } else {
+            Self::WHITE
         }
     }
     /// Returns the inverted color (RGB channels negated, alpha preserved).
@@ -506,6 +545,35 @@ mod tests {
         assert_eq!(black.contrast_color(), Color::WHITE);
         assert_eq!(white.contrast_color(), Color::BLACK);
         assert_eq!(gray.contrast_color(), Color::BLACK);
+
+        // WCAG relative luminance is the figure contrast decisions use: black is 0
+        // and white is 1 by definition, and the two extremes are 21:1 apart.
+        assert_eq!(black.relative_luminance(), 0.0);
+        assert!((white.relative_luminance() - 1.0).abs() < 1e-6);
+        assert!((black.contrast_ratio(white) - 21.0).abs() < 1e-3);
+        assert!((white.contrast_ratio(white) - 1.0).abs() < 1e-6);
+        // Symmetric, so argument order never matters.
+        assert_eq!(red.contrast_ratio(white), white.contrast_ratio(red));
+        // WCAG AA for normal text is 4.5:1.
+        assert!(black.contrast_ratio(white) >= 4.5);
+
+        // A saturated blue is a colour where the two luminance models disagree, so
+        // it pins that contrast decisions follow WCAG. `Color::is_dark` uses Rec.
+        // 601 on gamma-encoded bytes and calls this colour *dark* (so the old
+        // `contrast_color` picked white); WCAG's relative luminance puts it above
+        // the 0.179 threshold, so the legible choice is black.
+        let saturated_blue = Color::rgb(0, 121, 220);
+        assert!(saturated_blue.is_dark(), "Rec. 601 sees this as dark");
+        assert!(
+            saturated_blue.relative_luminance() > 0.179,
+            "WCAG sees this as light; contrast_color must therefore pick black"
+        );
+        assert_eq!(saturated_blue.contrast_color(), Color::BLACK);
+        assert!(
+            saturated_blue.contrast_ratio(Color::BLACK)
+                > saturated_blue.contrast_ratio(Color::WHITE),
+            "black must genuinely be the more legible of the two on this colour"
+        );
 
         assert!(red.is_dark());
         // Pure green (0,255,0) has luminance=0.587 > 0.5, so it's light by standard formula

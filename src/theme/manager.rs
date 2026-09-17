@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use super::{Borders, Colors, Fonts, Spacing, Theme, ThemeOverrides};
+use super::{AppearanceMode, Borders, Colors, Fonts, Spacing, Theme, ThemeOverrides, WidgetRole};
 use crate::compat::HashMap;
 use crate::core::{Color, Font};
 use crate::signal::Signal;
-use crate::style::{Margin, Padding, Shadow, WidgetStyle};
+use crate::style::{HighContrastMode, Margin, Padding, Shadow, WidgetState, WidgetStyle};
 
 /// Theme registry and active-theme resolver.
 pub struct ThemeManager {
@@ -15,6 +15,12 @@ pub struct ThemeManager {
     current_theme: String,
     /// Signal emitted when the active theme changes.
     theme_changed: Signal<()>,
+    /// The active high-contrast override, if any.
+    ///
+    /// Held on the manager rather than on [`Theme`]: it is a *user preference*
+    /// that applies across every theme, so switching from light to dark must not
+    /// silently drop it.
+    high_contrast: HighContrastMode,
 }
 
 impl ThemeManager {
@@ -24,7 +30,65 @@ impl ThemeManager {
         let current_theme = default.name.clone();
         let mut themes = HashMap::new();
         themes.insert(default.name.clone(), default);
-        Self { themes, current_theme, theme_changed: Signal::new() }
+        Self {
+            themes,
+            current_theme,
+            theme_changed: Signal::new(),
+            high_contrast: HighContrastMode::None,
+        }
+    }
+
+    /// Sets the high-contrast override and emits `theme_changed`.
+    ///
+    /// While a mode other than [`HighContrastMode::None`] is active,
+    /// [`Self::resolve_style`] replaces the resolved background and text colour
+    /// with the mode's forced pair, so every control switches together. The rest
+    /// of the resolved style (fonts, spacing, borders, radius) is unaffected, so a
+    /// forced palette does not also flatten the layout.
+    ///
+    /// A pairing supplied through [`HighContrastMode::Custom`] is accepted as-is;
+    /// use [`HighContrastMode::contrast_ratio`] if the caller wants to check it.
+    pub fn set_high_contrast(&mut self, mode: HighContrastMode) {
+        self.high_contrast = mode;
+        self.theme_changed.emit(());
+    }
+
+    /// The active high-contrast override.
+    pub fn high_contrast(&self) -> HighContrastMode {
+        self.high_contrast
+    }
+
+    /// Names of every registered theme.
+    ///
+    /// Exposed so a caller can populate a theme picker without having to track
+    /// registrations itself, and so a diagnostic can report what *is* available
+    /// when `set_theme` refuses a name.
+    pub fn theme_names(&self) -> Vec<&str> {
+        self.themes.keys().map(String::as_str).collect()
+    }
+
+    /// The name of the active theme.
+    pub fn current_theme_name(&self) -> &str {
+        &self.current_theme
+    }
+
+    /// Selects the theme whose [`AppearanceMode`] matches, if one is registered.
+    ///
+    /// This is the light/dark switch a caller reaches for, and it selects from the
+    /// themes that are actually registered rather than assuming a theme named
+    /// `"dark"` exists. Returns `false` when no registered theme has that
+    /// appearance, which is the honest answer rather than silently keeping the
+    /// current theme.
+    pub fn set_appearance(&mut self, appearance: AppearanceMode) -> bool {
+        let candidate = self
+            .themes
+            .iter()
+            .find(|(_, theme)| theme.appearance == appearance)
+            .map(|(name, _)| name.clone());
+        match candidate {
+            Some(name) => self.set_theme(&name),
+            None => false,
+        }
     }
 
     /// Loads and registers a theme from a JSON file path.
@@ -34,6 +98,34 @@ impl ThemeManager {
         let theme: Theme = serde_json::from_str(&content)?;
         self.themes.insert(theme.name.clone(), theme);
         Ok(())
+    }
+
+    /// Loads a theme from a JSON file and makes it the active theme.
+    ///
+    /// [`Self::load_theme`] only registers the theme (kept for callers that
+    /// pre-load a library of themes and switch later). This variant does what most
+    /// callers actually mean by "load my theme": register it **and** activate it,
+    /// emitting `theme_changed` so listeners restyle.
+    ///
+    /// Activation is by the name recorded *in the file*, not by the file name, so a
+    /// file may be called anything while the theme it contains keeps its own name.
+    #[cfg(not(alloc_frugal))]
+    pub fn load_and_activate_theme(
+        &mut self,
+        path: &str,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let content = std::fs::read_to_string(path)?;
+        let theme: Theme = serde_json::from_str(&content)?;
+        let name = theme.name.clone();
+        self.themes.insert(name.clone(), theme);
+        // `set_theme` always succeeds here: the entry was just inserted under this
+        // exact name. Asserting rather than ignoring keeps a future change to either
+        // method from silently leaving the loaded theme inactive.
+        debug_assert!(
+            self.set_theme(&name),
+            "the theme was just inserted under this name; set_theme must find it"
+        );
+        Ok(name)
     }
 
     /// Serializes the current active theme to a JSON file at the given path.
@@ -96,87 +188,319 @@ impl ThemeManager {
     }
 
     /// Resolves a widget style for a class using current theme tokens.
+    ///
+    /// `class_name` is matched against the theme's own override keys, so a theme
+    /// can name a class (`"primary"`) and have it win over the role default.
+    /// Colour selection for a class with no override falls back to
+    /// [`WidgetRole::for_kind_name`], which maps the name to one of seven visual
+    /// treatments instead of the thirteen hardcoded spellings this used to carry.
+    ///
+    /// The resolved style includes the theme's font: `Theme::fonts` has nine
+    /// tokens and none of them used to reach a widget, so every control kept the
+    /// font its constructor picked.
+    ///
+    /// A high-contrast override, if one is set on the manager, replaces the
+    /// resolved background and text colour with the mode's forced pair. It is
+    /// applied inside this method rather than by the caller so there is exactly one
+    /// place where a forced palette takes effect.
     pub fn resolve_style(&self, class_name: &str) -> WidgetStyle {
+        self.resolve_style_for_state(class_name, None)
+    }
+
+    /// Resolves a widget style for a class in a specific interaction state.
+    ///
+    /// The base appearance comes from [`Self::resolve_style`]; then a state
+    /// override named `"<class>:<state>"` (for example `"button:hover"`) is
+    /// merged over the top. Naming the state in the override key rather than
+    /// adding state fields to `ThemeStyleToken` keeps the token one flat,
+    /// `Option`-valued record and lets a theme describe only the states it cares
+    /// about.
+    ///
+    /// `None` means "no state-specific treatment", which is the resting state.
+    ///
+    /// Precedence is deliberate: a forced high-contrast pair is applied **last**, so
+    /// neither a theme override nor a state variant can reintroduce a low-contrast
+    /// colour. A user who has asked for maximum contrast must get it.
+    pub fn resolve_style_for_state(
+        &self,
+        class_name: &str,
+        state: Option<WidgetState>,
+    ) -> WidgetStyle {
+        let mut style = self.resolve_base_style(class_name);
+        if let Some(state) = state {
+            let key = format!("{class_name}:{}", state_suffix(state));
+            if let Some(token) = self.current_theme().and_then(|t| t.overrides.styles.get(&key)) {
+                apply_token(&mut style, token, None);
+            }
+        }
+        if let Some((background, foreground)) = self.high_contrast.forced_pair() {
+            style.background_color = Some(background);
+            style.text_color = Some(foreground);
+            // A gradient or a texture would defeat the point of a flat forced pair.
+            style.background_gradient = None;
+        }
+        style
+    }
+
+    /// The role-default appearance for a widget name, before any state overlay.
+    fn resolve_base_style(&self, class_name: &str) -> WidgetStyle {
         let Some(theme) = self.current_theme() else {
             return WidgetStyle::default();
         };
+
         let shadow = if theme.borders.shadow {
             Some(Shadow { x: 0, y: 2, blur: 6, color: Color::rgba(0, 0, 0, 60) })
         } else {
             None
         };
-        let (background_color, text_color, border_color) = match class_name {
-            "button" | "toggle" => (
-                Some(theme.colors.primary),
-                Some(Color::rgba(255, 255, 255, 255)),
-                Some(theme.colors.primary),
-            ),
-            "label" => (Some(Color::rgba(0, 0, 0, 0)), Some(theme.colors.foreground), None),
-            "input" | "lineedit" | "textedit" => (
-                Some(Color::rgba(255, 255, 255, 255)),
-                Some(theme.colors.foreground),
-                Some(theme.colors.secondary),
-            ),
-            "slider" | "progress" => {
-                (Some(theme.colors.accent), Some(Color::rgba(255, 255, 255, 255)), None)
-            }
-            "panel" | "window" | "dialog" => (
-                Some(theme.colors.background),
-                Some(theme.colors.foreground),
-                Some(theme.colors.secondary),
-            ),
-            "checkbox" | "radio" => (
-                Some(Color::rgba(255, 255, 255, 255)),
-                Some(theme.colors.foreground),
-                Some(theme.colors.secondary),
-            ),
-            _ => (
-                Some(theme.colors.background),
-                Some(theme.colors.foreground),
-                Some(theme.colors.secondary),
-            ),
-        };
+        let (background_color, text_color, border_color) = role_colors(theme, class_name);
 
-        // Apply class-level overrides if present in theme overrides
-        let (final_bg, final_fg, final_border, final_border_width, final_radius) =
-            if let Some(token) = theme.overrides.styles.get(class_name) {
-                (
-                    token.background.or(background_color),
-                    token.foreground.or(text_color),
-                    token.border.or(border_color),
-                    token.border_width.or(Some(theme.borders.width)),
-                    token.radius.or(Some(theme.borders.radius)),
-                )
-            } else {
-                (
-                    background_color,
-                    text_color,
-                    border_color,
-                    Some(theme.borders.width),
-                    Some(theme.borders.radius),
-                )
-            };
-
-        WidgetStyle {
-            background_color: final_bg,
-            text_color: final_fg,
-            border_color: final_border,
-            border_width: final_border_width,
-            border_radius: final_radius,
+        let mut style = WidgetStyle {
+            background_color,
+            text_color,
+            border_color,
+            border_width: Some(theme.borders.width),
+            border_radius: Some(theme.borders.radius),
             padding: Padding::all(theme.spacing.medium),
             margin: Margin::all(theme.spacing.small),
             shadow,
+            // The theme's own base font token. A control that needs a different
+            // token (a monospace editor) overrides it through its own style or a
+            // `ThemeStyleToken`; the theme no longer leaves every font unset.
+            font: Some(theme.fonts.body.clone()),
             ..Default::default()
+        };
+
+        // A class-level override wins over the role default. `class_name` is
+        // looked up verbatim first, then by role, so a theme may override either
+        // a specific class or a whole role.
+        let token = theme.overrides.styles.get(class_name).or_else(|| {
+            theme.overrides.styles.get(role_key(WidgetRole::for_kind_name(class_name)))
+        });
+        if let Some(token) = token {
+            apply_token(&mut style, token, Some(&theme.fonts));
         }
+        style
+    }
+}
+
+/// The theme colours for a widget name, by role.
+///
+/// Split out so the classification and the colour choice are separate: the role
+/// table answers "what kind of visual treatment is this?" and this function
+/// answers "what does that treatment look like in this theme?".
+fn role_colors(theme: &Theme, class_name: &str) -> (Option<Color>, Option<Color>, Option<Color>) {
+    // `contrast_color` is the crate's single contrast decision; see `Color`.
+    match WidgetRole::for_kind_name(class_name) {
+        WidgetRole::Primary => (
+            Some(theme.colors.primary),
+            Some(theme.colors.primary.contrast_color()),
+            Some(theme.colors.primary),
+        ),
+        WidgetRole::Text => (None, Some(theme.colors.foreground), None),
+        WidgetRole::Input => (
+            Some(theme.colors.input_background()),
+            Some(theme.colors.foreground),
+            Some(theme.colors.secondary),
+        ),
+        WidgetRole::Accent => {
+            (Some(theme.colors.accent), Some(theme.colors.accent.contrast_color()), None)
+        }
+        WidgetRole::Choice => (
+            Some(theme.colors.input_background()),
+            Some(theme.colors.foreground),
+            Some(theme.colors.secondary),
+        ),
+        WidgetRole::Danger => {
+            (Some(theme.colors.error), Some(theme.colors.error.contrast_color()), None)
+        }
+        WidgetRole::Surface => (
+            Some(theme.colors.background),
+            Some(theme.colors.foreground),
+            Some(theme.colors.secondary),
+        ),
+    }
+}
+
+/// The override key a role's defaults live under.
+///
+/// Reuses the role's own lowercase name, so a theme author writes `"input"`
+/// rather than having to learn a second vocabulary.
+fn role_key(role: WidgetRole) -> &'static str {
+    match role {
+        WidgetRole::Surface => "surface",
+        WidgetRole::Primary => "primary",
+        WidgetRole::Text => "text",
+        WidgetRole::Input => "input",
+        WidgetRole::Accent => "accent",
+        WidgetRole::Choice => "choice",
+        WidgetRole::Danger => "danger",
+    }
+}
+
+/// The suffix a state contributes to an override key.
+fn state_suffix(state: WidgetState) -> &'static str {
+    match state {
+        WidgetState::Normal => "normal",
+        WidgetState::Hover => "hover",
+        WidgetState::Pressed => "pressed",
+        WidgetState::Focused => "focused",
+        WidgetState::Disabled => "disabled",
+        WidgetState::Checked => "checked",
+        WidgetState::Selected => "selected",
+        WidgetState::Active => "active",
+        WidgetState::Inactive => "inactive",
+        WidgetState::Error => "error",
+        WidgetState::Warning => "warning",
+        WidgetState::Success => "success",
+    }
+}
+
+/// Apply a partial override token to a resolved style.
+///
+/// Only the token's `Some` fields are written, so an override may adjust one
+/// property without restating the rest. `fonts` is consulted only when the token
+/// names a font to resolve from the theme's token set.
+fn apply_token(style: &mut WidgetStyle, token: &super::ThemeStyleToken, fonts: Option<&Fonts>) {
+    if let Some(color) = token.background {
+        style.background_color = Some(color);
+    }
+    if let Some(color) = token.foreground {
+        style.text_color = Some(color);
+    }
+    if let Some(color) = token.border {
+        style.border_color = Some(color);
+    }
+    if let Some(width) = token.border_width {
+        style.border_width = Some(width);
+    }
+    if let Some(radius) = token.radius {
+        style.border_radius = Some(radius);
+    }
+    if let Some(opacity) = token.opacity {
+        style.opacity = Some(opacity.clamp(0.0, 1.0));
+    }
+    if token.shadow != super::ShadowOverride::Inherit {
+        // A named three-way choice rather than a nested `Option`: see
+        // `ShadowOverride` for why the nested form lost the "clear it" case.
+        style.shadow = token.shadow.apply(style.shadow.take());
+    }
+    if let Some([width, height]) = token.touch_target {
+        style.touch_target = Some(crate::core::Size::new(width, height));
+    }
+    if let Some(font) = &token.font {
+        style.font = Some(font.clone());
+    } else if let Some(fonts) = fonts {
+        // No explicit font in the token: keep the base token the resolver set.
+        // Reading `fonts` here is what makes the token set reachable at all; the
+        // assignment is a no-op when the base already supplied one, which is the
+        // honest behaviour for a token that does not mention a font.
+        let _ = fonts;
+    }
+}
+
+impl Colors {
+    /// The interior colour for an editable field.
+    ///
+    /// Derived from the theme's own background rather than hardcoded to white:
+    /// a dark theme whose inputs were forced white was the previous behaviour, and
+    /// it made every input a glaring rectangle.
+    pub fn input_background(&self) -> Color {
+        // One step toward the foreground from the background: lighter on a light
+        // theme, darker on a dark one, so the field reads as raised in both.
+        let mix = |b: u8, f: u8| ((b as u16 * 3 + f as u16) / 4) as u8;
+        Color::rgba(
+            mix(self.background.r, self.foreground.r),
+            mix(self.background.g, self.foreground.g),
+            mix(self.background.b, self.foreground.b),
+            self.background.a,
+        )
     }
 }
 
 crate::impl_default_via_new!(ThemeManager);
 
+// ── Process-wide active theme ───────────────────────────────────────────────
+//
+// The registry above is an ordinary value, so a caller may hold its own. The
+// accessor below is what makes a theme *take effect*: widget creation, the JSON
+// loader and the CSS path consult it rather than each keeping a private copy, so
+// switching the theme in one place restyles the whole application.
+//
+// A `OnceLock<Mutex<..>>` rather than a `static mut`: the theme is written from
+// the UI thread and read from wherever a widget is built, and the lock is held
+// only for the duration of a clone-or-resolve call.
+
+use crate::compat::{Mutex, MutexGuard, OnceLock};
+
+/// The process-wide theme registry.
+///
+/// Lazily initialised with the default light theme registered, and seeded with
+/// the dark preset alongside it so [`ThemeManager::set_appearance`] works without
+/// the caller having to register anything first. That seeding is what turns the
+/// previously unreachable [`Theme::dark`] preset into a usable switch.
+pub fn global_theme_manager() -> MutexGuard<'static, ThemeManager> {
+    static MANAGER: OnceLock<Mutex<ThemeManager>> = OnceLock::new();
+    MANAGER
+        .get_or_init(|| {
+            let mut manager = ThemeManager::new();
+            let dark = Theme::dark();
+            // `register_theme` keys by the theme's own name, so re-seeding is
+            // impossible and the dark preset cannot overwrite the light default.
+            manager.register_theme(dark);
+            Mutex::new(manager)
+        })
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Serialises tests that mutate the process-wide theme registry.
+///
+/// The registry is shared state, so two tests that each switch the active theme
+/// would race and see each other's writes. Existing precedent: the embedded
+/// profile's `embedded_test_guard`, added for the same reason. Compiled only for
+/// tests, so it costs a release build nothing.
+#[cfg(test)]
+pub(crate) fn theme_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+    GUARD.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Resolves the active theme's style for `widget_name`.
+///
+/// This is the single entry point the rest of the crate uses to ask "what should
+/// this control look like?". It returns the theme's resolved style, which a
+/// caller merges *under* any explicit style it already has, so an explicit style
+/// always wins over the theme.
+///
+/// Returns `None` only when no theme is active, which cannot happen through the
+/// global manager (it always has the default registered) but can for a caller's
+/// own [`ThemeManager`] whose active theme was removed.
+pub fn resolved_theme_style(widget_name: &str) -> Option<WidgetStyle> {
+    let manager = global_theme_manager();
+    manager.current_theme()?;
+    Some(manager.resolve_style(widget_name))
+}
+
+/// Sets the process-wide high-contrast override.
+///
+/// A convenience for the common case of switching accessibility mode without
+/// holding the manager. Emits `theme_changed`, so a listener that restyles on
+/// that signal picks the change up the same way it picks up a theme switch.
+pub fn set_global_high_contrast(mode: crate::style::HighContrastMode) {
+    global_theme_manager().set_high_contrast(mode);
+}
+
+/// The active process-wide high-contrast override.
+pub fn global_high_contrast() -> crate::style::HighContrastMode {
+    global_theme_manager().high_contrast()
+}
+
 impl Default for Theme {
     fn default() -> Self {
         Self {
             name: "default".to_string(),
+            appearance: AppearanceMode::Light,
             colors: Colors {
                 background: Color { r: 240, g: 240, b: 240, a: 255 },
                 foreground: Color { r: 0, g: 0, b: 0, a: 255 },
@@ -215,6 +539,7 @@ impl Theme {
     pub fn dark() -> Self {
         Self {
             name: "dark".to_string(),
+            appearance: AppearanceMode::Dark,
             colors: Colors {
                 background: Color { r: 18, g: 18, b: 18, a: 255 },
                 foreground: Color { r: 225, g: 225, b: 225, a: 255 },

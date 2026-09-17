@@ -263,7 +263,10 @@ SIMPLE_RENAMES = [
     ("PoolAllocator", "ObjectPool<T> / SharedPool<T> / PoolManager"),
     ("WebPlugin", "Plugin"),
     ("CssEngine", "CssParser"),
-    ("CssWatcher", "AssetWatcher (crate::asset::watcher)"),
+    # `CssWatcher` was listed here while it did not exist. It now does
+    # (`crate::style::css_watcher::CssWatcher`), so the rename is removed: keeping it
+    # would rewrite a real name into a different type and hide the fact that the
+    # documentation and the code finally agree.
     ("VirtualKeyboardController", "Keyboard (widget::input_widgets::keyboard)"),
 ]
 

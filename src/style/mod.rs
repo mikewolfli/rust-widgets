@@ -9,8 +9,8 @@
 //! 1. [`primitives`](crate::style::primitives) — the value types (colour, padding,
 //!    margin, font) that the rest of the system is built from. No resolution logic.
 //! 2. [`theme`](crate::style::theme) and [`theme_state`](crate::style::theme_state)
-//!    — the base appearance: global theme defaults, per-class overrides, and
-//!    per-widget state variants.
+//!    — the interaction-state model: which states a control can be in, and the
+//!    per-state appearance and light/dark preference that select a theme.
 //! 3. [`selector`](crate::style::selector), [`css`](crate::style::css), and
 //!    [`stylesheet`](crate::style::stylesheet) — declarative matching. A selector
 //!    decides *whether* a rule applies to a widget, and CSS text is parsed into
@@ -19,17 +19,31 @@
 //!    / [`animation_group`](crate::style::animation_group) — appearance values that
 //!    vary over position and time rather than being constants.
 //!
-//! Inheritance runs theme → per-class overrides → per-widget state, each level
-//! falling through to the next when unset; see the chain note below.
+//! # Resolution order
+//!
+//! A widget's appearance is resolved by *merging* successive layers, each of which
+//! only fills in what the layer before it left unset. The order is:
+//!
+//! 1. **Theme** — `crate::theme::resolved_theme_style`, the base palette, fonts and
+//!    metrics. This is the only layer that can supply a font.
+//! 2. **Registered stylesheets** — `StyleSheetManager::apply_to`, app-wide CSS in
+//!    priority order.
+//! 3. **Inline declarations** — a node's own CSS text (`Widget::apply_css`) and then
+//!    its explicit style keys.
+//!
+//! Each step is one call to `WidgetStyle::merge`, which cannot overwrite a value
+//! an earlier (more specific) layer already set. `crate::json` performs exactly this
+//! sequence; see `json::loader::apply_declared_styles`.
 /// Time-varying style values: a styled property that is evaluated at a point in
 /// time rather than being a constant.
 pub mod animation;
 /// Groups of animations advanced and driven as a unit, for coordinating several
 /// timelines under one play/pause/seek call.
-/// Groups of animations advanced and driven as a unit, for coordinating several
-/// timelines under one play/pause/seek call.
 pub mod animation_group;
 pub mod css;
+/// Poll-based CSS file watcher that reloads a stylesheet into the global
+/// [`stylesheet::StyleSheetManager`] when the file changes.
+pub mod css_watcher;
 /// Position-varying colour ramps, used where a constant colour would be a
 /// special case of a gradient.
 pub mod gradient;
@@ -44,23 +58,16 @@ pub mod theme;
 /// look different when hovered, pressed, focused, or disabled.
 pub mod theme_state;
 
-// ── Style Inheritance Chain (BLUE11 R6.6) ──
-//
-// Widget style resolution follows this inheritance chain:
-//
-// 1. Global Theme defaults (ThemeManager → Theme)
-// 2. ThemeOverrides per widget class (e.g., "Button", "Label")
-// 3. Widget instance state (StatefulTheme → WidgetState)
-// 4. Inline style overrides (future)
-//
-// The ThemeManager resolves: Theme → ThemeOverrides → WidgetState
-// Each step falls through to the next level if unset.
 pub use animation::*;
 pub use animation_group::*;
 pub use css::*;
+pub use css_watcher::*;
 pub use gradient::*;
 pub use primitives::*;
 pub use selector::*;
+/// Serialises tests that touch the process-wide stylesheet manager.
+#[cfg(test)]
+pub(crate) use stylesheet::stylesheet_test_guard;
 pub use stylesheet::*;
 pub use theme::*;
 pub use theme_state::*;

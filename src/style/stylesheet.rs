@@ -118,6 +118,20 @@ pub fn global_stylesheet_manager() -> MutexGuard<'static, StyleSheetManager> {
         .expect("StyleSheetManager mutex poisoned")
 }
 
+/// Serialises tests that register into, clear, or otherwise depend on the
+/// process-wide stylesheet manager.
+///
+/// The manager is shared state, so two tests that each register a sheet (or one
+/// that clears the registry while another applies a rule) race and observe each
+/// other's writes. Same precedent as the theme guard: shared state in a
+/// process-wide singleton needs explicit serialisation in tests, not a hope that
+/// the scheduling happens to work out. Compiled only for tests.
+#[cfg(test)]
+pub(crate) fn stylesheet_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+    GUARD.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,9 +231,13 @@ mod tests {
 
     #[test]
     fn global_manager_thread_safe() {
+        // Serialised: this test asserts the registry is empty afterwards, so it
+        // must not race a sheet another test registers concurrently.
+        let _guard = stylesheet_test_guard();
         // Get the global manager and verify it works.
         {
             let mut mgr = global_stylesheet_manager();
+            mgr.clear();
             mgr.register("global-test", "Button { border-color: #ff00ff; }", 0);
         }
 

@@ -41,17 +41,25 @@ pub enum CssSelector {
 
 impl CssSelector {
     /// Convert this CSS-parsed selector into the canonical `Selector` enum.
-    pub fn to_selector(&self) -> Selector {
-        match self {
+    ///
+    /// Returns `None` when the selector names a widget kind the library does not
+    /// know. Encoding "unknown kind" as a `Selector` was the previous behaviour and
+    /// it was wrong in a way that is hard to notice: an unrecognised name fell back
+    /// to `WidgetKind::Window`, so a rule written `Stepper { … }` silently selected
+    /// every **window** in the tree. `None` makes the caller decide, and the
+    /// alternative — matching nothing — is the honest reading of a rule whose
+    /// subject does not exist.
+    pub fn to_selector(&self) -> Option<Selector> {
+        Some(match self {
             CssSelector::Universal => Selector::Universal,
-            CssSelector::Kind(name) => Selector::Kind(widget_kind_from_str(name)),
+            CssSelector::Kind(name) => Selector::Kind(widget_kind_from_str(name)?),
             CssSelector::Class(name) => Selector::Class(name.clone()),
             CssSelector::Id(id) => Selector::Id(id.clone()),
             CssSelector::State(state) => Selector::State(*state),
-            CssSelector::And(selectors) => {
-                Selector::And(selectors.iter().map(|s| s.to_selector()).collect())
-            }
-        }
+            CssSelector::And(selectors) => Selector::And(
+                selectors.iter().map(CssSelector::to_selector).collect::<Option<Vec<_>>>()?,
+            ),
+        })
     }
 
     /// Check if this selector matches a widget with the given properties.
@@ -105,9 +113,19 @@ pub struct CssRule {
 }
 
 /// Convert a widget kind name string (e.g. "Button", "Label") to a `WidgetKind` variant.
-fn widget_kind_from_str(name: &str) -> WidgetKind {
+///
+/// Returns `None` for a name that is not a known kind. The previous version
+/// returned `WidgetKind::Window` as a "safe default", which was not safe: a rule
+/// whose subject the parser did not recognise would match windows instead of
+/// matching nothing, and the resulting mis-styling gave no hint about the cause.
+///
+/// The table is a suffix of the full `WidgetKind` set. A kind absent from it is
+/// reported as unknown rather than guessed at; adding a name here is a deliberate
+/// act, and `every_widget_kind_name_resolves_or_is_declared_unknown` in the tests
+/// keeps the table honest about which kinds are covered.
+fn widget_kind_from_str(name: &str) -> Option<WidgetKind> {
     // Case-insensitive matching of all variants common in CSS selectors.
-    match name {
+    Some(match name {
         n if n.eq_ignore_ascii_case("Window") => WidgetKind::Window,
         n if n.eq_ignore_ascii_case("Button") => WidgetKind::Button,
         n if n.eq_ignore_ascii_case("CheckBox") || n.eq_ignore_ascii_case("Checkbox") => {
@@ -141,11 +159,8 @@ fn widget_kind_from_str(name: &str) -> WidgetKind {
         n if n.eq_ignore_ascii_case("Keyboard") => WidgetKind::Keyboard,
         n if n.eq_ignore_ascii_case("Switch") => WidgetKind::Switch,
         n if n.eq_ignore_ascii_case("MiniCanvas") => WidgetKind::MiniCanvas,
-        _ => {
-            // Fallback: Window as a safe default for unregistered kinds.
-            WidgetKind::Window
-        }
-    }
+        _ => return None,
+    })
 }
 
 /// CSS parser that converts CSS text into `StyleSheet` + property application.
@@ -159,11 +174,20 @@ impl CssParser {
         let rules = Self::parse_rules(css)?;
         for rule in &rules {
             store_declarations(&rule.selector_text, rule.declarations.clone());
-            // Add a StyleRule entry using Universal selector so the parsed
-            // rules are reflected in sheet.rules().
-            let selector = Self::parse_selector(&rule.selector_text)
-                .map(|cs| cs.to_selector())
-                .unwrap_or(Selector::Universal);
+            // A selector whose kind is unknown contributes no rule: silently
+            // substituting another kind is what made a typo'd selector mis-style
+            // an unrelated control. The declarations are still stored above, so a
+            // caller can inspect what was written.
+            let Some(selector) =
+                Self::parse_selector(&rule.selector_text).and_then(|cs| cs.to_selector())
+            else {
+                log::warn!(
+                    "CSS rule selector {:?} names no known widget kind and was not registered as a \
+                     rule",
+                    rule.selector_text
+                );
+                continue;
+            };
             let rule_entry = StyleRule::new(selector, &rule.selector_text);
             sheet.add_rule(rule_entry);
         }
@@ -560,61 +584,88 @@ impl CssParser {
     }
 }
 
-// Need to add declarations field to StyleRule — use extension or modify selector
-// For now, add a helper extension trait
+// ── Declaration registry ────────────────────────────────────────────────────
+//
+// `StyleRule` carries a selector and a specificity, not the declarations
+// themselves, so parsed declarations are kept in a side table keyed by the rule's
+// selector text. The table is process-wide because the public `store_declarations`
+// / `get_declarations` pair is a published API.
+//
+// Two properties matter and were both wrong before:
+//
+// * **It must be bounded.** It is never evicted, so an unbounded map grows for
+//   the lifetime of the process every time the same stylesheet is re-parsed
+//   (a hot-reload loop is the realistic case). A small cap with oldest-first
+//   eviction keeps it useful for the introspection it exists for while making
+//   the growth finite and observable.
+// * **Lookups must be ordered.** Iterating a `HashMap` yields an unspecified
+//   order, so a caller relying on cascade order got a non-deterministic merge.
+//   Entries now carry the sequence number they were inserted with, and results
+//   are returned in that order.
 
-// Extension mechanism to store CSS declarations — uses global HashMap keyed by rule name
-// because StyleRule doesn't have a declarations field.
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::LazyLock;
 use std::sync::Mutex;
 
-/// Monotonically increasing counter to disambiguate entries with the same
-/// selector text from different stylesheets.
+/// Monotonically increasing counter giving each stored rule a stable order and a
+/// unique key, so two stylesheets with the same selector text do not collide.
 static DECL_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Stores CSS declarations keyed by a unique `{counter}:{selector}` string so
-/// that two stylesheets with the same selector text do not stomp each other.
-static DECLARATIONS: LazyLock<Mutex<HashMap<String, Vec<CssDeclaration>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+/// How many stored rules to keep. Sized for introspection of the stylesheets an
+/// application actually has loaded (a handful), not for archival.
+const MAX_STORED_RULES: usize = 512;
+
+/// The declaration registry: insertion order → that rule's declarations.
+///
+/// A named alias rather than the inline type so the `static` declaration below
+/// stays readable, and so the accessor functions share one spelling.
+type DeclarationRegistry = Vec<(u64, String, Vec<CssDeclaration>)>;
+
+/// The declaration registry itself.
+static DECLARATIONS: LazyLock<Mutex<DeclarationRegistry>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
 
 /// Stores a rule's declarations in the process-wide registry.
 ///
 /// `rule_name` is only a **suffix** of the real key: each call prepends a fresh
 /// counter, so the same `rule_name` can be stored many times without overwriting
 /// previous entries. Combined with [`get_declarations`], which matches by suffix,
-/// this means lookups are additive — storing a rule under a name that is a
-/// suffix of another rule's name will make that lookup return both.
+/// this means lookups are additive — storing a rule under a name that is a suffix
+/// of another rule's name will make that lookup return both.
 ///
-/// The registry is global and never evicted, so repeated parsing of the same
-/// stylesheet grows it without bound. A poisoned lock is recovered rather than
+/// The registry holds at most a fixed number of entries (the private
+/// `MAX_STORED_RULES`); the oldest is dropped once that is reached, so repeated
+/// parsing cannot grow it without bound. A poisoned lock is recovered rather than
 /// propagated.
 pub fn store_declarations(rule_name: &str, decls: Vec<CssDeclaration>) {
-    let key = format!("{}:{}", DECL_COUNTER.fetch_add(1, Ordering::Relaxed), rule_name);
+    let sequence = DECL_COUNTER.fetch_add(1, Ordering::Relaxed);
     // SAFETY: If the lock is poisoned (a previous panic while held), we recover
     // by ignoring the poison — the stored data is still valid for CSS parsing.
-    DECLARATIONS.lock().unwrap_or_else(|e| e.into_inner()).insert(key, decls);
+    let mut registry = DECLARATIONS.lock().unwrap_or_else(|e| e.into_inner());
+    if registry.len() >= MAX_STORED_RULES {
+        // Drop the oldest entry. `Vec::remove(0)` is O(n) but n is the small cap
+        // above and this runs once per over-cap insertion, not per lookup.
+        registry.remove(0);
+    }
+    registry.push((sequence, rule_name.to_string(), decls));
 }
 
-/// Returns every stored declaration whose rule key ends with `rule_name`,
-/// concatenated in unspecified order.
+/// Returns every stored declaration whose rule name ends with `rule_name`,
+/// concatenated in insertion order.
 ///
-/// Because the key is `"<counter>:<name>"` and matching is by suffix, a name
-/// that is a suffix of another stored name yields that other rule's declarations
-/// too. Returns `None` rather than an empty vector when nothing matches, so
-/// `None` is distinguishable from "matched but declared nothing". The returned
-/// vector is always non-empty.
+/// Because the key is matched by suffix, a name that is a suffix of another stored
+/// name yields that other rule's declarations too. Returns `None` rather than an
+/// empty vector when nothing matches, so `None` is distinguishable from "matched
+/// but declared nothing". The returned vector is always non-empty.
 ///
 /// A poisoned lock is recovered rather than propagated.
 pub fn get_declarations(rule_name: &str) -> Option<Vec<CssDeclaration>> {
     // SAFETY: Same poison recovery strategy — stale data is safe to read.
-    let map = DECLARATIONS.lock().unwrap_or_else(|e| e.into_inner());
+    let registry = DECLARATIONS.lock().unwrap_or_else(|e| e.into_inner());
     let mut result = Vec::new();
-    let suffix = format!(":{rule_name}");
-    for (key, decls) in map.iter() {
-        if key.ends_with(&suffix) {
-            result.extend(decls.clone());
+    for (_, name, decls) in registry.iter() {
+        if name.ends_with(rule_name) {
+            result.extend(decls.iter().cloned());
         }
     }
     if result.is_empty() {
@@ -872,5 +923,117 @@ mod tests {
         assert_eq!(style.margin.right, 20);
         assert_eq!(style.margin.bottom, 10);
         assert_eq!(style.margin.left, 20);
+    }
+
+    // ── Unknown selector kinds ────────────────────────────────────────────
+
+    /// A selector naming an unknown widget kind resolves to no selector, rather
+    /// than silently becoming `Window`.
+    #[test]
+    fn unknown_kind_selects_nothing() {
+        let selector = CssParser::parse_selector("NotAWidget").expect("the text parses");
+        assert_eq!(selector.to_selector(), None);
+    }
+
+    /// A **known** kind still resolves, so the `None` above is about the unknown
+    /// name and not a blanket refusal.
+    #[test]
+    fn known_kind_still_resolves() {
+        let selector = CssParser::parse_selector("Button").expect("the text parses");
+        assert_eq!(selector.to_selector(), Some(Selector::Kind(WidgetKind::Button)));
+    }
+
+    /// The regression this guards: before the fix, `Stepper { … }` resolved to
+    /// `WidgetKind::Window` and therefore styled windows. Now it resolves to
+    /// nothing, so it cannot match a window.
+    #[test]
+    fn an_unknown_kind_never_becomes_a_window() {
+        let selector = CssParser::parse_selector("Stepper").expect("the text parses");
+        assert_ne!(
+            selector.to_selector(),
+            Some(Selector::Kind(WidgetKind::Window)),
+            "an unknown name must not be reinterpreted as Window"
+        );
+    }
+
+    /// A compound selector with one unknown part resolves to nothing: a rule whose
+    /// subject does not exist cannot be made to apply by adding a class to it.
+    #[test]
+    fn a_compound_selector_with_an_unknown_kind_selects_nothing() {
+        let selector = CssParser::parse_selector("NotAWidget.primary").expect("the text parses");
+        assert_eq!(selector.to_selector(), None);
+    }
+
+    /// `CssParser::parse` skips a rule whose kind is unknown instead of registering
+    /// it against the wrong kind. The known rule beside it still lands.
+    #[test]
+    fn parse_skips_only_the_rule_with_an_unknown_kind() {
+        let css = "Button { color: #111; }\nStepper { color: #222; }";
+        let sheet = CssParser::parse(css).expect("the sheet parses");
+        let kinds: Vec<_> = sheet.rules().iter().map(|rule| rule.selector.clone()).collect();
+        assert_eq!(kinds, vec![Selector::Kind(WidgetKind::Button)], "only the known rule lands");
+    }
+
+    // ── Declaration registry ──────────────────────────────────────────────
+
+    /// A stored rule is retrievable by its name, and a name that was never stored
+    /// answers `None` rather than an empty vector.
+    #[test]
+    fn stored_declarations_round_trip() {
+        let name = "reg-round-trip";
+        store_declarations(
+            name,
+            vec![CssDeclaration { property: "color".into(), value: "#010203".into() }],
+        );
+        let retrieved = get_declarations(name).expect("the stored rule must be found");
+        assert_eq!(retrieved.len(), 1);
+        assert_eq!(retrieved[0].property, "color");
+        assert_eq!(get_declarations("reg-never-stored"), None);
+    }
+
+    /// Repeated storage of the same selector is bounded. Before the cap this grew
+    /// for the lifetime of the process, which a hot-reload loop would drive
+    /// without limit.
+    #[test]
+    fn the_registry_is_bounded() {
+        let name = "reg-bounded";
+        let last = MAX_STORED_RULES + 63;
+        for index in 0..last {
+            store_declarations(
+                name,
+                vec![CssDeclaration { property: "color".into(), value: format!("#{index:06x}") }],
+            );
+        }
+        let registry_len = DECLARATIONS.lock().unwrap_or_else(|e| e.into_inner()).len();
+        assert!(
+            registry_len <= MAX_STORED_RULES,
+            "the registry held {registry_len} entries, over the cap of {MAX_STORED_RULES}"
+        );
+        // The most recent insertion must still be present, so eviction removes the
+        // oldest rather than simply truncating the newest.
+        let retrieved = get_declarations(name).expect("the latest rule survives");
+        assert_eq!(
+            retrieved.last().map(|decl| decl.value.clone()),
+            Some(format!("#{:06x}", last - 1)),
+            "the newest entry must be the one still stored"
+        );
+    }
+
+    /// Lookups come back in insertion order. The registry used to be a `HashMap`,
+    /// so a caller relying on cascade order got an unspecified one.
+    #[test]
+    fn declarations_come_back_in_insertion_order() {
+        let name = "reg-order";
+        store_declarations(
+            name,
+            vec![CssDeclaration { property: "color".into(), value: "#aaaaaa".into() }],
+        );
+        store_declarations(
+            name,
+            vec![CssDeclaration { property: "color".into(), value: "#bbbbbb".into() }],
+        );
+        let retrieved = get_declarations(name).expect("both entries found");
+        assert_eq!(retrieved[0].value, "#aaaaaa");
+        assert_eq!(retrieved[1].value, "#bbbbbb");
     }
 }

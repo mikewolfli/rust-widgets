@@ -1,0 +1,145 @@
+{
+  "name": "default",
+  "appearance": "Light",
+  "colors": {
+    "background": {
+      "r": 240,
+      "g": 240,
+      "b": 240,
+      "a": 255
+    },
+    "foreground": {
+      "r": 0,
+      "g": 0,
+      "b": 0,
+      "a": 255
+    },
+    "primary": {
+      "r": 33,
+      "g": 150,
+      "b": 243,
+      "a": 255
+    },
+    "secondary": {
+      "r": 158,
+      "g": 158,
+      "b": 158,
+      "a": 255
+    },
+    "accent": {
+      "r": 255,
+      "g": 152,
+      "b": 0,
+      "a": 255
+    },
+    "error": {
+      "r": 244,
+      "g": 67,
+      "b": 54,
+      "a": 255
+    },
+    "warning": {
+      "r": 255,
+      "g": 193,
+      "b": 7,
+      "a": 255
+    },
+    "success": {
+      "r": 76,
+      "g": 175,
+      "b": 80,
+      "a": 255
+    },
+    "disabled": {
+      "r": 200,
+      "g": 200,
+      "b": 200,
+      "a": 255
+    },
+    "info": {
+      "r": 66,
+      "g": 133,
+      "b": 244,
+      "a": 255
+    }
+  },
+  "fonts": {
+    "regular": {
+      "family": "Arial",
+      "size": 14.0,
+      "weight": 400,
+      "bold": false,
+      "italic": false
+    },
+    "bold": {
+      "family": "Arial",
+      "size": 14.0,
+      "weight": 700,
+      "bold": true,
+      "italic": false
+    },
+    "italic": {
+      "family": "Arial",
+      "size": 14.0,
+      "weight": 400,
+      "bold": false,
+      "italic": true
+    },
+    "monospace": {
+      "family": "Courier New",
+      "size": 12.0,
+      "weight": 400,
+      "bold": false,
+      "italic": false
+    },
+    "caption": {
+      "family": "Arial",
+      "size": 11.0,
+      "weight": 400,
+      "bold": false,
+      "italic": false
+    },
+    "body": {
+      "family": "Arial",
+      "size": 14.0,
+      "weight": 400,
+      "bold": false,
+      "italic": false
+    },
+    "title": {
+      "family": "Arial",
+      "size": 16.0,
+      "weight": 700,
+      "bold": true,
+      "italic": false
+    },
+    "headline": {
+      "family": "Arial",
+      "size": 20.0,
+      "weight": 700,
+      "bold": true,
+      "italic": false
+    },
+    "display": {
+      "family": "Arial",
+      "size": 28.0,
+      "weight": 700,
+      "bold": true,
+      "italic": false
+    }
+  },
+  "spacing": {
+    "small": 4,
+    "medium": 8,
+    "large": 16,
+    "extra_large": 24
+  },
+  "borders": {
+    "width": 1,
+    "radius": 4,
+    "shadow": true
+  },
+  "overrides": {
+    "styles": {}
+  }
+}

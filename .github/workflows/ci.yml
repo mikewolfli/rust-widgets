@@ -102,6 +102,28 @@ jobs:
           chmod +x tools/check_docs.sh
           ./tools/check_docs.sh
 
+  theme-fixtures:
+    name: Theme fixtures
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # `themes/*.json` is the checked-in description of the theme file format, and
+      # nothing else in the build reads it. A field rename or a serde change would
+      # otherwise break every user's theme file while every test stayed green. The
+      # gate checks the fixtures round-trip **and** that regenerating from the
+      # built-in presets reproduces them byte for byte, which is what stops them
+      # drifting.
+      - name: Run theme fixture gate
+        shell: bash
+        run: |
+          chmod +x tools/check_theme_fixtures.sh themes/generate.sh
+          ./tools/check_theme_fixtures.sh
+
   feature-completeness-matrix:
     name: Feature completeness matrix
     runs-on: ubuntu-latest

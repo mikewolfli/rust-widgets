@@ -187,6 +187,19 @@ impl IconName {
 /// the render context. The widget supports all common icon names defined in
 /// `IconName` and renders a recognizable geometric representation for each.
 ///
+/// # Colour
+///
+/// The icon's colour is resolved in this order:
+///
+/// 1. [`Icon::set_color`] / the `color` style property, when either was used.
+/// 2. The active theme's resolved text colour for an icon, so an icon follows a
+///    light/dark switch along with the text beside it.
+/// 3. [`Color::PRIMARY`], the historical default.
+///
+/// Before step 2 existed the icon was the one themed control that did **not**
+/// follow the theme: it hardcoded `Color::PRIMARY` in its constructor, so a dark
+/// theme left every icon a bright blue that clashed with the rest of the surface.
+///
 /// # Sizing and layout
 ///
 /// [`Icon::size`] gives the side of a square bounding box, which is centred in
@@ -198,26 +211,29 @@ impl IconName {
 /// # Disabled appearance
 ///
 /// When the widget is disabled, the icon is rendered with a desaturated version
-/// of [`Icon::color`] (the mean of its R, G, and B channels) at half the
-/// original alpha. The stored colour is restored after drawing, so reading
-/// [`Icon::color`] still returns what was set.
+/// of the resolved colour (the mean of its R, G, and B channels) at half the
+/// original alpha. The resolved colour is recomputed on the next draw, so the
+/// stored value is unaffected.
 pub struct Icon {
     base: BaseWidget,
     icon_name: String,
     size: f32,
-    color: Color,
+    /// An explicit colour, if one was set. `None` means "follow the theme".
+    color: Option<Color>,
 }
 
 impl Icon {
     /// Creates a new Icon widget with the given geometry.
     ///
-    /// Defaults to a "check" icon with size 24 and the PRIMARY color.
+    /// Defaults to a "check" icon with size 24. The colour is left unset so the
+    /// icon follows the active theme; [`Icon::color`] reports the colour that
+    /// will actually be used.
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::Icon, geometry, "Icon"),
             icon_name: "check".to_string(),
             size: 24.0,
-            color: Color::PRIMARY,
+            color: None,
         }
     }
 
@@ -269,18 +285,47 @@ impl Icon {
         self.size
     }
 
-    /// Sets the icon color.
+    /// Sets an explicit icon colour, overriding the theme.
     ///
-    /// The color is used for every shape in the icon; there is no separate
+    /// The colour is used for every shape in the icon; there is no separate
     /// stroke and fill colour. Requests a redraw.
     pub fn set_color(&mut self, color: Color) {
-        self.color = color;
+        self.color = Some(color);
         self.base.request_redraw();
     }
 
-    /// Returns the icon color.
+    /// Clears an explicit colour, returning the icon to theme resolution.
+    pub fn clear_color(&mut self) {
+        self.color = None;
+        self.base.request_redraw();
+    }
+
+    /// Returns the colour this icon will actually be drawn in.
+    ///
+    /// Resolves in the order documented on the type: an explicit colour, then the
+    /// widget style's text colour (which is what the theme populates), then
+    /// [`Color::PRIMARY`].
     pub fn color(&self) -> Color {
+        self.resolve_color()
+    }
+
+    /// The colour an explicit setter stored, if any.
+    ///
+    /// Separate from [`Icon::color`] so a caller can tell "not set" from "set to
+    /// the same value the theme would have chosen".
+    pub fn explicit_color(&self) -> Option<Color> {
         self.color
+    }
+
+    /// The colour to draw with, after theme resolution.
+    fn resolve_color(&self) -> Color {
+        if let Some(explicit) = self.color {
+            return explicit;
+        }
+        if let Some(themed) = self.style().text_color {
+            return themed;
+        }
+        Color::PRIMARY
     }
 
     // ── Drawing helpers ──
@@ -297,7 +342,7 @@ impl Icon {
     /// Draws a check mark (✓).
     fn draw_check(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
-        let c = self.color;
+        let c = self.resolve_color();
         let sw = (self.size / 12.0).max(1.5) as u32;
         let cx = r.x;
         let cy = r.y;
@@ -319,7 +364,7 @@ impl Icon {
     /// Draws a cross (✕).
     fn draw_cross(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
-        let c = self.color;
+        let c = self.resolve_color();
         let sw = (self.size / 12.0).max(1.5) as u32;
         let cx = r.x;
         let cy = r.y;
@@ -342,7 +387,7 @@ impl Icon {
     /// Draws a left arrow (←).
     fn draw_arrow_left(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
-        let c = self.color;
+        let c = self.resolve_color();
         let sw = (self.size / 12.0).max(1.5) as u32;
         let cx = r.x;
         let cy = r.y;
@@ -362,7 +407,7 @@ impl Icon {
     /// Draws a right arrow (→).
     fn draw_arrow_right(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
-        let c = self.color;
+        let c = self.resolve_color();
         let sw = (self.size / 12.0).max(1.5) as u32;
         let cx = r.x;
         let cy = r.y;
@@ -387,7 +432,7 @@ impl Icon {
     /// Draws an up arrow (↑).
     fn draw_arrow_up(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
-        let c = self.color;
+        let c = self.resolve_color();
         let sw = (self.size / 12.0).max(1.5) as u32;
         let cx = r.x;
         let cy = r.y;
@@ -416,7 +461,7 @@ impl Icon {
     /// Draws a down arrow (↓).
     fn draw_arrow_down(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
-        let c = self.color;
+        let c = self.resolve_color();
         let sw = (self.size / 12.0).max(1.5) as u32;
         let cx = r.x;
         let cy = r.y;
@@ -445,7 +490,7 @@ impl Icon {
     /// Draws a star (★).
     fn draw_star(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
-        let c = self.color;
+        let c = self.resolve_color();
         let cx = r.x;
         let cy = r.y;
         let s = r.width as i32;
@@ -464,7 +509,7 @@ impl Icon {
     /// Draws a heart (♥).
     fn draw_heart(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
-        let c = self.color;
+        let c = self.resolve_color();
         let cx = r.x;
         let cy = r.y;
         let s = r.width as i32;
@@ -492,7 +537,7 @@ impl Icon {
     /// Draws a search/magnifying glass icon.
     fn draw_search(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
-        let c = self.color;
+        let c = self.resolve_color();
         let cx = r.x;
         let cy = r.y;
         let s = r.width as i32;
@@ -510,7 +555,7 @@ impl Icon {
     /// Draws a menu/hamburger icon (≡).
     fn draw_menu(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
-        let c = self.color;
+        let c = self.resolve_color();
         let cx = r.x;
         let cy = r.y;
         let s = r.width as i32;
@@ -545,7 +590,7 @@ impl Icon {
     /// Draws a plus (+) icon.
     fn draw_plus(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
-        let c = self.color;
+        let c = self.resolve_color();
         let sw = (self.size / 12.0).max(1.5) as u32;
         let cx = r.x;
         let cy = r.y;
@@ -568,7 +613,7 @@ impl Icon {
     /// Draws a minus (−) icon.
     fn draw_minus(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
-        let c = self.color;
+        let c = self.resolve_color();
         let sw = (self.size / 12.0).max(1.5) as u32;
         let cx = r.x;
         let cy = r.y;
@@ -585,7 +630,7 @@ impl Icon {
     /// Draws an info (i) icon.
     fn draw_info(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
-        let c = self.color;
+        let c = self.resolve_color();
         let cx = r.x;
         let cy = r.y;
         let s = r.width as i32;
@@ -606,7 +651,7 @@ impl Icon {
     /// Draws a warning (!) icon.
     fn draw_warning(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
-        let c = self.color;
+        let c = self.resolve_color();
         let cx = r.x;
         let cy = r.y;
         let s = r.width as i32;
@@ -643,7 +688,7 @@ impl Icon {
     /// Draws an error (✕ in circle) icon.
     fn draw_error(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
-        let c = self.color;
+        let c = self.resolve_color();
         let cx = r.x;
         let cy = r.y;
         let s = r.width as i32;
@@ -710,7 +755,7 @@ impl Icon {
 
     fn draw_settings(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
-        let c = self.color;
+        let c = self.resolve_color();
         let cx = r.x;
         let cy = r.y;
         let s = r.width as i32;
@@ -733,7 +778,7 @@ impl Icon {
 
     fn draw_home(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
-        let c = self.color;
+        let c = self.resolve_color();
         let cx = r.x;
         let cy = r.y;
         let s = r.width as i32;
@@ -791,7 +836,7 @@ impl Icon {
 
     fn draw_user(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
-        let c = self.color;
+        let c = self.resolve_color();
         let cx = r.x;
         let cy = r.y;
         let s = r.width as i32;
@@ -833,7 +878,7 @@ impl Icon {
 
     fn draw_mail(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
-        let c = self.color;
+        let c = self.resolve_color();
         let cx = r.x;
         let cy = r.y;
         let s = r.width as i32;
@@ -860,7 +905,7 @@ impl Icon {
 
     fn draw_bell(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
-        let c = self.color;
+        let c = self.resolve_color();
         let cx = r.x;
         let cy = r.y;
         let s = r.width as i32;
@@ -914,7 +959,7 @@ impl Icon {
 
     fn draw_edit(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
-        let c = self.color;
+        let c = self.resolve_color();
         let cx = r.x;
         let cy = r.y;
         let s = r.width as i32;
@@ -942,7 +987,7 @@ impl Icon {
 
     fn draw_trash(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
-        let c = self.color;
+        let c = self.resolve_color();
         let cx = r.x;
         let cy = r.y;
         let s = r.width as i32;
@@ -989,7 +1034,7 @@ impl Icon {
 
     fn draw_share(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
-        let c = self.color;
+        let c = self.resolve_color();
         let cx = r.x;
         let cy = r.y;
         let s = r.width as i32;
@@ -1013,7 +1058,7 @@ impl Icon {
 
     fn draw_refresh(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
-        let c = self.color;
+        let c = self.resolve_color();
         let cx = r.x;
         let cy = r.y;
         let s = r.width as i32;
@@ -1037,7 +1082,7 @@ impl Icon {
 
     fn draw_more(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
-        let c = self.color;
+        let c = self.resolve_color();
         let cx = r.x;
         let cy = r.y;
         let s = r.width as i32;
@@ -1049,7 +1094,7 @@ impl Icon {
 
     fn draw_filter(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
-        let c = self.color;
+        let c = self.resolve_color();
         let cx = r.x;
         let cy = r.y;
         let s = r.width as i32;
@@ -1083,7 +1128,7 @@ impl Icon {
 
     fn draw_lock(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
-        let c = self.color;
+        let c = self.resolve_color();
         let cx = r.x;
         let cy = r.y;
         let s = r.width as i32;
@@ -1118,7 +1163,7 @@ impl Icon {
 
     fn draw_unlock(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
-        let c = self.color;
+        let c = self.resolve_color();
         let cx = r.x;
         let cy = r.y;
         let s = r.width as i32;
@@ -1147,7 +1192,7 @@ impl Icon {
 
     fn draw_download(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
-        let c = self.color;
+        let c = self.resolve_color();
         let cx = r.x;
         let cy = r.y;
         let s = r.width as i32;
@@ -1182,7 +1227,7 @@ impl Icon {
 
     fn draw_upload(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
-        let c = self.color;
+        let c = self.resolve_color();
         let cx = r.x;
         let cy = r.y;
         let s = r.width as i32;
@@ -1218,7 +1263,7 @@ impl Icon {
     /// Draws an unknown icon as a question mark.
     fn draw_unknown(&self, ctx: &mut RenderContext) {
         let r = self.icon_rect();
-        let c = self.color;
+        let c = self.resolve_color();
         let cx = r.x;
         let cy = r.y;
         let s = r.width as i32;
@@ -1258,6 +1303,10 @@ impl WidgetProperties for Icon {
         match name {
             "icon_name" => Ok(CapabilityValue::String(self.icon().to_string())),
             "size" => Ok(CapabilityValue::Float(f64::from(self.size()))),
+            // Reports the *resolved* colour, which is what a reader wants: the
+            // colour a draw would use, whether that came from a setter or the
+            // theme.
+            "color" => Ok(CapabilityValue::String(self.resolve_color().to_hex_rgba())),
             _ => base_property_get(self, name),
         }
     }
@@ -1272,12 +1321,18 @@ impl WidgetProperties for Icon {
                 self.set_size(expect_f64(value)? as f32);
                 Ok(())
             }
+            "color" => {
+                let raw = expect_string(value)?;
+                let color = Color::parse_hex(&raw).ok_or(CapabilityAccessError::TypeMismatch)?;
+                self.set_color(color);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["icon_name", "size", BASE_PROPERTY_NAMES]
+        property_names_of!["icon_name", "size", "color", BASE_PROPERTY_NAMES]
     }
 }
 
@@ -1287,17 +1342,16 @@ impl Draw for Icon {
         if rect.width == 0 || rect.height == 0 {
             return;
         }
-        let is_enabled = self.base.is_enabled();
-        if !is_enabled {
-            let original_color = self.color;
-            // Compute grayscale: average of R, G, B channels
-            let gray =
-                ((original_color.r as u16 + original_color.g as u16 + original_color.b as u16) / 3)
-                    as u8;
-            // Use muted gray at half alpha for disabled appearance
-            self.color = Color::rgba(gray, gray, gray, original_color.a / 2);
+        if !self.base.is_enabled() {
+            // Render the disabled appearance by temporarily pinning an explicit
+            // colour: a desaturated grey at half the resolved colour's alpha. The
+            // pin is removed afterwards, so the pre-draw resolution (theme or
+            // explicit setter) is unchanged and the next draw recomputes it.
+            let resolved = self.resolve_color();
+            let gray = ((resolved.r as u16 + resolved.g as u16 + resolved.b as u16) / 3) as u8;
+            self.color = Some(Color::rgba(gray, gray, gray, resolved.a / 2));
             self.draw_icon(context);
-            self.color = original_color;
+            self.color = None;
             return;
         }
         self.draw_icon(context);
@@ -1337,6 +1391,63 @@ mod tests {
 
         icon.set_size(32.0);
         assert!((icon.size() - 32.0).abs() < f32::EPSILON);
+    }
+
+    // ── Theme-driven colour ──────────────────────────────────────────────
+
+    /// A freshly created icon reports the fallback colour, and an explicit setter
+    /// still wins over it.
+    #[test]
+    fn colour_resolution_prefers_an_explicit_setter() {
+        let mut icon = Icon::new(Rect::new(0, 0, 24, 24));
+        assert_eq!(icon.explicit_color(), None, "a new icon follows the theme");
+        assert_eq!(icon.color(), Color::PRIMARY, "with no theme, the fallback stands");
+
+        icon.set_color(Color::RED);
+        assert_eq!(icon.explicit_color(), Some(Color::RED));
+        assert_eq!(icon.color(), Color::RED);
+
+        icon.clear_color();
+        assert_eq!(icon.explicit_color(), None, "clearing returns the icon to the theme");
+        assert_eq!(icon.color(), Color::PRIMARY);
+    }
+
+    /// The icon picks up the text colour from its `WidgetStyle`, which is what the
+    /// theme populates. Before this the icon ignored `WidgetStyle` entirely and
+    /// stayed `Color::PRIMARY` through a theme switch.
+    #[test]
+    fn colour_resolution_follows_the_widget_style() {
+        use crate::style::WidgetStyle;
+
+        let mut icon = Icon::new(Rect::new(0, 0, 24, 24));
+        let themed = Color::rgba(7, 8, 9, 255);
+        icon.set_style(WidgetStyle::default().with_text_color(themed));
+
+        assert_eq!(icon.color(), themed, "the style's text colour must drive the icon");
+
+        // An explicit colour still outranks the style.
+        icon.set_color(Color::RED);
+        assert_eq!(icon.color(), Color::RED);
+    }
+
+    /// The `color` property is readable and writable, and a malformed value is
+    /// rejected rather than silently ignored.
+    #[test]
+    fn the_color_property_round_trips_and_rejects_garbage() {
+        use crate::widget::capability::WidgetProperties;
+
+        let mut icon = Icon::new(Rect::new(0, 0, 24, 24));
+        assert!(icon.property_names().contains(&"color"));
+
+        icon.set("color", CapabilityValue::String("#11223344".to_string()))
+            .expect("a hex colour must be accepted");
+        assert_eq!(icon.color(), Color::rgba(0x11, 0x22, 0x33, 0x44));
+
+        assert_eq!(
+            icon.set("color", CapabilityValue::String("not-a-colour".to_string())),
+            Err(CapabilityAccessError::TypeMismatch),
+            "an unparsable colour must be reported"
+        );
     }
 
     #[test]

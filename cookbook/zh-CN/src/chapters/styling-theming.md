@@ -235,7 +235,7 @@ use rust_widgets::style::stylesheet::{global_stylesheet_manager, StyleSheetManag
 
 ## `CssWatcher` — CSS 文件热重载
 
-基于轮询的文件监视器，当文件变化时自动重新加载 CSS 到全局 `StyleSheetManager`：
+基于轮询的文件监视器，当文件变化时自动重新加载 CSS 到全局 `StyleSheetManager`。重新加载按**名称**注册，因此新规则替换旧规则，而不会叠加第二份副本：
 
 ```rust
 use rust_widgets::style::css_watcher::CssWatcher;
@@ -247,7 +247,7 @@ watcher.set_poll_interval(500);  // 每 500ms 检查一次（默认）
 loop {
     match watcher.poll() {
         Ok(true)  => println!("CSS 已重新加载 — 样式已更新！"),
-        Ok(false) => { /* 无变化 */ }
+        Ok(false) => { /* 无变化，或文件尚未创建 */ }
         Err(e)    => eprintln!("CSS 监视错误: {}", e),
     }
 
@@ -255,10 +255,17 @@ loop {
 
     std::thread::sleep(std::time::Duration::from_millis(16));
 }
+```
 
-// 强制重新加载（忽略修改时间）
+文件不存在时 `poll()` 返回 `Ok(false)` 而非错误，因此可以在生成的样式表尚未写出前就开始监视。`reload()` 忽略修改时间强制加载：
+
+```rust
+# use rust_widgets::style::css_watcher::CssWatcher;
+# let mut watcher = CssWatcher::new("theme.css", "main-theme");
 watcher.reload()?;
 ```
+
+无法解析的样式表会被上报且**不会**注册，因此一次错误编辑不会替换掉可用的样式表。
 
 ---
 
@@ -636,11 +643,48 @@ manager.save_theme("exported_theme.json")?;
 | `"dark"` | Material Dark：近黑色背景 (#121212)，浅色文字，柔和主色调 |
 
 ```rust
-// 暗色主题预设
+// 深色主题预设
 let dark = Theme::dark();
 manager.register_theme(dark);
 manager.set_theme("dark");
 ```
+
+### 主题文件
+
+内置预设以 JSON 形式随仓提供，同时充当格式参考：
+
+```text
+themes/default.json   浅色预设
+themes/dark.json      深色预设
+themes/generate.sh    从预设重新生成两者
+```
+
+加载主题，并可选择在同一次调用中激活：
+
+```rust
+use rust_widgets::theme::ThemeManager;
+
+let mut manager = ThemeManager::new();
+
+// 仅注册 —— 当前活动主题不变。适合预加载一组主题后再切换。
+manager.load_theme("themes/default.json")?;
+
+// 注册**并**激活，返回文件中记录的名称。
+let activated = manager.load_and_activate_theme("themes/dark.json")?;
+assert_eq!(activated, "dark");
+```
+
+激活依据的是文件**内部**的名称，而非文件名，因此文件可以任意命名。
+
+将当前活动主题写回：
+
+```rust
+# use rust_widgets::theme::ThemeManager;
+# let manager = ThemeManager::new();
+manager.save_theme("exported_theme.json")?;
+```
+
+保存与加载互为逆运算，且随仓的夹具是**生成**的（经 `save_theme`）而非手写，因此文件不可能描述出代码里没有的 schema。若某个夹具不再能往返、或与重新生成的结果不一致，`tools/check_theme_fixtures.sh` 会失败。
 
 ---
 
@@ -753,7 +797,7 @@ stateful_theme.set_transition(WidgetState::Normal, WidgetState::Pressed, 50);  /
 
 ## `HighContrastMode`
 
-覆盖所有颜色以实现无障碍访问：
+在所有已解析样式中强制一对背景/前景色：
 
 ```rust
 pub enum HighContrastMode {
@@ -764,7 +808,31 @@ pub enum HighContrastMode {
 }
 ```
 
-当 `HighContrastMode` 为 `None` 以外的值时，主题颜色解析会忽略主题调色板，改用强制的前景/背景色。
+在管理器上设置，或全局设置：
+
+```rust
+use rust_widgets::style::HighContrastMode;
+use rust_widgets::theme::{global_theme_manager, set_global_high_contrast};
+
+// 单管理器（隔离的预览）：
+global_theme_manager().set_high_contrast(HighContrastMode::WhiteOnBlack);
+
+// 全进程：
+set_global_high_contrast(HighContrastMode::BlackOnWhite);
+```
+
+模式生效时，解析会用强制配对替换背景与文字颜色，并清除渐变（渐变会破坏纯色配对的用意）。它在**最后**应用，因此主题覆盖或 `:hover` 状态都无法再引入低对比度颜色。其余部分 —— 字体、间距、边框、圆角 —— 照常解析，因此强制调色板不会同时压平布局。
+
+该覆盖保存在管理器上而非主题上，因此从浅色切到深色不会静默丢弃它。
+
+`Custom` 接受任意配对。要确认它达到无障碍目标，请实测：
+
+```rust
+# use rust_widgets::style::HighContrastMode;
+# use rust_widgets::core::Color;
+let mode = HighContrastMode::Custom { fg: Color::BLACK, bg: Color::WHITE };
+assert!(mode.contrast_ratio().expect("a forced pair") >= 4.5);  // WCAG AA，正文
+```
 
 ---
 

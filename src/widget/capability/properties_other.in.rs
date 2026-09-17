@@ -1802,6 +1802,12 @@ macro_rules! impl_properties_other {
                 writable: true,
             },
             PropertySchema {
+                name: "color",
+                value_kind: PropertyValueKind::String,
+                readable: true,
+                writable: true,
+            },
+            PropertySchema {
                 name: "enabled",
                 value_kind: PropertyValueKind::Bool,
                 readable: true,
