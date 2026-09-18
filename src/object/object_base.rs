@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 use super::PropertyValue;
-use crate::compat::HashMap;
 use crate::compat::Mutex;
+use crate::compat::{HashMap, String, Vec};
 use crate::core::{CoreObject, MutexExt, ObjectId};
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};

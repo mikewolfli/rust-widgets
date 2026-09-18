@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use super::*;
+use crate::compat::MiniToString;
 use crate::event::Event;
 #[test]
 fn test_shortcut_parsing() {

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Arc widget — circular progress/indicator (BLUE13 R2.1).
+use crate::compat::{format, String};
 use crate::core::{deg_to_rad, Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderCommand, RenderContext};

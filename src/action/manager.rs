@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use super::{normalize_shortcut, Action, ActionBinding, ActionHostKind};
-use crate::compat::HashMap;
+use crate::compat::{HashMap, MiniToString, String, Vec};
 use crate::core::ObjectId;
 use crate::shortcut::Shortcut;
 use core::fmt;

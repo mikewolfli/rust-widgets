@@ -509,6 +509,7 @@ impl EventHandler for BaseWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compat::Vec;
 
     fn make_base() -> BaseWidget {
         BaseWidget::new(WidgetKind::Button, Rect::new(10, 20, 100, 30), "Button")

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Frame widget.
+use crate::compat::{Rc, RefCell, ToString};
 use crate::core::{Color, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -12,8 +13,6 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
-use std::cell::RefCell;
-use std::rc::Rc;
 /// Frame widget.
 pub struct Frame {
     base: BaseWidget,
@@ -548,6 +547,7 @@ impl Draw for Frame {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compat::{MiniToString, String};
     use crate::core::{Color, ObjectId, Rect};
     use crate::style::WidgetStyle;
 

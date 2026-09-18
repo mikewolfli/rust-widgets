@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 //! Per-widget dirty state tracking.
+use crate::compat::{HashMap, Vec};
 use crate::core::{ObjectId, Rect};
-use std::collections::{HashMap, HashSet};
+// NOTE: `HashSet` has no `crate::compat` equivalent; left on `std` deliberately.
+use std::collections::HashSet;
 /// Tracks dirty/clean state for individual widgets.
 ///
 /// Each dirty widget remembers the rectangle it was marked with, so a redraw

@@ -135,6 +135,7 @@ pub fn draw_of(widget: &mut dyn Widget) -> Option<&mut dyn Draw> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compat::MiniToString;
     use crate::core::{Color, Rect, Size};
     use crate::render::{PaintBackend, RenderContext, SoftwarePaintBackend};
     use crate::widget::base_widgets::button::Button;

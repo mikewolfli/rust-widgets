@@ -29,9 +29,9 @@
 //! bridge runs in pure state-machine mode. See BLUE14 D-1 for the precedent
 //! (`ime_windows`).
 
+use crate::compat::{lock, Box, Mutex, String, ToString};
 use crate::core::ObjectId;
 use crate::platform::ime::{ImeBridge, ImeCandidatePosition, ImeComposition};
-use std::sync::Mutex;
 
 // ──────────────────────────────────────────────
 // Native macOS IME imports (feature-gated)
@@ -98,7 +98,7 @@ fn try_activate_nstextinputcontext(
 
         log::debug!("[macOS IME] NSTextInputContext activated");
 
-        Some(Box::new(ImeCtx(ctx)) as Box<dyn std::any::Any + Send>)
+        Some(Box::new(ImeCtx(ctx)) as Box<dyn crate::compat::Any + Send>)
     }
 }
 
@@ -167,7 +167,7 @@ pub struct MacOsImeBridge {
     /// Opaque handle to the `NSTextInputContext` (only used on macOS with
     /// `objc2-macos` feature). Kept alive for the bridge lifetime.
     #[allow(dead_code)]
-    native_token: Mutex<Option<Box<dyn std::any::Any + Send>>>,
+    native_token: Mutex<Option<Box<dyn crate::compat::Any + Send>>>,
 }
 
 crate::impl_default_via_new!(MacOsImeBridge);
@@ -193,11 +193,11 @@ impl MacOsImeBridge {
     /// can be activated. `view_ptr` is a raw pointer to an `NSView`.
     ///
     /// On builds **without** `objc2-macos` this is a no-op.
-    pub fn attach_to_view(&self, view_ptr: *mut std::ffi::c_void) {
+    pub fn attach_to_view(&self, view_ptr: *mut core::ffi::c_void) {
         #[cfg(all(target_os = "macos", feature = "macos"))]
         {
             if let Some(token) = try_activate_nstextinputcontext(view_ptr) {
-                *self.native_token.lock().unwrap() = Some(token);
+                *lock(&self.native_token) = Some(token);
             }
         }
         let _ = view_ptr;
@@ -207,7 +207,7 @@ impl MacOsImeBridge {
     /// This tells the IME where to position the candidate window.
     pub fn set_cursor_rect(&self, x: i32, y: i32, w: u32, h: u32) {
         log::debug!("[macOS IME] set_cursor_rect: x={}, y={}, w={}, h={}", x, y, w, h,);
-        *self.cursor_rect.lock().unwrap() = (x, y, w, h);
+        *lock(&self.cursor_rect) = (x, y, w, h);
 
         #[cfg(all(target_os = "macos", feature = "macos"))]
         {
@@ -287,9 +287,9 @@ impl MacOsImeBridge {
     /// Clear the internal composition state after text is committed.
     /// Called by both the inherent API and the `ImeBridge` trait impl.
     fn clear_composition(&self) {
-        *self.marked_text.lock().unwrap() = String::new();
-        *self.marked_range.lock().unwrap() = (0, 0);
-        *self.selected_range.lock().unwrap() = (0, 0);
+        *lock(&self.marked_text) = String::new();
+        *lock(&self.marked_range) = (0, 0);
+        *lock(&self.selected_range) = (0, 0);
     }
 
     /// Commit a piece of text (called by the native IME callback).
@@ -324,14 +324,14 @@ impl MacOsImeBridge {
             (utf16_len, 0)
         };
 
-        *self.marked_text.lock().unwrap() = text.to_string();
-        *self.marked_range.lock().unwrap() = (0, utf16_len);
-        *self.selected_range.lock().unwrap() = (sel_offset, sel_length);
+        *lock(&self.marked_text) = text.to_string();
+        *lock(&self.marked_range) = (0, utf16_len);
+        *lock(&self.selected_range) = (sel_offset, sel_length);
 
         // Sync with native NSTextInputContext if available.
         #[cfg(all(target_os = "macos", feature = "macos"))]
         {
-            let guard = self.native_token.lock().unwrap();
+            let guard = lock(&self.native_token);
             if let Some(ref token) = *guard {
                 sync_nstextinputcontext(
                     token.as_ref(),
@@ -345,7 +345,7 @@ impl MacOsImeBridge {
 
     /// Get the current marked (preedit) text, if any.
     pub fn get_marked_text(&self) -> Option<String> {
-        let text = self.marked_text.lock().unwrap();
+        let text = lock(&self.marked_text);
         if text.is_empty() {
             None
         } else {
@@ -355,15 +355,15 @@ impl MacOsImeBridge {
 
     /// Returns `true` when there is an active composition (marked text).
     pub fn has_marked_text(&self) -> bool {
-        !self.marked_text.lock().unwrap().is_empty()
+        !lock(&self.marked_text).is_empty()
     }
 
     /// Discard / clear the current marked text without committing.
     pub fn discard_marked_text(&self) {
         log::debug!("[macOS IME] discard_marked_text");
-        *self.marked_text.lock().unwrap() = String::new();
-        *self.marked_range.lock().unwrap() = (0, 0);
-        *self.selected_range.lock().unwrap() = (0, 0);
+        *lock(&self.marked_text) = String::new();
+        *lock(&self.marked_range) = (0, 0);
+        *lock(&self.selected_range) = (0, 0);
     }
 
     /// Returns the UTF-16 length of a string.
@@ -378,14 +378,14 @@ impl MacOsImeBridge {
 
 impl ImeBridge for MacOsImeBridge {
     fn focus_in(&self, widget_id: ObjectId) {
-        *self.focused_widget.lock().unwrap() = Some(widget_id);
-        *self.active.lock().unwrap() = true;
+        *lock(&self.focused_widget) = Some(widget_id);
+        *lock(&self.active) = true;
         log::info!("[macOS IME] focus_in: widget={}", widget_id);
 
         // On native macOS, activate NSTextInputContext for the view.
         #[cfg(all(target_os = "macos", feature = "macos"))]
         {
-            let guard = self.native_token.lock().unwrap();
+            let guard = lock(&self.native_token);
             if let Some(ref token) = *guard {
                 unsafe {
                     use objc2::msg_send;
@@ -407,17 +407,17 @@ impl ImeBridge for MacOsImeBridge {
     }
 
     fn focus_out(&self, widget_id: ObjectId) {
-        *self.focused_widget.lock().unwrap() = None;
-        *self.active.lock().unwrap() = false;
+        *lock(&self.focused_widget) = None;
+        *lock(&self.active) = false;
         // Discard any pending composition.
-        *self.marked_text.lock().unwrap() = String::new();
-        *self.marked_range.lock().unwrap() = (0, 0);
-        *self.selected_range.lock().unwrap() = (0, 0);
+        *lock(&self.marked_text) = String::new();
+        *lock(&self.marked_range) = (0, 0);
+        *lock(&self.selected_range) = (0, 0);
         log::info!("[macOS IME] focus_out: widget={}", widget_id);
 
         #[cfg(all(target_os = "macos", feature = "macos"))]
         {
-            let guard = self.native_token.lock().unwrap();
+            let guard = lock(&self.native_token);
             if let Some(ref token) = *guard {
                 unsafe {
                     use objc2::msg_send;
@@ -457,13 +457,13 @@ impl ImeBridge for MacOsImeBridge {
         let sel_length_utf16 =
             composition.selection_length.min(utf16_len.saturating_sub(cursor_utf16));
 
-        *self.marked_text.lock().unwrap() = text.to_string();
-        *self.marked_range.lock().unwrap() = (0, utf16_len);
-        *self.selected_range.lock().unwrap() = (cursor_utf16, sel_length_utf16);
+        *lock(&self.marked_text) = text.to_string();
+        *lock(&self.marked_range) = (0, utf16_len);
+        *lock(&self.selected_range) = (cursor_utf16, sel_length_utf16);
 
         #[cfg(all(target_os = "macos", feature = "macos"))]
         {
-            let guard = self.native_token.lock().unwrap();
+            let guard = lock(&self.native_token);
             if let Some(ref token) = *guard {
                 sync_nstextinputcontext(
                     token.as_ref(),
@@ -477,7 +477,7 @@ impl ImeBridge for MacOsImeBridge {
 
     fn set_candidate_window_position(&self, position: ImeCandidatePosition) {
         log::debug!("[macOS IME] set_candidate_window_position: ({}, {})", position.x, position.y,);
-        *self.candidate_position.lock().unwrap() = position;
+        *lock(&self.candidate_position) = position;
 
         #[cfg(all(target_os = "macos", feature = "macos"))]
         {
@@ -504,7 +504,7 @@ impl ImeBridge for MacOsImeBridge {
     }
 
     fn is_active(&self) -> bool {
-        *self.active.lock().unwrap()
+        *lock(&self.active)
     }
 }
 
@@ -569,15 +569,15 @@ mod tests {
     fn test_focus_in_out() {
         let bridge = MacOsImeBridge::new();
         assert!(!bridge.is_active());
-        assert!(bridge.focused_widget.lock().unwrap().is_none());
+        assert!(lock(&bridge.focused_widget).is_none());
 
         bridge.focus_in(42);
         assert!(bridge.is_active());
-        assert_eq!(*bridge.focused_widget.lock().unwrap(), Some(42));
+        assert_eq!(*lock(&bridge.focused_widget), Some(42));
 
         bridge.focus_out(42);
         assert!(!bridge.is_active());
-        assert!(bridge.focused_widget.lock().unwrap().is_none());
+        assert!(lock(&bridge.focused_widget).is_none());
     }
 
     #[test]
@@ -643,7 +643,7 @@ mod tests {
         assert_eq!(bridge.get_marked_text(), Some("hello world".to_string()));
 
         // Verify selected range was set (UTF-16).
-        let sel = *bridge.selected_range.lock().unwrap();
+        let sel = *lock(&bridge.selected_range);
         assert_eq!(sel, (3, 4)); // offset 3, length 4 -> "lo w"
     }
 
@@ -651,7 +651,7 @@ mod tests {
     fn test_set_marked_text_negative_sel_defaults_cursor_at_end() {
         let bridge = MacOsImeBridge::new();
         bridge.set_marked_text("test", -1, -1);
-        let sel = *bridge.selected_range.lock().unwrap();
+        let sel = *lock(&bridge.selected_range);
         // UTF-16 length of "test" is 4, so cursor at end = (4, 0)
         assert_eq!(sel, (4, 0));
     }
@@ -739,17 +739,14 @@ mod tests {
     fn test_set_cursor_rect() {
         let bridge = MacOsImeBridge::new();
         bridge.set_cursor_rect(10, 20, 100, 30);
-        assert_eq!(*bridge.cursor_rect.lock().unwrap(), (10, 20, 100, 30));
+        assert_eq!(*lock(&bridge.cursor_rect), (10, 20, 100, 30));
     }
 
     #[test]
     fn test_candidate_position_is_retained() {
         let bridge = MacOsImeBridge::new();
         bridge.set_candidate_window_position(ImeCandidatePosition { x: 42, y: 84 });
-        assert_eq!(
-            *bridge.candidate_position.lock().unwrap(),
-            ImeCandidatePosition { x: 42, y: 84 }
-        );
+        assert_eq!(*lock(&bridge.candidate_position), ImeCandidatePosition { x: 42, y: 84 });
     }
 
     #[test]

@@ -65,6 +65,7 @@ pub use wrap::*;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compat::HashMap;
     use crate::core::{Point, Rect, Size};
     #[test]
     fn box_layout_applies_constraints() {
@@ -73,7 +74,7 @@ mod tests {
         layout.add_widget(2, 1);
         layout.set_constraints(1, LayoutConstraints::new(80, Some(80)));
         layout.set_size_policy(1, SizePolicy::Fixed);
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         layout.update(Rect::new(0, 0, 200, 40), &mut |id, rect| {
             rects.insert(id, rect);
         });
@@ -84,7 +85,7 @@ mod tests {
         let mut splitter = SplitterLayout::new(Orientation::Horizontal, 0);
         splitter.add_widget(1, 1);
         splitter.add_widget(2, 3);
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         splitter.update(Rect::new(0, 0, 400, 40), &mut |id, rect| {
             rects.insert(id, rect);
         });
@@ -113,7 +114,7 @@ mod tests {
         assert_eq!(hbox.spacing(), 3);
         assert_eq!(hbox.margin(), 2);
         assert_eq!(hbox.item_count(), 3);
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         hbox.update(Rect::new(0, 0, 120, 20), &mut |id, rect| {
             rects.insert(id, rect);
         });
@@ -121,7 +122,7 @@ mod tests {
         let mut vbox = BoxLayout::new(Orientation::Vertical, 1, 0);
         vbox.add_widget(10, 1);
         vbox.add_widget(11, 1);
-        let mut out = std::collections::HashMap::new();
+        let mut out = HashMap::new();
         vbox.update(Rect::new(0, 0, 20, 40), &mut |id, rect| {
             out.insert(id, rect);
         });
@@ -137,7 +138,7 @@ mod tests {
         layout.add_widget(1, 1);
         layout.add_widget(2, 1);
         layout.add_widget(3, 1);
-        let mut widths = std::collections::HashMap::new();
+        let mut widths = HashMap::new();
         layout.update(Rect::new(0, 0, 100, 10), &mut |id, rect| {
             widths.insert(id, rect.width);
         });
@@ -149,7 +150,7 @@ mod tests {
         let mut grid = GridLayout::new(2, 2, 0, 0);
         grid.set_widget(0, 0, 1);
         grid.set_widget(1, 1, 2);
-        let mut grid_rects = std::collections::HashMap::new();
+        let mut grid_rects = HashMap::new();
         grid.update(Rect::new(0, 0, 40, 20), &mut |id, rect| {
             grid_rects.insert(id, rect);
         });
@@ -182,7 +183,7 @@ mod tests {
             layout.set_constraints(id, LayoutConstraints::new(80, None));
             layout.set_size_policy(id, SizePolicy::Fixed);
         }
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         layout.update(Rect::new(0, 0, 100, 20), &mut |id, rect| {
             rects.insert(id, rect);
         });
@@ -212,7 +213,7 @@ mod tests {
         grid.set_widget(0, 1, 2);
         grid.set_widget(1, 0, 3);
         grid.set_widget(1, 1, 4);
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         grid.update(Rect::new(0, 0, 8, 4), &mut |id, rect| {
             rects.insert(id, rect);
         });

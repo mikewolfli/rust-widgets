@@ -4,6 +4,7 @@
 //! Keyboard-aware layout manager — shifts content upward when the mobile keyboard appears,
 //! preventing the focused input from being obscured.
 use super::{Layout, LayoutContext};
+use crate::compat::{fmt, Any, Box, Vec};
 use crate::core::{ObjectId, Rect};
 
 /// A layout wrapper that shifts its children upward by `keyboard_offset` pixels.
@@ -21,8 +22,8 @@ pub struct KeyboardAwareLayout {
     animation_duration: u64,
 }
 
-impl std::fmt::Debug for KeyboardAwareLayout {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for KeyboardAwareLayout {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("KeyboardAwareLayout")
             .field("keyboard_offset", &self.keyboard_offset)
             .field("animation_duration", &self.animation_duration)
@@ -79,11 +80,11 @@ impl KeyboardAwareLayout {
 }
 
 impl Layout for KeyboardAwareLayout {
-    fn as_any(&self) -> &dyn std::any::Any {
+    fn as_any(&self) -> &dyn Any {
         self
     }
 
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+    fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
 
@@ -128,14 +129,12 @@ impl Layout for KeyboardAwareLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compat::HashMap;
     use crate::layout::stack::StackLayout;
 
     /// Helper to collect update results into a HashMap.
-    fn collect_update(
-        layout: &dyn Layout,
-        rect: Rect,
-    ) -> std::collections::HashMap<ObjectId, Rect> {
-        let mut rects = std::collections::HashMap::new();
+    fn collect_update(layout: &dyn Layout, rect: Rect) -> HashMap<ObjectId, Rect> {
+        let mut rects = HashMap::new();
         layout.update(rect, &mut |id, r| {
             rects.insert(id, r);
         });
@@ -224,7 +223,7 @@ mod tests {
         layout.set_keyboard_offset(100);
 
         let context = LayoutContext::default();
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         layout.update_with_context(Rect::new(0, 0, 200, 300), &context, &mut |id, rect| {
             rects.insert(id, rect);
         });

@@ -18,6 +18,6 @@ pub trait MutexExt<T> {
 
 impl<T> MutexExt<T> for Mutex<T> {
     fn lock_guard(&self) -> MutexGuard<'_, T> {
-        self.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        crate::compat::lock(self)
     }
 }

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Slider widget.
+use crate::compat::ToString;
 use crate::core::{Color, Orientation, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;

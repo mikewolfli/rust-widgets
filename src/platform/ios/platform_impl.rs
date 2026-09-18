@@ -33,16 +33,17 @@
 //! same data instead of treating these handles as native menus.
 
 use super::types::{IosHandleKind, IosMobilePlatform};
+use crate::compat::atomic::Ordering;
+use crate::compat::{format, lock, String};
 use crate::core::PlatformFamily;
 use crate::platform::{
     DropEvent, Platform, PlatformCapabilities, WidgetTriggerEvent, WidgetTriggerKind,
 };
-use std::sync::atomic::Ordering;
+use core::time::Duration;
 use std::thread;
-use std::time::Duration;
 
 impl Platform for IosMobilePlatform {
-    fn as_any(&self) -> &dyn std::any::Any {
+    fn as_any(&self) -> &dyn crate::compat::Any {
         self
     }
 
@@ -134,7 +135,7 @@ impl Platform for IosMobilePlatform {
         // Drop the menu bookkeeping that names this widget: attached menu-bar
         // ownership, membership in a parent menu's child list, and any queued
         // trigger that would otherwise fire for a widget that no longer exists.
-        let mut menus = self.menus.lock().expect("ios menus lock poisoned");
+        let mut menus = lock(&self.menus);
         menus.attached_menu_bar.retain(|_window, menu_bar| *menu_bar != widget_id);
         let destroyed_children = menus.menu_children.remove(&widget_id);
         menus.menu_children.retain(|_parent, children| {
@@ -264,7 +265,7 @@ impl Platform for IosMobilePlatform {
         if !matches!(self.kind_of(menu_bar), Some(IosHandleKind::MenuBar)) {
             return false;
         }
-        let mut menus = self.menus.lock().expect("ios menus lock poisoned");
+        let mut menus = lock(&self.menus);
         menus.attached_menu_bar.insert(window, menu_bar);
         true
     }
@@ -275,25 +276,21 @@ impl Platform for IosMobilePlatform {
         }
         let id = self.insert_widget(IosHandleKind::MenuItem, text, 0, 0, 0, 0);
 
-        let mut menus = self.menus.lock().expect("ios menus lock poisoned");
+        let mut menus = lock(&self.menus);
         menus.menu_children.entry(parent_menu).or_default().push(id);
 
         id
     }
 
     fn poll_menu_triggered(&self) -> Option<u64> {
-        self.menus.lock().expect("ios menus lock poisoned").pending_menu_events.pop_front()
+        lock(&self.menus).pending_menu_events.pop_front()
     }
 
     fn inject_menu_trigger(&self, menu_item_id: u64) -> bool {
         if !matches!(self.kind_of(menu_item_id), Some(IosHandleKind::MenuItem)) {
             return false;
         }
-        self.menus
-            .lock()
-            .expect("ios menus lock poisoned")
-            .pending_menu_events
-            .push_back(menu_item_id);
+        lock(&self.menus).pending_menu_events.push_back(menu_item_id);
         true
     }
 

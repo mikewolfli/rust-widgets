@@ -30,9 +30,8 @@
 //!   <https://gitlab.gnome.org/GNOME/at-spi2-core/-/blob/main/docs/at-spi-dbus-dev.md>
 
 use super::AccessibilityBridge;
+use crate::compat::{lock, HashMap, Mutex, String, ToString};
 use crate::core::ObjectId;
-use std::collections::HashMap;
-use std::sync::Mutex;
 
 /// Error message logged when the `linux-a11y` feature is disabled.
 #[cfg(not(feature = "linux-a11y"))]
@@ -260,7 +259,7 @@ impl LinuxAccessibilityBridge {
     ) {
         #[cfg(feature = "linux-a11y")]
         {
-            let conn_guard = dbus_connection.lock().expect("dbus_connection lock");
+            let conn_guard = lock(dbus_connection);
             if let Some(ref conn) = *conn_guard {
                 let source_path = Self::object_path_for(id);
                 Self::emit_atspi_event(
@@ -283,12 +282,12 @@ crate::impl_default_via_new!(LinuxAccessibilityBridge);
 
 impl AccessibilityBridge for LinuxAccessibilityBridge {
     fn set_accessibility_name(&self, id: ObjectId, name: &str) {
-        let mut names = self.names.lock().expect("names lock");
+        let mut names = lock(&self.names);
         names.insert(id, name.to_string());
     }
 
     fn accessibility_name(&self, id: ObjectId) -> Option<String> {
-        self.names.lock().expect("names lock").get(&id).cloned()
+        lock(&self.names).get(&id).cloned()
     }
 
     fn notify_name_changed(&self, id: ObjectId) {

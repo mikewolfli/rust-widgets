@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use crate::compat::Mutex;
+use crate::compat::{lock, vec, Any, Box, Mutex, String, Vec};
 use alloc::sync::Arc;
 /// Types that can be recycled through an [`ObjectPool`].
 ///
@@ -165,19 +165,19 @@ impl<T: Poolable + Send> SharedPool<T> {
     /// `T::default()` is substituted when empty, and the value is reset before it
     /// is returned.
     pub fn acquire(&self) -> T {
-        self.pool.lock().unwrap_or_else(|e| e.into_inner()).acquire()
+        lock(&self.pool).acquire()
     }
     /// Returns an object to the shared pool; see [`ObjectPool::release`] for the
     /// reset and `max_size` behaviour.
     pub fn release(&self, obj: T) {
-        self.pool.lock().unwrap_or_else(|e| e.into_inner()).release(obj);
+        lock(&self.pool).release(obj);
     }
     /// Captures a consistent snapshot of the pool's counters under a single lock.
     ///
     /// Cheap enough to poll for diagnostics. Like any snapshot it can be stale as
     /// soon as it is returned if other threads are acquiring or releasing.
     pub fn stats(&self) -> PoolStats {
-        let pool = self.pool.lock().unwrap_or_else(|e| e.into_inner());
+        let pool = lock(&self.pool);
         PoolStats {
             available: pool.available(),
             allocated: pool.allocated(),
@@ -212,7 +212,7 @@ pub struct PoolStats {
 /// registry does not own the pools: it stores a `SharedPool` clone per entry, so
 /// outstanding handles stay valid after the manager is dropped or cleared.
 pub struct PoolManager {
-    pools: Vec<Box<dyn std::any::Any + Send>>,
+    pools: Vec<Box<dyn Any + Send>>,
 }
 impl PoolManager {
     /// Creates an empty registry.

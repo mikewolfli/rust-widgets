@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Single-line text edit widget.
+use crate::compat::{Box, Rc, RefCell, String, ToString};
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -15,8 +16,6 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::text_utils::floor_char_boundary;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
-use std::cell::RefCell;
-use std::rc::Rc;
 /// Single-line text edit widget.
 pub struct LineEdit {
     base: BaseWidget,
@@ -664,6 +663,7 @@ impl Draw for LineEdit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compat::{MiniToString, Vec};
     use crate::core::Rect;
 
     #[test]

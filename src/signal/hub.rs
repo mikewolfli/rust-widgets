@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use super::{ConnectionHandle, ConnectionScope, GenericSignal, Priority};
-use crate::compat::HashMap;
-use crate::compat::Mutex;
+use crate::compat::{lock, HashMap, Mutex, String};
 
 /// Registry of dynamically named zero-argument signals.
 ///
@@ -26,7 +25,7 @@ impl CustomSignalHub {
 
     /// Defines a named signal if it does not already exist.
     pub fn define(&self, name: impl Into<String>) {
-        self.signals.lock().unwrap_or_else(|e| e.into_inner()).entry(name.into()).or_default();
+        lock(&self.signals).entry(name.into()).or_default();
     }
 
     /// Emits a named signal when present.
@@ -47,7 +46,7 @@ impl CustomSignalHub {
     /// `remove` from another thread simply does nothing.
     pub fn emit(&self, name: &str) {
         let signal = {
-            let signals = self.signals.lock().unwrap_or_else(|e| e.into_inner());
+            let signals = lock(&self.signals);
             signals.get(name).cloned()
         };
         if let Some(signal) = signal {
@@ -60,18 +59,13 @@ impl CustomSignalHub {
     where
         F: FnMut() + Send + Sync + 'static,
     {
-        self.signals
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entry(name.into())
-            .or_default()
-            .connect(slot)
+        lock(&self.signals).entry(name.into()).or_default().connect(slot)
     }
 
     /// Disconnect a specific handle from a named signal.
     /// Returns true if the handle was valid and disconnected.
     pub fn disconnect(&self, name: &str, handle: ConnectionHandle) -> bool {
-        let signals = self.signals.lock().unwrap_or_else(|e| e.into_inner());
+        let signals = lock(&self.signals);
         if let Some(signal) = signals.get(name) {
             signal.disconnect(handle)
         } else {
@@ -81,77 +75,58 @@ impl CustomSignalHub {
 
     /// Disconnect all slots from a named signal.
     pub fn disconnect_all(&self, name: &str) {
-        if let Some(signal) = self.signals.lock().unwrap_or_else(|e| e.into_inner()).get(name) {
+        if let Some(signal) = lock(&self.signals).get(name) {
             signal.disconnect_all();
         }
     }
 
     /// Remove a named signal entirely, disconnecting all its slots.
     pub fn remove(&self, name: &str) -> bool {
-        self.signals.lock().unwrap_or_else(|e| e.into_inner()).remove(name).is_some()
+        lock(&self.signals).remove(name).is_some()
     }
 
     /// Returns true if a named signal exists in the hub.
     pub fn contains(&self, name: &str) -> bool {
-        self.signals.lock().unwrap_or_else(|e| e.into_inner()).contains_key(name)
+        lock(&self.signals).contains_key(name)
     }
 
     /// Returns the number of named signals defined.
     pub fn signal_count(&self) -> usize {
-        self.signals.lock().unwrap_or_else(|e| e.into_inner()).len()
+        lock(&self.signals).len()
     }
 
     /// Returns true if the hub has no named signals.
     pub fn is_empty(&self) -> bool {
-        self.signals.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
+        lock(&self.signals).is_empty()
     }
 
     /// Remove all named signals and their slots.
     pub fn clear(&self) {
-        self.signals.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        lock(&self.signals).clear();
     }
 
     /// Temporarily block a slot on a named signal without disconnecting it.
     /// Returns true if the handle was valid.
     pub fn block(&self, name: &str, handle: ConnectionHandle) -> bool {
-        self.signals
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(name)
-            .map(|s| s.block(handle))
-            .unwrap_or(false)
+        lock(&self.signals).get(name).map(|s| s.block(handle)).unwrap_or(false)
     }
 
     /// Unblock a previously blocked slot on a named signal.
     /// Returns true if the handle was valid.
     pub fn unblock(&self, name: &str, handle: ConnectionHandle) -> bool {
-        self.signals
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(name)
-            .map(|s| s.unblock(handle))
-            .unwrap_or(false)
+        lock(&self.signals).get(name).map(|s| s.unblock(handle)).unwrap_or(false)
     }
 
     /// Returns `Some(true/false)` if the handle exists on the named signal,
     /// `None` if the signal or handle is invalid.
     pub fn is_blocked(&self, name: &str, handle: ConnectionHandle) -> Option<bool> {
-        self.signals
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(name)
-            .and_then(|s| s.is_blocked(handle))
+        lock(&self.signals).get(name).and_then(|s| s.is_blocked(handle))
     }
 
     /// Change the priority of an existing connection on a named signal.
     /// Returns true if the handle was valid.
     pub fn set_priority(&self, name: &str, handle: ConnectionHandle, priority: Priority) -> bool {
-        self.signals
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(name)
-            .map(|s| s.set_priority(handle, priority))
-            .unwrap_or(false)
+        lock(&self.signals).get(name).map(|s| s.set_priority(handle, priority)).unwrap_or(false)
     }
 
     /// Connect a once-slot to a named signal, creating it when missing.
@@ -160,12 +135,7 @@ impl CustomSignalHub {
     where
         F: FnMut() + Send + Sync + 'static,
     {
-        self.signals
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entry(name.into())
-            .or_default()
-            .connect_once(slot)
+        lock(&self.signals).entry(name.into()).or_default().connect_once(slot)
     }
 
     /// Connect a slot to a named signal with a specific priority.
@@ -178,12 +148,7 @@ impl CustomSignalHub {
     where
         F: FnMut() + Send + Sync + 'static,
     {
-        self.signals
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entry(name.into())
-            .or_default()
-            .connect_with_priority(slot, priority)
+        lock(&self.signals).entry(name.into()).or_default().connect_with_priority(slot, priority)
     }
 
     /// Connect a slot bound to an owner scope on a named signal.
@@ -196,12 +161,7 @@ impl CustomSignalHub {
     where
         F: FnMut() + Send + Sync + 'static,
     {
-        self.signals
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entry(name.into())
-            .or_default()
-            .connect_scoped(owner, slot)
+        lock(&self.signals).entry(name.into()).or_default().connect_scoped(owner, slot)
     }
 
     /// Connect a once-slot bound to an owner scope on a named signal.
@@ -214,23 +174,13 @@ impl CustomSignalHub {
     where
         F: FnMut() + Send + Sync + 'static,
     {
-        self.signals
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entry(name.into())
-            .or_default()
-            .connect_once_scoped(owner, slot)
+        lock(&self.signals).entry(name.into()).or_default().connect_once_scoped(owner, slot)
     }
 
     /// Return the number of slots connected to a named signal.
     /// Returns 0 if the signal does not exist.
     pub fn slot_count(&self, name: &str) -> usize {
-        self.signals
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(name)
-            .map(|s| s.slot_count())
-            .unwrap_or(0)
+        lock(&self.signals).get(name).map(|s| s.slot_count()).unwrap_or(0)
     }
 }
 

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! MiniCanvas widget — simplified drawing surface for mini builds (BLUE13 R2.11).
+use crate::compat::Vec;
 use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderCommand, RenderContext};

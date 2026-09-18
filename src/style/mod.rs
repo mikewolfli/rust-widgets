@@ -65,6 +65,7 @@ pub mod theme_state;
 pub use animation::*;
 pub use animation_group::*;
 pub use css::*;
+#[cfg(not(alloc_frugal))]
 pub use css_watcher::*;
 pub use gradient::*;
 pub use primitives::*;

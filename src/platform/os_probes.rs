@@ -24,6 +24,8 @@
 //! inline copies had; these are not called per frame, and a platform probe that
 //! returned a cached figure would be lying about a live measurement.
 
+use crate::compat::{fmt, format, String, ToString};
+
 /// Reads `MemTotal` from `/proc/meminfo`, in mebibytes.
 ///
 /// Returns `None` when the file is unreadable or the field is missing, which is
@@ -167,8 +169,8 @@ impl SpoolerFailure {
     }
 }
 
-impl std::fmt::Display for SpoolerFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for SpoolerFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Unavailable(message) | Self::Rejected(message) => f.write_str(message),
         }

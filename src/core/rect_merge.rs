@@ -12,6 +12,7 @@
 //! This module centralises the core algorithm so all consumers share a single
 //! correct, tested implementation.
 
+use crate::compat::Vec;
 use crate::core::Rect;
 
 /// Merge overlapping rectangles into a minimal covering set.

@@ -3,8 +3,11 @@
 
 //! Shared backend state model used by platform adapters.
 use super::{DropEvent, EchoMode, WidgetTriggerEvent, WidgetTriggerKind, WindowStateFlag};
+use crate::compat::lock;
 use crate::compat::HashMap;
 use crate::compat::Mutex;
+use crate::compat::String;
+use crate::compat::ToString;
 use crate::core::ObjectId;
 use crate::core::Orientation;
 use crate::core::Rect;
@@ -218,13 +221,8 @@ where
     #[cfg(feature = "serde_json")]
     /// Serialize widget text snapshots without exposing synchronization primitives or id counters.
     pub fn serialize_widget_snapshot(&self) -> Result<String, serde_json::Error> {
-        let texts: Vec<String> = self
-            .widgets
-            .lock()
-            .expect("backend state widget lock poisoned")
-            .values()
-            .map(|record| record.text.clone())
-            .collect();
+        let texts: Vec<String> =
+            lock(&self.widgets).values().map(|record| record.text.clone()).collect();
         serde_json::to_string(&texts)
     }
 
@@ -259,28 +257,25 @@ where
         if !self.contains_widget(id) {
             return false;
         }
-        let mut surfaces = self.surfaces.lock().unwrap_or_else(|e| e.into_inner());
+        let mut surfaces = lock(&self.surfaces);
         surfaces.insert(id, rect_to_tuple(rect));
         true
     }
 
     /// Forgets the surface for `id`. Returns whether one was recorded.
     pub fn unmount_surface_record(&self, id: ObjectId) -> bool {
-        let removed = self.surfaces.lock().unwrap_or_else(|e| e.into_inner()).remove(&id).is_some();
+        let removed = lock(&self.surfaces).remove(&id).is_some();
         if removed {
             // A repaint request for a widget that is gone would make the host ask for
             // a frame that can never be produced.
-            self.pending_repaints
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .retain(|&pending| pending != id);
+            lock(&self.pending_repaints).retain(|&pending| pending != id);
         }
         removed
     }
 
     /// Updates the rect of a mounted surface. Returns whether `id` was mounted.
     pub fn resize_surface_record(&self, id: ObjectId, rect: Rect) -> bool {
-        let mut surfaces = self.surfaces.lock().unwrap_or_else(|e| e.into_inner());
+        let mut surfaces = lock(&self.surfaces);
         match surfaces.get_mut(&id) {
             Some(existing) => {
                 *existing = rect_to_tuple(rect);
@@ -292,11 +287,7 @@ where
 
     /// Returns the rect of a mounted surface, or `None` when `id` is not mounted.
     pub fn surface_rect(&self, id: ObjectId) -> Option<Rect> {
-        self.surfaces
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&id)
-            .map(|&(x, y, width, height)| Rect::new(x, y, width, height))
+        lock(&self.surfaces).get(&id).map(|&(x, y, width, height)| Rect::new(x, y, width, height))
     }
 
     /// Queues a repaint for `id` and reports whether it was mounted.
@@ -308,7 +299,7 @@ where
         if self.surface_rect(id).is_none() {
             return false;
         }
-        let mut pending = self.pending_repaints.lock().unwrap_or_else(|e| e.into_inner());
+        let mut pending = lock(&self.pending_repaints);
         if !pending.contains(&id) {
             pending.push_back(id);
         }
@@ -317,17 +308,17 @@ where
 
     /// Removes and returns the next widget awaiting a repaint.
     pub fn take_pending_repaint(&self) -> Option<ObjectId> {
-        self.pending_repaints.lock().unwrap_or_else(|e| e.into_inner()).pop_front()
+        lock(&self.pending_repaints).pop_front()
     }
 
     /// Returns how many widgets are awaiting a repaint.
     pub fn pending_repaint_count(&self) -> usize {
-        self.pending_repaints.lock().unwrap_or_else(|e| e.into_inner()).len()
+        lock(&self.pending_repaints).len()
     }
 
     /// Returns how many surfaces this host is displaying.
     pub fn mounted_surface_count(&self) -> usize {
-        self.surfaces.lock().unwrap_or_else(|e| e.into_inner()).len()
+        lock(&self.surfaces).len()
     }
     /// Insert one widget record and return allocated logical id.
     pub fn create_widget(
@@ -383,7 +374,7 @@ where
         width: u32,
         height: u32,
     ) {
-        self.widgets.lock().expect("backend state widget lock poisoned").insert(
+        lock(&self.widgets).insert(
             id,
             WidgetRecord {
                 kind,
@@ -417,7 +408,7 @@ where
     }
     /// Return `true` when widget exists.
     pub fn contains_widget(&self, widget_id: ObjectId) -> bool {
-        self.widgets.lock().expect("backend state widget lock poisoned").contains_key(&widget_id)
+        lock(&self.widgets).contains_key(&widget_id)
     }
 
     /// Remove a widget record, returning `true` when it existed.
@@ -427,25 +418,17 @@ where
     /// (create/discard cycles) would leak one record — plus whatever native
     /// object the backend stored — per discarded widget, forever.
     pub fn destroy_widget(&self, widget_id: ObjectId) -> bool {
-        self.widgets
-            .lock()
-            .expect("backend state widget lock poisoned")
-            .remove(&widget_id)
-            .is_some()
+        lock(&self.widgets).remove(&widget_id).is_some()
     }
 
     /// Number of live widget records. Used by tests and diagnostics to prove
     /// that teardown actually releases state.
     pub fn widget_count(&self) -> usize {
-        self.widgets.lock().expect("backend state widget lock poisoned").len()
+        lock(&self.widgets).len()
     }
     /// Return kind for an existing widget.
     pub fn kind_of(&self, widget_id: ObjectId) -> Option<K> {
-        self.widgets
-            .lock()
-            .expect("backend state widget lock poisoned")
-            .get(&widget_id)
-            .map(|widget| widget.kind)
+        lock(&self.widgets).get(&widget_id).map(|widget| widget.kind)
     }
     /// Return `true` when widget exists and kind matches.
     pub fn is_kind(&self, widget_id: ObjectId, kind: K) -> bool {
@@ -453,43 +436,27 @@ where
     }
     /// Set visibility for a widget.
     pub fn set_visible(&self, widget_id: ObjectId, visible: bool) {
-        if let Some(widget) =
-            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
-        {
+        if let Some(widget) = lock(&self.widgets).get_mut(&widget_id) {
             widget.visible = visible;
         }
     }
     /// Return visibility for a widget.
     pub fn visible(&self, widget_id: ObjectId) -> bool {
-        self.widgets
-            .lock()
-            .expect("backend state widget lock poisoned")
-            .get(&widget_id)
-            .map(|widget| widget.visible)
-            .unwrap_or(false)
+        lock(&self.widgets).get(&widget_id).map(|widget| widget.visible).unwrap_or(false)
     }
     /// Set enabled state for a widget.
     pub fn set_enabled(&self, widget_id: ObjectId, enabled: bool) {
-        if let Some(widget) =
-            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
-        {
+        if let Some(widget) = lock(&self.widgets).get_mut(&widget_id) {
             widget.enabled = enabled;
         }
     }
     /// Return enabled state for a widget.
     pub fn enabled(&self, widget_id: ObjectId) -> bool {
-        self.widgets
-            .lock()
-            .expect("backend state widget lock poisoned")
-            .get(&widget_id)
-            .map(|widget| widget.enabled)
-            .unwrap_or(false)
+        lock(&self.widgets).get(&widget_id).map(|widget| widget.enabled).unwrap_or(false)
     }
     /// Set geometry for a widget.
     pub fn set_geometry(&self, widget_id: ObjectId, x: i32, y: i32, width: u32, height: u32) {
-        if let Some(widget) =
-            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
-        {
+        if let Some(widget) = lock(&self.widgets).get_mut(&widget_id) {
             widget.x = x;
             widget.y = y;
             widget.width = width;
@@ -498,9 +465,7 @@ where
     }
     /// Set text for a widget.
     pub fn set_text(&self, widget_id: ObjectId, text: &str) -> bool {
-        if let Some(widget) =
-            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
-        {
+        if let Some(widget) = lock(&self.widgets).get_mut(&widget_id) {
             widget.text = text.to_string();
             return true;
         }
@@ -508,18 +473,11 @@ where
     }
     /// Return text for a widget.
     pub fn text(&self, widget_id: ObjectId) -> String {
-        self.widgets
-            .lock()
-            .expect("backend state widget lock poisoned")
-            .get(&widget_id)
-            .map(|widget| widget.text.clone())
-            .unwrap_or_default()
+        lock(&self.widgets).get(&widget_id).map(|widget| widget.text.clone()).unwrap_or_default()
     }
     /// Set IME enabled state for a widget.
     pub fn set_ime_enabled(&self, widget_id: ObjectId, enabled: bool) -> bool {
-        if let Some(widget) =
-            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
-        {
+        if let Some(widget) = lock(&self.widgets).get_mut(&widget_id) {
             widget.ime_enabled = enabled;
             return true;
         }
@@ -527,18 +485,11 @@ where
     }
     /// Return IME enabled state for a widget.
     pub fn ime_enabled(&self, widget_id: ObjectId) -> bool {
-        self.widgets
-            .lock()
-            .expect("backend state widget lock poisoned")
-            .get(&widget_id)
-            .map(|widget| widget.ime_enabled)
-            .unwrap_or(false)
+        lock(&self.widgets).get(&widget_id).map(|widget| widget.ime_enabled).unwrap_or(false)
     }
     /// Set accessibility label for a widget.
     pub fn set_accessibility_name(&self, widget_id: ObjectId, name: &str) -> bool {
-        if let Some(widget) =
-            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
-        {
+        if let Some(widget) = lock(&self.widgets).get_mut(&widget_id) {
             widget.accessibility_name = name.to_string();
             return true;
         }
@@ -546,9 +497,7 @@ where
     }
     /// Return accessibility label for a widget.
     pub fn accessibility_name(&self, widget_id: ObjectId) -> String {
-        self.widgets
-            .lock()
-            .expect("backend state widget lock poisoned")
+        lock(&self.widgets)
             .get(&widget_id)
             .map(|widget| widget.accessibility_name.clone())
             .unwrap_or_default()
@@ -570,9 +519,7 @@ where
 
     /// Store a widget's numeric value, returning `false` for an unknown id.
     pub fn set_value(&self, widget_id: ObjectId, value: f64) -> bool {
-        if let Some(widget) =
-            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
-        {
+        if let Some(widget) = lock(&self.widgets).get_mut(&widget_id) {
             widget.value = Some(value);
             return true;
         }
@@ -580,17 +527,11 @@ where
     }
     /// Return a widget's numeric value, or `None` when it has none.
     pub fn value(&self, widget_id: ObjectId) -> Option<f64> {
-        self.widgets
-            .lock()
-            .expect("backend state widget lock poisoned")
-            .get(&widget_id)
-            .and_then(|widget| widget.value)
+        lock(&self.widgets).get(&widget_id).and_then(|widget| widget.value)
     }
     /// Store a widget's `(min, max)` range, returning `false` for an unknown id.
     pub fn set_range(&self, widget_id: ObjectId, min: f64, max: f64) -> bool {
-        if let Some(widget) =
-            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
-        {
+        if let Some(widget) = lock(&self.widgets).get_mut(&widget_id) {
             widget.range = Some((min, max));
             // Keep the stored value inside the new range, mirroring what every
             // native control does when its range shrinks under the current value.
@@ -603,17 +544,11 @@ where
     }
     /// Return a widget's `(min, max)` range, or `None` when it has none.
     pub fn range(&self, widget_id: ObjectId) -> Option<(f64, f64)> {
-        self.widgets
-            .lock()
-            .expect("backend state widget lock poisoned")
-            .get(&widget_id)
-            .and_then(|widget| widget.range)
+        lock(&self.widgets).get(&widget_id).and_then(|widget| widget.range)
     }
     /// Store a widget's selection index, returning `false` for an unknown id.
     pub fn set_selected_index(&self, widget_id: ObjectId, index: Option<usize>) -> bool {
-        if let Some(widget) =
-            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
-        {
+        if let Some(widget) = lock(&self.widgets).get_mut(&widget_id) {
             widget.selected_index = index;
             return true;
         }
@@ -621,17 +556,11 @@ where
     }
     /// Return a widget's selection index, or `None` when nothing is selected.
     pub fn selected_index(&self, widget_id: ObjectId) -> Option<usize> {
-        self.widgets
-            .lock()
-            .expect("backend state widget lock poisoned")
-            .get(&widget_id)
-            .and_then(|widget| widget.selected_index)
+        lock(&self.widgets).get(&widget_id).and_then(|widget| widget.selected_index)
     }
     /// Store a widget's checked state, returning `false` for an unknown id.
     pub fn set_checked(&self, widget_id: ObjectId, checked: bool) -> bool {
-        if let Some(widget) =
-            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
-        {
+        if let Some(widget) = lock(&self.widgets).get_mut(&widget_id) {
             widget.checked = Some(checked);
             return true;
         }
@@ -639,18 +568,12 @@ where
     }
     /// Return a widget's checked state, or `None` when it is not checkable.
     pub fn checked(&self, widget_id: ObjectId) -> Option<bool> {
-        self.widgets
-            .lock()
-            .expect("backend state widget lock poisoned")
-            .get(&widget_id)
-            .and_then(|widget| widget.checked)
+        lock(&self.widgets).get(&widget_id).and_then(|widget| widget.checked)
     }
 
     /// Store a widget's increment step, returning `false` for an unknown id.
     pub fn set_step(&self, widget_id: ObjectId, step: f64) -> bool {
-        if let Some(widget) =
-            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
-        {
+        if let Some(widget) = lock(&self.widgets).get_mut(&widget_id) {
             widget.step = Some(step);
             return true;
         }
@@ -658,17 +581,11 @@ where
     }
     /// Return a widget's increment step, or `None` when it has none.
     pub fn step(&self, widget_id: ObjectId) -> Option<f64> {
-        self.widgets
-            .lock()
-            .expect("backend state widget lock poisoned")
-            .get(&widget_id)
-            .and_then(|widget| widget.step)
+        lock(&self.widgets).get(&widget_id).and_then(|widget| widget.step)
     }
     /// Store a widget's indeterminate state, returning `false` for an unknown id.
     pub fn set_indeterminate(&self, widget_id: ObjectId, indeterminate: bool) -> bool {
-        if let Some(widget) =
-            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
-        {
+        if let Some(widget) = lock(&self.widgets).get_mut(&widget_id) {
             widget.indeterminate = Some(indeterminate);
             return true;
         }
@@ -676,17 +593,11 @@ where
     }
     /// Return a widget's indeterminate state, or `None` when it has none.
     pub fn indeterminate(&self, widget_id: ObjectId) -> Option<bool> {
-        self.widgets
-            .lock()
-            .expect("backend state widget lock poisoned")
-            .get(&widget_id)
-            .and_then(|widget| widget.indeterminate)
+        lock(&self.widgets).get(&widget_id).and_then(|widget| widget.indeterminate)
     }
     /// Store a widget's read-only state, returning `false` for an unknown id.
     pub fn set_read_only(&self, widget_id: ObjectId, read_only: bool) -> bool {
-        if let Some(widget) =
-            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
-        {
+        if let Some(widget) = lock(&self.widgets).get_mut(&widget_id) {
             widget.read_only = Some(read_only);
             return true;
         }
@@ -694,17 +605,11 @@ where
     }
     /// Return a widget's read-only state, or `None` when it has none.
     pub fn read_only(&self, widget_id: ObjectId) -> Option<bool> {
-        self.widgets
-            .lock()
-            .expect("backend state widget lock poisoned")
-            .get(&widget_id)
-            .and_then(|widget| widget.read_only)
+        lock(&self.widgets).get(&widget_id).and_then(|widget| widget.read_only)
     }
     /// Store a widget's maximum text length, returning `false` for an unknown id.
     pub fn set_max_length(&self, widget_id: ObjectId, max_length: u32) -> bool {
-        if let Some(widget) =
-            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
-        {
+        if let Some(widget) = lock(&self.widgets).get_mut(&widget_id) {
             widget.max_length = Some(max_length);
             return true;
         }
@@ -712,11 +617,7 @@ where
     }
     /// Return a widget's maximum text length, or `None` when it has none.
     pub fn max_length(&self, widget_id: ObjectId) -> Option<u32> {
-        self.widgets
-            .lock()
-            .expect("backend state widget lock poisoned")
-            .get(&widget_id)
-            .and_then(|widget| widget.max_length)
+        lock(&self.widgets).get(&widget_id).and_then(|widget| widget.max_length)
     }
 
     /// Mark a widget as a window and seed its initial window state.
@@ -725,9 +626,7 @@ where
     /// `window_state == None`, so `is_window_in_state` correctly reports "not a
     /// window" for every non-window control.
     pub fn init_window_state(&self, widget_id: ObjectId, initial: WindowStateRecord) -> bool {
-        if let Some(widget) =
-            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
-        {
+        if let Some(widget) = lock(&self.widgets).get_mut(&widget_id) {
             widget.window_state = Some(initial);
             return true;
         }
@@ -736,9 +635,7 @@ where
 
     /// Store one window state flag, returning `false` when the id is not a window.
     pub fn set_window_state(&self, widget_id: ObjectId, flag: WindowStateFlag, on: bool) -> bool {
-        if let Some(widget) =
-            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
-        {
+        if let Some(widget) = lock(&self.widgets).get_mut(&widget_id) {
             if let Some(state) = widget.window_state.as_mut() {
                 state.set(flag, on);
                 return true;
@@ -749,9 +646,7 @@ where
 
     /// Read one window state flag, or `None` when the id is not a window.
     pub fn window_state(&self, widget_id: ObjectId, flag: WindowStateFlag) -> Option<bool> {
-        self.widgets
-            .lock()
-            .expect("backend state widget lock poisoned")
+        lock(&self.widgets)
             .get(&widget_id)
             .and_then(|widget| widget.window_state.as_ref())
             .map(|state| state.get(flag))
@@ -759,9 +654,7 @@ where
 
     /// Store a window's minimum content size, returning `false` for a non-window.
     pub fn set_window_min_size(&self, widget_id: ObjectId, width: u32, height: u32) -> bool {
-        if let Some(widget) =
-            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
-        {
+        if let Some(widget) = lock(&self.widgets).get_mut(&widget_id) {
             if let Some(state) = widget.window_state.as_mut() {
                 state.min_size = Some((width, height));
                 return true;
@@ -772,9 +665,7 @@ where
 
     /// Read a window's minimum content size, or `None` when it has none.
     pub fn window_min_size(&self, widget_id: ObjectId) -> Option<(u32, u32)> {
-        self.widgets
-            .lock()
-            .expect("backend state widget lock poisoned")
+        lock(&self.widgets)
             .get(&widget_id)
             .and_then(|widget| widget.window_state.as_ref())
             .and_then(|state| state.min_size)
@@ -782,9 +673,7 @@ where
 
     /// Store a window's icon path, returning `false` for a non-window.
     pub fn set_window_icon(&self, widget_id: ObjectId, path: &str) -> bool {
-        if let Some(widget) =
-            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
-        {
+        if let Some(widget) = lock(&self.widgets).get_mut(&widget_id) {
             if let Some(state) = widget.window_state.as_mut() {
                 state.icon = Some(path.to_string());
                 return true;
@@ -795,9 +684,7 @@ where
 
     /// Read a window's icon path, or `None` when it has none.
     pub fn window_icon(&self, widget_id: ObjectId) -> Option<String> {
-        self.widgets
-            .lock()
-            .expect("backend state widget lock poisoned")
+        lock(&self.widgets)
             .get(&widget_id)
             .and_then(|widget| widget.window_state.as_ref())
             .and_then(|state| state.icon.clone())
@@ -805,9 +692,7 @@ where
 
     /// Store a text entry's selection range, returning `false` for unknown ids.
     pub fn set_selection(&self, widget_id: ObjectId, start: u32, end: u32) -> bool {
-        if let Some(widget) =
-            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
-        {
+        if let Some(widget) = lock(&self.widgets).get_mut(&widget_id) {
             widget.selection = Some((start, end));
             return true;
         }
@@ -815,17 +700,11 @@ where
     }
     /// Read a text entry's selection range, or `None` when nothing is selected.
     pub fn selection(&self, widget_id: ObjectId) -> Option<(u32, u32)> {
-        self.widgets
-            .lock()
-            .expect("backend state widget lock poisoned")
-            .get(&widget_id)
-            .and_then(|widget| widget.selection)
+        lock(&self.widgets).get(&widget_id).and_then(|widget| widget.selection)
     }
     /// Store a text entry's placeholder text, returning `false` for unknown ids.
     pub fn set_placeholder(&self, widget_id: ObjectId, text: &str) -> bool {
-        if let Some(widget) =
-            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
-        {
+        if let Some(widget) = lock(&self.widgets).get_mut(&widget_id) {
             widget.placeholder = Some(text.to_string());
             return true;
         }
@@ -833,17 +712,11 @@ where
     }
     /// Read a text entry's placeholder text.
     pub fn placeholder(&self, widget_id: ObjectId) -> Option<String> {
-        self.widgets
-            .lock()
-            .expect("backend state widget lock poisoned")
-            .get(&widget_id)
-            .and_then(|widget| widget.placeholder.clone())
+        lock(&self.widgets).get(&widget_id).and_then(|widget| widget.placeholder.clone())
     }
     /// Store a text entry's echo mode, returning `false` for unknown ids.
     pub fn set_echo_mode(&self, widget_id: ObjectId, mode: EchoMode) -> bool {
-        if let Some(widget) =
-            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
-        {
+        if let Some(widget) = lock(&self.widgets).get_mut(&widget_id) {
             widget.echo_mode = Some(mode);
             return true;
         }
@@ -851,17 +724,11 @@ where
     }
     /// Read a text entry's echo mode.
     pub fn echo_mode(&self, widget_id: ObjectId) -> Option<EchoMode> {
-        self.widgets
-            .lock()
-            .expect("backend state widget lock poisoned")
-            .get(&widget_id)
-            .and_then(|widget| widget.echo_mode)
+        lock(&self.widgets).get(&widget_id).and_then(|widget| widget.echo_mode)
     }
     /// Store a checkable control's tri-state mode, `false` for unknown ids.
     pub fn set_tristate(&self, widget_id: ObjectId, enabled: bool) -> bool {
-        if let Some(widget) =
-            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
-        {
+        if let Some(widget) = lock(&self.widgets).get_mut(&widget_id) {
             widget.tristate = Some(enabled);
             return true;
         }
@@ -869,17 +736,11 @@ where
     }
     /// Read a checkable control's tri-state mode.
     pub fn tristate(&self, widget_id: ObjectId) -> Option<bool> {
-        self.widgets
-            .lock()
-            .expect("backend state widget lock poisoned")
-            .get(&widget_id)
-            .and_then(|widget| widget.tristate)
+        lock(&self.widgets).get(&widget_id).and_then(|widget| widget.tristate)
     }
     /// Store a radio button's group name, `false` for unknown ids.
     pub fn set_group(&self, widget_id: ObjectId, group: &str) -> bool {
-        if let Some(widget) =
-            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
-        {
+        if let Some(widget) = lock(&self.widgets).get_mut(&widget_id) {
             widget.group = Some(group.to_string());
             return true;
         }
@@ -887,17 +748,11 @@ where
     }
     /// Read a radio button's group name.
     pub fn group(&self, widget_id: ObjectId) -> Option<String> {
-        self.widgets
-            .lock()
-            .expect("backend state widget lock poisoned")
-            .get(&widget_id)
-            .and_then(|widget| widget.group.clone())
+        lock(&self.widgets).get(&widget_id).and_then(|widget| widget.group.clone())
     }
     /// Store a scroll container's offset, `false` for unknown ids.
     pub fn set_scroll(&self, widget_id: ObjectId, x: i32, y: i32) -> bool {
-        if let Some(widget) =
-            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
-        {
+        if let Some(widget) = lock(&self.widgets).get_mut(&widget_id) {
             widget.scroll = Some((x, y));
             return true;
         }
@@ -905,17 +760,11 @@ where
     }
     /// Read a scroll container's offset.
     pub fn scroll(&self, widget_id: ObjectId) -> Option<(i32, i32)> {
-        self.widgets
-            .lock()
-            .expect("backend state widget lock poisoned")
-            .get(&widget_id)
-            .and_then(|widget| widget.scroll)
+        lock(&self.widgets).get(&widget_id).and_then(|widget| widget.scroll)
     }
     /// Store a slider's creation-time orientation, `false` for unknown ids.
     pub fn set_orientation(&self, widget_id: ObjectId, orientation: Orientation) -> bool {
-        if let Some(widget) =
-            self.widgets.lock().expect("backend state widget lock poisoned").get_mut(&widget_id)
-        {
+        if let Some(widget) = lock(&self.widgets).get_mut(&widget_id) {
             widget.horizontal = Some(orientation == Orientation::Horizontal);
             return true;
         }
@@ -923,20 +772,13 @@ where
     }
     /// Read a slider's creation-time orientation.
     pub fn orientation(&self, widget_id: ObjectId) -> Option<Orientation> {
-        self.widgets
-            .lock()
-            .expect("backend state widget lock poisoned")
-            .get(&widget_id)
-            .and_then(|widget| widget.horizontal)
-            .map(
-                |horizontal| {
-                    if horizontal {
-                        Orientation::Horizontal
-                    } else {
-                        Orientation::Vertical
-                    }
-                },
-            )
+        lock(&self.widgets).get(&widget_id).and_then(|widget| widget.horizontal).map(|horizontal| {
+            if horizontal {
+                Orientation::Horizontal
+            } else {
+                Orientation::Vertical
+            }
+        })
     }
 
     // ─── Backend event methods ─────────────────────────────────────────────────
@@ -946,41 +788,37 @@ where
     /// Push menu trigger event.
     /// Reserved for menu system integration (not yet wired to platform backends).
     pub fn push_menu_event(&self, item_id: ObjectId) {
-        self.menu_events.lock().expect("backend state menu lock poisoned").push_back(item_id);
+        lock(&self.menu_events).push_back(item_id);
     }
     /// Pop menu trigger event.
     /// Reserved for menu system integration (paired with push_menu_event).
     pub fn pop_menu_event(&self) -> Option<ObjectId> {
-        self.menu_events.lock().expect("backend state menu lock poisoned").pop_front()
+        lock(&self.menu_events).pop_front()
     }
     /// Push typed widget trigger event.
     /// Reserved for event system integration (not yet wired to platform backends).
     pub fn push_widget_event(&self, event: WidgetTriggerEvent) {
-        self.widget_events
-            .lock()
-            .expect("backend state widget-event lock poisoned")
-            .push_back(event);
+        lock(&self.widget_events).push_back(event);
     }
     /// Pop typed widget trigger event.
     pub fn pop_widget_event(&self) -> Option<WidgetTriggerEvent> {
-        self.widget_events.lock().expect("backend state widget-event lock poisoned").pop_front()
+        lock(&self.widget_events).pop_front()
     }
     /// Set clipboard text.
     pub fn set_clipboard_text(&self, text: &str) -> bool {
-        *self.clipboard_text.lock().expect("backend state clipboard lock poisoned") =
-            text.to_string();
+        *lock(&self.clipboard_text) = text.to_string();
         true
     }
     /// Get clipboard text.
     pub fn clipboard_text(&self) -> String {
-        self.clipboard_text.lock().expect("backend state clipboard lock poisoned").clone()
+        lock(&self.clipboard_text).clone()
     }
     /// Begin drag event for existing source widget.
     pub fn begin_drag(&self, source_widget_id: ObjectId, mime: &str, payload: &[u8]) -> bool {
         if !self.contains_widget(source_widget_id) {
             return false;
         }
-        self.drop_events.lock().expect("backend state drop lock poisoned").push_back(DropEvent {
+        lock(&self.drop_events).push_back(DropEvent {
             source_widget_id,
             target_widget_id: 0, // Not yet known — target is determined at drop time
             mime: mime.to_string(),
@@ -990,14 +828,14 @@ where
     }
     /// Pop one drop event.
     pub fn pop_drop_event(&self) -> Option<DropEvent> {
-        self.drop_events.lock().expect("backend state drop lock poisoned").pop_front()
+        lock(&self.drop_events).pop_front()
     }
     /// Inject drop event when target widget exists.
     pub fn inject_drop_event(&self, event: DropEvent) -> bool {
         if !self.contains_widget(event.target_widget_id) {
             return false;
         }
-        self.drop_events.lock().expect("backend state drop lock poisoned").push_back(event);
+        lock(&self.drop_events).push_back(event);
         true
     }
 
@@ -1048,11 +886,7 @@ where
     /// reporting those is honest where inventing a number would not be (principle #37).
     /// The *reported* size lives with the control backend, which owns the window.
     pub fn window_size(&self, window_id: ObjectId) -> Option<(u32, u32)> {
-        self.widgets
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(&window_id)
-            .map(|record| (record.width, record.height))
+        lock(&self.widgets).get(&window_id).map(|record| (record.width, record.height))
     }
 
     /// The full geometry `widget_id` was last given, if it exists.
@@ -1062,9 +896,7 @@ where
     /// [`BackendState::set_geometry`] takes all four numbers: dropping the origin would
     /// move the window to `(0, 0)` as a side effect of resizing it.
     pub fn widget_geometry(&self, widget_id: ObjectId) -> Option<(i32, i32, u32, u32)> {
-        self.widgets
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        lock(&self.widgets)
             .get(&widget_id)
             .map(|record| (record.x, record.y, record.width, record.height))
     }

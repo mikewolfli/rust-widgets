@@ -17,6 +17,7 @@ pub use registry::{WidgetEntry, WidgetKind, WidgetRegistry};
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compat::MiniToString;
 
     #[test]
     fn registry_register_and_get() {

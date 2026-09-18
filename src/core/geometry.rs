@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
+use crate::compat::fmt;
+
 /// Two-dimensional point in logical pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Point {
@@ -108,7 +110,7 @@ impl Point {
         (self.x.max(0) as u32, self.y.max(0) as u32)
     }
 }
-impl std::ops::Add<(i32, i32)> for Point {
+impl core::ops::Add<(i32, i32)> for Point {
     type Output = Self;
     fn add(self, (dx, dy): (i32, i32)) -> Self {
         Self::new(self.x.saturating_add(dx), self.y.saturating_add(dy))
@@ -119,8 +121,8 @@ impl From<(i32, i32)> for Point {
         Self::new(x, y)
     }
 }
-impl std::fmt::Display for Point {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Point {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Point({}, {})", self.x, self.y)
     }
 }
@@ -235,14 +237,14 @@ impl Size {
         }
     }
 }
-impl std::ops::Add<(u32, u32)> for Size {
+impl core::ops::Add<(u32, u32)> for Size {
     type Output = Self;
     fn add(self, (dw, dh): (u32, u32)) -> Self {
         Self::new(self.width.saturating_add(dw), self.height.saturating_add(dh))
     }
 }
-impl std::fmt::Display for Size {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Size {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Size({}x{})", self.width, self.height)
     }
 }
@@ -593,8 +595,8 @@ impl Default for Rect {
         Self::new(0, 0, 0, 0)
     }
 }
-impl std::fmt::Display for Rect {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Rect {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Rect({}, {}, {}x{})", self.x, self.y, self.width, self.height)
     }
 }
@@ -610,7 +612,7 @@ pub enum Orientation {
 /// Converts degrees to radians.
 #[inline]
 pub fn deg_to_rad(deg: f32) -> f32 {
-    deg * std::f32::consts::PI / 180.0
+    deg * core::f32::consts::PI / 180.0
 }
 
 #[cfg(test)]

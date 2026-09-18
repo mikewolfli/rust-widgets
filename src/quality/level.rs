@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 //! Rendering quality level enum.
+use core::cmp::Ordering;
+
 /// Rendering quality levels for adaptive performance control.
 ///
 /// # Examples
@@ -27,20 +29,20 @@ pub enum QualityLevel {
     Low,
 }
 impl PartialOrd for QualityLevel {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 impl Ord for QualityLevel {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
-            (QualityLevel::High, QualityLevel::High) => std::cmp::Ordering::Equal,
-            (QualityLevel::High, _) => std::cmp::Ordering::Greater,
-            (_, QualityLevel::High) => std::cmp::Ordering::Less,
-            (QualityLevel::Medium, QualityLevel::Medium) => std::cmp::Ordering::Equal,
-            (QualityLevel::Medium, QualityLevel::Low) => std::cmp::Ordering::Greater,
-            (QualityLevel::Low, QualityLevel::Medium) => std::cmp::Ordering::Less,
-            (QualityLevel::Low, QualityLevel::Low) => std::cmp::Ordering::Equal,
+            (QualityLevel::High, QualityLevel::High) => Ordering::Equal,
+            (QualityLevel::High, _) => Ordering::Greater,
+            (_, QualityLevel::High) => Ordering::Less,
+            (QualityLevel::Medium, QualityLevel::Medium) => Ordering::Equal,
+            (QualityLevel::Medium, QualityLevel::Low) => Ordering::Greater,
+            (QualityLevel::Low, QualityLevel::Medium) => Ordering::Less,
+            (QualityLevel::Low, QualityLevel::Low) => Ordering::Equal,
         }
     }
 }

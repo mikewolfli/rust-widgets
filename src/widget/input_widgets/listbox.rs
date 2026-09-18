@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! List box widget.
+use crate::compat::{String, Vec, ToString};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;

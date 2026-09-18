@@ -22,7 +22,7 @@
 //! On emit, slots are sorted by priority into three buckets and invoked
 //! High → Normal → Low.  Inside each bucket, slots fire in insertion order.
 
-use crate::compat::HashMap;
+use crate::compat::{lock, read_lock, write_lock, Box, HashMap, Vec};
 use crate::compat::{Mutex, RwLock};
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -70,11 +70,11 @@ struct SignalInner<T: Clone + Send + 'static> {
 
 impl<T: Clone + Send + 'static> SignalInner<T> {
     fn disconnect(&self, handle: ConnectionHandle) -> bool {
-        self.slots.write().expect("signal lock poisoned").remove(&handle).is_some()
+        write_lock(&self.slots).remove(&handle).is_some()
     }
 
     fn block(&self, handle: ConnectionHandle) -> bool {
-        if let Some(entry) = self.slots.write().expect("signal lock poisoned").get_mut(&handle) {
+        if let Some(entry) = write_lock(&self.slots).get_mut(&handle) {
             entry.blocked = true;
             true
         } else {
@@ -83,7 +83,7 @@ impl<T: Clone + Send + 'static> SignalInner<T> {
     }
 
     fn unblock(&self, handle: ConnectionHandle) -> bool {
-        if let Some(entry) = self.slots.write().expect("signal lock poisoned").get_mut(&handle) {
+        if let Some(entry) = write_lock(&self.slots).get_mut(&handle) {
             entry.blocked = false;
             true
         } else {
@@ -92,11 +92,11 @@ impl<T: Clone + Send + 'static> SignalInner<T> {
     }
 
     fn is_blocked(&self, handle: ConnectionHandle) -> Option<bool> {
-        self.slots.read().expect("signal lock poisoned").get(&handle).map(|entry| entry.blocked)
+        read_lock(&self.slots).get(&handle).map(|entry| entry.blocked)
     }
 
     fn set_priority(&self, handle: ConnectionHandle, priority: Priority) -> bool {
-        if let Some(entry) = self.slots.write().expect("signal lock poisoned").get_mut(&handle) {
+        if let Some(entry) = write_lock(&self.slots).get_mut(&handle) {
             entry.priority = priority;
             true
         } else {
@@ -119,7 +119,7 @@ impl ConnectionScope {
 
     /// Manually clear all tracked connections without dropping the scope.
     pub fn clear(&self) {
-        let mut disconnectors = self.disconnectors.lock().unwrap_or_else(|e| e.into_inner());
+        let mut disconnectors = lock(&self.disconnectors);
         while let Some(disconnector) = disconnectors.pop() {
             disconnector();
         }
@@ -127,17 +127,17 @@ impl ConnectionScope {
 
     /// Returns the number of connections currently tracked by this scope.
     pub fn disconnect_count(&self) -> usize {
-        self.disconnectors.lock().unwrap_or_else(|e| e.into_inner()).len()
+        lock(&self.disconnectors).len()
     }
 
     fn track(&self, disconnector: Box<dyn FnOnce() + Send + 'static>) {
-        self.disconnectors.lock().unwrap_or_else(|e| e.into_inner()).push(disconnector);
+        lock(&self.disconnectors).push(disconnector);
     }
 }
 
 impl Drop for ConnectionScope {
     fn drop(&mut self) {
-        let mut disconnectors = self.disconnectors.lock().unwrap_or_else(|e| e.into_inner());
+        let mut disconnectors = lock(&self.disconnectors);
         while let Some(disconnector) = disconnectors.pop() {
             disconnector();
         }
@@ -171,7 +171,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
         F: FnMut(Arc<T>) + Send + Sync + 'static,
     {
         let handle = ConnectionHandle(NEXT_HANDLE.fetch_add(1, Ordering::Relaxed));
-        self.inner.slots.write().expect("signal lock poisoned").insert(
+        write_lock(&self.inner.slots).insert(
             handle,
             SlotEntry { callback: Some(Box::new(slot)), once: false, blocked: false, priority },
         );
@@ -184,7 +184,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
         F: FnMut(Arc<T>) + Send + Sync + 'static,
     {
         let handle = ConnectionHandle(NEXT_HANDLE.fetch_add(1, Ordering::Relaxed));
-        self.inner.slots.write().expect("signal lock poisoned").insert(
+        write_lock(&self.inner.slots).insert(
             handle,
             SlotEntry {
                 callback: Some(Box::new(slot)),
@@ -223,7 +223,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
 
     /// Disconnect all slots registered on this signal.
     pub fn disconnect_all(&self) {
-        self.inner.slots.write().expect("signal lock poisoned").clear();
+        write_lock(&self.inner.slots).clear();
     }
 
     /// Temporarily block a slot without disconnecting it. Returns true if the handle was valid.
@@ -243,7 +243,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
 
     /// Returns `true` if the handle is still connected (valid).
     pub fn is_connected(&self, handle: ConnectionHandle) -> bool {
-        self.inner.slots.read().expect("signal lock poisoned").contains_key(&handle)
+        read_lock(&self.inner.slots).contains_key(&handle)
     }
 
     /// Change the priority of an existing connection. Returns true if the handle was valid.
@@ -285,7 +285,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
 
         // 1. Snapshot handles and priorities under a read lock.
         let snapshot: Vec<(ConnectionHandle, Priority)> = {
-            let slots = self.inner.slots.read().expect("signal lock poisoned");
+            let slots = read_lock(&self.inner.slots);
             slots.iter().map(|(h, e)| (*h, e.priority)).collect()
         };
 
@@ -304,7 +304,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
             // Temporarily take the callback under a write lock, leaving None.
             // The handle stays in the HashMap so disconnect() can find it.
             let taken = {
-                let mut slots = self.inner.slots.write().expect("signal lock poisoned");
+                let mut slots = write_lock(&self.inner.slots);
                 if let Some(entry) = slots.get_mut(&handle) {
                     if entry.blocked {
                         None
@@ -323,7 +323,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
                 // After callback: if it was a once-slot, remove the entry.
                 // Otherwise, re-install the callback only if the handle still
                 // exists (i.e., the callback did not call disconnect on itself).
-                let mut slots = self.inner.slots.write().expect("signal lock poisoned");
+                let mut slots = write_lock(&self.inner.slots);
                 if let Some(entry) = slots.get_mut(&handle) {
                     if entry.once {
                         // Once-slot: remove the entry entirely.
@@ -340,7 +340,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
 
     /// Return number of currently connected slots.
     pub fn slot_count(&self) -> usize {
-        self.inner.slots.read().expect("signal lock poisoned").len()
+        read_lock(&self.inner.slots).len()
     }
 
     fn track_owner(&self, owner: &ConnectionScope, handle: ConnectionHandle) {
@@ -383,23 +383,23 @@ impl<T: Clone + Send + 'static> Default for Signal<T> {
 #[cfg(test)]
 mod emit_behaviour_tests {
     use super::*;
+    use crate::compat::lock;
     use alloc::sync::Arc;
     use core::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Mutex;
 
     /// Records the order in which slots ran, so ordering assertions read clearly.
     #[derive(Default)]
     struct Trace {
-        entries: Mutex<alloc::vec::Vec<&'static str>>,
+        entries: crate::compat::Mutex<alloc::vec::Vec<&'static str>>,
     }
 
     impl Trace {
         fn push(&self, label: &'static str) {
-            self.entries.lock().unwrap().push(label);
+            lock(&self.entries).push(label);
         }
 
         fn snapshot(&self) -> alloc::vec::Vec<&'static str> {
-            self.entries.lock().unwrap().clone()
+            lock(&self.entries).clone()
         }
     }
 
@@ -511,7 +511,7 @@ mod emit_behaviour_tests {
             "a slot connected during emit must wait for the next emit"
         );
 
-        trace.entries.lock().unwrap().clear();
+        lock(&trace.entries).clear();
         signal.emit(2);
         let mut order = trace.snapshot();
         order.sort_unstable();

@@ -6,6 +6,7 @@
 //! Allows matching widgets by kind, class name, ID, and state,
 //! enabling CSS-like cascading style sheets for the widget system.
 
+use crate::compat::{String, Vec};
 use crate::widget::WidgetKind;
 
 /// A CSS-style selector that can match widgets by kind, class, ID, and state.
@@ -158,6 +159,7 @@ crate::impl_default_via_new!(StyleSheet);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compat::MiniToString;
 
     #[test]
     fn selector_universal_matches_anything() {

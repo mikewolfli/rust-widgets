@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Progress bar widget.
+use crate::compat::{format, String, ToString};
 use crate::core::{Color, Font, HorizontalAlignment, Orientation, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;

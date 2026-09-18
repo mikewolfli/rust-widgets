@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 //! Software rendering surface: back buffer, surface, and configuration.
+use crate::compat::{lock, vec, MiniToString, Mutex, OnceLock, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::render::pixel_bytes_len;
 use crate::render::{PaintBackend, RenderCommand, ShapedText, TextMetrics};
-use std::sync::{Mutex, OnceLock};
 
 /// Double-buffered 8-bit RGBA pixel storage used by software rendering.
 ///
@@ -86,7 +86,7 @@ impl BackBuffer {
     /// pixels rather than a cleared surface; callers typically clear it at the
     /// start of the next frame.
     pub fn present(&mut self) {
-        std::mem::swap(&mut self.front, &mut self.back);
+        core::mem::swap(&mut self.front, &mut self.back);
     }
 }
 /// Software raster surface with quality controls and RGBA frame output.
@@ -160,8 +160,7 @@ pub(crate) fn software_render_config_test_lock() -> &'static Mutex<()> {
 /// set_default_software_render_config(SoftwareRenderConfig { aa_samples_per_axis: 4 });
 /// ```
 pub fn set_default_software_render_config(config: SoftwareRenderConfig) {
-    *global_software_render_config().lock().expect("software render config lock poisoned") =
-        config.normalized();
+    *lock(global_software_render_config()) = config.normalized();
 }
 /// Returns a copy of the process-wide default software render configuration.
 ///
@@ -172,7 +171,7 @@ pub fn set_default_software_render_config(config: SoftwareRenderConfig) {
 ///
 /// Panics if the internal config lock is poisoned by a previous panic.
 pub fn default_software_render_config() -> SoftwareRenderConfig {
-    *global_software_render_config().lock().expect("software render config lock poisoned")
+    *lock(global_software_render_config())
 }
 /// Render context for custom widget drawing.
 ///
@@ -487,20 +486,19 @@ impl<'a> RenderContext<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compat::{lock, MutexGuard};
     use crate::core::{Color, Font, Point, Rect, Size};
     use crate::render::SoftwarePaintBackend;
     use crate::render::{PaintBackend, RenderCommand};
 
     struct SoftwareRenderConfigTestGuard {
-        _lock: std::sync::MutexGuard<'static, ()>,
+        _lock: MutexGuard<'static, ()>,
         original: SoftwareRenderConfig,
     }
 
     impl SoftwareRenderConfigTestGuard {
         fn new() -> Self {
-            let lock = software_render_config_test_lock()
-                .lock()
-                .expect("software render config test lock poisoned");
+            let lock = lock(software_render_config_test_lock());
             let original = default_software_render_config();
             Self { _lock: lock, original }
         }

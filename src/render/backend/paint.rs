@@ -3,6 +3,7 @@
 
 //! Paint backend trait and software implementation.
 use super::batch::BatchState;
+use crate::compat::vec;
 use crate::core::{Color, Font, Size};
 use crate::render::pipeline::set_pixel;
 use crate::render::{
@@ -287,9 +288,9 @@ impl PaintBackend for SoftwarePaintBackend {
                     for px in 0..w {
                         let dx = px as f32 - cx;
                         let dy = py as f32 - cy;
-                        let mut t = dy.atan2(dx) + std::f32::consts::PI;
-                        t = (t + angle_offset) % (2.0 * std::f32::consts::PI);
-                        let pos = t / (2.0 * std::f32::consts::PI);
+                        let mut t = dy.atan2(dx) + core::f32::consts::PI;
+                        t = (t + angle_offset) % (2.0 * core::f32::consts::PI);
+                        let pos = t / (2.0 * core::f32::consts::PI);
                         // Find the two stops surrounding pos
                         let color = if pos <= stops[0].0 {
                             stops[0].1
@@ -447,6 +448,7 @@ fn box_blur_region(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compat::MiniToString;
     use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 
     // ── SoftwarePaintBackend construction ───────────────────────────────

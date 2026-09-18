@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Checkbox widget implementation.
+use crate::compat::{String, ToString};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -338,6 +339,7 @@ impl Draw for CheckBox {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compat::Vec;
     use crate::core::ObjectId;
     use crate::core::Size;
     use crate::event::Event;

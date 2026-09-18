@@ -10,6 +10,8 @@
 //! boundaries using known Unicode ranges. It does not depend on ICU or
 //! external C libraries.
 
+use crate::compat::{MiniToString, String, Vec};
+
 /// A single grapheme cluster — the smallest user-perceived character unit.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphemeCluster {

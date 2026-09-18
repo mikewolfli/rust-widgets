@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Scroll bar widget.
+use crate::compat::ToString;
 use crate::core::{Color, Orientation, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -590,6 +591,7 @@ impl Draw for ScrollBar {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compat::String;
     use crate::core::{Color, Orientation, Rect};
     use crate::style::WidgetStyle;
 

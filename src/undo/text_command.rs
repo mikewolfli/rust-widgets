@@ -2,9 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use super::{CommandDescription, CommandId, UndoCommand};
-use std::cell::RefCell;
-use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use crate::compat::{atomic::AtomicU64, atomic::Ordering, MiniToString, Rc, RefCell, String};
 
 static NEXT_TEXT_COMMAND_ID: AtomicU64 = AtomicU64::new(1);
 

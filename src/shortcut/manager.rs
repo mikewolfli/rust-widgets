@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use super::{Key, Modifiers, PlatformShortcutStyle, Shortcut, ShortcutEntry};
-use crate::compat::HashMap;
+use crate::compat::{HashMap, String, Vec};
 use crate::event::Event;
 use crate::signal::Signal1;
 /// Global shortcut manager for registering and dispatching shortcuts.

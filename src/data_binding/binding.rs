@@ -1,8 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use crate::compat::HashMap;
-use crate::compat::Mutex;
+use crate::compat::{format, lock, Box, HashMap, MiniToString, Mutex, String, Vec};
 use crate::data_binding::traits::*;
 use alloc::sync::{Arc, Weak};
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -36,7 +35,7 @@ impl<T: Clone + Send + 'static> Binding<T> {
     /// For `T: Copy` types, use [`get_copy`](Self::get_copy) to avoid the clone.
     #[inline(always)]
     pub fn get(&self) -> T {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).value.clone()
+        lock(&self.inner).value.clone()
     }
 
     /// Set a new value and notify all listeners.
@@ -52,7 +51,7 @@ impl<T: Clone + Send + 'static> Binding<T> {
         // ── Phase 1: Lock, update value, take all listeners ──
         let mut listeners: Vec<(String, BoxedListener)>;
         {
-            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let mut inner = lock(&self.inner);
             inner.value = value;
             listeners = core::mem::take(&mut inner.listeners).into_iter().collect();
         } // Mutex lock released.
@@ -64,7 +63,7 @@ impl<T: Clone + Send + 'static> Binding<T> {
 
         // ── Phase 3: Restore listeners that weren't re-subscribed ──
         {
-            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let mut inner = lock(&self.inner);
             for (key, listener) in listeners {
                 // If no new listener was subscribed under this key
                 // during notification, put the original one back.
@@ -78,16 +77,12 @@ impl<T: Clone + Send + 'static> Binding<T> {
     /// `key` is an identifier used to later unsubscribe. If a listener with
     /// the same key already exists, it is replaced.
     pub fn subscribe(&self, key: &str, listener: BoxedListener) {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .listeners
-            .insert(key.to_string(), listener);
+        lock(&self.inner).listeners.insert(key.to_string(), listener);
     }
 
     /// Remove a listener by its subscription key.
     pub fn unsubscribe(&self, key: &str) {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).listeners.remove(key);
+        lock(&self.inner).listeners.remove(key);
     }
 
     /// Create a two-way binding between this binding and another.
@@ -126,12 +121,12 @@ impl<T: Clone + Send + 'static> Binding<T> {
     where
         T: Copy,
     {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).value
+        lock(&self.inner).value
     }
 
     /// Return the number of currently registered listeners.
     pub fn listener_count(&self) -> usize {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).listeners.len()
+        lock(&self.inner).listeners.len()
     }
 }
 
@@ -179,15 +174,12 @@ impl<T: Clone + Send + 'static + PartialEq> BindingListener for TwoWayListener<T
         // Read value from source, then release source's Mutex lock BEFORE
         // locking the target.  This avoids a re-entrant-Mutex deadlock when
         // the outer `set()` already holds the source binding's lock.
-        let val = self
-            .source
-            .upgrade()
-            .map(|source| source.lock().unwrap_or_else(|e| e.into_inner()).value.clone());
+        let val = self.source.upgrade().map(|source| lock(&source).value.clone());
 
         // If either binding has been dropped, skip gracefully.
         if let Some(val) = val {
             if let Some(target) = self.target.upgrade() {
-                target.lock().unwrap_or_else(|e| e.into_inner()).set_no_notify(val);
+                lock(&target).set_no_notify(val);
             }
         }
     }
@@ -208,7 +200,7 @@ impl Drop for SyncingGuard<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compat::Mutex;
+    use crate::compat::{lock, Mutex};
     use core::sync::atomic::AtomicI32;
 
     #[test]
@@ -271,13 +263,13 @@ mod tests {
         );
 
         listener.on_value_changed("k", "set");
-        assert_eq!(target.lock().unwrap().value, 7, "the value must propagate source -> target");
+        assert_eq!(lock(&target).value, 7, "the value must propagate source -> target");
         assert!(!syncing.load(Ordering::SeqCst), "the guard must re-arm the listener");
 
         // A second call must still work (the guard did not get stuck).
-        source.lock().unwrap().value = 9;
+        lock(&source).value = 9;
         listener.on_value_changed("k", "set");
-        assert_eq!(target.lock().unwrap().value, 9, "a later change must still propagate");
+        assert_eq!(lock(&target).value, 9, "a later change must still propagate");
         assert!(!syncing.load(Ordering::SeqCst));
     }
 
@@ -341,11 +333,11 @@ mod tests {
         let received_key = Arc::new(Mutex::new(String::new()));
         let rk = received_key.clone();
         let listener = Box::new(FnListener::new(move |key, _op| {
-            *rk.lock().unwrap() = key.to_string();
+            *lock(&rk) = key.to_string();
         }));
         b.subscribe("my_key", listener);
         b.set(99);
-        assert_eq!(*received_key.lock().unwrap(), "my_key");
+        assert_eq!(*lock(&received_key), "my_key");
     }
 
     #[test]

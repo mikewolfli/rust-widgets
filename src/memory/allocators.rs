@@ -1,8 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use std::alloc::{alloc, dealloc, Layout};
-use std::ptr::NonNull;
+use crate::compat::{vec, Box, Vec};
+use alloc::alloc::{alloc, dealloc};
+use core::alloc::Layout;
+use core::ptr::NonNull;
 
 /// Counters describing how much memory an application has requested and how well
 /// its pools are serving those requests.
@@ -143,8 +145,8 @@ impl ArenaAllocator {
     /// arena will not drop `T` for you. The type's own alignment is honoured, which
     /// may skip a few padding bytes before the slot.
     pub fn allocate<T>(&mut self) -> Option<NonNull<T>> {
-        let size = std::mem::size_of::<T>();
-        let align = std::mem::align_of::<T>();
+        let size = core::mem::size_of::<T>();
+        let align = core::mem::align_of::<T>();
         let aligned_offset = self.offset.checked_add(align - 1)? & !(align - 1);
         let new_offset = aligned_offset + size;
         if new_offset > self.layout.size() {

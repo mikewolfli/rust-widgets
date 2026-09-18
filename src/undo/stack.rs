@@ -3,6 +3,7 @@
 
 use super::command::UndoCommand;
 use super::types::*;
+use crate::compat::{format, Box, String, Vec};
 
 /// Undo/Redo stack with configurable capacity.
 pub struct UndoStack {
@@ -178,6 +179,7 @@ crate::impl_default_via_new!(UndoStack);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compat::{Box, MiniToString};
     use std::time::SystemTime;
 
     // ── Test helpers ──

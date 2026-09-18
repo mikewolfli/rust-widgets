@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Pointer capture management.
+use crate::compat::Box;
 use crate::core::ObjectId;
 use core::fmt;
 /// Manages pointer capture for drag operations.

@@ -7,6 +7,7 @@
 //! Use the `add_span` / `add_text` builders to compose styled text, then call
 //! `measure()` to obtain the overall dimensions.
 
+use crate::compat::{MiniToString, String, Vec};
 use crate::core::Color;
 use crate::render::text_shaper::TextShaper;
 

@@ -12,6 +12,7 @@
 //! Most users should use [`render_widget_to_svg()`] as it is zero-maintenance
 //! and guaranteed accurate.
 
+use crate::compat::String;
 use crate::core::{Rect, Size};
 use crate::render::{PaintBackend, RenderContext, SvgPaintBackend};
 use crate::widget::{Draw, Widget};
@@ -58,6 +59,7 @@ pub fn render_widget_to_svg<T: Draw + ?Sized>(widget: &mut T, geometry: Rect) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compat::MiniToString;
     use crate::core::Rect;
     use crate::widget::Button;
 

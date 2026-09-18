@@ -14,6 +14,7 @@
 //! Multi-line clamping is handled by `TextClamp` and `apply_text_clamp`,
 //! which line-break text at word boundaries.
 
+use crate::compat::{format, MiniToString, String, Vec};
 use crate::render::text_shaper::TextShaper;
 
 /// Text overflow handling strategy.
@@ -129,7 +130,7 @@ pub fn apply_text_clamp(
             current_line = candidate;
         } else {
             // Word doesn't fit — push the current line and start a new one.
-            let finished = std::mem::take(&mut current_line);
+            let finished = core::mem::take(&mut current_line);
             lines.push(finished);
             if lines.len() >= max_lines {
                 line_limit_reached = true;

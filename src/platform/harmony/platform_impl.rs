@@ -14,14 +14,14 @@
 
 use super::super::{DropEvent, Platform};
 use super::types::*;
+use crate::compat::atomic::Ordering;
 use crate::core::PlatformFamily;
 use crate::{WidgetTriggerEvent, WidgetTriggerKind};
 
-use std::sync::atomic::Ordering;
+#[cfg(not(target_arch = "wasm32"))]
+use core::time::Duration;
 #[cfg(not(target_arch = "wasm32"))]
 use std::thread;
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::Duration;
 
 impl Platform for HarmonyPlatform {
     fn as_any(&self) -> &dyn std::any::Any {

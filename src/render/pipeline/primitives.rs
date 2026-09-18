@@ -6,6 +6,7 @@
 //!
 //! Methods are implemented as `impl SoftwareSurface` blocks.
 
+use crate::compat::Vec;
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::render::pipeline::pixel_ops::{
     blend_pixel, circle_fill_coverage_grid, circle_stroke_coverage_grid, draw_bitmap_glyph,
@@ -437,7 +438,7 @@ impl SoftwareSurface {
         if radius == 0 {
             return;
         }
-        const TWO_PI: f32 = std::f32::consts::TAU;
+        const TWO_PI: f32 = core::f32::consts::TAU;
         // Normalize both angles to [0, 2π)
         let mut start = start_angle % TWO_PI;
         if start < 0.0 {
@@ -538,7 +539,7 @@ impl SoftwareSurface {
                 j = i;
             }
 
-            intersections.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            intersections.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
 
             let mut i = 0;
             while i + 1 < intersections.len() {

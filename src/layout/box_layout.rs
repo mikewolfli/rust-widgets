@@ -3,6 +3,7 @@
 
 //! Box layout manager — arranges items in a single row or column.
 use super::{Layout, LayoutConstraints, LayoutContext, Orientation, SizePolicy};
+use crate::compat::{Any, Vec};
 use crate::core::{ObjectId, Rect};
 #[derive(Debug)]
 struct BoxLayoutItem {
@@ -178,7 +179,7 @@ impl BoxLayout {
     }
 }
 impl Layout for BoxLayout {
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+    fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
 
@@ -230,7 +231,7 @@ impl Layout for BoxLayout {
         }
     }
 
-    fn as_any(&self) -> &dyn std::any::Any {
+    fn as_any(&self) -> &dyn Any {
         self
     }
     fn child_ids(&self) -> Vec<ObjectId> {

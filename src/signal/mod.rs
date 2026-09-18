@@ -49,6 +49,7 @@ pub use hub::CustomSignalHub;
 #[cfg(test)]
 mod tests {
     use super::{ConnectionScope, GenericSignal, Priority, Signal};
+    use crate::compat::{lock, String, Vec};
     use alloc::sync::Arc;
     use core::sync::atomic::{AtomicUsize, Ordering};
     #[test]
@@ -160,12 +161,12 @@ mod tests {
     #[test]
     fn signal_priority_ordering() {
         let signal = Signal::<u32>::new();
-        let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let order = Arc::new(crate::compat::Mutex::new(Vec::new()));
 
         let o1 = order.clone();
         signal.connect_with_priority(
             move |_| {
-                o1.lock().unwrap().push("low");
+                lock(&o1).push("low");
             },
             Priority::Low,
         );
@@ -173,18 +174,18 @@ mod tests {
         let o2 = order.clone();
         signal.connect_with_priority(
             move |_| {
-                o2.lock().unwrap().push("high");
+                lock(&o2).push("high");
             },
             Priority::High,
         );
 
         let o3 = order.clone();
         signal.connect(move |_| {
-            o3.lock().unwrap().push("normal");
+            lock(&o3).push("normal");
         });
 
         signal.emit(0);
-        let ord = order.lock().unwrap();
+        let ord = lock(&order);
         assert_eq!(ord[0], "high");
         assert_eq!(ord[1], "normal");
         assert_eq!(ord[2], "low");

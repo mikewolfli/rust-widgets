@@ -8,10 +8,10 @@
 //!
 //! This bridges the gap between the ObjectId-based child tracking and the
 //! trait-object-based rendering/event dispatch.
+use crate::compat::{Box, HashMap};
 use crate::core::{ObjectId, Rect};
 use crate::event::Event;
 use crate::render::RenderContext;
-use std::collections::HashMap;
 
 /// A registry that maps ObjectId to draw + event handler closures.
 ///

@@ -12,12 +12,12 @@
 //! methods refuse rather than building a view off it.
 
 use super::types::{MacOSObjc2Platform, MacObjc2HandleKind};
+use crate::compat::atomic::Ordering;
 use crate::core::ObjectId;
 use crate::core::PlatformFamily;
 use crate::platform::{DropEvent, Platform};
-use std::sync::atomic::Ordering;
+use core::time::Duration;
 use std::thread;
-use std::time::Duration;
 
 impl Platform for MacOSObjc2Platform {
     // ---- Lifecycle & identity ----

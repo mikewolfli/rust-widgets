@@ -7,6 +7,8 @@
 //! width/height measurement) plus a simple default implementation that
 //! approximates metrics using average character widths.
 
+use crate::compat::{vec, Vec};
+
 /// A shaped glyph run with position information for each glyph.
 #[derive(Debug, Clone)]
 pub struct ShapedGlyphRun {

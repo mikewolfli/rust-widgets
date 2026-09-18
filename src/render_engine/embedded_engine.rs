@@ -7,6 +7,7 @@ use super::embedded::embedded_engine_shared;
 use super::engine_trait::RenderEngine;
 #[cfg(not(alloc_frugal))]
 use super::native::NativeRenderEngine;
+use crate::compat::Box;
 use crate::core::RuntimeProfile;
 
 /// Embedded engine with independent lifecycle and resource registry.

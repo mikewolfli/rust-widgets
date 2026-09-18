@@ -25,11 +25,7 @@ where
 macro_rules! impl_helpers {
     () => {
         fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
-            self.state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .widget_trigger_queue
-                .pop_front()
+            lock(&self.state).widget_trigger_queue.pop_front()
         }
 
         /// Pops the next triggered widget id.
@@ -38,19 +34,14 @@ macro_rules! impl_helpers {
         /// of the same event stream — so both consume an event when they answer,
         /// exactly as the platform backends do.
         fn poll_widget_triggered(&self) -> Option<ObjectId> {
-            self.state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .widget_trigger_queue
-                .pop_front()
-                .map(|event| event.widget_id)
+            lock(&self.state).widget_trigger_queue.pop_front().map(|event| event.widget_id)
         }
         fn inject_widget_trigger_event(
             &self,
             widget_id: ObjectId,
             kind: WidgetTriggerKind,
         ) -> bool {
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut state = lock(&self.state);
             state.widget_trigger_queue.push_back(WidgetTriggerEvent { widget_id, kind });
             true
         }
@@ -70,7 +61,7 @@ macro_rules! impl_helpers {
             if !crate::widget::runtime::is_mounted(window_id) {
                 return false;
             }
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut state = lock(&self.state);
             state.window_client_sizes.insert(window_id, (width, height));
             state.widget_trigger_queue.push_back(WidgetTriggerEvent {
                 widget_id: window_id,
@@ -85,14 +76,7 @@ macro_rules! impl_helpers {
         /// never been resized by the user still has. A stripped profile has no widget
         /// runtime to ask, so only an explicitly reported size answers there.
         fn window_client_size(&self, window_id: ObjectId) -> Option<(u32, u32)> {
-            if let Some(size) = self
-                .state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .window_client_sizes
-                .get(&window_id)
-                .copied()
-            {
+            if let Some(size) = lock(&self.state).window_client_sizes.get(&window_id).copied() {
                 return Some(size);
             }
             #[cfg(not(alloc_frugal))]
@@ -428,22 +412,12 @@ macro_rules! impl_helpers {
             if !crate::widget::runtime::is_mounted(widget_id) {
                 return false;
             }
-            self.state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .ime_enabled
-                .insert(widget_id, enabled);
+            lock(&self.state).ime_enabled.insert(widget_id, enabled);
             true
         }
 
         fn is_widget_ime_enabled(&self, widget_id: ObjectId) -> bool {
-            self.state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .ime_enabled
-                .get(&widget_id)
-                .copied()
-                .unwrap_or(false)
+            lock(&self.state).ime_enabled.get(&widget_id).copied().unwrap_or(false)
         }
 
         fn set_widget_accessibility_name(&self, widget_id: ObjectId, name: &str) -> bool {
@@ -451,11 +425,7 @@ macro_rules! impl_helpers {
             if !crate::widget::runtime::is_mounted(widget_id) {
                 return false;
             }
-            self.state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .accessibility_names
-                .insert(widget_id, name.to_string());
+            lock(&self.state).accessibility_names.insert(widget_id, name.to_string());
             true
         }
 
@@ -466,13 +436,7 @@ macro_rules! impl_helpers {
         /// old accessor returned an empty string unless a host had set one, so a
         /// control with a perfectly good label reported no accessible name at all.
         fn get_widget_accessibility_name(&self, widget_id: ObjectId) -> String {
-            let override_name = self
-                .state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .accessibility_names
-                .get(&widget_id)
-                .cloned();
+            let override_name = lock(&self.state).accessibility_names.get(&widget_id).cloned();
             if let Some(name) = override_name {
                 return name;
             }

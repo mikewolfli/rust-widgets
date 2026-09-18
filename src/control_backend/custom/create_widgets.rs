@@ -3,6 +3,12 @@
 
 // `LABEL_PROPERTY_NAMES` is used by the label accessors, which are only compiled
 // where the property registry exists.
+use crate::compat::String;
+// `lock` and `MiniToString` are used by the included macro bodies below, which
+// dereference the state mutex and build owned label strings. They are imported
+// once here rather than in each `.in.rs` fragment, because `include!` splices
+// those fragments into *this* module, so this is the scope they resolve in.
+use crate::compat::{lock, MiniToString};
 #[cfg(widgets_unstripped)]
 use crate::control_backend::custom::LABEL_PROPERTY_NAMES;
 use crate::control_backend::trait_def::ControlBackend;
@@ -125,7 +131,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
         #[cfg(alloc_frugal)]
         let released = false;
 
-        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = lock(&self.state);
         let had_host_state = state.ime_enabled.remove(&widget_id).is_some()
             || state.accessibility_names.remove(&widget_id).is_some()
             || state.window_client_sizes.remove(&widget_id).is_some();

@@ -14,6 +14,7 @@ use crate::style::WidgetStyle;
 use crate::compat::Mutex;
 use crate::compat::MutexGuard;
 use crate::compat::OnceLock;
+use crate::compat::{lock, MiniToString, String, Vec};
 
 /// A registered stylesheet with its raw CSS text and priority.
 #[derive(Debug)]
@@ -112,10 +113,7 @@ crate::impl_default_via_new!(StyleSheetManager);
 /// allowing safe access from multiple threads.
 pub fn global_stylesheet_manager() -> MutexGuard<'static, StyleSheetManager> {
     static MANAGER: OnceLock<Mutex<StyleSheetManager>> = OnceLock::new();
-    MANAGER
-        .get_or_init(|| Mutex::new(StyleSheetManager::new()))
-        .lock()
-        .expect("StyleSheetManager mutex poisoned")
+    lock(MANAGER.get_or_init(|| Mutex::new(StyleSheetManager::new())))
 }
 
 /// Serialises tests that register into, clear, or otherwise depend on the
@@ -127,9 +125,9 @@ pub fn global_stylesheet_manager() -> MutexGuard<'static, StyleSheetManager> {
 /// process-wide singleton needs explicit serialisation in tests, not a hope that
 /// the scheduling happens to work out. Compiled only for tests.
 #[cfg(test)]
-pub(crate) fn stylesheet_test_guard() -> std::sync::MutexGuard<'static, ()> {
+pub(crate) fn stylesheet_test_guard() -> crate::compat::MutexGuard<'static, ()> {
     static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
-    GUARD.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    lock(GUARD.get_or_init(|| Mutex::new(())))
 }
 
 #[cfg(test)]

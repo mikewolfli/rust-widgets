@@ -8,7 +8,7 @@
 //! - Integrated GPU: Frame time + memory bandwidth monitoring
 //! - CPU Software: CPU frame time + thread utilization monitoring
 use super::adapter::GpuDeviceType;
-use crate::compat::Instant;
+use crate::compat::{format, Instant, MiniToString, String};
 use alloc::collections::VecDeque;
 use core::time::Duration;
 /// Performance monitoring strategy based on hardware type
@@ -171,6 +171,13 @@ impl AdaptivePerformanceMonitor {
             frame_start: Instant::now(),
             consecutive_bad_frames: 0,
             consecutive_good_frames: 0,
+            // Backdated cooldown: the field is only ever read as
+            // `last_quality_change.elapsed() > 2s / 5s` (see `should_degrade` /
+            // `should_upgrade`), so it is seeded 60s in the past. That makes the
+            // first adjustment of a freshly built monitor *allowed* rather than held
+            // back by the cooldown, which is the initial state a new monitor is
+            // specified to have. Seeding it with `Instant::now()` would instead make
+            // `elapsed()` zero and suppress that first adjustment for 2s/5s.
             last_quality_change: Instant::now() - Duration::from_secs(60),
         }
     }
@@ -422,6 +429,11 @@ impl PerformanceTrapDetector {
             low_fps_threshold,
             sustained_low_fps_frames: sustained_frames,
             low_fps_counter: 0,
+            // Backdated cooldown, same rationale as
+            // `AdaptivePerformanceMonitor::last_quality_change`: the field is only
+            // read as `last_warning.elapsed() > 30s`, so it is seeded 300s in the
+            // past and the first trap fires as soon as the sustained-low-FPS
+            // threshold is met, with no 30s warm-up on a fresh detector.
             last_warning: Instant::now() - Duration::from_secs(300),
         }
     }

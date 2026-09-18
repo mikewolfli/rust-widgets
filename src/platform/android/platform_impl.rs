@@ -26,16 +26,17 @@
 //!    so the state-only backend remains the default for testing and CI.
 
 use super::types::{AndroidHandleKind, AndroidPlatform};
+use crate::compat::atomic::Ordering;
+use crate::compat::{format, lock, String, ToString};
 use crate::core::PlatformFamily;
 use crate::platform::{DropEvent, Platform, WidgetTriggerEvent, WidgetTriggerKind};
-use std::sync::atomic::Ordering;
+use core::time::Duration;
 use std::thread;
-use std::time::Duration;
 
 impl AndroidPlatform {}
 
 impl Platform for AndroidPlatform {
-    fn as_any(&self) -> &dyn std::any::Any {
+    fn as_any(&self) -> &dyn crate::compat::Any {
         self
     }
 
@@ -111,7 +112,7 @@ impl Platform for AndroidPlatform {
     /// are held at the same time.
     fn destroy_widget(&self, widget_id: u64) -> bool {
         {
-            let mut menus = self.menus.lock().expect("android menus lock poisoned");
+            let mut menus = lock(&self.menus);
             menus.attached_menu_bar.remove(&widget_id);
             // The widget may be a container in the menu tree: drop both the
             // children it owned and the child entry under its own parent.
@@ -177,7 +178,7 @@ impl Platform for AndroidPlatform {
         if !matches!(self.kind_of(menu_bar), Some(AndroidHandleKind::MenuBar)) {
             return false;
         }
-        let mut menus = self.menus.lock().expect("android menus lock poisoned");
+        let mut menus = lock(&self.menus);
         menus.attached_menu_bar.insert(window, menu_bar);
         true
     }
@@ -195,7 +196,7 @@ impl Platform for AndroidPlatform {
         };
         self.state.set_text(id, &display_text);
 
-        let mut menus = self.menus.lock().expect("android menus lock poisoned");
+        let mut menus = lock(&self.menus);
         menus.menu_children.entry(parent_menu).or_default().push(id);
 
         // Native menu items are represented through the Activity's own menu
@@ -204,7 +205,7 @@ impl Platform for AndroidPlatform {
     }
 
     fn poll_menu_triggered(&self) -> Option<u64> {
-        let mut menus = self.menus.lock().expect("android menus lock poisoned");
+        let mut menus = lock(&self.menus);
         menus.pending_menu_events.pop_front()
     }
 
@@ -213,7 +214,7 @@ impl Platform for AndroidPlatform {
         if !matches!(self.kind_of(menu_item_id), Some(AndroidHandleKind::MenuItem)) {
             return false;
         }
-        let mut menus = self.menus.lock().expect("android menus lock poisoned");
+        let mut menus = lock(&self.menus);
         menus.pending_menu_events.push_back(menu_item_id);
         true
     }
@@ -256,8 +257,7 @@ impl Platform for AndroidPlatform {
     fn window_client_size(&self, window_id: u64) -> Option<(u32, u32)> {
         // Ask the control backend, which owns the window and is therefore the only
         // store that knows the size a resize reported.
-        crate::window_client_size(window_id)
-            .or_else(|| self.state.window_size(window_id))
+        crate::window_client_size(window_id).or_else(|| self.state.window_size(window_id))
     }
 
     /// Reports a container's new client size and queues a `Resized` trigger.

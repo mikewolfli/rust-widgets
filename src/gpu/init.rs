@@ -3,6 +3,7 @@
 
 //! GPU initialization and subsystem summary functions.
 
+use crate::compat::{format, String};
 use crate::gpu::manager::{GpuManager, GpuManagerError};
 use crate::gpu::AdapterSelectionStrategy;
 

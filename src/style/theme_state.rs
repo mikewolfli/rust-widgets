@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use crate::compat::HashMap;
+use crate::compat::{Box, HashMap, MiniToString, String, Vec};
 use crate::core::Color;
 use alloc::rc::Rc;
 use core::cell::RefCell;
@@ -302,6 +302,15 @@ impl ThemeStateManager {
     /// epoch, which is approximate for local-time expectations. Returns `false`
     /// when no window is configured or the clock is unavailable (an error is
     /// treated as the epoch).
+    ///
+    /// # Under `mini`
+    ///
+    /// The wall clock is not readable: `SystemTime` is `std`-only and `mini` has no
+    /// `compat` clock that reports a calendar time (`compat::Instant` is monotonic
+    /// and has no epoch). The `mini` arm therefore reports `false` — the same value
+    /// the documented "clock is unavailable" case already produces, so a `mini`
+    /// build keeps the light theme rather than guessing an hour.
+    #[cfg(not(alloc_frugal))]
     fn should_use_dark(&self) -> bool {
         if let Some((start, end)) = self.auto_switch_threshold {
             let now = std::time::SystemTime::now()
@@ -314,6 +323,14 @@ impl ThemeStateManager {
         } else {
             false
         }
+    }
+    /// Resolves whether the automatic window currently calls for the dark theme.
+    ///
+    /// See the `not(alloc_frugal)` definition above: no wall clock is available
+    /// under `mini`, so this is always `false`.
+    #[cfg(alloc_frugal)]
+    fn should_use_dark(&self) -> bool {
+        false
     }
     /// Looks up the [`StateTheme`] for `state` in the theme that is currently
     /// active, falling back to that theme's default state as
@@ -379,7 +396,7 @@ mod tests {
         let light = StatefulTheme::new("light");
         let dark = StatefulTheme::new("dark");
         let mut manager = ThemeStateManager::new(light, dark);
-        let fired = std::rc::Rc::new(std::cell::RefCell::new(false));
+        let fired = crate::compat::Rc::new(crate::compat::RefCell::new(false));
         let fired_clone = fired.clone();
         manager.on_mode_changed(move |_mode| {
             *fired_clone.borrow_mut() = true;

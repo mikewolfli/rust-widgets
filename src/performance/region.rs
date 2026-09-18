@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 //! Dirty region tracking for incremental rendering.
+use crate::compat::Vec;
 use crate::core::rect_merge::{bounding_rect, merge_intersecting_rects};
 use crate::core::Rect;
+use core::cmp::Reverse;
 /// Unique identifier for a dirty region.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RegionId(u64);
@@ -231,7 +233,7 @@ impl DirtyRegionTracker {
         if self.regions.len() > self.max_regions {
             self.merge();
             if self.regions.len() > self.max_regions {
-                self.regions.sort_by_key(|b| std::cmp::Reverse(b.priority));
+                self.regions.sort_by_key(|b| Reverse(b.priority));
                 self.regions.truncate(self.max_regions);
             }
         }

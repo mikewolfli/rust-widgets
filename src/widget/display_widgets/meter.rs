@@ -22,6 +22,7 @@
 //! controls both answering to the name `gauge`, which is the duplication rule #78
 //! exists to prevent. Missing capability belongs here.
 
+use crate::compat::{format, String, Vec, ToString};
 use crate::core::{deg_to_rad, Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderCommand, RenderContext};

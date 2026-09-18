@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Window widget and platform integration.
+use crate::compat::{String, ToString};
 use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;

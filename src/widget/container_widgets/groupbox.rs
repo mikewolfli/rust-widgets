@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Group box widget.
+use crate::compat::{Rc, RefCell, String, ToString};
 use crate::core::{Alignment, Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -14,8 +15,6 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
-use std::cell::RefCell;
-use std::rc::Rc;
 /// Group box widget.
 pub struct GroupBox {
     base: BaseWidget,

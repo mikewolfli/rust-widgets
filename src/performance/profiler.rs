@@ -1,8 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use crate::compat::HashMap;
-use crate::compat::Instant;
+use crate::compat::{format, HashMap, Instant, MiniToString, String, Vec};
 use core::time::Duration;
 #[derive(Debug, Clone, Copy)]
 /// Accumulated timing statistics for a single named section.

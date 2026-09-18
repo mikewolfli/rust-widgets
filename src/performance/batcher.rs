@@ -3,7 +3,7 @@
 
 //! Update batching for coallescing frame updates.
 use super::region::DirtyRegionTracker;
-use crate::compat::Instant;
+use crate::compat::{Instant, Vec};
 use crate::core::Rect;
 /// Coalesces update rects into batches based on timeout thresholds.
 ///

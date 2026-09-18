@@ -4,6 +4,7 @@
 //! Mock/test implementation of the `ControlBackend` trait (BLUE11 R9.1, BLUE15 Phase C).
 
 use super::trait_def::ControlBackend;
+use crate::compat::String;
 use crate::control_backend::types::ControlBackendKind;
 use crate::core::ObjectId;
 

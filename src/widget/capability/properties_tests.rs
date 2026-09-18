@@ -898,7 +898,8 @@ fn published_commands_are_recognised_by_their_control() {
         if capability.commands.is_empty() {
             continue;
         }
-        let Some(mut widget) = factory.create(capability.canonical_name, Rect::new(0, 0, 64, 48), "")
+        let Some(mut widget) =
+            factory.create(capability.canonical_name, Rect::new(0, 0, 64, 48), "")
         else {
             continue;
         };

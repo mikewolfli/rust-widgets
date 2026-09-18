@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 //! Linux backend shell.
+use crate::compat::atomic::AtomicBool;
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]
 use crate::compat::HashMap;
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]
 use crate::compat::Mutex;
 use crate::platform::state::BackendState;
-use std::sync::atomic::AtomicBool;
 /// Logical handle kinds that survive the self-drawn widget strategy.
 ///
 /// # BLUE15: the host no longer builds controls

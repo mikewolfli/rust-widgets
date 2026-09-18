@@ -6,7 +6,7 @@
 //! Provides rendering support for `WebViewEnhanced` by delegating
 //! visual commands to the core web rendering pipeline.
 
-use std::cell::Cell;
+use crate::compat::Cell;
 
 use crate::core::{ObjectId, Point, Rect, Size};
 use crate::widget::WidgetKind;

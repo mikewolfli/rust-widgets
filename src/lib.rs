@@ -10,6 +10,10 @@
 // `desktop`, `embedded`, `mini` and `--all-features` builds alike, and CI's clippy
 // job runs with `-D warnings`, so a new undocumented public item fails the build.
 #![deny(missing_docs)]
+// `mini` is the no-std-oriented profile: it compiles against `core` + `alloc` only.
+// Every shared type is imported through `compat`, so this attribute is the switch
+// that turns the abstraction into an enforced contract.
+#![cfg_attr(feature = "mini", no_std)]
 // BLUE11: Clippy lints enabled for quality enforcement.
 // Individual allows are placed next to their specific violations.
 #![cfg_attr(test, allow(clippy::needless_pass_by_value, clippy::unwrap_used))]
@@ -18,7 +22,57 @@
 // std, but we need direct `alloc::` paths in `compat` for no_std builds.
 extern crate alloc;
 
-// ── BLUE13 Phase 3: Alloc bridge — unified imports for std and no_std ──
+// `#![no_std]` removes the *standard* prelude, and with it the `thread_local!`
+// macro. `thread_local!` is not part of the `core` prelude: it is declared in
+// `std` and reaches an ordinary crate only through the `#[prelude_import]`
+// `std::prelude::rust_20xx` glob that the compiler injects when `std` is
+// implicitly linked. Under `mini` the compiler stops injecting that glob (the
+// crate is `no_std`), so every `thread_local!` call site in the crate fails to
+// resolve — a *macro*-only regression, which is why it breaks modules such as
+// `layout` that never touch `std` directly.
+//
+// The attribute below makes the compiler re-inject the std prelude even though
+// `#![no_std]` is in effect, which is exactly what this crate wants: it is
+// no-std-*oriented* and still links `std` on every target it builds for, and the
+// glob is purely lexical (no `std` item is brought into scope — `Option`,
+// `String`, shadows and the rest stay `core`/`compat`-sourced as before).
+//
+// Two alternatives were measured and rejected:
+// * spelling each call site `std::thread_local!` — the macro is not reachable as
+//   a path under `no_std` (verified: `cannot find `thread_local` in `std``), so
+//   this does not compile at all;
+// * `use std::thread_local;` — a macro-only import of a macro that is *not*
+//   exported from the `std` crate root under `no_std`, same failure.
+#[cfg(alloc_frugal)]
+#[macro_use]
+extern crate std;
+
+// `#![no_std]` also removes the *alloc* prelude's trait imports, and unlike the
+// macros above they cannot be brought back wholesale.
+//
+// `ToString` is not in the `alloc` prelude at all: it is re-exported by
+// `std::prelude::v1` (`library/std/src/prelude/v1.rs`), which a crate receives
+// only through the compiler-injected prelude glob that `#![no_std]` suppresses.
+// The consequence is that every `s.to_string()` in the crate — on `&str`,
+// `char`, `&&str`, `Shortcut`, `io::Error` — stops resolving under `mini`.
+//
+// This cannot be repaired from here either. Name resolution in Rust is *lexical*:
+// a `use` is visible to items lexically nested in the block or module containing
+// it, never to a module reached by path. A crate-root `use std::string::ToString;`
+// would fix this file and nothing else, and the ninety-odd call sites live in
+// child modules. Verified against a `#![no_std]` crate whose root imported the
+// trait while a child module called `.to_string()`: the child still fails E0599.
+//
+// `#[macro_use]` is the mechanism that *does* cross module boundaries, but it
+// only carries the macro namespace — and `ToOwned`, the sibling that supplies
+// `.to_owned()`, is a trait, not a macro.
+//
+// So each module that needs these methods imports the trait itself, from
+// `compat`, which re-exports it as [`compat::MiniToString`]. The alias keeps the
+// import list readable next to `String` and `ToString` on desktop builds, where
+// both names resolve.
+//
+// **BLUE13 Phase 3: Alloc bridge — unified imports for std and no_std ──**
 // All crate files import from `compat` instead of directly from std.
 pub mod compat;
 

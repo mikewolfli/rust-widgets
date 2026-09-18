@@ -4,7 +4,7 @@
 // ...existing code...
 use crate::core::{Color, Rect, Size};
 // ...existing code...
-use std::fmt::Debug;
+use crate::compat::fmt::Debug;
 /// Color matcher
 pub trait ColorMatcher {
     /// Returns `true` when every channel — including alpha — differs from

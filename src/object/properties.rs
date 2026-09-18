@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
+use crate::compat::String;
+
 /// A scalar value stored in reflective object metadata.
 ///
 /// # Not the same as `widget::view_widgets::properties_panel::PropertyValue`

@@ -139,6 +139,7 @@ pub const BACKEND_NAME: &str = "portable";
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compat::Vec;
     use crate::platform::types::Platform;
 
     #[test]

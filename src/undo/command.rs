@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use super::types::*;
+use crate::compat::String;
 
 /// Trait for undoable commands.
 pub trait UndoCommand {

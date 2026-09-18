@@ -13,6 +13,7 @@
 //! [`custom`](crate::control_backend::custom) and
 //! [`native`](crate::control_backend::native) modules for common use cases.
 
+use crate::compat::String;
 use crate::control_backend::types::ControlBackendKind;
 use crate::core::ObjectId;
 use crate::platform::{WidgetTriggerEvent, WidgetTriggerKind};

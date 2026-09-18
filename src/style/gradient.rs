@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
+use crate::compat::Vec;
 use crate::core::{Color, Point};
 /// Which geometry a [`Gradient`] interpolates along.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]

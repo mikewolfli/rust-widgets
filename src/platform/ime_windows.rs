@@ -12,9 +12,9 @@
 //! machine that correctly tracks marked text, composition start offsets,
 //! and cursor positions.
 
+use crate::compat::{lock, Mutex, String, ToString};
 use crate::core::ObjectId;
 use crate::platform::ime::{ImeBridge, ImeCandidatePosition, ImeComposition};
-use std::sync::Mutex;
 
 #[cfg(target_os = "windows")]
 use winapi::um::libloaderapi::{GetProcAddress, LoadLibraryA};
@@ -175,7 +175,7 @@ impl WindowsImeBridge {
     /// position.
     pub fn set_cursor_rect(&self, x: i32, y: i32, w: u32, h: u32) {
         log::debug!("[Windows IME] set_cursor_rect: x={}, y={}, w={}, h={}", x, y, w, h,);
-        *self.cursor_rect.lock().unwrap() = (x, y, w, h);
+        *lock(&self.cursor_rect) = (x, y, w, h);
         // Real impl:  ITfContext::GetSelection → ITfContext::SetSelection
     }
 
@@ -238,9 +238,9 @@ impl WindowsImeBridge {
             len
         };
 
-        *self.marked_text.lock().unwrap() = text.to_string();
-        *self.composition_start.lock().unwrap() = 0;
-        *self.cursor_pos.lock().unwrap() = cursor;
+        *lock(&self.marked_text) = text.to_string();
+        *lock(&self.composition_start) = 0;
+        *lock(&self.cursor_pos) = cursor;
 
         // Native TSF:   ITfComposition::EndComposition if empty
         //               ITfContext::SetComposition otherwise
@@ -249,7 +249,7 @@ impl WindowsImeBridge {
 
     /// Get the current marked (preedit) text, if any.
     pub fn get_marked_text(&self) -> Option<String> {
-        let text = self.marked_text.lock().unwrap();
+        let text = lock(&self.marked_text);
         if text.is_empty() {
             None
         } else {
@@ -259,15 +259,15 @@ impl WindowsImeBridge {
 
     /// Returns `true` when there is an active IME composition.
     pub fn has_marked_text(&self) -> bool {
-        !self.marked_text.lock().unwrap().is_empty()
+        !lock(&self.marked_text).is_empty()
     }
 
     /// Discard the current composition without committing.
     pub fn discard_marked_text(&self) {
         log::debug!("[Windows IME] discard_marked_text");
-        *self.marked_text.lock().unwrap() = String::new();
-        *self.composition_start.lock().unwrap() = 0;
-        *self.cursor_pos.lock().unwrap() = 0;
+        *lock(&self.marked_text) = String::new();
+        *lock(&self.composition_start) = 0;
+        *lock(&self.cursor_pos) = 0;
 
         // Native TSF:  ITfComposition::EndComposition
         //              ITfContext::SetSelection(cursor_at_start)
@@ -275,9 +275,9 @@ impl WindowsImeBridge {
 
     /// Clear internal composition state (shared helper).
     fn clear_composition(&self) {
-        *self.marked_text.lock().unwrap() = String::new();
-        *self.composition_start.lock().unwrap() = 0;
-        *self.cursor_pos.lock().unwrap() = 0;
+        *lock(&self.marked_text) = String::new();
+        *lock(&self.composition_start) = 0;
+        *lock(&self.cursor_pos) = 0;
     }
 }
 
@@ -287,8 +287,8 @@ impl WindowsImeBridge {
 
 impl ImeBridge for WindowsImeBridge {
     fn focus_in(&self, widget_id: ObjectId) {
-        *self.focused_widget.lock().unwrap() = Some(widget_id);
-        *self.active.lock().unwrap() = true;
+        *lock(&self.focused_widget) = Some(widget_id);
+        *lock(&self.active) = true;
         log::info!("[Windows IME] focus_in: widget={}", widget_id);
 
         // Native TSF: ITfThreadMgr::SetFocus(doc_mgr)
@@ -296,8 +296,8 @@ impl ImeBridge for WindowsImeBridge {
     }
 
     fn focus_out(&self, widget_id: ObjectId) {
-        *self.focused_widget.lock().unwrap() = None;
-        *self.active.lock().unwrap() = false;
+        *lock(&self.focused_widget) = None;
+        *lock(&self.active) = false;
         self.clear_composition();
         log::info!("[Windows IME] focus_out: widget={}", widget_id);
 
@@ -319,11 +319,11 @@ impl ImeBridge for WindowsImeBridge {
         let text = &composition.text;
         let len = text.len();
 
-        *self.marked_text.lock().unwrap() = text.to_string();
-        *self.composition_start.lock().unwrap() = 0;
+        *lock(&self.marked_text) = text.to_string();
+        *lock(&self.composition_start) = 0;
 
         let cursor = composition.cursor_position.min(len);
-        *self.cursor_pos.lock().unwrap() = cursor;
+        *lock(&self.cursor_pos) = cursor;
 
         // Native TSF: ITfContext::SetComposition(composition, text)
         //             ITfCompositionSink callbacks
@@ -335,13 +335,13 @@ impl ImeBridge for WindowsImeBridge {
             position.x,
             position.y,
         );
-        *self.candidate_position.lock().unwrap() = position;
+        *lock(&self.candidate_position) = position;
         // Native TSF: ITfThreadMgr::GetGlobalCompartment → set candidate
         //             window position via ITfCandidateListUIElement.
     }
 
     fn is_active(&self) -> bool {
-        *self.active.lock().unwrap()
+        *lock(&self.active)
     }
 }
 
@@ -358,15 +358,15 @@ mod tests {
     fn test_focus_in_out() {
         let bridge = WindowsImeBridge::new();
         assert!(!bridge.is_active());
-        assert!(bridge.focused_widget.lock().unwrap().is_none());
+        assert!(lock(&bridge.focused_widget).is_none());
 
         bridge.focus_in(42);
         assert!(bridge.is_active());
-        assert_eq!(*bridge.focused_widget.lock().unwrap(), Some(42));
+        assert_eq!(*lock(&bridge.focused_widget), Some(42));
 
         bridge.focus_out(42);
         assert!(!bridge.is_active());
-        assert!(bridge.focused_widget.lock().unwrap().is_none());
+        assert!(lock(&bridge.focused_widget).is_none());
     }
 
     #[test]
@@ -401,7 +401,7 @@ mod tests {
         bridge.set_composition(&comp);
         assert!(bridge.has_marked_text());
         assert_eq!(bridge.get_marked_text(), Some("composing".to_string()));
-        assert_eq!(*bridge.cursor_pos.lock().unwrap(), 5);
+        assert_eq!(*lock(&bridge.cursor_pos), 5);
     }
 
     #[test]
@@ -419,12 +419,12 @@ mod tests {
         let bridge = WindowsImeBridge::new();
         bridge.set_marked_text("你好世界", 4, 8);
         assert!(bridge.has_marked_text());
-        assert_eq!(*bridge.cursor_pos.lock().unwrap(), 8);
+        assert_eq!(*lock(&bridge.cursor_pos), 8);
 
         bridge.discard_marked_text();
         assert!(!bridge.has_marked_text());
         assert_eq!(bridge.get_marked_text(), None);
-        assert_eq!(*bridge.cursor_pos.lock().unwrap(), 0);
+        assert_eq!(*lock(&bridge.cursor_pos), 0);
     }
 
     #[test]
@@ -432,7 +432,7 @@ mod tests {
         let bridge = WindowsImeBridge::new();
         bridge.set_marked_text("test", -1, -1);
         // Cursor should be at end of "test" (byte offset 4).
-        assert_eq!(*bridge.cursor_pos.lock().unwrap(), 4);
+        assert_eq!(*lock(&bridge.cursor_pos), 4);
     }
 
     #[test]
@@ -485,10 +485,7 @@ mod tests {
     fn test_set_candidate_window_position() {
         let bridge = WindowsImeBridge::new();
         bridge.set_candidate_window_position(ImeCandidatePosition { x: 50, y: 75 });
-        assert_eq!(
-            *bridge.candidate_position.lock().unwrap(),
-            ImeCandidatePosition { x: 50, y: 75 }
-        );
+        assert_eq!(*lock(&bridge.candidate_position), ImeCandidatePosition { x: 50, y: 75 });
     }
 
     #[test]
@@ -506,7 +503,7 @@ mod tests {
     fn test_set_cursor_rect() {
         let bridge = WindowsImeBridge::new();
         bridge.set_cursor_rect(0, 0, 200, 20);
-        assert_eq!(*bridge.cursor_rect.lock().unwrap(), (0, 0, 200, 20));
+        assert_eq!(*lock(&bridge.cursor_rect), (0, 0, 200, 20));
     }
 
     #[test]
@@ -518,8 +515,8 @@ mod tests {
         // flag agrees with the manager the constructor kept, and that the bridge
         // starts with no composition in flight.
         let bridge = WindowsImeBridge::new();
-        let available = *bridge.tsf_available.lock().unwrap();
-        let has_manager = bridge.tsf_manager.lock().unwrap().is_some();
+        let available = *lock(&bridge.tsf_available);
+        let has_manager = lock(&bridge.tsf_manager).is_some();
         assert_eq!(
             available, has_manager,
             "the TSF availability flag must mirror whether a thread manager was created"

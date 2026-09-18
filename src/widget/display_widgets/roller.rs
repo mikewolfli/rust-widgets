@@ -6,6 +6,7 @@
 //! Displays a scroll-wheel list of options where one item is highlighted in the
 //! center. Supports mouse wheel scrolling and click-to-select interaction.
 
+use crate::compat::{String, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -333,6 +334,7 @@ impl Draw for Roller {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compat::MiniToString;
     use crate::core::{Point, Size};
     use crate::render::{PaintBackend, SoftwarePaintBackend};
 

@@ -52,13 +52,13 @@ where
 ///
 /// A `Mutex`-protected slot (not thread-local) so that any thread's failed
 /// C ABI call is observable by the caller thread that queries the error.
-static LAST_FFI_ERROR: std::sync::Mutex<Option<super::RwError>> = std::sync::Mutex::new(None);
+static LAST_FFI_ERROR: crate::compat::Mutex<Option<super::RwError>> =
+    crate::compat::Mutex::new(None);
 
 /// Record the most recent FFI error for `rw_error_code` / `rw_error_message`.
 pub fn record_last_ffi_error(error: super::RwError) {
-    if let Ok(mut slot) = LAST_FFI_ERROR.lock() {
-        *slot = Some(error);
-    }
+    let mut slot = crate::compat::lock(&LAST_FFI_ERROR);
+    *slot = Some(error);
 }
 
 /// Returns the last FFI error, if any.
@@ -72,9 +72,8 @@ pub(crate) fn last_ffi_error() -> Option<super::RwError> {
 
 /// Clear the recorded last FFI error.
 pub fn clear_last_ffi_error() {
-    if let Ok(mut slot) = LAST_FFI_ERROR.lock() {
-        *slot = None;
-    }
+    let mut slot = crate::compat::lock(&LAST_FFI_ERROR);
+    *slot = None;
 }
 
 /// Records a capability-layer refusal as the last FFI error.
@@ -134,6 +133,7 @@ pub fn record_capability_error(error: crate::widget::capability::types::Capabili
 /// on the error path, so the leak is bounded by the number of failed calls a process
 /// makes.
 pub fn record_message_error(message: &str) {
+    use crate::compat::MiniToString;
     let owned: &'static str = alloc::boxed::Box::leak(message.to_string().into_boxed_str());
     record_last_ffi_error(super::RwError::new(super::ErrorId::INVALID_ARGUMENT, owned));
 }
@@ -208,24 +208,24 @@ impl CAbiSafe for bool {
         false
     }
 }
-impl CAbiSafe for *const std::ffi::c_char {
+impl CAbiSafe for *const core::ffi::c_char {
     fn c_abi_fallback() -> Self {
-        std::ptr::null()
+        core::ptr::null()
     }
 }
-impl CAbiSafe for *mut std::ffi::c_char {
+impl CAbiSafe for *mut core::ffi::c_char {
     fn c_abi_fallback() -> Self {
-        std::ptr::null_mut()
+        core::ptr::null_mut()
     }
 }
 impl CAbiSafe for *const u64 {
     fn c_abi_fallback() -> Self {
-        std::ptr::null()
+        core::ptr::null()
     }
 }
 impl CAbiSafe for *mut u64 {
     fn c_abi_fallback() -> Self {
-        std::ptr::null_mut()
+        core::ptr::null_mut()
     }
 }
 impl CAbiSafe for usize {

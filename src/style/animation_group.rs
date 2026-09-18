@@ -5,6 +5,7 @@
 //! animation sets together (BLUE11 R6.4).
 
 use super::animation::{AnimationConfig, AnimationDriver, AnimationId};
+use crate::compat::{String, Vec};
 
 /// A named group of animations that can contain both parallel and sequential sets.
 ///

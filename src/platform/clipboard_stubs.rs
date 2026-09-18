@@ -568,7 +568,7 @@ pub mod objc2_macos {
 pub mod linux {
 
     use super::super::clipboard::{ClipboardContent, RichClipboardBackend};
-    use crate::compat::Mutex;
+    use crate::compat::{lock, Mutex};
 
     /// In-memory clipboard backend for Linux.
     #[derive(Debug, Default)]
@@ -585,16 +585,16 @@ pub mod linux {
 
     impl RichClipboardBackend for LinuxClipboard {
         fn set_contents(&self, content: ClipboardContent) -> bool {
-            *self.content.lock().unwrap() = Some(content);
+            *lock(&self.content) = Some(content);
             true
         }
 
         fn get_contents(&self) -> Option<ClipboardContent> {
-            self.content.lock().unwrap().clone()
+            lock(&self.content).clone()
         }
 
         fn has_format(&self, content_type: &str) -> bool {
-            self.content.lock().unwrap().as_ref().is_some_and(|c| c.content_type() == content_type)
+            lock(&self.content).as_ref().is_some_and(|c| c.content_type() == content_type)
         }
     }
 }
@@ -609,7 +609,7 @@ pub mod linux {
 #[cfg(feature = "wasm")]
 pub mod wasm {
     use super::super::clipboard::{ClipboardContent, RichClipboardBackend};
-    use crate::compat::Mutex;
+    use crate::compat::{lock, Mutex};
 
     /// In-memory clipboard backend for WASM.
     #[derive(Debug, Default)]
@@ -626,16 +626,16 @@ pub mod wasm {
 
     impl RichClipboardBackend for WasmClipboard {
         fn set_contents(&self, content: ClipboardContent) -> bool {
-            *self.content.lock().unwrap() = Some(content);
+            *lock(&self.content) = Some(content);
             true
         }
 
         fn get_contents(&self) -> Option<ClipboardContent> {
-            self.content.lock().unwrap().clone()
+            lock(&self.content).clone()
         }
 
         fn has_format(&self, content_type: &str) -> bool {
-            self.content.lock().unwrap().as_ref().is_some_and(|c| c.content_type() == content_type)
+            lock(&self.content).as_ref().is_some_and(|c| c.content_type() == content_type)
         }
     }
 }

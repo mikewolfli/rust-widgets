@@ -3,6 +3,7 @@
 
 //! Flex layout manager — CSS Flexbox-style layout with grow, shrink, and alignment.
 use super::{Layout, LayoutContext};
+use crate::compat::{Any, Vec};
 use crate::core::{ObjectId, Rect, Size};
 
 /// Main-axis direction for flex layout.
@@ -567,11 +568,11 @@ impl FlexLayout {
 crate::impl_default_via_new!(FlexLayout);
 
 impl Layout for FlexLayout {
-    fn as_any(&self) -> &dyn std::any::Any {
+    fn as_any(&self) -> &dyn Any {
         self
     }
 
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+    fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
 
@@ -645,6 +646,7 @@ impl Layout for FlexLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compat::HashMap;
 
     #[test]
     fn flex_layout_default_creates_empty() {
@@ -701,7 +703,7 @@ mod tests {
         layout.add_widget(1, 1);
         layout.add_widget(2, 1);
 
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         layout.set_child_sizes(vec![Size::new(0, 0), Size::new(0, 0)]);
         layout.update(Rect::new(0, 0, 200, 50), &mut |id, rect| {
             rects.insert(id, rect);
@@ -727,7 +729,7 @@ mod tests {
         layout.add_widget(1, 1);
         layout.add_widget(2, 3);
 
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         layout.set_child_sizes(vec![Size::new(0, 0), Size::new(0, 0)]);
         layout.update(Rect::new(0, 0, 200, 50), &mut |id, rect| {
             rects.insert(id, rect);
@@ -751,7 +753,7 @@ mod tests {
         layout.add_widget(1, 1);
         layout.add_widget(2, 1);
 
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         layout.set_child_sizes(vec![Size::new(0, 0), Size::new(0, 0)]);
         layout.update(Rect::new(0, 0, 100, 200), &mut |id, rect| {
             rects.insert(id, rect);
@@ -777,7 +779,7 @@ mod tests {
         layout.add_widget(1, 0);
         layout.add_widget(2, 0);
 
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         layout.set_child_sizes(vec![Size::new(30, 20), Size::new(30, 20)]);
         layout.update(Rect::new(0, 0, 100, 50), &mut |id, rect| {
             rects.insert(id, rect);
@@ -803,7 +805,7 @@ mod tests {
         layout.add_widget(1, 0);
         layout.add_widget(2, 0);
 
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         layout.set_child_sizes(vec![Size::new(20, 10), Size::new(20, 10)]);
         layout.update(Rect::new(0, 0, 100, 50), &mut |id, rect| {
             rects.insert(id, rect);
@@ -827,7 +829,7 @@ mod tests {
         );
         layout.add_widget(1, 1);
 
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         layout.set_child_sizes(vec![Size::new(0, 0)]);
         layout.update(Rect::new(0, 0, 200, 60), &mut |id, rect| {
             rects.insert(id, rect);
@@ -854,7 +856,7 @@ mod tests {
         layout.add_widget(1, 0);
         layout.add_widget(2, 0);
 
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         layout.set_child_sizes(vec![Size::new(30, 20), Size::new(30, 20)]);
         layout.update(Rect::new(0, 0, 100, 50), &mut |id, rect| {
             rects.insert(id, rect);
@@ -881,7 +883,7 @@ mod tests {
         layout.add_widget(3, 0);
         layout.set_child_sizes(vec![Size::new(60, 20), Size::new(60, 30), Size::new(40, 10)]);
 
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         layout.update(Rect::new(0, 0, 125, 100), &mut |id, rect| {
             rects.insert(id, rect);
         });
@@ -906,7 +908,7 @@ mod tests {
         layout.add_widget(3, 0);
         layout.set_child_sizes(vec![Size::new(60, 20), Size::new(60, 20), Size::new(40, 10)]);
 
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         layout.update(Rect::new(0, 0, 125, 100), &mut |id, rect| {
             rects.insert(id, rect);
         });
@@ -931,7 +933,7 @@ mod tests {
         layout.add_widget(3, 0);
         layout.set_child_sizes(vec![Size::new(20, 60), Size::new(30, 60), Size::new(10, 40)]);
 
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         layout.update(Rect::new(0, 0, 100, 125), &mut |id, rect| {
             rects.insert(id, rect);
         });
@@ -956,7 +958,7 @@ mod tests {
             item.min_size = Size::new(50, 0);
         }
 
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         layout.set_child_sizes(vec![Size::new(10, 20)]);
         layout.update(Rect::new(0, 0, 100, 50), &mut |id, rect| {
             rects.insert(id, rect);
@@ -978,7 +980,7 @@ mod tests {
         );
         layout.add_widget(1, 0);
 
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         layout.set_child_sizes(vec![Size::new(30, 20)]);
         layout.update(Rect::new(0, 0, 100, 100), &mut |id, rect| {
             rects.insert(id, rect);
@@ -1000,7 +1002,7 @@ mod tests {
         );
         layout.add_widget(1, 0);
 
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         layout.set_child_sizes(vec![Size::new(30, 20)]);
         layout.update(Rect::new(0, 0, 100, 100), &mut |id, rect| {
             rects.insert(id, rect);
@@ -1026,7 +1028,7 @@ mod tests {
             item.align_self = Some(AlignItems::Center);
         }
 
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         layout.set_child_sizes(vec![Size::new(30, 20), Size::new(30, 20)]);
         layout.update(Rect::new(0, 0, 100, 100), &mut |id, rect| {
             rects.insert(id, rect);
@@ -1052,7 +1054,7 @@ mod tests {
 
         let context = LayoutContext { layout_scale: 2.0, ..LayoutContext::default() };
 
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         layout.set_child_sizes(vec![Size::new(0, 0)]);
         layout.update_with_context(Rect::new(0, 0, 200, 60), &context, &mut |id, rect| {
             rects.insert(id, rect);
@@ -1079,7 +1081,7 @@ mod tests {
         layout.add_widget(1, 1);
         layout.add_widget(2, 1);
 
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         layout.set_child_sizes(vec![Size::new(0, 0), Size::new(0, 0)]);
         layout.update(Rect::new(0, 0, 200, 50), &mut |id, rect| {
             rects.insert(id, rect);

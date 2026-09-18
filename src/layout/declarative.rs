@@ -32,7 +32,7 @@
 //! consequence is that declarative layouts are single-threaded by construction, and
 //! applying one from the wrong thread is a silent no-op rather than a corruption.
 
-use crate::compat::HashMap;
+use crate::compat::{Box, HashMap, Vec};
 use core::cell::RefCell;
 
 use crate::core::{ObjectId, Rect};

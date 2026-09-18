@@ -10,6 +10,7 @@
 //! - CPU Software: Small buffers, CPU-cache friendly layout
 //!
 //! This module integrates with the existing memory pool system in `crate::memory`.
+use crate::compat::Vec;
 /// GPU memory profile based on device type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpuMemoryProfile {

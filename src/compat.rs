@@ -41,10 +41,17 @@ pub use core::sync::atomic;
 pub use core::time::Duration;
 
 // ── RwLock (thread-safe in both profiles) ──
-// Under mini (which compiles on std), re-uses the battle-tested std RwLock
-// instead of a RefCell wrapper. A RefCell-backed "RwLock" would panic on
-// concurrent access (e.g. tests sharing a global), which is not a real lock.
-pub use std::sync::RwLock;
+/// Reader/writer lock used across the crate.
+#[cfg(alloc_frugal)]
+pub use spin::RwLock;
+/// Read guard returned by [`RwLock::read`].
+#[cfg(alloc_frugal)]
+pub use spin::RwLockReadGuard;
+/// Write guard returned by [`RwLock::write`].
+#[cfg(alloc_frugal)]
+pub use spin::RwLockWriteGuard;
+#[cfg(not(alloc_frugal))]
+pub use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 // ── alloc re-exports (available in both std and no_std) ──
 pub use alloc::boxed::Box;
@@ -54,6 +61,21 @@ pub use alloc::format;
 pub use alloc::rc::Rc;
 pub use alloc::string::{String, ToString};
 pub use alloc::sync::Arc;
+// The no-std prelude does not carry `ToString`, so under `alloc_frugal` every
+// `to_string()` call site — including on `&str`, which needs this trait rather
+// than an inherent method — stops compiling unless it names the trait itself.
+// Re-exporting it from `compat` is what lets those call sites stay
+// profile-agnostic: they import the trait from the same module that already
+// sorts out the profile's `String`/`Vec`/`Mutex`.
+//
+// Named `MiniToString` rather than re-exported as `ToString` so that a call site
+// can import both names into one list — `use crate::compat::{MiniToString,
+// String, ToString}` — without `E0252`. That is only a convenience on desktop,
+// where `ToString` also resolves through the prelude, but it keeps a line an
+// author writes once working in both profiles. (The trait is not renameable the
+// other way: the call is `s.to_string()`, so the *trait* has to be in scope; the
+// alias only decides how the import is spelled.)
+pub use alloc::string::ToString as MiniToString;
 pub use alloc::vec;
 pub use alloc::vec::Vec;
 
@@ -141,19 +163,75 @@ pub use alloc::collections::BTreeMap as HashMap;
 pub use std::collections::HashMap;
 
 // ── Mutex (thread-safe in both profiles) ──
-// Under mini (which compiles on std), re-uses the battle-tested std Mutex
-// instead of a RefCell wrapper. A RefCell-backed "Mutex" panics on
-// re-entrant/concurrent access — not a real mutual-exclusion primitive.
-/// Mutual-exclusion lock used across the crate; `std::sync::Mutex` under both
-/// profiles, because `mini` still links std.
-///
-/// Poisoning is a real possibility here (unlike the `no_std` plan, where the
-/// lock would have no poison state), so call sites handle the `Err` arm by
-/// recovering the guard.
-pub use std::sync::Mutex;
+// Under `alloc_frugal` (mini) the crate is no_std, so the `std::sync` locks are
+// unavailable and `spin`'s stand in. Both provide the same contract; the
+// difference is that `spin` has no poison state, which is what [`lock`],
+// [`read_lock`] and [`write_lock`] below normalise so call sites need no `#[cfg]`.
+// A RefCell-backed "Mutex" was rejected: it panics on re-entrant/concurrent
+// access — not a real mutual-exclusion primitive.
+/// Mutual-exclusion lock used across the crate.
+#[cfg(alloc_frugal)]
+pub use spin::Mutex;
 /// Guard returned by [`Mutex::lock`]. Its lifetime ties the guard to the lock, so
 /// it cannot outlive the mutex it came from.
+#[cfg(alloc_frugal)]
+pub use spin::MutexGuard;
+#[cfg(not(alloc_frugal))]
+pub use std::sync::Mutex;
+#[cfg(not(alloc_frugal))]
 pub use std::sync::MutexGuard;
+
+/// Acquire a [`Mutex`], recovering from poisoning if there is any.
+///
+/// The two profiles disagree about what `lock()` returns: `std::sync::Mutex`
+/// returns `LockResult<MutexGuard<T>>` (poisoning is a real state), while
+/// `spin::Mutex` returns a bare `MutexGuard<T>` (a spin lock has no poison
+/// state to report). Normalising that difference here is what lets call sites
+/// be identical in both profiles instead of carrying a `#[cfg]` each.
+///
+/// Poison recovery is the same policy the crate already applied by hand:
+/// `unwrap_or_else(|e| e.into_inner())` takes the guard rather than propagating
+/// a panic, because a poisoned lock still holds usable data.
+pub fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    #[cfg(not(alloc_frugal))]
+    {
+        mutex.lock().unwrap_or_else(|e| e.into_inner())
+    }
+    #[cfg(alloc_frugal)]
+    {
+        mutex.lock()
+    }
+}
+
+/// Acquire a [`RwLock`] for reading, recovering from poisoning if there is any.
+///
+/// The counterpart of [`lock`] for the reader side: same profile split (`std`
+/// returns `LockResult`, `spin` returns the guard directly), same policy of
+/// taking the guard rather than propagating the poison.
+pub fn read_lock<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
+    #[cfg(not(alloc_frugal))]
+    {
+        lock.read().unwrap_or_else(|e| e.into_inner())
+    }
+    #[cfg(alloc_frugal)]
+    {
+        lock.read()
+    }
+}
+
+/// Acquire a [`RwLock`] for writing, recovering from poisoning if there is any.
+///
+/// The write-side counterpart of [`read_lock`].
+pub fn write_lock<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
+    #[cfg(not(alloc_frugal))]
+    {
+        lock.write().unwrap_or_else(|e| e.into_inner())
+    }
+    #[cfg(alloc_frugal)]
+    {
+        lock.write()
+    }
+}
 
 // ── Bump arena allocator (BLUE13 R5.5) ──
 // Under mini, a pre-allocated bump arena replaces the global heap allocator.
@@ -469,17 +547,143 @@ unsafe impl<T> Send for OnceLock<T> {}
 pub use std::sync::OnceLock;
 
 // ── Instant (real clock in both profiles) ──
-// Under mini (which compiles on std), re-uses the real std clock. A zero-valued
-// stub would silently break every timing-based subsystem (timers, FPS counters,
-// animation frames) — not a working implementation.
+// Both arms must be a *real* monotonic clock. A zero-valued stub was rejected:
+// it would silently break every timing-based subsystem (timers, FPS counters,
+// animation frames) rather than fail visibly.
+//
+// No arm is a bare `pub use std::time::Instant`. The `alloc_frugal` arm is a
+// wrapper whose methods delegate to `std::time::Instant`, so a caller sees one
+// type with one behaviour in both profiles:
+//
+// * `spin`, the profile's lock crate, carries no clock at all — a spin lock has
+//   nothing to read time from — so it cannot supply one;
+// * `core::time` provides only `Duration`, with no way to read a clock;
+// * and the `std` the crate does link under `mini` (see the
+//   `#[macro_use] extern crate std` in `lib.rs`) *does* have a real monotonic
+//   clock. Reaching it from here, rather than from `compat`'s callers, is what
+//   keeps the `std` dependency confined to the one module whose job is to
+//   reconcile the two profiles.
+
+/// Monotonic clock reading used across the crate.
+#[cfg(not(alloc_frugal))]
+pub use std::time::Instant;
+
 /// Monotonic clock reading used across the crate.
 ///
-/// Both profiles resolve to `std::time::Instant`, because `mini` still links std.
-/// Chosen over a zero-valued stub so timing-based subsystems (timers, FPS
-/// counters, animation frames) keep working under `mini`; the cost is that this
-/// name is one of the re-exports that is *not* `no_std`-ready, and the ban on
-/// importing `std::time::Instant` directly does not change that.
-pub use std::time::Instant;
+/// The `alloc_frugal` spelling of `std::time::Instant`. It is the same clock with
+/// the same semantics — `now`, `duration_since`, `elapsed` and the `Sub`/`Add`
+/// arithmetic — so timing code behaves identically in both profiles. The wrapper
+/// exists so that `compat`, not each call site, answers which `std` items this
+/// profile is allowed to name.
+#[cfg(alloc_frugal)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Instant(std::time::Instant);
+
+#[cfg(alloc_frugal)]
+impl Instant {
+    /// Reads the monotonic clock.
+    pub fn now() -> Self {
+        Self(std::time::Instant::now())
+    }
+
+    /// Time elapsed since `earlier`, saturating at zero.
+    ///
+    /// Saturating rather than panicking keeps a caller that fed the readings in
+    /// the wrong order to a defined answer (`Duration::ZERO`) instead of
+    /// aborting — the same reasoning as the desktop arm, where a `Instant`
+    /// comparison, not `duration_since`, is normally what guards this.
+    pub fn duration_since(&self, earlier: Instant) -> Duration {
+        self.0.saturating_duration_since(earlier.0)
+    }
+
+    /// Time elapsed since `earlier`, or `None` when `earlier` is the later of the
+    /// two readings — the same contract as `std::time::Instant`'s method.
+    pub fn checked_duration_since(&self, earlier: Instant) -> Option<Duration> {
+        self.0.checked_duration_since(earlier.0)
+    }
+
+    /// Alias of [`Instant::duration_since`], spelled as callers of the newer
+    /// `std` API write it.
+    pub fn saturating_duration_since(&self, earlier: Instant) -> Duration {
+        self.0.saturating_duration_since(earlier.0)
+    }
+
+    /// Time elapsed since this reading was taken.
+    pub fn elapsed(&self) -> Duration {
+        self.0.elapsed()
+    }
+}
+
+#[cfg(alloc_frugal)]
+impl core::ops::Sub for Instant {
+    type Output = Duration;
+
+    /// Both operands are `Copy`, so the subtraction borrows nothing and can be
+    /// spelled `a - b` as it is on desktop. `duration_since` is the correct
+    /// choice over `self.0 - other.0`: the two readings may be in either order,
+    /// and a negative result has to clamp rather than panic.
+    fn sub(self, rhs: Instant) -> Duration {
+        self.duration_since(rhs)
+    }
+}
+
+#[cfg(alloc_frugal)]
+impl core::ops::Sub<Duration> for Instant {
+    type Output = Instant;
+
+    /// Moves a reading backwards in time: `Instant::now() - Duration::from_secs(300)`
+    /// seeds a derived field with a reading that has already elapsed. This is the
+    /// spelling the desktop arm inherits from `std`, and `compat` exists so that the
+    /// same expression compiles in both profiles.
+    ///
+    /// Arithmetic on this type cannot produce a reading earlier than the epoch of the
+    /// wrapped clock, so the subtraction saturates there instead of panicking. That
+    /// is the pessimistic end of the range: a saturated value only makes a
+    /// derived cooldown look *staler* than requested, which lets the owning check
+    /// run rather than holding it back.
+    fn sub(self, rhs: Duration) -> Instant {
+        Instant(self.0.checked_sub(rhs).unwrap_or_else(|| {
+            // `checked_sub` yields `None` only when the result would precede the
+            // clock's epoch. Stepping forward from a floor built at the epoch, then
+            // walking back to it, is what expresses "as early as this clock can go"
+            // without naming a platform-specific minimum.
+            let base = std::time::Instant::now();
+            let elapsed = base.elapsed();
+            base - elapsed
+        }))
+    }
+}
+
+#[cfg(alloc_frugal)]
+impl core::ops::SubAssign<Duration> for Instant {
+    /// The in-place spelling of [`Sub`], matching the `a -= interval` form the
+    /// desktop arm inherits from `std`.
+    fn sub_assign(&mut self, rhs: Duration) {
+        *self = *self - rhs;
+    }
+}
+
+#[cfg(alloc_frugal)]
+impl core::ops::Add<Duration> for Instant {
+    type Output = Instant;
+
+    /// Deadlines are written `Instant::now() + interval` throughout the crate,
+    /// which is why this arm exists rather than a named `advance` method: the
+    /// timer and animation call sites are shared with the desktop arm, and
+    /// carrying a `#[cfg]` at each of them is exactly what `compat` is for.
+    fn add(self, rhs: Duration) -> Instant {
+        Instant(self.0 + rhs)
+    }
+}
+
+#[cfg(alloc_frugal)]
+impl core::ops::AddAssign<Duration> for Instant {
+    /// Provides the `a += interval` spelling used by the animation clock, which
+    /// is the same deadline arithmetic as [`Add`] written in place.
+    fn add_assign(&mut self, rhs: Duration) {
+        self.0 += rhs;
+    }
+}
 
 // ── mpsc compat (single-threaded channel for mini builds) ──
 

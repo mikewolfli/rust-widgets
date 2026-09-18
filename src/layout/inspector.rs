@@ -27,6 +27,7 @@
 //! LayoutInspector::disable();
 //! ```
 
+use crate::compat::{format, HashMap, String, ToString, Vec};
 use core::cell::RefCell;
 use core::fmt;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -471,8 +472,7 @@ impl LayoutInspector {
         }
 
         // Build a widget_id → parent lookup.
-        let mut parent_of: std::collections::HashMap<ObjectId, Option<ObjectId>> =
-            std::collections::HashMap::new();
+        let mut parent_of: HashMap<ObjectId, Option<ObjectId>> = HashMap::new();
         for id in registry.all_ids() {
             if let Some(entry) = registry.get(id) {
                 parent_of.insert(id, entry.parent);
@@ -480,16 +480,14 @@ impl LayoutInspector {
         }
 
         // Group widget ids by their (optional) parent.
-        let mut children_by_parent: std::collections::HashMap<Option<ObjectId>, Vec<ObjectId>> =
-            std::collections::HashMap::new();
+        let mut children_by_parent: HashMap<Option<ObjectId>, Vec<ObjectId>> = HashMap::new();
         for (widget_id, _) in geometries {
             let parent = parent_of.get(widget_id).copied().flatten();
             children_by_parent.entry(parent).or_default().push(*widget_id);
         }
 
         // Build rect_by_id for fast lookup.
-        let rect_by_id: std::collections::HashMap<ObjectId, Rect> =
-            geometries.iter().copied().collect();
+        let rect_by_id: HashMap<ObjectId, Rect> = geometries.iter().copied().collect();
 
         let mut issues = Vec::new();
         for (parent, children) in &children_by_parent {
@@ -619,17 +617,17 @@ impl LayoutInspector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compat::{lock, Mutex, MutexGuard};
     use crate::core::Rect;
     use crate::index::{WidgetEntry, WidgetKind, WidgetRegistry};
-    use std::sync::Mutex;
 
     /// Serializes LayoutInspector tests that share global `ENABLED` state.
     /// Uses `ignore_poison` to recover from panics in prior tests.
     static LAYOUT_INSPECTOR_LOCK: Mutex<()> = Mutex::new(());
 
     /// Acquire the test lock, recovering from poison if a previous test panicked.
-    fn lock_inspector() -> std::sync::MutexGuard<'static, ()> {
-        LAYOUT_INSPECTOR_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    fn lock_inspector() -> MutexGuard<'static, ()> {
+        lock(&LAYOUT_INSPECTOR_LOCK)
     }
 
     // ── Enable/disable ──

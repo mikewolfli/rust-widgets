@@ -6,10 +6,9 @@ use super::state::BackendState;
 use super::{
     MobileBackend, MobilePlatformExtension, Platform, WidgetTriggerEvent, WidgetTriggerKind,
 };
+use crate::compat::atomic::{AtomicUsize, Ordering};
+use crate::compat::{HashMap, Mutex, OnceLock};
 use crate::core::{ObjectId, PlatformFamily};
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
 
 /// Logical handle kinds that survive the self-drawn widget strategy.
 ///
@@ -87,7 +86,7 @@ impl AndroidMobilePlatform {
     }
 }
 impl Platform for AndroidMobilePlatform {
-    fn as_any(&self) -> &dyn std::any::Any {
+    fn as_any(&self) -> &dyn crate::compat::Any {
         self
     }
     fn backend_name(&self) -> &'static str {
@@ -324,8 +323,7 @@ impl Platform for AndroidMobilePlatform {
     fn window_client_size(&self, window_id: ObjectId) -> Option<(u32, u32)> {
         // Ask the control backend, which owns the window and is therefore the only
         // store that knows the size a resize reported.
-        crate::window_client_size(window_id)
-            .or_else(|| self.state.window_size(window_id))
+        crate::window_client_size(window_id).or_else(|| self.state.window_size(window_id))
     }
 
     /// Reports a container's new client size and queues a `Resized` trigger.

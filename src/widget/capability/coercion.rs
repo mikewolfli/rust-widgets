@@ -42,6 +42,7 @@ use chrono::{NaiveDate, Weekday};
 
 use super::CapabilityAccessError;
 use super::CapabilityValue;
+use crate::compat::String;
 use crate::core::{Alignment, Orientation};
 #[cfg(full_widgets)]
 use crate::widget::advanced_widgets::date_edit::Date;
@@ -71,12 +72,12 @@ use crate::widget::Widget;
 /// The cast goes through `dyn Any`, so it requires `T: 'static` and compares
 /// types exactly; a trait object of a supertype will not match its subtypes.
 pub fn widget_as<T: Widget + 'static>(widget: &dyn Widget) -> Option<&T> {
-    (widget as &dyn std::any::Any).downcast_ref::<T>()
+    (widget as &dyn crate::compat::Any).downcast_ref::<T>()
 }
 
 /// Mutable counterpart of [`widget_as`], for writing to a widget's properties.
 pub fn widget_as_mut<T: Widget + 'static>(widget: &mut dyn Widget) -> Option<&mut T> {
-    (widget as &mut dyn std::any::Any).downcast_mut::<T>()
+    (widget as &mut dyn crate::compat::Any).downcast_mut::<T>()
 }
 
 // ---------------------------------------------------------------------------

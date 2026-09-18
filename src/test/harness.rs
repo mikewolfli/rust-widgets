@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
+use crate::compat::Vec;
 use crate::core::{Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::widget::Widget;
@@ -266,6 +267,8 @@ impl LayoutTester {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compat::MiniToString;
+    use crate::core::Rect;
     use crate::widget::Label;
     #[test]
     fn test_harness() {

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use crate::compat::HashMap;
+use crate::compat::{HashMap, MiniToString, String, Vec};
 use crate::data_binding::traits::*;
 
 /// An observable list that notifies listeners on mutations.
@@ -119,7 +119,8 @@ impl<T: Clone + Send + 'static> ObservableList<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compat::Mutex;
+    use crate::compat::Box;
+    use crate::compat::{lock, MiniToString, Mutex};
     use alloc::sync::Arc;
     use core::sync::atomic::{AtomicI32, Ordering};
 
@@ -180,11 +181,11 @@ mod tests {
         list.subscribe(
             "test",
             Box::new(FnListener::new(move |_key, op| {
-                *no.lock().unwrap() = op.to_string();
+                *lock(&no) = op.to_string();
             })),
         );
         list.push(42);
-        assert_eq!(*notified_op.lock().unwrap(), "push");
+        assert_eq!(*lock(&notified_op), "push");
     }
 
     #[test]
@@ -195,11 +196,11 @@ mod tests {
         list.subscribe(
             "test",
             Box::new(FnListener::new(move |_key, op| {
-                *no.lock().unwrap() = op.to_string();
+                *lock(&no) = op.to_string();
             })),
         );
         list.pop();
-        assert_eq!(*notified_op.lock().unwrap(), "pop");
+        assert_eq!(*lock(&notified_op), "pop");
     }
 
     #[test]
@@ -210,11 +211,11 @@ mod tests {
         list.subscribe(
             "test",
             Box::new(FnListener::new(move |_key, op| {
-                *no.lock().unwrap() = op.to_string();
+                *lock(&no) = op.to_string();
             })),
         );
         list.insert(1, 2);
-        assert_eq!(*notified_op.lock().unwrap(), "insert");
+        assert_eq!(*lock(&notified_op), "insert");
     }
 
     #[test]

@@ -17,6 +17,7 @@
 //! assert!(!sheet.rules().is_empty());
 //! ```
 
+use crate::compat::{format, vec, MiniToString, String, Vec};
 use crate::core::Color;
 use crate::style::{PseudoState, Selector, StyleRule, StyleSheet, WidgetStyle};
 use crate::widget::WidgetKind;
@@ -880,9 +881,8 @@ impl CssParser {
 //   Entries now carry the sequence number they were inserted with, and results
 //   are returned in that order.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::LazyLock;
-use std::sync::Mutex;
+use crate::compat::atomic::{AtomicU64, Ordering};
+use crate::compat::{lock, Mutex, OnceLock};
 
 /// Monotonically increasing counter giving each stored rule a stable order and a
 /// unique key, so two stylesheets with the same selector text do not collide.
@@ -899,8 +899,7 @@ const MAX_STORED_RULES: usize = 512;
 type DeclarationRegistry = Vec<(u64, String, Vec<CssDeclaration>)>;
 
 /// The declaration registry itself.
-static DECLARATIONS: LazyLock<Mutex<DeclarationRegistry>> =
-    LazyLock::new(|| Mutex::new(Vec::new()));
+static DECLARATIONS: OnceLock<Mutex<DeclarationRegistry>> = OnceLock::new();
 
 /// Stores a rule's declarations in the process-wide registry.
 ///
@@ -918,7 +917,8 @@ pub fn store_declarations(rule_name: &str, decls: Vec<CssDeclaration>) {
     let sequence = DECL_COUNTER.fetch_add(1, Ordering::Relaxed);
     // SAFETY: If the lock is poisoned (a previous panic while held), we recover
     // by ignoring the poison — the stored data is still valid for CSS parsing.
-    let mut registry = DECLARATIONS.lock().unwrap_or_else(|e| e.into_inner());
+    // `lock` is the shared spelling of that recovery; see its documentation.
+    let mut registry = lock(DECLARATIONS.get_or_init(|| Mutex::new(Vec::new())));
     if registry.len() >= MAX_STORED_RULES {
         // Drop the oldest entry. `Vec::remove(0)` is O(n) but n is the small cap
         // above and this runs once per over-cap insertion, not per lookup.
@@ -938,7 +938,7 @@ pub fn store_declarations(rule_name: &str, decls: Vec<CssDeclaration>) {
 /// A poisoned lock is recovered rather than propagated.
 pub fn get_declarations(rule_name: &str) -> Option<Vec<CssDeclaration>> {
     // SAFETY: Same poison recovery strategy — stale data is safe to read.
-    let registry = DECLARATIONS.lock().unwrap_or_else(|e| e.into_inner());
+    let registry = lock(DECLARATIONS.get_or_init(|| Mutex::new(Vec::new())));
     let mut result = Vec::new();
     for (_, name, decls) in registry.iter() {
         if name.ends_with(rule_name) {
@@ -1407,7 +1407,7 @@ mod tests {
                 vec![CssDeclaration { property: "color".into(), value: format!("#{index:06x}") }],
             );
         }
-        let registry_len = DECLARATIONS.lock().unwrap_or_else(|e| e.into_inner()).len();
+        let registry_len = lock(DECLARATIONS.get_or_init(|| Mutex::new(Vec::new()))).len();
         assert!(
             registry_len <= MAX_STORED_RULES,
             "the registry held {registry_len} entries, over the cap of {MAX_STORED_RULES}"

@@ -4,6 +4,7 @@
 //! SVG paint backend — converts `RenderCommand`s into SVG elements.
 
 use super::convert::{color_to_rgba, escape_xml, point_attrs, rect_attrs};
+use crate::compat::{format, vec, MiniToString, String, Vec};
 use crate::core::{Color, Font, Size};
 use crate::render::core::command::RenderCommand;
 use crate::render::core::types::{ShapedText, TextMetrics};
@@ -390,7 +391,7 @@ impl PaintBackend for SvgPaintBackend {
             RenderCommand::DrawArc { center, radius, start_angle, end_angle, color, filled } => {
                 // Convert arc to SVG path element.
                 let large_arc =
-                    if (end_angle - start_angle).abs() > std::f32::consts::PI { 1 } else { 0 };
+                    if (end_angle - start_angle).abs() > core::f32::consts::PI { 1 } else { 0 };
                 let start_x = center.x + (*radius as f32 * start_angle.cos()) as i32;
                 let start_y = center.y + (*radius as f32 * start_angle.sin()) as i32;
                 let end_x = center.x + (*radius as f32 * end_angle.cos()) as i32;

@@ -5,6 +5,7 @@
 
 #![allow(deprecated)] // Cocoa 0.24 fallback; remove when objc2 backend fully replaces cocoa
 
+use crate::compat::{String, Vec};
 use crate::core::{ObjectId, PlatformFamily};
 use crate::platform::accessibility::AccessibilityBridge;
 use crate::platform::clipboard::RichClipboardBackend;
@@ -22,7 +23,7 @@ use std::ffi::CStr;
 use std::os::raw::c_char;
 
 impl Platform for MacOSPlatform {
-    fn as_any(&self) -> &dyn std::any::Any {
+    fn as_any(&self) -> &dyn crate::compat::Any {
         self
     }
     fn backend_name(&self) -> &'static str {
@@ -279,8 +280,7 @@ impl Platform for MacOSPlatform {
         }
         // Ask the control backend, which owns the window and is therefore the only
         // store that knows the size a resize reported.
-        crate::window_client_size(window_id)
-            .or_else(|| self.state.window_size(window_id))
+        crate::window_client_size(window_id).or_else(|| self.state.window_size(window_id))
     }
 
     /// Reports a container's new client size and queues a `Resized` trigger.

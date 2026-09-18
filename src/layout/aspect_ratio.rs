@@ -7,6 +7,7 @@
 //! aspect ratio (width / height). When `respect_parent` is true, the child's
 //! size is bounded by the parent dimensions so it never exceeds them.
 use super::Layout;
+use crate::compat::{Any, Vec};
 use crate::core::{ObjectId, Rect};
 
 /// A layout that constrains a single child to a specific aspect ratio.
@@ -92,11 +93,11 @@ impl AspectRatioLayout {
 }
 
 impl Layout for AspectRatioLayout {
-    fn as_any(&self) -> &dyn std::any::Any {
+    fn as_any(&self) -> &dyn Any {
         self
     }
 
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+    fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
 

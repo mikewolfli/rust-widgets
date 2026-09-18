@@ -3,7 +3,7 @@
 
 //! Test infrastructure types and utilities.
 
-use std::time::{Duration, Instant};
+use crate::compat::{Duration, Instant, MiniToString, String, Vec};
 
 /// Test configuration
 ///

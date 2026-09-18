@@ -16,11 +16,10 @@
 //! a UIKit object any more; it is the authority, and it stays because it is what
 //! the host's window, menu and event plumbing is expressed in.
 
+use crate::compat::{HashMap, Mutex, Vec, VecDeque};
 use crate::platform::state::BackendState;
 #[cfg(all(feature = "serde", widgets_unstripped))]
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
-use std::sync::Mutex;
 
 /// iOS-specific handle type discriminator.
 ///
@@ -60,16 +59,16 @@ pub(crate) struct IosMenuState {
 /// iOS platform runtime state lifecycle markers.
 pub(crate) struct IosRuntimeState {
     /// `true` after backend initialization has completed.
-    pub(crate) initialized: std::sync::atomic::AtomicBool,
+    pub(crate) initialized: crate::compat::atomic::AtomicBool,
     /// `true` while the preview loop is running.
-    pub(crate) running: std::sync::atomic::AtomicBool,
+    pub(crate) running: crate::compat::atomic::AtomicBool,
 }
 
 impl IosRuntimeState {
     pub(crate) fn new() -> Self {
         Self {
-            initialized: std::sync::atomic::AtomicBool::new(false),
-            running: std::sync::atomic::AtomicBool::new(false),
+            initialized: crate::compat::atomic::AtomicBool::new(false),
+            running: crate::compat::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -98,7 +97,7 @@ pub struct IosMobilePlatform {
     /// Runtime state for init/run/quit.
     pub(crate) runtime: IosRuntimeState,
     /// Native root view handle attached via `MobilePlatformExtension`.
-    pub(crate) attached_native_view: std::sync::atomic::AtomicUsize,
+    pub(crate) attached_native_view: crate::compat::atomic::AtomicUsize,
 }
 
 impl IosMobilePlatform {
@@ -108,13 +107,13 @@ impl IosMobilePlatform {
             state: BackendState::new(),
             menus: Mutex::new(IosMenuState::default()),
             runtime: IosRuntimeState::new(),
-            attached_native_view: std::sync::atomic::AtomicUsize::new(0),
+            attached_native_view: crate::compat::atomic::AtomicUsize::new(0),
         }
     }
 
     /// Returns the currently attached native root view handle, if any.
     pub fn attached_native_view(&self) -> Option<usize> {
-        let handle = self.attached_native_view.load(std::sync::atomic::Ordering::SeqCst);
+        let handle = self.attached_native_view.load(crate::compat::atomic::Ordering::SeqCst);
         if handle == 0 {
             None
         } else {
@@ -168,7 +167,7 @@ impl crate::platform::types::MobilePlatformExtension for IosMobilePlatform {
         if native_handle == 0 {
             return false;
         }
-        self.attached_native_view.store(native_handle, std::sync::atomic::Ordering::SeqCst);
+        self.attached_native_view.store(native_handle, crate::compat::atomic::Ordering::SeqCst);
         true
     }
 }

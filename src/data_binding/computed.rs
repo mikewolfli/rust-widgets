@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use crate::compat::HashMap;
+use crate::compat::{Box, HashMap, MiniToString, String, Vec};
 use crate::data_binding::traits::*;
 
 /// A computed/derived value that auto-updates when its dependencies change.

@@ -45,6 +45,7 @@
 //! }
 //! ```
 
+use crate::compat::String;
 use crate::core::Point;
 
 /// What a drag carries.
@@ -299,6 +300,7 @@ impl DragSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compat::{MiniToString, String, Vec};
     use crate::core::Rect;
 
     /// A target that accepts one payload type and records what it was given.

@@ -3,6 +3,7 @@
 
 //! Form layout manager — two-column label/field row pairs.
 use super::Layout;
+use crate::compat::{Any, Vec};
 use crate::core::{ObjectId, Rect};
 
 /// Two-column form layout storing `(label, field)` row pairs
@@ -65,11 +66,11 @@ impl FormLayout {
 }
 
 impl Layout for FormLayout {
-    fn as_any(&self) -> &dyn std::any::Any {
+    fn as_any(&self) -> &dyn Any {
         self
     }
 
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+    fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
 

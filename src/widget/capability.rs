@@ -80,7 +80,7 @@
 // does; see the module's `cfg` section below for why the property *contract* is
 // separate.
 #[cfg(full_widgets)]
-use std::collections::HashMap;
+use crate::compat::HashMap;
 
 #[cfg(full_widgets)]
 use crate::core::Rect;

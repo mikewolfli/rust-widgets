@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
+use crate::compat::{format, MiniToString, String, Vec};
+
 /// Represents a keyboard shortcut (key combination).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Shortcut {
@@ -101,7 +103,7 @@ impl Shortcut {
     /// `format_shortcut`) to get the text a user should see on the current OS —
     /// `⌘⇧Z` on macOS, `Ctrl+Shift+Z` on Windows and Linux.
     pub fn format_shortcut(&self) -> String {
-        use std::fmt::Write;
+        use core::fmt::Write;
         let mut result = String::new();
         if self.modifiers.contains(Modifiers::PRIMARY) {
             result.push_str("Primary");
@@ -146,8 +148,8 @@ impl Default for Shortcut {
         Self::new(Key::None, Modifiers::empty())
     }
 }
-impl std::fmt::Display for Shortcut {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for Shortcut {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}", self.format_shortcut())
     }
 }
@@ -550,8 +552,8 @@ impl Key {
         }
     }
 }
-impl std::fmt::Display for Key {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for Key {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}", self.format_key())
     }
 }
@@ -657,13 +659,13 @@ impl Modifiers {
         self.0
     }
 }
-impl std::ops::BitOr for Modifiers {
+impl core::ops::BitOr for Modifiers {
     type Output = Self;
     fn bitor(self, rhs: Self) -> Self::Output {
         Self(self.0 | rhs.0)
     }
 }
-impl std::ops::BitOrAssign for Modifiers {
+impl core::ops::BitOrAssign for Modifiers {
     fn bitor_assign(&mut self, rhs: Self) {
         self.0 |= rhs.0;
     }

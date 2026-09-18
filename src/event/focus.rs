@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Focus management for widgets.
+use crate::compat::{Box, HashMap, Vec};
 use crate::core::ObjectId;
 use crate::signal::GenericSignal;
 /// Manages keyboard focus across widgets.
@@ -17,7 +18,7 @@ pub struct FocusManager {
     /// Focus traversal strategy (BLUE11 R7.2).
     traversal_strategy: FocusTraversalStrategy,
     /// Widget positions for RowMajor/ColumnMajor traversal.
-    widget_positions: std::collections::HashMap<ObjectId, (i32, i32)>,
+    widget_positions: HashMap<ObjectId, (i32, i32)>,
 }
 impl FocusManager {
     /// Creates a new focus manager.
@@ -28,7 +29,7 @@ impl FocusManager {
             focusable_widgets: Vec::new(),
             on_focus_changed: None,
             traversal_strategy: FocusTraversalStrategy::TabOrder,
-            widget_positions: std::collections::HashMap::new(),
+            widget_positions: HashMap::new(),
         }
     }
     /// Returns the currently focused widget, if any.

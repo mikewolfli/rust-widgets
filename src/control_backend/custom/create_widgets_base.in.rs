@@ -24,9 +24,7 @@ macro_rules! impl_base_widgets {
                 //
                 // Clearing on creation makes "was this window resized?" a property of the
                 // window rather than of the integer that names it.
-                self.state
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                lock(&self.state)
                     .window_client_sizes
                     .remove(&id);
             }

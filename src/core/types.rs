@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 use super::geometry::{Rect, Size};
-use std::fmt::{Debug, Display};
+use crate::compat::fmt::{Debug, Display};
+use crate::compat::{format, String, Vec};
 
 /// Stable numeric identifier used for widgets and objects.
 pub type ObjectId = u64;
@@ -66,8 +67,8 @@ pub enum CoreError {
     /// Internal error.
     Internal(String),
 }
-impl std::fmt::Display for CoreError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl crate::compat::fmt::Display for CoreError {
+    fn fmt(&self, f: &mut crate::compat::fmt::Formatter<'_>) -> crate::compat::fmt::Result {
         match self {
             Self::InvalidArgument(msg) => write!(f, "Invalid argument: {msg}"),
             Self::NotSupported(msg) => write!(f, "Not supported: {msg}"),
@@ -76,7 +77,7 @@ impl std::fmt::Display for CoreError {
         }
     }
 }
-impl std::error::Error for CoreError {}
+impl core::error::Error for CoreError {}
 
 impl From<crate::error::RwError> for CoreError {
     fn from(err: crate::error::RwError) -> Self {
@@ -92,7 +93,7 @@ impl From<crate::error::RwError> for CoreError {
 }
 
 /// Generic result type with default error.
-pub type Result<T, E = CoreError> = std::result::Result<T, E>;
+pub type Result<T, E = CoreError> = core::result::Result<T, E>;
 /// Version information for compatibility checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Version {
@@ -158,14 +159,14 @@ impl Version {
         Ok(Self { major, minor, patch })
     }
 }
-impl std::str::FromStr for Version {
+impl core::str::FromStr for Version {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::parse_str(s)
     }
 }
 impl Display for Version {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut crate::compat::fmt::Formatter<'_>) -> crate::compat::fmt::Result {
         write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
     }
 }
@@ -298,6 +299,7 @@ impl CoreConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compat::MiniToString;
 
     #[test]
     fn test_version_creation() {

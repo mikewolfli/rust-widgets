@@ -7,6 +7,7 @@
 //! expands to show a scrollable list of options. Selecting an item emits
 //! a `changed` signal and collapses the list.
 
+use crate::compat::{String, Vec, ToString};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;

@@ -3,6 +3,7 @@
 
 //! Grid layout manager — arranges items in a fixed row/column grid.
 use super::Layout;
+use crate::compat::{vec, Any, Vec};
 use crate::core::{ObjectId, Rect};
 /// Fixed-grid layout manager with row/column cell placement.
 pub struct GridLayout {
@@ -117,10 +118,10 @@ impl GridLayout {
     }
 }
 impl Layout for GridLayout {
-    fn as_any(&self) -> &dyn std::any::Any {
+    fn as_any(&self) -> &dyn Any {
         self
     }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+    fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
     fn add_widget(&mut self, widget_id: ObjectId, _stretch: u32) {

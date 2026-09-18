@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use super::Layout;
+use crate::compat::{Any, Box, Vec};
 use crate::core::{ObjectId, Rect, Size};
 use crate::widget::Widget;
 use core::fmt;
@@ -350,11 +351,11 @@ impl FlowLayout {
 crate::impl_default_via_new!(FlowLayout);
 
 impl Layout for FlowLayout {
-    fn as_any(&self) -> &dyn std::any::Any {
+    fn as_any(&self) -> &dyn Any {
         self
     }
 
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+    fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
 

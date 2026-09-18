@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 //! Adaptive rendering quality optimization.
+use crate::compat::VecDeque;
 use crate::quality::QualityLevel;
-use std::collections::VecDeque;
+
 /// Adaptive rendering optimizer that adjusts quality based on performance.
 pub struct AdaptiveRenderer {
     current_quality: QualityLevel,

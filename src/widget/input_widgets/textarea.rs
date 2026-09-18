@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! TextArea widget — multi-line text input (BLUE13 R2.5).
+use crate::compat::{Box, Rc, RefCell, String, ToString};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -14,8 +15,6 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::text_utils::floor_char_boundary;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
-use std::cell::RefCell;
-use std::rc::Rc;
 
 /// Multi-line text input widget.
 ///

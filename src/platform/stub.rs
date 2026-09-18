@@ -26,6 +26,7 @@
 //! [`BackendState::register_widget_with_id`], so `get_widget_text` and friends
 //! keep working for them without any per-kind code here.
 
+use crate::compat::{format, String};
 use crate::core::{ObjectId, Orientation, PlatformFamily};
 use crate::platform::state::{BackendState, WindowStateRecord};
 use crate::platform::types::*;
@@ -257,8 +258,7 @@ impl Platform for StubPlatform {
     fn window_client_size(&self, window_id: ObjectId) -> Option<(u32, u32)> {
         // Ask the control backend, which owns the window and is therefore the only
         // store that knows the size a resize reported.
-        crate::window_client_size(window_id)
-            .or_else(|| self.state.window_size(window_id))
+        crate::window_client_size(window_id).or_else(|| self.state.window_size(window_id))
     }
 
     /// Reports a container's new client size and queues a `Resized` trigger.

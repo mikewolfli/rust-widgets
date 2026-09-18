@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Spin box widget for numeric input.
+use crate::compat::{format, String, ToString};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;

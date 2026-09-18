@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Control backend abstraction for the library-painted control path.
+use crate::compat::String;
 use crate::core::ObjectId;
 use crate::platform::WidgetTriggerEvent;
 use alloc::collections::VecDeque;

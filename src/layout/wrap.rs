@@ -4,6 +4,7 @@
 //! Wrap layout manager — auto-wrap flow layout that places items in rows or columns,
 //! breaking to the next line/column when the available space is exhausted.
 use super::{Layout, LayoutContext};
+use crate::compat::{Any, Vec};
 use crate::core::{ObjectId, Rect, Size};
 
 /// Direction in which items flow before wrapping.
@@ -138,7 +139,7 @@ impl WrapLayout {
             let need = if current_line.is_empty() { cw } else { cw + gap };
             if !current_line.is_empty() && line_width + need > avail_w {
                 // Wrap to next line.
-                lines.push(std::mem::take(&mut current_line));
+                lines.push(core::mem::take(&mut current_line));
                 current_line.push((child.widget_id, child.size));
                 line_width = cw;
             } else {
@@ -230,7 +231,7 @@ impl WrapLayout {
             let ch = child.size.height as i32;
             let need = if current_col.is_empty() { ch } else { ch + gap };
             if !current_col.is_empty() && col_height + need > avail_h {
-                cols.push(std::mem::take(&mut current_col));
+                cols.push(core::mem::take(&mut current_col));
                 current_col.push((child.widget_id, child.size));
                 col_height = ch;
             } else {
@@ -309,11 +310,11 @@ impl WrapLayout {
 }
 
 impl Layout for WrapLayout {
-    fn as_any(&self) -> &dyn std::any::Any {
+    fn as_any(&self) -> &dyn Any {
         self
     }
 
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+    fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
 
@@ -387,6 +388,7 @@ impl Layout for WrapLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compat::HashMap;
 
     #[test]
     fn wrap_layout_default_creates_empty() {
@@ -437,7 +439,7 @@ mod tests {
         layout.set_child_size(1, Size::new(40, 20));
         layout.set_child_size(2, Size::new(40, 20));
 
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         layout.update(Rect::new(0, 0, 200, 50), &mut |id, rect| {
             rects.insert(id, rect);
         });
@@ -457,7 +459,7 @@ mod tests {
         layout.set_child_size(2, Size::new(60, 20));
         layout.set_child_size(3, Size::new(60, 20));
 
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         // Width 100: item1(60) fits, item2(60+4=64) doesn't => wraps
         // Row1: item1 at (0,0)
         // Row2: item2 at (0,24), item3 at (60+4=64) doesn't fit => wraps
@@ -483,7 +485,7 @@ mod tests {
         layout.set_child_size(3, Size::new(40, 20));
         layout.set_child_size(4, Size::new(40, 20));
 
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         // Width 80: two items of 40 fit per row
         // Row1: (0,0) and (40,0)
         // Row2: (0,20) and (40,20)
@@ -503,7 +505,7 @@ mod tests {
         layout.add_widget(1, 0);
         layout.set_child_size(1, Size::new(40, 20));
 
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         // 40px item in 80x50 container => centered at x=20, y=15 (vertical center too)
         layout.update(Rect::new(0, 0, 80, 50), &mut |id, rect| {
             rects.insert(id, rect);
@@ -518,7 +520,7 @@ mod tests {
         layout.add_widget(1, 0);
         layout.set_child_size(1, Size::new(40, 20));
 
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         // 40px item in 80x50 container => right-aligned at x=40, y=30 (vertical end too)
         layout.update(Rect::new(0, 0, 80, 50), &mut |id, rect| {
             rects.insert(id, rect);
@@ -533,7 +535,7 @@ mod tests {
         layout.add_widget(1, 0);
         layout.set_child_size(1, Size::new(40, 20));
 
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         // Padding 10: content starts at (10,10)
         layout.update(Rect::new(0, 0, 100, 50), &mut |id, rect| {
             rects.insert(id, rect);
@@ -550,7 +552,7 @@ mod tests {
         layout.set_child_size(1, Size::new(30, 40));
         layout.set_child_size(2, Size::new(30, 40));
 
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         layout.update(Rect::new(0, 0, 100, 150), &mut |id, rect| {
             rects.insert(id, rect);
         });
@@ -570,7 +572,7 @@ mod tests {
         layout.set_child_size(2, Size::new(30, 50));
         layout.set_child_size(3, Size::new(30, 50));
 
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         // Height 60: item1(50) fits, item2(50+4=54) doesn't => wraps
         // Col1: item1 at (0,0)
         // Col2: item2 at (34,0), item3 at (34,54) doesn't fit => wraps
@@ -594,7 +596,7 @@ mod tests {
 
         let context = LayoutContext { layout_scale: 2.0, ..LayoutContext::default() };
 
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         layout.update_with_context(Rect::new(0, 0, 200, 100), &context, &mut |id, rect| {
             rects.insert(id, rect);
         });

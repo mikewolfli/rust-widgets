@@ -121,7 +121,7 @@ macro_rules! impl_menu_widgets {
                 // just added. The previous `ObjectId::from(added)` returned `1` for
                 // every item: it addressed no entry at all, and collided with the
                 // first id the platform hands out.
-                let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                let mut state = lock(&self.state);
                 let id = super::super::types::allocate_menu_entry_id(&mut state);
                 state.menu_entries.insert(id, (parent_menu, index));
                 id
@@ -145,7 +145,7 @@ macro_rules! impl_menu_widgets {
             #[cfg(all(not(alloc_frugal), full_widgets))]
             {
                 let (menu_id, index) = {
-                    let state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let state = lock(&self.state);
                     *state.menu_entries.get(&menu_item)?
                 };
                 return crate::widget::runtime::with_widget(menu_id, |widget| {
@@ -243,14 +243,12 @@ macro_rules! impl_menu_widgets {
         }
 
         fn poll_menu_triggered(&self) -> Option<ObjectId> {
-            self.state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
+            lock(&self.state)
                 .menu_trigger_queue
                 .pop_front()
         }
         fn inject_menu_trigger(&self, menu_item_id: ObjectId) -> bool {
-            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut state = lock(&self.state);
             state.menu_trigger_queue.push_back(menu_item_id);
             true
         }

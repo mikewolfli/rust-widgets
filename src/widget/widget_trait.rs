@@ -4,13 +4,13 @@
 //! Common widget contract implemented by all widget models.
 
 use super::{BaseWidget, WidgetKind};
+use crate::compat::{format, Any, String, ToString, Vec};
 use crate::core::{Color, Font, ObjectId, Point, Rect, Size};
 use crate::event::EventHandler;
 use crate::platform::accessibility::AccessibleRole;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::css::CssParser;
 use crate::style::{Margin, Padding, WidgetStyle};
-use std::any::Any;
 
 /// Common widget contract implemented by all widget models.
 pub trait Widget: EventHandler + Any {
@@ -22,7 +22,7 @@ pub trait Widget: EventHandler + Any {
     /// geometry/visibility bookkeeping.
     #[track_caller]
     fn base(&self) -> &BaseWidget {
-        panic!("Widget::base() not implemented — override in {}", std::any::type_name::<Self>());
+        panic!("Widget::base() not implemented — override in {}", core::any::type_name::<Self>());
     }
     /// Returns mutable base widget state for default trait delegation.
     ///
@@ -31,7 +31,7 @@ pub trait Widget: EventHandler + Any {
     fn base_mut(&mut self) -> &mut BaseWidget {
         panic!(
             "Widget::base_mut() not implemented — override in {}",
-            std::any::type_name::<Self>()
+            core::any::type_name::<Self>()
         );
     }
     /// Get stable widget id.
@@ -577,6 +577,7 @@ pub trait Widget: EventHandler + Any {
 #[cfg(test)]
 mod tests {
     use super::Widget;
+    use crate::compat::{MiniToString, String};
     use crate::core::Rect;
     use crate::widget::base_widgets::button::Button;
 

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Frame time monitor for tracking rendering performance.
+use crate::compat::{vec, Vec};
 /// Frame time monitor for tracking rendering performance with lightweight statistics.
 #[derive(Debug, Clone)]
 pub struct FrameTimeMonitor {

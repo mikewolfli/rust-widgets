@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use super::Layout;
+use crate::compat::{Any, Box, Vec};
 use crate::core::{ObjectId, Rect, Size};
 use crate::widget::Widget;
 /// A positioned child in an absolute layout, with optional size and anchor.
@@ -395,11 +396,11 @@ impl AbsoluteLayout {
 }
 
 impl Layout for AbsoluteLayout {
-    fn as_any(&self) -> &dyn std::any::Any {
+    fn as_any(&self) -> &dyn Any {
         self
     }
 
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+    fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
 

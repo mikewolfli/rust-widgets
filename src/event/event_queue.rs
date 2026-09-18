@@ -3,8 +3,8 @@
 
 //! Event queue implementation.
 use super::types::{Event, EventPriority};
-use crate::compat::mpsc;
 use crate::compat::mpsc::{Receiver, Sender};
+use crate::compat::{format, mpsc, String};
 use crate::core::ObjectId;
 #[derive(Debug, Clone)]
 struct EventEnvelope {

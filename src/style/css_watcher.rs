@@ -34,9 +34,14 @@
 //! }
 //! ```
 
+#[cfg(not(alloc_frugal))]
+use crate::compat::{format, Duration, String};
+#[cfg(not(alloc_frugal))]
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+#[cfg(not(alloc_frugal))]
+use std::time::SystemTime;
 
+#[cfg(not(alloc_frugal))]
 use super::stylesheet::global_stylesheet_manager;
 
 /// Polls a CSS file and reloads it into the global stylesheet manager on change.
@@ -46,6 +51,15 @@ use super::stylesheet::global_stylesheet_manager;
 /// does not exist yet is not an error: `poll` reports `false` and keeps waiting,
 /// which is what lets a caller start watching before a generated stylesheet has
 /// been written.
+///
+/// # Availability
+///
+/// Compiled only when `alloc_frugal` is **off** (i.e. outside the `mini` profile).
+/// Watching a file needs `std::fs`, `std::io` and the `SystemTime` clock, none of
+/// which exist under `mini`'s `core` + `alloc` build. This is the declared gate
+/// rather than a design choice left open: a `mini` target has no filesystem to
+/// watch, so the capability is absent rather than degraded.
+#[cfg(not(alloc_frugal))]
 #[derive(Debug)]
 pub struct CssWatcher {
     /// The stylesheet's path on disk.
@@ -66,6 +80,7 @@ pub struct CssWatcher {
     priority: u8,
 }
 
+#[cfg(not(alloc_frugal))]
 impl CssWatcher {
     /// Creates a watcher for `path`, registering into the global manager as `name`.
     ///
@@ -199,7 +214,7 @@ impl CssWatcher {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(alloc_frugal)))]
 mod tests {
     use super::*;
     use crate::style::global_stylesheet_manager;
@@ -216,7 +231,7 @@ mod tests {
     ///
     /// Every test here registers into the process-wide manager, so without this
     /// they would race each other (and the other suites' sheet tests).
-    fn guard() -> std::sync::MutexGuard<'static, ()> {
+    fn guard() -> crate::compat::MutexGuard<'static, ()> {
         crate::style::stylesheet_test_guard()
     }
 

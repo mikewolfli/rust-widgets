@@ -6,12 +6,11 @@
 //! This module provides a state-backed platform implementation for Android,
 //! serving as a foundation for progressive JNI native view integration.
 
+use crate::compat::atomic::AtomicBool;
+use crate::compat::{HashMap, Mutex, Vec, VecDeque};
 use crate::platform::state::BackendState;
 #[cfg(all(feature = "serde", widgets_unstripped))]
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::AtomicBool;
-use std::sync::Mutex;
 
 /// Android-specific widget handle type discriminator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -78,7 +77,7 @@ pub struct AndroidPlatform {
     /// Runtime state for init/run/quit.
     pub(crate) runtime: AndroidRuntimeState,
     /// Optional JVM pointer (set via `init_jvm`).
-    pub(crate) jvm: Option<*mut std::ffi::c_void>,
+    pub(crate) jvm: Option<*mut core::ffi::c_void>,
 }
 
 // Safety: `jvm` is a raw pointer only used within JNI calls that are
@@ -98,7 +97,7 @@ impl AndroidPlatform {
     }
 
     /// Initialize JVM pointer for JNI-based operations.
-    pub fn init_jvm(&mut self, jvm: *mut std::ffi::c_void) {
+    pub fn init_jvm(&mut self, jvm: *mut core::ffi::c_void) {
         self.jvm = Some(jvm);
     }
 
@@ -161,7 +160,7 @@ crate::impl_default_via_new!(AndroidPlatform);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::Ordering;
+    use crate::compat::atomic::Ordering;
 
     #[test]
     fn test_android_platform_new() {

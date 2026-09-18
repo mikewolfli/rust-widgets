@@ -3,6 +3,7 @@
 
 //! Space allocation preference used by layout items.
 
+use crate::compat::{vec, Any, Vec};
 use crate::core::{ObjectId, Point, Rect, Size};
 /// How a layout item reacts to the space its parent offers it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,10 +100,10 @@ pub trait Layout {
 
     /// Enables downcasting from `dyn Layout` to concrete types.
     /// Required by the layout inspector for introspection.
-    fn as_any(&self) -> &dyn std::any::Any;
+    fn as_any(&self) -> &dyn Any;
 
     /// Enables mutable downcasting from `dyn Layout` to concrete types.
     /// Required for mutation access to concrete layout implementations
     /// through the trait object.
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 }

@@ -16,9 +16,9 @@
 
 #![cfg(target_os = "linux")]
 
+use crate::compat::{lock, Mutex, String, ToString};
 use crate::core::ObjectId;
 use crate::platform::ime::{ImeBridge, ImeCandidatePosition, ImeComposition};
-use std::sync::Mutex;
 
 // ──────────────────────────────────────────────
 // IBus connection handle (feature-gated).
@@ -295,7 +295,7 @@ impl LinuxImeBridge {
 
     /// Whether the IBus daemon was reachable when the bridge was created.
     pub fn is_ibus_available(&self) -> bool {
-        *self.ibus_available.lock().unwrap()
+        *lock(&self.ibus_available)
     }
 
     // ── Native IME interface (exposed for platform event dispatch) ──
@@ -308,9 +308,9 @@ impl LinuxImeBridge {
     /// placement works without a daemon too.
     pub fn set_cursor_rect(&self, x: i32, y: i32, w: u32, h: u32) {
         log::debug!("[Linux IME] set_cursor_rect: x={x}, y={y}, w={w}, h={h}");
-        *self.cursor_rect.lock().unwrap() = (x, y, w, h);
+        *lock(&self.cursor_rect) = (x, y, w, h);
         #[cfg(feature = "linux-a11y")]
-        if let Some(conn) = self.ibus_connection.lock().unwrap().as_ref() {
+        if let Some(conn) = lock(&self.ibus_connection).as_ref() {
             if !conn.set_cursor_location(x, y, w, h) {
                 log::warn!("[Linux IME] SetCursorLocation failed (engine may be gone)");
             }
@@ -338,7 +338,7 @@ impl LinuxImeBridge {
         #[cfg(feature = "linux-a11y")]
         if pressed {
             let consumed = {
-                let guard = self.ibus_connection.lock().unwrap();
+                let guard = lock(&self.ibus_connection);
                 guard
                     .as_ref()
                     .and_then(|conn| conn.process_key_event(key_code, key_code, modifiers))
@@ -387,13 +387,13 @@ impl LinuxImeBridge {
             len
         };
 
-        *self.marked_text.lock().unwrap() = text.to_string();
-        *self.cursor_pos.lock().unwrap() = cursor;
+        *lock(&self.marked_text) = text.to_string();
+        *lock(&self.cursor_pos) = cursor;
     }
 
     /// Get the current marked (preedit) text, if any.
     pub fn get_marked_text(&self) -> Option<String> {
-        let text = self.marked_text.lock().unwrap();
+        let text = lock(&self.marked_text);
         if text.is_empty() {
             None
         } else {
@@ -403,20 +403,20 @@ impl LinuxImeBridge {
 
     /// Returns `true` when there is an active composition.
     pub fn has_marked_text(&self) -> bool {
-        !self.marked_text.lock().unwrap().is_empty()
+        !lock(&self.marked_text).is_empty()
     }
 
     /// Discard the current composition without committing.
     pub fn discard_marked_text(&self) {
         log::debug!("[Linux IME] discard_marked_text");
-        *self.marked_text.lock().unwrap() = String::new();
-        *self.cursor_pos.lock().unwrap() = 0;
+        *lock(&self.marked_text) = String::new();
+        *lock(&self.cursor_pos) = 0;
     }
 
     /// Clear internal composition state (shared helper).
     fn clear_composition(&self) {
-        *self.marked_text.lock().unwrap() = String::new();
-        *self.cursor_pos.lock().unwrap() = 0;
+        *lock(&self.marked_text) = String::new();
+        *lock(&self.cursor_pos) = 0;
     }
 }
 
@@ -426,13 +426,13 @@ impl LinuxImeBridge {
 
 impl ImeBridge for LinuxImeBridge {
     fn focus_in(&self, widget_id: ObjectId) {
-        *self.focused_widget.lock().unwrap() = Some(widget_id);
-        *self.active.lock().unwrap() = true;
+        *lock(&self.focused_widget) = Some(widget_id);
+        *lock(&self.active) = true;
         log::info!("[Linux IME] focus_in: widget={widget_id}");
         // Announce capabilities once per connection, then focus the engine so it
         // starts composing into this context.
         #[cfg(feature = "linux-a11y")]
-        if let Some(conn) = self.ibus_connection.lock().unwrap().as_ref() {
+        if let Some(conn) = lock(&self.ibus_connection).as_ref() {
             conn.set_capabilities(IBUS_CAP_PREEDIT_TEXT_FOCUS);
             if !conn.focus_in() {
                 log::warn!("[Linux IME] IBus FocusIn failed (engine may be gone)");
@@ -441,12 +441,12 @@ impl ImeBridge for LinuxImeBridge {
     }
 
     fn focus_out(&self, widget_id: ObjectId) {
-        *self.focused_widget.lock().unwrap() = None;
-        *self.active.lock().unwrap() = false;
+        *lock(&self.focused_widget) = None;
+        *lock(&self.active) = false;
         self.clear_composition();
         log::info!("[Linux IME] focus_out: widget={widget_id}");
         #[cfg(feature = "linux-a11y")]
-        if let Some(conn) = self.ibus_connection.lock().unwrap().as_ref() {
+        if let Some(conn) = lock(&self.ibus_connection).as_ref() {
             if !conn.focus_out() {
                 log::warn!("[Linux IME] IBus FocusOut failed (engine may be gone)");
             }
@@ -465,17 +465,17 @@ impl ImeBridge for LinuxImeBridge {
         let len = text.len();
         let cursor = composition.cursor_position.min(len);
 
-        *self.marked_text.lock().unwrap() = text.to_string();
-        *self.cursor_pos.lock().unwrap() = cursor;
+        *lock(&self.marked_text) = text.to_string();
+        *lock(&self.cursor_pos) = cursor;
     }
 
     fn set_candidate_window_position(&self, position: ImeCandidatePosition) {
         log::debug!("[Linux IME] set_candidate_window_position: ({}, {})", position.x, position.y);
-        *self.candidate_position.lock().unwrap() = position;
+        *lock(&self.candidate_position) = position;
     }
 
     fn is_active(&self) -> bool {
-        *self.active.lock().unwrap()
+        *lock(&self.active)
     }
 }
 
@@ -492,15 +492,15 @@ mod tests {
     fn test_focus_in_out() {
         let bridge = LinuxImeBridge::new();
         assert!(!bridge.is_active());
-        assert!(bridge.focused_widget.lock().unwrap().is_none());
+        assert!(lock(&bridge.focused_widget).is_none());
 
         bridge.focus_in(42);
         assert!(bridge.is_active());
-        assert_eq!(*bridge.focused_widget.lock().unwrap(), Some(42));
+        assert_eq!(*lock(&bridge.focused_widget), Some(42));
 
         bridge.focus_out(42);
         assert!(!bridge.is_active());
-        assert!(bridge.focused_widget.lock().unwrap().is_none());
+        assert!(lock(&bridge.focused_widget).is_none());
     }
 
     #[test]
@@ -535,7 +535,7 @@ mod tests {
         bridge.set_composition(&comp);
         assert!(bridge.has_marked_text());
         assert_eq!(bridge.get_marked_text(), Some("composing".to_string()));
-        assert_eq!(*bridge.cursor_pos.lock().unwrap(), 5);
+        assert_eq!(*lock(&bridge.cursor_pos), 5);
     }
 
     #[test]
@@ -553,12 +553,12 @@ mod tests {
         let bridge = LinuxImeBridge::new();
         bridge.set_marked_text("你好世界", 4, 8);
         assert!(bridge.has_marked_text());
-        assert_eq!(*bridge.cursor_pos.lock().unwrap(), 8);
+        assert_eq!(*lock(&bridge.cursor_pos), 8);
 
         bridge.discard_marked_text();
         assert!(!bridge.has_marked_text());
         assert_eq!(bridge.get_marked_text(), None);
-        assert_eq!(*bridge.cursor_pos.lock().unwrap(), 0);
+        assert_eq!(*lock(&bridge.cursor_pos), 0);
     }
 
     #[test]
@@ -610,10 +610,7 @@ mod tests {
     fn test_set_candidate_window_position() {
         let bridge = LinuxImeBridge::new();
         bridge.set_candidate_window_position(ImeCandidatePosition { x: 100, y: 200 });
-        assert_eq!(
-            *bridge.candidate_position.lock().unwrap(),
-            ImeCandidatePosition { x: 100, y: 200 }
-        );
+        assert_eq!(*lock(&bridge.candidate_position), ImeCandidatePosition { x: 100, y: 200 });
     }
 
     #[test]
@@ -631,7 +628,7 @@ mod tests {
     fn test_set_cursor_rect() {
         let bridge = LinuxImeBridge::new();
         bridge.set_cursor_rect(10, 20, 100, 30);
-        assert_eq!(*bridge.cursor_rect.lock().unwrap(), (10, 20, 100, 30));
+        assert_eq!(*lock(&bridge.cursor_rect), (10, 20, 100, 30));
     }
 
     #[test]
@@ -674,7 +671,7 @@ mod tests {
         }
 
         let context_path = {
-            let guard = bridge.ibus_connection.lock().unwrap();
+            let guard = lock(&bridge.ibus_connection);
             guard.as_ref().expect("available implies a connection").input_context_path.clone()
         };
         assert!(
@@ -684,7 +681,7 @@ mod tests {
 
         // Every engine call must be accepted by the daemon.
         {
-            let guard = bridge.ibus_connection.lock().unwrap();
+            let guard = lock(&bridge.ibus_connection);
             let conn = guard.as_ref().unwrap();
             assert!(conn.set_capabilities(IBUS_CAP_PREEDIT_TEXT_FOCUS), "SetCapabilities");
             assert!(conn.focus_in(), "FocusIn");

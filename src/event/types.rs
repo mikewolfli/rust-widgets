@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Event types and handler trait.
+use crate::compat::{Box, String, Vec};
 use crate::core::{Point, Size};
 /// A unique identifier for a touch contact point (used by `touch` and `holographic` features).
 pub type TouchId = u64;

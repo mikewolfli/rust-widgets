@@ -7,6 +7,7 @@
 //! between widgets sequentially (not a full Cassowary solver). Each constraint
 //! references a target widget and describes how this widget relates to it.
 use super::Layout;
+use crate::compat::{Any, Vec};
 use crate::core::{ObjectId, Rect};
 
 /// Describes the type of spatial relationship between two widgets.
@@ -191,11 +192,11 @@ impl ConstraintLayout {
 crate::impl_default_via_new!(ConstraintLayout);
 
 impl Layout for ConstraintLayout {
-    fn as_any(&self) -> &dyn std::any::Any {
+    fn as_any(&self) -> &dyn Any {
         self
     }
 
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+    fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
 
@@ -272,6 +273,7 @@ impl Layout for ConstraintLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compat::HashMap;
 
     #[test]
     fn test_left_to_left_alignment() {
@@ -281,7 +283,7 @@ mod tests {
         // Widget 2 left edge aligns with widget 1 left edge, offset +10
         layout.add_constraint(2, 1, ConstraintType::LeftToLeft, 10, 1.0);
 
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         layout.update(Rect::new(0, 0, 200, 100), &mut |id, rect| {
             rects.insert(id, rect);
         });
@@ -302,7 +304,7 @@ mod tests {
         layout.remove_constraints(1);
         layout.add_constraint(1, 2, ConstraintType::LeftToRight, 10, 1.0);
 
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         layout.update(Rect::new(5, 0, 200, 100), &mut |id, rect| {
             rects.insert(id, rect);
         });
@@ -324,7 +326,7 @@ mod tests {
         // Widget 2 has width = 200 (parent), center x = 200/2 = 100, so x stays 0.
         layout.add_constraint(2, 1, ConstraintType::CenterX, 0, 1.0);
 
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         layout.update(Rect::new(0, 0, 200, 100), &mut |id, rect| {
             rects.insert(id, rect);
         });
@@ -341,7 +343,7 @@ mod tests {
         // Widget 2 top aligns with widget 1 bottom.
         layout.add_constraint(2, 1, ConstraintType::TopToBottom, 5, 1.0);
 
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         layout.update(Rect::new(0, 0, 200, 100), &mut |id, rect| {
             rects.insert(id, rect);
         });
@@ -370,7 +372,7 @@ mod tests {
         // Aspect ratio = 2.0, current ratio = 200/100 = 2.0, no change.
         layout.add_constraint(1, 1, ConstraintType::AspectRatio(2.0), 0, 1.0);
 
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         layout.update(Rect::new(0, 0, 200, 100), &mut |id, rect| {
             rects.insert(id, rect);
         });

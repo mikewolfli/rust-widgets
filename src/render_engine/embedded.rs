@@ -6,15 +6,14 @@
 #[cfg(not(alloc_frugal))]
 use crate::compat::Condvar;
 use crate::compat::HashMap;
-#[cfg(not(alloc_frugal))]
 use crate::compat::Instant;
 use crate::compat::Mutex;
 use crate::compat::MutexGuard;
 use crate::compat::OnceLock;
+use crate::compat::{lock, Box, MiniToString, String, Vec};
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
-#[cfg(not(alloc_frugal))]
 use core::time::Duration;
 
 /// The target frame rate a freshly-created embedded engine starts at.
@@ -31,7 +30,6 @@ fn clamp_embedded_target_fps(fps: u32) -> u32 {
     fps.clamp(MIN_EMBEDDED_TARGET_FPS, MAX_EMBEDDED_TARGET_FPS)
 }
 
-#[cfg(not(alloc_frugal))]
 fn frame_interval_for_fps(fps: u32) -> Duration {
     Duration::from_nanos(1_000_000_000 / fps as u64)
 }
@@ -103,7 +101,7 @@ impl EmbeddedEngineShared {
     }
 
     fn lock_state(&self) -> MutexGuard<'_, EmbeddedRuntimeState> {
-        self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        lock(&self.state)
     }
 
     fn set_target_fps(&self, fps: u32) -> u32 {
@@ -169,7 +167,16 @@ impl EmbeddedEngineShared {
 
     #[cfg(alloc_frugal)]
     pub(crate) fn run_loop(&self) {
-        // mini: no-thread embedded loop — process tasks inline, no sleep/wait
+        // mini: no-thread embedded loop — process tasks inline, no sleeping.
+        //
+        // There is no second thread to wake this loop, so the desktop arm's
+        // `Condvar::wait_timeout` frame pacing has nothing to wait on. Pacing is
+        // still applied, by busy-waiting on the same monotonic clock and the same
+        // `frame_interval_for_fps` budget: without it the loop would spin at full
+        // speed and every task would run far more often than the target rate asks
+        // for, which on a device is a battery and thermal problem rather than a
+        // cosmetic one. The state lock is re-checked inside the wait so a
+        // `stop()` from a task is still observed promptly.
         {
             let mut state = self.lock_state();
             if state.running {
@@ -178,11 +185,13 @@ impl EmbeddedEngineShared {
             state.running = true;
         }
         loop {
-            let (tasks, still_running) = {
+            let frame_start = Instant::now();
+            let (tasks, target_fps, still_running) = {
                 let mut state = self.lock_state();
                 let still_running = state.running;
+                let target_fps = state.target_fps;
                 let tasks = state.pending_tasks.drain(..).collect::<Vec<_>>();
-                (tasks, still_running)
+                (tasks, target_fps, still_running)
             };
             if !still_running {
                 break;
@@ -190,6 +199,13 @@ impl EmbeddedEngineShared {
             let frame_index = self.frame_count.fetch_add(1, Ordering::SeqCst) + 1;
             for task in tasks {
                 task.run(frame_index);
+            }
+            let frame_interval = frame_interval_for_fps(clamp_embedded_target_fps(target_fps));
+            while frame_start.elapsed() < frame_interval {
+                if !self.lock_state().running {
+                    return;
+                }
+                core::hint::spin_loop();
             }
         }
     }
@@ -396,10 +412,10 @@ pub fn embedded_engine_stats() -> EmbeddedEngineStats {
 /// Callers must take it for the whole mutate-assert-restore span.
 #[cfg(test)]
 pub(crate) fn embedded_test_guard() -> crate::compat::MutexGuard<'static, ()> {
-    use std::sync::{Mutex, OnceLock};
+    use crate::compat::{lock, Mutex, OnceLock};
 
     static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
-    GUARD.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    lock(GUARD.get_or_init(|| Mutex::new(())))
 }
 
 #[cfg(test)]

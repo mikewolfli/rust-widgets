@@ -237,7 +237,7 @@ impl Draw for Spinner {
         // Draw the spinning arc segment (~135 degrees sweep).
         // Convert angle from degrees to radians; start at -90° (12 o'clock) offset.
         let arc_sweep = 2.4; // ~135 degrees in radians
-        let start_angle = self.angle.to_radians() - std::f32::consts::FRAC_PI_2;
+        let start_angle = self.angle.to_radians() - core::f32::consts::FRAC_PI_2;
         let end_angle = start_angle + arc_sweep;
 
         crate::render::draw_arc_segments(

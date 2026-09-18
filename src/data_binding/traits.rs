@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
+use crate::compat::Box;
 use core::any::Any;
 
 /// A listener that gets notified when a binding value changes.
@@ -36,7 +37,6 @@ impl<F: FnMut(&str, &str) + Send + 'static> FnListener<F> {
         Self { f }
     }
 }
-
 impl<F: FnMut(&str, &str) + Send + 'static> BindingListener for FnListener<F> {
     fn on_value_changed(&mut self, key: &str, operation: &str) {
         (self.f)(key, operation);
@@ -46,7 +46,7 @@ impl<F: FnMut(&str, &str) + Send + 'static> BindingListener for FnListener<F> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compat::Mutex;
+    use crate::compat::{lock, MiniToString, Mutex, String};
     use alloc::sync::Arc;
     use core::sync::atomic::{AtomicI32, Ordering};
 
@@ -55,10 +55,10 @@ mod tests {
         let invoked_key = Arc::new(Mutex::new(String::new()));
         let ik = invoked_key.clone();
         let mut listener = FnListener::new(move |key, _op| {
-            *ik.lock().unwrap() = key.to_string();
+            *lock(&ik) = key.to_string();
         });
         listener.on_value_changed("test_key", "");
-        assert_eq!(*invoked_key.lock().unwrap(), "test_key");
+        assert_eq!(*lock(&invoked_key), "test_key");
     }
 
     #[test]

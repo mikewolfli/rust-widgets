@@ -431,7 +431,7 @@ crate::impl_default_via_new!(ThemeManager);
 // the UI thread and read from wherever a widget is built, and the lock is held
 // only for the duration of a clone-or-resolve call.
 
-use crate::compat::{Mutex, MutexGuard, OnceLock};
+use crate::compat::{lock, Mutex, MutexGuard, OnceLock};
 
 /// The process-wide theme registry.
 ///
@@ -441,17 +441,14 @@ use crate::compat::{Mutex, MutexGuard, OnceLock};
 /// previously unreachable [`Theme::dark`] preset into a usable switch.
 pub fn global_theme_manager() -> MutexGuard<'static, ThemeManager> {
     static MANAGER: OnceLock<Mutex<ThemeManager>> = OnceLock::new();
-    MANAGER
-        .get_or_init(|| {
-            let mut manager = ThemeManager::new();
-            let dark = Theme::dark();
-            // `register_theme` keys by the theme's own name, so re-seeding is
-            // impossible and the dark preset cannot overwrite the light default.
-            manager.register_theme(dark);
-            Mutex::new(manager)
-        })
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    lock(MANAGER.get_or_init(|| {
+        let mut manager = ThemeManager::new();
+        let dark = Theme::dark();
+        // `register_theme` keys by the theme's own name, so re-seeding is
+        // impossible and the dark preset cannot overwrite the light default.
+        manager.register_theme(dark);
+        Mutex::new(manager)
+    }))
 }
 
 /// Serialises tests that mutate the process-wide theme registry.
@@ -469,9 +466,9 @@ pub fn global_theme_manager() -> MutexGuard<'static, ThemeManager> {
 /// Public rather than `#[cfg(test)]` because integration tests are separate crates
 /// and cannot see crate-test-only items, yet they exercise the same registry. Not
 /// for production use — an application has no other tests to race against.
-pub fn theme_test_guard() -> std::sync::MutexGuard<'static, ()> {
+pub fn theme_test_guard() -> crate::compat::MutexGuard<'static, ()> {
     static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
-    GUARD.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    lock(GUARD.get_or_init(|| Mutex::new(())))
 }
 
 /// Resolves the active theme's style for `widget_name`.

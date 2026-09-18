@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Render commands for composing widget visuals.
+use crate::compat::{String, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::style::Gradient;
 

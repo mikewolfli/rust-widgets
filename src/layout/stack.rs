@@ -3,6 +3,7 @@
 
 //! Stack layout manager — shows one child page at a time.
 use super::Layout;
+use crate::compat::{Any, Vec};
 use crate::core::{ObjectId, Rect};
 /// Stack layout that shows one child page at a time.
 #[derive(Debug)]
@@ -36,10 +37,10 @@ impl StackLayout {
 }
 crate::impl_default_via_new!(StackLayout);
 impl Layout for StackLayout {
-    fn as_any(&self) -> &dyn std::any::Any {
+    fn as_any(&self) -> &dyn Any {
         self
     }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+    fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
     fn add_widget(&mut self, widget_id: ObjectId, _stretch: u32) {

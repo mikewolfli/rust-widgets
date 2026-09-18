@@ -34,6 +34,7 @@
 //! happens once, here, and the rest of the crate is free of the feature names
 //! (BLUE15 rules #57/#58).
 
+use crate::compat::Box;
 use crate::core::RuntimeProfile;
 use crate::render_engine::RenderEngine;
 

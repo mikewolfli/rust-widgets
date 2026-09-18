@@ -13,6 +13,7 @@ pub use drag_drop_manager::DragDropManager;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compat::MiniToString;
     use crate::core::PlatformFamily;
     use crate::platform::{DropEvent, Platform, StubPlatform};
     #[test]

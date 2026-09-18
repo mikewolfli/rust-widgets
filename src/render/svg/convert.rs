@@ -6,6 +6,7 @@
 //! Provides color formatting and XML escaping utilities
 //! shared across SVG element generation.
 
+use crate::compat::{format, String, ToString};
 use crate::core::{Color, Point, Rect};
 
 /// Format a [`Color`] as an SVG-compatible `rgba()` CSS string.

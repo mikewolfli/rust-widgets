@@ -7,6 +7,7 @@
 //! line across the widget rectangle. Useful for visually separating sections
 //! in layouts.
 
+use crate::compat::ToString;
 use crate::core::{Color, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;

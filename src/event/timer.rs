@@ -5,9 +5,7 @@
 use super::event_queue::EventSender;
 #[cfg(not(alloc_frugal))]
 use super::types::Event;
-use crate::compat::HashMap;
-use crate::compat::Instant;
-use crate::compat::Mutex;
+use crate::compat::{lock, Box, HashMap, Instant, MiniToString, Mutex, String, Vec};
 use crate::core::ObjectId;
 use alloc::sync::Arc;
 use core::time::Duration;
@@ -23,13 +21,6 @@ struct TimerEntry {
 struct TimerState {
     timers: HashMap<(ObjectId, u32), TimerEntry>,
     running: bool,
-}
-
-#[cfg(not(alloc_frugal))]
-fn recover_lock<T>(
-    e: std::sync::PoisonError<crate::compat::MutexGuard<'_, T>>,
-) -> crate::compat::MutexGuard<'_, T> {
-    e.into_inner()
 }
 
 /// Emits timer events into the event queue for one-shot and repeating timers.
@@ -63,7 +54,7 @@ impl TimerManager {
             let mut due_events = Vec::new();
 
             {
-                let mut guard = worker_state.lock().unwrap_or_else(recover_lock);
+                let mut guard = lock(&worker_state);
                 if !guard.running {
                     return;
                 }
@@ -94,8 +85,7 @@ impl TimerManager {
 
             for (target, id) in due_events {
                 if worker_sender.post(target, Event::timer(id)).is_err() {
-                    let mut guard = worker_state.lock().unwrap_or_else(recover_lock);
-                    guard.timers.remove(&(target, id));
+                    lock(&worker_state).timers.remove(&(target, id));
                 }
             }
 
@@ -118,14 +108,7 @@ impl TimerManager {
 
     /// Acquire the lock on timer state, recovering from poisoning.
     fn lock_timers(&self) -> crate::compat::MutexGuard<'_, TimerState> {
-        #[cfg(not(alloc_frugal))]
-        {
-            self.state.lock().unwrap_or_else(recover_lock)
-        }
-        #[cfg(alloc_frugal)]
-        {
-            self.state.lock().unwrap_or_else(|p| p.into_inner())
-        }
+        lock(&self.state)
     }
 
     /// Start or replace a timer for `(target, id)`.
@@ -169,11 +152,11 @@ impl TimerManager {
     /// loop iteration) invoke this periodically to fire due timers.
     #[cfg(alloc_frugal)]
     pub fn pump(&self) {
-        let now = crate::compat::Instant::now();
+        let now = Instant::now();
         let mut due_events = Vec::new();
 
         {
-            let mut guard = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            let mut guard = lock(&self.state);
             if !guard.running {
                 return;
             }
@@ -185,7 +168,7 @@ impl TimerManager {
                         due_events.push(key);
                         if entry.repeating {
                             // Reset based on current time to avoid cumulative drift.
-                            entry.next_fire = crate::compat::Instant::now() + entry.interval;
+                            entry.next_fire = Instant::now() + entry.interval;
                         }
                     }
                 }
@@ -210,10 +193,13 @@ impl TimerManager {
 impl Drop for TimerManager {
     fn drop(&mut self) {
         {
-            let mut guard = self.state.lock().unwrap_or_else(recover_lock);
+            let mut guard = lock(&self.state);
             guard.running = false;
             guard.timers.clear();
         }
+        // `mini` has no `JoinHandle` here — the field is `Option<()>` to keep this
+        // body shared with the threaded arm — so there is nothing to join and no
+        // worker to stop beyond clearing `running` above.
         if let Some(handle) = self.thread_handle.take() {
             if let Err(e) = handle.join() {
                 log::error!("[timer-manager] Thread join failed: {e:?}");

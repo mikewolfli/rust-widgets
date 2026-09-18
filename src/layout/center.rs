@@ -7,6 +7,7 @@
 //! width_factor and height_factor (0.0–1.0) control how much of the available
 //! space the child consumes before centering.
 use super::Layout;
+use crate::compat::{Any, Vec};
 use crate::core::{ObjectId, Rect};
 
 /// A layout that centers a single child within the available rectangle.
@@ -68,11 +69,11 @@ impl CenterLayout {
 crate::impl_default_via_new!(CenterLayout);
 
 impl Layout for CenterLayout {
-    fn as_any(&self) -> &dyn std::any::Any {
+    fn as_any(&self) -> &dyn Any {
         self
     }
 
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+    fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
 

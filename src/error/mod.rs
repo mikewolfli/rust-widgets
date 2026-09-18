@@ -19,7 +19,7 @@
 //!
 //! **State:** Production callers: `src/bindings/binding_impl.rs:1` (`rw_error_code` / `rw_error_message` read `error::ffi`).
 
-use std::fmt;
+use crate::compat::{fmt, format, MiniToString, String};
 
 // ---------------------------------------------------------------------------
 // ErrorId — stable integer error codes (for C/C++ FFI only)
@@ -193,7 +193,7 @@ impl RwError {
     }
 
     /// Convert panic info (from `catch_unwind`) into an `RwError`.
-    pub fn from_panic(panic_info: &dyn std::any::Any) -> Self {
+    pub fn from_panic(panic_info: &dyn crate::compat::Any) -> Self {
         let msg = panic_info
             .downcast_ref::<&str>()
             .map(|s| s.to_string())
@@ -209,7 +209,7 @@ impl fmt::Display for RwError {
     }
 }
 
-impl std::error::Error for RwError {}
+impl core::error::Error for RwError {}
 
 // ---------------------------------------------------------------------------
 // From impls — bridge between core and error domains
@@ -245,14 +245,38 @@ pub type RwResult<T> = Result<T, RwError>;
 ///
 /// **Must** be used at every `extern "C" fn` entry point to prevent
 /// unwinding across the C ABI boundary.
+///
+/// # Under `mini`
+///
+/// `catch_unwind` has no `core` equivalent on the supported toolchain: it lives
+/// in `std` because catching a panic needs the std unwinder and the panic-payload
+/// machinery. `mini` targets `panic = "abort"` (see the `release-mini` profile in
+/// `Cargo.toml`), where unwinding cannot be caught by *any* API, so the mini arm
+/// calls `f` directly. That is not a silent behaviour change — aborting is what a
+/// panic does under that profile with or without this function.
+#[cfg(not(alloc_frugal))]
 pub fn catch_panic<F, T>(f: F) -> RwResult<T>
 where
-    F: FnOnce() -> T + std::panic::UnwindSafe,
+    F: FnOnce() -> T + core::panic::UnwindSafe,
 {
     match std::panic::catch_unwind(f) {
         Ok(v) => Ok(v),
         Err(e) => Err(RwError::from_panic(&*e)),
     }
+}
+
+/// Execute a closure, converting any panic into an `RwResult::Err`.
+///
+/// See the `not(alloc_frugal)` definition above for why the `mini` arm cannot
+/// catch: `panic = "abort"` has no unwinding to catch. The signature is kept
+/// identical (`core::panic::UnwindSafe` is available in `core`) so callers do not
+/// have to be feature-gated.
+#[cfg(alloc_frugal)]
+pub fn catch_panic<F, T>(f: F) -> RwResult<T>
+where
+    F: FnOnce() -> T + core::panic::UnwindSafe,
+{
+    Ok(f())
 }
 
 // ---------------------------------------------------------------------------

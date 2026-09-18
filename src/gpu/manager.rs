@@ -15,7 +15,7 @@ use super::buffer_pool::{GpuBufferPoolStats, GpuStagingBufferPool};
 use super::performance::{
     AdaptivePerformanceMonitor, PerformanceStats, PerformanceTrap, PerformanceTrapDetector,
 };
-use crate::compat::Mutex;
+use crate::compat::{format, lock, MiniToString, Mutex, String, Vec};
 use crate::quality::{GpuCapability, QualityLevel};
 
 /// GPU operation mode
@@ -83,7 +83,7 @@ impl GpuQualityTracker {
         self.level = level.clamp(self.min_quality, self.max_quality);
     }
 
-    fn finish_frame(&mut self, frame_duration: std::time::Duration) {
+    fn finish_frame(&mut self, frame_duration: core::time::Duration) {
         let secs = frame_duration.as_secs_f64();
         if secs > self.target_frame_time * self.degrade_threshold {
             self.bad_frame_count += 1;
@@ -225,42 +225,24 @@ impl GpuManager {
 
     /// Begins a new frame
     pub fn begin_frame(&self) {
-        if let Ok(mut monitor) = self.performance_monitor.lock() {
-            monitor.begin_frame();
-        }
-        if let Ok(mut pool) = self.buffer_pool.lock() {
-            pool.next_frame();
-        }
+        lock(&self.performance_monitor).begin_frame();
+        lock(&self.buffer_pool).next_frame();
     }
 
     /// Ends the current frame and updates performance monitoring
     pub fn end_frame(&self) -> Option<PerformanceStats> {
-        let sample = if let Ok(mut monitor) = self.performance_monitor.lock() {
-            Some(monitor.end_frame())
-        } else {
-            None
-        };
-        if let Ok(mut quality) = self.quality_tracker.lock() {
-            if let Some(ref s) = sample {
-                quality.finish_frame(s.frame_duration);
+        let sample = Some(lock(&self.performance_monitor).end_frame());
+        if let Some(ref s) = sample {
+            lock(&self.quality_tracker).finish_frame(s.frame_duration);
+        }
+        if let Some(ref sample) = sample {
+            let fps = 1.0 / sample.frame_duration.as_secs_f32();
+            if let Some(trap) = lock(&self.trap_detector).check(fps) {
+                self.handle_performance_trap(trap);
             }
         }
-        if let Ok(mut detector) = self.trap_detector.lock() {
-            if let Some(ref sample) = sample {
-                let fps = 1.0 / sample.frame_duration.as_secs_f32();
-                if let Some(trap) = detector.check(fps) {
-                    self.handle_performance_trap(trap);
-                }
-            }
-        }
-        if let Ok(mut monitor) = self.performance_monitor.lock() {
-            monitor.auto_adjust_thresholds();
-        }
-        if let Ok(monitor) = self.performance_monitor.lock() {
-            Some(monitor.stats())
-        } else {
-            None
-        }
+        lock(&self.performance_monitor).auto_adjust_thresholds();
+        Some(lock(&self.performance_monitor).stats())
     }
 
     /// Handles a performance trap
@@ -286,79 +268,50 @@ impl GpuManager {
 
     /// Adds a warning message
     fn add_warning(&self, message: &str) {
-        if let Ok(mut warnings) = self.warnings.lock() {
-            if !warnings.contains(&message.to_string()) {
-                warnings.push(message.to_string());
-            }
+        let mut warnings = lock(&self.warnings);
+        if !warnings.contains(&message.to_string()) {
+            warnings.push(message.to_string());
         }
     }
 
     /// Returns all warnings
     pub fn warnings(&self) -> Vec<String> {
-        if let Ok(warnings) = self.warnings.lock() {
-            warnings.clone()
-        } else {
-            Vec::new()
-        }
+        lock(&self.warnings).clone()
     }
 
     /// Clears all warnings
     pub fn clear_warnings(&self) {
-        if let Ok(mut warnings) = self.warnings.lock() {
-            warnings.clear();
-        }
+        lock(&self.warnings).clear();
     }
 
     /// Returns the current quality level
     pub fn current_quality(&self) -> QualityLevel {
-        if let Ok(quality) = self.quality_tracker.lock() {
-            quality.quality_level()
-        } else {
-            QualityLevel::Medium
-        }
+        lock(&self.quality_tracker).quality_level()
     }
 
     /// Sets the quality level manually
     pub fn set_quality(&self, level: QualityLevel) {
-        if let Ok(mut quality) = self.quality_tracker.lock() {
-            quality.set_quality_level(level);
-        }
+        lock(&self.quality_tracker).set_quality_level(level);
     }
 
     /// Returns buffer pool statistics
     pub fn buffer_pool_stats(&self) -> Option<GpuBufferPoolStats> {
-        if let Ok(pool) = self.buffer_pool.lock() {
-            Some(pool.memory_stats())
-        } else {
-            None
-        }
+        Some(lock(&self.buffer_pool).memory_stats())
     }
 
     /// Returns performance statistics
     pub fn performance_stats(&self) -> Option<PerformanceStats> {
-        if let Ok(monitor) = self.performance_monitor.lock() {
-            Some(monitor.stats())
-        } else {
-            None
-        }
+        Some(lock(&self.performance_monitor).stats())
     }
 
     /// Returns true if quality should be degraded
     pub fn should_degrade_quality(&self) -> bool {
-        if let Ok(monitor) = self.performance_monitor.lock() {
-            monitor.should_degrade()
-        } else {
-            false
-        }
+        lock(&self.performance_monitor).should_degrade()
     }
 
     /// Returns true if quality should be upgraded
     pub fn should_upgrade_quality(&self) -> bool {
-        if let Ok(monitor) = self.performance_monitor.lock() {
-            monitor.should_upgrade()
-        } else {
-            false
-        }
+        lock(&self.performance_monitor).should_upgrade()
     }
 
     /// Returns recommended actions based on current state
@@ -462,8 +415,8 @@ pub enum GpuManagerError {
     NoSuitableGpu,
 }
 
-impl std::fmt::Display for GpuManagerError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for GpuManagerError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::AdapterSelectionFailed(msg) => write!(f, "Adapter selection failed: {msg}"),
             Self::DeviceCreationFailed(msg) => write!(f, "Device creation failed: {msg}"),
@@ -472,7 +425,7 @@ impl std::fmt::Display for GpuManagerError {
     }
 }
 
-impl std::error::Error for GpuManagerError {}
+impl core::error::Error for GpuManagerError {}
 
 /// Builder for GPU manager
 pub struct GpuManagerBuilder {

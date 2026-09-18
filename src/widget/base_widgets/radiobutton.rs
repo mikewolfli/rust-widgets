@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Radio button widget.
+use crate::compat::{String, ToString};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -230,6 +231,7 @@ impl Draw for RadioButton {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compat::Vec;
     use crate::core::Rect;
     use crate::core::Size;
     use crate::style::WidgetStyle;

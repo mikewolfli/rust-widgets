@@ -383,8 +383,7 @@ impl Platform for WindowsPlatform {
         }
         // Ask the control backend, which owns the window and is therefore the only
         // store that knows the size a resize reported.
-        crate::window_client_size(window_id)
-            .or_else(|| self.state.window_size(window_id))
+        crate::window_client_size(window_id).or_else(|| self.state.window_size(window_id))
     }
 
     /// Reports a container's new client size and queues a `Resized` trigger.

@@ -7,6 +7,7 @@
 //! a [`Signal1<(u32, u32)>`] with the key code and modifiers on press.
 //! Special keys (Enter, Backspace, Space) also emit dedicated signals.
 
+use crate::compat::{format, vec, String, Vec, ToString};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;

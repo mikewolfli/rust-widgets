@@ -47,6 +47,7 @@
 #[cfg(widgets_unstripped)]
 use super::access::{read_widget_property_by_id, write_widget_property_by_id};
 use super::types::CapabilityValue;
+use crate::compat::String;
 use crate::core::ObjectId;
 
 /// Writes `value` under the first of `names` the control accepts.

@@ -6,6 +6,7 @@
 //! Provides the `ImeBridge` trait for platform IME integration,
 //! IME event types, and a mock implementation for testing.
 
+use crate::compat::{lock, String, ToString};
 use crate::core::ObjectId;
 
 /// IME composition state.
@@ -91,54 +92,54 @@ impl MockImeBridge {
     /// Real backends derive activity from their host connection; this setter
     /// exists so tests can exercise both states without one.
     pub fn set_active(&self, active: bool) {
-        *self.active.lock().unwrap() = active;
+        *lock(&self.active) = active;
     }
 
     /// Returns the widget id passed to the most recent `focus_in`, or `None`
     /// after a `focus_out` or before any focus call.
     pub fn focused_widget(&self) -> Option<ObjectId> {
-        *self.focused_widget.lock().unwrap()
+        *lock(&self.focused_widget)
     }
 
     /// Returns the last text committed via [`commit_text`](ImeBridge::commit_text).
     pub fn last_committed_text(&self) -> String {
-        self.committed_text.lock().unwrap().clone()
+        lock(&self.committed_text).clone()
     }
 
     /// Returns the last composition set via [`set_composition`](ImeBridge::set_composition).
     pub fn last_composition(&self) -> ImeComposition {
-        self.composition.lock().unwrap().clone()
+        lock(&self.composition).clone()
     }
 
     /// Returns the last candidate window position set via [`set_candidate_window_position`](ImeBridge::set_candidate_window_position).
     pub fn last_candidate_position(&self) -> ImeCandidatePosition {
-        *self.candidate_position.lock().unwrap()
+        *lock(&self.candidate_position)
     }
 }
 
 impl ImeBridge for MockImeBridge {
     fn focus_in(&self, widget_id: ObjectId) {
-        *self.focused_widget.lock().unwrap() = Some(widget_id);
+        *lock(&self.focused_widget) = Some(widget_id);
     }
 
     fn focus_out(&self, _widget_id: ObjectId) {
-        *self.focused_widget.lock().unwrap() = None;
+        *lock(&self.focused_widget) = None;
     }
 
     fn commit_text(&self, text: &str) {
-        *self.committed_text.lock().unwrap() = text.to_string();
+        *lock(&self.committed_text) = text.to_string();
     }
 
     fn set_composition(&self, composition: &ImeComposition) {
-        *self.composition.lock().unwrap() = composition.clone();
+        *lock(&self.composition) = composition.clone();
     }
 
     fn set_candidate_window_position(&self, position: ImeCandidatePosition) {
-        *self.candidate_position.lock().unwrap() = position;
+        *lock(&self.candidate_position) = position;
     }
 
     fn is_active(&self) -> bool {
-        *self.active.lock().unwrap()
+        *lock(&self.active)
     }
 }
 

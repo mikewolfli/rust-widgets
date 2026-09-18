@@ -7,6 +7,10 @@
 //! images, and file lists. Each platform backend can implement the
 //! `RichClipboardBackend` trait to provide native clipboard integration.
 
+use crate::compat::lock;
+use crate::compat::String;
+use crate::compat::ToString;
+use crate::compat::Vec;
 #[cfg(not(alloc_frugal))]
 use std::path::PathBuf;
 
@@ -118,16 +122,16 @@ impl MockClipboard {
 
 impl RichClipboardBackend for MockClipboard {
     fn set_contents(&self, content: ClipboardContent) -> bool {
-        *self.content.lock().unwrap() = Some(content);
+        *lock(&self.content) = Some(content);
         true
     }
 
     fn get_contents(&self) -> Option<ClipboardContent> {
-        self.content.lock().unwrap().clone()
+        lock(&self.content).clone()
     }
 
     fn has_format(&self, content_type: &str) -> bool {
-        self.content.lock().unwrap().as_ref().is_some_and(|c| c.content_type() == content_type)
+        lock(&self.content).as_ref().is_some_and(|c| c.content_type() == content_type)
     }
 }
 

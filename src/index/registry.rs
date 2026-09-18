@@ -6,7 +6,7 @@
 //! This is the "index" that allows any part of the system to look up
 //! a widget by its raw `ObjectId` at runtime.
 
-use crate::compat::HashMap;
+use crate::compat::{HashMap, String, Vec};
 
 #[cfg(all(feature = "serde", widgets_unstripped))]
 use serde::{Deserialize, Serialize};

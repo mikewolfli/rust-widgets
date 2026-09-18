@@ -10,6 +10,7 @@
 //! MB/s at 168 controls, 1000×1000 and 60 Hz — which presents as stutter and is
 //! easy to misread as "the painting approach is too slow" (BLUE15 §10.4/R-3).
 
+use crate::compat::Vec;
 use crate::platform::portable::{required_end, SurfaceGeometry};
 
 /// A frame buffer that grows but never shrinks.

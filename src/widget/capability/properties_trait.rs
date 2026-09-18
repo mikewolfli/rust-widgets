@@ -40,6 +40,7 @@
 //! }
 //! ```
 
+use crate::compat::{format, String, ToString};
 use crate::core::Rect;
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::widget_trait::Widget;

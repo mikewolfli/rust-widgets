@@ -5,7 +5,7 @@
 use super::config::QualityConfig;
 use super::level::QualityLevel;
 use super::monitor::FrameTimeMonitor;
-use std::time::Duration;
+use crate::compat::Duration;
 /// GPU capability detection based on adapter information.
 #[derive(Debug, Clone, Copy)]
 pub struct GpuCapability {

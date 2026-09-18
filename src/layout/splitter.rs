@@ -3,6 +3,7 @@
 
 //! Splitter layout manager — distributes space by pane ratios.
 use super::{Layout, Orientation};
+use crate::compat::{Any, Vec};
 use crate::core::{ObjectId, Rect};
 
 /// Splitter-like layout distributing space by pane ratios.
@@ -115,11 +116,11 @@ impl SplitterLayout {
 }
 
 impl Layout for SplitterLayout {
-    fn as_any(&self) -> &dyn std::any::Any {
+    fn as_any(&self) -> &dyn Any {
         self
     }
 
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+    fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
 

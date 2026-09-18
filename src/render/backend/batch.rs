@@ -6,7 +6,7 @@
 //! Provides types for organizing draw commands into batches that can be
 //! recorded once and replayed efficiently by the renderer.
 
-use crate::compat::HashMap;
+use crate::compat::{fmt, HashMap, String, Vec};
 
 use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect};
 use crate::render::RenderCommand;
@@ -46,8 +46,8 @@ pub enum BatchError {
     NoActiveBatch,
 }
 
-impl std::fmt::Display for BatchError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for BatchError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             BatchError::NoActiveBatch => {
                 write!(f, "called record() without an open batch; call begin_batch() first")
@@ -56,7 +56,7 @@ impl std::fmt::Display for BatchError {
     }
 }
 
-impl std::error::Error for BatchError {}
+impl core::error::Error for BatchError {}
 
 /// A single draw command that can be recorded into a batch.
 ///
@@ -553,6 +553,7 @@ impl BatchRenderer for SoftwarePaintBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compat::MiniToString;
     use crate::core::{Color, Point, Rect};
 
     // ── BatchId construction & conversions ──────────────────────────────

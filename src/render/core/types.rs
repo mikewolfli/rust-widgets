@@ -3,6 +3,8 @@
 
 //! Core rendering data types for text and geometry.
 
+use crate::compat::{String, Vec};
+
 /// Measured dimensions of a laid-out text run, in logical pixels.
 ///
 /// Every field is a whole number of pixels rounded by the measuring backend,

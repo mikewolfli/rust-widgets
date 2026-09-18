@@ -7,6 +7,11 @@ use crate::compat::Condvar;
 use crate::compat::Instant;
 #[cfg(not(alloc_frugal))]
 use crate::compat::Mutex;
+// The helper is the profile-agnostic spelling of "take the guard"; importing it
+// only where the mutex lives keeps `mini` — which never compiles these queues —
+// free of an unused import.
+#[cfg(not(alloc_frugal))]
+use crate::compat::lock;
 use alloc::collections::VecDeque;
 #[cfg(not(alloc_frugal))]
 use core::time::Duration;
@@ -235,10 +240,10 @@ impl<T> BlockingQueue<T> {
     /// storing the item once [`Self::close`] has been called. A poisoned mutex is
     /// recovered from rather than propagated, so this cannot panic the caller.
     pub fn push(&self, item: T) -> Result<(), QueueError> {
-        if *self.closed.lock().unwrap_or_else(|e| e.into_inner()) {
+        if *lock(&self.closed) {
             return Err(QueueError::Closed);
         }
-        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        let mut queue = lock(&self.queue);
         queue.push_back(item);
         self.condvar.notify_one();
         Ok(())
@@ -250,12 +255,12 @@ impl<T> BlockingQueue<T> {
     /// [`QueueError::Closed`] after a concurrent [`Self::close`]. Callers that
     /// need a deadline should use [`Self::pop_timeout`] instead.
     pub fn pop(&self) -> Result<T, QueueError> {
-        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        let mut queue = lock(&self.queue);
         loop {
             if let Some(item) = queue.pop_front() {
                 return Ok(item);
             }
-            if *self.closed.lock().unwrap_or_else(|e| e.into_inner()) {
+            if *lock(&self.closed) {
                 return Err(QueueError::Closed);
             }
             queue = self.condvar.wait(queue).unwrap_or_else(|e| e.into_inner());
@@ -270,12 +275,12 @@ impl<T> BlockingQueue<T> {
     /// [`QueueError::Closed`] if [`Self::close`] races the wait.
     pub fn pop_timeout(&self, timeout: Duration) -> Result<T, QueueError> {
         let start = Instant::now();
-        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        let mut queue = lock(&self.queue);
         loop {
             if let Some(item) = queue.pop_front() {
                 return Ok(item);
             }
-            if *self.closed.lock().unwrap_or_else(|e| e.into_inner()) {
+            if *lock(&self.closed) {
                 return Err(QueueError::Closed);
             }
             let elapsed = start.elapsed();
@@ -291,7 +296,7 @@ impl<T> BlockingQueue<T> {
     /// Removes and returns the front item if one is already available, without
     /// blocking; `None` means the queue was momentarily empty.
     pub fn try_pop(&self) -> Option<T> {
-        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        let mut queue = lock(&self.queue);
         queue.pop_front()
     }
     /// Closes the queue and wakes every blocked consumer and producer.
@@ -302,27 +307,27 @@ impl<T> BlockingQueue<T> {
     /// [`Self::pop`] before the closed check is reached. `close` is idempotent and
     /// cannot be undone.
     pub fn close(&self) {
-        *self.closed.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        *lock(&self.closed) = true;
         self.condvar.notify_all();
     }
     /// Returns `true` once [`Self::close`] has been called.
     pub fn is_closed(&self) -> bool {
-        *self.closed.lock().unwrap_or_else(|e| e.into_inner())
+        *lock(&self.closed)
     }
     /// Number of items currently queued. Takes the same lock as [`Self::push`] and
     /// [`Self::pop`], so the value can be stale as soon as it is returned.
     pub fn len(&self) -> usize {
-        self.queue.lock().unwrap_or_else(|e| e.into_inner()).len()
+        lock(&self.queue).len()
     }
     /// Returns `true` when no items are queued at the moment of the call.
     pub fn is_empty(&self) -> bool {
-        self.queue.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
+        lock(&self.queue).is_empty()
     }
     /// Removes all queued items, dropping each one. Does not change the closed
     /// state and does not wake blocked consumers, which will simply keep waiting
     /// for the next [`Self::push`].
     pub fn clear(&self) {
-        self.queue.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        lock(&self.queue).clear();
     }
 }
 #[cfg(not(alloc_frugal))]
@@ -372,9 +377,9 @@ impl<T> BoundedQueue<T> {
     /// `item` is not stored. Never returns [`QueueError::Full`] — that is reserved
     /// for [`Self::try_push`].
     pub fn push(&self, item: T) -> Result<(), QueueError> {
-        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        let mut queue = lock(&self.queue);
         while queue.len() >= self.capacity {
-            if *self.closed.lock().unwrap_or_else(|e| e.into_inner()) {
+            if *lock(&self.closed) {
                 return Err(QueueError::Closed);
             }
             queue = self.condvar_not_full.wait(queue).unwrap_or_else(|e| e.into_inner());
@@ -389,10 +394,10 @@ impl<T> BoundedQueue<T> {
     /// [`QueueError::Closed`] if the queue has been closed; in both cases `item`
     /// is handed back by being dropped, and nothing is queued.
     pub fn try_push(&self, item: T) -> Result<(), QueueError> {
-        if *self.closed.lock().unwrap_or_else(|e| e.into_inner()) {
+        if *lock(&self.closed) {
             return Err(QueueError::Closed);
         }
-        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        let mut queue = lock(&self.queue);
         if queue.len() >= self.capacity {
             return Err(QueueError::Full);
         }
@@ -406,13 +411,13 @@ impl<T> BoundedQueue<T> {
     /// Returns [`QueueError::Closed`] only when the queue is empty *and* has been
     /// closed; items still queued are drained normally after {@link close}.
     pub fn pop(&self) -> Result<T, QueueError> {
-        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        let mut queue = lock(&self.queue);
         loop {
             if let Some(item) = queue.pop_front() {
                 self.condvar_not_full.notify_one();
                 return Ok(item);
             }
-            if *self.closed.lock().unwrap_or_else(|e| e.into_inner()) {
+            if *lock(&self.closed) {
                 return Err(QueueError::Closed);
             }
             queue = self.condvar_not_empty.wait(queue).unwrap_or_else(|e| e.into_inner());
@@ -422,7 +427,7 @@ impl<T> BoundedQueue<T> {
     /// `None` means the queue was momentarily empty; it does not indicate a
     /// closed queue. Wakes one blocked producer when an item was removed.
     pub fn try_pop(&self) -> Option<T> {
-        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        let mut queue = lock(&self.queue);
         let item = queue.pop_front();
         if item.is_some() {
             self.condvar_not_full.notify_one();
@@ -435,26 +440,26 @@ impl<T> BoundedQueue<T> {
     /// consumers wake so they can observe the closed flag; already-queued items
     /// remain available to [`Self::pop`]. Idempotent and irreversible.
     pub fn close(&self) {
-        *self.closed.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        *lock(&self.closed) = true;
         self.condvar_not_full.notify_all();
         self.condvar_not_empty.notify_all();
     }
     /// Returns `true` once [`Self::close`] has been called.
     pub fn is_closed(&self) -> bool {
-        *self.closed.lock().unwrap_or_else(|e| e.into_inner())
+        *lock(&self.closed)
     }
     /// Number of items currently queued; at most [`Self::capacity`].
     pub fn len(&self) -> usize {
-        self.queue.lock().unwrap_or_else(|e| e.into_inner()).len()
+        lock(&self.queue).len()
     }
     /// Returns `true` when no items are queued at the moment of the call.
     pub fn is_empty(&self) -> bool {
-        self.queue.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
+        lock(&self.queue).is_empty()
     }
     /// Returns `true` when the queue holds [`Self::capacity`] items, meaning the
     /// next [`Self::push`] would block.
     pub fn is_full(&self) -> bool {
-        self.queue.lock().unwrap_or_else(|e| e.into_inner()).len() >= self.capacity
+        lock(&self.queue).len() >= self.capacity
     }
     /// Maximum number of items the queue can hold, as passed to [`Self::new`].
     pub fn capacity(&self) -> usize {
@@ -463,7 +468,7 @@ impl<T> BoundedQueue<T> {
     /// Removes all queued items, dropping each one, and wakes all blocked
     /// producers so they can refill the space.
     pub fn clear(&self) {
-        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        let mut queue = lock(&self.queue);
         queue.clear();
         self.condvar_not_full.notify_all();
     }

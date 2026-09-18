@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Button widget implementation.
+use crate::compat::{String, ToString};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;

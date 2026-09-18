@@ -4,6 +4,7 @@
 //! Uniform grid layout manager — arranges items in a grid with equal cell sizes.
 use super::grid::GridLayout;
 use super::Layout;
+use crate::compat::{Any, Vec};
 use crate::core::{ObjectId, Rect};
 
 /// Fixed-grid layout manager where all cells are the same size.
@@ -73,11 +74,11 @@ impl UniformGridLayout {
 }
 
 impl Layout for UniformGridLayout {
-    fn as_any(&self) -> &dyn std::any::Any {
+    fn as_any(&self) -> &dyn Any {
         self
     }
 
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+    fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
 
@@ -109,6 +110,7 @@ impl Layout for UniformGridLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compat::HashMap;
 
     #[test]
     fn uniform_grid_has_correct_cell_count() {
@@ -125,7 +127,7 @@ mod tests {
         grid.set_widget(0, 0, 1);
         grid.set_widget(1, 1, 2);
 
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         grid.update(Rect::new(0, 0, 40, 20), &mut |id, rect| {
             rects.insert(id, rect);
         });
@@ -141,7 +143,7 @@ mod tests {
         grid.set_widget(0, 0, 1);
         grid.set_widget(0, 1, 2);
 
-        let mut rects = std::collections::HashMap::new();
+        let mut rects = HashMap::new();
         // Available inner: 100 - 2*2(margin) - (2-1)*4(spacing) = 92.
         // Cell width: 92 / 2 = 46.
         // Available height: 60 - 2*2 - (2-1)*4 = 52.
@@ -219,7 +221,7 @@ mod tests {
             }
         }
 
-        let mut sizes = std::collections::HashSet::new();
+        let mut sizes = alloc::collections::BTreeSet::new();
         grid.update(Rect::new(0, 0, 100, 80), &mut |_id, rect| {
             sizes.insert((rect.width, rect.height));
         });

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
+use crate::compat::MiniToString;
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::render::{
     last_auto_render_backend, AutoRenderBackend, PaintBackend, RenderCommand, RenderScene,
@@ -986,7 +987,7 @@ fn draw_gradient_svg_produces_valid_markup() {
 fn draw_arc_via_software_backend_paints_pixels() {
     let mut surface = SoftwareSurface::new(Size { width: 20, height: 20 }, 1.0);
     surface.begin_frame(Color::TRANSPARENT);
-    surface.draw_arc(Point::new(10, 10), 8, 0.0, std::f32::consts::PI * 2.0, Color::RED, true);
+    surface.draw_arc(Point::new(10, 10), 8, 0.0, core::f32::consts::PI * 2.0, Color::RED, true);
     surface.end_frame();
     // Center should be filled (for a filled full-circle arc)
     let center_idx = (10 * 20 + 10) * 4;

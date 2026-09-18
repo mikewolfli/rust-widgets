@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Combo box widget.
+use crate::compat::{String, Vec, ToString};
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;

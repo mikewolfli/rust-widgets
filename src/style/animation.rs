@@ -1,8 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use crate::compat::HashMap;
-use crate::compat::{Duration, Instant};
+use crate::compat::{format, Box, Duration, HashMap, Instant, String, Vec};
 use crate::core::Color;
 use crate::style::theme_state::{StatefulTheme, WidgetState};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -80,7 +79,7 @@ impl EasingFunction {
                     1.0
                 } else {
                     -(2.0_f32.powf(10.0 * (t - 1.0)))
-                        * ((t - 1.1) * 5.0 * std::f32::consts::PI).sin()
+                        * ((t - 1.1) * 5.0 * core::f32::consts::PI).sin()
                 }
             }
             Self::ElasticOut => {
@@ -89,7 +88,7 @@ impl EasingFunction {
                 } else if t == 1.0 {
                     1.0
                 } else {
-                    2.0_f32.powf(-10.0 * t) * ((t - 0.1) * 5.0 * std::f32::consts::PI).sin() + 1.0
+                    2.0_f32.powf(-10.0 * t) * ((t - 0.1) * 5.0 * core::f32::consts::PI).sin() + 1.0
                 }
             }
             Self::BackIn => {
@@ -1299,6 +1298,8 @@ impl SpringAnimation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compat::MiniToString;
+
     #[test]
     fn test_easing_functions() {
         assert_eq!(EasingFunction::Linear.apply(0.5), 0.5);

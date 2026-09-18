@@ -9,6 +9,7 @@
 //! Connect `ShortcutManager::shortcut_triggered` → `ActionRouter::route_action_id`.
 
 use crate::action::ActionManager;
+use crate::compat::String;
 use crate::shortcut::Key;
 use crate::shortcut::Shortcut;
 

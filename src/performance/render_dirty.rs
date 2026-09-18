@@ -3,6 +3,7 @@
 
 //! Helper for rendering only dirty regions using clip rects.
 
+use crate::compat::Vec;
 use crate::core::Rect;
 use crate::performance::DirtyRegionTracker;
 

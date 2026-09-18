@@ -3,6 +3,7 @@
 
 //! Platform abstraction types and capability contracts.
 
+use crate::compat::{format, Box, String, Vec};
 use crate::core::{ObjectId, Orientation, PlatformFamily};
 #[cfg(all(feature = "serde", widgets_unstripped))]
 use serde::{Deserialize, Serialize};

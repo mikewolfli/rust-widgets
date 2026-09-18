@@ -40,6 +40,8 @@ macro_rules! computed {
 
 #[cfg(test)]
 mod tests {
+    use crate::compat::MiniToString;
+
     #[test]
     fn test_binding_macro() {
         let b = binding!(42);

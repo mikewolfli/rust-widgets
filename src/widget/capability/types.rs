@@ -3,7 +3,8 @@
 
 // Imports for the factory, which only exists where the full control set does.
 #[cfg(widgets_unstripped)]
-use std::collections::HashMap;
+use crate::compat::HashMap;
+use crate::compat::{String, Vec};
 
 #[cfg(widgets_unstripped)]
 use crate::core::Rect;

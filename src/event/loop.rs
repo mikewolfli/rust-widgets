@@ -6,7 +6,7 @@ use super::event_queue::{EventQueue, EventSender};
 use super::timer::IdleTask;
 use super::timer::TimerManager;
 use super::types::{Event, EventPriority};
-use crate::compat::Mutex;
+use crate::compat::{lock, Box, MiniToString, Mutex, String, Vec};
 use crate::core::ObjectId;
 #[cfg(all(feature = "touch", not(alloc_frugal)))]
 use crate::gesture::GestureEngine;
@@ -21,14 +21,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Type alias for event dispatch function.
 pub type EventDispatchFn = Arc<dyn Fn(ObjectId, &Event) + Send + Sync>;
-
-/// Helper to recover from a poisoned mutex by extracting the inner value.
-#[cfg(not(alloc_frugal))]
-fn recover_lock<T>(
-    e: std::sync::PoisonError<crate::compat::MutexGuard<'_, T>>,
-) -> crate::compat::MutexGuard<'_, T> {
-    e.into_inner()
-}
 
 /// Returns the current timestamp in milliseconds since UNIX epoch.
 #[cfg(all(feature = "touch", not(alloc_frugal)))]
@@ -128,7 +120,7 @@ impl EventLoop {
     /// reason `start` itself is. Offering it there would promise work that cannot run.
     #[cfg(not(alloc_frugal))]
     pub fn add_idle_task(&mut self, task: IdleTask) -> bool {
-        if *self.running.lock().unwrap_or_else(recover_lock) {
+        if *lock(&self.running) {
             return false;
         }
         // Replacing a task with the same id keeps the registry keyed rather than
@@ -153,10 +145,10 @@ impl EventLoop {
     /// Starts the event loop in a separate thread.
     #[cfg(not(alloc_frugal))]
     pub fn start(&mut self) {
-        if *self.running.lock().unwrap_or_else(recover_lock) {
+        if *lock(&self.running) {
             return;
         }
-        *self.running.lock().unwrap_or_else(recover_lock) = true;
+        *lock(&self.running) = true;
         let running = Arc::clone(&self.running);
         let queue = Arc::clone(&self.queue);
         let dispatch_fn = self.dispatch_fn.clone();
@@ -168,7 +160,7 @@ impl EventLoop {
         // honest state — the caller re-registers what it still wants.
         let mut idle_tasks = core::mem::take(&mut self.idle_tasks);
         let handle = thread::spawn(move || {
-            while *running.lock().unwrap_or_else(recover_lock) {
+            while *lock(&running) {
                 // Phase 0: Pump native platform events (e.g., Wayland dispatch)
                 if let Some(ref pump) = native_pump {
                     pump();
@@ -180,7 +172,7 @@ impl EventLoop {
                 let mut had_work = false;
                 let mut priority_buffer: Vec<(ObjectId, Event, EventPriority)> = Vec::new();
                 let mut idle_events: Vec<(ObjectId, Event)> = Vec::new();
-                while let Some(entry) = queue.lock().unwrap_or_else(recover_lock).dequeue() {
+                while let Some(entry) = lock(&queue).dequeue() {
                     had_work = true;
                     priority_buffer.push(entry);
                 }
@@ -330,7 +322,7 @@ impl EventLoop {
     /// Starts the event loop (no-op under mini/embedded).
     #[cfg(alloc_frugal)]
     pub fn start(&mut self) {
-        *self.running.lock().unwrap_or_else(|p| p.into_inner()) = true;
+        *lock(&self.running) = true;
     }
 
     /// Processes one queued event and pumps timers in the mini profile.
@@ -343,7 +335,7 @@ impl EventLoop {
             return false;
         }
         self.timer_manager.pump();
-        let next = self.queue.lock().unwrap_or_else(|p| p.into_inner()).dequeue();
+        let next = lock(&self.queue).dequeue();
         let Some((target, event, _priority)) = next else {
             return false;
         };
@@ -356,7 +348,7 @@ impl EventLoop {
     /// Stops the event loop.
     #[cfg(not(alloc_frugal))]
     pub fn stop(&mut self) {
-        *self.running.lock().unwrap_or_else(recover_lock) = false;
+        *lock(&self.running) = false;
         self.timer_manager.clear();
         // Post a wake event so the event loop thread unblocks from
         // dequeue_blocking() and can observe the running flag.
@@ -376,7 +368,7 @@ impl EventLoop {
     /// version so call sites need no profile branch.
     #[cfg(alloc_frugal)]
     pub fn stop(&mut self) {
-        *self.running.lock().unwrap_or_else(|p| p.into_inner()) = false;
+        *lock(&self.running) = false;
         self.timer_manager.clear();
     }
 
@@ -428,14 +420,7 @@ impl EventLoop {
 
     /// Checks if the event loop is running.
     pub fn is_running(&self) -> bool {
-        #[cfg(not(alloc_frugal))]
-        {
-            *self.running.lock().unwrap_or_else(recover_lock)
-        }
-        #[cfg(alloc_frugal)]
-        {
-            *self.running.lock().unwrap_or_else(|p| p.into_inner())
-        }
+        *lock(&self.running)
     }
 
     /// Start or replace a timer bound to `target` and `timer_id`.

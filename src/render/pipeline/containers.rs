@@ -7,6 +7,7 @@
 //! Rendering primitives (rect, circle, line, text, etc.) are in the
 //! `primitives` sub-module.
 
+use crate::compat::{MiniToString, Vec};
 use crate::core::{Color, Font, Rect, Size};
 use crate::render::default_software_render_config;
 use crate::render::pipeline::pixel_ops::{
@@ -152,9 +153,9 @@ impl SoftwareSurface {
                     GradientType::Conic => {
                         let dx = x as f32 - gradient.center.x as f32;
                         let dy = y as f32 - gradient.center.y as f32;
-                        let angle = dy.atan2(dx) + std::f32::consts::PI;
-                        let angle = (angle + gradient.angle) % (2.0 * std::f32::consts::PI);
-                        angle / (2.0 * std::f32::consts::PI)
+                        let angle = dy.atan2(dx) + core::f32::consts::PI;
+                        let angle = (angle + gradient.angle) % (2.0 * core::f32::consts::PI);
+                        angle / (2.0 * core::f32::consts::PI)
                     }
                 };
                 let color = gradient.interpolate(pos);

@@ -15,7 +15,9 @@
 //!   pick a GTK host that cannot exist there.
 
 use super::types::{LinuxHandleKind, LinuxPlatform};
+use crate::compat::atomic::Ordering;
 use crate::compat::OnceLock;
+use crate::compat::String;
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]
 use crate::core::MutexExt;
 use crate::core::PlatformFamily;
@@ -24,16 +26,15 @@ use crate::platform::accessibility::linux::LinuxAccessibilityBridge;
 #[cfg(target_os = "linux")]
 use crate::platform::accessibility::AccessibilityBridge;
 use crate::platform::Platform;
+#[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
+use core::time::Duration;
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]
 use gtk::prelude::*;
-use std::sync::atomic::Ordering;
 #[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
 use std::thread;
-#[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
-use std::time::Duration;
 
 impl Platform for LinuxPlatform {
-    fn as_any(&self) -> &dyn std::any::Any {
+    fn as_any(&self) -> &dyn crate::compat::Any {
         self
     }
     fn backend_name(&self) -> &'static str {
