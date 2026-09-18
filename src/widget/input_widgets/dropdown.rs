@@ -194,6 +194,25 @@ impl WidgetProperties for Dropdown {
         // Mirrors `DROPDOWN_PROPERTIES`.
         property_names_of!["text", "selected_index", "item_count", "expanded", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `dropdown` publishes.
+    ///
+    /// `toggle` flips the expanded state through the control's own `toggle()`, so the
+    /// flag and the redraw request stay in one place. `set_items`,
+    /// `set_selected_index` and `set_expanded` assign state and need a payload, so they
+    /// are answered through the property route.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "toggle" => {
+                self.toggle();
+                Ok(())
+            }
+            "set_items" | "set_selected_index" | "set_expanded" => {
+                Err(CapabilityAccessError::OutOfRange)
+            }
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for Dropdown {

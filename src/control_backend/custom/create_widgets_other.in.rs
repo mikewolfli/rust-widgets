@@ -116,7 +116,14 @@ macro_rules! impl_other_widgets {
             // to its own capability, going through the name says directly which
             // control is wanted — the same rule `create_web_engine_page` and
             // `mount_named_widget`'s own documentation lay out for shared kinds.
-            self.mount_named_widget("web_engine_view", parent, "", x, y, width, height)
+            #[cfg(full_widgets)]
+            {
+                self.mount_named_widget("web_engine_view", parent, "", x, y, width, height)
+            }
+            #[cfg(not(full_widgets))]
+            {
+                self.mount_widget_of_kind(WidgetKind::WebEngineView, parent, "", x, y, width, height)
+            }
         }
         #[cfg(not(alloc_frugal))]
         fn create_activity_indicator(
@@ -159,7 +166,14 @@ macro_rules! impl_other_widgets {
         ) -> ObjectId {
             // By name: see `create_web_view` above for why a shared kind is not
             // sufficient to identify the control.
-            self.mount_named_widget("web_engine_view", parent, "", x, y, width, height)
+            #[cfg(full_widgets)]
+            {
+                self.mount_named_widget("web_engine_view", parent, "", x, y, width, height)
+            }
+            #[cfg(not(full_widgets))]
+            {
+                self.mount_widget_of_kind(WidgetKind::WebEngineView, parent, "", x, y, width, height)
+            }
         }
         #[cfg(full_widgets)]
         fn create_web_engine_page(
@@ -175,7 +189,14 @@ macro_rules! impl_other_widgets {
             // not `WidgetKind` variants: those named nothing any code path could
             // produce, so a kind lookup resolved to the empty constructor name and
             // returned `0`.
-            self.mount_named_widget("web_engine_view", parent, "", x, y, width, height)
+            #[cfg(full_widgets)]
+            {
+                self.mount_named_widget("web_engine_view", parent, "", x, y, width, height)
+            }
+            #[cfg(not(full_widgets))]
+            {
+                self.mount_widget_of_kind(WidgetKind::WebEngineView, parent, "", x, y, width, height)
+            }
         }
         #[cfg(full_widgets)]
         fn create_web_engine_settings(
@@ -186,7 +207,14 @@ macro_rules! impl_other_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            self.mount_named_widget("web_engine_view", parent, "", x, y, width, height)
+            #[cfg(full_widgets)]
+            {
+                self.mount_named_widget("web_engine_view", parent, "", x, y, width, height)
+            }
+            #[cfg(not(full_widgets))]
+            {
+                self.mount_widget_of_kind(WidgetKind::WebEngineView, parent, "", x, y, width, height)
+            }
         }
         #[cfg(full_widgets)]
         fn create_web_engine_download_item(
@@ -197,7 +225,14 @@ macro_rules! impl_other_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            self.mount_named_widget("web_engine_view", parent, "", x, y, width, height)
+            #[cfg(full_widgets)]
+            {
+                self.mount_named_widget("web_engine_view", parent, "", x, y, width, height)
+            }
+            #[cfg(not(full_widgets))]
+            {
+                self.mount_widget_of_kind(WidgetKind::WebEngineView, parent, "", x, y, width, height)
+            }
         }
         #[cfg(full_widgets)]
         fn create_web_engine_cookie_store(
@@ -208,7 +243,14 @@ macro_rules! impl_other_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            self.mount_named_widget("web_engine_view", parent, "", x, y, width, height)
+            #[cfg(full_widgets)]
+            {
+                self.mount_named_widget("web_engine_view", parent, "", x, y, width, height)
+            }
+            #[cfg(not(full_widgets))]
+            {
+                self.mount_widget_of_kind(WidgetKind::WebEngineView, parent, "", x, y, width, height)
+            }
         }
         #[cfg(full_widgets)]
         fn create_web_engine_web_channel(
@@ -219,7 +261,14 @@ macro_rules! impl_other_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            self.mount_named_widget("web_engine_view", parent, "", x, y, width, height)
+            #[cfg(full_widgets)]
+            {
+                self.mount_named_widget("web_engine_view", parent, "", x, y, width, height)
+            }
+            #[cfg(not(full_widgets))]
+            {
+                self.mount_widget_of_kind(WidgetKind::WebEngineView, parent, "", x, y, width, height)
+            }
         }
         #[cfg(full_widgets)]
         fn create_web_engine_find_text_result(
@@ -230,7 +279,14 @@ macro_rules! impl_other_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            self.mount_named_widget("web_engine_view", parent, "", x, y, width, height)
+            #[cfg(full_widgets)]
+            {
+                self.mount_named_widget("web_engine_view", parent, "", x, y, width, height)
+            }
+            #[cfg(not(full_widgets))]
+            {
+                self.mount_widget_of_kind(WidgetKind::WebEngineView, parent, "", x, y, width, height)
+            }
         }
         #[cfg(full_widgets)]
         fn create_web_engine_notification(
@@ -241,7 +297,14 @@ macro_rules! impl_other_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            self.mount_named_widget("web_engine_view", parent, "", x, y, width, height)
+            #[cfg(full_widgets)]
+            {
+                self.mount_named_widget("web_engine_view", parent, "", x, y, width, height)
+            }
+            #[cfg(not(full_widgets))]
+            {
+                self.mount_widget_of_kind(WidgetKind::WebEngineView, parent, "", x, y, width, height)
+            }
         }
         #[cfg(full_widgets)]
         fn create_web_engine_script_dialog(
@@ -252,7 +315,14 @@ macro_rules! impl_other_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            self.mount_named_widget("web_engine_view", parent, "", x, y, width, height)
+            #[cfg(full_widgets)]
+            {
+                self.mount_named_widget("web_engine_view", parent, "", x, y, width, height)
+            }
+            #[cfg(not(full_widgets))]
+            {
+                self.mount_widget_of_kind(WidgetKind::WebEngineView, parent, "", x, y, width, height)
+            }
         }
         #[cfg(full_widgets)]
         fn create_web_engine_context_menu_request(
@@ -263,7 +333,14 @@ macro_rules! impl_other_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            self.mount_named_widget("web_engine_view", parent, "", x, y, width, height)
+            #[cfg(full_widgets)]
+            {
+                self.mount_named_widget("web_engine_view", parent, "", x, y, width, height)
+            }
+            #[cfg(not(full_widgets))]
+            {
+                self.mount_widget_of_kind(WidgetKind::WebEngineView, parent, "", x, y, width, height)
+            }
         }
     };
 }

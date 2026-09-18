@@ -183,6 +183,20 @@ impl WidgetProperties for Roller {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["selected_index", "visible_count", "item_count", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `roller` publishes.
+    ///
+    /// All three assign state — the option list, the selected row and the number of
+    /// rows on screen — and each needs a payload, so the whole set is answered through
+    /// the property route rather than performed here.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "set_options" | "set_selected_index" | "set_visible_count" => {
+                Err(CapabilityAccessError::OutOfRange)
+            }
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for Roller {

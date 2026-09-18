@@ -105,6 +105,24 @@ pub enum CapabilityAccessError {
     /// a different control when the real mistake was in their own argument, and it made
     /// the error indistinguishable from a genuine capability gap in logs.
     OutOfRange,
+    /// The control has no command by that name.
+    ///
+    /// The counterpart of [`CapabilityAccessError::UnknownProperty`] for the imperative
+    /// half of the contract, and deliberately not folded into it: a caller reading the
+    /// error needs to know whether it named state or an action, because the two are
+    /// discovered from different lists (`property_names()` versus
+    /// `WidgetCapability::commands`).
+    ///
+    /// # Why this variant had to be added
+    ///
+    /// `WidgetProperties::command` needs a "no such command" answer, and the
+    /// alternatives were both worse: returning `Ok(())` reports success for an action
+    /// that did not happen, and returning `UnknownProperty` tells the caller to look in
+    /// the property schema for a name that belongs to the command list. This error is
+    /// also what makes the command list falsifiable — the test that calls every
+    /// published command distinguishes "the control refuses it" from "the control ran
+    /// it" by this variant.
+    UnknownCommand,
 }
 
 /// Primitive property value kinds used by capability metadata.

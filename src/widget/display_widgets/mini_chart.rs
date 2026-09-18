@@ -163,6 +163,21 @@ impl WidgetProperties for MiniChart {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["chart_type", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `mini_chart` publishes.
+    ///
+    /// All three assign state — the style, the series and the axis bounds — so each
+    /// needs an argument a command carries none of. They are refused as
+    /// [`CapabilityAccessError::OutOfRange`] rather than reported unknown: `chart_type`
+    /// travels through `set("chart_type", ..)`, while `set_data` and `set_range` have
+    /// no property equivalent yet, so a caller reading `OutOfRange` knows the name was
+    /// recognised and the payload is what is missing.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "set_chart_type" | "set_data" | "set_range" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for MiniChart {

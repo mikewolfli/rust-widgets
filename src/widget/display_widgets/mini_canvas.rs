@@ -111,6 +111,31 @@ impl WidgetProperties for MiniCanvas {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of![BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `mini_canvas` publishes.
+    ///
+    /// `clear` is the one name here that is a genuine zero-argument action: it drops
+    /// every retained draw command, which is exactly what
+    /// [`MiniCanvas::clear`] does.
+    ///
+    /// The four drawing names are a different case. Each takes geometry and a colour,
+    /// so `fill_rect()` / `draw_rect()` / `draw_line()` / `fill_circle()` append a
+    /// shape — state a caller has to supply — and a command carries no argument that
+    /// could describe the rectangle or the endpoints. They are therefore refused as
+    /// [`CapabilityAccessError::OutOfRange`]: the names are right and the invocation
+    /// needs the inherent API, which is not `UnknownCommand`.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "clear" => {
+                self.clear();
+                Ok(())
+            }
+            "fill_rect" | "draw_rect" | "draw_line" | "fill_circle" => {
+                Err(CapabilityAccessError::OutOfRange)
+            }
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for MiniCanvas {

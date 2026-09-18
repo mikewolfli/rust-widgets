@@ -60,20 +60,20 @@ echo "=============================================="
 echo " Default Profile Widget Creation Smoke Tests "
 echo "=============================================="
 
-run_example_smoke "demo_main"
 run_example_smoke "demo_button"
-run_example_smoke "demo_window"
-run_example_smoke "demo_list_view"
-run_example_smoke "demo_code_editor"
-run_example_smoke "demo_terminal"
-run_example_smoke "demo_media_player"
-run_example_smoke "demo_map_view"
+# `demo_button` is also the embedded-profile canary below; the other `demo_*.rs`
+# SVG-length stubs that lived here were removed once the three real projects under
+# `demo/` covered the same controls with actual applications and assertions. Keeping
+# both meant two things claiming to be the example for one control.
 # The declarative-retained loop (BLUE18 Phase F-1): state change -> one patch.
 run_example_smoke "view_counter"
 
 # ---------------------------------------------------------------------------
 # [2] Embedded profile demos
 # ---------------------------------------------------------------------------
+# The `demo/` projects cannot stand in here: each declares `gtk-native` (a desktop
+# backend), so they do not build on a stripped profile. This example is the only
+# remaining coverage that a control is *constructible* on `embedded`.
 echo ""
 echo "=============================================="
 echo " Embedded Profile Widget Creation Smoke Tests"
@@ -82,8 +82,6 @@ echo "=============================================="
 FEAT="--no-default-features --features embedded"
 
 run_example_smoke "demo_button" --no-default-features --features embedded
-run_example_smoke "demo_window" --no-default-features --features embedded
-run_example_smoke "demo_list_view" --no-default-features --features embedded
 
 # ---------------------------------------------------------------------------
 # [3] Runtime & integration test suite

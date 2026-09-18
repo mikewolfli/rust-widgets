@@ -85,9 +85,27 @@ mod tests {
     #[cfg(not(alloc_frugal))]
     use std::thread;
 
+    /// Serialises the embedded-engine tests against **every other module** that drives
+    /// the same singleton.
+    ///
+    /// # Why this must not be a local `OnceLock`
+    ///
+    /// The embedded engine is process-wide (one paint budget, one window registry, one
+    /// target FPS), so the tests here mutate state that `render_engine::embedded`'s tests
+    /// and `bindings::binding_impl`'s tests read and write. A module-local mutex excludes
+    /// only the tests inside this module — two locks over one resource exclude nothing,
+    /// which is precisely how `embedded_target_fps_clamps` failed at random.
+    ///
+    /// The window was measured rather than assumed: widening that test's assertion span
+    /// by 400 ms made `set_embedded_target_fps(120)` from this module land on it and the
+    /// assertion report `left: 120, right: 72`. Without the widening the two collide in a
+    /// window of nanoseconds, which is why it read as an intermittent flake and passed on
+    /// retry.
+    ///
+    /// Delegating to the one shared guard is what actually excludes them, so the fix is
+    /// to remove the local lock rather than to add a second one.
     fn test_guard() -> crate::compat::MutexGuard<'static, ()> {
-        static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
-        GUARD.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        crate::render_engine::embedded::embedded_test_guard()
     }
 
     #[test]
@@ -109,6 +127,11 @@ mod tests {
         assert!(frame >= 1);
         engine.quit();
         handle.join().expect("embedded render loop thread should join");
+        // Restore the shared default before releasing the guard. This test raises the
+        // target FPS to 120 purely to make the loop tick faster, and leaving it raised
+        // would hand a *correct* looking value to whichever test runs next — the other
+        // half of the same contamination this guard exists to prevent.
+        set_embedded_target_fps(crate::render_engine::embedded::DEFAULT_EMBEDDED_TARGET_FPS);
     }
 
     #[test]
@@ -148,8 +171,7 @@ mod tests {
         assert_eq!([first, second, third], [1, 2, 3]);
         engine.quit();
         handle.join().expect("embedded render loop thread should join");
+        // Restore the shared default: see the note in `embedded_task_executes_in_run_loop`.
+        set_embedded_target_fps(crate::render_engine::embedded::DEFAULT_EMBEDDED_TARGET_FPS);
     }
-
-    use crate::compat::Mutex;
-    use crate::compat::OnceLock;
 }

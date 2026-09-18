@@ -103,10 +103,27 @@ nav_bar.add_item("⚙️", "Settings");
 
 ## Full Examples
 
-See the `examples/` directory for complete runnable demos:
-- `demo_button.rs` — Button interactions
-- `demo_window.rs` — Window management
-- `examples/demo_container.rs` — Layout containers
+Two places hold runnable code, and they answer different questions:
+
+**`demo/` — complete applications.** These open a real window and exercise the whole
+stack (app framework, layout, events, theming). Start here to see the library used the
+way an application uses it:
+
+- `demo/control` — six tabbed pages covering 28 controls, with a live event log
+- `demo/code_editor` — project tree plus editor, wired through the layout managers
+- `demo/finance` — candlestick / depth / order-book widgets over live-shaped data
+
+Run one with `cd demo/control && cargo run`.
+
+**`examples/` — focused, single-purpose programs.** These are small enough to read in
+one sitting and are what CI builds and runs:
+
+- `examples/demo_button.rs` — one control, and the only example that also builds on the
+  `embedded` profile (the `demo/` projects require `gtk-native`, so they cannot)
+- `examples/view_counter.rs` — the declarative-retained loop end to end
+- `examples/control_property_uniform.rs` — the property contract across controls
+- `examples/widget_reachability.rs` — machine-readable registry report, consumed by the
+  registration-fidelity gate
 
 ## Next Steps
 

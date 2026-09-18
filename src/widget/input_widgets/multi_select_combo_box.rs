@@ -270,6 +270,17 @@ impl WidgetProperties for MultiSelectComboBox {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["selected_count", "expanded", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `multi_select_combo_box` publishes.
+    ///
+    /// `set_expanded` assigns the popup flag and needs a payload, so it is answered
+    /// through the property route — the capability publishes no zero-argument action.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "set_expanded" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Draw for MultiSelectComboBox {

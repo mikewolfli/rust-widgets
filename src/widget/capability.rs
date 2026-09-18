@@ -744,6 +744,211 @@ impl WidgetFactory {
         write_widget_property_by_name(widget, property.name, value)
     }
 
+    /// Runs a published command on a widget instance, by command name.
+    ///
+    /// The imperative counterpart of [`Self::write_property`]: where that assigns
+    /// state, this performs an action. Both validate the name against the capability
+    /// first, so a caller that read the name from
+    /// [`WidgetCapability::commands`](types::WidgetCapability::commands) cannot be
+    /// told "no such command" for a name the registry itself published — the two
+    /// sources are compared rather than trusted, and a divergence is reported as
+    /// [`CapabilityAccessError::UnsupportedOnWidget`] meaning "the registry is
+    /// wrong", not "you are".
+    ///
+    /// # Why the capability check comes first
+    ///
+    /// The control's own `command` is the final authority on what it can do, but
+    /// asking the capability first makes the *published list* load-bearing: if a
+    /// control implements a command its capability forgot to list, this reports it
+    /// instead of quietly succeeding, which is what keeps
+    /// `capability::properties_tests::every_published_command_is_dispatched` able to
+    /// fail.
+    ///
+    /// # Errors
+    ///
+    /// * [`CapabilityAccessError::UnknownWidget`] — the widget resolves to no
+    ///   capability.
+    /// * [`CapabilityAccessError::UnknownCommand`] — the capability does not publish
+    ///   the name, so it is not a command of this control at all.
+    /// * [`CapabilityAccessError::UnsupportedOnWidget`] — the capability publishes it
+    ///   but the control does not implement it, which is a registry/implementation
+    ///   disagreement rather than a caller mistake.
+    pub fn invoke_command(
+        &self,
+        widget: &mut dyn Widget,
+        command_name: &str,
+    ) -> Result<(), CapabilityAccessError> {
+        let capability =
+            self.capability_for_widget(widget).ok_or(CapabilityAccessError::UnknownWidget)?;
+
+        // `commands` are plain lower-case names by construction, but normalising is
+        // what makes the lookup agree with `capability()` / `read_property`, which
+        // both normalise. A caller using `"clear-selection"` must reach the same
+        // command as one using `"clear_selection"`.
+        let normalized = normalize_key(command_name);
+        let published = capability.commands.iter().any(|name| normalize_key(name) == normalized);
+        if !published {
+            return Err(CapabilityAccessError::UnknownCommand);
+        }
+
+        // Route through the control's declared `WidgetProperties` contract, the same
+        // way `read_property` / `write_property` do: `command` lives there so a
+        // control implements it beside `get` / `set` / `property_names`, and so its
+        // default ("no such command") cannot be bypassed by a type that merely happens
+        // to have a same-named inherent method.
+        //
+        // A control with no contract declared at all answers `UnsupportedOnWidget`,
+        // matching how the property path reports the same situation.
+        let Some(properties) = widget.properties_dyn_mut() else {
+            return Err(CapabilityAccessError::UnsupportedOnWidget);
+        };
+
+        match properties.command(command_name) {
+            Ok(()) => Ok(()),
+            // The capability published the name but the control refused it. Reporting
+            // the caller's name as unknown would send them to look for a different
+            // control; `UnsupportedOnWidget` says the control was expected to have it.
+            Err(CapabilityAccessError::UnknownCommand) => {
+                log::warn!(
+                    "widget {command_name:?} is published by capability {:?} but the control \
+                     does not implement it",
+                    capability.canonical_name
+                );
+                Err(CapabilityAccessError::UnsupportedOnWidget)
+            }
+            Err(other) => Err(other),
+        }
+    }
+
+    /// Reports whether a widget's control answers `command_name`.
+    ///
+    /// The read-only companion to [`Self::invoke_command`], for a caller building a
+    /// menu or a palette that must show only the actions a control can actually
+    /// perform. It runs the command, because there is no side-effect-free way to ask
+    /// and a command is expected to be idempotent enough to probe — the alternative
+    /// (a second "supports" table next to the dispatch) would be the drift this
+    /// module already removed for properties.
+    ///
+    /// # Why this is not called `supports_command`
+    ///
+    /// It reports whether the command is *addressable*: published by the capability
+    /// **and** implemented by the control. `supports` would suggest a capability
+    /// question, and the capability's answer alone is the half that can be wrong.
+    ///
+    /// # Errors
+    ///
+    /// Exactly the errors [`Self::invoke_command`] returns. A caller that only needs
+    /// a yes/no reads `is_ok()`.
+    pub fn command_is_known(
+        &self,
+        widget: &mut dyn Widget,
+        command_name: &str,
+    ) -> Result<(), CapabilityAccessError> {
+        self.invoke_command(widget, command_name)
+    }
+
+    /// Validates an event name a caller read from
+    /// [`WidgetCapability::events`](types::WidgetCapability::events), and connects a
+    /// slot to it on `hub`.
+    ///
+    /// # The bridge this provides, and why it is needed
+    ///
+    /// A capability publishes the names of the events its control can emit
+    /// (`"clicked"`, `"selection_changed"`, …). A consumer that discovered the control
+    /// through the registry therefore knows the names but has no way to *act* on them:
+    /// unlike a command, an event cannot be invoked on demand, so there is no dispatch
+    /// to add. What was missing is that the published names reached nothing — the name
+    /// `"clicked"` in a capability and the `clicked` signal a control actually emits
+    /// were two unrelated facts, connected only by spelling.
+    ///
+    /// This method is that connection. `signal::CustomSignalHub` is the library's
+    /// name-addressed signal registry; routing the published name through validation
+    /// here means a subscriber can only attach to a name its control publishes, which
+    /// is what makes the published list load-bearing rather than decorative.
+    ///
+    /// # Why `hub` is a parameter rather than a global
+    ///
+    /// The hub is owned by whoever dispatches events — an application, a test, a
+    /// platform backend — so this method must not invent a global one. Taking it as an
+    /// argument also makes the function usable from a test without process-wide state.
+    ///
+    /// # Errors
+    ///
+    /// * [`CapabilityAccessError::UnknownWidget`] — no control is registered under
+    ///   `control_name`, so it has no event list to validate against.
+    /// * [`CapabilityAccessError::UnknownCommand`] — the control exists but does not
+    ///   publish that event name. The variant names "command", but it is the
+    ///   capability layer's single "this control does not have that action" answer and
+    ///   is reused rather than forked: an event is an action the control performs, just
+    ///   one the caller cannot trigger. Adding a fourth sibling with identical semantics
+    ///   would be the duplication rule #54 forbids.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rust_widgets::signal::CustomSignalHub;
+    /// use rust_widgets::widget::capability::WidgetFactory;
+    ///
+    /// let factory = WidgetFactory::new_with_defaults();
+    /// let hub = CustomSignalHub::new();
+    /// factory
+    ///     .connect_event("button", "clicked", &hub, || {})
+    ///     .expect("button publishes `clicked`");
+    /// ```
+    pub fn connect_event<F>(
+        &self,
+        control_name: &str,
+        event_name: &str,
+        hub: &crate::signal::CustomSignalHub,
+        slot: F,
+    ) -> Result<crate::signal::ConnectionHandle, CapabilityAccessError>
+    where
+        F: FnMut() + Send + Sync + 'static,
+    {
+        let capability =
+            self.capability(control_name).ok_or(CapabilityAccessError::UnknownWidget)?;
+
+        // Normalised, so `"value-changed"` and `"value_changed"` reach the same event
+        // — the same tolerance `invoke_command` and `read_property` provide.
+        let normalized = normalize_key(event_name);
+        let published = capability.events.iter().any(|name| normalize_key(name) == normalized);
+        if !published {
+            return Err(CapabilityAccessError::UnknownCommand);
+        }
+
+        Ok(hub.connect(event_name, slot))
+    }
+
+    /// Reports whether `control_name` publishes `event_name`, without subscribing.
+    ///
+    /// The probing form of [`Self::connect_event`], for a consumer that builds a menu
+    /// of available events and must not register a slot per entry. It answers exactly
+    /// the same question — the validation is shared, not re-stated — so a name this
+    /// accepts is a name `connect_event` accepts.
+    ///
+    /// # Why a `hub` is still needed
+    ///
+    /// The check itself is a lookup on the capability, but sharing one implementation
+    /// with `connect_event` is what keeps the two from diverging, and the cheapest way
+    /// to share it is to run the real path. The hub is therefore passed in and the
+    /// connection is dropped immediately.
+    ///
+    /// # Errors
+    ///
+    /// Exactly the errors [`Self::connect_event`] returns.
+    pub fn event_is_subscribable(
+        &self,
+        control_name: &str,
+        event_name: &str,
+        hub: &crate::signal::CustomSignalHub,
+    ) -> Result<(), CapabilityAccessError> {
+        // A real connection, not a flag: the slot is dropped with the handle, so this
+        // has no lasting effect on the hub while exercising the identical validation.
+        let handle = self.connect_event(control_name, event_name, hub, || {})?;
+        let _ = hub.disconnect(event_name, handle);
+        Ok(())
+    }
+
     /// Looks up capability by widget kind using the kind-based index.
     ///
     /// When several capabilities share a `WidgetKind` (`DataGrid`, `VirtualTable`

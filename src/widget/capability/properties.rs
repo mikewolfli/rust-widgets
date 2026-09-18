@@ -63,7 +63,7 @@ pub(crate) fn check_box_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::CheckBox,
         canonical_name: "check_box",
-        aliases: &["checkbox"],
+        aliases: &[],
         properties: CHECK_BOX_PROPERTIES,
         events: &["toggled", "state_changed"],
         commands: &["set_checked", "toggle", "set_state"],
@@ -74,7 +74,7 @@ pub(crate) fn radio_button_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::RadioButton,
         canonical_name: "radio_button",
-        aliases: &["radiobutton"],
+        aliases: &[],
         properties: RADIO_BUTTON_PROPERTIES,
         events: &["selected", "checked_changed"],
         commands: &["set_checked", "set_group_id"],
@@ -85,7 +85,7 @@ pub(crate) fn slider_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Slider,
         canonical_name: "slider",
-        aliases: &["range_slider"],
+        aliases: &[],
         properties: SLIDER_PROPERTIES,
         events: &["value_changed", "slider_moved"],
         commands: &["set_range", "set_value", "set_slider_position"],
@@ -96,7 +96,7 @@ pub(crate) fn progress_bar_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ProgressBar,
         canonical_name: "progress_bar",
-        aliases: &["progressbar"],
+        aliases: &[],
         properties: PROGRESS_BAR_PROPERTIES,
         events: &["value_changed", "range_changed"],
         commands: &["set_range", "set_value", "set_orientation"],
@@ -107,7 +107,7 @@ pub(crate) fn scroll_bar_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ScrollBar,
         canonical_name: "scroll_bar",
-        aliases: &["scrollbar"],
+        aliases: &[],
         properties: SCROLL_BAR_PROPERTIES,
         events: &["value_changed", "range_changed", "slider_moved"],
         commands: &["set_range", "set_value", "set_steps", "set_orientation"],
@@ -118,7 +118,7 @@ pub(crate) fn list_box_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ListBox,
         canonical_name: "list_box",
-        aliases: &["listbox"],
+        aliases: &[],
         properties: LIST_BOX_PROPERTIES,
         events: &["item_selected", "item_activated", "selection_changed"],
         commands: &["add_item", "remove_item", "clear", "clear_selection", "set_selection_mode"],
@@ -129,7 +129,7 @@ pub(crate) fn spin_box_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::SpinBox,
         canonical_name: "spin_box",
-        aliases: &["spinbox"],
+        aliases: &[],
         properties: SPIN_BOX_PROPERTIES,
         events: &["value_changed", "editing_finished"],
         commands: &["set_range", "set_value", "step_up", "step_down"],
@@ -140,7 +140,7 @@ pub(crate) fn combo_box_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ComboBox,
         canonical_name: "combo_box",
-        aliases: &["combobox"],
+        aliases: &[],
         properties: COMBO_BOX_PROPERTIES,
         events: &["current_index_changed", "current_text_changed", "activated"],
         commands: &["set_items", "set_current_index", "clear"],
@@ -174,7 +174,7 @@ pub(crate) fn group_box_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::GroupBox,
         canonical_name: "group_box",
-        aliases: &["groupbox"],
+        aliases: &[],
         properties: GROUP_BOX_PROPERTIES,
         events: &["toggled"],
         commands: &["set_title", "set_checkable", "set_checked", "toggle"],
@@ -238,7 +238,7 @@ pub(crate) fn lcd_number_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::LCDNumber,
         canonical_name: "lcd_number",
-        aliases: &["lcdnumber"],
+        aliases: &[],
         properties: LCD_NUMBER_PROPERTIES,
         events: &["value_changed", "overflow"],
         commands: &["set_value", "set_mode", "set_segment_style"],
@@ -250,7 +250,7 @@ pub(crate) fn command_link_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::CommandLink,
         canonical_name: "command_link",
-        aliases: &["commandlink"],
+        aliases: &[],
         properties: COMMAND_LINK_PROPERTIES,
         events: &["clicked", "hovered"],
         commands: &["set_text", "set_description", "set_enabled", "click"],
@@ -262,7 +262,7 @@ pub(crate) fn font_combo_box_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::FontComboBox,
         canonical_name: "font_combo_box",
-        aliases: &["fontcombobox"],
+        aliases: &[],
         properties: FONT_COMBO_BOX_PROPERTIES,
         events: &[
             "current_font_changed",
@@ -299,25 +299,6 @@ pub(crate) fn tool_box_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Toolbox,
         canonical_name: "tool_box",
-        aliases: &["toolbox"],
-        properties: TOOL_BOX_PROPERTIES,
-        events: &["current_changed"],
-        commands: &["add_item", "remove_item", "set_current_index", "set_orientation"],
-    }
-}
-
-/// The capability for the `toolbox` entry, a deprecated spelling of `tool_box`.
-///
-/// `ControlBackend::create_toolbox(..)` calls `mount_widget_of_kind(Toolbox)`, which
-/// resolves the kind to the **canonical** name and mounts `tool_box` — so the panel
-/// is the right control, but the name the trait method spells was not registered and
-/// a `factory.create("toolbox", ..)` returned `None`. The row exists so the two
-/// spellings address the same control instead of one of them silently missing.
-#[cfg(not(alloc_frugal))]
-pub(crate) fn toolbox_capability() -> WidgetCapability {
-    WidgetCapability {
-        kind: WidgetKind::Toolbox,
-        canonical_name: "toolbox",
         aliases: &[],
         properties: TOOL_BOX_PROPERTIES,
         events: &["current_changed"],
@@ -325,12 +306,22 @@ pub(crate) fn toolbox_capability() -> WidgetCapability {
     }
 }
 
+// NOTE: there is deliberately no second `toolbox` entry here.
+//
+// One existed, registered against the same kind, so `tool_box` and `toolbox` were two
+// capabilities for one control. That made `capability("toolbox")` answer by
+// registration order and gave `WidgetKind::Toolbox` two entries to disambiguate between
+// with a tie-break row — all to buy a spelling `normalize_key` cannot distinguish from
+// `tool_box` (`"toolbox"` and `"tool_box"` are the same key). The single `tool_box`
+// entry accepts both spellings, so the second entry was duplication (rule #54) with no
+// behaviour behind it.
+
 #[cfg(not(alloc_frugal))]
 pub(crate) fn tab_bar_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::TabBar,
         canonical_name: "tab_bar",
-        aliases: &["tabbar"],
+        aliases: &[],
         properties: TAB_BAR_PROPERTIES,
         events: &["current_changed", "tab_close_requested", "tab_moved"],
         commands: &["add_tab", "remove_tab", "set_current_index", "set_closable", "set_movable"],
@@ -354,7 +345,7 @@ pub(crate) fn date_edit_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::DatePicker,
         canonical_name: "date_edit",
-        aliases: &["dateedit", "date_picker"],
+        aliases: &[],
         properties: DATE_EDIT_PROPERTIES,
         events: &["date_changed"],
         commands: &["set_date", "set_date_range", "set_display_format"],
@@ -366,7 +357,7 @@ pub(crate) fn time_edit_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::TimePicker,
         canonical_name: "time_edit",
-        aliases: &["timeedit", "time_picker"],
+        aliases: &["time_picker"],
         properties: TIME_EDIT_PROPERTIES,
         events: &["time_changed"],
         commands: &["set_time", "set_time_range", "set_display_format"],
@@ -377,7 +368,7 @@ pub(crate) fn line_edit_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::LineEdit,
         canonical_name: "line_edit",
-        aliases: &["lineedit", "text_input", "input"],
+        aliases: &["text_input", "input"],
         properties: LINE_EDIT_PROPERTIES,
         events: &["text_changed", "editing_finished", "return_pressed"],
         commands: &["clear", "select_all"],
@@ -389,7 +380,7 @@ pub(crate) fn list_view_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ListView,
         canonical_name: "list_view",
-        aliases: &["listview"],
+        aliases: &[],
         properties: LIST_VIEW_PROPERTIES,
         events: &["selection_changed", "focused_row_changed"],
         commands: &["clear_selection", "clear_focused_row"],
@@ -401,7 +392,7 @@ pub(crate) fn tree_view_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::TreeView,
         canonical_name: "tree_view",
-        aliases: &["treeview"],
+        aliases: &[],
         properties: TREE_VIEW_PROPERTIES,
         events: &["selection_changed", "focused_node_changed"],
         commands: &["clear_selection", "clear_focused_node"],
@@ -413,7 +404,7 @@ pub(crate) fn table_widget_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Table,
         canonical_name: "table_widget",
-        aliases: &["tablewidget"],
+        aliases: &[],
         properties: TABLE_WIDGET_PROPERTIES,
         events: &["selection_changed", "focused_row_changed"],
         commands: &["clear_selection", "clear_focused_row"],
@@ -442,7 +433,7 @@ pub(crate) fn table_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Table,
         canonical_name: "table",
-        aliases: &["table_widget", "tablewidget"],
+        aliases: &[],
         properties: TABLE_WIDGET_PROPERTIES,
         events: &["selection_changed", "focused_row_changed"],
         commands: &["clear_selection", "clear_focused_row"],
@@ -454,7 +445,7 @@ pub(crate) fn data_grid_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Table,
         canonical_name: "data_grid",
-        aliases: &["datagrid"],
+        aliases: &[],
         properties: DATA_GRID_PROPERTIES,
         events: &["visible_window_changed"],
         commands: &[
@@ -474,7 +465,7 @@ pub(crate) fn tree_table_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::TreeView,
         canonical_name: "tree_table",
-        aliases: &["treetable"],
+        aliases: &[],
         properties: TREE_TABLE_PROPERTIES,
         events: &["projection_changed", "selection_changed"],
         commands: &["set_model", "clear_model", "expand_row", "collapse_row", "select_row"],
@@ -486,7 +477,7 @@ pub(crate) fn virtual_table_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Table,
         canonical_name: "virtual_table",
-        aliases: &["virtualtable"],
+        aliases: &[],
         properties: VIRTUAL_TABLE_PROPERTIES,
         events: &["visible_window_changed"],
         commands: &[
@@ -508,7 +499,7 @@ pub(crate) fn virtual_list_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::DataView,
         canonical_name: "virtual_list",
-        aliases: &["virtuallist"],
+        aliases: &[],
         properties: VIRTUAL_LIST_PROPERTIES,
         events: &["selection_changed", "visible_window_changed"],
         commands: &["clear_data_source", "fetch_visible_rows"],
@@ -542,7 +533,7 @@ pub(crate) fn data_view_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::DataView,
         canonical_name: "data_view",
-        aliases: &["dataview"],
+        aliases: &[],
         properties: VIRTUAL_LIST_PROPERTIES,
         events: &["selection_changed", "visible_window_changed"],
         commands: &["clear_data_source", "fetch_visible_rows"],
@@ -566,7 +557,7 @@ pub(crate) fn menu_bar_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::MenuBar,
         canonical_name: "menu_bar",
-        aliases: &["menubar"],
+        aliases: &[],
         properties: MENU_BAR_PROPERTIES,
         events: &["triggered", "hovered_entry"],
         commands: &["clear", "add_menu", "remove_menu"],
@@ -578,7 +569,7 @@ pub(crate) fn tool_bar_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ToolBar,
         canonical_name: "tool_bar",
-        aliases: &["toolbar"],
+        aliases: &[],
         properties: TOOL_BAR_PROPERTIES,
         events: &[
             "action_triggered",
@@ -595,7 +586,7 @@ pub(crate) fn ribbon_bar_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::RibbonBar,
         canonical_name: "ribbon_bar",
-        aliases: &["ribbonbar", "ribbon"],
+        aliases: &["ribbon"],
         properties: RIBBON_BAR_PROPERTIES,
         events: &["current_tab_changed", "item_triggered"],
         commands: &["add_tab", "add_group", "add_item", "add_large_item", "clear"],
@@ -611,7 +602,7 @@ pub(crate) fn color_picker_capability() -> WidgetCapability {
         // "dialog" for a control with no window.
         kind: WidgetKind::ColorPicker,
         canonical_name: "color_picker",
-        aliases: &["colorpicker"],
+        aliases: &[],
         properties: COLOR_PICKER_PROPERTIES,
         events: &["color_changed", "hex_changed"],
         commands: &["set_hex", "apply_preset"],
@@ -649,7 +640,7 @@ pub(crate) fn code_editor_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::RichEdit,
         canonical_name: "code_editor",
-        aliases: &["codeeditor"],
+        aliases: &[],
         properties: CODE_EDITOR_PROPERTIES,
         events: &["text_changed", "cursor_moved", "selection_changed"],
         commands: &["set_text", "append_line", "set_markers", "set_cursor"],
@@ -661,7 +652,7 @@ pub(crate) fn gantt_widget_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Chart,
         canonical_name: "gantt_widget",
-        aliases: &["gantt", "ganttwidget"],
+        aliases: &["gantt"],
         properties: GANTT_WIDGET_PROPERTIES,
         events: &["task_selected", "viewport_changed"],
         commands: &["set_tasks", "zoom", "set_viewport", "select_task"],
@@ -673,7 +664,7 @@ pub(crate) fn terminal_view_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::TextEdit,
         canonical_name: "terminal_view",
-        aliases: &["terminal", "terminalview"],
+        aliases: &["terminal"],
         properties: TERMINAL_VIEW_PROPERTIES,
         events: &["command_submitted"],
         commands: &["append_output", "submit"],
@@ -697,7 +688,7 @@ pub(crate) fn map_view_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Canvas,
         canonical_name: "map_view",
-        aliases: &["mapview"],
+        aliases: &[],
         properties: MAP_VIEW_PROPERTIES,
         events: &["center_changed", "zoom_changed", "marker_selected"],
         commands: &["set_markers", "set_center", "set_zoom"],
@@ -709,7 +700,7 @@ pub(crate) fn media_player_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::WebEngineView,
         canonical_name: "media_player",
-        aliases: &["mediaplayer"],
+        aliases: &[],
         properties: MEDIA_PLAYER_PROPERTIES,
         events: &["playback_changed", "position_changed", "volume_changed", "source_changed"],
         commands: &["set_source", "clear_source", "play", "pause", "seek_to", "set_volume"],
@@ -828,7 +819,7 @@ pub(crate) fn otp_input_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::OtpInput,
         canonical_name: "otp_input",
-        aliases: &["otpinput", "otp"],
+        aliases: &["otp"],
         properties: OTP_INPUT_PROPERTIES,
         events: &["value_changed", "completed"],
         commands: &["insert_char", "backspace", "paste", "clear"],
@@ -891,7 +882,7 @@ pub(crate) fn number_picker_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::NumberPicker,
         canonical_name: "number_picker",
-        aliases: &["numberpicker", "picker"],
+        aliases: &["picker"],
         properties: NUMBER_PICKER_PROPERTIES,
         events: &["value_changed"],
         commands: &["scroll_rows", "set_value", "set_range", "set_step"],
@@ -903,7 +894,7 @@ pub(crate) fn grid_table_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::GridTable,
         canonical_name: "grid_table",
-        aliases: &["gridtable"],
+        aliases: &[],
         properties: GRID_TABLE_WIDGET_PROPERTIES,
         events: &["cell_selected", "cell_double_clicked", "sort_changed", "header_clicked"],
         commands: &[
@@ -922,7 +913,7 @@ pub(crate) fn split_button_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ToolButton,
         canonical_name: "split_button",
-        aliases: &["splitbutton"],
+        aliases: &[],
         properties: SPLIT_BUTTON_PROPERTIES,
         events: &["triggered", "action_selected", "menu_toggled"],
         commands: &["add_action", "open_menu", "close_menu", "trigger_primary"],
@@ -934,7 +925,7 @@ pub(crate) fn segmented_control_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ToggleButton,
         canonical_name: "segmented_control",
-        aliases: &["segmentedcontrol"],
+        aliases: &[],
         properties: SEGMENTED_CONTROL_PROPERTIES,
         events: &["selection_changed"],
         commands: &["set_items", "move_selection"],
@@ -983,7 +974,7 @@ pub(crate) fn freeform_shape_capability() -> WidgetCapability {
         kind: WidgetKind::FreeformShape,
         canonical_name: "freeform_shape",
         commands: &["set_fill_color", "set_stroke_color", "set_stroke_width"],
-        aliases: &["freeformshape"],
+        aliases: &[],
         properties: FREEFORM_SHAPE_PROPERTIES,
         events: &["clicked", "hovered_changed", "pressed_changed"],
     }
@@ -995,7 +986,7 @@ pub(crate) fn message_box_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::MessageBox,
         canonical_name: "message_box",
-        aliases: &["messagebox", "msgbox"],
+        aliases: &["msgbox"],
         properties: MESSAGE_BOX_PROPERTIES,
         events: &["button_clicked", "accepted", "rejected"],
         commands: &["set_text", "set_title", "set_icon"],
@@ -1007,7 +998,7 @@ pub(crate) fn file_dialog_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::FileDialog,
         canonical_name: "file_dialog",
-        aliases: &["filedialog"],
+        aliases: &[],
         properties: FILE_DIALOG_PROPERTIES,
         events: &["file_selected", "files_selected", "accepted", "rejected"],
         commands: &["set_mode", "set_directory", "open"],
@@ -1019,7 +1010,7 @@ pub(crate) fn font_dialog_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::FontDialog,
         canonical_name: "font_dialog",
-        aliases: &["fontdialog"],
+        aliases: &[],
         properties: FONT_DIALOG_PROPERTIES,
         events: &["font_selected", "accepted", "rejected"],
         commands: &["set_current_font", "accept", "reject"],
@@ -1031,7 +1022,7 @@ pub(crate) fn input_dialog_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::InputDialog,
         canonical_name: "input_dialog",
-        aliases: &["inputdialog"],
+        aliases: &[],
         properties: INPUT_DIALOG_PROPERTIES,
         events: &[
             "text_value_changed",
@@ -1049,7 +1040,7 @@ pub(crate) fn progress_dialog_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ProgressDialog,
         canonical_name: "progress_dialog",
-        aliases: &["progressdialog"],
+        aliases: &[],
         properties: PROGRESS_DIALOG_PROPERTIES,
         events: &["canceled"],
         commands: &["set_value", "set_range", "set_title", "set_label_text"],
@@ -1061,7 +1052,7 @@ pub(crate) fn popup_window_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::PopupWindow,
         canonical_name: "popup_window",
-        aliases: &["popupwindow", "popup"],
+        aliases: &["popup"],
         properties: POPUP_WINDOW_PROPERTIES,
         events: &[],
         commands: &["set_content_widget"],
@@ -1079,7 +1070,7 @@ pub(crate) fn scroll_area_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ScrollArea,
         canonical_name: "scroll_area",
-        aliases: &["scrollarea"],
+        aliases: &[],
         properties: SCROLL_AREA_PROPERTIES,
         events: &["scroll_position_changed"],
         commands: &["set_widget_resizable", "set_horizontal_policy", "set_vertical_policy"],
@@ -1091,7 +1082,7 @@ pub(crate) fn tab_widget_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::TabWidget,
         canonical_name: "tab_widget",
-        aliases: &["tabwidget"],
+        aliases: &[],
         properties: TAB_WIDGET_PROPERTIES,
         events: &["current_changed", "tab_close_requested"],
         commands: &[
@@ -1110,7 +1101,7 @@ pub(crate) fn stacked_widget_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::StackedWidget,
         canonical_name: "stacked_widget",
-        aliases: &["stackedwidget", "stacked"],
+        aliases: &["stacked"],
         properties: STACKED_WIDGET_PROPERTIES,
         events: &["current_changed"],
         commands: &["add_widget", "remove_widget", "set_current_index"],
@@ -1122,7 +1113,7 @@ pub(crate) fn collapsible_pane_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::CollapsiblePane,
         canonical_name: "collapsible_pane",
-        aliases: &["collapsiblepane", "collapsible"],
+        aliases: &["collapsible"],
         properties: COLLAPSIBLE_PANE_PROPERTIES,
         events: &["toggled"],
         commands: &["set_title", "set_collapsed", "toggle"],
@@ -1134,7 +1125,7 @@ pub(crate) fn dock_widget_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::DockWidget,
         canonical_name: "dock_widget",
-        aliases: &["dockwidget", "dock"],
+        aliases: &["dock"],
         properties: DOCK_WIDGET_PROPERTIES,
         events: &["dock_location_changed", "features_changed", "top_level_changed"],
         commands: &["set_title", "set_floating", "set_features", "set_allowed_areas"],
@@ -1146,7 +1137,7 @@ pub(crate) fn mdi_area_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::MdiArea,
         canonical_name: "mdi_area",
-        aliases: &["mdiarea", "mdi"],
+        aliases: &["mdi"],
         properties: MDI_AREA_PROPERTIES,
         events: &["subwindow_activated"],
         commands: &["add_subwindow", "remove_subwindow", "set_view_mode", "activate_subwindow"],
@@ -1159,7 +1150,7 @@ pub(crate) fn text_edit_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::TextEdit,
         canonical_name: "text_edit",
-        aliases: &["textedit"],
+        aliases: &[],
         properties: TEXT_EDIT_PROPERTIES,
         events: &["text_changed", "cursor_position_changed"],
         commands: &[
@@ -1215,7 +1206,7 @@ pub(crate) fn pie_menu_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::PieMenu,
         canonical_name: "pie_menu",
-        aliases: &["piemenu", "radial_menu"],
+        aliases: &["radial_menu"],
         properties: PIE_MENU_PROPERTIES,
         events: &["triggered", "triggered_text", "about_to_show", "about_to_hide"],
         commands: &["add_item", "remove_item", "set_radius", "set_current_index"],
@@ -1231,7 +1222,7 @@ pub(crate) fn toggle_button_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ToggleButton,
         canonical_name: "toggle_button",
-        aliases: &["togglebutton", "toggle"],
+        aliases: &["toggle"],
         properties: TOGGLE_BUTTON_PROPERTIES,
         events: &["toggled", "checked_changed", "pressed", "released"],
         commands: &["set_checked", "toggle", "set_text"],
@@ -1242,7 +1233,7 @@ pub(crate) fn arc_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Arc,
         canonical_name: "arc",
-        aliases: &["arc_widget", "circular_progress"],
+        aliases: &["arc_widget"],
         properties: ARC_PROPERTIES,
         events: &["changed"],
         commands: &["set_value", "set_range"],
@@ -1286,7 +1277,7 @@ pub(crate) fn text_area_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::TextArea,
         canonical_name: "text_area",
-        aliases: &["textarea", "multiline_edit"],
+        aliases: &["multiline_edit"],
         properties: TEXT_AREA_PROPERTIES,
         events: &["changed"],
         commands: &["set_text", "set_placeholder", "set_read_only", "insert", "delete_char"],
@@ -1345,7 +1336,7 @@ pub(crate) fn line_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Line,
         canonical_name: "line",
-        aliases: &["line_widget", "divider"],
+        aliases: &["line_widget"],
         properties: LINE_PROPERTIES,
         events: &[],
         commands: &["set_orientation"],
@@ -1405,7 +1396,7 @@ pub(crate) fn emoji_picker_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::EmojiPicker,
         canonical_name: "emoji_picker",
-        aliases: &["emojipicker", "emoji"],
+        aliases: &["emoji"],
         properties: EMOJI_PICKER_PROPERTIES,
         events: &["glyph_chosen"],
         commands: &["set_glyphs", "set_categories", "set_search", "choose"],
@@ -1422,7 +1413,7 @@ pub(crate) fn query_builder_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::QueryBuilder,
         canonical_name: "query_builder",
-        aliases: &["querybuilder", "filter_builder"],
+        aliases: &["filter_builder"],
         properties: QUERY_BUILDER_PROPERTIES,
         events: &["query_changed"],
         commands: &["set_fields", "add_row", "remove_row", "toggle_conjunction"],
@@ -1465,7 +1456,7 @@ pub(crate) fn mini_chart_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::MiniChart,
         canonical_name: "mini_chart",
-        aliases: &["minichart", "mini_chart_widget", "sparkline"],
+        aliases: &["mini_chart_widget"],
         properties: MINI_CHART_PROPERTIES,
         events: &[],
         commands: &["set_chart_type", "set_data", "set_range"],
@@ -1476,7 +1467,7 @@ pub(crate) fn image_view_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ImageView,
         canonical_name: "image_view",
-        aliases: &["imageview", "image_viewer"],
+        aliases: &["image_viewer"],
         properties: IMAGE_VIEW_PROPERTIES,
         events: &[],
         commands: &["set_image", "set_scaled"],
@@ -1487,7 +1478,7 @@ pub(crate) fn mini_canvas_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::MiniCanvas,
         canonical_name: "mini_canvas",
-        aliases: &["minicanvas", "canvas"],
+        aliases: &[],
         properties: MINI_CANVAS_PROPERTIES,
         events: &["clicked", "mouse_pressed", "mouse_released"],
         commands: &["fill_rect", "draw_rect", "draw_line", "fill_circle", "clear"],
@@ -1498,7 +1489,7 @@ pub(crate) fn date_time_edit_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::DateTimePicker,
         canonical_name: "date_time_edit",
-        aliases: &["datetimeedit", "datetimepicker", "date_time_picker"],
+        aliases: &["datetimepicker", "date_time_picker"],
         properties: DATE_TIME_EDIT_PROPERTIES,
         events: &["datetime_changed"],
         commands: &["set_datetime", "set_display_format", "set_calendar_popup"],
@@ -1535,7 +1526,7 @@ pub(crate) fn search_box_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::SearchBox,
         canonical_name: "search_box",
-        aliases: &["searchbox", "search"],
+        aliases: &["search"],
         properties: SEARCH_BOX_PROPERTIES,
         events: &["changed", "search_submitted"],
         commands: &["set_text", "set_placeholder", "clear"],
@@ -1559,7 +1550,7 @@ pub(crate) fn skeleton_loader_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::SkeletonLoader,
         canonical_name: "skeleton_loader",
-        aliases: &["skeletonloader", "skeleton", "shimmer"],
+        aliases: &["skeleton", "shimmer"],
         properties: SKELETON_LOADER_PROPERTIES,
         events: &[],
         commands: &["set_active"],
@@ -1583,7 +1574,7 @@ pub(crate) fn bottom_sheet_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::BottomSheet,
         canonical_name: "bottom_sheet",
-        aliases: &["bottomsheet", "sheet"],
+        aliases: &["sheet"],
         properties: BOTTOM_SHEET_PROPERTIES,
         events: &["expanded_changed"],
         commands: &["set_expanded", "set_peek_height"],
@@ -1595,7 +1586,7 @@ pub(crate) fn bottom_navigation_bar_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::BottomNavigationBar,
         canonical_name: "bottom_navigation_bar",
-        aliases: &["bottomnavigationbar", "bottom_nav", "bottomnav"],
+        aliases: &["bottom_nav", "bottomnav"],
         properties: BOTTOM_NAVIGATION_BAR_PROPERTIES,
         events: &["selected_changed"],
         commands: &["set_selected_index", "set_items"],
@@ -1607,7 +1598,7 @@ pub(crate) fn navigation_drawer_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::NavigationDrawer,
         canonical_name: "navigation_drawer",
-        aliases: &["navigationdrawer", "nav_drawer", "drawer"],
+        aliases: &["nav_drawer", "drawer"],
         properties: NAVIGATION_DRAWER_PROPERTIES,
         events: &["open_changed"],
         commands: &["set_open", "set_width"],
@@ -1619,7 +1610,7 @@ pub(crate) fn app_bar_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::AppBar,
         canonical_name: "app_bar",
-        aliases: &["appbar", "top_app_bar"],
+        aliases: &["top_app_bar"],
         properties: APP_BAR_PROPERTIES,
         events: &[],
         commands: &["set_title"],
@@ -1631,7 +1622,7 @@ pub(crate) fn mobile_date_picker_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::MobileDatePicker,
         canonical_name: "mobile_date_picker",
-        aliases: &["mobiledatepicker", "date_picker"],
+        aliases: &[],
         properties: MOBILE_DATE_PICKER_PROPERTIES,
         events: &["date_changed"],
         commands: &["set_selected_date"],
@@ -1691,7 +1682,7 @@ pub(crate) fn empty_state_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::EmptyState,
         canonical_name: "empty_state",
-        aliases: &["emptystate", "empty_placeholder"],
+        aliases: &["empty_placeholder"],
         properties: EMPTY_STATE_PROPERTIES,
         events: &[],
         commands: &["set_message", "set_description"],
@@ -1703,7 +1694,7 @@ pub(crate) fn color_history_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ColorHistory,
         canonical_name: "color_history",
-        aliases: &["colorhistory", "color_swatch"],
+        aliases: &[],
         properties: COLOR_HISTORY_PROPERTIES,
         events: &["color_selected"],
         commands: &[],
@@ -1715,7 +1706,7 @@ pub(crate) fn color_well_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ColorWell,
         canonical_name: "color_well",
-        aliases: &["colorwell", "color_swatch"],
+        aliases: &[],
         properties: COLOR_WELL_PROPERTIES,
         events: &["clicked"],
         commands: &["set_color"],
@@ -1727,7 +1718,7 @@ pub(crate) fn tag_input_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::TagInput,
         canonical_name: "tag_input",
-        aliases: &["taginput", "tag_editor", "chip_input"],
+        aliases: &["tag_editor", "chip_input"],
         properties: TAG_INPUT_PROPERTIES,
         events: &["tags_changed"],
         commands: &["add_tag", "remove_tag", "set_placeholder"],
@@ -1739,7 +1730,7 @@ pub(crate) fn ime_preedit_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ImePreedit,
         canonical_name: "ime_preedit",
-        aliases: &["imepreedit", "preedit"],
+        aliases: &["preedit"],
         properties: IME_PREEDIT_PROPERTIES,
         events: &[],
         commands: &["set_text", "set_cursor_position"],
@@ -1751,7 +1742,7 @@ pub(crate) fn inplace_editor_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::InplaceEditor,
         canonical_name: "inplace_editor",
-        aliases: &["inplaceeditor", "inline_editor"],
+        aliases: &["inline_editor"],
         properties: INPLACE_EDITOR_PROPERTIES,
         events: &["edit_completed"],
         commands: &["set_text", "start_editing", "finish_editing"],
@@ -1763,7 +1754,7 @@ pub(crate) fn qr_code_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::QRCode,
         canonical_name: "qr_code",
-        aliases: &["qrcode", "qr"],
+        aliases: &["qr"],
         properties: QR_CODE_PROPERTIES,
         events: &[],
         commands: &["set_data", "set_size"],
@@ -1775,7 +1766,7 @@ pub(crate) fn masonry_layout_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::MasonryLayout,
         canonical_name: "masonry_layout",
-        aliases: &["masonrylayout", "waterfall_layout"],
+        aliases: &["waterfall_layout"],
         properties: MASONRY_LAYOUT_PROPERTIES,
         events: &[],
         commands: &["set_column_count"],
@@ -1787,7 +1778,7 @@ pub(crate) fn material_snackbar_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::MaterialSnackbar,
         canonical_name: "material_snackbar",
-        aliases: &["materialsnackbar"],
+        aliases: &[],
         properties: MATERIAL_SNACKBAR_PROPERTIES,
         events: &["action_pressed", "dismissed"],
         commands: &["show", "dismiss", "set_message", "set_action_text"],
@@ -1799,7 +1790,7 @@ pub(crate) fn adaptive_scaffold_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::AdaptiveScaffold,
         canonical_name: "adaptive_scaffold",
-        aliases: &["adaptivescaffold", "scaffold"],
+        aliases: &["scaffold"],
         properties: ADAPTIVE_SCAFFOLD_PROPERTIES,
         events: &[],
         commands: &["set_title"],
@@ -1811,7 +1802,7 @@ pub(crate) fn wizard_dialog_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::WizardDialog,
         canonical_name: "wizard_dialog",
-        aliases: &["wizarddialog", "wizard"],
+        aliases: &["wizard"],
         properties: WIZARD_DIALOG_PROPERTIES,
         events: &["finished", "cancelled"],
         commands: &["set_current_step", "next", "back", "finish"],
@@ -1823,7 +1814,7 @@ pub(crate) fn safe_area_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::SafeArea,
         canonical_name: "safe_area",
-        aliases: &["safearea", "safe_area_insets"],
+        aliases: &["safe_area_insets"],
         properties: SAFE_AREA_PROPERTIES,
         events: &[],
         commands: &["set_insets"],
@@ -1835,7 +1826,7 @@ pub(crate) fn cupertino_alert_dialog_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::CupertinoAlertDialog,
         canonical_name: "cupertino_alert_dialog",
-        aliases: &["cupertinoalertdialog", "ios_alert"],
+        aliases: &["ios_alert"],
         properties: CUPERTINO_ALERT_DIALOG_PROPERTIES,
         events: &["confirmed", "cancelled"],
         commands: &["set_title", "set_message"],
@@ -1847,7 +1838,7 @@ pub(crate) fn cupertino_slider_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::CupertinoSlider,
         canonical_name: "cupertino_slider",
-        aliases: &["cupertinoslider", "ios_slider"],
+        aliases: &["ios_slider"],
         properties: CUPERTINO_SLIDER_PROPERTIES,
         events: &["value_changed"],
         commands: &["set_value", "set_min", "set_max"],
@@ -1871,7 +1862,7 @@ pub(crate) fn segmented_button_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::SegmentedButton,
         canonical_name: "segmented_button",
-        aliases: &["segmentedbutton", "segmented_btn"],
+        aliases: &["segmented_btn"],
         properties: SEGMENTED_BUTTON_PROPERTIES,
         events: &["selected_changed"],
         commands: &["set_selected_index"],
@@ -1883,7 +1874,7 @@ pub(crate) fn navigation_stack_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::NavigationStack,
         canonical_name: "navigation_stack",
-        aliases: &["navigationstack", "nav_stack"],
+        aliases: &["nav_stack"],
         properties: NAVIGATION_STACK_PROPERTIES,
         events: &["page_changed"],
         commands: &["push", "pop", "set_current_page"],
@@ -1895,7 +1886,7 @@ pub(crate) fn progress_circle_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ProgressCircle,
         canonical_name: "progress_circle",
-        aliases: &["progresscircle", "circular_progress"],
+        aliases: &["circular_progress"],
         properties: PROGRESS_CIRCLE_PROPERTIES,
         events: &[],
         commands: &["set_value", "set_thickness", "set_indeterminate"],
@@ -1919,7 +1910,7 @@ pub(crate) fn dropdown_menu_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::DropdownMenu,
         canonical_name: "dropdown_menu",
-        aliases: &["dropdownmenu"],
+        aliases: &[],
         properties: DROPDOWN_MENU_PROPERTIES,
         events: &["selected_changed"],
         commands: &["set_selected_index", "set_expanded"],
@@ -1931,7 +1922,7 @@ pub(crate) fn masked_edit_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::MaskedEdit,
         canonical_name: "masked_edit",
-        aliases: &["maskededit", "masked_input"],
+        aliases: &["masked_input"],
         properties: MASKED_EDIT_PROPERTIES,
         events: &["changed"],
         commands: &["set_text", "set_mask"],
@@ -1943,7 +1934,7 @@ pub(crate) fn menu_button_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::MenuButton,
         canonical_name: "menu_button",
-        aliases: &["menubutton", "dropdown_button"],
+        aliases: &["dropdown_button"],
         properties: MENU_BUTTON_PROPERTIES,
         events: &["selected_changed"],
         commands: &["set_text", "set_expanded"],
@@ -1967,7 +1958,7 @@ pub(crate) fn auto_complete_edit_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::AutoCompleteEdit,
         canonical_name: "auto_complete_edit",
-        aliases: &["autocompleteedit", "autocomplete"],
+        aliases: &["autocomplete"],
         properties: AUTO_COMPLETE_EDIT_PROPERTIES,
         events: &["changed", "selected"],
         commands: &["set_text"],
@@ -1979,7 +1970,7 @@ pub(crate) fn multi_select_combo_box_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::MultiSelectComboBox,
         canonical_name: "multi_select_combo_box",
-        aliases: &["multiselectcombobox", "multi_combo"],
+        aliases: &["multi_combo"],
         properties: MULTI_SELECT_COMBO_BOX_PROPERTIES,
         events: &["selection_changed"],
         commands: &["set_expanded"],
@@ -1991,7 +1982,7 @@ pub(crate) fn range_slider_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::RangeSlider,
         canonical_name: "range_slider",
-        aliases: &["rangeslider", "dual_slider"],
+        aliases: &["dual_slider"],
         properties: RANGE_SLIDER_PROPERTIES,
         events: &["changed"],
         commands: &["set_lower", "set_upper", "set_range"],
@@ -2003,7 +1994,7 @@ pub(crate) fn floating_label_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::FloatingLabel,
         canonical_name: "floating_label",
-        aliases: &["floatinglabel", "floating_input"],
+        aliases: &["floating_input"],
         properties: FLOATING_LABEL_PROPERTIES,
         events: &["changed", "focused"],
         commands: &["set_text", "set_placeholder", "set_focused"],
@@ -2015,7 +2006,7 @@ pub(crate) fn font_preview_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::FontPreview,
         canonical_name: "font_preview",
-        aliases: &["fontpreview", "font_viewer"],
+        aliases: &["font_viewer"],
         properties: FONT_PREVIEW_PROPERTIES,
         events: &[],
         commands: &["set_font_family", "set_font_size", "set_preview_text"],
@@ -2051,7 +2042,7 @@ pub(crate) fn refresh_control_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::RefreshControl,
         canonical_name: "refresh_control",
-        aliases: &["refreshcontrol", "pull_to_refresh"],
+        aliases: &["pull_to_refresh"],
         properties: REFRESH_CONTROL_PROPERTIES,
         events: &["refreshed"],
         commands: &["set_refreshing"],
@@ -2063,7 +2054,7 @@ pub(crate) fn modal_bottom_sheet_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ModalBottomSheet,
         canonical_name: "modal_bottom_sheet",
-        aliases: &["modalbottomsheet", "modal_sheet"],
+        aliases: &["modal_sheet"],
         properties: MODAL_BOTTOM_SHEET_PROPERTIES,
         events: &["dismissed"],
         commands: &["set_visible", "show", "dismiss"],
@@ -2075,7 +2066,7 @@ pub(crate) fn find_replace_dialog_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::FindReplaceDialog,
         canonical_name: "find_replace_dialog",
-        aliases: &["findreplacedialog", "find_replace"],
+        aliases: &["find_replace"],
         properties: FIND_REPLACE_DIALOG_PROPERTIES,
         events: &["find", "replace", "replace_all"],
         commands: &["set_find_text", "set_replace_text", "set_match_case", "set_wrap_around"],
@@ -2087,7 +2078,7 @@ pub(crate) fn properties_panel_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::PropertiesPanel,
         canonical_name: "properties_panel",
-        aliases: &["propertiespanel", "property_panel"],
+        aliases: &["property_panel"],
         properties: PROPERTIES_PANEL_PROPERTIES,
         events: &["property_changed"],
         commands: &[],
@@ -2099,7 +2090,7 @@ pub(crate) fn cupertino_date_picker_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::CupertinoDatePicker,
         canonical_name: "cupertino_date_picker",
-        aliases: &["cupertinodatepicker", "ios_date_picker"],
+        aliases: &["ios_date_picker"],
         properties: CUPERTINO_DATE_PICKER_PROPERTIES,
         events: &["date_changed"],
         commands: &["set_selected_date"],
@@ -2111,7 +2102,7 @@ pub(crate) fn editable_combo_box_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::EditableComboBox,
         canonical_name: "editable_combo_box",
-        aliases: &["editablecombobox", "editable_combo"],
+        aliases: &["editable_combo"],
         properties: EDITABLE_COMBO_BOX_PROPERTIES,
         events: &["changed"],
         commands: &["set_text"],
@@ -2123,7 +2114,7 @@ pub(crate) fn date_range_picker_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::DateRangePicker,
         canonical_name: "date_range_picker",
-        aliases: &["daterangepicker", "range_picker"],
+        aliases: &["range_picker"],
         properties: DATE_RANGE_PICKER_PROPERTIES,
         events: &["range_changed"],
         commands: &["set_start_date", "set_end_date"],
@@ -2137,7 +2128,7 @@ pub(crate) fn rich_edit_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::RichEdit,
         canonical_name: "rich_edit",
-        aliases: &["richedit", "rich_text_editor"],
+        aliases: &["rich_text_editor"],
         properties: RICH_EDIT_PROPERTIES,
         events: &["text_changed"],
         commands: &["set_text"],
@@ -2161,7 +2152,7 @@ pub(crate) fn material_navigation_rail_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::MaterialNavigationRail,
         canonical_name: "material_navigation_rail",
-        aliases: &["materialnavigationrail", "nav_rail", "navigation_rail"],
+        aliases: &["nav_rail", "navigation_rail"],
         properties: MATERIAL_NAVIGATION_RAIL_PROPERTIES,
         events: &["selected_changed"],
         commands: &["set_selected_index"],
@@ -2173,7 +2164,7 @@ pub(crate) fn tab_view_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::TabView,
         canonical_name: "tab_view",
-        aliases: &["tabview", "page_tab_view"],
+        aliases: &["page_tab_view"],
         properties: TAB_VIEW_PROPERTIES,
         events: &["tab_changed"],
         commands: &["set_selected_index"],
@@ -2185,7 +2176,7 @@ pub(crate) fn search_bar_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::SearchBar,
         canonical_name: "search_bar",
-        aliases: &["searchbar", "search_field"],
+        aliases: &["search_field"],
         properties: SEARCH_BAR_PROPERTIES,
         events: &["text_changed", "search_submitted"],
         commands: &["set_text", "set_placeholder"],
@@ -2197,7 +2188,7 @@ pub(crate) fn shortcut_editor_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ShortcutEditor,
         canonical_name: "shortcut_editor",
-        aliases: &["shortcuteditor", "keyboard_shortcut_editor"],
+        aliases: &["keyboard_shortcut_editor"],
         properties: SHORTCUT_EDITOR_PROPERTIES,
         events: &["shortcut_changed"],
         commands: &["set_filter_text"],
@@ -2209,7 +2200,7 @@ pub(crate) fn swipe_to_dismiss_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::SwipeToDismiss,
         canonical_name: "swipe_to_dismiss",
-        aliases: &["swipetodismiss", "swipe_dismiss"],
+        aliases: &["swipe_dismiss"],
         properties: SWIPE_TO_DISMISS_PROPERTIES,
         events: &["dismissed"],
         commands: &[],
@@ -2221,7 +2212,7 @@ pub(crate) fn line_chart_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::LineChart,
         canonical_name: "line_chart",
-        aliases: &["linechart", "line_graph"],
+        aliases: &["line_graph"],
         properties: LINE_CHART_PROPERTIES,
         events: &["changed"],
         commands: &["set_stroke_width"],
@@ -2233,7 +2224,7 @@ pub(crate) fn sparkline_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Sparkline,
         canonical_name: "sparkline",
-        aliases: &["sparkline_chart", "spark_line"],
+        aliases: &["sparkline_chart"],
         properties: SPARKLINE_PROPERTIES,
         events: &[],
         commands: &["set_stroke_width"],
@@ -2245,7 +2236,7 @@ pub(crate) fn bar_chart_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::BarChart,
         canonical_name: "bar_chart",
-        aliases: &["barchart", "bar_graph"],
+        aliases: &["bar_graph"],
         properties: BAR_CHART_PROPERTIES,
         events: &["changed"],
         commands: &["set_bar_spacing"],
@@ -2294,7 +2285,7 @@ pub(crate) fn order_book_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::OrderBook,
         canonical_name: "order_book",
-        aliases: &["orderbook", "book_ladder", "market_depth_ladder"],
+        aliases: &["book_ladder", "market_depth_ladder"],
         properties: ORDER_BOOK_PROPERTIES,
         events: &["changed"],
         commands: &["set_series", "add_overlay"],
@@ -2329,7 +2320,7 @@ pub(crate) fn pie_chart_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::PieChart,
         canonical_name: "pie_chart",
-        aliases: &["piechart", "pie_graph"],
+        aliases: &["pie_graph"],
         properties: PIE_CHART_PROPERTIES,
         events: &["changed"],
         commands: &["set_donut"],
@@ -2341,7 +2332,7 @@ pub(crate) fn animated_image_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::AnimatedImage,
         canonical_name: "animated_image",
-        aliases: &["animatedimage", "anim_image"],
+        aliases: &["anim_image"],
         properties: ANIMATED_IMAGE_PROPERTIES,
         events: &["finished"],
         commands: &["set_playing"],
@@ -2353,7 +2344,7 @@ pub(crate) fn hero_animation_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::HeroAnimation,
         canonical_name: "hero_animation",
-        aliases: &["heroanimation", "hero"],
+        aliases: &["hero"],
         properties: HERO_ANIMATION_PROPERTIES,
         events: &["animation_completed"],
         commands: &["set_animation_progress"],
@@ -2365,7 +2356,7 @@ pub(crate) fn bezier_curve_editor_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::BezierCurveEditor,
         canonical_name: "bezier_curve_editor",
-        aliases: &["beziercurveeditor", "curve_editor"],
+        aliases: &["curve_editor"],
         properties: BEZIER_CURVE_EDITOR_PROPERTIES,
         events: &["changed"],
         commands: &["set_snap_to_grid"],
@@ -2377,7 +2368,7 @@ pub(crate) fn lottie_widget_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::LottieWidget,
         canonical_name: "lottie_widget",
-        aliases: &["lottiewidget", "lottie"],
+        aliases: &["lottie"],
         properties: LOTTIE_WIDGET_PROPERTIES,
         events: &["finished"],
         commands: &["set_playing"],
@@ -2389,7 +2380,7 @@ pub(crate) fn rive_widget_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::RiveWidget,
         canonical_name: "rive_widget",
-        aliases: &["rivewidget", "rive"],
+        aliases: &["rive"],
         properties: RIVE_WIDGET_PROPERTIES,
         events: &["finished"],
         commands: &["set_playing"],
@@ -2401,7 +2392,7 @@ pub(crate) fn video_player_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::VideoPlayer,
         canonical_name: "video_player",
-        aliases: &["videoplayer", "video"],
+        aliases: &["video"],
         properties: VIDEO_PLAYER_PROPERTIES,
         events: &["finished"],
         commands: &["set_playing", "set_volume"],
@@ -2413,7 +2404,7 @@ pub(crate) fn image_gallery_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ImageGallery,
         canonical_name: "image_gallery",
-        aliases: &["imagegallery", "gallery"],
+        aliases: &["gallery"],
         properties: IMAGE_GALLERY_PROPERTIES,
         events: &["image_changed"],
         commands: &["set_current_index"],
@@ -2425,7 +2416,7 @@ pub(crate) fn audio_visualizer_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::AudioVisualizer,
         canonical_name: "audio_visualizer",
-        aliases: &["audiovisualizer", "audio_viz"],
+        aliases: &["audio_viz"],
         properties: AUDIO_VISUALIZER_PROPERTIES,
         events: &[],
         commands: &["set_bar_count"],
@@ -2437,7 +2428,7 @@ pub(crate) fn camera_preview_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::CameraPreview,
         canonical_name: "camera_preview",
-        aliases: &["camerapreview", "camera"],
+        aliases: &["camera"],
         properties: CAMERA_PREVIEW_PROPERTIES,
         events: &[],
         commands: &["set_active"],
@@ -2449,7 +2440,7 @@ pub(crate) fn barcode_scanner_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::BarcodeScanner,
         canonical_name: "barcode_scanner",
-        aliases: &["barcodescanner", "scanner"],
+        aliases: &["scanner"],
         properties: BARCODE_SCANNER_PROPERTIES,
         events: &["barcode_detected"],
         commands: &["set_scanning"],
@@ -2461,7 +2452,7 @@ pub(crate) fn tool_button_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::ToolButton,
         canonical_name: "tool_button",
-        aliases: &["toolbutton", "toolbar_button"],
+        aliases: &["toolbar_button"],
         properties: TOOL_BUTTON_PROPERTIES,
         events: &["clicked", "toggled"],
         commands: &["set_text", "set_checked"],
@@ -2473,7 +2464,7 @@ pub(crate) fn status_bar_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::StatusBar,
         canonical_name: "status_bar",
-        aliases: &["statusbar", "status"],
+        aliases: &["status"],
         properties: STATUS_BAR_PROPERTIES,
         events: &["message_changed"],
         commands: &["set_message"],
@@ -2486,7 +2477,7 @@ pub(crate) fn property_grid_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::PropertyGrid,
         canonical_name: "property_grid",
-        aliases: &["propertygrid", "inspector"],
+        aliases: &["inspector"],
         properties: PROPERTY_GRID_PROPERTIES,
         events: &["selected"],
         commands: &["add_property", "set_value", "clear", "set_selected_index"],

@@ -226,6 +226,23 @@ impl WidgetProperties for ToggleButton {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["text", "checked", "state", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `toggle_button` publishes.
+    ///
+    /// `toggle` flips the latch. `set_checked` and `set_text` assign state and need
+    /// an argument, so they are answered through the property path and refused here
+    /// as [`CapabilityAccessError::OutOfRange`] — "the name is right, the invocation
+    /// needs a payload" — rather than `UnknownCommand`.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "toggle" => {
+                self.toggle();
+                Ok(())
+            }
+            "set_checked" | "set_text" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Draw for ToggleButton {

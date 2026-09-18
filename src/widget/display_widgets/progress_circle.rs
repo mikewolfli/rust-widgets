@@ -197,6 +197,22 @@ impl WidgetProperties for ProgressCircle {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["value", "thickness", "indeterminate", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `progress_circle` publishes.
+    ///
+    /// All three assign state — the progress value, the stroke width and the
+    /// indeterminate flag — so each needs an argument a command carries none of. They
+    /// are refused as [`CapabilityAccessError::OutOfRange`] (use the property route
+    /// `set("value", ..)` / `set("thickness", ..)` / `set("indeterminate", ..)`)
+    /// rather than reported as unknown.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "set_value" | "set_thickness" | "set_indeterminate" => {
+                Err(CapabilityAccessError::OutOfRange)
+            }
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Draw for ProgressCircle {

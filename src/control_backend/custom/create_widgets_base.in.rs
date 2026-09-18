@@ -88,9 +88,9 @@ macro_rules! impl_base_widgets {
             // lookup answers with whichever of the two is registered first — which was
             // the breadcrumb, so `create_panel` built a navigation trail.
             //
-            // The name-based path only exists where the capability registry is
-            // compiled in; a stripped profile has no constructors at all and reports
-            // `0` from either path, so it keeps the kind-based call rather than
+            // `mount_named_widget` is compiled only where the factory is
+            // (`full_widgets`). Every other profile has no constructors at all and
+            // reports `0` from either path, so it keeps the kind-based call rather than
             // referring to a helper it does not compile.
             #[cfg(full_widgets)]
             {

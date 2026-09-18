@@ -340,6 +340,23 @@ impl WidgetProperties for Keyboard {
         // Mirrors `KEYBOARD_PROPERTIES`.
         property_names_of!["layout", "lowercase", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `keyboard` publishes.
+    ///
+    /// `toggle_shift` is the zero-argument action — the same one the on-screen Shift key
+    /// performs — so it goes through the control's own method. `set_layout` and
+    /// `set_lowercase` assign state and need a payload, so they are answered through the
+    /// property route; `layout`'s accepted tokens are published by `property_tokens`.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "toggle_shift" => {
+                self.toggle_shift();
+                Ok(())
+            }
+            "set_layout" | "set_lowercase" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for Keyboard {

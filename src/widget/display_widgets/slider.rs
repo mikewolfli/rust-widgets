@@ -416,6 +416,23 @@ impl WidgetProperties for Slider {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `slider` publishes.
+    ///
+    /// All three assign state and need an argument a command carries none of:
+    /// `set_range` the bounds, `set_value` the position and `set_slider_position` the
+    /// derived handle coordinate. They are refused as
+    /// [`CapabilityAccessError::OutOfRange`] so the caller is sent to the property
+    /// route (`set("value", ..)`, `set("slider_position", ..)`) rather than to a
+    /// different control, which is what `UnknownCommand` would say.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "set_range" | "set_value" | "set_slider_position" => {
+                Err(CapabilityAccessError::OutOfRange)
+            }
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for Slider {

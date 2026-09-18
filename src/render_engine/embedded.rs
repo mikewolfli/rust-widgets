@@ -17,7 +17,13 @@ use core::sync::atomic::{AtomicU64, Ordering};
 #[cfg(not(alloc_frugal))]
 use core::time::Duration;
 
-const DEFAULT_EMBEDDED_TARGET_FPS: u32 = 60;
+/// The target frame rate a freshly-created embedded engine starts at.
+///
+/// `pub(crate)` rather than private because it is the value a test must **restore**:
+/// the engine is process-wide, so a test that raises the rate to make its own loop tick
+/// faster has to put this back before releasing the shared test guard. Leaving the
+/// constant private forced such a test to restate `60`, which is the copy that drifts.
+pub(crate) const DEFAULT_EMBEDDED_TARGET_FPS: u32 = 60;
 const MIN_EMBEDDED_TARGET_FPS: u32 = 1;
 const MAX_EMBEDDED_TARGET_FPS: u32 = 240;
 

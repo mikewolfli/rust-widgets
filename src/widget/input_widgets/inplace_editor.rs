@@ -279,6 +279,29 @@ impl WidgetProperties for InplaceEditor {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["text", "editing", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `inplace_editor` publishes.
+    ///
+    /// The two actions enter and leave edit mode through the control's own methods, so
+    /// the guard against a redundant start, the revert-on-cancel and the
+    /// `edit_completed` signal all stay in one place. `finish_editing` accepts, which is
+    /// the meaning of the name: a caller that wants the revert spells it as
+    /// `set("editing", false)`, where the payload says so. `set_text` assigns the text
+    /// and is answered through the property route.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "start_editing" => {
+                self.start_edit();
+                Ok(())
+            }
+            "finish_editing" => {
+                self.finish_edit(true);
+                Ok(())
+            }
+            "set_text" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Draw for InplaceEditor {

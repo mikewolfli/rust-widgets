@@ -236,6 +236,26 @@ impl WidgetProperties for TextEdit {
     fn property_names(&self) -> &'static [&'static str] {
         crate::widget::capability::properties_trait::BASE_PROPERTY_NAMES
     }
+
+    /// Runs one of the commands `text_edit` publishes.
+    ///
+    /// Every name in the set assigns state — the text, the placeholder, the length
+    /// limit, the read-only flag, the wrap mode — and each needs a payload, so the whole
+    /// set is answered through the property route. The names are placed in
+    /// `TEXT_EDIT_PROPERTIES` rather than served by this widget (see the module docs on
+    /// why), but the capability still resolves `text_edit` to `TextEdit`, so the refusal
+    /// has to live here: returning `UnknownCommand` would make `invoke_command` report
+    /// `UnsupportedOnWidget` for names the control does publish.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "set_text"
+            | "set_placeholder_text"
+            | "set_max_length"
+            | "set_read_only"
+            | "set_line_wrap" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 impl EventHandler for TextEdit {
     fn handle_event(&mut self, event: &Event) {

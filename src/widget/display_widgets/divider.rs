@@ -128,6 +128,20 @@ impl WidgetProperties for Divider {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["orientation", "thickness", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `divider` publishes.
+    ///
+    /// `set_orientation` takes an orientation token and `set_thickness` a pixel count,
+    /// so both assign state through the property path rather than performing an
+    /// action. They are refused as [`CapabilityAccessError::OutOfRange`] so a caller
+    /// discovers the names are valid and the invocation needs a payload, not
+    /// [`CapabilityAccessError::UnknownCommand`].
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "set_orientation" | "set_thickness" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Draw for Divider {

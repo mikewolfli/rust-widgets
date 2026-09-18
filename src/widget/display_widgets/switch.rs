@@ -95,6 +95,24 @@ impl WidgetProperties for Switch {
         // Mirrors `SWITCH_PROPERTIES`.
         property_names_of!["checked", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `switch` publishes.
+    ///
+    /// `toggle` is the control's zero-argument action and flips the latch, emitting
+    /// `toggled` on the transition exactly as a pointer activation does.
+    /// `set_checked` assigns the same state but needs the boolean, so it is refused as
+    /// [`CapabilityAccessError::OutOfRange`] — use `set("checked", ..)` — rather than
+    /// reported unknown.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "toggle" => {
+                self.toggle();
+                Ok(())
+            }
+            "set_checked" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Draw for Switch {

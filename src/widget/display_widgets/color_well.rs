@@ -127,6 +127,19 @@ impl WidgetProperties for ColorWell {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["color", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `color_well` publishes.
+    ///
+    /// `set_color` is the only published name and it assigns the swatch's colour, so
+    /// it needs an argument a command carries none of. It is refused as
+    /// [`CapabilityAccessError::OutOfRange`] — the name is right, the value belongs on
+    /// the property route (`set("color", ..)`) — rather than reported unknown.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "set_color" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Draw for ColorWell {

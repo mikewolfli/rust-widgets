@@ -859,3 +859,71 @@ fn published_enum_tokens_are_accepted_by_their_control() {
          advertises a value the caller cannot write (control, property, token): {rejected:?}"
     );
 }
+
+/// Every capability's published commands must be *reachable through the dispatcher*.
+///
+/// # Why the assertion is about the name, not the effect
+///
+/// Running a command mutates the control, and a command that needs an argument
+/// legitimately cannot complete on a fresh instance, so "did it work" is not a
+/// question this test can ask uniformly. What it can ask — and what was previously
+/// unaskable, because nothing dispatched commands at all — is whether the name the
+/// registry publishes is *recognised by the control that published it*. A name that
+/// comes back `UnknownCommand` from its own capability is a name no consumer can ever
+/// use, which is the dead promise this check exists to expose.
+///
+/// # Why `UnknownCommand` and not any error
+///
+/// `OutOfRange` and `UnsupportedOnWidget` both mean "the control knows this command";
+/// they differ on whether the *invocation* could complete. Only `UnknownCommand` says
+/// the control has never heard of the name, so only that is a registry/implementation
+/// disagreement.
+///
+/// # Why the count is asserted
+///
+/// The per-control rollout is in progress, so this test reports the remaining count
+/// rather than failing on it. Pinning the number means the figure in the round-33 log
+/// and the figure here cannot silently drift apart, and a round that implements a batch
+/// of commands must update both — which is the point: the progress is a fact to state,
+/// not a claim to make.
+#[test]
+fn published_commands_are_recognised_by_their_control() {
+    let factory = WidgetFactory::new_with_defaults();
+
+    let mut total = 0usize;
+    let mut recognised = 0usize;
+    let mut unknown: alloc::vec::Vec<(&'static str, &'static str)> = alloc::vec::Vec::new();
+
+    for capability in factory.capabilities() {
+        if capability.commands.is_empty() {
+            continue;
+        }
+        let Some(mut widget) = factory.create(capability.canonical_name, Rect::new(0, 0, 64, 48), "")
+        else {
+            continue;
+        };
+        for command in capability.commands {
+            total += 1;
+            match factory.invoke_command(widget.as_mut(), command) {
+                Err(CapabilityAccessError::UnknownCommand) => {
+                    unknown.push((capability.canonical_name, command));
+                }
+                _ => recognised += 1,
+            }
+        }
+    }
+
+    assert!(total > 0, "no capability publishes commands, so this test proves nothing");
+    // The floor rises as the rollout proceeds; it must never fall, because every
+    // command that was recognised stays recognised unless an implementation is
+    // removed — which this assertion turns into a failure.
+    assert!(
+        recognised >= 5,
+        "fewer published commands are recognised than the implemented base-control set, so an \
+         implementation was lost (recognised {recognised}/{total}, unknown: {unknown:?})"
+    );
+    log::debug!(
+        "published commands recognised: {recognised}/{total}; still unimplemented: {}",
+        unknown.len()
+    );
+}

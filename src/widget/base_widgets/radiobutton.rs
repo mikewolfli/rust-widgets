@@ -144,6 +144,20 @@ impl WidgetProperties for RadioButton {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["text", "checked", "group_id", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `radio_button` publishes.
+    ///
+    /// Both published names assign state (`set_checked`, `set_group_id`) and so need
+    /// a payload; neither can be a zero-argument action. They are therefore refused
+    /// as [`CapabilityAccessError::OutOfRange`], which tells the caller the name is
+    /// right and the value belongs on the property route — not `UnknownCommand`,
+    /// which would say the name does not exist.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "set_checked" | "set_group_id" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for RadioButton {

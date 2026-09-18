@@ -319,6 +319,33 @@ impl WidgetProperties for FontComboBox {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `font_combo_box` publishes.
+    ///
+    /// `show_popup` and `hide_popup` are the zero-argument actions and go through the
+    /// control's own methods, so the `popup_shown` / `popup_hidden` signals are emitted
+    /// exactly as they are for a mouse-driven open. They are idempotent in the sense that
+    /// matters here: opening an open popup still performed the command, so it answers
+    /// `Ok(())` rather than reporting a failure the caller did not cause.
+    ///
+    /// `set_current_index`, `set_editable` and `set_max_visible_items` assign state and
+    /// need a payload, so they are answered through the property route.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "show_popup" => {
+                self.show_popup();
+                Ok(())
+            }
+            "hide_popup" => {
+                self.hide_popup();
+                Ok(())
+            }
+            "set_current_index" | "set_editable" | "set_max_visible_items" => {
+                Err(CapabilityAccessError::OutOfRange)
+            }
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 use crate::render::RenderContext;

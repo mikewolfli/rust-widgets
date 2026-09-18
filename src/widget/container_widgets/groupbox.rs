@@ -196,6 +196,23 @@ impl WidgetProperties for GroupBox {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["title", "alignment", "checkable", "checked", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `group_box` publishes.
+    ///
+    /// `toggle` flips the group's checkable latch — the one zero-argument action in
+    /// the list. `set_title`, `set_checkable` and `set_checked` assign state, so they
+    /// are refused as [`CapabilityAccessError::OutOfRange`] (use the property route)
+    /// rather than reported unknown.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "toggle" => {
+                self.toggle();
+                Ok(())
+            }
+            "set_title" | "set_checkable" | "set_checked" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for GroupBox {

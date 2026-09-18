@@ -1334,6 +1334,19 @@ impl WidgetProperties for Icon {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["icon_name", "size", "color", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `icon` publishes.
+    ///
+    /// Both published names assign state: `set_icon_name` a name and `set_size` a
+    /// pixel size. Neither has a zero-argument meaning in this control's API, so both
+    /// are refused as [`CapabilityAccessError::OutOfRange`] — use `set("icon_name", ..)`
+    /// / `set("size", ..)` — rather than reported as unknown.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "set_icon_name" | "set_size" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Draw for Icon {

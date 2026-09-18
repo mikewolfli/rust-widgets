@@ -57,17 +57,14 @@ capability matrix
 is generated from source and gated for drift in CI.
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.3.1-blue)]()
+[![version](https://img.shields.io/badge/version-2.3.2-blue)]()
 [![tests](https://img.shields.io/badge/tests-4900%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
-**Verified in 2.3.1:** `4897` lib tests pass on `desktop` (`1538` on `embedded`,
-`1477` on `mini`), `5075` across all test binaries, and every demo builds and runs —
-including `demo/finance`, whose 12 tests cover the financial panel wiring.
-`--all-targets`, `cargo doc --no-deps` reports no warnings, and all five profiles
-(`desktop`/`tablet`/`mobile`/`mini`/`embedded`) build. 30 gates run, of which 4 are
-host-gated or pre-existing (documented in
-[`docs/log/log-20260917-4.md`](docs/log/log-20260917-4.md) §8.3).
+**Verified in 2.3.2:** `4916` lib tests pass on `desktop` (`4688` on `tablet`, `4716` on
+`mobile`, `1558` on `embedded`, `1497` on `mini`), and `cargo test` reports 0 failures
+across all 27 test binaries. `cargo clippy --all-targets -- -D warnings` is clean and all
+five profiles build. **32 gates** pass; the one skip needs a macOS host and says so.
 See [`CHANGELOG.md`](CHANGELOG.md).
 
 <p align="center">

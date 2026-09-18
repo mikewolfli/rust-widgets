@@ -327,6 +327,22 @@ impl WidgetProperties for ScrollBar {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `scroll_bar` publishes.
+    ///
+    /// All four assign state: `set_range` the bounds, `set_value` the position,
+    /// `set_steps` the two increments and `set_orientation` the axis. Each needs an
+    /// argument a command carries none of, so the whole set is answered through the
+    /// property route and refused here as [`CapabilityAccessError::OutOfRange`] rather
+    /// than reported as unknown.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "set_range" | "set_value" | "set_steps" | "set_orientation" => {
+                Err(CapabilityAccessError::OutOfRange)
+            }
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for ScrollBar {

@@ -281,6 +281,28 @@ impl WidgetProperties for SpinBox {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `spin_box` publishes.
+    ///
+    /// `step_up` / `step_down` are the zero-argument actions: they move the value by
+    /// `single_step` and wrap when wrapping is enabled, which is exactly the effect a
+    /// caller asking for "one step" means. `set_range` and `set_value` assign state and
+    /// therefore need a payload, so they are answered through the property route rather
+    /// than guessed at; `OutOfRange` says the name is right and the invocation is not.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "step_up" => {
+                self.step_up();
+                Ok(())
+            }
+            "step_down" => {
+                self.step_down();
+                Ok(())
+            }
+            "set_range" | "set_value" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl SpinBox {

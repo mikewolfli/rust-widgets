@@ -5,6 +5,148 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 2.3.2 (2026-09-18) — One Name, One Meaning
+
+Backward compatible. **No signature changed and no control was removed.** Two things were
+removed that no caller could depend on: 127 alias spellings that resolved to nothing, and a
+handful of duplicate registry entries. Both are explained under *Removed*.
+
+This release is the result of auditing the widget registry not by reading it but by
+**asking it questions and checking the answers against each other**. The registry makes four
+promises — which control a kind builds, what a name means, what a control can do, and what
+it will announce — and every one of them had a defect that no existing test could see,
+because the defects produced exactly what the tests asserted.
+
+The one that matters most: **`create_web_view(..)` built a `MediaPlayer`.** It returned a
+valid, non-zero `ObjectId`, so every reachability and construction check passed. Nothing
+failed; the control simply was not there.
+
+### Fixed
+
+- **`create_web_view` and ten `create_web_engine_*` methods built a `MediaPlayer`.**
+  `WidgetKind::WebEngineView` is shared by two controls, and the kind→capability lookup
+  fell back to *whichever capability registered first* when no entry was named after the
+  kind. `media_player` happened to be first. The C ABI and the Java binding reach the same
+  path, so they were wrong in the same way. The same fallback built a `Breadcrumb` for
+  `create_panel`, a non-`DataView` for `create_data_view`, and a differently-named control
+  for `create_table` and `create_toolbox`.
+- **Seven names meant two different controls each.** `divider` resolved to the `Line`
+  capability *and* the `Divider` capability depending on lookup order; likewise `canvas`,
+  `sparkline`, `range_slider`, `circular_progress`, `date_picker` and `color_swatch`.
+  A name that answers differently depending on registration order is not a name.
+- **`commands` was a promise with no way to keep it.** 180 capabilities published **500**
+  command names and the library had **no API to run any of them** — no `invoke`, no
+  `dispatch`, and no error to report a refusal with. A consumer could read a name, offer it
+  to a user, and get no effect and no error, because there was nothing to call.
+- **`events` was the same defect one layer down.** 159 capabilities published **281**
+  event names. `WidgetFactory::connect_event` could *validate* one, but nothing joined a
+  control's own typed signals (`Signal1<T>`) to the name-addressed hub, so a subscriber
+  could register under a published name and never be called.
+- **`embedded_target_fps_clamps` failed intermittently, and was not a timing flake.**
+  Two modules each declared their own `OnceLock<Mutex<()>>` over the same process-wide
+  embedded engine. Two locks over one resource exclude nothing, so one module's
+  `set_embedded_target_fps(120)` landed inside the other's assertion on `72`. It read as
+  environmental because the overlap window is nanoseconds and it passed on retry; widening
+  that window by 400 ms reproduced it immediately.
+- **A `geometry` property returned `UnsupportedOnWidget`** for controls whose schema
+  declares it readable.
+
+### Added
+
+- **`WidgetProperties::command(&mut self, name)`** — the imperative half of the control
+  contract, implemented for all **179** capabilities that publish commands (**500** names).
+  A name that needs a payload (`set_text`) answers `OutOfRange`, meaning "the name is right,
+  use `set(name, value)`"; it never answers `UnknownCommand`, which would blame the
+  registry for the caller's call.
+- **`WidgetFactory::invoke_command` / `command_is_known`** — runs a published command and
+  distinguishes "the control does not know this name" from "this invocation could not
+  complete". A name the capability publishes but the control does not implement is reported
+  as a registry/implementation disagreement, not as a caller mistake.
+- **`CapabilityAccessError::UnknownCommand`** — the counterpart of `UnknownProperty` for
+  the imperative contract. Mapped into the FFI error slot so a binding can tell it apart.
+- **`WidgetFactory::connect_event` / `event_is_subscribable`** — subscribes to a published
+  event name on a `CustomSignalHub`, refusing names the control does not publish.
+- **`signal::EventSignalBinder`** — forwards a control's typed signals into that hub, so a
+  subscriber registered under a published name is actually reached. Forwarding is explicit
+  per event because `emit(name)` carries no value and the payload's fate is the caller's
+  decision, not a lossy default.
+- **`WidgetFactory::shared_kinds_resolving_to_other_names()`** — reports every kind whose
+  canonical control is not named after it, so the ordering dependency above is enumerable
+  rather than discovered one bug report at a time.
+- **`DEFAULT_EMBEDDED_TARGET_FPS`** is now `pub(crate)`, so a test that raises the shared
+  frame rate can restore the same constant instead of restating `60`.
+
+### Removed
+
+- **127 aliases that resolved to nothing.** `WidgetFactory` stores every name under
+  `normalize_key`, which strips `_`, `-` and spaces and lowercases the rest — so
+  `checkbox` and `check_box` were already the same key and `aliases: &["checkbox"]` changed
+  no lookup. 124 rows were of this kind. They were not harmless: they inflated the manifest's
+  published alias list and hid the aliases that do real work. `table_widget` and `toolbox`
+  each had a second *capability* for the same key, which made the answer order-dependent.
+- **Alias counts:** 314 → **188**. Capabilities: 185 → **184**. Every removed spelling still
+  resolves (`table_widget`, `tablewidget`, `toolbox`, `check_box`, `lcd_number`, …) because
+  normalisation reaches it; this was asserted before and after the change, and **no name
+  lost reachability**.
+- **The SVG-length stubs `demo_main` / `demo_window` / `demo_list_view` /
+  `demo_code_editor` / `demo_terminal` / `demo_media_player` / `demo_map_view`.** Each was
+  16–32 lines of `X::new() → render_to_svg() → println!(len)`. The three projects under
+  `demo/` are applications that exercise the same controls with real layout, events and
+  assertions. Keeping both meant two things claiming to be the example for one control.
+  `examples/demo_button.rs` is kept: it is the only example that also builds on `embedded`,
+  which the `demo/` projects cannot (they require `gtk-native`).
+
+### Changed
+
+- **Kind→capability resolution no longer depends on registration order.** A capability whose
+  `canonical_name` is the kind's own name now answers for it (`web_engine_view`, `panel`,
+  `table`, `data_view`, `tool_box`), and names claimed by two capabilities were resolved by
+  deleting the duplicate rather than by picking a winner. Old spellings are retained as
+  aliases, so `factory.create("web_view", ..)` and `create("table_widget", ..)` behave as
+  before.
+- **`widget_matches_capability` gained the rows for those names.** Without them a mounted,
+  constructible control was unaddressable through the property layer: `read_property`
+  answered `UnknownWidget` for the control's own properties.
+- **Two embedded tests now restore the shared frame rate** instead of relying on the next
+  test to reset it. The previous arrangement masked the contamination rather than fixing it.
+
+### Gates
+
+Six new gates, and one existing gap closed. Every one was verified by reverse injection —
+restoring the defect and observing the gate fail — because a gate that cannot fail is not a
+check.
+
+- `check_test_guard_uniqueness.sh` — a test guard must *delegate* to the shared lock, not
+  declare its own. Identifies guards by **return type** (`-> MutexGuard<'static, ()>`), not
+  by name, because the offending guard was named `test_guard` while the canonical one was
+  `embedded_test_guard`; a name-based check would have missed it.
+- `tests/control_backend_named_creation_test.rs` — all **182** `create_*` methods must build
+  the control they are named after.
+- `tests/capability_name_resolution_test.rs` — the capability, the mounted control and the
+  property path must give the same answer for every name.
+- `tests/capability_alias_hygiene_test.rs` — no inert alias, and no name shadowing another
+  control.
+- `tests/capability_command_surface_test.rs` — every published command is dispatched, with a
+  count floor so the check cannot pass vacuously.
+- `tests/event_signal_bridge_test.rs` — a published event name reaches a real subscriber,
+  asserted by **delivery**, not by subscription.
+- `tools/run_all_gates.sh` — enumerates and runs every gate, so the PASS count in a report is
+  produced by a script rather than counted by hand. Host-limited gates are reported as SKIP,
+  never as PASS.
+
+### Verified in 2.3.2
+
+| Check | Result |
+|---|---|
+| `cargo test --lib` (desktop) | **4916** passed, 0 failed, 0 ignored |
+| `cargo test` (27 test binaries) | 0 failed |
+| `tablet` / `mobile` lib | 4688 / 4716 passed |
+| `embedded` / `mini` lib | 1558 / 1497 passed |
+| `cargo clippy --all-targets -- -D warnings` | 0 warnings |
+| All gates | **32** PASS, 0 FAIL, 1 SKIP (needs a macOS host) |
+| `smoke_demos.sh` | 6 / 6 |
+| Registration fidelity | 175 kinds, **175/175** constructible |
+
 ## 2.3.1 (2026-09-18) — The Financial Control Family, and a Running Demo
 
 Backward compatible. Adds six controls and one demo; changes no existing signature.

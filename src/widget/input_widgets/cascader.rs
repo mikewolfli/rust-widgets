@@ -690,6 +690,29 @@ impl WidgetProperties for Cascader {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `cascader` publishes.
+    ///
+    /// `expand` and `collapse` are real actions on this control, so they go through its
+    /// own methods rather than the `expanded` property: the methods open at the selected
+    /// path and discard the browsed path respectively, and both short-circuit on the
+    /// state they are already in. `set_options` and `set_selected_path` assign state —
+    /// a tree and an index path — and need a payload, so they are answered through the
+    /// property route.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "expand" => {
+                self.expand();
+                Ok(())
+            }
+            "collapse" => {
+                self.collapse();
+                Ok(())
+            }
+            "set_options" | "set_selected_path" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Draw for Cascader {

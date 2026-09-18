@@ -39,9 +39,11 @@
 //!
 //! **State:** Production callers: `src/widget/base.rs:1`; 147 files reference it (every control's public signals).
 mod core_signal;
+mod event_bridge;
 mod generic_signal;
 mod hub;
 pub use core_signal::{ConnectionHandle, ConnectionScope, Priority, Signal};
+pub use event_bridge::EventSignalBinder;
 pub use generic_signal::{GenericSignal, Signal1};
 pub use hub::CustomSignalHub;
 #[cfg(test)]

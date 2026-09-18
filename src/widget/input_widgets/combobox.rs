@@ -258,6 +258,23 @@ impl WidgetProperties for ComboBox {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `combo_box` publishes.
+    ///
+    /// `clear` empties the item list and drops the selection — the only zero-argument
+    /// action in the set. `set_items` and `set_current_index` assign state and need a
+    /// payload, so they are answered through the property route: `OutOfRange` tells the
+    /// caller the name is right and the property form is the one to use.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "clear" => {
+                self.clear();
+                Ok(())
+            }
+            "set_items" | "set_current_index" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for ComboBox {

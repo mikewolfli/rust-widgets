@@ -634,13 +634,20 @@ fn capability_manifest_exports_defaults_and_metadata() {
         factory.capability_manifest("table").expect("table manifest should be exportable");
 
     assert_eq!(manifest.kind, WidgetKind::Table);
-    // `table` was an alias of `table_widget` until the kind needed a capability named
-    // after it; the manifest now answers for the entry whose canonical name is `table`
-    // while still carrying `table_widget` as the alias, so every spelling still
-    // resolves to this one control and `WidgetKind::Table` resolves by name rather
-    // than by registration order.
+    // `table` is the canonical name; `table_widget` and `tablewidget` reach the same
+    // control through `normalize_key` (which strips `_`), not through an alias row —
+    // see `tests/capability_alias_hygiene_test.rs`. The list is therefore empty, and
+    // that is the correct state: every alias it used to carry was inert.
     assert_eq!(manifest.canonical_name, "table");
-    assert!(manifest.aliases.contains(&"table_widget"));
+    assert!(
+        manifest.aliases.is_empty(),
+        "`table` needs no alias: `normalize_key` already accepts `table_widget` / \
+         `tablewidget`, so an alias row would be a no-op (found: {:?})",
+        manifest.aliases
+    );
+    // and those spellings must still resolve.
+    assert!(factory.capability("table_widget").is_some());
+    assert!(factory.capability("tablewidget").is_some());
     assert!(manifest.events.contains(&"selection_changed"));
     assert!(manifest.commands.contains(&"clear_selection"));
 

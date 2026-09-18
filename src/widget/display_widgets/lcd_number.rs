@@ -275,6 +275,22 @@ impl WidgetProperties for LCDNumber {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `lcd_number` publishes.
+    ///
+    /// All three assign state — a number, a display mode and a segment style — so
+    /// each needs an argument a command carries none of. They are refused as
+    /// [`CapabilityAccessError::OutOfRange`] (use the property route
+    /// `set("value", ..)` / `set("mode", ..)` / `set("segment_style", ..)`) rather
+    /// than reported unknown.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "set_value" | "set_mode" | "set_segment_style" => {
+                Err(CapabilityAccessError::OutOfRange)
+            }
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 impl EventHandler for LCDNumber {
     fn handle_event(&mut self, event: &Event) {

@@ -66,7 +66,6 @@ impl WidgetFactory {
             self.register(action_capability(), create_action);
             self.register(panel_capability(), create_panel);
             self.register(tool_box_capability(), create_tool_box);
-            self.register(toolbox_capability(), create_toolbox);
             self.register(table_capability(), create_table);
             self.register(list_view_capability(), create_list_view);
             self.register(tree_view_capability(), create_tree_view);

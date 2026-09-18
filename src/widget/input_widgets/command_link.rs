@@ -146,6 +146,27 @@ impl WidgetProperties for CommandLink {
         // Mirrors `COMMAND_LINK_PROPERTIES`.
         property_names_of!["text", "description", "enabled", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `command_link` publishes.
+    ///
+    /// `click` is the zero-argument action: it emits `clicked` when the link is
+    /// enabled and does nothing when it is not, which is exactly what a pointer
+    /// activation does — so a programmatic click cannot fire a disabled link. It needs
+    /// no `&mut self`, but the trait's signature supplies one and the borrow does not
+    /// change the effect. The other three assign state and need a payload, so they are
+    /// answered through the property route.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "click" => {
+                self.click();
+                Ok(())
+            }
+            "set_text" | "set_description" | "set_enabled" => {
+                Err(CapabilityAccessError::OutOfRange)
+            }
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for CommandLink {

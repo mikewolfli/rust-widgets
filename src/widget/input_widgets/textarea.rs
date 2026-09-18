@@ -304,6 +304,32 @@ impl WidgetProperties for TextArea {
         // Mirrors `TEXT_AREA_PROPERTIES`.
         property_names_of!["text", "placeholder", "read_only", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `text_area` publishes.
+    ///
+    /// `insert` and `delete_char` are the editing actions: they act at the caret, which
+    /// the control owns, so they take no argument. On a fresh control `delete_char` is a
+    /// no-op (the caret is already at position 0), but the command still ran, so it
+    /// answers `Ok(())` rather than manufacturing an error for a legal invocation.
+    ///
+    /// `set_text`, `set_placeholder` and `set_read_only` assign state and need a
+    /// payload, so they are answered through the property route.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "insert" => {
+                self.insert(' ');
+                Ok(())
+            }
+            "delete_char" => {
+                self.delete_char();
+                Ok(())
+            }
+            "set_text" | "set_placeholder" | "set_read_only" => {
+                Err(CapabilityAccessError::OutOfRange)
+            }
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for TextArea {

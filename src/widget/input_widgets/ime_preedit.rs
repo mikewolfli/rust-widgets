@@ -149,6 +149,18 @@ impl WidgetProperties for ImePreedit {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["text", "cursor_position", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `ime_preedit` publishes.
+    ///
+    /// Both assign state — the preedit string and the caret inside it — and each needs
+    /// a payload, so both are answered through the property route. The preedit string is
+    /// supplied by the input method, so a nameless command could not invent one.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "set_text" | "set_cursor_position" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Draw for ImePreedit {

@@ -196,6 +196,32 @@ impl WidgetProperties for CheckBox {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["text", "state", "checked", "tristate_enabled", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `check_box` publishes.
+    ///
+    /// The command set is found in `CHECK_BOX_PROPERTIES`'s capability entry; every
+    /// name there must be answered here or
+    /// `capability::properties_tests::every_published_command_is_dispatched` fails.
+    ///
+    /// `toggle` flips the state; `set_checked` assigns it and needs a payload, so it
+    /// is answered through the property path (`set("checked", ..)`) and is refused
+    /// here — a command carries no argument, and accepting one that does nothing
+    /// would be the silent success this contract exists to prevent. Commands whose
+    /// only effect is to assign state are still published, because a consumer that
+    /// discovered the control through `commands` should find them; the refusal is
+    /// [`CapabilityAccessError::OutOfRange`], which tells the caller the name was
+    /// right and the invocation needs the property route, rather than
+    /// [`CapabilityAccessError::UnknownCommand`], which would say it was wrong.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "toggle" => {
+                self.toggle();
+                Ok(())
+            }
+            "set_checked" | "set_state" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for CheckBox {

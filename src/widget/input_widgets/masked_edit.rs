@@ -371,6 +371,19 @@ impl WidgetProperties for MaskedEdit {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["text", "mask", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `masked_edit` publishes.
+    ///
+    /// Both assign state — the contents and the mask that validates them — and each
+    /// needs a payload, so the whole set is answered through the property route. The
+    /// mask argument is not merely data: changing it re-validates the text, which is a
+    /// decision the caller has to make rather than one a nameless command can supply.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "set_text" | "set_mask" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Draw for MaskedEdit {

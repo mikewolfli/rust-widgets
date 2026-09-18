@@ -362,6 +362,24 @@ impl WidgetProperties for NumberPicker {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `number_picker` publishes.
+    ///
+    /// `scroll_rows` names a row count and a direction, so a bare command has no
+    /// distance to scroll. The natural zero-argument meaning of "scroll" on a picker is
+    /// one row forward, which is what `1` asks for here and is the same unit the control
+    /// exposes through `step`; `set_value`, `set_range` and `set_step` assign state and
+    /// are answered through the property route.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "scroll_rows" => {
+                self.scroll_rows(1);
+                Ok(())
+            }
+            "set_value" | "set_range" | "set_step" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for NumberPicker {

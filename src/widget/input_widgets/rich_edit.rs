@@ -296,6 +296,17 @@ impl WidgetProperties for RichEdit {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["text", "line_count", "read_only", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `rich_edit` publishes.
+    ///
+    /// `set_text` assigns the document body and needs a payload, so it is answered
+    /// through the property route — the capability publishes no zero-argument action.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "set_text" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 impl Draw for RichEdit {
     fn draw(&mut self, context: &mut RenderContext) {

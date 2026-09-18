@@ -325,6 +325,19 @@ impl WidgetProperties for Meter {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `meter` publishes.
+    ///
+    /// `set_value` assigns the reading and `set_range` the bounds; both need an
+    /// argument a command carries none of, so both are refused as
+    /// [`CapabilityAccessError::OutOfRange`] — use `set("value", ..)` /
+    /// `set("minimum", ..)` / `set("maximum", ..)` — rather than reported unknown.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "set_value" | "set_range" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for Meter {

@@ -614,6 +614,27 @@ impl WidgetProperties for Mention {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `mention` publishes.
+    ///
+    /// `open_popup` is the zero-argument action and goes through the control's own
+    /// method, which inserts the trigger and runs the same path typed input would. On a
+    /// fresh control that leaves the popup open, and answers `Ok(())`.
+    ///
+    /// `complete` picks a candidate by index, so a bare command has no candidate to
+    /// commit; `set_candidates` and `set_trigger` assign state and need a payload. All
+    /// three are answered through the property route — `candidate_count` and `trigger`
+    /// are published scalars, and completion is driven by the popup's own selection.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "open_popup" => {
+                self.open_popup();
+                Ok(())
+            }
+            "set_candidates" | "set_trigger" | "complete" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Draw for Mention {

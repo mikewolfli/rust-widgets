@@ -211,6 +211,46 @@ pub trait WidgetProperties {
     fn property_tokens(&self, _name: &str) -> &'static [&'static str] {
         &[]
     }
+
+    /// Runs an imperative command by its stable lower-case name.
+    ///
+    /// # What a command is, and why it is not a property write
+    ///
+    /// A property is state a caller **assigns** (`set_text`, `set_value`). A command
+    /// is an action the control **performs** — `play`, `toggle`, `clear_selection` —
+    /// whose effect may depend on state the caller does not own and whose result is an
+    /// event, not a return value. `WidgetCapability::commands` has published a list of
+    /// these names since the capability layer was introduced.
+    ///
+    /// # Why this method had to exist
+    ///
+    /// Until it did, `commands` was a promise with no way to keep it: the registry
+    /// exported the names through
+    /// [`WidgetCapability::commands`](crate::widget::capability::types::WidgetCapability::commands)
+    /// and through the capability manifest, but **nothing dispatched them**. A
+    /// generic consumer — a property editor building a command menu, a language
+    /// binding, the declarative engine — could read a name, offer it, and get no
+    /// effect and no error, because there was no call to make. Publishing an action a
+    /// caller cannot invoke is the same defect shape as publishing a control that
+    /// cannot be constructed (round 31) or a property that cannot be read (round 32).
+    ///
+    /// # The default
+    ///
+    /// `UnknownCommand` rather than `Ok(())`: a control with no override genuinely
+    /// cannot run the command, and reporting success for an action that did not happen
+    /// is the failure mode this whole contract exists to prevent. `Ok(())` means the
+    /// command ran.
+    ///
+    /// # What an override must guarantee
+    ///
+    /// The set of names this answers must equal the `commands` list the control's
+    /// capability publishes; `capability::properties_tests` calls every published name
+    /// on a constructed control and fails if any is refused, so the list and the
+    /// dispatch cannot drift.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        let _ = name;
+        Err(CapabilityAccessError::UnknownCommand)
+    }
 }
 
 /// Returns a `&'static [&'static str]` naming the given properties.

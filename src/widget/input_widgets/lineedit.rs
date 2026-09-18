@@ -418,6 +418,25 @@ impl WidgetProperties for LineEdit {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `line_edit` publishes.
+    ///
+    /// Both are zero-argument actions with a direct method on the control, so both
+    /// run rather than being routed through the property path: `clear` assigns the
+    /// empty text and `select_all` selects without changing it.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "clear" => {
+                self.clear();
+                Ok(())
+            }
+            "select_all" => {
+                self.select_all();
+                Ok(())
+            }
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for LineEdit {

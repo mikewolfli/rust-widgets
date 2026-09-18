@@ -140,6 +140,19 @@ impl WidgetProperties for Rating {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["value", "max", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `rating` publishes.
+    ///
+    /// `set_value` assigns the star count and `set_max` the ceiling; both need an
+    /// argument a command carries none of, so both are refused as
+    /// [`CapabilityAccessError::OutOfRange`] — use `set("value", ..)` / `set("max", ..)`
+    /// — rather than reported unknown.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "set_value" | "set_max" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Draw for Rating {

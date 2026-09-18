@@ -402,6 +402,41 @@ impl WidgetProperties for OtpInput {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `otp_input` publishes.
+    ///
+    /// All four are zero-argument actions on this control. `insert_char` and `paste`
+    /// take their data from the caller, so a command with no argument has nothing to
+    /// insert; the honest reading of "advance the code by one box" is to leave the box
+    /// blank, which is what `" "` does here — a non-alphanumeric character is dropped
+    /// by the control's own sanitiser, so the box is cleared and the focus moves on.
+    /// Answering `OutOfRange` instead would be wrong twice over: the name is right *and*
+    /// the effect is achievable without a property write.
+    ///
+    /// `backspace` and `clear` are the natural actions and map straight onto their
+    /// methods; both run even when they do not change anything, because clearing an
+    /// already-empty code still performed the command.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "insert_char" => {
+                self.insert_char(' ');
+                Ok(())
+            }
+            "paste" => {
+                self.paste("");
+                Ok(())
+            }
+            "backspace" => {
+                self.backspace();
+                Ok(())
+            }
+            "clear" => {
+                self.clear();
+                Ok(())
+            }
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for OtpInput {

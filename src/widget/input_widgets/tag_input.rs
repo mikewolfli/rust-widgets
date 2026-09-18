@@ -371,6 +371,21 @@ impl WidgetProperties for TagInput {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["tags", "placeholder", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `tag_input` publishes.
+    ///
+    /// `add_tag` and `remove_tag` name a tag, so a bare command has nothing to act on:
+    /// there is no "current tag" for either to fall back to, and inventing one would
+    /// mean the command silently added or deleted a tag the caller never named. They are
+    /// therefore answered through the property route. `set_placeholder` is the same
+    /// shape — it assigns the placeholder string, `set` already carries the arm, and the
+    /// `placeholder` property is published. A caller reaches all three through `set`.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "add_tag" | "remove_tag" | "set_placeholder" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Draw for TagInput {

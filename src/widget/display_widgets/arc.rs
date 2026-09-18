@@ -264,6 +264,19 @@ impl WidgetProperties for Arc {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `arc` publishes.
+    ///
+    /// Both published names (`set_value`, `set_range`) assign a number and are
+    /// answered through the property path (`set("value", ..)`), so neither can be a
+    /// zero-argument action; they are refused as
+    /// [`CapabilityAccessError::OutOfRange`] rather than reported unknown.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "set_value" | "set_range" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for Arc {

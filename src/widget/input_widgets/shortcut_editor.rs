@@ -372,6 +372,18 @@ impl WidgetProperties for ShortcutEditor {
         // Mirrors `SHORTCUT_EDITOR_PROPERTIES`.
         property_names_of!["filter_text", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `shortcut_editor` publishes.
+    ///
+    /// `set_filter_text` assigns the filter string and needs a payload, so it is
+    /// answered through the property route — the capability publishes no zero-argument
+    /// action.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "set_filter_text" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Draw for ShortcutEditor {

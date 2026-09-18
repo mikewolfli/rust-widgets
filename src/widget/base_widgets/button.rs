@@ -249,6 +249,25 @@ impl WidgetProperties for Button {
         // retyped per control.
         property_names_of!["text", "pressed", "default", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `button` publishes.
+    ///
+    /// `click` is the action a programmatic invocation means: press, release and
+    /// emit `clicked`, the same sequence a pointer activation produces. It is
+    /// deliberately *not* just `press()` — a caller asking for a click expects the
+    /// resulting signal, and `press()` alone only mutates the visual state and emits
+    /// nothing.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "click" => {
+                self.press();
+                self.release();
+                self.base.clicked.emit();
+                Ok(())
+            }
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for Button {

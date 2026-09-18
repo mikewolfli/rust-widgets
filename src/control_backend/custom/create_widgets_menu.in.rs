@@ -220,7 +220,14 @@ macro_rules! impl_menu_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            self.mount_named_widget("tool_box", parent, "", x, y, width, height)
+            #[cfg(full_widgets)]
+            {
+                self.mount_named_widget("tool_box", parent, "", x, y, width, height)
+            }
+            #[cfg(not(full_widgets))]
+            {
+                self.mount_widget_of_kind(WidgetKind::Toolbox, parent, "", x, y, width, height)
+            }
         }
         #[cfg(not(alloc_frugal))]
         fn create_context_menu(

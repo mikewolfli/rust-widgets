@@ -339,6 +339,18 @@ impl WidgetProperties for RangeSlider {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["min_value", "max_value", "lower", "upper", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `range_slider` publishes.
+    ///
+    /// `set_lower` and `set_upper` name a handle and a value, and `set_range` names
+    /// both bounds: every one of them needs a payload, so the whole set is answered
+    /// through the property route.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "set_lower" | "set_upper" | "set_range" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Draw for RangeSlider {

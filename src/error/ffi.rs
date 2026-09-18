@@ -112,6 +112,9 @@ pub fn record_capability_error(error: crate::widget::capability::types::Capabili
         CapabilityAccessError::OutOfRange => {
             (super::ErrorId::INVALID_ARGUMENT, "the value is out of range for this property")
         }
+        CapabilityAccessError::UnknownCommand => {
+            (super::ErrorId::INVALID_ARGUMENT, "the widget has no command by that name")
+        }
     };
     record_last_ffi_error(super::RwError::new(id, message));
 }

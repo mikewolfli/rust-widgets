@@ -222,6 +222,18 @@ impl WidgetProperties for SearchBar {
         // Mirrors `SEARCH_BAR_PROPERTIES`.
         property_names_of!["text", "placeholder", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `search_bar` publishes.
+    ///
+    /// Both names assign state and need a payload, so both are answered through the
+    /// property route. The capability publishes no zero-argument action for this
+    /// control, which is why there is no `Ok(())` arm here.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "set_text" | "set_placeholder" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Draw for SearchBar {

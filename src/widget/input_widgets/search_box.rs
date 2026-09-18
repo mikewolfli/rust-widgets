@@ -205,6 +205,23 @@ impl WidgetProperties for SearchBox {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["text", "placeholder", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `search_box` publishes.
+    ///
+    /// `clear` is the zero-argument action and goes through the control's own method, so
+    /// the `text_changed` signal and the empty-text short circuit stay in one place.
+    /// `set_text` and `set_placeholder` assign state and need a payload, so they are
+    /// answered through the property route.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "clear" => {
+                self.clear();
+                Ok(())
+            }
+            "set_text" | "set_placeholder" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Draw for SearchBox {

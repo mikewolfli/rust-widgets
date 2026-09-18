@@ -195,6 +195,20 @@ impl WidgetProperties for Badge {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["text", "count", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `badge` publishes.
+    ///
+    /// Both published names assign state — `set_text` a string, `set_count` a number
+    /// — so each needs an argument that a command carries none of. They are refused
+    /// as [`CapabilityAccessError::OutOfRange`], which tells the caller the name is
+    /// right and the value belongs on the property route, rather than
+    /// [`CapabilityAccessError::UnknownCommand`].
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "set_text" | "set_count" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Draw for Badge {

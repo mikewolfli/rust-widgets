@@ -33,7 +33,7 @@
 | 外观 | **跨 OS 完全一致** | 随各 OS 工具包与版本变化 |
 | 控件数量 | **175 种，全平台可用** | 仅限该 OS 工具包提供的 |
 | 依赖体积 | **不链接任何 GUI 工具包** | GTK / AppKit / Win32 / Android SDK |
-| 无头与嵌入式 | **无 OS 也能运行**（`mini`、SVG） | 不可能 |
+| 无OS与嵌入式 | **无 OS 也能运行**（`mini`、SVG） | 不可能 |
 | 测试确定性 | **像素／序列化快照** | 需要真实显示器 |
 
 ### 每个后端*仍*负责什么
@@ -130,16 +130,14 @@ Arc、Spinner、Roller、Dropdown、TextArea、Keyboard、Switch。
 （`docs/plans/platform_capability_matrix.md`）由源码机械派生，并在 CI 中设有防脱节门禁。
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.3.1-blue)]()
+[![version](https://img.shields.io/badge/version-2.3.2-blue)]()
 [![tests](https://img.shields.io/badge/tests-4900%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
-**2.3.1 实测：** `desktop` 档 **4897** 个库测试全通过（`embedded` **1538**、`mini` **1477**），
-全部测试二进制 **5075** 个通过，且每个 demo 均可构建运行 —— 包括 `demo/finance`，
-其 12 条测试覆盖金融面板的接线。
-`cargo doc --no-deps` 0 warning，五个档位（`desktop`/`tablet`/`mobile`/`mini`/`embedded`）
-均可构建。共 **30** 个门禁，其中 4 个为主机门控或先存问题
-（取证见 [`docs/log/log-20260917-4.md`](docs/log/log-20260917-4.md) §8.3）。
+**2.3.2 实测：** `desktop` 档 **4916** 个库测试全通过（`tablet` **4688**、`mobile` **4716**、
+`embedded` **1558**、`mini` **1497**）；`cargo test` 在全部 27 个测试二进制上 0 失败。
+`cargo clippy --all-targets -- -D warnings` 0 warning，五个档位均可构建。
+共 **32** 个门禁全通过；唯一 skip 需 macOS 主机且已自述原因。
 详见
 [`CHANGELOG.md`](CHANGELOG.md)（中文版见 [`docs/reports/CHANGELOG.md`](docs/reports/CHANGELOG.md)）。
 
