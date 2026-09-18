@@ -344,6 +344,8 @@ pub use misc_widgets::bezier_curve_editor::BezierCurveEditor;
 #[cfg(full_widgets)]
 pub use misc_widgets::date_range_picker::DateRangePicker;
 #[cfg(full_widgets)]
+pub use misc_widgets::drop_zone::DropZone;
+#[cfg(full_widgets)]
 pub use misc_widgets::mobile_date_picker::MobileDatePicker;
 #[cfg(full_widgets)]
 pub use misc_widgets::qr_code::QRCode;
@@ -374,6 +376,7 @@ pub use advanced_widgets::{
 pub use dialog::{
     bottom_sheet::BottomSheet,
     color_dialog::ColorDialog,
+    dialog_widget::Dialog,
     file_dialog::FileDialog,
     find_replace_dialog::FindReplaceDialog,
     font_dialog::FontDialog,
@@ -386,11 +389,6 @@ pub use dialog::{
     tooltip::Tooltip,
     wizard::{WizardDialog, WizardStep},
 };
-/// Generic dialog alias, currently resolving to [`PopupWindow`].
-/// Not a distinct type: code that needs a dialog-specific API must name the
-/// concrete dialog.
-#[cfg(full_widgets)]
-pub type Dialog = PopupWindow;
 /// Alias for [`FileDialog`], for callers that only ever select directories.
 /// Selecting files is not prevented by this alias — it is unchecked.
 #[cfg(full_widgets)]
@@ -440,9 +438,9 @@ pub use special_widgets::{
     CommandEntry, CommandPalette, DiagnosticMarker, DiffKind, DiffLine, DiffViewer,
     FreeformShapeWidget, GanttTask, GanttWidget, GridWidget, KanbanBoard, KanbanCard, KanbanColumn,
     MapMarker, MapView, MarkdownEditor, MarkerSeverity, MediaPlayer, NotificationCenter,
-    NotificationItem, NotificationLevel, RadarChart, SegmentItem, SegmentedControl, Snackbar,
-    SplitAction, SplitButton, TerminalView, TimelineItem, TimelineWidget, Toast, ToastItem,
-    ToastLevel, ToastStack,
+    NotificationItem, NotificationLevel, RadarChart, SegmentItem, SegmentedControl, SignaturePad,
+    SignatureStroke, Snackbar, SplitAction, SplitButton, TerminalView, TimelineItem,
+    TimelineWidget, Toast, ToastItem, ToastLevel, ToastStack,
 };
 /// Alias for [`ProgressBar`], naming an indicator use case.
 /// This is a plain progress bar: it does not animate on its own.

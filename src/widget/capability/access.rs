@@ -510,6 +510,10 @@ pub fn default_widget_property_default_value(
             "node_count" => CapabilityValue::UInt(0),
             "focused_node" => CapabilityValue::Null,
             "selected_node" => CapabilityValue::Null,
+            _ => return None,
+        },
+        WidgetKind::TreeTable => match property_name {
+            "has_model" => CapabilityValue::Bool(false),
             "row_count" => CapabilityValue::UInt(0),
             "column_count" => CapabilityValue::UInt(0),
             "selected_row" => CapabilityValue::Null,
@@ -785,15 +789,25 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
 
-        // `Breadcrumb` reports `WidgetKind::Panel` (see `breadcrumb_capability`),
-        // so this arm serves it. `Frame` used to be listed here too, which was the
-        // conflation the frame's own contract documents: `Frame` has no
-        // `segment_count` and the arm answered `None` for it anyway. Now that
-        // `Frame` has its own arm above, naming it here is unreachable code — hence
-        // its removal rather than an exclusion.
-        WidgetKind::Panel => match property_name {
+        // `Breadcrumb` previously reported `WidgetKind::Panel` (a shared kind), so
+        // this arm served it. It now has its own `WidgetKind::Breadcrumb` kind, so
+        // the `segment_count` / `selected_index` defaults are declared on the kind
+        // that actually owns them.
+        WidgetKind::Breadcrumb => match property_name {
             "segment_count" => CapabilityValue::UInt(0),
             "selected_index" => CapabilityValue::Null,
+            _ => return None,
+        },
+        WidgetKind::SignaturePad => match property_name {
+            "stroke_count" => CapabilityValue::UInt(0),
+            "stroke_width" => CapabilityValue::UInt(2),
+            "stroke_color" => CapabilityValue::Color(crate::core::Color::rgb(20, 20, 20)),
+            "min_point_distance" => CapabilityValue::Float(1.5),
+            _ => return None,
+        },
+        WidgetKind::DropZone => match property_name {
+            "accepted_type" => CapabilityValue::String("text/plain".to_string()),
+            "hovered" => CapabilityValue::Bool(false),
             _ => return None,
         },
 
@@ -969,6 +983,12 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         // ── Dialog widgets ──────────────────────────────────
+        WidgetKind::Dialog => match property_name {
+            "title" => CapabilityValue::String(String::new()),
+            "modal" => CapabilityValue::Bool(true),
+            "has_content" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
         WidgetKind::MessageBox => match property_name {
             "title" => CapabilityValue::String(String::new()),
             "text" => CapabilityValue::String(String::new()),

@@ -1128,7 +1128,6 @@ impl AnimationFrameRequest {
     pub fn new(callback: Box<dyn FnMut()>) -> Self;
     pub fn request(&mut self);
     pub fn cancel(&mut self);
-    pub fn is_pending(&self) -> bool;
 }
 ```
 
@@ -1194,12 +1193,9 @@ impl RenderContext<'_> {
     pub fn draw_rounded_rect(&mut self, rect: Rect, radius: u32, color: Color, width: u32);
     pub fn fill_rounded_rect(&mut self, rect: Rect, radius: u32, color: Color);
     pub fn draw_image(&mut self, data: &[u8], rect: Rect);
-    pub fn draw_gradient(&mut self, rect: Rect, gradient: &Gradient);
-    pub fn draw_shadow(&mut self, rect: Rect, shadow: &Shadow);
     pub fn push_clip(&mut self, x: i32, y: i32, w: u32, h: u32);
     pub fn pop_clip(&mut self);
     pub fn execute(&mut self, cmd: &RenderCommand);
-    pub fn execute_batch(&mut self, cmds: &[RenderCommand]);
 }
 ```
 
@@ -1213,7 +1209,6 @@ impl BackBuffer {
     pub fn pixel(&self, x: u32, y: u32) -> Option<Color>;
     pub fn set_pixel(&mut self, x: u32, y: u32, color: Color);
     pub fn pixels(&self) -> &[u8];
-    pub fn pixels_mut(&mut self) -> &mut [u8];
     pub fn size(&self) -> Size;
     pub fn present(&self, target: &mut dyn PaintBackend, x: i32, y: i32);
     pub fn resize(&mut self, new_size: Size);
@@ -1250,7 +1245,6 @@ pub struct BatchRenderer { /* ... */ }
 pub struct AutoRenderBackend(SoftwarePaintBackend);
 impl AutoRenderBackend {
     pub fn new(size: Size, dpi: f32) -> Self;
-    pub fn as_software(&self) -> &SoftwarePaintBackend;
 }
 
 pub fn default_software_render_config() -> SoftwareRenderConfig;
@@ -1305,7 +1299,6 @@ pub struct GraphemeCluster { /* ... */ }
 pub struct GraphemeProcessor { /* ... */ }
 impl GraphemeProcessor {
     pub fn new() -> Self;
-    pub fn grapheme_clusters(&self, text: &str) -> Vec<GraphemeCluster>;
 }
 ```
 
@@ -1315,8 +1308,6 @@ impl GraphemeProcessor {
 pub struct SvgPaintBackend { /* ... */ }
 impl SvgPaintBackend {
     pub fn new(size: Size) -> Self;
-    pub fn render_to_string(&self) -> String;
-    pub fn render_to_bytes(&self) -> Vec<u8>;
 }
 ```
 
@@ -1485,7 +1476,6 @@ pub struct Selector { /* ... */ }
 pub struct AssetWatcher (crate::asset::watcher) { /* ... */ }
 impl AssetWatcher (crate::asset::watcher) {
     pub fn watch(path: &str) -> Result<Self, ()>;
-    pub fn poll_changed(&mut self) -> bool;
 }
 ```
 
@@ -1526,8 +1516,6 @@ impl ThemeManager {
     pub fn set_theme(&mut self, theme: Theme);
     pub fn current_theme(&self) -> Option<&Theme>;
     pub fn register_theme(&mut self, name: &str, theme: Theme) -> bool;
-    pub fn switch_to(&mut self, name: &str) -> bool;
-    pub fn available_themes(&self) -> Vec<&str>;
 }
 ```
 
@@ -1647,7 +1635,6 @@ impl Keyboard (widget::input_widgets::keyboard) {
     pub fn show(&mut self);
     pub fn hide(&mut self);
     pub fn is_visible(&self) -> bool;
-    pub fn keyboard_height(&self) -> u32;
 }
 ```
 
@@ -1825,7 +1812,6 @@ impl ShortcutManager {
     pub fn register(&mut self, entry: ShortcutEntry) -> bool;
     pub fn unregister(&mut self, id: &str) -> bool;
     pub fn trigger(&self, shortcut: &Shortcut) -> bool;
-    pub fn detect_conflicts(&self, entry: &ShortcutEntry) -> Vec<&ShortcutEntry>;
     pub fn all_shortcuts(&self) -> Vec<&ShortcutEntry>;
     pub fn clear(&mut self);
 }
@@ -1880,7 +1866,6 @@ impl<T: Clone + PartialEq + 'static> Binding<T> {
     pub fn subscribe(&mut self, key: &str, listener: Box<dyn BoxedListener<T>>);
     pub fn unsubscribe(&mut self, key: &str);
     pub fn bind_to(&mut self, target: &mut dyn BindingListener<T>);
-    pub fn has_subscribers(&self) -> bool;
 }
 ```
 
@@ -2027,7 +2012,6 @@ impl I18nManager {
     pub fn language(&self) -> &str;
     pub fn translate(&self, key: &str) -> String;
     pub fn translate_with_context(&self, key: &str, context: &[(&str, &str)]) -> String;
-    pub fn available_languages(&self) -> Vec<String>;
     pub fn reload(&mut self) -> Result<(), RwError>;
 }
 ```
@@ -2094,10 +2078,8 @@ pub struct GestureEngine { /* ... */ }
 
 impl GestureEngine {
     pub fn new() -> Self;       // 预填充所有标准识别器
-    pub fn with_recognizers(recognizers: Vec<Box<dyn GestureRecognizer>>) -> Self;
     pub fn process(&mut self, event: &Event, now_ms: u64) -> Option<Event>;
     pub fn reset_all(&mut self);
-    pub fn last_timestamp(&self) -> u64;
 }
 ```
 
@@ -2330,7 +2312,6 @@ impl Profiler {
     pub fn end_frame(&mut self);
     pub fn record(&mut self, label: &str, duration_ns: u64);
     pub fn frame_count(&self) -> u64;
-    pub fn average_frame_time_ns(&self) -> u64;
     pub fn timing(&self, label: &str) -> Option<&TimingSample>;
 }
 ```
@@ -2470,9 +2451,7 @@ impl Object {
     pub fn class_name(&self) -> &str;
     pub fn set_property(&mut self, key: &str, value: PropertyValue);
     pub fn property(&self, key: &str) -> Option<&PropertyValue>;
-    pub fn has_property(&self, key: &str) -> bool;
     pub fn property_keys(&self) -> Vec<&str>;
-    pub fn dynamic_properties(&self) -> std::collections::HashMap<String, PropertyValue>;
 }
 
 pub enum PropertyValue {
@@ -2612,7 +2591,6 @@ pub struct PrivacySettings { /* ... */ }
 impl PrivacySettings {
     pub fn new() -> Self;
     pub fn strict() -> Self;
-    pub fn lenient() -> Self;
 }
 
 pub struct CookieJar { /* ... */ }
@@ -2620,7 +2598,6 @@ impl CookieJar {
     pub fn new() -> Self;
     pub fn add(&mut self, cookie: Cookie);
     pub fn remove(&mut self, domain: &str, name: &str);
-    pub fn get_for_url(&self, url: &str) -> Vec<&Cookie>;
     pub fn len(&self) -> usize;
     pub fn clear(&mut self);
 }
@@ -2704,7 +2681,6 @@ impl UndoStack {
     pub fn undo_text(&self) -> Option<&str>;
     pub fn redo_text(&self) -> Option<&str>;
     pub fn is_clean(&self) -> bool;
-    pub fn set_clean(&mut self);
 }
 ```
 

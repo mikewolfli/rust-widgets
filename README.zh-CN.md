@@ -121,7 +121,7 @@ Arc、Spinner、Roller、Dropdown、TextArea、Keyboard、Switch。
 
 ---
 
-175 种控件全部为自绘。每一种都能通过 `factory_name_for_kind` 解析出构造器
+179 种控件全部为自绘。每一种都能通过 `factory_name_for_kind` 解析出构造器
 （含别名共 **456** 个可解析名称）；
 新增 kind 若无法归类、或解析不出任何构造器，`tools/check_widget_registration_fidelity.sh`
 会直接失败 —— 后者已捕获 4 类 `create_*` 永远返回 id `0` 的缺陷
@@ -134,8 +134,8 @@ Arc、Spinner、Roller、Dropdown、TextArea、Keyboard、Switch。
 [![tests](https://img.shields.io/badge/tests-5100%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
-**2.4.0 实测：** `desktop` 档 **4938** 个库测试全通过（`tablet` **4694**、`mobile` **4722**、
-`embedded` **1549**、`mini` **1481**）；`cargo test` 在全部 27 个测试二进制上 **5151** 通过、0 失败。
+**2.4.0 实测：** `desktop` 档 **4958** 个库测试全通过（`tablet` **4714**、`mobile` **4742**、
+`embedded` **1549**、`mini` **1481**）；`cargo test` 在全部 27 个测试二进制上 **5171** 通过、0 失败。
 `cargo clippy --all-targets -- -D warnings` 0 warning，五个档位均可构建。
 共 **32** 个门禁全通过；唯一 skip 需 macOS 主机且已自述原因。
 详见
@@ -440,9 +440,9 @@ assert_eq!(report.patches.len(), 1);            // 一个 SetProperty，别无�
 
 ## 控件库
 
-### 桌面/平板/手机（175 种控件）
+### 桌面/平板/手机（179 种控件）
 
-**核心**：Window、Dialog、MessageBox、FileDialog、ColorDialog、FontDialog、InputDialog、ProgressDialog、PopupWindow、Button、CheckBox、RadioButton、Label、LineEdit、TextEdit、RichEdit、ComboBox、SpinBox、ListBox、ListView、TreeView、ProgressBar、Slider、ScrollBar、ScrollArea、TabWidget、Splitter、GroupBox、MenuBar、Menu、MenuItem、ContextMenu、ToolBar、StatusBar、Canvas、Table、Grid、Chart、ToggleButton
+**核心**：Window、Dialog、MessageBox、FileDialog、ColorDialog、FontDialog、InputDialog、ProgressDialog、PopupWindow、Button、CheckBox、RadioButton、Label、LineEdit、TextEdit、RichEdit、ComboBox、SpinBox、ListBox、ListView、TreeView、TreeTable、ProgressBar、Slider、ScrollBar、ScrollArea、TabWidget、Splitter、GroupBox、MenuBar、Menu、MenuItem、ContextMenu、ToolBar、StatusBar、Canvas、Table、Grid、Chart、ToggleButton
 
 **日期与时间**：Calendar、DateEdit、TimeEdit、DateTimeEdit、DatePicker、TimePicker、DateTimePicker、CupertinoDatePicker、DateRangePicker、MobileDatePicker
 
@@ -460,7 +460,7 @@ assert_eq!(report.patches.len(), 1);            // 一个 SetProperty，别无�
 
 **菜单**：PieMenu、RibbonBar、MenuButton、DropdownMenu、Popover、SegmentedButton
 
-**特殊**：FreeformShape、QRCode、ColorHistory、ColorWell、MasonryLayout、Stepper、Divider、SwipeToDismiss、Toolbox、PropertiesPanel、PropertyGrid、WizardDialog、Wizard、AnimatedImage、HeroAnimation、BezierCurveEditor、LottieWidget、RiveWidget、VideoPlayer、ImageGallery、AudioVisualizer、CameraPreview、BarcodeScanner、Breakcrumb、CodeEditor、ColorPicker、CommandEntry、CommandPalette、DiffViewer、MapView、MediaPlayer、NotificationCenter、Snackbar、SplitButton、TerminalView、ToastStack
+**特殊**：FreeformShape、QRCode、ColorHistory、ColorWell、MasonryLayout、Stepper、Divider、SwipeToDismiss、Toolbox、PropertiesPanel、PropertyGrid、WizardDialog、Wizard、AnimatedImage、HeroAnimation、BezierCurveEditor、LottieWidget、RiveWidget、VideoPlayer、ImageGallery、AudioVisualizer、CameraPreview、BarcodeScanner、Breadcrumb、SignaturePad、DropZone、CodeEditor、ColorPicker、CommandEntry、CommandPalette、DiffViewer、MapView、MediaPlayer、NotificationCenter、Snackbar、SplitButton、TerminalView、ToastStack
 
 ### Mini / Embedded（精简核心控件集）
 

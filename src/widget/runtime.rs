@@ -162,6 +162,17 @@ thread_local! {
     #[allow(clippy::missing_const_for_thread_local)]
     static CAPTURE: RefCell<crate::event::PointerCaptureManager> =
         RefCell::new(crate::event::PointerCaptureManager::new());
+
+    /// Stack of currently-active modal dialog ids, innermost last.
+    ///
+    /// While this stack is non-empty, input outside the top modal dialog's subtree
+    /// is suppressed: [`dispatch_event`], [`dispatch_pointer_event`] and
+    /// [`focus_widget`] all ask [`modal_blocks`] before acting. This is the one
+    /// place modality is enforced, so a modal dialog actually blocks its owner —
+    /// the `modal` flag on each dialog widget records the *intent*, and the stack
+    /// is what makes that intent real (principle #5: no uninforced flag).
+    #[allow(clippy::missing_const_for_thread_local)]
+    static MODAL: RefCell<alloc::vec::Vec<ObjectId>> = const { RefCell::new(alloc::vec::Vec::new()) };
 }
 
 /// How many ids one thread reserves at a time.
@@ -357,6 +368,12 @@ pub fn focus_widget(id: ObjectId) -> bool {
             // Focus on an unmounted id would be an unobservable lie: the key
             // router would find nothing to deliver to. Refuse it instead.
             if !is_mounted(id) {
+                return false;
+            }
+            // A modal dialog owns focus while it is up: focusing a widget outside
+            // its subtree would let the keyboard type into a window the user cannot
+            // otherwise reach, so it is refused the same way an unmounted id is.
+            if modal_blocks(id) {
                 return false;
             }
             focus.set_focus(id);
@@ -596,15 +613,17 @@ pub fn dispatch_pointer_event(root: ObjectId, event: &Event, point: Point) -> bo
     // cursor leaves it — that is what lets a drag continue past its origin widget.
     // Hover still follows the true position, so highlights stay honest.
     if let Some(captured) = capturing_widget() {
-        if is_mounted(captured) {
+        if is_mounted(captured) && !modal_blocks(captured) {
             return dispatch_event(captured, event);
         }
-        // The capturer is gone; drop the capture rather than routing into nothing.
+        // The capturer is gone (or blocked by a modal); drop the capture rather
+        // than routing into nothing.
         let _ = release_pointer_capture();
+        return false;
     }
     match target {
-        Some(target) => dispatch_event(target, event),
-        None => false,
+        Some(target) if !modal_blocks(target) => dispatch_event(target, event),
+        _ => false,
     }
 }
 
@@ -633,6 +652,103 @@ pub fn capturing_widget() -> Option<ObjectId> {
 /// Returns whether `id` currently holds pointer capture.
 pub fn has_pointer_capture(id: ObjectId) -> bool {
     CAPTURE.try_with(|capture| capture.borrow().has_capture(id)).unwrap_or(false)
+}
+
+// ---------------------------------------------------------------------------
+// Modal dialog enforcement
+// ---------------------------------------------------------------------------
+
+/// Returns whether `descendant` is `ancestor` or anywhere below it in the widget
+/// tree, walking the [`crate::widget::Widget::parent`] links.
+///
+/// A widget is its own descendant for this purpose: a modal dialog's own controls
+/// (and the dialog itself) must keep receiving input while the modal is up.
+fn is_descendant_of(ancestor: ObjectId, descendant: ObjectId) -> bool {
+    if ancestor == descendant {
+        return true;
+    }
+    let mut cursor = with_widget(descendant, |widget| widget.parent());
+    while let Some(current) = cursor.flatten() {
+        if current == ancestor {
+            return true;
+        }
+        cursor = with_widget(current, |widget| widget.parent());
+    }
+    false
+}
+
+/// Returns the top of the modal stack, i.e. the dialog that currently owns input.
+pub fn active_modal() -> Option<ObjectId> {
+    MODAL.try_with(|stack| stack.borrow().last().copied()).unwrap_or(None)
+}
+
+/// Returns whether any modal dialog is currently active.
+pub fn is_modal_active() -> bool {
+    MODAL.try_with(|stack| !stack.borrow().is_empty()).unwrap_or(false)
+}
+
+/// Returns whether `id` is outside the active modal dialog's subtree and therefore
+/// must not receive input.
+///
+/// This is the single predicate both event dispatch and focus routing consult, so
+/// the rule "a modal blocks everything except itself and its descendants" is stated
+/// once rather than re-derived at each call site. When no modal is active, nothing
+/// is blocked.
+pub fn modal_blocks(id: ObjectId) -> bool {
+    let Some(modal) = active_modal() else {
+        return false;
+    };
+    // The modal itself and its subtree stay live; everything else is blocked. An
+    // unmounted id is also blocked — it cannot be part of the live dialog.
+    !is_descendant_of(modal, id)
+}
+
+/// Pushes `dialog_id` onto the modal stack so it becomes the input owner.
+///
+/// Returns `false` for an unmounted id, so a caller cannot install a modal that no
+/// event can ever reach. Re-pushing an already-active id is a no-op that reports
+/// `true`: the caller asked for "make this modal", and it already is.
+pub fn enter_modal(dialog_id: ObjectId) -> bool {
+    if !is_mounted(dialog_id) {
+        return false;
+    }
+    MODAL
+        .try_with(|stack| {
+            let mut stack = stack.borrow_mut();
+            if stack.last() == Some(&dialog_id) {
+                return true;
+            }
+            stack.push(dialog_id);
+            true
+        })
+        .unwrap_or(false)
+}
+
+/// Removes the topmost occurrence of `dialog_id` from the modal stack.
+///
+/// A dialog that is dismissed pops itself; this is also how a caller closes a modal
+/// it opened. Returns whether the stack changed.
+pub fn exit_modal(dialog_id: ObjectId) -> bool {
+    MODAL
+        .try_with(|stack| {
+            let mut stack = stack.borrow_mut();
+            if let Some(pos) = stack.iter().rposition(|&id| id == dialog_id) {
+                stack.remove(pos);
+                true
+            } else {
+                false
+            }
+        })
+        .unwrap_or(false)
+}
+
+/// Closes *every* active modal dialog, leaving the stack empty.
+///
+/// A hard reset for a host that is tearing down a window tree or an application
+/// shutdown, where the incremental pop of [`exit_modal`] would leave a stale id
+/// behind if the caller lost track of the open order.
+pub fn clear_modals() {
+    let _ = MODAL.try_with(|stack| stack.borrow_mut().clear());
 }
 
 /// Sends the enter/leave pair for a pointer that is now over `hovered`.
@@ -803,7 +919,15 @@ pub fn with_widget<R>(id: ObjectId, f: impl FnOnce(&dyn Widget) -> R) -> Option<
 /// Returns whether the widget was found. Backends call this to deliver raw
 /// platform input; coordinate translation into widget-local space is the
 /// widget's responsibility (see `position_at_point`).
+///
+/// A modal dialog blocks delivery to anything outside its own subtree: when a modal
+/// is active and `id` is not the modal (or one of its descendants), the event is
+/// is dropped and `false` is returned — the same "not found" answer a hit outside any
+/// widget gives, so the backend treats it as unowned input rather than an error.
 pub fn dispatch_event(id: ObjectId, event: &Event) -> bool {
+    if modal_blocks(id) {
+        return false;
+    }
     with_widget_mut(id, |widget| widget.handle_event(event)).is_some()
 }
 
@@ -3143,6 +3267,119 @@ mod tests {
         release_pointer_capture();
         unregister(parent);
         unregister(right);
+    }
+
+    // -----------------------------------------------------------------------
+    // Modal dialog enforcement
+    // -----------------------------------------------------------------------
+
+    /// Builds a window with a modal dialog and an unrelated control, wiring the
+    /// `parent` links that [`is_descendant_of`] walks (the same links the real mount
+    /// path sets via `mount_named_widget`). Returns `(window, modal, outside)`, where
+    /// the modal is a top-level dialog and `outside` is another widget the modal
+    /// must block.
+    fn modal_fixture() -> (ObjectId, ObjectId, ObjectId) {
+        let window = register(Box::new(crate::widget::container_widgets::groupbox::GroupBox::new(
+            Rect::new(0, 0, 400, 400),
+        )))
+        .expect("window");
+        let modal = register(Box::new(crate::widget::dialog::message_box::MessageBox::new(
+            Rect::new(50, 50, 200, 100),
+        )))
+        .expect("modal");
+        let outside = register(Box::new(crate::widget::base_widgets::label::Label::new(
+            "outside".to_string(),
+            Rect::new(0, 0, 100, 20),
+        )))
+        .expect("outside");
+        // The dialog and the label both belong to the window's frame of reference;
+        // neither is a *child* of the other, so the modal must block the label.
+        with_widget_mut(modal, |w| w.set_parent(Some(window)));
+        with_widget_mut(outside, |w| w.set_parent(Some(window)));
+        with_widget_mut(window, |w| {
+            w.add_child(modal);
+            w.add_child(outside);
+        });
+        (window, modal, outside)
+    }
+
+    #[test]
+    fn no_modal_blocks_nothing() {
+        let (window, modal, outside) = modal_fixture();
+        assert!(!is_modal_active());
+        assert!(!modal_blocks(window));
+        assert!(!modal_blocks(modal));
+        assert!(!modal_blocks(outside));
+        unregister(window);
+        unregister(modal);
+        unregister(outside);
+    }
+
+    #[test]
+    fn an_active_modal_blocks_input_outside_its_subtree() {
+        let (window, modal, outside) = modal_fixture();
+
+        assert!(enter_modal(modal));
+        assert!(is_modal_active());
+        assert_eq!(active_modal(), Some(modal));
+
+        // The dialog itself stays live; everything else (the window chrome, an
+        // unrelated control) is blocked.
+        assert!(!modal_blocks(modal));
+        assert!(modal_blocks(window));
+        assert!(modal_blocks(outside));
+
+        // Event delivery follows the same rule.
+        let event = crate::event::Event::mouse_press(10, 10, 1);
+        assert!(!dispatch_event(outside, &event), "a blocked widget must not receive events");
+        assert!(dispatch_event(modal, &event), "the modal dialog must receive events");
+
+        exit_modal(modal);
+        assert!(!is_modal_active());
+        assert!(!modal_blocks(outside), "after dismissal nothing is blocked");
+
+        unregister(window);
+        unregister(modal);
+        unregister(outside);
+    }
+
+    #[test]
+    fn a_modal_blocks_focus_outside_its_subtree() {
+        let (window, modal, outside) = modal_fixture();
+        clear_focus();
+
+        enter_modal(modal);
+        assert!(focus_widget(modal));
+        // Focus elsewhere is refused while the modal is up.
+        assert!(!focus_widget(outside));
+        assert_eq!(focused_widget(), Some(modal));
+
+        // After the modal is dismissed, focus can move to the formerly blocked widget.
+        exit_modal(modal);
+        assert!(focus_widget(outside));
+        assert_eq!(focused_widget(), Some(outside));
+
+        clear_focus();
+        unregister(window);
+        unregister(modal);
+        unregister(outside);
+    }
+
+    #[test]
+    fn an_unmounted_modal_cannot_be_entered() {
+        clear_modals();
+        assert!(!enter_modal(0xDEAD_BEEF));
+        assert!(!is_modal_active());
+    }
+
+    #[test]
+    fn clear_modals_drops_the_whole_stack() {
+        let (_, modal, _) = modal_fixture();
+        assert!(enter_modal(modal));
+        assert!(is_modal_active());
+        clear_modals();
+        assert!(!is_modal_active());
+        unregister(modal);
     }
 
     /// A recording IME bridge, for asserting the focus calls arrive in order.

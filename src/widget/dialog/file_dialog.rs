@@ -110,8 +110,8 @@ impl FileDialog {
     }
     /// Whether the dialog blocks interaction with its owner while open.
     ///
-    /// This is a stored flag: nothing in this widget enforces modality, so the
-    /// host is what must act on it. On by default.
+    /// This records the intent; enforcement is the modal stack in
+    /// [`crate::widget::runtime`] (`enter_modal` / `exit_modal`). On by default.
     pub fn is_modal(&self) -> bool {
         self.modal
     }

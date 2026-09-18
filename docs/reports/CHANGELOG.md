@@ -48,20 +48,39 @@ signals the controls actually emit.
   drag path emitted it, the programmatic setter did not, and the field's doc claimed the
   reverse of what the code did. `set_value` now emits on a real change, and the doc is
   corrected.
+- **Modal dialogs were not modal.** Every dialog (`MessageBox`, `ColorDialog`, `FileDialog`,
+  `FontDialog`, `InputDialog`, `ProgressDialog`) carried a `modal` flag whose docs admitted
+  "nothing enforces modality" and `MessageBoxHandle::show_modal()` was just `show_widget` in
+  disguise. A real modal stack now lives in `widget::runtime` (`enter_modal` / `exit_modal` /
+  `clear_modals` / `is_modal_active` / `modal_blocks`); `dispatch_event`,
+  `dispatch_pointer_event` and `focus_widget` all consult it, so input and focus outside the
+  active dialog's subtree are blocked until it is dismissed, and `show_modal` / `close` drive
+  the stack.
 
 ### Added
 
 - **`FloatingLabel::tick(delta_ms)`** and **`FloatingLabel::animation_progress()`** — the
   animation runtime and its observable read-back, following the `delta_ms`-based `tick`
   convention of `Spinner` and the media widgets.
+- **Four new widget kinds.** `SignaturePad` (a touch-friendly freehand signature capture with
+  smoothing, undo, clear and polyline export) and `DropZone` (a named drop target that filters
+  dragged payloads by MIME type and emits `payload_dropped`) are brand-new controls. `TreeTable`
+  and `Breadcrumb` each gained their own `WidgetKind` variant after previously hiding behind the
+  shared `TreeView` and `Panel` kinds respectively — the conflation that made the
+  accessibility role and the factory lookup answer "tree"/"panel" for a tabular tree and a
+  navigation trail. All four are fully registered (capability, constructor, property schema,
+  factory), constructible by name, and covered by unit tests.
+- **A modal input stack in `widget::runtime`.** `enter_modal`, `exit_modal`, `clear_modals`,
+  `is_modal_active`, `active_modal` and `modal_blocks` give hosted dialogs a real, observable
+  modality: input and focus outside the top dialog's subtree are suppressed while it is up.
 
 ### Verified in 2.4.0
 
 | Check | Result |
 |---|---|
-| `cargo test --lib` (desktop) | **4938** passed, 0 failed, 0 ignored |
-| `cargo test` (27 test binaries) | **5151** passed, 0 failed |
-| `tablet` / `mobile` lib | 4694 / 4722 passed |
+| `cargo test --lib` (desktop) | **4958** passed, 0 failed, 0 ignored |
+| `cargo test` (27 test binaries) | **5171** passed, 0 failed |
+| `tablet` / `mobile` lib | 4714 / 4742 passed |
 | `embedded` / `mini` lib | 1549 / 1481 passed |
 | `cargo clippy --all-targets -- -D warnings` | 0 warnings |
 

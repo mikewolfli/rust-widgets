@@ -76,6 +76,14 @@ pub enum WidgetKind {
     /// Scrollable container that clips and offsets a larger child widget.
     ScrollArea,
     /// Plain rectangular container used for grouping child widgets.
+    ///
+    /// kind-role: base — `Panel` is a `pub type` for `GroupBox` under a second
+    /// name. In a full build `create_panel` mounts the `panel` factory name, which
+    /// reports `WidgetKind::GroupBox`; `Panel` is kept as a distinct variant only
+    /// as the always-available fallback kind for stripped profiles (see
+    /// `KIND_MENU_BAR` and friends in `lib.rs`). It publishes no capability of its
+    /// own, so `factory_name_for_kind(Panel)` is answered by the `panel` name, not
+    /// by a `Panel`-kinded capability.
     Panel,
     /// Container that draws a border or 3D frame around its child.
     ///
@@ -575,4 +583,28 @@ pub enum WidgetKind {
     /// when the application is ready rather than by user action.
     #[cfg(widgets_unstripped)]
     SplashScreen,
+    /// TreeTable — hierarchical rows combined with tabular columns in one view.
+    ///
+    /// Distinct from `TreeView` (a pure tree) and `Table`/`GridTable` (flat grids):
+    /// the rows form a tree with expand/collapse, and each row carries column cells.
+    #[cfg(widgets_unstripped)]
+    TreeTable,
+    /// Breadcrumb — a horizontal navigation trail of segments.
+    ///
+    /// Distinct from `Panel`, the plain container this control previously reported
+    /// as its kind: the two share no behaviour, and conflating them made the
+    /// accessibility role and the factory lookup answer "panel" for a navigation
+    /// trail. Each trail segment is clickable and emits its id on activation.
+    #[cfg(widgets_unstripped)]
+    Breadcrumb,
+    /// SignaturePad — a touch-friendly freehand drawing surface for capturing
+    /// signatures. Records a list of pen strokes with optional smoothing, supports
+    /// undo, clear and export to a polyline description.
+    #[cfg(widgets_unstripped)]
+    SignaturePad,
+    /// DropZone — a named drop target that accepts a [`crate::event::dnd::DragPayload`]
+    /// filtered by MIME type, emits an accept/commit signal, and renders a hover
+    /// highlight while a compatible drag is over it.
+    #[cfg(widgets_unstripped)]
+    DropZone,
 }

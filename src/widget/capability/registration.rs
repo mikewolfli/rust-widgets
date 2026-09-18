@@ -103,6 +103,8 @@ impl WidgetFactory {
             self.register(map_view_capability(), create_map_view);
             self.register(media_player_capability(), create_media_player);
             self.register(breadcrumb_capability(), create_breadcrumb);
+            self.register(signature_pad_capability(), create_signature_pad);
+            self.register(drop_zone_capability(), create_drop_zone);
             self.register(split_button_capability(), create_split_button);
             self.register(segmented_control_capability(), create_segmented_control);
             self.register(chip_capability(), create_chip);
@@ -129,6 +131,7 @@ impl WidgetFactory {
             self.register(splash_screen_capability(), create_splash_screen);
             self.register(progress_dialog_capability(), create_progress_dialog);
             self.register(popup_window_capability(), create_popup_window);
+            self.register(dialog_capability(), create_dialog);
 
             // ── Container widgets ─────────────────────────────────────
             self.register(scroll_area_capability(), create_scroll_area);

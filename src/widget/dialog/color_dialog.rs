@@ -64,8 +64,11 @@ impl ColorDialog {
     }
     /// Returns whether the dialog is modal. Defaults to `true`.
     ///
-    /// Advisory only: the widget records the intent, and the surrounding dialog
-    /// manager is what actually blocks interaction behind it.
+    /// This records the intent; the enforcement is [`crate::widget::runtime::enter_modal`]
+    /// / [`crate::widget::runtime::exit_modal`], which push/pop the active modal so
+    /// input outside the dialog's subtree is blocked. A caller that shows a modal
+    /// dialog through a handle (e.g. `MessageBoxHandle::show_modal`) gets both the
+    /// show and the stack push together.
     pub fn is_modal(&self) -> bool {
         self.modal
     }

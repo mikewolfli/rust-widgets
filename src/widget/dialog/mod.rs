@@ -5,6 +5,7 @@
 #[cfg(not(alloc_frugal))]
 pub mod bottom_sheet;
 pub mod color_dialog;
+pub mod dialog_widget;
 pub mod file_dialog;
 #[cfg(not(alloc_frugal))]
 pub mod find_replace_dialog;
@@ -25,6 +26,7 @@ pub mod wizard;
 #[cfg(not(alloc_frugal))]
 pub use bottom_sheet::BottomSheet;
 pub use color_dialog::ColorDialog;
+pub use dialog_widget::Dialog;
 pub use file_dialog::FileDialog;
 #[cfg(not(alloc_frugal))]
 pub use find_replace_dialog::FindReplaceDialog;

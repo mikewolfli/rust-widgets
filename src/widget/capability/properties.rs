@@ -463,7 +463,7 @@ pub(crate) fn data_grid_capability() -> WidgetCapability {
 #[cfg(not(alloc_frugal))]
 pub(crate) fn tree_table_capability() -> WidgetCapability {
     WidgetCapability {
-        kind: WidgetKind::TreeView,
+        kind: WidgetKind::TreeTable,
         canonical_name: "tree_table",
         aliases: &[],
         properties: TREE_TABLE_PROPERTIES,
@@ -710,12 +710,36 @@ pub(crate) fn media_player_capability() -> WidgetCapability {
 #[cfg(not(alloc_frugal))]
 pub(crate) fn breadcrumb_capability() -> WidgetCapability {
     WidgetCapability {
-        kind: WidgetKind::Panel,
+        kind: WidgetKind::Breadcrumb,
         canonical_name: "breadcrumb",
         aliases: &["nav_breadcrumb"],
         properties: BREADCRUMB_PROPERTIES,
         events: &["segment_activated"],
         commands: &["set_segments", "push_segment", "clear_segments"],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn signature_pad_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::SignaturePad,
+        canonical_name: "signature_pad",
+        aliases: &["signature"],
+        properties: SIGNATURE_PAD_PROPERTIES,
+        events: &["changed", "stroke_completed"],
+        commands: &["undo"],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn drop_zone_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::DropZone,
+        canonical_name: "drop_zone",
+        aliases: &["drop_target"],
+        properties: DROP_ZONE_PROPERTIES,
+        events: &["payload_dropped"],
+        commands: &[],
     }
 }
 
@@ -1056,6 +1080,18 @@ pub(crate) fn popup_window_capability() -> WidgetCapability {
         properties: POPUP_WINDOW_PROPERTIES,
         events: &[],
         commands: &["set_content_widget"],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn dialog_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Dialog,
+        canonical_name: "dialog",
+        aliases: &[],
+        properties: DIALOG_PROPERTIES,
+        events: &["accepted", "rejected", "opened", "closed"],
+        commands: &["accept", "reject"],
     }
 }
 

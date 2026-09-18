@@ -196,6 +196,10 @@ fn all_kinds() -> Vec<WidgetKind> {
         ColorPicker,
         Toast,
         SplashScreen,
+        TreeTable,
+        Breadcrumb,
+        SignaturePad,
+        DropZone,
         CandlestickChart,
         VolumeChart,
         DepthChart,
@@ -387,6 +391,10 @@ fn exhaustive(kind: WidgetKind) -> &'static str {
         ColorPicker => "ColorPicker",
         Toast => "Toast",
         SplashScreen => "SplashScreen",
+        TreeTable => "TreeTable",
+        Breadcrumb => "Breadcrumb",
+        SignaturePad => "SignaturePad",
+        DropZone => "DropZone",
         CandlestickChart => "CandlestickChart",
         VolumeChart => "VolumeChart",
         DepthChart => "DepthChart",
@@ -477,7 +485,7 @@ mod tests {
     /// mutually visible.
     #[test]
     fn kind_list_is_exhaustive() {
-        assert_eq!(super::all_kinds().len(), 175);
+        assert_eq!(super::all_kinds().len(), 179);
     }
 
     /// The `match` in `exhaustive` and the `vec!` in `all_kinds` must agree.

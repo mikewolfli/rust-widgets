@@ -282,6 +282,10 @@ WIDGETS: Dict[str, Tuple[str, List[str]]] = {
     "Tooltip": ("Tooltip", CELLS),
     "VideoPlayer": ("VideoPlayer", CELLS),
     "WizardDialog": ("WizardDialog", CELLS),
+    "TreeTable": ("TreeTable", CELLS),
+    "Breadcrumb": ("Breadcrumb", CELLS),
+    "SignaturePad": ("SignaturePad", CELLS),
+    "DropZone": ("DropZone", CELLS),
 }
 
 # Sort widgets alphabetically by display name

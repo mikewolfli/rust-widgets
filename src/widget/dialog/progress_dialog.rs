@@ -165,8 +165,8 @@ impl ProgressDialog {
     /// Returns whether the dialog is modal (blocks interaction with the widgets
     /// behind it). Defaults to `true`.
     ///
-    /// This is advisory: it records the caller's intent for the surrounding
-    /// runtime or dialog manager, which is what actually enforces modality.
+    /// Records the intent; enforcement is the modal stack in
+    /// [`crate::widget::runtime`] (`enter_modal` / `exit_modal`).
     pub fn is_modal(&self) -> bool {
         self.modal
     }

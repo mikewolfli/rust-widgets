@@ -45,7 +45,7 @@ A backend that cannot supply even a surface (for example a bare framebuffer) sti
 
 > **Migrating from 1.x?** Native control creation was removed from all ten backends in 2.0.0. See [`CHANGELOG.md`](CHANGELOG.md) and [`docs/MIGRATION_GUIDE.md`](docs/MIGRATION_GUIDE.md).
 
-All 175 widget kinds are self-drawn. Every one of them resolves a constructor through
+All 179 widget kinds are self-drawn. Every one of them resolves a constructor through
 `factory_name_for_kind` (`456` accepted names in total, counting aliases);
 `tools/check_widget_registration_fidelity.sh` fails if a kind is added without an
 answer, or resolves to no constructor at all — the latter caught four `create_*`
@@ -61,7 +61,7 @@ is generated from source and gated for drift in CI.
 [![tests](https://img.shields.io/badge/tests-5100%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
-**Verified in 2.4.0:** `4938` lib tests pass on `desktop` (`4694` on `tablet`, `4722` on
+**Verified in 2.4.0:** `4958` lib tests pass on `desktop` (`4714` on `tablet`, `4742` on
 `mobile`, `1549` on `embedded`, `1481` on `mini`), and `cargo test` reports 0 failures
 across all 27 test binaries. `cargo clippy --all-targets -- -D warnings` is clean and all
 five profiles build. **32 gates** pass; the one skip needs a macOS host and says so.
@@ -475,9 +475,9 @@ silently stay unreachable from a language.
 
 ## Widget Library
 
-### Desktop/Tablet/Mobile (175 widget kinds)
+### Desktop/Tablet/Mobile (179 widget kinds)
 
-**Core**: Window, Dialog, MessageBox, FileDialog, ColorDialog, FontDialog, InputDialog, ProgressDialog, PopupWindow, Button, CheckBox, RadioButton, Label, LineEdit, TextEdit, RichEdit, ComboBox, SpinBox, ListBox, ListView, TreeView, ProgressBar, Slider, ScrollBar, ScrollArea, TabWidget, Splitter, GroupBox, MenuBar, Menu, MenuItem, ContextMenu, ToolBar, StatusBar, Canvas, Table, Grid, Chart, ToggleButton
+**Core**: Window, Dialog, MessageBox, FileDialog, ColorDialog, FontDialog, InputDialog, ProgressDialog, PopupWindow, Button, CheckBox, RadioButton, Label, LineEdit, TextEdit, RichEdit, ComboBox, SpinBox, ListBox, ListView, TreeView, TreeTable, ProgressBar, Slider, ScrollBar, ScrollArea, TabWidget, Splitter, GroupBox, MenuBar, Menu, MenuItem, ContextMenu, ToolBar, StatusBar, Canvas, Table, Grid, Chart, ToggleButton
 
 **Date & Time**: Calendar, DateEdit, TimeEdit, DateTimeEdit, DatePicker, TimePicker, DateTimePicker, CupertinoDatePicker, DateRangePicker, MobileDatePicker
 
@@ -495,7 +495,7 @@ silently stay unreachable from a language.
 
 **Menus**: PieMenu, RibbonBar, MenuButton, DropdownMenu, Popover, SegmentedButton
 
-**Special**: FreeformShape, QRCode, ColorHistory, ColorWell, MasonryLayout, Stepper, Divider, SwipeToDismiss, Toolbox, PropertiesPanel, PropertyGrid, WizardDialog, Wizard, AnimatedImage, HeroAnimation, BezierCurveEditor, LottieWidget, RiveWidget, VideoPlayer, ImageGallery, AudioVisualizer, CameraPreview, BarcodeScanner, Breakcrumb, CodeEditor, ColorPicker, CommandEntry, CommandPalette, DiffViewer, MapView, MediaPlayer, NotificationCenter, Snackbar, SplitButton, TerminalView, ToastStack
+**Special**: FreeformShape, QRCode, ColorHistory, ColorWell, MasonryLayout, Stepper, Divider, SwipeToDismiss, Toolbox, PropertiesPanel, PropertyGrid, WizardDialog, Wizard, AnimatedImage, HeroAnimation, BezierCurveEditor, LottieWidget, RiveWidget, VideoPlayer, ImageGallery, AudioVisualizer, CameraPreview, BarcodeScanner, Breadcrumb, SignaturePad, DropZone, CodeEditor, ColorPicker, CommandEntry, CommandPalette, DiffViewer, MapView, MediaPlayer, NotificationCenter, Snackbar, SplitButton, TerminalView, ToastStack
 
 ### Mini / Embedded (reduced core widget set)
 

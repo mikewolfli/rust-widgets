@@ -159,7 +159,7 @@ fn factory_creates_registered_widgets_by_alias() {
 
     let breadcrumb =
         factory.create("breadcrumb", rect, "").expect("breadcrumb must be created via alias");
-    assert_eq!(breadcrumb.kind(), WidgetKind::Panel);
+    assert_eq!(breadcrumb.kind(), WidgetKind::Breadcrumb);
 
     let split_button = factory
         .create("splitbutton", rect, "Menu")
@@ -249,6 +249,24 @@ fn factory_creates_registered_widgets_by_alias() {
         .create("datetimepicker", rect, "")
         .expect("date time picker must be created via alias");
     assert_eq!(datetime.kind(), WidgetKind::DateTimePicker);
+}
+
+#[test]
+fn new_widget_kinds_resolve_their_own_kind() {
+    let factory = WidgetFactory::new_with_defaults();
+    let rect = Rect::new(0, 0, 200, 120);
+
+    let tree_table = factory.create("tree_table", rect, "").expect("tree table must be created");
+    assert_eq!(tree_table.kind(), WidgetKind::TreeTable);
+
+    let breadcrumb = factory.create("breadcrumb", rect, "").expect("breadcrumb must be created");
+    assert_eq!(breadcrumb.kind(), WidgetKind::Breadcrumb);
+
+    let pad = factory.create("signature_pad", rect, "").expect("signature pad must be created");
+    assert_eq!(pad.kind(), WidgetKind::SignaturePad);
+
+    let zone = factory.create("drop_zone", rect, "").expect("drop zone must be created");
+    assert_eq!(zone.kind(), WidgetKind::DropZone);
 }
 
 #[test]

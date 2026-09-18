@@ -90,8 +90,8 @@ impl FontDialog {
     }
     /// Returns whether the dialog is modal. Defaults to `true`.
     ///
-    /// Advisory: the surrounding dialog manager enforces modality, not this
-    /// flag.
+    /// Records the intent; enforcement is the modal stack in
+    /// [`crate::widget::runtime`] (`enter_modal` / `exit_modal`).
     pub fn is_modal(&self) -> bool {
         self.modal
     }

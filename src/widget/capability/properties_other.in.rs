@@ -120,6 +120,28 @@ macro_rules! impl_properties_other {
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const SIGNATURE_PAD_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("stroke_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("stroke_width", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("stroke_color", PropertyValueKind::Color, true, true),
+            PropertySchema::new("min_point_distance", PropertyValueKind::Float, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const DROP_ZONE_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("accepted_type", PropertyValueKind::String, true, true),
+            PropertySchema::new("hovered", PropertyValueKind::Bool, true, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
         // `ChartWidget`'s property contract. This is the single definition of the
         // constant; it was previously written out twice in this file, which stayed
         // invisible only while both copies were byte-identical.
@@ -848,7 +870,12 @@ macro_rules! impl_properties_other {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
-            PropertySchema::enumerated("sort", true, true, &["none", "symbol", "last_descending", "change_magnitude"]),
+            PropertySchema::enumerated(
+                "sort",
+                true,
+                true,
+                &["none", "symbol", "last_descending", "change_magnitude"],
+            ),
             PropertySchema::new("selected_index", PropertyValueKind::UInt, true, true),
             PropertySchema::new("row_height", PropertyValueKind::UInt, true, true),
         ];
@@ -859,7 +886,12 @@ macro_rules! impl_properties_other {
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
             PropertySchema::new("series", PropertyValueKind::String, true, true),
-            PropertySchema::enumerated("mode", true, true, &["macd", "rsi", "stochastic", "money_flow_index", "atr", "on_balance_volume"]),
+            PropertySchema::enumerated(
+                "mode",
+                true,
+                true,
+                &["macd", "rsi", "stochastic", "money_flow_index", "atr", "on_balance_volume"],
+            ),
             PropertySchema::new("period", PropertyValueKind::UInt, true, true),
             PropertySchema::new("show_reference_levels", PropertyValueKind::Bool, true, true),
         ];

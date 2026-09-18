@@ -59,7 +59,7 @@ impl TreeTable {
     /// Creates an empty tree table.
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::TreeView, geometry, "TreeTable"),
+            base: BaseWidget::new(WidgetKind::TreeTable, geometry, "TreeTable"),
             model: None,
             model_connection_scope: ConnectionScope::new(),
             expanded_paths: HashSet::new(),

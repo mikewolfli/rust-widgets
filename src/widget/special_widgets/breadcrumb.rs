@@ -44,7 +44,7 @@ impl Breadcrumb {
     /// Creates an empty breadcrumb.
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::Panel, geometry, "Breadcrumb"),
+            base: BaseWidget::new(WidgetKind::Breadcrumb, geometry, "Breadcrumb"),
             segments: Vec::new(),
             selected_index: None,
             segment_padding: 8,

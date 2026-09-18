@@ -193,7 +193,7 @@ fn creation_cases(backend: &CustomPaintControlBackend, parent: ObjectId) -> Vec<
         ),
         ("create_depth_chart", backend.create_depth_chart(parent, 0, 0, W, H), "depth_chart"),
         ("create_dial", backend.create_dial(parent, 0, 0, W, H), "dial"),
-        ("create_dialog", backend.create_dialog(parent, "t", 0, 0, W, H), "popup_window"),
+        ("create_dialog", backend.create_dialog(parent, "t", 0, 0, W, H), "dialog"),
         (
             "create_directory_dialog",
             backend.create_directory_dialog(parent, "t", 0, 0, W, H),

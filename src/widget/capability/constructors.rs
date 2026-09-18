@@ -417,6 +417,20 @@ pub fn create_breadcrumb(geometry: Rect, text: &str) -> Box<dyn Widget> {
 }
 
 #[cfg(full_widgets)]
+/// Creates an empty signature pad. `text` is applied as the control's label.
+pub fn create_signature_pad(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(SignaturePad::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates a drop zone that accepts `text/plain`. `text` is applied as the
+/// control's label; the accepted MIME type is set via the `accepted_type`
+/// property or [`DropZone::set_accepted_type`].
+pub fn create_drop_zone(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(DropZone::new(geometry, "text/plain")))
+}
+
+#[cfg(full_widgets)]
 /// Creates a split button whose primary label is `text`.
 pub fn create_split_button(geometry: Rect, text: &str) -> Box<dyn Widget> {
     Box::new(SplitButton::new(text.to_string(), geometry))
@@ -742,6 +756,17 @@ pub fn create_progress_dialog(geometry: Rect, text: &str) -> Box<dyn Widget> {
 /// label.
 pub fn create_popup_window(geometry: Rect, text: &str) -> Box<dyn Widget> {
     label(geometry, text, Box::new(PopupWindow::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates a generic titled dialog with no content. `text` is applied as the
+/// control's title.
+///
+/// Distinct from [`create_popup_window`] (a chrome-only popup) and from
+/// [`create_message_box`] (a fixed message plus buttons): this is the standard
+/// secondary window a caller fills with its own form via `set_content_widget`.
+pub fn create_dialog(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(Dialog::with_title("", geometry)))
 }
 
 // ── Container widget constructors ─────────────────────────────

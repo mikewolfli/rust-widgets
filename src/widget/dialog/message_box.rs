@@ -262,9 +262,9 @@ impl MessageBox {
     }
     /// Whether the box is marked modal. Defaults to `true`.
     ///
-    /// This is a flag the surrounding dialog machinery reads; the widget itself
-    /// performs no input blocking, so a modal box is only actually modal if the
-    /// host honours the flag.
+    /// This records the intent; enforcement is the modal stack in
+    /// [`crate::widget::runtime`] (`enter_modal` / `exit_modal`), which
+    /// `MessageBoxHandle::show_modal` drives so input outside the box is blocked.
     pub fn is_modal(&self) -> bool {
         self.modal
     }

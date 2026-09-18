@@ -138,8 +138,6 @@ use crate::widget::view_widgets::list_view::ListView;
 #[cfg(full_widgets)]
 use crate::widget::view_widgets::table_widget::TableWidget;
 #[cfg(full_widgets)]
-use crate::widget::view_widgets::tree_table::TreeTable;
-#[cfg(full_widgets)]
 use crate::widget::view_widgets::tree_view::TreeView;
 #[cfg(full_widgets)]
 use crate::widget::view_widgets::virtual_list::VirtualList;
@@ -154,8 +152,6 @@ use crate::widget::web_widgets::web_view::WebView;
 use crate::widget::container_widgets::groupbox::GroupBox;
 #[cfg(full_widgets)]
 use crate::widget::container_widgets::toolbox::ToolBox;
-#[cfg(full_widgets)]
-use crate::widget::special_widgets::breadcrumb::Breadcrumb;
 
 /// Shared capability value and error types (`CapabilityValue`,
 /// `CapabilityAccessError`, …) exchanged through the property contract below.
@@ -307,7 +303,6 @@ fn alias_factory_name(kind: crate::widget::WidgetKind) -> &'static str {
         crate::widget::WidgetKind::CheckListBox => "list_box",
         crate::widget::WidgetKind::DirectoryDialog => "file_dialog",
         crate::widget::WidgetKind::ContextMenu => "menu",
-        crate::widget::WidgetKind::Dialog => "popup_window",
         crate::widget::WidgetKind::Wizard => "wizard_dialog",
         crate::widget::WidgetKind::DockPanel => "dock_widget",
         other => {
@@ -362,7 +357,6 @@ fn alias_for_name(name: &str) -> Option<&'static str> {
         "check_list_box" => "list_box",
         "directory_dialog" => "file_dialog",
         "context_menu" => "menu",
-        "dialog" => "popup_window",
         "wizard" => "wizard_dialog",
         "dock_panel" => "dock_widget",
         _ => return None,
@@ -1054,7 +1048,6 @@ impl WidgetFactory {
             "table_widget" | "table" => self::coercion::widget_as::<TableWidget>(widget).is_some(),
             "diff_viewer" => self::coercion::widget_as::<DiffViewer>(widget).is_some(),
             // `WidgetKind::TreeView`
-            "tree_table" => self::coercion::widget_as::<TreeTable>(widget).is_some(),
             "tree_view" => self::coercion::widget_as::<TreeView>(widget).is_some(),
             // `WidgetKind::ToggleButton`
             "segmented_control" => self::coercion::widget_as::<SegmentedControl>(widget).is_some(),
@@ -1095,10 +1088,6 @@ impl WidgetFactory {
             "media_player" => self::coercion::widget_as::<MediaPlayer>(widget).is_some(),
             // `WidgetKind::Toolbox`. Two registered names for one control.
             "tool_box" | "toolbox" => self::coercion::widget_as::<ToolBox>(widget).is_some(),
-            // `WidgetKind::Panel`. `breadcrumb` is the navigation trail that reports
-            // this kind; `panel` is the plain container, which reports
-            // `WidgetKind::GroupBox` and is distinguished there.
-            "breadcrumb" => self::coercion::widget_as::<Breadcrumb>(widget).is_some(),
             // `WidgetKind::DataView`. `DataView` is `VirtualList` under a second name,
             // so one concrete check answers both rows.
             "virtual_list" | "data_view" => {

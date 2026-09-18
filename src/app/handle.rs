@@ -1228,12 +1228,20 @@ impl MessageBoxHandle {
     }
 
     /// Show the message-box modally.
+    ///
+    /// Shows the box and pushes it onto the modal stack, so input outside the box's
+    /// subtree is blocked until [`MessageBoxHandle::close`] (or a dismissal) pops it.
     pub fn show_modal(&self) {
         crate::show_widget(self.id);
+        crate::widget::runtime::enter_modal(self.id);
     }
 
     /// Dismiss the message-box.
+    ///
+    /// Hides the box and removes it from the modal stack, restoring input to
+    /// whatever it was blocking.
     pub fn close(&self) {
+        crate::widget::runtime::exit_modal(self.id);
         crate::hide_widget(self.id);
     }
 

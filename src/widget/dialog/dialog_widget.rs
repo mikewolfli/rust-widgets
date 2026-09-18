@@ -1,0 +1,370 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
+//! Dialog widget — a secondary, usually-modal window that hosts its own children.
+//!
+//! This is the generic `QDialog`-style control: a titled frame that carries a single
+//! content widget, exposes modal intent (enforced through [`crate::widget::runtime`]'s
+//! modal stack), and announces accept/reject through dedicated signals. It is the
+//! standard desktop dialog — distinct from `MessageBox` (a fixed message + buttons)
+//! and `PopupWindow` (a chrome-only popup), which `WidgetKind::Dialog` was previously
+//! aliased to.
+
+use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
+use crate::event::{Event, EventHandler};
+use crate::render::RenderContext;
+use crate::signal::GenericSignal;
+use crate::widget::capability::coercion::expect_string;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
+use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
+
+/// The height of the dialog's title bar, in pixels.
+///
+/// Also the amount the content area is inset by when a title is present, so the two
+/// cannot drift apart.
+pub const DIALOG_TITLE_BAR_HEIGHT: u32 = 24;
+
+/// A generic dial‑log window: a titled frame that owns one content widget.
+///
+/// The dialog is the secondary window a caller fills with its own form. Modality is a
+/// stored intent that [`crate::widget::runtime::enter_modal`] / [`crate::widget::runtime::exit_modal`]
+/// make real — `open` and `close` drive both the visible state and the modal stack.
+pub struct Dialog {
+    base: BaseWidget,
+    /// Title shown in the dialog's own chrome.
+    title: String,
+    /// The single content widget the dialog hosts, if any.
+    content_widget: Option<ObjectId>,
+    /// Whether the dialog blocks interaction with its owner while open.
+    modal: bool,
+    /// Emitted by [`Dialog::accept`], when the dialog is accepted.
+    pub accepted: GenericSignal,
+    /// Emitted by [`Dialog::reject`], when the dialog is rejected.
+    pub rejected: GenericSignal,
+    /// Emitted by [`Dialog::open`].
+    pub opened: GenericSignal,
+    /// Emitted by [`Dialog::close`].
+    pub closed: GenericSignal,
+}
+
+impl Dialog {
+    /// Creates a titleless, non-modal dialog.
+    pub fn new(geometry: Rect) -> Self {
+        Self::with_title(String::new(), geometry)
+    }
+
+    /// Creates a dialog with a title.
+    pub fn with_title(title: impl Into<String>, geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::Dialog, geometry, "Dialog"),
+            title: title.into(),
+            content_widget: None,
+            modal: true,
+            accepted: GenericSignal::new(),
+            rejected: GenericSignal::new(),
+            opened: GenericSignal::new(),
+            closed: GenericSignal::new(),
+        }
+    }
+
+    /// Returns the dialog's title.
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    /// Sets the dialog's title and requests a redraw.
+    pub fn set_title(&mut self, title: impl Into<String>) {
+        self.title = title.into();
+        self.base.request_redraw();
+    }
+
+    /// Returns the content widget id, if any.
+    pub fn content_widget(&self) -> Option<ObjectId> {
+        self.content_widget
+    }
+
+    /// Sets the content widget this dialog hosts.
+    ///
+    /// Replaces any previous content child and records the parent/child link so the
+    /// tree walk (and the modal subtree test) sees it.
+    pub fn set_content_widget(&mut self, widget: Option<ObjectId>) {
+        if let Some(old) = self.content_widget {
+            self.base.remove_child(old);
+        }
+        self.content_widget = widget;
+        if let Some(id) = widget {
+            self.base.add_child(id);
+            let _ = crate::widget::runtime::with_widget_mut(id, |child| {
+                child.set_parent(Some(self.id()));
+            });
+        }
+        self.base.request_redraw();
+    }
+
+    /// Returns whether the dialog is modal. Defaults to `true`.
+    ///
+    /// Records the intent; enforcement is the modal stack in [`crate::widget::runtime`]
+    /// (`enter_modal` / `exit_modal`), which [`Dialog::open`] drives.
+    pub fn is_modal(&self) -> bool {
+        self.modal
+    }
+
+    /// Sets the modality intent.
+    pub fn set_modal(&mut self, modal: bool) {
+        self.modal = modal;
+    }
+
+    /// Shows the dialog, emits `opened`, and — when modal — enters the modal stack.
+    pub fn open(&mut self) {
+        self.show();
+        if self.modal {
+            let _ = crate::widget::runtime::enter_modal(self.id());
+        }
+        self.opened.emit();
+    }
+
+    /// Hides the dialog, pops it from the modal stack (if it was there), and emits
+    /// `closed`.
+    pub fn close(&mut self) {
+        let _ = crate::widget::runtime::exit_modal(self.id());
+        self.hide();
+        self.closed.emit();
+    }
+
+    /// Accepts the dialog: emits `accepted` then closes it.
+    pub fn accept(&mut self) {
+        self.accepted.emit();
+        self.close();
+    }
+
+    /// Rejects the dialog: emits `rejected` then closes it.
+    pub fn reject(&mut self) {
+        self.rejected.emit();
+        self.close();
+    }
+
+    /// The rectangle available to the content child.
+    ///
+    /// Insets the top by the title bar **only when a title is set**, so a titleless
+    /// dialog gives its child the full rect.
+    pub fn content_rect(&self) -> Rect {
+        let rect = self.base.geometry();
+        if self.title.is_empty() {
+            return rect;
+        }
+        let inset = DIALOG_TITLE_BAR_HEIGHT.min(rect.height);
+        Rect::new(rect.x, rect.y + inset as i32, rect.width, rect.height - inset)
+    }
+}
+
+impl Widget for Dialog {
+    fn base(&self) -> &BaseWidget {
+        &self.base
+    }
+
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        Size::new(320, 240)
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+/// `Dialog`'s property contract.
+impl WidgetProperties for Dialog {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "title" => Ok(CapabilityValue::String(self.title().to_string())),
+            "modal" => Ok(CapabilityValue::Bool(self.is_modal())),
+            "has_content" => Ok(CapabilityValue::Bool(self.content_widget().is_some())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "title" => {
+                self.set_title(expect_string(value)?);
+                Ok(())
+            }
+            "modal" => match value {
+                CapabilityValue::Bool(v) => {
+                    self.set_modal(v);
+                    Ok(())
+                }
+                _ => Err(CapabilityAccessError::TypeMismatch),
+            },
+            "has_content" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["title", "modal", "has_content", BASE_PROPERTY_NAMES]
+    }
+
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "accept" => {
+                self.accepted.emit();
+                Ok(())
+            }
+            "reject" => {
+                self.rejected.emit();
+                Ok(())
+            }
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
+}
+
+impl EventHandler for Dialog {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+        if !self.base.is_enabled() {
+            return;
+        }
+        match event {
+            Event::MousePress { button: 1, .. } => self.base.set_mouse_pressed(true),
+            Event::MouseRelease { button: 1, .. } => self.base.set_mouse_pressed(false),
+            _ => { /* Other events are not relevant */ }
+        }
+    }
+}
+
+impl Draw for Dialog {
+    fn draw(&mut self, context: &mut RenderContext) {
+        let rect = self.geometry();
+        if rect.width == 0 || rect.height == 0 {
+            return;
+        }
+        context.fill_rect(rect, Color::rgb(255, 255, 255));
+        context.draw_rect(rect, Color::rgb(110, 110, 110));
+
+        if self.title.is_empty() {
+            return;
+        }
+        let bar_height = DIALOG_TITLE_BAR_HEIGHT.min(rect.height);
+        context.fill_rect(
+            Rect::new(rect.x, rect.y, rect.width, bar_height),
+            Color::rgb(240, 240, 240),
+        );
+        context.draw_line(
+            Point::new(rect.x, rect.y + bar_height as i32),
+            Point::new(rect.x + rect.width as i32, rect.y + bar_height as i32),
+            Color::rgb(110, 110, 110),
+        );
+        context.draw_text(
+            Point::new(rect.x + 8, rect.y + (bar_height / 2) as i32),
+            &self.title,
+            &Font::default(),
+            Color::rgb(40, 40, 40),
+            HorizontalAlignment::Left,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
+    fn dialog() -> Dialog {
+        Dialog::with_title("Settings", Rect::new(0, 0, 400, 300))
+    }
+
+    #[test]
+    fn dialog_creation_defaults() {
+        let d = Dialog::new(Rect::new(0, 0, 400, 300));
+        assert_eq!(d.kind(), WidgetKind::Dialog);
+        assert!(d.title().is_empty());
+        assert!(d.is_modal());
+        assert!(d.content_widget().is_none());
+    }
+
+    #[test]
+    fn dialog_title_and_modal_roundtrip() {
+        let mut d = dialog();
+        assert_eq!(d.title(), "Settings");
+        d.set_title("Preferences");
+        assert_eq!(d.title(), "Preferences");
+        d.set_modal(false);
+        assert!(!d.is_modal());
+    }
+
+    #[test]
+    fn dialog_accept_and_reject_emit_their_signals() {
+        let mut d = dialog();
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let rejected = Arc::new(AtomicUsize::new(0));
+        let a = accepted.clone();
+        let r = rejected.clone();
+        d.accepted.connect(move || {
+            a.fetch_add(1, Ordering::SeqCst);
+        });
+        d.rejected.connect(move || {
+            r.fetch_add(1, Ordering::SeqCst);
+        });
+
+        d.accept();
+        assert_eq!(accepted.load(Ordering::SeqCst), 1);
+        assert_eq!(rejected.load(Ordering::SeqCst), 0);
+
+        d.reject();
+        assert_eq!(rejected.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn dialog_open_close_emit_lifecycle_signals() {
+        let mut d = dialog();
+        let opened = Arc::new(AtomicUsize::new(0));
+        let closed = Arc::new(AtomicUsize::new(0));
+        let o = opened.clone();
+        let c = closed.clone();
+        d.opened.connect(move || {
+            o.fetch_add(1, Ordering::SeqCst);
+        });
+        d.closed.connect(move || {
+            c.fetch_add(1, Ordering::SeqCst);
+        });
+
+        d.open();
+        assert!(d.is_visible());
+        assert_eq!(opened.load(Ordering::SeqCst), 1);
+
+        d.close();
+        assert!(!d.is_visible());
+        assert_eq!(closed.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn dialog_content_rect_insets_only_when_titled() {
+        let titleless = Dialog::new(Rect::new(0, 0, 160, 100));
+        assert_eq!(titleless.content_rect(), Rect::new(0, 0, 160, 100));
+
+        let titled = Dialog::with_title("T", Rect::new(0, 0, 160, 100));
+        assert_eq!(
+            titled.content_rect(),
+            Rect::new(0, DIALOG_TITLE_BAR_HEIGHT as i32, 160, 100 - DIALOG_TITLE_BAR_HEIGHT)
+        );
+    }
+
+    #[test]
+    fn dialog_with_a_title_paints_chrome() {
+        let mut titleless = Dialog::new(Rect::new(0, 0, 160, 100));
+        let mut titled = Dialog::with_title("Details".to_string(), Rect::new(0, 0, 160, 100));
+        let plain = crate::widget::svg::render_to_svg(&mut titleless);
+        let decorated = crate::widget::svg::render_to_svg(&mut titled);
+        assert_ne!(plain, decorated);
+        assert!(decorated.contains("Details"));
+    }
+}

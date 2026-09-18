@@ -15,6 +15,8 @@ pub mod date_range_picker;
 #[cfg(not(alloc_frugal))]
 pub mod date_utils;
 #[cfg(not(alloc_frugal))]
+pub mod drop_zone;
+#[cfg(not(alloc_frugal))]
 pub mod mobile_date_picker;
 #[cfg(not(alloc_frugal))]
 pub mod qr_code;
@@ -30,6 +32,8 @@ pub use barcode_scanner::{BarcodeFormat, BarcodeResult, BarcodeScanner};
 pub use bezier_curve_editor::BezierCurveEditor;
 #[cfg(not(alloc_frugal))]
 pub use date_range_picker::DateRangePicker;
+#[cfg(not(alloc_frugal))]
+pub use drop_zone::DropZone;
 #[cfg(not(alloc_frugal))]
 pub use mobile_date_picker::MobileDatePicker;
 #[cfg(not(alloc_frugal))]

@@ -39,7 +39,12 @@ macro_rules! impl_properties_dialog {
             PropertySchema::new("modal", PropertyValueKind::Bool, false, false),
             PropertySchema::new("directory", PropertyValueKind::String, false, false),
             PropertySchema::new("selected_file", PropertyValueKind::String, false, false),
-            PropertySchema::enumerated("mode", false, false, &["text", "integer", "double", "item"]),
+            PropertySchema::enumerated(
+                "mode",
+                false,
+                false,
+                &["text", "integer", "double", "item"],
+            ),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -59,7 +64,12 @@ macro_rules! impl_properties_dialog {
         pub(crate) const INPUT_DIALOG_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("title", PropertyValueKind::String, false, false),
             PropertySchema::new("label_text", PropertyValueKind::String, false, false),
-            PropertySchema::enumerated("mode", false, false, &["text", "integer", "double", "item"]),
+            PropertySchema::enumerated(
+                "mode",
+                false,
+                false,
+                &["text", "integer", "double", "item"],
+            ),
             PropertySchema::new("text_value", PropertyValueKind::String, false, false),
             PropertySchema::new("int_value", PropertyValueKind::Int, false, false),
             PropertySchema::new("double_value", PropertyValueKind::Float, false, false),
@@ -85,6 +95,17 @@ macro_rules! impl_properties_dialog {
         #[cfg(not(alloc_frugal))]
         pub(crate) const POPUP_WINDOW_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("title", PropertyValueKind::String, true, true),
+            PropertySchema::new("has_content", PropertyValueKind::Bool, false, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const DIALOG_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("title", PropertyValueKind::String, true, true),
+            PropertySchema::new("modal", PropertyValueKind::Bool, true, true),
             PropertySchema::new("has_content", PropertyValueKind::Bool, false, false),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),

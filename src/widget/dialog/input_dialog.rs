@@ -273,8 +273,8 @@ impl InputDialog {
     }
     /// Whether the dialog blocks interaction with its owner while open.
     ///
-    /// A stored flag, on by default: nothing here enforces modality, so the host
-    /// is what must act on it.
+    /// Records the intent, on by default; enforcement is the modal stack in
+    /// [`crate::widget::runtime`] (`enter_modal` / `exit_modal`).
     pub fn is_modal(&self) -> bool {
         self.modal
     }
