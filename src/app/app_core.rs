@@ -251,7 +251,11 @@ impl App {
 
     /// Create a top-level window and return a type-safe handle.
     pub fn new_window(&self, title: &str, x: i32, y: i32, w: u32, h: u32) -> WindowHandle {
-        WindowHandle::from_raw(crate::create_window(title, x, y, w, h))
+        let id = crate::create_window(title, x, y, w, h);
+        // Record the size here so a layout applied immediately afterwards has a rect to
+        // work with. See `WindowHandle::record_created_geometry`.
+        WindowHandle::record_created_geometry(id, x, y, w, h);
+        WindowHandle::from_raw(id)
     }
 
     /// Poll the next triggered event from the platform layer.

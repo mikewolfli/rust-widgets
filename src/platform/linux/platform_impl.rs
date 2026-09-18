@@ -260,6 +260,26 @@ impl Platform for LinuxPlatform {
             let fixed = gtk::Fixed::new();
             root.pack_start(&fixed, true, true, 0);
             window.add(&root);
+
+            // Report every re-allocation of the toplevel as a `Resized` trigger.
+            //
+            // Without this the library only learns a new window size when someone calls
+            // `WindowHandle::set_geometry`, so a user dragging the window edge left every
+            // child control at the geometry it had for the previous size. The signal
+            // fires for programmatic resizes too, which is harmless: the caller is
+            // expected to re-run its layout, and re-running it twice is idempotent.
+            //
+            // The handler captures only `id`: the size it reports goes through
+            // `crate::queue_resize_trigger`, which reaches the control backend's own
+            // record, so there is no platform state for the closure to hold.
+            window.connect_size_allocate(move |_, allocation| {
+                crate::queue_resize_trigger(
+                    id,
+                    allocation.width().max(0) as u32,
+                    allocation.height().max(0) as u32,
+                );
+            });
+
             let mut native = self.native.lock_guard();
             native.windows.insert(id, window.clone());
             native.root_boxes.insert(id, root);
@@ -272,6 +292,45 @@ impl Platform for LinuxPlatform {
     #[cfg(target_os = "linux")]
     fn ime_bridge(&self) -> Option<&dyn crate::platform::ime::ImeBridge> {
         Some(&self.ime_bridge)
+    }
+
+    /// The window's current client size.
+    ///
+    /// With `gtk-native` and a real `gtk::Window` this asks GTK, which is the authority
+    /// once the user has resized the window. Otherwise it falls back to the size recorded
+    /// when the last resize was reported, and finally to the created geometry — each step
+    /// answerable, so a caller always gets a real number rather than a guess.
+    #[cfg(target_os = "linux")]
+    fn window_client_size(&self, window_id: crate::core::ObjectId) -> Option<(u32, u32)> {
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            // GTK widgets are main-thread-only; asking from anywhere else would abort.
+            if gtk::is_initialized_main_thread() {
+                let native = self.native.lock_guard();
+                if let Some(window) = native.windows.get(&window_id) {
+                    let (width, height) = window.size();
+                    if width > 0 && height > 0 {
+                        return Some((width as u32, height as u32));
+                    }
+                }
+            }
+        }
+        // Ask the control backend, which owns the window and is therefore the only
+        // store that knows the size a resize reported.
+        crate::window_client_size(window_id).or_else(|| self.state.window_size(window_id))
+    }
+
+    /// Reports a container's new client size and queues a `Resized` trigger.
+    fn queue_resize_trigger(
+        &self,
+        window_id: crate::core::ObjectId,
+        width: u32,
+        height: u32,
+    ) -> bool {
+        // Forward to the control backend, which owns the window and the queue the app
+        // polls. Writing to the platform's own state would land in a store the host
+        // never reads, because `create_window` goes through the control backend.
+        crate::queue_resize_trigger(window_id, width, height)
     }
 
     /// Stores the text in the backend's clipboard record.

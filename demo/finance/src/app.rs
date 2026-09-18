@@ -32,6 +32,13 @@
 //! 手动对齐，而是 `finance::layout` 让四个面板走同一套 `IndexAxis` 映射 ——
 //! 对齐是算术结果，不是约定。
 //!
+//! # 面板的版式由 `BoxLayout` 决定
+//!
+//! 两列各自是一个纵向 `BoxLayout`（`Layout::left_column_layout` / `right_column_layout`），
+//! 每个面板的高度来自它的权重而非像素字面量；`Layout::compute` 只是把布局算出的
+//! 高度读回来、再给每个面板配上相同的 `x` 与宽度 —— 后者正是“共享索引轴”的充要条件。
+//! 这样“哪个面板多高”是布局的属性，而不是一串 `y + height + gap` 的加法。
+//!
 //! # 跨平台
 //!
 //! 与 `demo/control` 一样，本 demo 没有任何 `cfg(target_os)`，也不出现任何
@@ -41,7 +48,10 @@
 use std::sync::{Arc, Mutex};
 
 use rust_widgets::app::{App, WidgetHandle, WindowHandle};
-use rust_widgets::core::Rect;
+use rust_widgets::core::{ObjectId, Orientation, Rect};
+// The demo has a `Layout` struct of its own (the panel rects), so the library's layout
+// trait is imported under a distinct name rather than shadowing it.
+use rust_widgets::layout::{BoxLayout, Layout as LayoutTrait, LayoutConstraints};
 use rust_widgets::widget::special_widgets::finance::{
     Bar, BookLevel, CandlestickChart, DepthChart, IndicatorChart, IndicatorMode, OrderBook,
     OrderBookWidget, Overlay, PriceLevelKind, PriceLine, PriceSeries, Quote, QuoteBoard,
@@ -201,14 +211,21 @@ fn sample_quotes(last_price: f64) -> Vec<Quote> {
 // Layout
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// The panel rectangles, derived from one place.
+/// The panel rectangles.
 ///
-/// # Why the rectangles are computed rather than written as literals
+/// # Why the rectangles are still computed here
 ///
 /// The stacked panes must share a left edge and a width, or their index axes differ by
-/// a few pixels and bar 17 no longer lines up across the chart. Deriving all of them
-/// from `LEFT`/`LEFT_WIDTH` and a running `y` makes that structural: changing the
-/// window width cannot leave one pane misaligned.
+/// a few pixels and bar 17 no longer lines up across the chart. That agreement is the
+/// demo's whole point, so the rects are derived from one place.
+///
+/// # Why the *columns* are also described as layouts
+///
+/// Deriving every rect by hand means every rect's arithmetic has to be checked by hand.
+/// The two columns are expressed as [`BoxLayout`]s instead (see [`Self::column_layouts`]),
+/// which makes "the left column is 4 stacked panes in these proportions" a property of a
+/// layout rather than of a chain of `y + height + gap` additions. The per-pane rects are
+/// then *read back* from those layouts, so the two never disagree.
 struct Layout {
     price: Rect,
     volume: Rect,
@@ -219,41 +236,146 @@ struct Layout {
     depth: Rect,
 }
 
+/// The demo window's width, shared by the layout and the window it creates.
+const WINDOW_WIDTH: u32 = 1440;
+/// The demo window's height, shared by the layout and the window it creates.
+const WINDOW_HEIGHT: u32 = 900;
+/// The menu bar's height, which every panel starts below.
+const MENU_BAR_HEIGHT: u32 = 30;
+/// The status bar's height, which every panel ends above.
+const STATUS_BAR_HEIGHT: u32 = 30;
+/// The gap between neighbouring panels.
+const GAP: i32 = 6;
+/// The margin around the whole grid.
+const MARGIN: i32 = 12;
+/// The left column's width: the price chart and its indicator panes.
+const LEFT_WIDTH: u32 = 940;
+
+/// The left column's vertical proportions: price / volume / MACD / RSI.
+///
+/// Ratios rather than pixels: a taller window then grows every pane in proportion, and no
+/// pane can silently keep a height that was chosen for a different window size.
+const LEFT_COLUMN_WEIGHTS: [u32; 4] = [45, 15, 20, 20];
+/// The right column's vertical proportions: watchlist / ladder / depth.
+const RIGHT_COLUMN_WEIGHTS: [u32; 3] = [30, 34, 36];
+
+/// Placeholder ids per pane: four for the left column, three for the right.
+///
+/// These stand in for the real widget ids so a column layout's arithmetic can be built and
+/// read back — and asserted — without a window.
+const LEFT_IDS: &[ObjectId] = &[101, 102, 103, 104];
+const RIGHT_IDS: &[ObjectId] = &[201, 202, 203];
+
 impl Layout {
-    /// The window is 1440×900 with a 30-pixel menu bar and a 30-pixel status bar.
+    /// The area the panels may occupy: below the menu bar, above the status bar.
+    fn content_rect() -> Rect {
+        let top = MENU_BAR_HEIGHT as i32 + MARGIN;
+        let bottom = WINDOW_HEIGHT as i32 - STATUS_BAR_HEIGHT as i32 - MARGIN;
+        let height = (bottom - top).max(0) as u32;
+        Rect::new(MARGIN, top, (WINDOW_WIDTH as i32 - MARGIN * 2).max(0) as u32, height)
+    }
+
+    /// The right column's width, given the left column's.
+    fn right_column_width() -> u32 {
+        let content = Self::content_rect();
+        content.width.saturating_sub(LEFT_WIDTH + GAP as u32 * 2).max(120)
+    }
+
+    /// The left column as a vertical layout of four panes.
+    ///
+    /// Returned so [`Self::compute`] can read the pane heights back from it, and so a test
+    /// can assert the proportions without constructing a window.
+    fn left_column_layout() -> BoxLayout {
+        let mut column = BoxLayout::new(Orientation::Vertical, GAP as u32, 0);
+        for (index, weight) in LEFT_COLUMN_WEIGHTS.iter().enumerate() {
+            let id = LEFT_IDS[index];
+            LayoutTrait::add_widget(&mut column, id, *weight);
+            // Each pane needs room for its own axis labels and a few bars.
+            column.set_constraints(id, LayoutConstraints::new(60, None));
+        }
+        column
+    }
+
+    /// The right column as a vertical layout of three panes.
+    fn right_column_layout() -> BoxLayout {
+        let mut column = BoxLayout::new(Orientation::Vertical, GAP as u32, 0);
+        for (index, weight) in RIGHT_COLUMN_WEIGHTS.iter().enumerate() {
+            let id = RIGHT_IDS[index];
+            LayoutTrait::add_widget(&mut column, id, *weight);
+            column.set_constraints(id, LayoutConstraints::new(60, None));
+        }
+        column
+    }
+
+    /// The pane heights a column layout produces inside `area`, in declaration order.
+    ///
+    /// `ids` must be the ids the column was built from, in the same order: reading the
+    /// heights back by the *wrong* id list silently yields zeros for every pane whose id
+    /// is not in that list. The demo's own tests caught exactly that (the right column was
+    /// read back with the left column's ids, so all three panes came out zero-height).
+    fn column_heights(column: &BoxLayout, area: Rect, ids: &[ObjectId]) -> Vec<u32> {
+        let mut placed = Vec::new();
+        LayoutTrait::update(column, area, &mut |id, rect| placed.push((id, rect)));
+        ids.iter()
+            .map(|id| {
+                placed.iter().find(|(placed_id, _)| placed_id == id).map(|(_, rect)| rect.height)
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|height| height.unwrap_or(0))
+            .collect()
+    }
+
+    /// Splits the window into the seven panel rectangles.
+    ///
+    /// The heights come from the two column layouts rather than from a chain of manual
+    /// additions: the layout decides the proportions, and this function only assigns
+    /// x/width to each pane (which is what makes the panes share an index axis).
     fn compute() -> Self {
-        // The left column: the price chart and its two indicator panes.
-        let left = 12;
-        let left_width = 940;
-        let top = 42;
-        let price_height = 340;
-        let volume_height = 110;
-        let indicator_height = 118;
-        let gap = 6;
+        let content = Self::content_rect();
+        let left_x = content.x;
+        let right_x = left_x + LEFT_WIDTH as i32 + GAP * 2;
+        let right_width = Self::right_column_width();
 
-        let price = Rect::new(left, top, left_width, price_height);
-        let volume = Rect::new(left, top + price_height as i32 + gap, left_width, volume_height);
-        let macd =
-            Rect::new(left, volume.y + volume.height as i32 + gap, left_width, indicator_height);
-        let rsi = Rect::new(left, macd.y + macd.height as i32 + gap, left_width, indicator_height);
+        let left_area = Rect::new(left_x, content.y, LEFT_WIDTH, content.height);
+        let right_area = Rect::new(right_x, content.y, right_width, content.height);
 
-        // The right column: the watchlist, the ladder and the depth curve.
-        let right = left + left_width as i32 + gap * 2;
-        let right_width = 470;
-        let quotes_height = 210;
-        let book_height = 240;
+        let left_heights = Self::column_heights(&Self::left_column_layout(), left_area, LEFT_IDS);
+        let right_heights =
+            Self::column_heights(&Self::right_column_layout(), right_area, RIGHT_IDS);
 
-        let quotes = Rect::new(right, top, right_width, quotes_height);
-        let book = Rect::new(right, top + quotes_height as i32 + gap, right_width, book_height);
-        let depth = Rect::new(
-            right,
-            book.y + book.height as i32 + gap,
-            right_width,
-            // Whatever is left above the status bar, so the column always fills its side.
-            (rsi.y + rsi.height as i32 - (book.y + book.height as i32) - gap).max(120) as u32,
-        );
+        let mut left_y = content.y;
+        let mut take_left = |index: usize| -> (i32, u32) {
+            let top = left_y;
+            let height = left_heights.get(index).copied().unwrap_or(0);
+            left_y += height as i32 + GAP;
+            (top, height)
+        };
+        let (price_y, price_h) = take_left(0);
+        let (volume_y, volume_h) = take_left(1);
+        let (macd_y, macd_h) = take_left(2);
+        let (rsi_y, rsi_h) = take_left(3);
 
-        Self { price, volume, macd, rsi, quotes, book, depth }
+        let mut right_y = content.y;
+        let mut take_right = |index: usize| -> (i32, u32) {
+            let top = right_y;
+            let height = right_heights.get(index).copied().unwrap_or(0);
+            right_y += height as i32 + GAP;
+            (top, height)
+        };
+        let (quotes_y, quotes_h) = take_right(0);
+        let (book_y, book_h) = take_right(1);
+        let (depth_y, depth_h) = take_right(2);
+
+        Self {
+            price: Rect::new(left_x, price_y, LEFT_WIDTH, price_h),
+            volume: Rect::new(left_x, volume_y, LEFT_WIDTH, volume_h),
+            macd: Rect::new(left_x, macd_y, LEFT_WIDTH, macd_h),
+            rsi: Rect::new(left_x, rsi_y, LEFT_WIDTH, rsi_h),
+            quotes: Rect::new(right_x, quotes_y, right_width, quotes_h),
+            book: Rect::new(right_x, book_y, right_width, book_h),
+            depth: Rect::new(right_x, depth_y, right_width, depth_h),
+        }
     }
 }
 
@@ -389,6 +511,10 @@ fn build_screen(win: &WindowHandle, log: &Arc<EventLog>) {
     // Every level, so the curve's far ends are visible — which is where the accumulated
     // size reading lives.
     depth.set_depth(0);
+    let depth_log = Arc::clone(log);
+    depth.level_hovered.connect(move |price| {
+        depth_log.append(format!("[DepthChart] hover price {price:.2}"));
+    });
     mount(win, depth, layout.depth, "DepthChart", log);
 
     // ── Verify the alignment claim rather than only asserting it in a comment ──
@@ -400,6 +526,94 @@ fn build_screen(win: &WindowHandle, log: &Arc<EventLog>) {
         "[align] 左列四个面板共享 {} 根 K 线的索引轴（主图/成交量/MACD/RSI）",
         series.len()
     ));
+
+    // ── And verify the panels actually paint, not merely construct ──────────
+    log.append(format!("[paint] {}", verify_panels_paint(&layout, &series, close)));
+}
+
+/// Renders each panel offscreen at its **real geometry** and reports how many pixels it
+/// painted.
+///
+/// # Why the demo does this
+///
+/// A panel placed at a non-zero origin used to render blank in its upper band and clipped
+/// at its lower-right, because the frame was sized to the panel but the panel drew at its
+/// absolute position. Nothing about constructing or mounting a control reveals that — only
+/// asking it to paint does. Checking here means the demo says so out loud at startup rather
+/// than showing a subtly wrong screen that a reader has to notice.
+///
+/// # Why this goes through `render_frame` rather than calling `Draw::draw` directly
+///
+/// `Draw` paints at absolute coordinates; the translation from a control's absolute
+/// position to its own frame is `render_frame`'s job. Calling `draw` against a bare backend
+/// would re-create the very defect this check exists to catch, so the check must exercise
+/// the same entry point the backends use.
+fn verify_panels_paint(layout: &Layout, series: &PriceSeries, close: f64) -> String {
+    use rust_widgets::core::{Color, Size};
+    use rust_widgets::widget::runtime;
+
+    // Each entry builds one panel fed the demo's own data, at the demo's own rect.
+    let mut panels: Vec<(&str, Rect, Box<dyn rust_widgets::widget::Widget>)> = Vec::new();
+
+    let mut chart = CandlestickChart::new(layout.price);
+    chart.set_series(series.clone());
+    chart.add_overlay(Overlay::moving_average(20));
+    chart.add_overlay(Overlay::bollinger_bands(20, 2.0));
+    panels.push(("CandlestickChart", layout.price, Box::new(chart)));
+
+    let mut volume = VolumeChart::new(layout.volume);
+    volume.set_series(series.clone());
+    panels.push(("VolumeChart", layout.volume, Box::new(volume)));
+
+    let mut macd = IndicatorChart::new(layout.macd);
+    macd.set_series(series.clone());
+    macd.set_mode(IndicatorMode::Macd);
+    panels.push(("IndicatorChart(MACD)", layout.macd, Box::new(macd)));
+
+    let mut rsi = IndicatorChart::new(layout.rsi);
+    rsi.set_series(series.clone());
+    rsi.set_mode(IndicatorMode::Rsi);
+    panels.push(("IndicatorChart(RSI)", layout.rsi, Box::new(rsi)));
+
+    let mut quotes = QuoteBoard::new(layout.quotes);
+    quotes.set_quotes(sample_quotes(close));
+    panels.push(("QuoteBoard", layout.quotes, Box::new(quotes)));
+
+    let mut ladder = OrderBookWidget::new(layout.book);
+    ladder.set_book(sample_book(close));
+    panels.push(("OrderBook", layout.book, Box::new(ladder)));
+
+    let mut depth = DepthChart::new(layout.depth);
+    depth.set_book(sample_book(close));
+    panels.push(("DepthChart", layout.depth, Box::new(depth)));
+
+    let mut painted = Vec::new();
+    for (name, rect, panel) in panels {
+        let Some(id) = runtime::register(panel) else {
+            painted.push(format!("{name} UNMOUNTED"));
+            continue;
+        };
+        let size = Size::new(rect.width, rect.height);
+        // A colour no panel paints, so "did it draw" is not confused with "the clear
+        // colour happens to match a panel colour".
+        let frame = runtime::render_frame(id, size, Color::rgb(255, 0, 255));
+        runtime::unregister(id);
+
+        let Some(frame) = frame else {
+            painted.push(format!("{name} NO FRAME"));
+            continue;
+        };
+        let total = (rect.width * rect.height) as usize;
+        // `as_chunks` rather than `chunks_exact` so the four-byte grouping is expressed in
+        // the type; it also lets the compiler see the length is exact, which the lints
+        // require.
+        let drawn =
+            frame.as_chunks::<4>().0.iter().filter(|pixel| **pixel != [255, 0, 255, 255]).count();
+        let percent = drawn * 100 / total.max(1);
+        painted.push(format!("{name} {percent}%"));
+    }
+
+    painted.join(" / ")
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -441,7 +655,7 @@ pub fn run() {
     app.init();
     log.append("[App] init() done");
 
-    let win = app.new_window("Finance Demo — rust_widgets", 60, 60, 1440, 900);
+    let win = app.new_window("Finance Demo — rust_widgets", 60, 60, WINDOW_WIDTH, WINDOW_HEIGHT);
     log.append(format!("[Window] created: id={:?}", win.raw_id()));
 
     // A menu bar, so the demo has the same window chrome as the other demos and the
@@ -456,7 +670,13 @@ pub fn run() {
     // The text is set once here and then updated from the log after the screen is
     // built, so the bar reflects what actually happened rather than a static string:
     // a status bar that never changes is indistinguishable from a broken one.
-    let status = win.new_status_bar("就绪", 0, 866, 1440, 30);
+    let status = win.new_status_bar(
+        "就绪",
+        0,
+        (WINDOW_HEIGHT - STATUS_BAR_HEIGHT) as i32,
+        WINDOW_WIDTH,
+        STATUS_BAR_HEIGHT,
+    );
 
     build_screen(&win, &log);
 
@@ -578,6 +798,52 @@ mod tests {
         assert!(layout.rsi.y >= layout.macd.y + layout.macd.height as i32);
     }
 
+    /// Every panel must fit inside the window, above the status bar and below the menu bar.
+    ///
+    /// The layout and the window now both derive from the same constants, and this pins
+    /// that: a panel that ran off the right edge or under the status bar would be drawn
+    /// without any visible symptom at the panel level.
+    #[test]
+    fn every_panel_stays_inside_the_window() {
+        let layout = Layout::compute();
+        let bottom_limit = WINDOW_HEIGHT as i32 - STATUS_BAR_HEIGHT as i32;
+        let panels = [
+            ("price", layout.price),
+            ("volume", layout.volume),
+            ("macd", layout.macd),
+            ("rsi", layout.rsi),
+            ("quotes", layout.quotes),
+            ("book", layout.book),
+            ("depth", layout.depth),
+        ];
+        for (name, rect) in panels {
+            assert!(rect.width > 0 && rect.height > 0, "{name} has no area: {rect:?}");
+            assert!(rect.x >= 0, "{name} starts left of the window: {rect:?}");
+            assert!(
+                rect.x + rect.width as i32 <= WINDOW_WIDTH as i32,
+                "{name} runs off the right edge: {rect:?}"
+            );
+            assert!(rect.y >= MENU_BAR_HEIGHT as i32, "{name} is under the menu bar: {rect:?}");
+            assert!(
+                rect.y + rect.height as i32 <= bottom_limit,
+                "{name} runs under the status bar: {rect:?}"
+            );
+        }
+    }
+
+    /// The two columns must not overlap each other.
+    #[test]
+    fn the_columns_do_not_overlap() {
+        let layout = Layout::compute();
+        let left_right_edge = layout.price.x + layout.price.width as i32;
+        for rect in [layout.quotes, layout.book, layout.depth] {
+            assert!(
+                rect.x >= left_right_edge,
+                "the right column must start at or after the left column's edge"
+            );
+        }
+    }
+
     /// The right column sits beside the left one and within the window.
     #[test]
     fn the_right_column_is_beside_the_left_one() {
@@ -653,6 +919,42 @@ mod tests {
         assert!(close.is_finite() && close > 0.0);
     }
 
+    /// Every panel the demo mounts really paints, at its real geometry.
+    ///
+    /// This is the assertion that would have caught the frame-origin defect directly: a
+    /// panel placed at a non-zero origin used to paint nothing in its upper band, and
+    /// nothing about constructing it revealed that. The report must name every panel and
+    /// every percentage must be well above zero, or a blank pane would pass unnoticed.
+    #[test]
+    fn every_panel_paints_something_at_its_real_geometry() {
+        let layout = Layout::compute();
+        let series = sample_series();
+        let close = last_close(&series);
+        let report = verify_panels_paint(&layout, &series, close);
+        println!("[paint report] {report}");
+
+        for name in [
+            "CandlestickChart",
+            "VolumeChart",
+            "IndicatorChart(MACD)",
+            "IndicatorChart(RSI)",
+            "QuoteBoard",
+            "OrderBook",
+            "DepthChart",
+        ] {
+            let entry = report
+                .split(" / ")
+                .find(|entry| entry.starts_with(name))
+                .unwrap_or_else(|| panic!("{name} missing from the report: {report}"));
+            let percent: u32 = entry
+                .rsplit(' ')
+                .next()
+                .and_then(|value| value.trim_end_matches('%').parse().ok())
+                .unwrap_or_else(|| panic!("{name} did not report a percentage: {entry}"));
+            assert!(percent > 5, "{name} painted only {percent}% of its frame: {entry}");
+        }
+    }
+
     /// Every control the demo mounts can be constructed and drawn headlessly.
     ///
     /// This is the integration claim in one test: six controls, fed the demo's own
@@ -726,6 +1028,93 @@ mod tests {
         // The three left-column panes were all handed the same series, so their index
         // axes agree — which is the demo's whole point.
         assert_eq!(series.len(), BAR_COUNT);
+    }
+
+    /// The two columns are built from layouts, and their declared proportions are what the
+    /// panel heights follow.
+    ///
+    /// This is the assertion that ties the layout to the version this demo previously had
+    /// (hand-computed percentages): the price chart must still be the tallest pane on the
+    /// left, and each column's panes must sum to the column's height.
+    #[test]
+    fn the_column_layouts_produce_the_declared_proportions() {
+        let content = Layout::content_rect();
+        let left_area = Rect::new(0, content.y, LEFT_WIDTH, content.height);
+        let right_area = Rect::new(0, content.y, Layout::right_column_width(), content.height);
+
+        let left = Layout::column_heights(&Layout::left_column_layout(), left_area, LEFT_IDS);
+        let right = Layout::column_heights(&Layout::right_column_layout(), right_area, RIGHT_IDS);
+
+        assert_eq!(left.len(), LEFT_COLUMN_WEIGHTS.len());
+        assert_eq!(right.len(), RIGHT_COLUMN_WEIGHTS.len());
+        for (index, height) in left.iter().enumerate() {
+            assert!(*height > 0, "left pane {index} has no height: {left:?}");
+        }
+        for (index, height) in right.iter().enumerate() {
+            assert!(*height > 0, "right pane {index} has no height: {right:?}");
+        }
+        // The price chart carries the heaviest weight, so it must be the tallest.
+        assert!(
+            left[0] >= *left.iter().max().unwrap_or(&0),
+            "the price pane must be the tallest on the left: {left:?}"
+        );
+        // The panes plus inter-pane gaps must not exceed the column.
+        let left_used: u32 = left.iter().sum::<u32>() + GAP as u32 * 3;
+        assert!(
+            left_used <= content.height,
+            "the left column overflows: {left_used} > {}",
+            content.height
+        );
+        let right_used: u32 = right.iter().sum::<u32>() + GAP as u32 * 2;
+        assert!(
+            right_used <= content.height,
+            "the right column overflows: {right_used} > {}",
+            content.height
+        );
+    }
+
+    /// The panes read back from the layouts are exactly the rects `compute` hands out.
+    ///
+    /// This pins "the geometry comes from the layout": if `compute` ever went back to
+    /// computing heights independently, this would catch the divergence.
+    #[test]
+    fn the_computed_rects_match_the_layout_output() {
+        let layout = Layout::compute();
+        let content = Layout::content_rect();
+        let left_area = Rect::new(content.x, content.y, LEFT_WIDTH, content.height);
+        let right = Layout::right_column_width();
+        let right_area =
+            Rect::new(content.x + LEFT_WIDTH as i32 + GAP * 2, content.y, right, content.height);
+
+        let left_heights =
+            Layout::column_heights(&Layout::left_column_layout(), left_area, LEFT_IDS);
+        let right_heights =
+            Layout::column_heights(&Layout::right_column_layout(), right_area, RIGHT_IDS);
+
+        assert_eq!(layout.price.height, left_heights[0]);
+        assert_eq!(layout.volume.height, left_heights[1]);
+        assert_eq!(layout.macd.height, left_heights[2]);
+        assert_eq!(layout.rsi.height, left_heights[3]);
+        assert_eq!(layout.quotes.height, right_heights[0]);
+        assert_eq!(layout.book.height, right_heights[1]);
+        assert_eq!(layout.depth.height, right_heights[2]);
+    }
+
+    /// A taller window must grow the panes rather than leaving a gap at the bottom.
+    #[test]
+    fn the_columns_fill_whatever_height_they_are_given() {
+        for height in [600u32, 900, 1200] {
+            let area = Rect::new(0, 0, LEFT_WIDTH, height);
+            let left = Layout::column_heights(&Layout::left_column_layout(), area, LEFT_IDS);
+            let used: u32 = left.iter().sum::<u32>() + GAP as u32 * 3;
+            assert!(used <= height, "the column must fit its area at height {height}: {used}");
+            // A column that left a large hole would mean the weights stopped stretching.
+            let slack = height - used;
+            assert!(
+                slack < 16,
+                "the column left {slack}px unused at height {height} (weights must stretch)"
+            );
+        }
     }
 
     /// The status bar text is the most recent entry, which is what it shows.

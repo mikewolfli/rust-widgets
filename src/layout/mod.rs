@@ -165,4 +165,87 @@ mod tests {
         });
         assert_eq!(shown, Some((8, Rect::new(1, 2, 30, 40))));
     }
+
+    /// Children must never be placed outside the rect the layout was given.
+    ///
+    /// Regression: when the sum of the items' minima exceeded the available length,
+    /// `BoxLayout` returned allocations whose total was larger than the parent, so two
+    /// 80-pixel minima in a 100-pixel row were drawn at `x = 0` and `x = 80` — running to
+    /// 160 and painting the second control over whatever sat beside the layout. There is no
+    /// assignment that honours both minima there, so the shortfall is now split evenly.
+    #[test]
+    fn box_layout_children_stay_inside_a_parent_that_cannot_pay_every_minimum() {
+        let mut layout = BoxLayout::new(Orientation::Horizontal, 0, 0);
+        layout.add_widget(1, 1);
+        layout.add_widget(2, 1);
+        for id in [1, 2] {
+            layout.set_constraints(id, LayoutConstraints::new(80, None));
+            layout.set_size_policy(id, SizePolicy::Fixed);
+        }
+        let mut rects = std::collections::HashMap::new();
+        layout.update(Rect::new(0, 0, 100, 20), &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+        let total: u32 = rects.values().map(|rect| rect.width).sum();
+        assert!(total <= 100, "the children must fit the parent, got {total}");
+        for (id, rect) in &rects {
+            assert!(
+                rect.x >= 0 && rect.x + rect.width as i32 <= 100,
+                "item {id} escapes: {rect:?}"
+            );
+        }
+        // The shortfall is shared, not applied to one item by iteration order.
+        let first = rects.get(&1).map(|rect| rect.width).unwrap_or(0);
+        let second = rects.get(&2).map(|rect| rect.width).unwrap_or(0);
+        assert!(first.abs_diff(second) <= 1, "the shortfall must be shared evenly");
+    }
+
+    /// A grid whose rect cannot hold its own margins and spacing must not overflow.
+    ///
+    /// Regression: `available_width` saturated to zero while the offset walk still stepped
+    /// by the full configured spacing, so later columns were placed at coordinates the
+    /// parent had never allocated.
+    #[test]
+    fn grid_cells_stay_inside_a_parent_too_small_for_its_spacing() {
+        let mut grid = GridLayout::new(2, 2, 8, 2);
+        grid.set_widget(0, 0, 1);
+        grid.set_widget(0, 1, 2);
+        grid.set_widget(1, 0, 3);
+        grid.set_widget(1, 1, 4);
+        let mut rects = std::collections::HashMap::new();
+        grid.update(Rect::new(0, 0, 8, 4), &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+        assert_eq!(rects.len(), 4, "every cell is still addressed");
+        for (id, rect) in &rects {
+            assert!(
+                rect.x >= 0
+                    && rect.y >= 0
+                    && rect.x + rect.width as i32 <= 8
+                    && rect.y + rect.height as i32 <= 4,
+                "cell {id} escapes the 8x4 parent: {rect:?}"
+            );
+        }
+    }
+
+    /// The splitter's weights and its normalised ratios must not disagree in meaning.
+    ///
+    /// Regression: `add_pane` stored a raw weight without the `0.01` floor that
+    /// `add_widget` applied, so the two entry points populated the same field with
+    /// different units. The weights are relative (normalised on release), and the
+    /// documented accessor now says so.
+    #[test]
+    fn splitter_add_pane_matches_add_widget_and_normalises_on_release() {
+        let mut splitter = SplitterLayout::new(Orientation::Horizontal, 0);
+        splitter.add_pane(1, 1);
+        splitter.add_pane(2, 3);
+        assert_eq!(splitter.pane_count(), 2);
+        // Relative weights, not fractions, until normalised.
+        let weight_sum: f32 = splitter.ratios().iter().sum();
+        assert!((weight_sum - 4.0).abs() < 1e-6, "weights are relative: {weight_sum}");
+        splitter.normalize_ratios();
+        let fraction_sum: f32 = splitter.ratios().iter().sum();
+        assert!((fraction_sum - 1.0).abs() < 1e-6, "normalising yields fractions");
+        assert!((splitter.ratio(1).unwrap_or(0.0) - 0.75).abs() < 1e-6);
+    }
 }

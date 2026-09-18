@@ -26,10 +26,33 @@ pub(crate) unsafe extern "system" fn wnd_proc(
 ) -> isize {
     use winapi::um::winuser::NMHDR;
     use winapi::um::winuser::{
-        DefWindowProcW, GetDlgCtrlID, PostQuitMessage, WM_COMMAND, WM_DESTROY, WM_GETMINMAXINFO,
-        WM_NOTIFY,
+        DefWindowProcW, GetClientRect, GetDlgCtrlID, PostQuitMessage, WM_COMMAND, WM_DESTROY,
+        WM_GETMINMAXINFO, WM_NOTIFY, WM_SIZE,
     };
     match msg {
+        // The user resized the window (or the window manager did). Report the new client
+        // size so the host can re-run its layout: without this a window resized by the
+        // user kept every child at the geometry it had for the previous size, because
+        // nothing else tells the library the window changed.
+        WM_SIZE => {
+            if let Some(platform) = notify::active_windows_platform() {
+                if let Some(widget_id) = platform.widget_id_by_native_handle(hwnd) {
+                    let mut rect =
+                        winapi::um::windef::RECT { left: 0, top: 0, right: 0, bottom: 0 };
+                    // SAFETY: `hwnd` is the window this procedure was called for, and
+                    // Win32 fills the RECT we hand it. A failure leaves the zeros, which
+                    // are rejected below rather than reported as a size.
+                    if unsafe { GetClientRect(hwnd, &mut rect) } != 0 {
+                        let width = (rect.right - rect.left).max(0) as u32;
+                        let height = (rect.bottom - rect.top).max(0) as u32;
+                        if width > 0 && height > 0 {
+                            crate::queue_resize_trigger(widget_id, width, height);
+                        }
+                    }
+                }
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
         WM_COMMAND => {
             let command_id = (wparam & 0xFFFF) as u32;
             let notify_code = ((wparam >> 16) & 0xFFFF) as u32;

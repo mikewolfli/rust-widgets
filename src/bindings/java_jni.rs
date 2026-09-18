@@ -58,6 +58,7 @@ fn c_string_to_jstring(env: &mut JNIEnv<'_>, ptr: *const std::ffi::c_char) -> js
 // ===========================================================================
 
 #[no_mangle]
+/// JNI entry point for Java `nativeInit`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeInit(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -66,6 +67,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeInit(
 }
 
 #[no_mangle]
+/// JNI entry point for Java `nativeRun`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeRun(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -74,6 +76,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeRun(
 }
 
 #[no_mangle]
+/// JNI entry point for Java `nativeQuit`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeQuit(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -86,6 +89,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeQuit(
 // ===========================================================================
 
 #[no_mangle]
+/// JNI entry point for Java `nativeCreateWindow`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeCreateWindow(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -107,6 +111,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeCreateWindow
 macro_rules! jni_create_widget_with_text {
     ($name:ident, $c_func:ident) => {
         #[no_mangle]
+        #[doc = concat!("JNI entry point for Java `", stringify!($name), "`.")]
         pub extern "system" fn $name(
             mut env: JNIEnv<'_>,
             _class: JClass<'_>,
@@ -137,6 +142,7 @@ macro_rules! jni_create_widget_with_text {
 macro_rules! jni_create_widget_no_text {
     ($name:ident, $c_func:ident) => {
         #[no_mangle]
+        #[doc = concat!("JNI entry point for Java `", stringify!($name), "`.")]
         pub extern "system" fn $name(
             _env: JNIEnv<'_>,
             _class: JClass<'_>,
@@ -223,6 +229,7 @@ jni_create_widget_no_text!(
 
 // Dialog variants — take an extra `title` parameter (message box)
 #[no_mangle]
+/// JNI entry point for Java `nativeCreateMessageBox`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeCreateMessageBox(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -253,6 +260,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeCreateMessag
 macro_rules! jni_create_dialog {
     ($name:ident, $c_func:ident) => {
         #[no_mangle]
+        #[doc = concat!("JNI entry point for Java `", stringify!($name), "`.")]
         pub extern "system" fn $name(
             mut env: JNIEnv<'_>,
             _class: JClass<'_>,
@@ -295,6 +303,7 @@ jni_create_dialog!(
 // ===========================================================================
 
 #[no_mangle]
+/// JNI entry point for Java `nativeShowWidget`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeShowWidget(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -304,6 +313,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeShowWidget(
 }
 
 #[no_mangle]
+/// JNI entry point for Java `nativeHideWidget`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeHideWidget(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -313,6 +323,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeHideWidget(
 }
 
 #[no_mangle]
+/// JNI entry point for Java `nativeDestroyWidget`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeDestroyWidget(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -322,6 +333,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeDestroyWidge
 }
 
 #[no_mangle]
+/// JNI entry point for Java `nativeSetWidgetText`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeSetWidgetText(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -334,6 +346,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeSetWidgetTex
 }
 
 #[no_mangle]
+/// JNI entry point for Java `nativeGetWidgetText`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeGetWidgetText(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -344,6 +357,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeGetWidgetTex
 }
 
 #[no_mangle]
+/// JNI entry point for Java `nativeSetWidgetEnabled`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeSetWidgetEnabled(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -354,6 +368,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeSetWidgetEna
 }
 
 #[no_mangle]
+/// JNI entry point for Java `nativeIsWidgetEnabled`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeIsWidgetEnabled(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -367,6 +382,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeIsWidgetEnab
 }
 
 #[no_mangle]
+/// JNI entry point for Java `nativeSetWidgetGeometry`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeSetWidgetGeometry(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -390,6 +406,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeSetWidgetGeo
 // ===========================================================================
 
 #[no_mangle]
+/// JNI entry point for Java `nativeComboBoxAddItem`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeComboBoxAddItem(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -406,6 +423,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeComboBoxAddI
 }
 
 #[no_mangle]
+/// JNI entry point for Java `nativeComboBoxClearItems`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeComboBoxClearItems(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -419,6 +437,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeComboBoxClea
 }
 
 #[no_mangle]
+/// JNI entry point for Java `nativeComboBoxSetCurrentIndex`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeComboBoxSetCurrentIndex(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -433,6 +452,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeComboBoxSetC
 }
 
 #[no_mangle]
+/// JNI entry point for Java `nativeComboBoxCurrentIndex`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeComboBoxCurrentIndex(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -442,6 +462,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeComboBoxCurr
 }
 
 #[no_mangle]
+/// JNI entry point for Java `nativeComboBoxItemCount`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeComboBoxItemCount(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -451,6 +472,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeComboBoxItem
 }
 
 #[no_mangle]
+/// JNI entry point for Java `nativeComboBoxItemText`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeComboBoxItemText(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -466,6 +488,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeComboBoxItem
 // ===========================================================================
 
 #[no_mangle]
+/// JNI entry point for Java `nativeListBoxAddItem`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeListBoxAddItem(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -482,6 +505,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeListBoxAddIt
 }
 
 #[no_mangle]
+/// JNI entry point for Java `nativeListBoxRemoveItem`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeListBoxRemoveItem(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -496,6 +520,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeListBoxRemov
 }
 
 #[no_mangle]
+/// JNI entry point for Java `nativeListBoxClearItems`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeListBoxClearItems(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -509,6 +534,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeListBoxClear
 }
 
 #[no_mangle]
+/// JNI entry point for Java `nativeListBoxSetCurrentIndex`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeListBoxSetCurrentIndex(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -523,6 +549,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeListBoxSetCu
 }
 
 #[no_mangle]
+/// JNI entry point for Java `nativeListBoxCurrentIndex`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeListBoxCurrentIndex(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -532,6 +559,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeListBoxCurre
 }
 
 #[no_mangle]
+/// JNI entry point for Java `nativeListBoxItemCount`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeListBoxItemCount(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -541,6 +569,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeListBoxItemC
 }
 
 #[no_mangle]
+/// JNI entry point for Java `nativeListBoxItemText`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeListBoxItemText(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -556,6 +585,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeListBoxItemT
 // ===========================================================================
 
 #[no_mangle]
+/// JNI entry point for Java `nativeAttachMenuBarToWindow`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeAttachMenuBarToWindow(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -570,6 +600,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeAttachMenuBa
 }
 
 #[no_mangle]
+/// JNI entry point for Java `nativeMenuAddItem`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeMenuAddItem(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -586,6 +617,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeMenuAddItem(
 }
 
 #[no_mangle]
+/// JNI entry point for Java `nativePollMenuTriggered`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativePollMenuTriggered(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -598,6 +630,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativePollMenuTrig
 // ===========================================================================
 
 #[no_mangle]
+/// JNI entry point for Java `nativePollWidgetTriggered`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativePollWidgetTriggered(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -629,6 +662,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativePollWidgetTr
 // ===========================================================================
 
 #[no_mangle]
+/// JNI entry point for Java `nativeSetClipboardText`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeSetClipboardText(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -644,6 +678,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeSetClipboard
 }
 
 #[no_mangle]
+/// JNI entry point for Java `nativeGetClipboardText`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeGetClipboardText(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -657,6 +692,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeGetClipboard
 // ===========================================================================
 
 #[no_mangle]
+/// JNI entry point for Java `nativeBackendName`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeBackendName(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -666,6 +702,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeBackendName(
 }
 
 #[no_mangle]
+/// JNI entry point for Java `nativePlatformCapabilities`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativePlatformCapabilities(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -674,6 +711,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativePlatformCapa
 }
 
 #[no_mangle]
+/// JNI entry point for Java `nativeBindingsApiVersion`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeBindingsApiVersion(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -682,6 +720,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeBindingsApiV
 }
 
 #[no_mangle]
+/// JNI entry point for Java `nativeFreeString`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeFreeString(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,

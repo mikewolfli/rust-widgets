@@ -145,7 +145,9 @@ pub use crate::platform::runtime::{mobile_attach_to_native_view, mobile_backend_
 /// runtime asked a backend to do. Public because the runtime's own tests live in
 /// another module; nothing outside tests installs an override.
 #[cfg(not(alloc_frugal))]
-pub use crate::platform::runtime::{with_recorded_invalidations, RecordingInvalidations};
+pub use crate::platform::runtime::{
+    with_platform, with_recorded_invalidations, RecordingInvalidations,
+};
 pub use crate::platform::stub::StubPlatform;
 pub use crate::platform::types::*;
 

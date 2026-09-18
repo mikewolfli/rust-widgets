@@ -634,8 +634,13 @@ fn capability_manifest_exports_defaults_and_metadata() {
         factory.capability_manifest("table").expect("table manifest should be exportable");
 
     assert_eq!(manifest.kind, WidgetKind::Table);
-    assert_eq!(manifest.canonical_name, "table_widget");
-    assert!(manifest.aliases.contains(&"table"));
+    // `table` was an alias of `table_widget` until the kind needed a capability named
+    // after it; the manifest now answers for the entry whose canonical name is `table`
+    // while still carrying `table_widget` as the alias, so every spelling still
+    // resolves to this one control and `WidgetKind::Table` resolves by name rather
+    // than by registration order.
+    assert_eq!(manifest.canonical_name, "table");
+    assert!(manifest.aliases.contains(&"table_widget"));
     assert!(manifest.events.contains(&"selection_changed"));
     assert!(manifest.commands.contains(&"clear_selection"));
 

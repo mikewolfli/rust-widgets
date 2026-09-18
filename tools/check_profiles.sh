@@ -71,6 +71,12 @@ echo "[8/9] declarative-layer platform gate (BLUE18 rules #92/#94)"
 # succeeding on a stripped profile is caught in the same place.
 bash tools/check_view_platform_gate.sh
 
+# BLUE18 rule #88: every node built by a `Node` view chain must carry a `key`,
+# and keys must be unique among siblings. Run beside the view layer's other
+# gate so both protections move together; it was previously only runnable by
+# hand, so CI never exercised it (BLUE18 E-1).
+bash tools/check_view_keys_are_unique.sh
+
 echo "[9/9] gpu P3g parity regression gate"
 run_test_case "gpu auto-compose mixed scene" \
   cargo test --lib --features gpu-wgpu render::tests::auto_compose_renders_mixed_commands_scene_with_gpu_or_cpu_backend

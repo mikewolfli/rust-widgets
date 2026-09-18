@@ -610,11 +610,18 @@ impl CandlestickChart {
         );
 
         // And a readout of that bar, positioned to stay inside the pane on both sides.
+        //
+        // The text is longer than a narrow pane can hold, so it is clipped to the plot
+        // area: without a clip both candidate positions overflow — the right branch runs
+        // past `area.right()`, and the left branch, clamped *right* to `area.rect.x`,
+        // runs further still. Clipping keeps the readout inside the control that owns it
+        // instead of painting over a neighbouring pane.
         let bar = bars[index];
         let text =
             format!("O {:.2}  H {:.2}  L {:.2}  C {:.2}", bar.open, bar.high, bar.low, bar.close);
         let width = text.len() as i32 * 7;
         let label_x = if x + 8 + width > area.right() { x - 8 - width } else { x + 8 };
+        context.push_clip(area.rect.x, area.rect.y, area.rect.width, area.rect.height);
         context.draw_text(
             crate::core::Point { x: label_x.max(area.rect.x), y: area.rect.y + 2 },
             &text,
@@ -622,6 +629,7 @@ impl CandlestickChart {
             Color::rgb(230, 230, 230),
             HorizontalAlignment::Left,
         );
+        context.pop_clip();
     }
 }
 

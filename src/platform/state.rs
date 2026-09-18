@@ -1040,6 +1040,34 @@ where
         self.push_widget_event(WidgetTriggerEvent { widget_id, kind });
         true
     }
+
+    /// The size `window_id` was created with, if it exists.
+    ///
+    /// Used as the fallback behind a backend's `Platform::window_client_size`: a window
+    /// that has never been resized still has the dimensions it was created at, and
+    /// reporting those is honest where inventing a number would not be (principle #37).
+    /// The *reported* size lives with the control backend, which owns the window.
+    pub fn window_size(&self, window_id: ObjectId) -> Option<(u32, u32)> {
+        self.widgets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&window_id)
+            .map(|record| (record.width, record.height))
+    }
+
+    /// The full geometry `widget_id` was last given, if it exists.
+    ///
+    /// A backend that resizes a window by rewriting its record (rather than by keeping a
+    /// separate client-size map) needs the origin to write back, because
+    /// [`BackendState::set_geometry`] takes all four numbers: dropping the origin would
+    /// move the window to `(0, 0)` as a side effect of resizing it.
+    pub fn widget_geometry(&self, widget_id: ObjectId) -> Option<(i32, i32, u32, u32)> {
+        self.widgets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&widget_id)
+            .map(|record| (record.x, record.y, record.width, record.height))
+    }
 }
 
 #[cfg(test)]

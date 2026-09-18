@@ -432,6 +432,24 @@ impl Platform for WaylandPlatform {
         }
     }
 
+    /// The window's current client size, as last reported by the host.
+    ///
+    /// Falls back to the size the window was created with. `None` for an id this backend
+    /// does not know, so a caller can tell "no such window" from "a size I can use".
+    fn window_client_size(&self, window_id: ObjectId) -> Option<(u32, u32)> {
+        // Ask the control backend, which owns the window and is therefore the only
+        // store that knows the size a resize reported.
+        crate::window_client_size(window_id).or_else(|| self.state.window_size(window_id))
+    }
+
+    /// Reports a container's new client size and queues a `Resized` trigger.
+    fn queue_resize_trigger(&self, window_id: ObjectId, width: u32, height: u32) -> bool {
+        // Forward to the control backend, which owns the window and the queue the app
+        // polls. Writing to the platform's own state would land in a store the host
+        // never reads, because `create_window` goes through the control backend.
+        crate::queue_resize_trigger(window_id, width, height)
+    }
+
     // -----------------------------------------------------------------------
     // Widget lifecycle operations
     // -----------------------------------------------------------------------
@@ -688,8 +706,41 @@ impl WaylandPlatform {
         let id = self.insert_widget(WaylandHandleKind::Window, title, x, y, width, height);
         log::info!("[wayland] Window {} registered with state backend", id);
 
+        // Record which window the session's configure events belong to. The dispatch
+        // handler is a free function with no access to the platform object, so this is
+        // how a compositor-driven resize finds its way back to the layout.
+        record_configured_window(id);
+
         Some(id)
     }
+}
+
+// The window a session's `xdg_toplevel` configure events describe.
+//
+// Thread-local because a Wayland connection belongs to the thread that created it, and
+// a compositor callback arrives on that thread. `0` means "no window configured yet",
+// which the handler treats as "do not report".
+//
+// A plain comment rather than a doc comment: rustdoc generates no documentation for a
+// macro invocation, so a `///` here is an unused doc comment (a denied warning).
+#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+thread_local! {
+    static CONFIGURED_WINDOW: core::cell::Cell<ObjectId> = const { core::cell::Cell::new(0) };
+}
+
+/// Records the window that subsequent configure events describe.
+#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+fn record_configured_window(id: ObjectId) {
+    CONFIGURED_WINDOW.with(|slot| slot.set(id));
+}
+
+/// The window to report a configure event against, if one is known.
+#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+pub(crate) fn configured_window_id() -> Option<ObjectId> {
+    CONFIGURED_WINDOW.with(|slot| match slot.get() {
+        0 => None,
+        id => Some(id),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -940,6 +991,14 @@ impl wl_client::Dispatch<wl_protocols::xdg::shell::client::xdg_toplevel::XdgTopl
                     height,
                     states
                 );
+                // The compositor told us the new size — this is Wayland's equivalent of
+                // a user dragging the window edge, so it must reach the layout. A zero
+                // dimension means "you choose", not a real size, so it is not reported.
+                if width > 0 && height > 0 {
+                    if let Some(id) = super::platform_impl::configured_window_id() {
+                        crate::queue_resize_trigger(id, width as u32, height as u32);
+                    }
+                }
             }
             Event::Close => {
                 log::info!("[wayland] xdg_toplevel close requested");

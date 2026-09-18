@@ -51,3 +51,15 @@ pub use stepper::Stepper;
 pub use tabwidget::TabWidget;
 #[cfg(widgets_unstripped)]
 pub use toolbox::ToolBox;
+
+/// `Toolbox` — the container-side spelling of the `ToolBox` control.
+///
+/// `WidgetKind::Toolbox` is the kind every toolbox spelling reports, and the
+/// capability layer registers `tool_box` / `toolbox` against it. The type keeps its
+/// historical `ToolBox` spelling (it predates the kind), and this alias is what makes
+/// the two names interchangeable from Rust as well, so a caller who writes the
+/// control's name the way the enum does is not left with a type that does not exist.
+/// It is a type alias rather than a second struct: two structs would be two controls
+/// whose state could diverge (rule #23).
+#[cfg(widgets_unstripped)]
+pub type Toolbox = ToolBox;

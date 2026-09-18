@@ -142,9 +142,20 @@ use crate::widget::view_widgets::tree_table::TreeTable;
 #[cfg(full_widgets)]
 use crate::widget::view_widgets::tree_view::TreeView;
 #[cfg(full_widgets)]
+use crate::widget::view_widgets::virtual_list::VirtualList;
+#[cfg(full_widgets)]
 use crate::widget::view_widgets::virtual_table::VirtualTable;
 #[cfg(full_widgets)]
 use crate::widget::web_widgets::web_view::WebView;
+// The container types the tie-break table below compares against. Each is named
+// there because its kind is shared with another control, so the concrete-type check
+// is the only way to tell which capability a mounted widget belongs to.
+#[cfg(full_widgets)]
+use crate::widget::container_widgets::groupbox::GroupBox;
+#[cfg(full_widgets)]
+use crate::widget::container_widgets::toolbox::ToolBox;
+#[cfg(full_widgets)]
+use crate::widget::special_widgets::breadcrumb::Breadcrumb;
 
 /// Shared capability value and error types (`CapabilityValue`,
 /// `CapabilityAccessError`, …) exchanged through the property contract below.
@@ -621,6 +632,67 @@ impl WidgetFactory {
         self.capabilities.iter().map(|capability| capability.canonical_name).collect()
     }
 
+    /// Reports every `WidgetKind` that carries **more than one** capability.
+    ///
+    /// Several kinds are deliberately shared by distinct controls — `Table` is
+    /// served by `table_widget`, `data_grid`, `tree_table` and `virtual_table`; the
+    /// nine chart kinds all report `WidgetKind::Chart`. That sharing is intended, and
+    /// [`Self::capability_by_kind`] documents how the right one is chosen.
+    ///
+    /// What is *not* intended is a kind whose only capability is named after a
+    /// **different** kind.
+    ///
+    /// # The defect this answers
+    ///
+    /// `WidgetKind::Table` used to resolve to `tree_table`. The cause was structural:
+    /// there was no `table` capability at all, so many-to-one resolution returned
+    /// whichever chart/table entry happened to be registered first. Nothing caught it,
+    /// because every gate that asks "is this kind reachable" is satisfied by *any*
+    /// capability reporting the kind, and by that measure `Table` was fine — only the
+    /// *control a caller gets back* was wrong.
+    ///
+    /// Returning these pairs lets a test turn the substitution into a statement about
+    /// every kind at once instead of one hand-picked example. The same list shows an
+    /// auditor where the kind→name table is load-bearing.
+    ///
+    /// Returns an empty vector when every kind's canonical control has a capability
+    /// named after it, which is the healthy state for kinds with a single capability.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rust_widgets::widget::capability::WidgetFactory;
+    /// let factory = WidgetFactory::new_with_defaults();
+    /// for (kind, resolved, candidates) in factory.shared_kinds_resolving_to_other_names() {
+    ///     // `resolved` is a real, constructible control — the kind just is not its
+    ///     // own control's name because several controls share the kind.
+    ///     assert!(!factory.capability(resolved).is_none(), "{resolved} must be constructible");
+    ///     assert!(candidates >= 1, "{kind:?} must list at least the resolved control");
+    /// }
+    /// ```
+    pub fn shared_kinds_resolving_to_other_names(&self) -> Vec<(WidgetKind, &'static str, usize)> {
+        let mut result: Vec<(WidgetKind, &'static str, usize)> = Vec::new();
+        for (kind, indices) in &self.kind_to_index {
+            if indices.is_empty() {
+                continue;
+            }
+            let expected = kind_canonical_name(*kind);
+            let matches_own_name = indices.iter().any(|index| {
+                self.capabilities
+                    .get(*index)
+                    .is_some_and(|capability| capability.canonical_name == expected)
+            });
+            if matches_own_name {
+                continue;
+            }
+            if let Some(resolved) = self.capability_by_kind(*kind) {
+                result.push((*kind, resolved.canonical_name, indices.len()));
+            }
+        }
+        result.sort_by_key(|(kind, _, _)| *kind);
+        result
+    }
+
     /// Reads a known property from a widget instance by property name.
     ///
     /// This is a minimal read-only reflection layer intended for R2 integration.
@@ -688,6 +760,15 @@ impl WidgetFactory {
 
         // Resolve by concrete type first. This is the only reliable tie-break: the
         // kind alone cannot distinguish two types that report the same one.
+        //
+        // Iteration order matters when two capabilities in this group are **the same
+        // control under two names** (`table_widget` / `table`, `group_box` / `panel`,
+        // `tool_box` / `toolbox`, `virtual_list` / `data_view`). Their tie-break rows
+        // both accept the widget — correctly, because it is one widget — so the first
+        // iteration wins. Choosing it by *registration order* rather than by "whichever
+        // name this iteration happened to produce" is what makes the answer stable:
+        // `indices` is a list of positions in a `Vec` built by the same deterministic
+        // registration sequence every time, so the same name comes back on every call.
         for &idx in indices.iter() {
             let cap = &self.capabilities[idx];
             if self.widget_matches_capability(widget, cap.canonical_name) {
@@ -737,13 +818,35 @@ impl WidgetFactory {
     /// row here. `every_shared_kind_has_a_tie_break` in the tests enforces that, so a
     /// newly registered control cannot quietly inherit another's schema the way
     /// `segmented_control` inherited `toggle_button`'s.
+    /// # Why the row key is the *canonical* name, and what a missing row costs
+    ///
+    /// This table is reached only when a kind has more than one capability, so the
+    /// names it must cover are the ones that actually collide. A missing row makes the
+    /// control **unaddressable through the capability layer**: `capability_for_widget`
+    /// finds no match and returns nothing, so `read_property`
+    /// `write_property` answer `UnknownWidget` for a control that is mounted and
+    /// constructible — and `capability_for_kind_instance` reports `None`, which is the
+    /// signal `tests/control_backend_named_creation_test.rs` uses to catch substitutions.
+    ///
+    /// The rows below were each added because that signal fired, not speculatively:
+    /// `web_engine_view` (and therefore the `web_view` / `webview` aliases and the
+    /// `WebView` type), `tool_box` / `toolbox`, `panel` and `data_view` all share their
+    /// kind with another control and had no row.
     #[cfg(full_widgets)]
     fn widget_matches_capability(&self, widget: &dyn Widget, canonical_name: &str) -> bool {
         match canonical_name {
+            // `WidgetKind::GroupBox`, which `panel` shares because `Panel` is a
+            // `pub type` for `GroupBox`.
+            "group_box" | "panel" => self::coercion::widget_as::<GroupBox>(widget).is_some(),
             // `WidgetKind::Table`
             "data_grid" => self::coercion::widget_as::<DataGrid>(widget).is_some(),
             "virtual_table" => self::coercion::widget_as::<VirtualTable>(widget).is_some(),
-            "table_widget" => self::coercion::widget_as::<TableWidget>(widget).is_some(),
+            // `table_widget` and `table` are two names for one control, so both rows
+            // have the same answer. The same holds for `tool_box` / `toolbox`,
+            // `panel` / `group_box`, and `virtual_list` / `data_view` below: an alias
+            // and its canonical name are one widget, and a tie-break row keyed on only
+            // one of the two spellings makes the other address nothing.
+            "table_widget" | "table" => self::coercion::widget_as::<TableWidget>(widget).is_some(),
             "diff_viewer" => self::coercion::widget_as::<DiffViewer>(widget).is_some(),
             // `WidgetKind::TreeView`
             "tree_table" => self::coercion::widget_as::<TreeTable>(widget).is_some(),
@@ -777,9 +880,25 @@ impl WidgetFactory {
             "chart" => self::coercion::widget_as::<ChartWidget>(widget).is_some(),
             "gantt_widget" => self::coercion::widget_as::<GanttWidget>(widget).is_some(),
             "timeline_widget" => self::coercion::widget_as::<TimelineWidget>(widget).is_some(),
-            // `WidgetKind::WebEngineView`
-            "web_view" => self::coercion::widget_as::<WebView>(widget).is_some(),
+            // `WidgetKind::WebEngineView`. The canonical name is `web_engine_view`;
+            // `web_view` and `webview` are aliases of it, so all three spellings must
+            // resolve — an alias that resolves to a name absent from this table is an
+            // alias that cannot address its own control.
+            "web_engine_view" | "web_view" | "webview" => {
+                self::coercion::widget_as::<WebView>(widget).is_some()
+            }
             "media_player" => self::coercion::widget_as::<MediaPlayer>(widget).is_some(),
+            // `WidgetKind::Toolbox`. Two registered names for one control.
+            "tool_box" | "toolbox" => self::coercion::widget_as::<ToolBox>(widget).is_some(),
+            // `WidgetKind::Panel`. `breadcrumb` is the navigation trail that reports
+            // this kind; `panel` is the plain container, which reports
+            // `WidgetKind::GroupBox` and is distinguished there.
+            "breadcrumb" => self::coercion::widget_as::<Breadcrumb>(widget).is_some(),
+            // `WidgetKind::DataView`. `DataView` is `VirtualList` under a second name,
+            // so one concrete check answers both rows.
+            "virtual_list" | "data_view" => {
+                self::coercion::widget_as::<VirtualList>(widget).is_some()
+            }
             // `WidgetKind::ToolButton`
             "tool_button" => self::coercion::widget_as::<ToolButton>(widget).is_some(),
             "split_button" => self::coercion::widget_as::<SplitButton>(widget).is_some(),

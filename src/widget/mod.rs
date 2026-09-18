@@ -145,7 +145,6 @@ pub use input_widgets::{
     ime_preedit::ImePreedit,
     inplace_editor::InplaceEditor,
     masked_edit::MaskedEdit,
-    mention::{CompletedMention, Mention, MentionCandidate},
     multi_select_combo_box::{MultiSelectComboBox, MultiSelectItem},
     otp_input::OtpInput,
     range_slider::{RangeSlider, RangeSliderOrientation},
@@ -169,6 +168,14 @@ pub use input_widgets::{
 // stripped profile compiles it out — same gate as its module declaration.
 #[cfg(full_widgets)]
 pub use input_widgets::cascader::{Cascader, CascaderOption};
+// `Mention` publishes a property contract and is built by the factory, so it needs the
+// full property registry and not just an unstripped widget set. Its module is declared
+// under `full_widgets`, and this export must carry the *same* gate: listing it in the
+// `widgets_unstripped` group above left the re-export dangling in any profile that has
+// `widgets_unstripped` without `full_widgets` (a `--features wasm` build, for one), which
+// is a compile error rather than a missing widget.
+#[cfg(full_widgets)]
+pub use input_widgets::mention::{CompletedMention, Mention, MentionCandidate};
 // `NumberPicker` needs the full property registry (it publishes a contract and is
 // constructed by the factory), so a stripped profile compiles it out. The export
 // carries the same gate as the module, not the looser `full_widgets` one.
@@ -191,8 +198,16 @@ pub use container_widgets::stackedwidget::StackedWidget;
 pub use container_widgets::tabwidget::TabWidget;
 #[cfg(widgets_unstripped)]
 pub use container_widgets::toolbox::ToolBox;
+/// Alias for [`ToolBox`], matching the `WidgetKind::Toolbox` spelling.
+#[cfg(widgets_unstripped)]
+pub type Toolbox = ToolBox;
 /// Alias for [`GroupBox`], for callers that name the container a "panel".
-/// Interchangeable with `GroupBox`; only the spelling differs.
+///
+/// **The same Rust type as `GroupBox`, exposed under the `panel` factory name.**
+/// `WidgetKind::Panel` is declared by several capabilities — this control, plus
+/// `breadcrumb`, which is a `Panel`-kinded navigation trail — so a caller that wants
+/// the plain container must ask for `panel` by name; see `constructed_as` in
+/// `src/widget/capability/registration.rs`.
 pub type Panel = GroupBox;
 pub use base_widgets::frame::Frame;
 /// Alias for [`DockWidget`], for callers that think of a dockable region as a
@@ -437,9 +452,10 @@ pub type ActivityIndicator = ProgressBar;
 /// Per-item checkboxes are **not** implied — this is a selectable list.
 #[cfg(full_widgets)]
 pub type CheckListBox = ListBox;
-/// Alias for [`ToolBox`] declared here as well as re-exported above, so it
-/// remains reachable under every gate. Identical to the `ToolBox` re-export.
-#[cfg(full_widgets)]
+/// Alias for [`ToolBox`] declared next to the re-export above, so it remains
+/// reachable on a device build whose widget set is stripped.
+/// It is the same control; the alias only carries the `WidgetKind::Toolbox` spelling.
+#[cfg(all(full_widgets, not(widgets_unstripped)))]
 pub type Toolbox = ToolBox;
 /// Alias for [`SpinBox`] intended for floating-point input.
 /// It is the same integer spin box: no decimal support is added by the alias.

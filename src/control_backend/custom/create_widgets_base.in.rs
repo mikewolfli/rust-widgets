@@ -12,9 +12,25 @@ macro_rules! impl_base_widgets {
         }
 
         fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
-
-            self.mount_widget_of_kind(WidgetKind::Window, 0, title, x, y, width, height)
-
+            let id = self.mount_widget_of_kind(WidgetKind::Window, 0, title, x, y, width, height);
+            if id != 0 {
+                // A widget id is *reusable*: `widget::runtime` counts ids per thread from a
+                // fixed start, so a window created after another was dropped (or created by a
+                // different, earlier test on the same thread) can be handed the same id. The
+                // recorded client size is keyed by id, so without this the new window would
+                // answer `window_client_size` with the *previous* window's size — a stale
+                // value that beats the correct geometry fallback and lays the new window's
+                // children out at the wrong size.
+                //
+                // Clearing on creation makes "was this window resized?" a property of the
+                // window rather than of the integer that names it.
+                self.state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .window_client_sizes
+                    .remove(&id);
+            }
+            id
         }
         fn create_button(
             &self,
@@ -68,7 +84,22 @@ macro_rules! impl_base_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            self.mount_widget_of_kind(WidgetKind::Panel, parent, "", x, y, width, height)
+            // By name: `WidgetKind::Panel` is shared with `breadcrumb`, and the kind
+            // lookup answers with whichever of the two is registered first — which was
+            // the breadcrumb, so `create_panel` built a navigation trail.
+            //
+            // The name-based path only exists where the capability registry is
+            // compiled in; a stripped profile has no constructors at all and reports
+            // `0` from either path, so it keeps the kind-based call rather than
+            // referring to a helper it does not compile.
+            #[cfg(full_widgets)]
+            {
+                self.mount_named_widget("panel", parent, "", x, y, width, height)
+            }
+            #[cfg(not(full_widgets))]
+            {
+                self.mount_widget_of_kind(WidgetKind::Panel, parent, "", x, y, width, height)
+            }
         }
         fn create_group_box(
             &self,

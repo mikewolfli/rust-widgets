@@ -832,6 +832,105 @@ pub(crate) unsafe fn local_point(view: id, window_point: NSPoint) -> Point {
     Point::new(local.x.round() as i32, local.y.round() as i32)
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// Window resize reporting
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Association key holding the logical widget id on a window.
+fn window_association_key() -> id {
+    static KEY: OnceLock<usize> = OnceLock::new();
+    let ptr = *KEY.get_or_init(|| {
+        // SAFETY: standard NSString construction; the value lives for the process.
+        unsafe { NSString::alloc(nil).init_str("RustWidgetsWindowWidgetId") as id as usize }
+    });
+    ptr as id
+}
+
+/// The `NSWindowDelegate` subclass that reports resizes.
+///
+/// # Why a delegate rather than a notification observer
+///
+/// A window resized by the user must re-run the host's layout. AppKit reports this
+/// through `windowDidResize:`, and the delegate is the documented receiver. The window
+/// id travels as an associated object because `ClassDecl` needs its ivars finalised
+/// before `register()` — the same constraint the canvas view class documents.
+fn window_delegate_class() -> *const Class {
+    static CLASS: OnceLock<usize> = OnceLock::new();
+    (*CLASS.get_or_init(|| {
+        let superclass = class!(NSObject);
+        let mut decl = ClassDecl::new("RustWidgetsWindowDelegate", superclass)
+            .expect("the Objective-C runtime refused to declare RustWidgetsWindowDelegate");
+        // SAFETY: `windowDidResize:` is `NSWindowDelegate` API and takes the notifying
+        // `NSWindow *`; the function pointer reproduces that ABI.
+        unsafe {
+            decl.add_method(
+                sel!(windowDidResize:),
+                window_did_resize as extern "C" fn(&Object, Sel, id),
+            );
+        }
+        decl.register()
+    })) as *const Class
+}
+
+/// `windowDidResize:` — records the new client size and queues a `Resized` trigger.
+unsafe extern "C" fn window_did_resize(this: &Object, _cmd: Sel, notification: id) {
+    let widget_id = associated_widget_id(this, window_association_key());
+    if widget_id == 0 {
+        return;
+    }
+    // `NSNotification.object` is the window that resized.
+    let window: id = msg_send![notification, object];
+    if window == nil {
+        return;
+    }
+    // The content rect excludes the title bar, which is the area the layout may use.
+    // `contentView` reports it directly and is simpler than converting a frame rect.
+    let content: id = msg_send![window, contentView];
+    if content == nil {
+        return;
+    }
+    let bounds: NSRect = msg_send![content, bounds];
+    let width = bounds.size.width.max(0.0) as u32;
+    let height = bounds.size.height.max(0.0) as u32;
+    if width == 0 || height == 0 {
+        return;
+    }
+    if let Some(platform) = super::platform_impl::active_platform() {
+        if let Some(macos) = platform.as_any().downcast_ref::<super::types::MacOSPlatform>() {
+            crate::queue_resize_trigger(widget_id, width, height);
+        }
+    }
+}
+
+/// Installs the resize delegate on `window` and tags it with `widget_id`.
+///
+/// # Safety
+///
+/// `window` must be a live `NSWindow` on the AppKit main thread.
+pub(crate) unsafe fn install_resize_delegate(window: id, widget_id: ObjectId) {
+    // The delegate is retained by the window, so a process-lifetime allocation here is
+    // correct: AppKit releases it with the window.
+    let delegate: id = msg_send![window_delegate_class(), new];
+    objc_setAssociatedObject(
+        delegate as *mut c_void,
+        window_association_key() as *const c_void,
+        widget_id as *mut c_void,
+        OBJC_ASSOCIATION_ASSIGN,
+    );
+    let _: () = msg_send![window, setDelegate: delegate];
+}
+
+/// Reads the logical widget id associated with `object`, or 0 when absent.
+///
+/// # Safety
+///
+/// `object` must be a live Objective-C object.
+unsafe fn associated_widget_id(object: &Object, key: id) -> ObjectId {
+    let value =
+        objc_getAssociatedObject(object as *const Object as *mut c_void, key as *const c_void);
+    value as ObjectId
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

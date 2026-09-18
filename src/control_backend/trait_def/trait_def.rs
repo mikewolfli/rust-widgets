@@ -1121,6 +1121,29 @@ pub trait ControlBackend: Send + Sync {
     fn get_widget_geometry(&self, _widget_id: ObjectId) -> Option<(i32, i32, u32, u32)> {
         None
     }
+
+    /// Report that a container's client area became `width` by `height`.
+    ///
+    /// A host calls this when the *user* resizes a window — the case no
+    /// `set_widget_geometry` covers, because the program was not the one changing the
+    /// size. Two things happen: the size becomes answerable through
+    /// [`Self::window_client_size`], and a `Resized` trigger is queued so the app layer
+    /// re-runs the window's layout.
+    ///
+    /// Returns `false` when the id addresses nothing this backend created, so a stale id
+    /// cannot inject a phantom resize.
+    fn queue_resize_trigger(&self, _window_id: ObjectId, _width: u32, _height: u32) -> bool {
+        false
+    }
+
+    /// The client size last reported for `window_id`, or `None` when none was.
+    ///
+    /// This is the "how big is it now?" half of [`Self::queue_resize_trigger`]: the
+    /// resize event carries only an id, and it is consumed by polling, so a host reads
+    /// the dimensions from here rather than trying to race the queue.
+    fn window_client_size(&self, _window_id: ObjectId) -> Option<(u32, u32)> {
+        None
+    }
     /// Enable or disable IME input handling for a widget.
     fn set_widget_ime_enabled(&self, widget_id: ObjectId, enabled: bool) -> bool;
     /// Query IME enabled state for a widget.

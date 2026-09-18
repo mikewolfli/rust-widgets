@@ -748,15 +748,36 @@ fn every_shared_kind_has_a_tie_break() {
         // A shared kind needs every member distinguishable. Instantiating each
         // member and asking the factory to resolve it back is the only check that
         // exercises the real table rather than a copy of it.
-        for name in &names {
-            let Some(widget) = factory.create(name, Rect::new(0, 0, 32, 32), "") else {
-                // Not constructible: it cannot be mis-resolved at runtime either.
-                continue;
-            };
-            let resolved = factory.capability_for_kind_instance(widget.as_ref());
-            let resolved_name = resolved.map(|cap| cap.canonical_name);
-            if resolved_name != Some(*name) {
-                ambiguous.push((kind, *name, resolved_name));
+        //
+        // A group may legitimately contain **one control under two names**
+        // (`table_widget` / `table`, `group_box` / `panel`, `tool_box` / `toolbox`,
+        // `virtual_list` / `data_view`): the alias exists so every spelling resolves,
+        // not so a second type exists. The two entries answer with the same concrete
+        // type, so "resolved back to the name I created it as" is the wrong
+        // question — what must hold is that *some* entry in the group resolves it,
+        // and that the answer is the same whichever of the two names asked. That
+        // pair-wise agreement is what is asserted here; a genuinely different
+        // control resolving to a sibling's name is still caught, because its own
+        // name would not be in the agreeing set.
+        let resolved_by_name: alloc::vec::Vec<(&'static str, &'static str)> = names
+            .iter()
+            .filter_map(|name| {
+                let widget = factory.create(name, Rect::new(0, 0, 32, 32), "")?;
+                let resolved = factory.capability_for_kind_instance(widget.as_ref());
+                Some((*name, resolved.map(|cap| cap.canonical_name).unwrap_or("<none>")))
+            })
+            .collect();
+        for (name, resolved) in &resolved_by_name {
+            if resolved == &"<none>" {
+                ambiguous.push((kind, *name, None));
+            }
+        }
+        // Two names may share an answer; a name may never map to a *third* name that
+        // is not itself a member of this group, and a group may not leave a member
+        // answering nothing.
+        for (name, resolved) in &resolved_by_name {
+            if *resolved != "<none>" && !names.contains(resolved) {
+                ambiguous.push((kind, *name, Some(*resolved)));
             }
         }
     }

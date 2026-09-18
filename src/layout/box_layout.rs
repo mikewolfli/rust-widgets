@@ -69,6 +69,19 @@ impl BoxLayout {
             item.policy = policy;
         }
     }
+    /// Splits `primary` pixels across the items, honouring each item's constraints.
+    ///
+    /// # The two invariants this must not break
+    ///
+    /// 1. `sum(assigned) <= primary` — children that together need more than the parent
+    ///    must not be placed partly outside it. Overflow here is visible as a control
+    ///    painted over its neighbour, and it is reachable from the public
+    ///    `set_constraints` API, so it cannot be left to the caller to avoid.
+    /// 2. Each item's `min` is honoured *when the space can satisfy all of them*. When it
+    ///    cannot — two 80px minima in a 100px row — no assignment satisfies both, so the
+    ///    shortfall is distributed proportionally to the minima instead of being applied
+    ///    inconsistently (the previous single-pass shrink loop reduced some items below
+    ///    their minimum while leaving others at it, so the result depended on item order).
     fn allocate_major_lengths(&self, primary: u32) -> Vec<u32> {
         if self.items.is_empty() {
             return Vec::new();
@@ -87,6 +100,31 @@ impl BoxLayout {
             }
             assigned.push(major);
         }
+
+        // `min` is a hard floor only while the parent can pay for every floor. When the
+        // floors alone exceed `primary`, they are scaled down proportionally: every item
+        // then falls short by the same fraction, which is the only order-independent
+        // answer, and invariant 1 is restored before the grow/shrink passes run.
+        let total_min: u32 = self.items.iter().map(|item| item.constraints.min).sum();
+        if total_min > primary {
+            let budget = primary;
+            let mut scaled = Vec::with_capacity(self.items.len());
+            let mut consumed = 0u32;
+            for (index, item) in self.items.iter().enumerate() {
+                // The last item takes the remainder rather than its own rounded share, so
+                // the pieces always add up to exactly `budget`.
+                let share = if index + 1 == self.items.len() {
+                    budget.saturating_sub(consumed)
+                } else {
+                    (budget.saturating_mul(item.constraints.min) / total_min.max(1))
+                        .min(budget.saturating_sub(consumed))
+                };
+                consumed = consumed.saturating_add(share);
+                scaled.push(share);
+            }
+            return scaled;
+        }
+
         let mut total_assigned: u32 = assigned.iter().sum();
         while total_assigned < primary {
             let mut grew = false;
@@ -120,7 +158,20 @@ impl BoxLayout {
                 }
             }
             if !shrank {
-                break;
+                // Nothing is above its minimum and the total is still too large, which
+                // can now only happen if a `max` below the summed minima was pinned above
+                // its own minimum. Reducing from the largest allocation keeps the sum
+                // inside `primary` instead of returning an overflowing vector.
+                let Some((largest_index, _)) = assigned
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, value)| **value > 0)
+                    .max_by_key(|(_, value)| **value)
+                else {
+                    break;
+                };
+                assigned[largest_index] = assigned[largest_index].saturating_sub(1);
+                total_assigned = total_assigned.saturating_sub(1);
             }
         }
         assigned

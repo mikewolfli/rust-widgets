@@ -1418,6 +1418,57 @@ pub fn inject_widget_trigger_event(
 ) -> bool {
     control_backend::get_control_backend().inject_widget_trigger_event(widget_id, kind)
 }
+/// Reports that a container's client area became `width` by `height`, and queues a
+/// `Resized` trigger so a host re-runs its layout.
+///
+/// # Who calls this
+///
+/// The platform backends call it from their window-resize callback (GTK
+/// `size-allocate`, Win32 `WM_SIZE`, AppKit `windowDidResize:`), and a host that owns
+/// its event loop may call it for a resize it learns about by other means. It is the
+/// one entry point for "the user resized this window", which no `set_widget_geometry`
+/// call covers — the program was not the one changing the size.
+///
+/// The reported size is retained (see [`window_client_size`]) and a
+/// [`WidgetTriggerKind::Resized`] event is queued. The two are deliberately separate:
+/// the event is consumed by polling, while the size keeps answering afterwards.
+///
+/// Returns `false` when `window_id` addresses nothing, so a stale id cannot inject a
+/// phantom resize.
+#[cfg(not(alloc_frugal))]
+pub fn queue_resize_trigger(window_id: crate::core::ObjectId, width: u32, height: u32) -> bool {
+    control_backend::get_control_backend().queue_resize_trigger(window_id, width, height)
+}
+/// Reports a container resize in an allocation-frugal (`mini`) build.
+///
+/// The signature is identical to the full build's (rule #21: a profile change must
+/// not change the API). `mini` runs without a platform singleton, so there is no
+/// window whose resize could be observed and nothing to queue — answering `false`
+/// reports that honestly instead of accepting a resize that could never be delivered.
+#[cfg(alloc_frugal)]
+pub fn queue_resize_trigger(window_id: crate::core::ObjectId, width: u32, height: u32) -> bool {
+    let _ = (window_id, width, height);
+    false
+}
+/// The client size last reported for `window_id`, or `None` when none was.
+///
+/// The readback half of [`queue_resize_trigger`]: a host that receives a `Resized`
+/// event learns *which* window changed, and asks here *how big* it now is. Falls back
+/// to the window's current geometry, which is what it still has if the user has never
+/// resized it.
+#[cfg(not(alloc_frugal))]
+pub fn window_client_size(window_id: crate::core::ObjectId) -> Option<(u32, u32)> {
+    control_backend::get_control_backend().window_client_size(window_id)
+}
+/// The last reported client size in an allocation-frugal (`mini`) build.
+///
+/// Always `None`: the same signature as the full build, but a `mini` build keeps no
+/// window records, so no size was ever reported to answer with.
+#[cfg(alloc_frugal)]
+pub fn window_client_size(window_id: crate::core::ObjectId) -> Option<(u32, u32)> {
+    let _ = window_id;
+    None
+}
 // Clipboard
 /// Replaces the platform clipboard's text contents.
 ///

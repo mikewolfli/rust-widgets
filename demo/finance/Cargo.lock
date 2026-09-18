@@ -2826,7 +2826,7 @@ dependencies = [
 
 [[package]]
 name = "rust_widgets"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "aes",
  "boa_engine",

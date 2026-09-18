@@ -184,6 +184,18 @@ pub fn create_tool_box(geometry: Rect, text: &str) -> Box<dyn Widget> {
 }
 
 #[cfg(full_widgets)]
+/// Creates a toolbox with no items. `text` is applied as the control's label.
+///
+/// The same `ToolBox` control as [`create_tool_box`] under the spelling the
+/// `toolbox` factory name uses. Both names have to exist because the factory
+/// resolves the `toolbox` alias to its own constructor — a control table row is
+/// `(capability, constructor)`, so an alias without a constructor cannot be
+/// registered at all.
+pub fn create_toolbox(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    create_tool_box(geometry, text)
+}
+
+#[cfg(full_widgets)]
 /// Creates a tab bar with no tabs. `text` is applied as the control's label.
 pub fn create_tab_bar(geometry: Rect, text: &str) -> Box<dyn Widget> {
     label(geometry, text, Box::new(TabBar::new(geometry)))
@@ -240,6 +252,18 @@ pub fn create_table_widget(geometry: Rect, text: &str) -> Box<dyn Widget> {
 }
 
 #[cfg(full_widgets)]
+/// Creates the plain `Table` control with no rows or columns.
+///
+/// Distinct from [`create_table_widget`]: `Table` reports `WidgetKind::Table` and
+/// publishes the `table` factory name, which the C ABI's `create_table` addresses.
+/// Before this constructor existed the only way to reach a table by name was the
+/// `table_widget` entry, so `WidgetKind::Table` had no capability *named after it*
+/// and the kind lookup resolved to whichever table-like entry registered first.
+pub fn create_table(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(TableWidget::new(geometry)))
+}
+
+#[cfg(full_widgets)]
 /// Creates a data grid with no rows or columns. `text` is applied as the
 /// control's label.
 pub fn create_data_grid(geometry: Rect, text: &str) -> Box<dyn Widget> {
@@ -265,6 +289,16 @@ pub fn create_virtual_table(geometry: Rect, text: &str) -> Box<dyn Widget> {
 /// the control's label.
 pub fn create_virtual_list(geometry: Rect, text: &str) -> Box<dyn Widget> {
     label(geometry, text, Box::new(VirtualList::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates a data view with no data source. `text` is applied as the control's label.
+///
+/// The same `VirtualList` control as [`create_virtual_list`] under the `DataView`
+/// spelling — `widget::mod.rs` declares `pub type DataView = VirtualList;`, and a kind
+/// whose constructor cannot be named is a kind `create_data_view` cannot build.
+pub fn create_data_view(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    create_virtual_list(geometry, text)
 }
 
 #[cfg(full_widgets)]
@@ -306,6 +340,19 @@ pub fn create_color_picker(geometry: Rect, text: &str) -> Box<dyn Widget> {
 /// differently-named picker.
 pub fn create_color_dialog(geometry: Rect, text: &str) -> Box<dyn Widget> {
     label(geometry, text, Box::new(ColorDialog::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates a panel container with no children and no label.
+///
+/// `Panel` is a type alias for `GroupBox` (`src/widget/mod.rs`), so this is the same
+/// control `create_group_box(..)` builds, under the `panel` factory name. The second
+/// name is not redundant: the capability the `panel` name is registered against is
+/// what `create_panel(..)` mounts, and without it `WidgetKind::Panel` had no
+/// capability *named after it*, so the kind lookup fell through to `breadcrumb` — a
+/// navigation trail where the caller asked for an empty container.
+pub fn create_panel(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(GroupBox::new(geometry)))
 }
 
 #[cfg(full_widgets)]

@@ -389,7 +389,7 @@ assert_eq!(report.patches.len(), 1);            // 一个 SetProperty，别无�
 > 盘口报价表、行情表与振荡指标面板 —— 以及它们共用的技术指标计算。
 > 详见 [cookbook/zh-CN/src/chapters/finance.md](cookbook/zh-CN/src/chapters/finance.md)。
 
-> **C ABI 覆盖范围。** C ABI（`include/rw_generated.h`，128 个 `rw_*` 函数）
+> **C ABI 覆盖范围。** C ABI（`include/rw_generated.h`，129 个 `rw_*` 函数）
 > 覆盖窗口管理、控件创建、逐控件属性与主题选择。创建与属性访问都是**通用**的：
 > `rw_create_widget_of_kind(parent, "tree_view", ...)` 可触及每一个已注册控件
 > （`rw_widget_kind_names` 列出全部），`rw_set_widget_property(id, "tooltip", ...)`

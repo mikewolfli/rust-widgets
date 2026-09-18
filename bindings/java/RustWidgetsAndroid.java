@@ -67,6 +67,30 @@ public final class RustWidgets {
      */
     public static native void nativeDetachContext();
 
+    // ---- Layout -----------------------------------------------------------
+
+    /**
+     * Report the host window's new client size, in pixels.
+     *
+     * <p>Android has no window-resize callback the library can subscribe to without
+     * owning the {@code Activity}: the change is delivered to the host's own
+     * {@code View.OnLayoutChangeListener} or {@code Activity.onConfigurationChanged}. So
+     * the host, which is the only party that observes it, reports it here — the same
+     * contract the desktop backends implement from their toolkit's callback.
+     *
+     * <p>Reporting re-runs that window's layout, so its children follow the new size
+     * instead of keeping the geometry they were given for the old one. A host that never
+     * calls this still works: its window keeps the size it was created with.
+     *
+     * @param windowId the id {@code rw_create_window} returned; a non-positive value is
+     *                 refused
+     * @param width    the new client width, in pixels; must be positive
+     * @param height   the new client height, in pixels; must be positive
+     * @return {@code 1} when the resize was accepted, {@code 0} when it was refused (an
+     *         unknown {@code windowId} or a non-positive size)
+     */
+    public static native int nativeNotifyResize(long windowId, int width, int height);
+
     // ---- Diagnostics ------------------------------------------------------
 
     /**

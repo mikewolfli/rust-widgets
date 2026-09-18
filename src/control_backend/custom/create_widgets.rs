@@ -109,7 +109,14 @@ impl ControlBackend for super::CustomPaintControlBackend {
     ///
     /// The widget object itself is released through
     /// `widget::runtime::unregister`, which owns it; what remains here is
-    /// the IME policy and accessible-name override, which no widget holds.
+    /// the IME policy, the accessible-name override and the last reported client size,
+    /// none of which a widget holds.
+    ///
+    /// The client size **must** be dropped here, and that is why it is named explicitly:
+    /// it is keyed by widget id, and a destroyed id can be handed out again (the registry
+    /// counts ids per thread from a fixed start). Leaving the entry behind would make a
+    /// brand-new window open at the size of a *different*, long-gone window, because
+    /// `window_client_size` answers from this map before falling back to geometry.
     fn destroy_widget(&self, widget_id: ObjectId) -> bool {
         // `widget::runtime` is compiled out of the alloc-frugal profile, which
         // holds no widget objects by design; only the host-side maps remain there.
@@ -120,7 +127,8 @@ impl ControlBackend for super::CustomPaintControlBackend {
 
         let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let had_host_state = state.ime_enabled.remove(&widget_id).is_some()
-            || state.accessibility_names.remove(&widget_id).is_some();
+            || state.accessibility_names.remove(&widget_id).is_some()
+            || state.window_client_sizes.remove(&widget_id).is_some();
         released || had_host_state
     }
     impl_helpers!();

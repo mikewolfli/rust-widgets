@@ -335,6 +335,39 @@ impl Platform for IosMobilePlatform {
         self.state.unmount_surface_record(id)
     }
 
+    /// The window's current client size, as last reported by the host.
+    ///
+    /// Falls back to the size the window was created with. `None` for an id this backend
+    /// does not know, so a caller can tell "no such window" from "a size I can use".
+    fn window_client_size(&self, window_id: u64) -> Option<(u32, u32)> {
+        // Ask the control backend, which owns the window and is therefore the only
+        // store that knows the size a resize reported.
+        crate::window_client_size(window_id).or_else(|| self.state.window_size(window_id))
+    }
+
+    /// Reports a container's new client size and queues a `Resized` trigger.
+    ///
+    /// # Who calls this on iOS
+    ///
+    /// The **host**, not this backend. This platform has no resize callback of its own:
+    /// a `UIWindow` fills its scene and the size change arrives at the host's view
+    /// controller (`viewDidLayoutSubviews`) or at its
+    /// `UIDevice.orientationDidChangeNotification` observer, neither of which the library
+    /// sees — it has no window delegate and deliberately stores no UIKit handle (see
+    /// `create_window`). Fabricating a subscription here would mean holding a UIKit object
+    /// the module documents as not holding.
+    ///
+    /// So an iOS host that wants its layout to follow the screen reports the new size here
+    /// (or through the crate-level [`crate::queue_resize_trigger`], which is the same
+    /// call). A host that does not is not broken: its window keeps the size it was created
+    /// with, which is what `window_client_size` falls back to.
+    fn queue_resize_trigger(&self, window_id: u64, width: u32, height: u32) -> bool {
+        // Forward to the control backend, which owns the window and the queue the app
+        // polls. Writing to the platform's own state would land in a store the host
+        // never reads, because `create_window` goes through the control backend.
+        crate::queue_resize_trigger(window_id, width, height)
+    }
+
     /// Queues a repaint for the host to pick up. `false` when `id` is not mounted.
     fn invalidate_surface(&self, id: u64) -> bool {
         self.state.invalidate_surface_record(id)

@@ -145,14 +145,22 @@ impl Layout for GridLayout {
         self.cells.fill(None);
     }
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
-        let available_width = rect
-            .width
-            .saturating_sub(self.margin * 2)
-            .saturating_sub((self.cols - 1) * self.spacing);
-        let available_height = rect
-            .height
-            .saturating_sub(self.margin * 2)
-            .saturating_sub((self.rows - 1) * self.spacing);
+        // The margins and the inter-cell spacing are honoured only as far as the rect can
+        // pay for them. When it cannot, the spacing is reduced *before* the available
+        // extent is derived, so the cursor walk and the extent can never disagree: the
+        // previous version saturated `available_width` to zero while still stepping by the
+        // full spacing, which placed later columns outside a parent that had allocated
+        // nothing for them. A control resized small is the case this exists for.
+        let margin = self.margin.min((rect.width / 2).min(rect.height / 2));
+        let inner_width = rect.width.saturating_sub(margin * 2);
+        let inner_height = rect.height.saturating_sub(margin * 2);
+        let spacing_x =
+            if self.cols > 1 { self.spacing.min(inner_width / (self.cols - 1)) } else { 0 };
+        let spacing_y =
+            if self.rows > 1 { self.spacing.min(inner_height / (self.rows - 1)) } else { 0 };
+
+        let available_width = inner_width.saturating_sub(spacing_x * (self.cols - 1));
+        let available_height = inner_height.saturating_sub(spacing_y * (self.rows - 1));
 
         // Calculate column widths and x-offsets based on per-column stretch factors
         let total_col_stretch: u32 = self.column_stretches.iter().sum();
@@ -172,7 +180,7 @@ impl Layout for GridLayout {
             };
             col_widths.push(cell_width);
             col_x_offsets.push(current_x);
-            current_x += cell_width as i32 + self.spacing as i32;
+            current_x += cell_width as i32 + spacing_x as i32;
         }
 
         // Precompute cumulative row height sums for y-offsets (fraction-aware)
@@ -188,11 +196,11 @@ impl Layout for GridLayout {
             };
             row_heights.push(cell_height);
             row_y_offsets.push(current_y);
-            current_y += cell_height as i32 + self.spacing as i32;
+            current_y += cell_height as i32 + spacing_y as i32;
         }
 
         // Distribute the remainder width/height across columns/rows (biggest-bucket algorithm)
-        let total_width: u32 = col_widths.iter().sum::<u32>() + self.spacing * (self.cols - 1);
+        let total_width: u32 = col_widths.iter().sum::<u32>() + spacing_x * (self.cols - 1);
         let remainder_w = available_width.saturating_sub(total_width);
         if remainder_w > 0 && !col_widths.is_empty() {
             // Distribute remainder to columns with largest stretch first
@@ -211,7 +219,7 @@ impl Layout for GridLayout {
             }
         }
 
-        let total_height: u32 = row_heights.iter().sum::<u32>() + self.spacing * (self.rows - 1);
+        let total_height: u32 = row_heights.iter().sum::<u32>() + spacing_y * (self.rows - 1);
         let remainder_h = available_height.saturating_sub(total_height);
         if remainder_h > 0 && !row_heights.is_empty() {
             let mut indices: Vec<usize> = (0..self.rows as usize).collect();
@@ -233,12 +241,12 @@ impl Layout for GridLayout {
         current_x = 0;
         for col in 0..self.cols {
             col_x_offsets[col as usize] = current_x;
-            current_x += col_widths[col as usize] as i32 + self.spacing as i32;
+            current_x += col_widths[col as usize] as i32 + spacing_x as i32;
         }
         current_y = 0;
         for row in 0..self.rows {
             row_y_offsets[row as usize] = current_y;
-            current_y += row_heights[row as usize] as i32 + self.spacing as i32;
+            current_y += row_heights[row as usize] as i32 + spacing_y as i32;
         }
 
         for row in 0..self.rows {
@@ -246,8 +254,8 @@ impl Layout for GridLayout {
                 if let Some(widget_id) = self.cells[(row * self.cols + col) as usize] {
                     let cell_width = col_widths[col as usize];
                     let cell_height = row_heights[row as usize];
-                    let x = rect.x + self.margin as i32 + col_x_offsets[col as usize];
-                    let y = rect.y + self.margin as i32 + row_y_offsets[row as usize];
+                    let x = rect.x + margin as i32 + col_x_offsets[col as usize];
+                    let y = rect.y + margin as i32 + row_y_offsets[row as usize];
                     widgets(widget_id, Rect::new(x, y, cell_width, cell_height));
                 }
             }

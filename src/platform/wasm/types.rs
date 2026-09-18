@@ -49,6 +49,16 @@ pub struct WasmPlatform {
     pub(crate) state: BackendState<WasmHandleKind>,
     pub(crate) runtime: WasmRuntime,
     pub(crate) canvas_id: String,
+    /// The `ResizeObserver` attached by [`WasmPlatform::observe_canvas_resize`], if any.
+    ///
+    /// Kept so the observation can be replaced or dropped rather than accumulating one
+    /// observer per call, which would re-run the window's layout once per attached
+    /// observer every time the canvas changes size.
+    ///
+    /// `Mutex` rather than `RefCell` because `Platform` is `Send + Sync`; the browser
+    /// runs this on one thread anyway, so the lock is never contended.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+    pub(crate) resize_observer: crate::compat::Mutex<Option<web_sys::ResizeObserver>>,
 }
 
 impl WasmPlatform {
@@ -58,6 +68,8 @@ impl WasmPlatform {
             state: BackendState::new(),
             runtime: WasmRuntime::new(),
             canvas_id: "wgpu-canvas".to_string(),
+            #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+            resize_observer: crate::compat::Mutex::new(None),
         }
     }
 
@@ -67,6 +79,8 @@ impl WasmPlatform {
             state: BackendState::new(),
             runtime: WasmRuntime::new(),
             canvas_id: canvas_id.to_string(),
+            #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+            resize_observer: crate::compat::Mutex::new(None),
         }
     }
 
@@ -86,6 +100,98 @@ impl WasmPlatform {
         h: u32,
     ) -> u64 {
         self.state.create_widget(kind, text, x, y, w, h)
+    }
+
+    /// Makes `window_id`'s layout follow this backend's canvas as the page resizes it.
+    ///
+    /// # Why an observer rather than a `window.onresize` listener
+    ///
+    /// The library's client area is the **canvas**, not the browser window: a page can
+    /// resize its canvas without the window changing (a sidebar opens, the canvas is in
+    /// a flex column), and the window can change without the canvas being repainted at a
+    /// new size. `ResizeObserver` reports the element that actually shrank, which is the
+    /// element the library paints into.
+    ///
+    /// Calling this again replaces the previous observation, so a host that re-runs its
+    /// setup does not end up laying the window out once per attached observer.
+    ///
+    /// Returns `false` when there is no canvas or the browser has no
+    /// `ResizeObserver` (an older engine), in which case the host must report resizes
+    /// through [`crate::queue_resize_trigger`] itself. `false` is also the answer on a
+    /// non-wasm host, where there is no DOM to observe.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+    pub fn observe_canvas_resize(&self, window_id: crate::core::ObjectId) -> bool {
+        use wasm_bindgen::JsCast;
+
+        let Some(canvas) = self.canvas_element() else {
+            log::warn!(
+                "[wasm] observe_canvas_resize: no canvas element with id '{}'; nothing to \
+                 observe",
+                self.canvas_id
+            );
+            return false;
+        };
+
+        // The callback is handed to JS with `into_js_value`, which transfers ownership to
+        // the JS heap. That matters for two reasons: the DOM requires the callback to
+        // outlive the `ResizeObserver::new` call, and a Rust-side `Closure` handle is
+        // `!Send`, which `Platform` cannot hold. The JS side keeps it alive for as long as
+        // the observer is attached; `web_sys`'s own implementation does the same.
+        let callback = wasm_bindgen::closure::Closure::<dyn FnMut(js_sys::Array)>::new(
+            move |entries: js_sys::Array| {
+                for entry in entries.iter() {
+                    let Ok(entry) = entry.dyn_into::<web_sys::ResizeObserverEntry>() else {
+                        continue;
+                    };
+                    // The content box is the client area the library lays out against.
+                    let rect = entry.content_rect();
+                    let width = rect.width().round().max(0.0) as u32;
+                    let height = rect.height().round().max(0.0) as u32;
+                    if width == 0 || height == 0 {
+                        // A hidden or `display: none` canvas reports a zero client area.
+                        // Reporting it would lay every child out at zero size; the next
+                        // non-zero report re-runs the layout, so skipping is the safe
+                        // answer.
+                        continue;
+                    }
+                    crate::queue_resize_trigger(window_id, width, height);
+                }
+            },
+        );
+
+        let callback: js_sys::Function = callback.into_js_value().unchecked_into();
+        let Ok(observer) = web_sys::ResizeObserver::new(&callback) else {
+            log::warn!(
+                "[wasm] observe_canvas_resize: this browser has no ResizeObserver; the host \
+                 must report resizes through `queue_resize_trigger` instead"
+            );
+            return false;
+        };
+        observer.observe(&canvas);
+        *self.resize_observer.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            Some(observer);
+        true
+    }
+
+    /// Makes `window_id`'s layout follow the canvas as the page resizes it.
+    ///
+    /// Always `false` on a non-wasm host: there is no DOM canvas to observe, so the
+    /// honest answer is that the library cannot watch for resizes here — a host that
+    /// knows its own size reports it through [`crate::queue_resize_trigger`].
+    #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
+    pub fn observe_canvas_resize(&self, _window_id: crate::core::ObjectId) -> bool {
+        false
+    }
+
+    /// Returns this backend's canvas element, if the document has one.
+    #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+    fn canvas_element(&self) -> Option<web_sys::HtmlCanvasElement> {
+        use wasm_bindgen::JsCast;
+        web_sys::window()?
+            .document()?
+            .get_element_by_id(&self.canvas_id)?
+            .dyn_into::<web_sys::HtmlCanvasElement>()
+            .ok()
     }
 }
 

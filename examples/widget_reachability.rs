@@ -403,6 +403,31 @@ fn kind_name(kind: WidgetKind) -> String {
 fn main() {
     let factory = WidgetFactory::new_with_defaults();
 
+    // Audit mode: answer the one question the default report cannot — for every
+    // kind, *which control does the library hand back*. The gate needs the full
+    // kind list rather than the kinds that happen to be *registered*, because any
+    // of several capabilities can report a shared kind (every table variant reports
+    // `WidgetKind::Table`), so a registered-name check cannot see a substitution.
+    if std::env::args().any(|argument| argument == "--shared-kind-resolution") {
+        let resolutions: Vec<serde_json::Value> = all_kinds()
+            .into_iter()
+            .map(|kind| {
+                let resolved = factory
+                    .capability_by_kind(kind)
+                    .map(|capability| capability.canonical_name)
+                    .unwrap_or("");
+                let candidates = factory.capabilities_for_kind(kind).count();
+                serde_json::json!({
+                    "kind": kind_name(kind),
+                    "resolved": resolved,
+                    "candidates": candidates,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::json!({ "resolutions": resolutions }));
+        return;
+    }
+
     let kinds: Vec<String> = all_kinds().into_iter().map(kind_name).collect();
     let registered: Vec<String> = factory.widget_names().into_iter().map(str::to_string).collect();
 

@@ -12,6 +12,24 @@
 > 文件 / kind / 工厂 / 属性 / CSS / JSON / a11y / 文档），故 `WidgetKind` 由 **171 → 169**。
 > 同时本轮新增 2 个门禁（**28 → 30**）。证据见 [`log-20260917-4.md`](../log/log-20260917-4.md) §2。
 >
+> 🔄 **第 30 轮校正（2026-09-18，规则 #18/#91「文档不得与实现不符」）**：
+> 第 29 轮的追加轮又新增了金融控件族（6 个 kind），`WidgetKind` 最终为 **175**，
+> 门禁为 **32** 个可运行单元。本文档 §六 Phase E/F 的两处**完成率表格**当时写的是
+> **171/171** 与 **169**，已过期且与实跑不符；现已按实跑输出校正为 **175/175** 与 **175**。
+> 实跑证据（第 30 轮）：
+> ```
+> $ bash tools/check_widget_registration_fidelity.sh | tail -1
+> ✅ widget registration fidelity: 175 kinds classified (...), 175/175 constructible
+> $ bash tools/check_widget_kind_count.sh | tail -2
+> WidgetKind variants (parsed from src/widget/kind.rs): 175
+> ✅ check_widget_kind_count: documented variant counts match the enum
+> ```
+> 另修正一处**计划与实现的表述差异**（非缺陷）：Phase B 的 B1-5 行写作
+> 「`autoplay` / `autoplay_interval`」两个属性，而实现在
+> `properties_container.in.rs:189-210` 有意只发布 **`autoplay_interval`** 一个
+> （毫秒；`null` 表示关闭）——理由已写入该处注释：拆成 bool + 间隔会允许二者矛盾。
+> 现已把该行改为与实现一致，而不是新增一个冗余属性。
+>
 > ⚠️ **基线已变**：执行中删除了 9 个孤儿 `WebEngine*` kind，并新增了
 > `RadarChart`、`KanbanBoard`、`Cascader`、`QueryBuilder`、`EmojiPicker`、`Mention`，
 > 所以 `WidgetKind` 由 **174 → 171**。两处数字已同步到 README / codemap / 平台矩阵。
@@ -268,7 +286,7 @@ new page_count set_page_count current_page set_current_page next_page(priv) prev
 | B1-2 | **滑动翻页**：接 `MousePress` → `MouseMove` → `MouseRelease`，松手按**位移阈值 + 速度**决定前进/回退/吸附；与 B1-1 的内容事件转发的**冲突必须解决**（滑动与「点内容」的判定边界） | 像素断言：滑过 50% 宽度后松手，落到相邻页；⭐ **速度判据**（第 29 轮补完）：`swipe_direction_at(offset, velocity)`，400px/s 击发 + 2% 防抖下限，反向注入已证可失败 |
 | B1-3 | **自动播放 + 循环**：`set_autoplay(Option<Duration>)` / `set_loop(bool)`；暂停条件（指针悬停、按下、不可见、`is_enabled() == false`） | 测试：autoplay 开启时 hover **不**推进；`loop` 为 false 时末页停住 |
 | B1-4 | **指示器样式**：`set_indicator_style(Dots / Bars / Numeric / None)`、`set_indicator_position(Top/Bottom/Left/Right)` | 测试：`None` 时不绘制指示器（像素断言）；⭐ **`Numeric`**（第 29 轮补完）：绘制 `current/total`，不随页数扩展（像素比 < 2.0） |
-| B1-5 | **属性契约扩展**：`autoplay` / `autoplay_interval` / `loop` / `indicator_style` 进 `CAROUSEL_PROPERTIES`。**每个 enum 属性必须成对更新 `accepted_tokens` 与 `set` 解析器**（规则 #82） | `published_enum_tokens_are_accepted_by_their_control` PASS |
+| B1-5 | **属性契约扩展**：`loop` / `autoplay_interval` / `indicator_style` / `indicator_position` 进 `CAROUSEL_PROPERTIES`。**每个 enum 属性必须成对更新 `accepted_tokens` 与 `set` 解析器**（规则 #82）。📌 实现有意**不**发布独立的 `autoplay` 布尔属性：毫秒值 `null` 即关闭自动播放，拆成两者会允许互相矛盾的写法（理由见 `properties_container.in.rs:196-198`） | `published_enum_tokens_are_accepted_by_their_control` PASS |
 | B1-6 | **测试空转（已实测证实，顺带修）**：`carousel_disabled_blocks_events` 发的是 `MousePress`，而翻页逻辑在 `MouseRelease`（`carousel.rs:273`）。**反向注入实验**：删掉 `handle_event` 开头的 `if !self.base.is_enabled() { return; }`（`carousel.rs:269`）后，该测试**仍然 13 passed / 0 failed**——证明它并未真的断言禁用态。补一条发 `MouseRelease` 的断言 | 补完后再做同样的反向注入，必须 FAIL |
 
 **不要做的事**：
@@ -430,7 +448,7 @@ pub struct ColumnFilter { pub column: usize, pub query: String }
 > | **B** `Carousel` 能力补齐 | ✅ **100%**（B1-0~B1-6） | 内容槽/滑动/自动播放/循环/指示器/属性契约/空转修复全部完成；**第 29 轮补完 B1-2 的速度判据与 B1-4 的 `Numeric`**；`PagerPageView`/`TileView` 已按用户要求物理删除 |
 > | **C** 既有可视化控件扩展 | ✅ **100%**（C-1~C-5） | 多序列模型 + 图表 4→9 变体 + `Meter` 色带 + `ScrollArea` 吸顶 |
 | **D** 新控件 | ✅ **100%**（D-1 ~ D-6） | `KanbanBoard` + `RadarChart` + `Cascader` + `QueryBuilder` + `EmojiPicker` + `Mention` |
-| **E** 新控件的强制同步 | ✅ **100%** | 四条门禁全 PASS（171/171 constructible） |
+| **E** 新控件的强制同步 | ✅ **100%** | 四条门禁全 PASS（**175/175** constructible；第 30 轮校正，见文首） |
 | **F** 文档与发布物 | ✅ **100%**（F-1/F-2/F-3） | 计数已同步；四个新控件已补 `# Reachability` 段；日志已回写 |
 
 ### Phase A — 拖放基础设施（A3，**前置**）
@@ -485,7 +503,7 @@ bash tools/check_widget_kind_count.sh                                  # 计数�
 
 | 步骤 | 内容 |
 |---|---|
-| F-1 | 同步 `WidgetKind` 计数到 `README.md`、`README.zh-CN.md`、`docs/ARCHITECTURE.md` | ✅ README ×2 同步为 169；`docs/ARCHITECTURE.md` **不含任何计数**（实测），无需改动 —— 但本轮发现并修正了它的两处架构描述错误（见下） |
+| F-1 | 同步 `WidgetKind` 计数到 `README.md`、`README.zh-CN.md`、`docs/ARCHITECTURE.md` | ✅ README ×2 与 `docs/ARCHITECTURE.md` 均与实跑一致（**175**，第 30 轮实跑复核）；该文件已修正其两处架构描述错误（见下） |
 | F-2 | 每个新控件补 `# Reachability` 段（规则 #72 三态） | ✅ 六个新控件均已含（实测逐个 grep） |
 | F-3 | 日志回写完成率与证据 | ✅ `log-20260917-3.md` + `log-20260917-4.md` |
 

@@ -219,6 +219,58 @@ impl Platform for WasmPlatform {
     fn is_widget_ime_enabled(&self, widget_id: u64) -> bool {
         self.state.ime_enabled(widget_id)
     }
+
+    /// The window's current client size, as last reported by the host page.
+    ///
+    /// Falls back to the size the window was created with, so a window that has never
+    /// been resized answers with the size it was built for rather than claiming not to
+    /// exist. `None` for an id this backend does not know.
+    fn window_client_size(&self, window_id: u64) -> Option<(u32, u32)> {
+        // The control backend owns the window, so it is the only store that knows a size
+        // a resize reported. The platform's own record is the fallback for "never
+        // resized", which a browser page that opened at a fixed canvas size will be.
+        crate::window_client_size(window_id).or_else(|| self.state.window_size(window_id))
+    }
+
+    /// Reports that the drawing surface is now `width` x `height` CSS pixels.
+    ///
+    /// # Who calls this
+    ///
+    /// Two producers, both real:
+    ///
+    /// * [`WasmPlatform::observe_canvas_resize`], which attaches a `ResizeObserver` to the
+    ///   canvas and reports every content-box change;
+    /// * a host that already tracks its own layout and would rather report the size
+    ///   itself than have the library observe the element.
+    ///
+    /// Returns `false` when `window_id` addresses nothing, so a host that reports a
+    /// resize for a window it already dropped is told rather than silently ignored.
+    ///
+    /// # Why this does not just forward to the crate-level entry point
+    ///
+    /// The other backends forward, because their `create_window` delegates to the control
+    /// backend, which then owns the window and its size record. **This** backend creates
+    /// its window in its own `BackendState` (see `create_window` above: it sizes the host
+    /// canvas directly), so the control backend has never heard of the id and its
+    /// `queue_resize_trigger` would refuse it. Recording the geometry here — where the
+    /// window actually lives — is what keeps the readback answerable.
+    ///
+    /// The trigger *event* is still queued through the crate-level entry point, because
+    /// that queue is what the host loop polls regardless of which backend created the
+    /// window. A refusal there (the id belongs to a control-backend window, as it does in
+    /// a host that built its window through `rw_create_window`) is harmless: the size is
+    /// already recorded, and the control backend queues its own event in that case.
+    fn queue_resize_trigger(&self, window_id: u64, width: u32, height: u32) -> bool {
+        let Some((x, y, _, _)) = self.state.widget_geometry(window_id) else {
+            return false;
+        };
+        // Resize the record rather than adding a second size store: `window_size` reads
+        // the record, so one write keeps the two views of "how big is this window"
+        // (geometry and client size) from disagreeing.
+        self.state.set_geometry(window_id, x, y, width, height);
+        let _ = crate::queue_resize_trigger(window_id, width, height);
+        true
+    }
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────────────
@@ -288,5 +340,53 @@ mod tests {
         let p = make_platform();
         assert!(!p.has_print_support());
         assert!(p.spawn_print_job(std::path::Path::new("/tmp/x.txt")).is_err());
+    }
+
+    /// A window that has never been resized reports the size it was created with.
+    ///
+    /// The page can defer attaching the canvas observer, so this is the state every
+    /// backend sits in until the first resize arrives: claiming `None` would make a
+    /// host treat its own window as unknown.
+    #[test]
+    fn an_unresized_window_reports_its_created_size() {
+        let p = make_platform();
+        let win = p.create_window("test", 0, 0, 1024, 768);
+        assert_eq!(p.window_client_size(win), Some((1024, 768)));
+    }
+
+    /// A resize reported through the backend must be readable back afterwards.
+    #[test]
+    fn a_reported_resize_is_readable_from_the_backend() {
+        let p = make_platform();
+        let win = p.create_window("test", 0, 0, 800, 600);
+        assert!(p.queue_resize_trigger(win, 1200, 900), "a live window must accept a resize");
+        assert_eq!(
+            p.window_client_size(win),
+            Some((1200, 900)),
+            "the reported size must be what the backend answers with"
+        );
+    }
+
+    /// A resize for an id this backend does not know must be refused.
+    #[test]
+    fn a_resize_for_an_unknown_window_is_refused() {
+        let p = make_platform();
+        assert!(!p.queue_resize_trigger(0x0BAD_1DEA, 100, 100));
+        assert_eq!(p.window_client_size(0x0BAD_1DEA), None);
+    }
+
+    /// On a non-wasm host there is no DOM, so observing is reported as unavailable.
+    ///
+    /// The honest `false` matters: a host that read `true` here would attach nothing and
+    /// then never receive a resize, with no way to tell that from an idle window.
+    #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
+    #[test]
+    fn observing_a_canvas_is_unavailable_without_a_dom() {
+        let p = make_platform();
+        let win = p.create_window("test", 0, 0, 800, 600);
+        assert!(
+            !p.observe_canvas_resize(win),
+            "a host with no DOM must be told observation is unavailable"
+        );
     }
 }

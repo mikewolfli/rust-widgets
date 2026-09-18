@@ -55,6 +55,56 @@ macro_rules! impl_helpers {
             true
         }
 
+        /// Reports a container's new client size and queues a `Resized` trigger.
+        ///
+        /// Only an id this backend actually created is accepted: the state map is the
+        /// authority on what exists, so a stale id cannot inject a phantom resize that
+        /// would then re-run a layout for a window that is gone.
+        fn queue_resize_trigger(&self, window_id: ObjectId, width: u32, height: u32) -> bool {
+            // Only an id this backend actually created is accepted, so a stale id
+            // cannot inject a phantom resize that would re-run a layout for a window
+            // that is gone. A stripped profile keeps no widget objects in the runtime
+            // (that is what `alloc_frugal`/`embedded_surface` mean), so the record map
+            // itself — written below — is the authority there.
+            #[cfg(not(alloc_frugal))]
+            if !crate::widget::runtime::is_mounted(window_id) {
+                return false;
+            }
+            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.window_client_sizes.insert(window_id, (width, height));
+            state.widget_trigger_queue.push_back(WidgetTriggerEvent {
+                widget_id: window_id,
+                kind: WidgetTriggerKind::Resized,
+            });
+            true
+        }
+
+        /// The client size last reported for `window_id`.
+        ///
+        /// Falls back to the widget's current geometry, which is what a window that has
+        /// never been resized by the user still has. A stripped profile has no widget
+        /// runtime to ask, so only an explicitly reported size answers there.
+        fn window_client_size(&self, window_id: ObjectId) -> Option<(u32, u32)> {
+            if let Some(size) = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .window_client_sizes
+                .get(&window_id)
+                .copied()
+            {
+                return Some(size);
+            }
+            #[cfg(not(alloc_frugal))]
+            return crate::widget::runtime::geometry_of(window_id)
+                .map(|rect| (rect.width, rect.height));
+            #[cfg(alloc_frugal)]
+            {
+                let _ = window_id;
+                None
+            }
+        }
+
         /// Writes the control's label, repainting it.
         ///
         /// Kinds disagree on the property's name — a `Button` exposes `text`, a

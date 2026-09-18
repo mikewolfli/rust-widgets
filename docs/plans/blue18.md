@@ -12,6 +12,18 @@
 > 本文件是执行计划，不是完成报告。
 > **取证纪律（原则 #64）**：§二、§三 的每条「存在/缺失」都在当前工作树上实跑取得，
 > 附带回执命令；**未复跑的不写入**。
+>
+> 🔄 **第 30 轮校正（2026-09-18，规则 #18/#91）**：
+> 本文档的基线数字（`WidgetKind` 169/171、`cargo test --lib` 4758、门禁 30/32）是
+> **BLUE18 执行当时**的实测值，作为历史记录保留。当前工作树已随追加轮（金融控件族）
+> 演进为 `WidgetKind` **175**、`cargo test --lib` **4915**；`check_widget_kind_count.sh`
+> 实跑一致。
+>
+> 另修一处**「门禁存在但无人跑」**的缺口（本轮实跑发现）：E′-1 的姊妹门禁
+> `tools/check_view_keys_are_unique.sh`（规则 #88）虽已创建，但**未接入任何自动流程**
+> —— `ci.yml` 与 `check_profiles.sh` 都不调用它，即它只能手动跑。已把它并入
+> `tools/check_profiles.sh` 第 `[8/9]` 步（与 `check_view_platform_gate.sh` 同处），
+> CI 经该脚本自动覆盖。实跑：`bash tools/check_profiles.sh` → `All profile checks passed.`
 
 ---
 

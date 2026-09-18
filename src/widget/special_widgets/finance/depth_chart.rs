@@ -128,8 +128,8 @@ impl DepthChart {
     pub fn curve(&self) -> Vec<DepthPoint> {
         let mut points = Vec::new();
         let mut running = 0.0;
-        for level in self.levels(DepthSide::Bid) {
-            running += level.quantity.max(0.0);
+        for level in self.plottable_levels(DepthSide::Bid) {
+            running += level.quantity;
             points.push(DepthPoint {
                 price: level.price,
                 cumulative_quantity: running,
@@ -137,8 +137,8 @@ impl DepthChart {
             });
         }
         let mut running = 0.0;
-        for level in self.levels(DepthSide::Ask) {
-            running += level.quantity.max(0.0);
+        for level in self.plottable_levels(DepthSide::Ask) {
+            running += level.quantity;
             points.push(DepthPoint {
                 price: level.price,
                 cumulative_quantity: running,
@@ -161,6 +161,26 @@ impl DepthChart {
         }
     }
 
+    /// The levels that are actually plottable on one side.
+    ///
+    /// # Why the filter lives here rather than inside the draw loop
+    ///
+    /// A book routinely contains levels the curve cannot use — an exchange publishes a
+    /// zero-size level for every price in range, and a malformed tick can carry a `NAN`.
+    /// The scale (`max_cumulative`), the price bounds (`price_bounds`) and the segments
+    /// must all be computed from the *same* set of levels, or the axis is stretched by
+    /// data that is never drawn and a skipped level silently removes a segment.
+    /// Skipping inside the loop while the bounds still counted the skipped level was
+    /// exactly that bug: one zero-size level could erase the whole curve.
+    fn plottable_levels(&self, side: DepthSide) -> Vec<BookLevel> {
+        self.levels(side)
+            .into_iter()
+            .filter(|level| {
+                level.price.is_finite() && level.quantity.is_finite() && level.quantity > 0.0
+            })
+            .collect()
+    }
+
     /// The quantity the plot scales against: the largest cumulative total on either side.
     ///
     /// Deliberately the *cumulative* maximum rather than the largest single level, because
@@ -170,8 +190,8 @@ impl DepthChart {
         let mut best = 0.0_f64;
         for side in [DepthSide::Bid, DepthSide::Ask] {
             let mut running = 0.0;
-            for level in self.levels(side) {
-                running += level.quantity.max(0.0);
+            for level in self.plottable_levels(side) {
+                running += level.quantity;
             }
             best = best.max(running);
         }
@@ -192,7 +212,7 @@ impl DepthChart {
         color: Color,
         max_cumulative: f64,
     ) {
-        let levels = self.levels(side);
+        let levels = self.plottable_levels(side);
         if levels.is_empty() || max_cumulative <= 0.0 {
             return;
         }
@@ -214,27 +234,38 @@ impl DepthChart {
         let mut running = 0.0;
         // Walk away from the touch, so the curve starts at the spread and grows outward.
         for level in &levels {
-            if !level.price.is_finite() || !level.quantity.is_finite() || level.quantity <= 0.0 {
-                continue;
-            }
             running += level.quantity;
             let x = to_x(level.price);
             let y = to_y(running);
-            if let Some((previous_x, previous_y)) = previous {
-                // The horizontal segment carries the previous total across to this level,
-                // which is what makes it a step rather than a staircase of diagonals.
-                context.draw_line_stroke(
-                    crate::core::Point { x: previous_x, y: previous_y },
-                    crate::core::Point { x, y: previous_y },
-                    color,
-                    1,
-                );
-                context.draw_line_stroke(
-                    crate::core::Point { x, y: previous_y },
-                    crate::core::Point { x, y },
-                    color,
-                    1,
-                );
+            match previous {
+                Some((previous_x, previous_y)) => {
+                    // The horizontal segment carries the previous total across to this level,
+                    // which is what makes it a step rather than a staircase of diagonals.
+                    context.draw_line_stroke(
+                        crate::core::Point { x: previous_x, y: previous_y },
+                        crate::core::Point { x, y: previous_y },
+                        color,
+                        1,
+                    );
+                    context.draw_line_stroke(
+                        crate::core::Point { x, y: previous_y },
+                        crate::core::Point { x, y },
+                        color,
+                        1,
+                    );
+                }
+                // A lone level has no run to draw a step on, so it is drawn as the vertical
+                // from the baseline to its own total. Without this the whole curve is absent
+                // for a side that holds exactly one usable level — which is the normal state
+                // of a one-level book, not an edge case.
+                None => {
+                    context.draw_line_stroke(
+                        crate::core::Point { x, y: area.bottom() },
+                        crate::core::Point { x, y },
+                        color,
+                        1,
+                    );
+                }
             }
             previous = Some((x, y));
         }
@@ -244,9 +275,6 @@ impl DepthChart {
         let mut running = 0.0;
         let mut previous_x = None;
         for level in &levels {
-            if !level.price.is_finite() || !level.quantity.is_finite() || level.quantity <= 0.0 {
-                continue;
-            }
             running += level.quantity;
             let x = to_x(level.price);
             let y = to_y(running);
@@ -271,20 +299,31 @@ impl DepthChart {
         }
     }
 
-    /// The price range the plot spans, including the spread's midpoint.
+    /// The price range the plot spans.
+    ///
+    /// # Why a degenerate range is widened rather than rejected
+    ///
+    /// A book can legitimately have every usable level at one price — a one-level book, or
+    /// a side whose other levels are all zero-size. Returning a zero-width range would make
+    /// `high_price <= low_price` true and every caller bail out, so the pane would go blank
+    /// for data that is perfectly drawable. The range is therefore widened by a nominal
+    /// amount around the single price, which is the same degradation `PriceAxis::new` uses,
+    /// and the lone level then draws through the middle of the pane.
     fn price_bounds(&self) -> (f64, f64) {
         let mut low = f64::INFINITY;
         let mut high = f64::NEG_INFINITY;
         for side in [DepthSide::Bid, DepthSide::Ask] {
-            for level in self.levels(side) {
-                if level.price.is_finite() {
-                    low = low.min(level.price);
-                    high = high.max(level.price);
-                }
+            for level in self.plottable_levels(side) {
+                low = low.min(level.price);
+                high = high.max(level.price);
             }
         }
         if low > high {
             return (f64::NAN, f64::NAN);
+        }
+        if high <= low {
+            let magnitude = low.abs().max(1.0) * 0.001;
+            return (low - magnitude, high + magnitude);
         }
         (low, high)
     }
@@ -533,5 +572,96 @@ mod tests {
             crate::render::SoftwarePaintBackend::new(crate::core::Size::new(320, 200), 1.0);
         let mut context = RenderContext::new(&mut backend);
         chart.draw(&mut context);
+    }
+
+    /// The pane must paint a curve, not merely survive, when a level it cannot use is
+    /// present.
+    ///
+    /// Regression: the draw loop `continue`d past a zero-size or non-finite level while
+    /// the scale and the price bounds still counted it, so one such level could leave the
+    /// pane completely blank — the earlier test only asserted "does not panic", which the
+    /// blank pane satisfied. A zero-size level is a normal live-book state, so this is a
+    /// real failure mode rather than a contrived input.
+    #[test]
+    fn a_zero_size_level_does_not_erase_the_curve() {
+        let geometry = Rect::new(0, 0, 400, 200);
+        let mut book = crate::widget::special_widgets::finance::types::OrderBook::new();
+        // The zero-size level is first, so it is the one the old loop skipped first.
+        book.set_bids(alloc::vec![
+            crate::widget::special_widgets::finance::types::BookLevel::new(100.0, 0.0),
+            crate::widget::special_widgets::finance::types::BookLevel::new(99.0, 100.0),
+        ]);
+        book.set_asks(alloc::vec![crate::widget::special_widgets::finance::types::BookLevel::new(
+            101.0, 100.0,
+        )]);
+        let mut chart = DepthChart::new(geometry);
+        chart.set_book(book);
+
+        assert!(
+            pane_contains_bid_colour(&mut chart, geometry),
+            "a zero-size level must not erase the depth curve"
+        );
+        assert_eq!(chart.curve().len(), 2, "one bid and one ask are plottable");
+    }
+
+    /// A book whose only bid price is non-finite must still draw its ask side.
+    ///
+    /// Regression: `max_cumulative` and `price_bounds` both folded the `NAN`-priced level
+    /// into their arithmetic, so the whole pane went blank. A `NAN` price is now dropped
+    /// at the book boundary, and the bounds widen a single-price side so it stays drawable.
+    #[test]
+    fn a_non_finite_price_does_not_erase_the_curve() {
+        let geometry = Rect::new(0, 0, 400, 200);
+        let mut book = crate::widget::special_widgets::finance::types::OrderBook::new();
+        book.set_bids(alloc::vec![crate::widget::special_widgets::finance::types::BookLevel::new(
+            f64::NAN,
+            1000.0,
+        )]);
+        book.set_asks(alloc::vec![crate::widget::special_widgets::finance::types::BookLevel::new(
+            101.0, 100.0,
+        )]);
+        let mut chart = DepthChart::new(geometry);
+        chart.set_book(book);
+
+        assert!(
+            pane_contains_ask_colour(&mut chart, geometry),
+            "the ask curve must survive a NAN-priced bid"
+        );
+    }
+
+    /// Whether any pixel of the pane carries the bid curve's colour.
+    fn pane_contains_bid_colour(chart: &mut DepthChart, geometry: Rect) -> bool {
+        use crate::render::PaintBackend as _;
+        let mut backend = crate::render::SoftwarePaintBackend::new(
+            crate::core::Size::new(geometry.width, geometry.height),
+            1.0,
+        );
+        backend.begin_frame(crate::core::Color::BLACK);
+        {
+            let mut context = RenderContext::new(&mut backend);
+            chart.draw(&mut context);
+        }
+        backend.end_frame();
+        let rgba = backend.frame_rgba();
+        let target = [38u8, 166, 91, 255];
+        rgba.chunks_exact(4).any(|pixel| pixel == target)
+    }
+
+    /// Whether any pixel of the pane carries the ask curve's colour.
+    fn pane_contains_ask_colour(chart: &mut DepthChart, geometry: Rect) -> bool {
+        use crate::render::PaintBackend as _;
+        let mut backend = crate::render::SoftwarePaintBackend::new(
+            crate::core::Size::new(geometry.width, geometry.height),
+            1.0,
+        );
+        backend.begin_frame(crate::core::Color::BLACK);
+        {
+            let mut context = RenderContext::new(&mut backend);
+            chart.draw(&mut context);
+        }
+        backend.end_frame();
+        let rgba = backend.frame_rgba();
+        let target = [220u8, 68, 70, 255];
+        rgba.chunks_exact(4).any(|pixel| pixel == target)
     }
 }

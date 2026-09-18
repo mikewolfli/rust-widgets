@@ -414,7 +414,7 @@ worker thread reaches a live control.
 > oscillator pane — plus the technical-analysis arithmetic they share. See
 > [cookbook/en/src/chapters/finance.md](cookbook/en/src/chapters/finance.md).
 
-> **C ABI coverage.** The C ABI (`include/rw_generated.h`, 128 `rw_*` functions)
+> **C ABI coverage.** The C ABI (`include/rw_generated.h`, 129 `rw_*` functions)
 > covers window management, widget creation, per-widget properties and theme
 > selection. Creation and property access are **generic**:
 > `rw_create_widget_of_kind(parent, "tree_view", ...)` reaches every registered

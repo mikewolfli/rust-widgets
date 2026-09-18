@@ -361,6 +361,40 @@ impl Platform for WindowsPlatform {
         true
     }
 
+    /// The window's current client size, asked of Win32.
+    ///
+    /// `GetClientRect` is the authority once the user has dragged the window edge; the
+    /// backend's recorded size is only a fallback for a window Win32 cannot answer for
+    /// (off-Windows builds, or an id with no `HWND`).
+    #[cfg(target_os = "windows")]
+    fn window_client_size(&self, window_id: ObjectId) -> Option<(u32, u32)> {
+        use winapi::um::winuser::GetClientRect;
+        if let Some(hwnd) = self.get_native_handle(window_id) {
+            let mut rect = winapi::um::windef::RECT { left: 0, top: 0, right: 0, bottom: 0 };
+            // SAFETY: `hwnd` came from this backend's own handle table and Win32 fills
+            // the RECT we pass. Zero dimensions are rejected below rather than reported.
+            if unsafe { GetClientRect(hwnd, &mut rect) } != 0 {
+                let width = (rect.right - rect.left).max(0) as u32;
+                let height = (rect.bottom - rect.top).max(0) as u32;
+                if width > 0 && height > 0 {
+                    return Some((width, height));
+                }
+            }
+        }
+        // Ask the control backend, which owns the window and is therefore the only
+        // store that knows the size a resize reported.
+        crate::window_client_size(window_id)
+            .or_else(|| self.state.window_size(window_id))
+    }
+
+    /// Reports a container's new client size and queues a `Resized` trigger.
+    fn queue_resize_trigger(&self, window_id: ObjectId, width: u32, height: u32) -> bool {
+        // Forward to the control backend, which owns the window and the queue the app
+        // polls. Writing to the platform's own state would land in a store the host
+        // never reads, because `create_window` goes through the control backend.
+        crate::queue_resize_trigger(window_id, width, height)
+    }
+
     /// Invalidate the canvas window so the OS sends a fresh `WM_PAINT`.
     #[cfg(widgets_unstripped)]
     fn invalidate_surface(&self, id: ObjectId) -> bool {

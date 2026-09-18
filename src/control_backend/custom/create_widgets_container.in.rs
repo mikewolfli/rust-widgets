@@ -77,7 +77,10 @@ macro_rules! impl_container_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            self.mount_widget_of_kind(WidgetKind::Toolbox, parent, "", x, y, width, height)
+            // By name, so the two spellings of this control (`tool_box`, and the
+            // `toolbox` alias the factory also accepts) both land on the same
+            // constructor rather than one of them depending on kind resolution.
+            self.mount_named_widget("toolbox", parent, "", x, y, width, height)
         }
         #[cfg(widgets_unstripped)]
         fn create_collapsible_pane(
@@ -89,7 +92,15 @@ macro_rules! impl_container_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            self.mount_widget_of_kind(WidgetKind::CollapsiblePane, parent, title, x, y, width, height)
+            self.mount_widget_of_kind(
+                WidgetKind::CollapsiblePane,
+                parent,
+                title,
+                x,
+                y,
+                width,
+                height,
+            )
         }
         #[cfg(widgets_unstripped)]
         fn create_dock_widget(

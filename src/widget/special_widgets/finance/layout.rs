@@ -73,9 +73,13 @@ impl IndexAxis {
     /// The width a bar body should be drawn at, leaving a one-pixel gap either side.
     ///
     /// Floored at 1 so a slot of 1 or 2 pixels still produces a visible body — a bar that
-    /// rounds to zero width is a bar that silently disappears at high zoom.
+    /// rounds to zero width is a bar that silently disappears at high zoom. Zero when the
+    /// axis holds no bars, because `total_width()` is zero there and a positive body would
+    /// describe a bar that cannot exist; callers multiply this into a rect's width.
     pub fn body_width(&self) -> i32 {
-        if self.slot_width <= 2 {
+        if self.count == 0 {
+            0
+        } else if self.slot_width <= 2 {
             1
         } else {
             self.slot_width - 2
@@ -88,20 +92,20 @@ impl IndexAxis {
     /// `None` outside the plot rather than clamping, because "the pointer is not over the
     /// chart" is a different answer from "the pointer is over the first bar", and a caller
     /// that needs a clamped index can ask for one.
+    ///
+    /// Both edges are honoured: an `x` left of `origin_x` **or** past `total_width()` is
+    /// outside the plot. Checking only the left edge — as this did — meant an axis with a
+    /// negative origin reported a bar for a point to the left of the whole plot, because
+    /// the offset there is still positive.
     pub fn index_at(&self, x: i32) -> Option<usize> {
         if self.slot_width <= 0 || self.count == 0 {
             return None;
         }
         let offset = x - self.origin_x;
-        if offset < 0 {
+        if offset < 0 || offset >= self.slot_width * self.count as i32 {
             return None;
         }
-        let index = (offset / self.slot_width) as usize;
-        if index < self.count {
-            Some(index)
-        } else {
-            None
-        }
+        Some((offset / self.slot_width) as usize)
     }
 
     /// The width the axis occupies, in pixels.
@@ -191,6 +195,73 @@ impl PriceAxis {
         }
         let fraction = (self.bottom - y) as f64 / height;
         self.low + fraction * (self.high - self.low)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Hit-testing must reject both plot edges, not only the left one.
+    ///
+    /// Regression: the guard checked `offset < 0` but never the right edge, so any `x`
+    /// whose offset happened to be in `[0, slot_width * count)` reported a bar — including
+    /// points outside a plot whose origin is negative.
+    #[test]
+    fn index_at_honours_both_edges() {
+        let axis = IndexAxis::new(10, 100, 10);
+        assert_eq!(axis.index_at(9), None, "one pixel left of the plot is outside");
+        assert_eq!(axis.index_at(10), Some(0), "the plot's own left edge is bar 0");
+        assert_eq!(axis.index_at(109), Some(9), "the last bar's last pixel");
+        assert_eq!(axis.index_at(110), None, "the first pixel past the plot is outside");
+    }
+
+    /// A negative origin must not make a point outside the plot resolve to a bar.
+    #[test]
+    fn index_at_rejects_points_outside_a_negative_origin_plot() {
+        let axis = IndexAxis::new(-30, 100, 10);
+        assert_eq!(axis.index_at(-30), Some(0), "the plot starts at -30");
+        assert_eq!(axis.index_at(-31), None, "left of the plot's own left edge");
+        assert_eq!(axis.index_at(69), Some(9), "the last bar inside the plot");
+        assert_eq!(axis.index_at(70), None, "the first pixel past the plot");
+    }
+
+    /// An axis with no bars has no body to draw.
+    ///
+    /// Regression: `body_width()` never consulted `count`, so an empty axis reported a
+    /// 1-pixel body while `total_width()` was zero — a bar that cannot exist.
+    #[test]
+    fn an_empty_axis_has_no_body_width() {
+        let axis = IndexAxis::new(0, 100, 0);
+        assert_eq!(axis.slot_width, 0);
+        assert_eq!(axis.body_width(), 0);
+        assert_eq!(axis.total_width(), 0);
+    }
+
+    /// A one-pixel slot still yields a visible body, which is the documented floor.
+    #[test]
+    fn a_one_pixel_slot_still_has_a_visible_body() {
+        let axis = IndexAxis::new(0, 10, 10);
+        assert_eq!(axis.slot_width, 1);
+        assert_eq!(axis.body_width(), 1);
+    }
+
+    /// A flat series must draw through the middle rather than divide by zero.
+    #[test]
+    fn a_degenerate_price_range_is_widened() {
+        let axis = PriceAxis::new(0, 100, 50.0, 50.0);
+        assert!(axis.high > axis.low, "the range must be usable");
+        let middle = axis.y_for(50.0);
+        assert!((0..=100).contains(&middle));
+    }
+
+    /// The price mapping is inverted: a higher price is a smaller y.
+    #[test]
+    fn a_higher_price_maps_to_a_smaller_y() {
+        let axis = PriceAxis::new(0, 100, 90.0, 110.0);
+        assert!(axis.y_for(110.0) < axis.y_for(90.0));
+        assert_eq!(axis.y_for(110.0), 0);
+        assert_eq!(axis.y_for(90.0), 100);
     }
 }
 

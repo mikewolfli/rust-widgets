@@ -209,7 +209,7 @@ pub fn android_integration_ready() -> IntegrationStatus {
 /// Kept as a named constant next to the functions it counts, and asserted by a
 /// test, so adding an entry point without updating it fails the build rather than
 /// silently misreporting the integration's surface.
-pub const NATIVE_METHOD_COUNT: u32 = 7;
+pub const NATIVE_METHOD_COUNT: u32 = 8;
 
 /// Runs `f` with a JNI environment, attaching the current thread if needed.
 ///
@@ -452,6 +452,69 @@ pub extern "system" fn Java_rust_1widgets_RustWidgets_nativeDetachContext(
     log::info!("[android-jni] Activity Context detached");
 }
 
+/// Reports that the host window's client area is now `width` x `height` pixels.
+///
+/// # Why the host has to call this
+///
+/// Android has no window-resize *callback* the library can subscribe to without
+/// owning the `Activity`: the size change is delivered to the host's own
+/// `View.OnLayoutChangeListener` / `Activity.onConfigurationChanged`. So the host,
+/// which is the only party that observes the change, reports it here — the same
+/// contract the desktop backends implement from their toolkit's callback.
+///
+/// `windowId` is the id `rw_create_window` returned. Reporting re-runs that window's
+/// layout, so its children follow the new size instead of keeping the geometry they
+/// were given for the old one.
+///
+/// Returns `1` when the resize was accepted and `0` when it was refused. The decision
+/// itself is `accept_host_resize`, which is testable without a JVM; this entry point
+/// is only the boundary that validates the JVM's integer types and logs the refusal.
+#[no_mangle]
+pub extern "system" fn Java_rust_1widgets_RustWidgets_nativeNotifyResize(
+    _env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    window_id: jni::sys::jlong,
+    width: jni::sys::jint,
+    height: jni::sys::jint,
+) -> jni::sys::jint {
+    if width <= 0 || height <= 0 {
+        log::warn!("[android-jni] nativeNotifyResize: ignoring non-positive size {width}x{height}");
+        return 0;
+    }
+    // `window_id` arrives as the `jlong` the host was given; a non-positive value cannot
+    // be an id this library handed out.
+    if window_id <= 0 {
+        log::warn!("[android-jni] nativeNotifyResize: ignoring non-positive window id {window_id}");
+        return 0;
+    }
+    if accept_host_resize(window_id, width, height) {
+        1
+    } else {
+        log::warn!(
+            "[android-jni] nativeNotifyResize: {window_id} addresses no live window; \
+             the resize was refused"
+        );
+        0
+    }
+}
+
+/// Accepts a resize the Android host reported, re-running that window's layout.
+///
+/// # Why this is a named function rather than inline
+///
+/// A JNI entry point cannot be called from a test — it takes a `JNIEnv`, which only the
+/// JVM can supply. Keeping the decision here puts the refusal branches (a stale id, a
+/// window that no longer exists) under host-runnable tests instead of leaving them for a
+/// device run to exercise.
+///
+/// The caller has already rejected non-positive values; that is re-checked in debug
+/// builds so the invariant cannot silently rot if a second caller appears.
+fn accept_host_resize(window_id: i64, width: i32, height: i32) -> bool {
+    debug_assert!(window_id > 0, "a non-positive window id must be filtered by the caller");
+    debug_assert!(width > 0 && height > 0, "a non-positive size must be filtered by the caller");
+    crate::queue_resize_trigger(window_id as u64, width as u32, height as u32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -507,5 +570,46 @@ mod tests {
         assert_eq!(logcat_priority(log::Level::Info), 4);
         assert_eq!(logcat_priority(log::Level::Debug), 3);
         assert_eq!(logcat_priority(log::Level::Trace), 2);
+    }
+
+    /// A resize for a window this library never created must be refused.
+    ///
+    /// The host can report a resize with a stale id (it survived a configuration change,
+    /// the window did not). Accepting it would queue a `Resized` event for a window that
+    /// does not exist, and the host loop would then ask for the size of something gone.
+    #[test]
+    fn a_resize_for_an_unknown_window_is_refused() {
+        assert!(
+            !accept_host_resize(0x0BAD_1DEA, 800, 600),
+            "an id this library never handed out must be refused"
+        );
+    }
+
+    /// An unknown id must not be able to inject a size anyone could read back.
+    #[test]
+    fn a_refused_resize_records_no_size() {
+        assert!(!accept_host_resize(0x0BAD_1DEA, 800, 600));
+        assert_eq!(
+            crate::window_client_size(0x0BAD_1DEA),
+            None,
+            "a refused resize must leave no size behind"
+        );
+    }
+
+    /// The non-positive checks the entry point performs, asserted directly.
+    ///
+    /// These are the conditions the JNI boundary filters before calling
+    /// `accept_host_resize`; spelling them out here keeps the two in step, because a
+    /// `jint` can be negative and a cast to `u32` would wrap it to roughly four billion.
+    #[test]
+    fn the_entry_point_rejects_non_positive_inputs() {
+        let entry_point_accepts =
+            |window_id: i64, width: i32, height: i32| width > 0 && height > 0 && window_id > 0;
+        assert!(!entry_point_accepts(1, -1, 600), "a negative width must be refused");
+        assert!(!entry_point_accepts(1, 800, -5), "a negative height must be refused");
+        assert!(!entry_point_accepts(1, 0, 600), "a zero width must be refused");
+        assert!(!entry_point_accepts(1, 800, 0), "a zero height must be refused");
+        assert!(!entry_point_accepts(-1, 800, 600), "a negative id must be refused");
+        assert!(entry_point_accepts(1, 800, 600), "a well-formed report must be accepted");
     }
 }

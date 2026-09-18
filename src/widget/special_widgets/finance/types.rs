@@ -338,18 +338,27 @@ impl OrderBook {
     /// Sorting rather than trusting the caller's order: a feed that delivers levels out
     /// of order is normal, and a book whose top row is not the best bid is worse than
     /// useless — it is actively misleading about the spread.
+    ///
+    /// # Why levels with a non-finite price are dropped
+    ///
+    /// A `NAN` price compares neither less nor greater than anything, so a comparator that
+    /// falls back to `Ordering::Equal` leaves such a level wherever the feed happened to
+    /// put it — including at the front, where it then *becomes* [`Self::best_bid`] and makes
+    /// [`Self::spread`] and [`Self::mid_price`] return `None` for a book full of good
+    /// levels. A price that is not a number is not a price: it is dropped at the boundary,
+    /// exactly as every other part of this family treats a non-finite value as unusable.
     pub fn set_bids(&mut self, mut bids: Vec<BookLevel>) {
-        bids.sort_by(|left, right| {
-            right.price.partial_cmp(&left.price).unwrap_or(core::cmp::Ordering::Equal)
-        });
+        bids.retain(|level| level.price.is_finite());
+        bids.sort_by(|left, right| right.price.total_cmp(&left.price));
         self.bids = bids;
     }
 
     /// Replaces the asks, sorting them best-first (lowest price first).
+    ///
+    /// Non-finite prices are dropped for the reason given on [`Self::set_bids`].
     pub fn set_asks(&mut self, mut asks: Vec<BookLevel>) {
-        asks.sort_by(|left, right| {
-            left.price.partial_cmp(&right.price).unwrap_or(core::cmp::Ordering::Equal)
-        });
+        asks.retain(|level| level.price.is_finite());
+        asks.sort_by(|left, right| left.price.total_cmp(&right.price));
         self.asks = asks;
     }
 
@@ -461,12 +470,13 @@ impl Quote {
 
     /// The percentage change from the previous close.
     ///
-    /// `NAN` when the previous close is missing or zero — a percentage against zero is
-    /// undefined, and reporting `0%` or `inf%` would both be wrong in a way a trader would
-    /// act on.
+    /// `NAN` when the previous close is missing, zero, or negative — a percentage against
+    /// a non-positive base is undefined, and each way of faking it is wrong in a way a
+    /// trader would act on: dividing by a negative base reports a *gain* percentage beside
+    /// a *falling* change, and reporting `0%`/`inf%` hides the missing base entirely.
     pub fn change_percent(&self) -> f64 {
         let change = self.change();
-        if !change.is_finite() || !self.previous_close.is_finite() || self.previous_close == 0.0 {
+        if !change.is_finite() || !self.previous_close.is_finite() || self.previous_close <= 0.0 {
             return f64::NAN;
         }
         change / self.previous_close * 100.0
@@ -535,6 +545,86 @@ impl PriceLine {
 /// A synthetic series is built here rather than in each test because the controls all
 /// need one of a known shape — deterministic, non-flat, with a gap big enough to be
 /// visible — and six local copies would eventually differ.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A level with a non-finite price must not be able to become the best bid.
+    ///
+    /// Regression: `set_bids` used `partial_cmp(..).unwrap_or(Equal)` for the sort, and a
+    /// `NAN` price compares equal to everything — so it kept its arrival position. Supplied
+    /// first, it stayed first, `best_bid()` returned it, and `spread()`/`mid_price()`
+    /// returned `None` for a book holding two perfectly good levels.
+    #[test]
+    fn a_non_finite_price_is_dropped_rather_than_becoming_the_best_bid() {
+        let mut book = OrderBook::new();
+        book.set_bids(vec![BookLevel::new(f64::NAN, 1.0), BookLevel::new(100.0, 2.0)]);
+        book.set_asks(vec![BookLevel::new(101.0, 3.0)]);
+
+        assert_eq!(book.bids().len(), 1, "the NAN-priced level is not a price and is dropped");
+        assert_eq!(book.best_bid().map(|level| level.price), Some(100.0));
+        assert_eq!(book.spread(), Some(1.0), "the good levels must still form a spread");
+        assert_eq!(book.mid_price(), Some(100.5));
+    }
+
+    /// The same guard applies to the ask side.
+    #[test]
+    fn a_non_finite_ask_price_is_dropped_too() {
+        let mut book = OrderBook::new();
+        book.set_bids(vec![BookLevel::new(100.0, 1.0)]);
+        book.set_asks(vec![BookLevel::new(f64::INFINITY, 1.0), BookLevel::new(101.0, 1.0)]);
+        assert_eq!(book.asks().len(), 1);
+        assert_eq!(book.best_ask().map(|level| level.price), Some(101.0));
+    }
+
+    /// Bids sort best-first with the total order, not the partial one.
+    #[test]
+    fn bids_and_asks_are_sorted_best_first() {
+        let mut book = OrderBook::new();
+        book.set_bids(vec![
+            BookLevel::new(98.0, 1.0),
+            BookLevel::new(100.0, 1.0),
+            BookLevel::new(99.0, 1.0),
+        ]);
+        book.set_asks(vec![
+            BookLevel::new(102.0, 1.0),
+            BookLevel::new(100.0, 1.0),
+            BookLevel::new(101.0, 1.0),
+        ]);
+        let bid_prices: Vec<f64> = book.bids().iter().map(|level| level.price).collect();
+        let ask_prices: Vec<f64> = book.asks().iter().map(|level| level.price).collect();
+        assert_eq!(bid_prices, vec![100.0, 99.0, 98.0], "bids descend");
+        assert_eq!(ask_prices, vec![100.0, 101.0, 102.0], "asks ascend");
+    }
+
+    /// A percentage is undefined against a non-positive base, and must say so.
+    ///
+    /// Regression: only `previous_close == 0.0` was guarded, so a negative base divided
+    /// out a *gain* percentage beside a *falling* change — two accessors on one row that
+    /// disagreed about the direction of the move.
+    #[test]
+    fn a_percentage_against_a_non_positive_base_is_not_a_number() {
+        let zero = Quote::new("ZERO", -5.0, 0.0);
+        assert!(zero.change_percent().is_nan());
+
+        // The base is negative while the move is downward: dividing by -10.0 would report
+        // `+50%` beside a falling change, so the percentage is absent instead.
+        let negative = Quote::new("NEG", -15.0, -10.0);
+        assert!(negative.change() < 0.0, "the absolute change is downward");
+        assert!(!negative.is_up());
+        assert!(negative.change_percent().is_nan(), "a negative base has no percentage");
+    }
+
+    /// A normal quote still reports both accessors consistently.
+    #[test]
+    fn a_positive_base_reports_a_consistent_change() {
+        let up = Quote::new("UP", 110.0, 100.0);
+        assert!((up.change() - 10.0).abs() < 1e-9);
+        assert!((up.change_percent() - 10.0).abs() < 1e-9);
+        assert!(up.is_up());
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod fixtures {
     use super::*;

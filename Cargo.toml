@@ -371,6 +371,7 @@ web-sys = { version = "0.3", features = [
     "HtmlElement",
     "Node",
     "Event",
+    "EventTarget",
     "MouseEvent",
     "KeyboardEvent",
     "console",
@@ -379,6 +380,10 @@ web-sys = { version = "0.3", features = [
     "Clipboard",
     "Navigator",
     "Location",
+    "ResizeObserver",
+    "ResizeObserverEntry",
+    "ResizeObserverSize",
+    "DomRectReadOnly",
 ], optional = true }
 
 jni = { version = "0.21", features = ["invocation"], optional = true }

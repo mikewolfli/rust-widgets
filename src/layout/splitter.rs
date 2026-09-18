@@ -40,19 +40,32 @@ impl SplitterLayout {
     }
 
     /// Returns current pane ratios slice.
+    ///
+    /// # What the entries are
+    ///
+    /// **Relative weights**, not fractions: the slice need not sum to `1.0`. Each pane's
+    /// share of the splitter is `weights[i] / sum(weights)`, which is what `update`
+    /// computes. The weights are preserved during a drag (so only the dragged pair moves)
+    /// and normalised on release by [`Self::normalize_ratios`]. Reading the slice as a
+    /// fraction is only valid after a release or a call to `normalize_ratios`.
     pub fn ratios(&self) -> &[f32] {
         &self.ratios
     }
 
-    /// Returns ratio for pane index.
+    /// Returns the relative weight for pane index.
     pub fn ratio(&self, index: usize) -> Option<f32> {
         self.ratios.get(index).copied()
     }
 
     /// Adds one pane and returns assigned index.
+    ///
+    /// `stretch` is a relative weight, matching [`Self::add_widget`]. The weight is stored
+    /// as given (floored at `0.01` so a pane is never allocated exactly nothing); it is
+    /// normalised by [`Self::normalize_ratios`], not here, so that adding a pane does not
+    /// rescale the panes already present during an in-flight drag.
     pub fn add_pane(&mut self, pane_id: ObjectId, stretch: u32) -> usize {
         self.panes.push(pane_id);
-        self.ratios.push((stretch.max(1)) as f32);
+        self.ratios.push((stretch.max(1) as f32).max(0.01));
         self.panes.len().saturating_sub(1)
     }
 
@@ -71,7 +84,7 @@ impl SplitterLayout {
         if index >= self.ratios.len() {
             return false;
         }
-        self.ratios[index] = ratio.max(0.0);
+        self.ratios[index] = if ratio.is_finite() { ratio.max(0.0) } else { 0.0 };
         true
     }
 
@@ -80,16 +93,22 @@ impl SplitterLayout {
         if ratios.len() != self.ratios.len() {
             return false;
         }
-        self.ratios = ratios.into_iter().map(|r| r.max(0.0)).collect();
+        self.ratios =
+            ratios.into_iter().map(|r| if r.is_finite() { r.max(0.0) } else { 0.0 }).collect();
         true
     }
 
     /// Normalizes ratios to sum to 1.
+    ///
+    /// The stored values are relative weights (see [`Self::ratios`]), and this turns them
+    /// into fractions. A total of zero — every pane collapsed — is left as it is rather
+    /// than divided by zero; `update` falls back to its own `max(0.01)` divisor, so the
+    /// panes stay addressable.
     pub fn normalize_ratios(&mut self) {
-        let sum: f32 = self.ratios.iter().sum();
+        let sum: f32 = self.ratios.iter().filter(|value| value.is_finite()).sum();
         if sum > 0.0 {
             for ratio in &mut self.ratios {
-                *ratio /= sum;
+                *ratio = if ratio.is_finite() { *ratio / sum } else { 0.0 };
             }
         }
     }

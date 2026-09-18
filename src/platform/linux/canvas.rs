@@ -163,6 +163,14 @@ pub(crate) fn mount_canvas(
     // presses, so without this the gesture engine never saw a `TouchBegin` and all
     // eleven recognisers were reachable only from unit tests.
     area.connect_touch_event(move |widget, event| {
+        // `connect_touch_event` hands the handler the *generic* `gdk::Event`, and
+        // `position()` is declared on the concrete `gdk::EventTouch` (it reads the
+        // touch-specific `x`/`y` fields). Calling it on the generic type does not
+        // compile, so the event is narrowed first — which is also where the
+        // "is this actually a touch event" check belongs.
+        let Some(touch) = event.downcast_ref::<gdk::EventTouch>() else {
+            return glib::Propagation::Proceed;
+        };
         let translated = match event.event_type() {
             gdk::EventType::TouchBegin => TouchPhase::Begin,
             gdk::EventType::TouchUpdate => TouchPhase::Update,
@@ -171,13 +179,13 @@ pub(crate) fn mount_canvas(
             gdk::EventType::TouchEnd | gdk::EventType::TouchCancel => TouchPhase::End,
             _ => return glib::Propagation::Proceed,
         };
-        let position = Point::new(event.position().0 as i32, event.position().1 as i32);
+        let position = Point::new(touch.position().0 as i32, touch.position().1 as i32);
         let absolute = Point::new(origin.x + position.x, origin.y + position.y);
         // `GdkEventSequence` identifies the contact for its whole lifetime, which is
         // what the recognisers need to follow one finger across move and end. Its
         // pointer is used as the `TouchId`: it is only ever compared, never
         // dereferenced, and is stable while the contact lasts.
-        let touch_id = event.event_sequence().map(|sequence| sequence.as_ptr() as u64).unwrap_or(0);
+        let touch_id = touch.event_sequence().map(|sequence| sequence.as_ptr() as u64).unwrap_or(0);
         let widget_event = match translated {
             TouchPhase::Begin => Event::TouchBegin { pos: absolute, touch_id },
             TouchPhase::Update => Event::TouchMove { pos: absolute, touch_id },

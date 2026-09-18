@@ -419,6 +419,38 @@ pub fn with_recorded_invalidations<R>(
     f()
 }
 
+/// Runs `f` with `platform` as the active platform for this thread.
+///
+/// The general form of [`with_recorded_invalidations`]: an embedding host, or a test
+/// that wants to drive a real backend (say the stub) while the process default is
+/// something else, installs its backend here. The override is thread-local and scoped,
+/// so concurrent tests on other threads keep the process default, and it is restored
+/// even when `f` panics.
+///
+/// This exists because the platform singleton is `OnceLock`-memoized: without an
+/// override there is no way to substitute a backend after the default one has been
+/// created, which would make a backend unwirable in a test.
+#[cfg(not(alloc_frugal))]
+pub fn with_platform<R>(platform: &'static dyn Platform, f: impl FnOnce() -> R) -> R {
+    struct Restore(Option<&'static dyn Platform>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let previous = self.0;
+            let _ = PLATFORM_OVERRIDE.try_with(|slot| *slot.borrow_mut() = previous);
+        }
+    }
+
+    let previous = PLATFORM_OVERRIDE
+        .try_with(|slot| {
+            let previous = *slot.borrow();
+            *slot.borrow_mut() = Some(platform);
+            previous
+        })
+        .unwrap_or(None);
+    let _restore = Restore(previous);
+    f()
+}
+
 /// Initializes the platform backend.
 #[cfg(not(alloc_frugal))]
 pub fn init() {

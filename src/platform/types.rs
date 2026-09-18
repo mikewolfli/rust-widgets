@@ -93,6 +93,15 @@ pub enum WidgetTriggerKind {
     SelectionChanged = 3,
     /// Widget/window closed lifecycle trigger.
     Closed = 4,
+    /// A container's own size changed.
+    ///
+    /// Reported when the host resizes a window (the user dragging its edge, or the
+    /// window manager tiling it). It is distinct from the widget-level triggers above:
+    /// nothing the user *touched* changed, but every child geometry is now stale.
+    ///
+    /// A host that offers layout managers must re-run them when this arrives, or the
+    /// controls keep the geometry they were given for the previous size.
+    Resized = 5,
 }
 /// Typed widget trigger event with source widget id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -422,6 +431,48 @@ pub trait Platform: Send + Sync {
     ///
     /// Returns `false` when `id` is not mounted on this backend.
     fn unmount_surface(&self, _id: ObjectId) -> bool {
+        false
+    }
+
+    /// Reads back the current size of a window's usable client area.
+    ///
+    /// # Why this exists
+    ///
+    /// When the host resizes a window, the window's own geometry in this library's
+    /// mirror is not updated — only the OS knows the new size. A caller that keeps a
+    /// layout (`app::WindowHandle::set_layout`) therefore needs a way to ask "how big
+    /// is this window now?" without knowing which toolkit is underneath.
+    ///
+    /// # Return value
+    ///
+    /// `Some((width, height))` in logical pixels when the backend knows the window and
+    /// can report its client area; `None` when it does not — either the id addresses
+    /// nothing, or this backend has no window to ask. The default is `None`, which is
+    /// the honest answer rather than a fabricated size: a caller that receives it keeps
+    /// the geometry it already had instead of laying out against a guess.
+    fn window_client_size(&self, _window_id: ObjectId) -> Option<(u32, u32)> {
+        None
+    }
+
+    /// Reports that a container's client area became `width` by `height`.
+    ///
+    /// # Who calls this
+    ///
+    /// Backends call it from their own resize callback (`configure-event` on GTK,
+    /// `WM_SIZE` on Win32, `windowDidResize:` on AppKit), and a host that owns the event
+    /// loop may call it for a resize it learns about by other means.
+    ///
+    /// The call has two effects: the size becomes answerable through
+    /// [`Self::window_client_size`], and a [`WidgetTriggerKind::Resized`] event is queued
+    /// so the app layer re-runs the window's layout. "Something resized" and "to what"
+    /// travel separately on purpose — the event is a queue entry that gets consumed, the
+    /// size is state that survives it.
+    ///
+    /// Returns `false` for an id this backend does not know, in which case neither is
+    /// recorded and nothing is queued.
+    ///
+    /// [`WidgetTriggerKind::Resized`]: crate::platform::WidgetTriggerKind::Resized
+    fn queue_resize_trigger(&self, _window_id: ObjectId, _width: u32, _height: u32) -> bool {
         false
     }
 

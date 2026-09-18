@@ -101,8 +101,21 @@ thread_local! {
     ///
     /// Starts high so a mounted id cannot collide with a platform-allocated
     /// widget id (those come from `BackendState`, which counts up from 1).
+    ///
+    /// The counter is seeded per thread but advances in a **globally unique** range:
+    /// each thread that wants ids reserves a block with [`reserve_id_block`] and hands
+    /// them out locally. A purely per-thread counter would give two threads the same
+    /// ids, and some stores that hold widget state are process-wide (the control
+    /// backend's, for one), so the second thread's window would read the first thread's
+    /// record — a window reporting another window's client size. See [`reserve_id_block`].
     #[allow(clippy::missing_const_for_thread_local)]
-    static NEXT_ID: RefCell<ObjectId> = const { RefCell::new(0x5345_4C46_0000_0001) };
+    static NEXT_ID: RefCell<ObjectId> = const { RefCell::new(0) };
+
+    /// The end of the id block `NEXT_ID` is handing out from.
+    ///
+    /// Zero means "no block yet", which is what makes the first allocation reserve one.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static NEXT_ID_LIMIT: RefCell<ObjectId> = const { RefCell::new(0) };
 
     /// Maps a mounted `Window` widget id to the host window the platform built
     /// for it.
@@ -151,17 +164,78 @@ thread_local! {
         RefCell::new(crate::event::PointerCaptureManager::new());
 }
 
+/// How many ids one thread reserves at a time.
+///
+/// Large enough that the reservation is rare (a thread creating a whole window's worth of
+/// controls reserves once) and small enough that the address space is not wasted.
+const ID_BLOCK: ObjectId = 0x1_0000;
+
+/// Where the globally unique id space begins.
+///
+/// Starts high so a mounted id cannot collide with a platform-allocated widget id
+/// (those come from `BackendState`, which counts up from 1).
+const ID_BASE: ObjectId = 0x5345_4C46_0000_0000;
+
+/// The high-water mark of every block handed out so far.
+///
+/// Process-wide, and the **only** piece of id allocation that is: the per-thread counter
+/// caches what this hands out, so the common path stays a thread-local read with no
+/// synchronisation.
+static ID_HIGH_WATER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(ID_BASE);
+
+/// Reserves a block of ids for the calling thread and returns the first id in it.
+///
+/// # Why blocks rather than a plain per-thread counter
+///
+/// Widgets are `!Send`, so the *registry* is thread-local and a per-thread counter is the
+/// obvious fit. But not every store keyed by widget id is thread-local: the control
+/// backend keeps its host-side maps process-wide (it is a `OnceLock` singleton). With a
+/// per-thread counter two threads mint the **same** ids, so the second thread's window
+/// reads the first thread's record — concretely, a newly created window reporting
+/// another window's client size. Reserving disjoint blocks makes an id identify one
+/// window for the whole process without giving up the lock-free local path.
+fn reserve_id_block() -> Option<ObjectId> {
+    // `fetch_add` on the high-water mark is the rendezvous point. Uniqueness comes from
+    // it being a read-modify-write, so two threads can never be handed overlapping
+    // blocks, and no lock is needed on the per-allocation path.
+    let start = ID_HIGH_WATER.fetch_add(ID_BLOCK, std::sync::atomic::Ordering::Relaxed);
+    // A released thread's ids are not reclaimed: a store may still hold a record for one
+    // and a later reader must not find it under a fresh window. Wrapping would do exactly
+    // that, so exhaustion is reported instead of reusing the space.
+    start.checked_add(ID_BLOCK)?;
+    NEXT_ID.try_with(|next| *next.borrow_mut() = start).ok()?;
+    NEXT_ID_LIMIT.try_with(|limit| *limit.borrow_mut() = start.wrapping_add(ID_BLOCK)).ok()?;
+    Some(start)
+}
+
+/// Hands out the next id for this thread, reserving a block when the current one runs out.
+///
+/// `Err` means this thread has no registry (no UI thread), matching [`register`]'s contract.
+fn next_widget_id() -> Result<ObjectId, ()> {
+    NEXT_ID
+        .try_with(|next| {
+            let id = *next.borrow();
+            let limit = NEXT_ID_LIMIT.try_with(|limit| *limit.borrow()).unwrap_or(0);
+            if id < limit {
+                *next.borrow_mut() = id.wrapping_add(1);
+                return Ok(id);
+            }
+            // Exhausted (or never reserved): take the next block. `reserve_id_block`
+            // seeds `NEXT_ID`/`NEXT_ID_LIMIT`, so the id to return is the block's first.
+            let start = reserve_id_block().ok_or(())?;
+            *next.borrow_mut() = start.wrapping_add(1);
+            Ok(start)
+        })
+        .unwrap_or(Err(()))
+}
+
 /// Hands ownership of `widget` to the registry and returns its display id.
 ///
 /// Returns `None` when the calling thread has no registry — i.e. it is not the
 /// thread that drives the UI. Callers must surface that as "cannot display
 /// here" rather than dropping the widget silently.
 pub fn register(widget: Box<dyn Widget>) -> Option<ObjectId> {
-    let id = NEXT_ID.try_with(|next| {
-        let id = *next.borrow();
-        *next.borrow_mut() = id.wrapping_add(1);
-        id
-    });
+    let id = next_widget_id();
     let Ok(id) = id else { return None };
     let stored = MOUNTED.try_with(|map| {
         map.borrow_mut().insert(id, Mounted { widget });
@@ -682,6 +756,16 @@ pub fn geometry_of(id: ObjectId) -> Option<Rect> {
         .try_with(|map| map.borrow().get(&id).map(|entry| entry.widget.geometry()))
         .ok()
         .flatten()
+}
+
+/// The absolute origin a control draws from, used to translate its frame.
+///
+/// See [`render_frame`] for why the origin is subtracted rather than assumed to be
+/// `(0, 0)`. An unmounted id has no geometry and therefore no origin to subtract, so
+/// `(0, 0)` is returned: a later `with_widget_mut` then finds nothing and the render
+/// reports failure, which is the same outcome as any other unmounted render.
+fn frame_origin(id: ObjectId) -> (i32, i32) {
+    geometry_of(id).map(|geometry| (geometry.x, geometry.y)).unwrap_or((0, 0))
 }
 
 /// Updates the geometry of a mounted widget. Returns whether it was found.
@@ -1280,6 +1364,11 @@ pub fn render_frame_incremental(
     // touch keep their pixels.
     backend.seed_from(carried?);
 
+    // The widget draws in absolute coordinates and the frame is its own box, so the
+    // frame origin is subtracted (see `render_frame`). This must be pushed *before*
+    // the clip rectangles, which are also absolute, so that both translate together.
+    let origin = frame_origin(id);
+
     let mut tracker = REPAINT
         .try_with(|map| {
             map.borrow_mut().get_mut(&id).map(|state| {
@@ -1310,9 +1399,11 @@ pub fn render_frame_incremental(
         };
         {
             let mut context = RenderContext::new(&mut backend);
+            context.push_offset(-origin.0, -origin.1);
             crate::performance::render_dirty_regions(&mut tracker, &mut context, |ctx| {
                 drawable.draw(ctx);
             });
+            context.pop_offset();
         }
         // Present the back buffer this pass drew into. Without this the frame read
         // below comes from the front buffer, which still holds the *pre-seed* state
@@ -1411,10 +1502,24 @@ pub fn adaptive_large_damage_run(id: ObjectId) -> u32 {
 /// `bytes.len() == size.width * size.height * 4`, top-down, straight (non
 /// premultiplied) alpha — the layout all three desktop backends consume.
 /// Returns `None` when `id` is not mounted or the size is empty.
+///
+/// # Why the widget's own origin is subtracted
+///
+/// Widget geometry is **absolute**: a control's rect is its position in the window, and
+/// every control draws at those absolute coordinates (the same model the event router
+/// uses, see [`widget_at`]). The frame here is only `size.width * size.height` — the
+/// control's own box — so drawing at the absolute origin of a control placed at, say,
+/// `(260, 42)` would land 260 px right and 42 px down inside its own buffer: the
+/// top-left band stays clear and the bottom-right is clipped away. Pushing the negated
+/// origin makes the control's absolute coordinates land on its own frame origin, which
+/// is the only interpretation that can be correct for every control already written.
 pub fn render_frame(id: ObjectId, size: Size, clear: crate::core::Color) -> Option<Vec<u8>> {
     if size.width == 0 || size.height == 0 {
         return None;
     }
+    // The frame is the control's own box, so it has to be drawn at the box's origin
+    // rather than at the control's absolute position.
+    let origin = frame_origin(id);
     let mut backend = SoftwarePaintBackend::new(size, 1.0);
     let painted = with_widget_mut(id, |widget| {
         let Some(drawable) = widget.as_draw_mut() else {
@@ -1423,7 +1528,9 @@ pub fn render_frame(id: ObjectId, size: Size, clear: crate::core::Color) -> Opti
         backend.begin_frame(clear);
         {
             let mut context = RenderContext::new(&mut backend);
+            context.push_offset(-origin.0, -origin.1);
             drawable.draw(&mut context);
+            context.pop_offset();
         }
         backend.end_frame();
         true
@@ -1980,6 +2087,73 @@ mod tests {
 
         unregister(id);
         assert_eq!(cached_frame_size(id), None, "unmounting must drop the frame");
+    }
+
+    /// A control placed away from the surface origin must paint into its own frame.
+    ///
+    /// Regression: `render_frame` created a buffer the size of the control's own box but
+    /// asked it to draw at the control's **absolute** coordinates, with no translation.
+    /// A control at `(12, 42)` therefore painted from `(12, 42)` inside a 200×120 buffer:
+    /// the top band stayed blank and the bottom-right of the control was clipped away.
+    /// Every fixture in this module used `Rect::new(0, 0, ..)`, so the whole suite was
+    /// blind to it — only a control with a non-zero origin can catch it.
+    #[test]
+    fn a_control_offset_from_the_origin_paints_into_its_own_frame() {
+        let geometry = Rect::new(12, 42, 200, 160);
+        let mut chart =
+            crate::widget::special_widgets::finance::candlestick_chart::CandlestickChart::new(
+                geometry,
+            );
+        let mut series = crate::widget::special_widgets::finance::types::PriceSeries::new();
+        for index in 0..20 {
+            let open = 100.0 + index as f64;
+            series.push(crate::widget::special_widgets::finance::types::Bar::new(
+                open,
+                open + 2.0,
+                open - 2.0,
+                open + 1.0,
+                1000.0,
+            ));
+        }
+        chart.set_series(series);
+        let id = register(Box::new(chart)).expect("registry");
+
+        let size = Size::new(geometry.width, geometry.height);
+        let frame = render_frame(id, size, Color::BLACK).expect("frame");
+
+        // The panel background is a dark slate, not the clear colour, and the control
+        // fills its plot area — so the frame must be substantially painted rather than
+        // carrying a blank band as tall as the geometry's y offset.
+        let painted = frame.chunks_exact(4).filter(|pixel| *pixel != [0, 0, 0, 255]).count();
+        let total = size.width as usize * size.height as usize;
+        assert!(
+            painted > total / 2,
+            "a control offset by ({}, {}) painted only {painted}/{total} pixels",
+            geometry.x,
+            geometry.y
+        );
+        // And the blank band above the first paint must be the control's own top margin
+        // (a few pixels), not its absolute y offset. Before the translation was applied
+        // this band was as tall as `geometry.y`, which is the failure this pins.
+        let mut blank_rows = 0usize;
+        for row in 0..size.height as usize {
+            let start = row * size.width as usize * 4;
+            let blank = frame[start..start + size.width as usize * 4]
+                .chunks_exact(4)
+                .all(|pixel| pixel == [0, 0, 0, 255]);
+            if !blank {
+                break;
+            }
+            blank_rows += 1;
+        }
+        assert!(
+            blank_rows < geometry.y as usize,
+            "the blank top band ({blank_rows} rows) must be the control's own margin, \
+             not its absolute y offset ({})",
+            geometry.y
+        );
+
+        unregister(id);
     }
 
     /// A cached frame of the wrong size must not be used, or a resize would leave part

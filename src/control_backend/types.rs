@@ -62,6 +62,13 @@ pub(crate) struct CustomControlState {
     pub(crate) menu_trigger_queue: VecDeque<ObjectId>,
     /// Widget activations awaiting delivery.
     pub(crate) widget_trigger_queue: VecDeque<WidgetTriggerEvent>,
+    /// Last client size reported for a window, written when the host reports a resize.
+    ///
+    /// This is the custom backend's own record, not the platform's: a window created
+    /// through the `create_window` backend lives here (`mount_widget_of_kind`), so the
+    /// platform's state store never sees it. It answers "how big is this window now?"
+    /// after the resize event has been consumed — the event carries only an id.
+    pub(crate) window_client_sizes: crate::compat::HashMap<ObjectId, (u32, u32)>,
     /// Which menu row an id names, as `(menu widget id, item index)`.
     ///
     /// A menu entry is a row inside a [`crate::widget::menu_toolbar`] menu, not a

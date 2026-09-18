@@ -552,7 +552,36 @@ pub fn dispatch_trigger(widget_id: ObjectId, kind: WidgetTriggerKind) -> bool {
             remove_callbacks(widget_id);
             false
         }
+        WidgetTriggerKind::Resized => {
+            // The host resized a container: re-run its layout against the new size.
+            //
+            // This is the path that makes a layout follow a window the *user* resized.
+            // `WindowHandle::set_geometry` covers programmatic resizes, but nothing the
+            // user does with the window frame goes through it — the OS tells the
+            // backend, the backend queues this event, and the layout is re-run here.
+            //
+            // The size is asked of the **control backend**, which is where a window
+            // created through `create_window` actually lives and where the resize was
+            // reported. Asking the platform instead would query a different store that
+            // never saw this window.
+            if let Some((width, height)) = crate::window_client_size(widget_id) {
+                set_window_size(widget_id, width, height);
+                apply_window_layout(widget_id);
+            }
+            false
+        }
     }
+}
+
+/// Updates the window-size mirror used by `apply_window_layout` and the geometry-aware
+/// window helpers, without routing back into the platform.
+fn set_window_size(window_id: ObjectId, width: u32, height: u32) {
+    WINDOW_STATES.with(|map| {
+        let mut map = map.borrow_mut();
+        let state = map.entry(window_id).or_insert_with(Default::default);
+        state.w = width;
+        state.h = height;
+    });
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -577,6 +606,27 @@ impl WindowHandle {
     /// quietly or returns `None`/`false`; nothing panics.
     pub fn from_raw(id: ObjectId) -> Self {
         Self { id }
+    }
+
+    /// Records a freshly created window's geometry in the handle-side mirror.
+    ///
+    /// # Why this is needed and why it lives here
+    ///
+    /// [`WindowHandle::set_layout`] needs the window's size to lay its children out, and
+    /// it reads that size from the mirror this writes. Without the call, a window's layout
+    /// could not be applied until something happened to call `set_geometry` — so
+    /// `new_window(..)` followed by `set_layout(..)` silently did nothing, and the controls
+    /// stayed at their creation coordinates. The mirror is private to this module, so the
+    /// constructor path cannot write it directly.
+    pub(crate) fn record_created_geometry(id: ObjectId, x: i32, y: i32, w: u32, h: u32) {
+        WINDOW_STATES.with(|map| {
+            let mut map = map.borrow_mut();
+            let state = map.entry(id).or_default();
+            state.x = x;
+            state.y = y;
+            state.w = w;
+            state.h = h;
+        });
     }
 
     /// The underlying object id, for the raw `set_widget_*` functions and for
@@ -1054,7 +1104,19 @@ fn apply_window_layout(window_id: ObjectId) {
             geometry.width,
             geometry.height,
         );
+        // A child that hosts its own layout has just been given a new box, so its
+        // children have to be laid out again. Without this a panel positioned by the
+        // window layout keeps whatever child geometry it computed against its original
+        // (usually zero-area) rect — the children exist but are never placed.
+        if widget_hosts_a_layout(widget_id) {
+            apply_panel_geometry(widget_id, geometry);
+        }
     }
+}
+
+/// Whether `id` has a child layout registered on it.
+fn widget_hosts_a_layout(id: ObjectId) -> bool {
+    PANEL_LAYOUTS.try_with(|map| map.borrow().contains_key(&id)).unwrap_or(false)
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -2137,22 +2199,24 @@ thread_local! {
 impl PanelHandle {
     /// Set panel geometry and reapply the active child layout.
     pub fn set_geometry(&self, x: i32, y: i32, w: u32, h: u32) {
-        PANEL_STATES.with(|map| {
-            let mut map = map.borrow_mut();
-            let state = map.entry(self.raw_id()).or_default();
-            state.x = x;
-            state.y = y;
-            state.w = w;
-            state.h = h;
-        });
         crate::set_widget_geometry(self.raw_id(), x, y, w, h);
-        apply_panel_layout(self.raw_id());
+        apply_panel_geometry(self.raw_id(), Rect::new(x, y, w, h));
     }
 
     /// Set the layout manager for this panel.
     ///
     /// The layout is stored internally and used to reposition children.
     /// Only one layout can be active at a time.
+    ///
+    /// # Applying a layout before the panel has a size
+    ///
+    /// A panel is usually created with a placeholder rect (`new_panel(0, 0, 0, 0)`) and
+    /// then positioned by a parent layout. Applying this layout immediately would lay
+    /// every child out inside a zero-area rect — invisible, and never corrected, because
+    /// the parent layout positions the panel through `set_widget_geometry`, which does not
+    /// re-run this. The layout is therefore **also** applied whenever the panel's real
+    /// geometry changes (see `apply_panel_layout`, which reads the live geometry rather
+    /// than the mirrored state), so a caller can set the layout at any point.
     pub fn set_layout(&self, layout: Box<dyn crate::layout::Layout>) {
         PANEL_LAYOUTS.with(|map| {
             map.borrow_mut().insert(self.raw_id(), layout);
@@ -2170,12 +2234,43 @@ impl PanelHandle {
     }
 }
 
-fn apply_panel_layout(panel_id: ObjectId) {
-    let Some(rect) = PANEL_STATES.with(|map| {
-        map.borrow().get(&panel_id).map(|state| Rect::new(state.x, state.y, state.w, state.h))
-    }) else {
+/// Applies a panel's layout to its children.
+///
+/// # Why the rect comes from the widget, not from `PANEL_STATES`
+///
+/// A panel's geometry has two writers: `PanelHandle::set_geometry` (which updates the
+/// mirrored `PANEL_STATES`) and `crate::set_widget_geometry` (used by the window layout,
+/// which does not). Reading the mirror therefore lays children out into a stale rect
+/// whenever the panel is positioned by a parent layout — the case that matters, since
+/// that is how a panel normally gets its size. Reading the widget's own geometry is the
+/// single source of truth, and the mirror stays for the accessors that publish it.
+/// Records a panel's geometry and lays its children out inside it.
+///
+/// # Why the mirror exists and why it is written from here
+///
+/// A panel's rect has two writers: `PanelHandle::set_geometry` (a direct call) and the
+/// window layout, which positions it through `crate::set_widget_geometry`. The latter does
+/// not reach `PANEL_STATES`, and `crate::widget::runtime::geometry_of` cannot answer for a
+/// native control either (only *mounted* widgets live in that registry), so the mirror is
+/// the one place that can hold the panel's real box. Both writers funnel through here, so
+/// the mirror cannot fall behind.
+///
+/// A zero-area panel is recorded but **not** laid out: computing against an empty rect
+/// would overwrite every child's geometry with zeros, which is precisely the invisible-grid
+/// failure this replaces.
+fn apply_panel_geometry(panel_id: ObjectId, rect: Rect) {
+    PANEL_STATES.with(|map| {
+        let mut map = map.borrow_mut();
+        let state = map.entry(panel_id).or_default();
+        state.x = rect.x;
+        state.y = rect.y;
+        state.w = rect.width;
+        state.h = rect.height;
+    });
+
+    if rect.width == 0 || rect.height == 0 {
         return;
-    };
+    }
 
     let child_geometries = PANEL_LAYOUTS.with(|map| {
         let map = map.borrow();
@@ -2198,6 +2293,19 @@ fn apply_panel_layout(panel_id: ObjectId) {
             geometry.height,
         );
     }
+}
+
+/// Applies the layout a panel already has, using its recorded geometry.
+///
+/// Used by [`PanelHandle::set_layout`], where the caller has supplied a layout but not a
+/// rect: the panel's current box is whatever was recorded last.
+fn apply_panel_layout(panel_id: ObjectId) {
+    let Some(rect) = PANEL_STATES.with(|map| {
+        map.borrow().get(&panel_id).map(|state| Rect::new(state.x, state.y, state.w, state.h))
+    }) else {
+        return;
+    };
+    apply_panel_geometry(panel_id, rect);
 }
 
 // ═══════════════════════════════════════════════════════════════

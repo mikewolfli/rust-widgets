@@ -22,6 +22,7 @@ bool rw_attach_menu_bar_to_window(uint64_t window, uint64_t menu_bar);
 const char* rw_backend_name(void);
 bool rw_begin_drag(uint64_t source, const char* mime_type, const uint8_t* payload, unsigned int payload_len);
 unsigned int rw_bindings_api_version(void);
+bool rw_combo_box_add_item(uint64_t combo_box, const char* text);
 bool rw_combo_box_clear_items(uint64_t combo_box);
 int rw_combo_box_current_index(uint64_t combo_box);
 unsigned int rw_combo_box_item_count(uint64_t combo_box);

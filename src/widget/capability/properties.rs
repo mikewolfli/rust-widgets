@@ -181,6 +181,34 @@ pub(crate) fn group_box_capability() -> WidgetCapability {
     }
 }
 
+/// The capability for the `panel` entry — the plain container spelling.
+///
+/// # Why the schema and the kind both point at `GroupBox`
+///
+/// `Panel` is a `pub type` for `GroupBox` (`src/widget/mod.rs`), so `create_panel(..)`
+/// builds a `GroupBox` and the control reports `WidgetKind::GroupBox`. Naming the kind
+/// here as `Panel` was the earlier attempt, and it produced a second, undecidable
+/// question: a mounted `GroupBox` then claimed *two* kinds depending on which entry it
+/// came from, so the property contract had to publish a schema that matched neither
+/// entry — which the schema/contract gate correctly rejected.
+///
+/// What was actually wrong was smaller: `WidgetKind::Panel` had **no capability named
+/// after it**, so `create_panel(..)` resolved to whichever kind-`Panel` entry was
+/// registered first (`breadcrumb`). Registering the `panel` name against the kind the
+/// control really reports removes the ordering from that lookup and keeps the mounted
+/// widget's kind, its schema and its contract agreeing with each other.
+#[cfg(full_widgets)]
+pub(crate) fn panel_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::GroupBox,
+        canonical_name: "panel",
+        aliases: &[],
+        properties: GROUP_BOX_PROPERTIES,
+        events: &["toggled"],
+        commands: &["set_title", "set_checkable", "set_checked", "toggle"],
+    }
+}
+
 #[cfg(not(alloc_frugal))]
 pub(crate) fn frame_capability() -> WidgetCapability {
     WidgetCapability {
@@ -278,6 +306,25 @@ pub(crate) fn tool_box_capability() -> WidgetCapability {
     }
 }
 
+/// The capability for the `toolbox` entry, a deprecated spelling of `tool_box`.
+///
+/// `ControlBackend::create_toolbox(..)` calls `mount_widget_of_kind(Toolbox)`, which
+/// resolves the kind to the **canonical** name and mounts `tool_box` — so the panel
+/// is the right control, but the name the trait method spells was not registered and
+/// a `factory.create("toolbox", ..)` returned `None`. The row exists so the two
+/// spellings address the same control instead of one of them silently missing.
+#[cfg(not(alloc_frugal))]
+pub(crate) fn toolbox_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Toolbox,
+        canonical_name: "toolbox",
+        aliases: &[],
+        properties: TOOL_BOX_PROPERTIES,
+        events: &["current_changed"],
+        commands: &["add_item", "remove_item", "set_current_index", "set_orientation"],
+    }
+}
+
 #[cfg(not(alloc_frugal))]
 pub(crate) fn tab_bar_capability() -> WidgetCapability {
     WidgetCapability {
@@ -366,7 +413,36 @@ pub(crate) fn table_widget_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Table,
         canonical_name: "table_widget",
-        aliases: &["tablewidget", "table"],
+        aliases: &["tablewidget"],
+        properties: TABLE_WIDGET_PROPERTIES,
+        events: &["selection_changed", "focused_row_changed"],
+        commands: &["clear_selection", "clear_focused_row"],
+    }
+}
+
+/// The capability for `WidgetKind::Table`, the kind the public `create_table(..)`
+/// mounts — and the one every `table` spelling also addresses.
+///
+/// # Why `table` was an alias of `table_widget` before this row existed
+///
+/// Because there was no other way to make it resolve. With no entry declaring
+/// `WidgetKind::Table` as its canonical name, `capability_by_kind(Table)` fell back
+/// to `indices[0]` — **whichever of `table_widget`, `data_grid`, `tree_table`,
+/// `virtual_table` happened to be registered first**. That order is invisible to
+/// every caller-facing check: the id that comes back is valid, the control mounts,
+/// and only the *kind* of control is wrong. A row whose `canonical_name` is `table`
+/// removes the ordering from the answer entirely: `capability_by_kind` matches on
+/// `canonical_name == "table"`, so the resolution is the same for every registration
+/// order (rule #2: fix the class, not the instance).
+///
+/// The property schema is the one `table_widget` published, so no caller sees a
+/// change in behaviour — only a stable answer.
+#[cfg(not(alloc_frugal))]
+pub(crate) fn table_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Table,
+        canonical_name: "table",
+        aliases: &["table_widget", "tablewidget"],
         properties: TABLE_WIDGET_PROPERTIES,
         events: &["selection_changed", "focused_row_changed"],
         commands: &["clear_selection", "clear_focused_row"],
@@ -432,7 +508,41 @@ pub(crate) fn virtual_list_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::DataView,
         canonical_name: "virtual_list",
-        aliases: &["virtuallist", "data_view", "dataview"],
+        aliases: &["virtuallist"],
+        properties: VIRTUAL_LIST_PROPERTIES,
+        events: &["selection_changed", "visible_window_changed"],
+        commands: &["clear_data_source", "fetch_visible_rows"],
+    }
+}
+
+/// The capability for `WidgetKind::DataView`, the kind the public
+/// `create_data_view(..)` mounts.
+///
+/// # Why this exists next to `virtual_list_capability`
+///
+/// `DataView` and `VirtualList` are the same Rust type (`widget::mod.rs` declares
+/// `pub type DataView = VirtualList;`), so both kinds are served by one constructor
+/// and the factory keeps one entry whose canonical name is `virtual_list`.
+///
+/// The kind→capability index still has to answer for `DataView` — `create_data_view`
+/// mounts exactly that kind — and the answer it used to give was **whichever entry
+/// registered first**, because no entry declared the kind and the fallback in
+/// `capability_by_kind` takes `indices[0]`. That is the same order-dependent
+/// resolution that made `ToolButton` build a `split_button` and `Table` build a
+/// `tree_table`; it is silent because the id is valid.
+///
+/// Rule #54 argues against a second *type*, and this is not one: it registers the
+/// kind under its own name while keeping the same type, the same property schema and
+/// therefore the same behaviour. The alternative — adding `dataview` as an alias of
+/// `virtual_list` — was rejected because `capability_by_kind` matches on
+/// `canonical_name`, so an alias would leave the resolution order-dependent and the
+/// defect reachable again by a different registration order.
+#[cfg(not(alloc_frugal))]
+pub(crate) fn data_view_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::DataView,
+        canonical_name: "data_view",
+        aliases: &["dataview"],
         properties: VIRTUAL_LIST_PROPERTIES,
         events: &["selection_changed", "visible_window_changed"],
         commands: &["clear_data_source", "fetch_visible_rows"],
@@ -1063,12 +1173,29 @@ pub(crate) fn text_edit_capability() -> WidgetCapability {
 }
 
 // ── Web widget capabilities ──────────────────────────────────
+/// The web view's capability.
+///
+/// # Why the canonical name is `web_engine_view`
+///
+/// `web_view` is one of the two things `WidgetKind::WebEngineView` is called, and it
+/// was the canonical name until it became clear what that cost. Two capabilities
+/// declare this kind — this one and `media_player` — and
+/// [`WidgetFactory::capability_by_kind`] resolves a kind by matching the capability's
+/// `canonical_name` against **the kind's own name**. With the canonical name spelled
+/// `web_view`, that match failed for `WebEngineView`, the lookup fell through to
+/// `indices[0]`, and `create_web_view(..)` — and the C ABI function behind it — built
+/// a **`MediaPlayer`** while returning a valid id.
+///
+/// Naming the entry after the kind is the same fix as `table` / `panel` / `data_view`:
+/// the kind's own name is the only key that cannot be reordered out from under the
+/// lookup. `web_view` stays reachable as an alias, so `factory.create("web_view", ..)`
+/// and `WebView` (the `pub type` for this same control) are unaffected.
 #[cfg(not(alloc_frugal))]
 pub(crate) fn web_view_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::WebEngineView,
-        canonical_name: "web_view",
-        aliases: &["webview"],
+        canonical_name: "web_engine_view",
+        aliases: &["webview", "web_view"],
         properties: WEB_VIEW_PROPERTIES,
         events: &[
             "loading_started",

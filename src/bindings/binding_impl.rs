@@ -1376,6 +1376,20 @@ const RW_VALUE_STRING: c_int = 5;
 const RW_VALUE_COLOR: c_int = 6;
 const RW_VALUE_RECT: c_int = 7;
 #[no_mangle]
+/// Appends `text` (null gives an empty string) as a new last item.
+///
+/// Returns `true` when the item was added.
+///
+/// This is the combo-box counterpart of [`rw_list_box_add_item`]. It was missing
+/// while its siblings (`rw_combo_box_clear_items`, `rw_combo_box_item_count`, …) were
+/// present, so `src/bindings/java_jni.rs` — which calls it — could not compile under
+/// `--features android-jni`, and a C caller had no way to populate a combo box at all.
+/// A combo box you cannot add items to is only ever empty, so the omission was a
+/// functional gap rather than a cosmetic one.
+pub extern "C" fn rw_combo_box_add_item(combo_box: u64, text: *const c_char) -> CBool {
+    c_try!({ get_control_backend().combo_box_add_item(combo_box, &c_str_or_default(text)) })
+}
+#[no_mangle]
 /// Removes every item, leaving the combo box empty and with no selection.
 ///
 /// Returns `true` on success.

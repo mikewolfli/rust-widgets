@@ -81,6 +81,16 @@ impl IndicatorMode {
         })
     }
 
+    /// Whether this mode's arithmetic needs each bar's traded volume.
+    ///
+    /// Money Flow Index weights the typical price by volume, and On-Balance Volume *is* a
+    /// running total of signed volume — both are meaningless without it. Named so a caller
+    /// (or the `series` property) can tell that a price-only series cannot feed them,
+    /// rather than discovering it from a blank pane.
+    pub fn requires_volume(self) -> bool {
+        matches!(self, IndicatorMode::MoneyFlowIndex | IndicatorMode::OnBalanceVolume)
+    }
+
     /// The fixed `0..=100` range for the bounded modes, or `None` when the axis scales
     /// to the data.
     ///
@@ -637,6 +647,14 @@ impl WidgetProperties for IndicatorChart {
                 let CapabilityValue::String(text) = value else {
                     return Err(CapabilityAccessError::TypeMismatch);
                 };
+                // The property carries closes only, so the bars it builds have no volume.
+                // A volume-weighted mode read off such a series is undefined (MFI produces
+                // `NAN` throughout, OBV a flat zero line), and silently accepting the write
+                // would leave the caller with a blank pane and no error. Refusing names the
+                // problem instead: the property cannot express what the mode needs.
+                if self.mode.requires_volume() {
+                    return Err(CapabilityAccessError::UnsupportedOnWidget);
+                }
                 let mut series = PriceSeries::new();
                 for token in text.split([',', ' ', ';']).filter(|token| !token.is_empty()) {
                     let price: f64 =

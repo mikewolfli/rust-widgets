@@ -250,6 +250,25 @@ impl Platform for StubPlatform {
         true
     }
 
+    /// The window's current client size, as last reported by the host.
+    ///
+    /// Falls back to the size the window was created with. `None` for an id this backend
+    /// does not know, so a caller can tell "no such window" from "a size I can use".
+    fn window_client_size(&self, window_id: ObjectId) -> Option<(u32, u32)> {
+        // Ask the control backend, which owns the window and is therefore the only
+        // store that knows the size a resize reported.
+        crate::window_client_size(window_id)
+            .or_else(|| self.state.window_size(window_id))
+    }
+
+    /// Reports a container's new client size and queues a `Resized` trigger.
+    fn queue_resize_trigger(&self, window_id: ObjectId, width: u32, height: u32) -> bool {
+        // Forward to the control backend, which owns the window and the queue the app
+        // polls. Writing to the platform's own state would land in a store the host
+        // never reads, because `create_window` goes through the control backend.
+        crate::queue_resize_trigger(window_id, width, height)
+    }
+
     fn show_widget(&self, widget_id: ObjectId) {
         self.state.set_visible(widget_id, true);
     }

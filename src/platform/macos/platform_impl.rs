@@ -241,12 +241,56 @@ impl Platform for MacOSPlatform {
                 height,
                 window as usize,
             );
+            // The id has to exist before it can be associated with the delegate, so this
+            // comes after `register_handle`. A window resized by the user then re-runs the
+            // host's layout instead of keeping stale child geometry.
+            super::canvas::install_resize_delegate(window as id, id);
             self.state
                 .init_window_state(id, crate::platform::state::WindowStateRecord::new_window());
             pool.drain();
             id
         }
     }
+
+    /// The window's current client size, asked of AppKit.
+    ///
+    /// `contentView.bounds` is the authority once the user has dragged the window edge;
+    /// the recorded size is only a fallback for an id with no live `NSWindow`.
+    #[cfg(target_os = "macos")]
+    fn window_client_size(&self, window_id: ObjectId) -> Option<(u32, u32)> {
+        // SAFETY: `view_for`/`get_native_handle` return pointers this backend created,
+        // and the messages sent are read-only AppKit accessors. Off-main is excluded by
+        // the thread check, because AppKit must only be driven from the main thread.
+        unsafe {
+            if super::types::is_main_thread() {
+                if let Some(handle) = self.get_native_handle(window_id) {
+                    let window = handle as id;
+                    let content: id = msg_send![window, contentView];
+                    if content != nil {
+                        let bounds: NSRect = msg_send![content, bounds];
+                        let width = bounds.size.width.max(0.0) as u32;
+                        let height = bounds.size.height.max(0.0) as u32;
+                        if width > 0 && height > 0 {
+                            return Some((width, height));
+                        }
+                    }
+                }
+            }
+        }
+        // Ask the control backend, which owns the window and is therefore the only
+        // store that knows the size a resize reported.
+        crate::window_client_size(window_id)
+            .or_else(|| self.state.window_size(window_id))
+    }
+
+    /// Reports a container's new client size and queues a `Resized` trigger.
+    fn queue_resize_trigger(&self, window_id: ObjectId, width: u32, height: u32) -> bool {
+        // Forward to the control backend, which owns the window and the queue the app
+        // polls. Writing to the platform's own state would land in a store the host
+        // never reads, because `create_window` goes through the control backend.
+        crate::queue_resize_trigger(window_id, width, height)
+    }
+
     fn menu_item_shortcut(&self, menu_item: ObjectId) -> Option<String> {
         let shortcuts = self.menu_item_shortcuts.lock().ok()?;
         shortcuts.get(&menu_item).cloned().filter(|text| !text.is_empty())
@@ -416,4 +460,19 @@ impl Platform for MacOSPlatform {
     fn accessibility_bridge(&self) -> Option<&dyn AccessibilityBridge> {
         Some(&self.a11y_bridge)
     }
+}
+
+/// The running platform, when it is this backend and it has been initialised.
+///
+/// # Why this is needed
+///
+/// A resize arrives as an Objective-C callback, which is handed the window and nothing
+/// else — it has no reference to the platform object. This is how such a callback gets
+/// back to the state it needs to report through. Returns `None` when the active backend
+/// is not this one (or none is installed), so a callback that fires during teardown
+/// cannot act on the wrong backend.
+pub(crate) fn active_platform() -> Option<&'static dyn crate::platform::Platform> {
+    let platform = crate::platform::runtime::get_platform();
+    platform.as_any().downcast_ref::<MacOSPlatform>()?;
+    Some(platform)
 }

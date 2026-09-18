@@ -64,7 +64,10 @@ impl WidgetFactory {
             self.register(command_link_capability(), create_command_link);
             self.register(font_combo_box_capability(), create_font_combo_box);
             self.register(action_capability(), create_action);
+            self.register(panel_capability(), create_panel);
             self.register(tool_box_capability(), create_tool_box);
+            self.register(toolbox_capability(), create_toolbox);
+            self.register(table_capability(), create_table);
             self.register(list_view_capability(), create_list_view);
             self.register(tree_view_capability(), create_tree_view);
             self.register(table_widget_capability(), create_table_widget);
@@ -72,6 +75,7 @@ impl WidgetFactory {
             self.register(tree_table_capability(), create_tree_table);
             self.register(virtual_table_capability(), create_virtual_table);
             self.register(virtual_list_capability(), create_virtual_list);
+            self.register(data_view_capability(), create_data_view);
             self.register(menu_bar_capability(), create_menu_bar);
             self.register(tool_bar_capability(), create_tool_bar);
 

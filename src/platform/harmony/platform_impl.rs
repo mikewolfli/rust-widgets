@@ -205,6 +205,35 @@ impl Platform for HarmonyPlatform {
         self.state.unmount_surface_record(id)
     }
 
+    /// The window's current client size, as last reported by the host.
+    ///
+    /// Falls back to the size the window was created with. `None` for an id this backend
+    /// does not know, so a caller can tell "no such window" from "a size I can use".
+    fn window_client_size(&self, window_id: u64) -> Option<(u32, u32)> {
+        // Ask the control backend, which owns the window and is therefore the only
+        // store that knows the size a resize reported.
+        crate::window_client_size(window_id).or_else(|| self.state.window_size(window_id))
+    }
+
+    /// Reports a container's new client size and queues a `Resized` trigger.
+    ///
+    /// # Who calls this on Harmony
+    ///
+    /// The **host ArkTS page**, not this backend. OpenHarmony delivers a size change to
+    /// the host's `onAreaChange` callback on the component it created the surface in; the
+    /// library holds no ArkUI component handle to subscribe with (this backend is a state
+    /// model — see `create_window`), so there is no callback for it to attach.
+    ///
+    /// A host reports the new size here (or through [`crate::queue_resize_trigger`], the
+    /// same call). One that does not keeps the created size, which is what
+    /// `window_client_size` falls back to.
+    fn queue_resize_trigger(&self, window_id: u64, width: u32, height: u32) -> bool {
+        // Forward to the control backend, which owns the window and the queue the app
+        // polls. Writing to the platform's own state would land in a store the host
+        // never reads, because `create_window` goes through the control backend.
+        crate::queue_resize_trigger(window_id, width, height)
+    }
+
     /// Queues a repaint for the host to pick up. `false` when `id` is not mounted.
     fn invalidate_surface(&self, id: u64) -> bool {
         self.state.invalidate_surface_record(id)
