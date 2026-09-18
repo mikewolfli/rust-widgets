@@ -412,37 +412,38 @@ pub trait EventHandler {
 `BaseWidget` provides a default implementation that maps platform events to
 signal emissions (click → `clicked.emit()`, mouse move → `hover.emit(point)`).
 
-### `WidgetKind` Enum — 109+ Variants
+### `WidgetKind` Enum — 179 Variants
 
 The `WidgetKind` enum categorizes every widget type. Variants are
-feature-gated: 15 are available under all profiles, and 94+ are unlocked with
+feature-gated: 28 are available under all profiles, and 151 are unlocked with
 non-`mini` features:
 
 ```rust
 pub enum WidgetKind {
-    // Always available (15):
-    Window, Dialog, PopupWindow,
+    // Always available (28):
+    Window, PopupWindow,
     Button, CheckBox, RadioButton, Label,
     LineEdit, ComboBox, SpinBox, ListBox,
     ProgressBar, Slider, ScrollBar, ScrollArea,
-    Panel, GroupBox, ToggleButton,
+    Panel, GroupBox, Frame, ToggleButton,
     FreeformShape,
     Line, Meter, MiniChart, ImageView,
     MiniCanvas, Arc, Spinner, Roller,
     Dropdown, TextArea, Keyboard, Switch,
 
-    // Feature-gated (94+):
+    // Feature-gated (151):
     #[cfg(not(feature = "mini"))]
-    MessageBox, FileDialog, ColorDialog, FontDialog,
+    Dialog, MessageBox, FileDialog, ColorDialog, FontDialog,
     InputDialog, ProgressDialog,
     TextEdit, RichEdit,
-    ListView, TreeView, Table, Grid, Chart,
+    ListView, TreeView, TreeTable, Table, Grid, Chart,
     TabWidget, Splitter, MdiArea,
     MenuBar, Menu, MenuItem, ContextMenu,
     ToolBar, StatusBar, Canvas, DockPanel,
     Calendar, DatePicker, TimePicker, DateTimePicker,
-    WebView, WebEngineView, WebEnginePage,
+    WebEngineView, WebEnginePage,
     Action, ToolButton,
+    Breadcrumb, SignaturePad, DropZone,
     TabBar, PieMenu, RibbonBar,
     SearchBox, Chip, Badge, SkeletonLoader,
     FAB, PullToRefresh, BottomSheet,
@@ -891,8 +892,9 @@ pub trait ControlBackend {
 
 The dispatcher in `control_backend::dispatcher` routes widget creation calls
 to the appropriate backend based on compile-time feature flags. The routing
-system in `control_backend::routing` handles the 180+ widget kinds, mapping
-each to the correct native or custom implementation.
+system in `control_backend::routing` covers all 179 widget kinds. Every one is
+custom-painted, so there is no second (platform-held) mechanism left to choose
+between.
 
 ---
 
@@ -951,7 +953,7 @@ This means widget code does not need `#[cfg]` annotations for memory types
    separation between UI and logic.
 
 4. **Compile-time feature selection.** Dead code is eliminated by the compiler.
-   A mini profile binary contains only ~15 widget implementations with zero
+   A mini profile binary contains only ~28 widget implementations with zero
    overhead from unused widget code.
 
 5. **Single backend contract.** The `ControlBackend` trait is the only

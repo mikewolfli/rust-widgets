@@ -612,6 +612,15 @@ def generate_matrix() -> str:
 
     abi_kinds = _abi_constructible_kinds()
 
+    # The `WebEngine*` rows after `WebEngineView` are wrapper types over that one
+    # view, not `WidgetKind` variants (see the note in `DEGRADATION_NOTES`).
+    # Derived rather than hard-coded so adding or removing a wrapper cannot make
+    # the totals below silently wrong.
+    webengine_wrappers = [
+        key for key in WIDGETS if key.startswith("WebEngine") and key != "WebEngineView"
+    ]
+    kind_count = len(WIDGETS) - len(webengine_wrappers)
+
     # Header
     header = "| Widget | " + " | ".join(PLATFORMS) + " | C |"
     sep = "| " + "--- |" * (len(PLATFORMS) + 2)
@@ -631,13 +640,14 @@ def generate_matrix() -> str:
     lines.append("---")
     lines.append("")
     lines.append(
-        f"Total widgets: {len(WIDGETS)} ({len(WIDGETS) - 9} WidgetKind variants plus 9 documented WebEngine wrapper types)"
+        f"Total widgets: {len(WIDGETS)} ({kind_count} WidgetKind variants plus "
+        f"{len(webengine_wrappers)} documented WebEngine wrapper types)"
     )
     lines.append("")
     lines.append(
         f"C-ABI typed constructors: {len(abi_kinds & set(WIDGETS))} of {len(WIDGETS)} "
-        "kinds. The remainder are reachable through `rw_create_widget_of_kind`, which "
-        "takes a factory name at run time."
+        "widget types. The remainder are reachable through `rw_create_widget_of_kind`, "
+        "which takes a factory name at run time."
     )
     lines.append("")
     lines.append("---")

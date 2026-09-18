@@ -267,6 +267,11 @@ fn new_widget_kinds_resolve_their_own_kind() {
 
     let zone = factory.create("drop_zone", rect, "").expect("drop zone must be created");
     assert_eq!(zone.kind(), WidgetKind::DropZone);
+
+    // `dialog` used to be an alias of `popup_window`, so `create("dialog")` built a
+    // `PopupWindow`. It is now its own control and must report `WidgetKind::Dialog`.
+    let dialog = factory.create("dialog", rect, "").expect("dialog must be created");
+    assert_eq!(dialog.kind(), WidgetKind::Dialog);
 }
 
 #[test]

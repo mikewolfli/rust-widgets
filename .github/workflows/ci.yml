@@ -117,6 +117,19 @@ jobs:
           chmod +x tools/check_widget_kind_count.sh
           ./tools/check_widget_kind_count.sh
 
+      # `SignaturePad`, `DropZone`, `TreeTable` and `Breadcrumb` were promoted to
+      # their own `WidgetKind` variants, registered, and given constructors — but
+      # no `ControlBackend` method ever served them, so every caller that creates a
+      # control through the backend got id `0`. This gate grades each kind against
+      # both backends and exits non-zero on a placeholder; it was written for
+      # exactly this failure and was simply not wired into CI, which is why the gap
+      # survived four release cycles of reviews.
+      - name: Run control route matrix gate
+        shell: bash
+        run: |
+          chmod +x tools/check_control_route_matrix.sh
+          ./tools/check_control_route_matrix.sh
+
       # `embedded_target_fps_clamps` flaked because two modules declared separate test
       # mutexes over one process-wide embedded engine — two locks over one resource
       # exclude nothing. The flake passed on retry, so it read as environmental. This

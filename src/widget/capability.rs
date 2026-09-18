@@ -252,9 +252,13 @@ pub(crate) fn kind_canonical_name_into(
 /// Several `WidgetKind` variants name a *type alias* rather than a distinct type:
 /// `ActivityIndicator` is `ProgressBar`, `DoubleSpinBox` is `SpinBox`,
 /// `ColumnView` is `TreeView`, `UndoView` is `ListView`, `DirectoryDialog` is
-/// `FileDialog`, `ContextMenu` is `Menu`, `Dialog` is `PopupWindow`. The factory
+/// `FileDialog`, `ContextMenu` is `Menu`. The factory
 /// registers the target type once, so a lookup by the alias finds nothing and the
 /// control would refuse to be created.
+///
+/// `Dialog` used to be listed here as an alias of `PopupWindow`. It is no longer
+/// one: 2.4.0 gave `Dialog` its own module and constructor, so both are
+/// independent controls and neither needs the other's entry.
 ///
 /// `alias_factory_name` resolves those variants, which is why this returns a `&str`
 /// rather than `Option`: every kind has a constructor, either directly or through

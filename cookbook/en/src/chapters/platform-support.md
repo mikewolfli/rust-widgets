@@ -46,15 +46,15 @@ OS-dependent.
 
 ### 1.2 Widget availability is per profile, not per OS
 
-Because every control is self-drawn, **the same 167 widget kinds work on every
+Because every control is self-drawn, **the same 179 widget kinds work on every
 OS**. What varies is how much of the widget set is compiled in, which is chosen by
 *profile*:
 
 | Profile | Widget kinds | Registry | Custom-painted controls | Renderer |
 |---------|:-----------:|:--------:|:-----------------------:|----------|
-| `desktop` | 167 (full) | ✅ | ✅ | wgpu (GPU) |
-| `tablet` | 167 (full) | ✅ | ✅ | wgpu (GPU) |
-| `mobile` | 167 (full) | ✅ | ✅ | wgpu (GPU) |
+| `desktop` | 179 (full) | ✅ | ✅ | wgpu (GPU) |
+| `tablet` | 179 (full) | ✅ | ✅ | wgpu (GPU) |
+| `mobile` | 179 (full) | ✅ | ✅ | wgpu (GPU) |
 | `embedded` | reduced core set | — | — | software |
 | `mini` | reduced core set | — | — | software |
 

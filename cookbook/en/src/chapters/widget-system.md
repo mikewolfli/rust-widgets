@@ -426,15 +426,15 @@ impl EventHandler for MyWidget {
 
 ---
 
-## `WidgetKind` Enum — 109+ Variants
+## `WidgetKind` Enum — 179 Variants
 
 The `WidgetKind` enum categorizes every widget type. It is feature-gated:
-15 variants are always available; 94+ require non-`mini` features.
+28 variants are always available; 151 require non-`mini` features.
 
 ```mermaid
 graph TB
     subgraph "Always Available (mini-safe)"
-        ALWAYS["Window, Dialog, PopupWindow<br/>Button, CheckBox, RadioButton<br/>Label, LineEdit, ComboBox<br/>SpinBox, ListBox<br/>ProgressBar, Slider, ScrollBar<br/>ScrollArea, Panel, GroupBox<br/>ToggleButton, FreeformShape<br/>Line, Meter, MiniChart<br/>ImageView, MiniCanvas<br/>Arc, Spinner, Roller<br/>Dropdown, TextArea, Keyboard<br/>Switch"]
+        ALWAYS["Window, PopupWindow<br/>Button, CheckBox, RadioButton<br/>Label, LineEdit, ComboBox<br/>SpinBox, ListBox<br/>ProgressBar, Slider, ScrollBar<br/>ScrollArea, Panel, GroupBox<br/>Frame, ToggleButton, FreeformShape<br/>Line, Meter, MiniChart<br/>ImageView, MiniCanvas<br/>Arc, Spinner, Roller<br/>Dropdown, TextArea, Keyboard<br/>Switch"]
     end
 
     subgraph "Feature-Gated (non-mini)"
@@ -447,7 +447,7 @@ graph TB
         WEB["Web<br/>WebView, WebEngineView<br/>WebEnginePage, WebEngineSettings<br/>WebEngineCookieStore"]
         CHART["Chart<br/>LineChart, BarChart<br/>PieChart, Sparkline"]
         MODERN["Modern UI<br/>Switch, AnimatedImage<br/>TabView, Chip, Badge<br/>FAB, BottomSheet, Carousel<br/>QRCode, SkeletonLoader<br/>SegmentedControl, Avatar<br/>PullToRefresh, Rating<br/>HeroAnimation, Stepper"]
-        SPECIAL["Special<br/>Canvas, Grid, CodeEditor<br/>ColorPicker, DiffViewer<br/>TerminalView, MediaPlayer<br/>MapView, GanttWidget<br/>TimelineWidget, MarkdownEditor<br/>NotificationCenter, Snackbar<br/>Toast, Breadcrumb, CommandPalette"]
+        SPECIAL["Special<br/>Canvas, Grid, CodeEditor<br/>ColorPicker, DiffViewer<br/>TerminalView, MediaPlayer<br/>MapView, GanttWidget<br/>TimelineWidget, MarkdownEditor<br/>NotificationCenter, Snackbar<br/>Toast, Breadcrumb, CommandPalette<br/>SignaturePad, DropZone"]
     end
 
     ALWAYS --> INPUT
@@ -467,8 +467,9 @@ graph TB
 | Category | Variant | Mini-Safe | Description |
 |---|---|---|---|
 | **Window** | `Window` | ✓ | Top-level application window |
-| | `Dialog` | ✓ | Modal dialog |
+| | `Dialog` | ✗ | Titled dialog that hosts one content widget |
 | | `PopupWindow` | ✓ | Non-modal popup |
+| | `Frame` | ✓ | Border/frame drawn around its child |
 | **Base** | `Button` | ✓ | Push button |
 | | `CheckBox` | ✓ | Check box (on/off/partial) |
 | | `RadioButton` | ✓ | Radio button (exclusive group) |
@@ -622,6 +623,8 @@ graph TB
 | | `BezierCurveEditor` | ✗ | Bezier curve editor |
 | | `LottieWidget` | ✗ | Lottie animation player |
 | | `RiveWidget` | ✗ | Rive animation runtime |
+| | `SignaturePad` | ✗ | Freehand signature capture with smoothing, undo and polyline export |
+| | `DropZone` | ✗ | Named drag-and-drop target filtered by MIME type |
 | **Chart** | `LineChart` | ✗ | Line chart |
 | | `BarChart` | ✗ | Bar chart |
 | | `PieChart` | ✗ | Pie chart |

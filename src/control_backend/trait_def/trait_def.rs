@@ -2241,6 +2241,54 @@ pub trait ControlBackend: Send + Sync {
     ) -> ObjectId {
         0
     }
+    /// Create breadcrumb trail control.
+    ///
+    /// Promoted from a shared `Panel` kind to its own kind in 2.4.0; the typed
+    /// method is what keeps `WidgetKind::Breadcrumb` reachable by name from the
+    /// bindings and the route matrix.
+    fn create_breadcrumb(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create drag-and-drop upload target control.
+    fn create_drop_zone(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create freehand signature capture control.
+    fn create_signature_pad(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create tree-table control (a tree whose rows carry editable columns).
+    fn create_tree_table(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
     /// Create text area control.
     fn create_text_area(
         &self,

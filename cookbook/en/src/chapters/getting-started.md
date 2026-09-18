@@ -54,7 +54,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-rust_widgets = "2.3.0"
+rust_widgets = "2.4.0"
 ```
 
 The default feature set (`desktop`) pulls in the full desktop profile: GPU
@@ -76,11 +76,11 @@ the binary you need. Pick one option from each axis:
 | **Tablet** | `tablet` | Touch-first, GPU, no desktop extras |
 | **Mobile** | `mobile` | Touch, GPU, mobile API surface |
 | **Embedded** | `embedded` | Software raster, no GPU, low memory, reduced widget set |
-| **Mini** | `mini` | LVGL-style: ~15 core widgets, software raster, no alloc-heavy deps |
+| **Mini** | `mini` | LVGL-style: ~28 core widgets, software raster, no alloc-heavy deps |
 
 > **A profile chooses how much of the widget set is *compiled in* — never which
 > controls are available per OS.** Every profile paints the same self-drawn controls;
-> `desktop`/`tablet`/`mobile` compile all 167 widget kinds, while `embedded`/`mini`
+> `desktop`/`tablet`/`mobile` compile all 179 widget kinds, while `embedded`/`mini`
 > compile a reduced core set. See
 > [platform-support.md § 1.2](platform-support.md#12-widget-availability-is-per-profile-not-per-os).
 
@@ -119,23 +119,23 @@ the binary you need. Pick one option from each axis:
 ```toml
 # Desktop Linux with Wayland, keep everything:
 [dependencies]
-rust_widgets = { version = "2.3.0", features = ["desktop", "linux-wayland"] }
+rust_widgets = { version = "2.4.0", features = ["desktop", "linux-wayland"] }
 
 # Tablet with auto-detected OS:
 [dependencies]
-rust_widgets = { version = "2.3.0", default-features = false, features = ["tablet"] }
+rust_widgets = { version = "2.4.0", default-features = false, features = ["tablet"] }
 
 # Minimal embedded (no std):
 [dependencies]
-rust_widgets = { version = "2.3.0", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "2.4.0", default-features = false, features = ["embedded"] }
 
 # Mobile Android:
 [dependencies]
-rust_widgets = { version = "2.3.0", default-features = false, features = ["mobile", "android"] }
+rust_widgets = { version = "2.4.0", default-features = false, features = ["mobile", "android"] }
 
 # WASM web app:
 [dependencies]
-rust_widgets = { version = "2.3.0", default-features = false, features = ["mobile", "wasm", "touch"] }
+rust_widgets = { version = "2.4.0", default-features = false, features = ["mobile", "wasm", "touch"] }
 ```
 
 ### Build Profiles

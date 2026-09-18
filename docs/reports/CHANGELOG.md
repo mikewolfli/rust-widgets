@@ -59,6 +59,13 @@ signals the controls actually emit.
 
 ### Added
 
+- **`Dialog` — the generic desktop dialog control.** `WidgetKind::Dialog` previously resolved to
+  `PopupWindow` through the alias table, so `create_dialog(..)` built a popup that reported
+  `WidgetKind::PopupWindow` — the same "named method that builds something else" defect fixed for
+  `create_web_view` in 2.3.2. `Dialog` is now a real control: a titled frame that hosts one content
+  widget (`set_content_widget`), carries modal intent (enforced by the modal stack), and exposes
+  `open`/`close`/`accept`/`reject` with `opened`/`closed`/`accepted`/`rejected` signals. Registered,
+  constructible by name, and covered by unit tests.
 - **`FloatingLabel::tick(delta_ms)`** and **`FloatingLabel::animation_progress()`** — the
   animation runtime and its observable read-back, following the `delta_ms`-based `tick`
   convention of `Spinner` and the media widgets.
@@ -78,9 +85,9 @@ signals the controls actually emit.
 
 | Check | Result |
 |---|---|
-| `cargo test --lib` (desktop) | **4958** passed, 0 failed, 0 ignored |
-| `cargo test` (27 test binaries) | **5171** passed, 0 failed |
-| `tablet` / `mobile` lib | 4714 / 4742 passed |
+| `cargo test --lib` (desktop) | **4964** passed, 0 failed, 0 ignored |
+| `cargo test` (27 test binaries) | **5177** passed, 0 failed |
+| `tablet` / `mobile` lib | 4720 / 4748 passed |
 | `embedded` / `mini` lib | 1549 / 1481 passed |
 | `cargo clippy --all-targets -- -D warnings` | 0 warnings |
 

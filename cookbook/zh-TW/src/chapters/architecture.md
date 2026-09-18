@@ -402,40 +402,41 @@ pub trait EventHandler {
 
 `BaseWidget` 提供了一個預設實作，將平台事件對應到訊號發射（點擊 → `clicked.emit()`、滑鼠移動 → `hover.emit(point)`）。
 
-### `WidgetKind` 列舉 — 109+ 個變體
+### `WidgetKind` 列舉 — 179 個變體
 
-`WidgetKind` 列舉對每個 widget 型別進行分類。變體是功能閘控的：在所有設定檔下都有 15 個可用，94+ 個需要非 `mini` 功能才能解鎖：
+`WidgetKind` 列舉對每個 widget 型別進行分類。變體是功能閘控的：在所有設定檔下都有 28 個可用，151 個需要非 `mini` 功能才能解鎖：
 
 ```rust
 pub enum WidgetKind {
-    // 始終可用（15 個）：
-    Window, Dialog, PopupWindow,
+    // 始終可用（28 個）：
+    Window, PopupWindow,
     Button, CheckBox, RadioButton, Label,
     LineEdit, ComboBox, SpinBox, ListBox,
     ProgressBar, Slider, ScrollBar, ScrollArea,
-    Panel, GroupBox, ToggleButton,
+    Panel, GroupBox, Frame, ToggleButton,
     FreeformShape,
     Line, Meter, MiniChart, ImageView,
     MiniCanvas, Arc, Spinner, Roller,
     Dropdown, TextArea, Keyboard, Switch,
 
-    // 功能閘控（94+ 個）：
+    // 功能閘控（151 個）：
     #[cfg(not(feature = "mini"))]
-    MessageBox, FileDialog, ColorDialog, FontDialog,
+    Dialog, MessageBox, FileDialog, ColorDialog, FontDialog,
     InputDialog, ProgressDialog,
     TextEdit, RichEdit,
-    ListView, TreeView, Table, Grid, Chart,
+    ListView, TreeView, TreeTable, Table, Grid, Chart,
     TabWidget, Splitter, MdiArea,
     MenuBar, Menu, MenuItem, ContextMenu,
     ToolBar, StatusBar, Canvas, DockPanel,
     Calendar, DatePicker, TimePicker, DateTimePicker,
-    WebView, WebEngineView, WebEnginePage,
+    WebEngineView, WebEnginePage,
     Action, ToolButton,
     TabBar, PieMenu, RibbonBar,
     SearchBox, Chip, Badge, SkeletonLoader,
     FAB, PullToRefresh, BottomSheet,
     BottomNavigationBar, NavigationDrawer, AppBar,
-    // ... 還有 50+ 個
+    Breadcrumb, SignaturePad, DropZone,
+    // ... 以及更多
 }
 ```
 
@@ -867,7 +868,7 @@ pub trait ControlBackend {
 
 ### 分派策略
 
-`control_backend::dispatcher` 中的分派器根據編譯期功能標記，將 widget 建立呼叫路由到適當的後端。`control_backend::routing` 中的路由系統處理 180+ 種 widget 種類，將每一種對應到正確的原生或自訂實作。
+`control_backend::dispatcher` 中的分派器根據編譯期功能標記，將 widget 建立呼叫路由到適當的後端。`control_backend::routing` 中的路由系統涵蓋全部 179 種 widget 種類；每種 widget 皆為自繪，已無第二套（平台託管）機制可選。
 
 ---
 
@@ -918,7 +919,7 @@ pub type MiniString = heapless::String<128>;
 
 3. **訊號/插槽實現解耦。** Widgets 不知道它們的消費者。它們發射訊號，消費者連接插槽。這實現了 UI 與邏輯之間的清晰分離。
 
-4. **編譯期功能選擇。** 死碼由編譯器消除。mini 設定檔的二進位檔只包含約 15 個 widget 實作，且沒有來自未使用 widget 程式碼的任何開銷。
+4. **編譯期功能選擇。** 死碼由編譯器消除。mini 設定檔的二進位檔只包含約 28 個 widget 實作，且沒有來自未使用 widget 程式碼的任何開銷。
 
 5. **單一後端合約。** `ControlBackend` trait 是新增平台的唯一整合點。實作 180+ 個方法一次，整個 widget 函式庫就能在新的目標上運作。
 

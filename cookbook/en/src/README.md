@@ -18,7 +18,7 @@ Two consequences worth internalising before you read further:
 1. **A control looks identical on every OS.** Your button has the same pixels on
    Windows, macOS, Linux, iOS, Android and the web, because the same Rust
    rasterizer drew all of them.
-2. **Widget availability is a *profile* question, not an OS question.** All 167
+2. **Widget availability is a *profile* question, not an OS question.** All 179
    widget kinds are available on every platform in the `desktop`/`tablet`/`mobile`
    profiles. Only the resource-constrained `embedded`/`mini` profiles compile a
    reduced set.
@@ -36,7 +36,7 @@ hardware-adaptive rendering, and deep platform integration — all through a
 clean, idiomatic Rust API.
 
 > The snippet below is illustrative of the intended API shape. For code that
-> compiles against 2.3.0, start from [`chapters/getting-started.md`](chapters/getting-started.md),
+> compiles against 2.4.0, start from [`chapters/getting-started.md`](chapters/getting-started.md),
 > which is verified against the current crate.
 
 ```rust
@@ -59,16 +59,16 @@ fn main() {
 
 ## Key Features
 
-### Rich Widget Library — 167 Widget Kinds
+### Rich Widget Library — 179 Widget Kinds
 
-167 built-in widget kinds span every common UI need, and **all of them are
+179 built-in widget kinds span every common UI need, and **all of them are
 self-drawn and therefore available on every platform**:
 
 - **Core controls**: Button, CheckBox, RadioButton, Label, LineEdit, TextEdit,
   ComboBox, SpinBox, Slider, ScrollBar, ProgressBar
-- **Containers**: Window, Dialog, TabWidget, Splitter, GroupBox, StackedWidget,
+- **Containers**: Window, Dialog, Frame, TabWidget, Splitter, GroupBox, StackedWidget,
   DockWidget, MdiArea, ToolBox, CollapsiblePane
-- **Lists & views**: ListView, TreeView, Table, Grid, Canvas
+- **Lists & views**: ListView, TreeView, TreeTable, Table, Grid, Canvas
 - **Date & time**: Calendar, DatePicker, TimePicker, DateTimePicker,
   DateRangePicker
 - **Menus**: MenuBar, ContextMenu, PieMenu, RibbonBar, DropdownMenu, Popover
@@ -79,7 +79,8 @@ self-drawn and therefore available on every platform**:
 - **Display**: LCDNumber, Dial, ProgressCircle, Rating, Sparkline, Badge, Chip,
   Avatar, SkeletonLoader
 - **Specialized**: QRCode, VideoPlayer, CameraPreview, BarcodeScanner, MapView,
-  TerminalView, MediaPlayer, CodeEditor, DiffViewer
+  TerminalView, MediaPlayer, CodeEditor, DiffViewer, SignaturePad, DropZone,
+  Breadcrumb
 
 ### Hardware-Adaptive Rendering
 
@@ -94,7 +95,7 @@ Three rendering backends, automatically selected for your target:
 ### Nine Platforms, One API
 
 The table below lists **how each platform provides a surface and event loop** — not
-which controls are available. Because every control is self-drawn, all 167 widget
+which controls are available. Because every control is self-drawn, all 179 widget
 kinds work on every platform listed; only the `embedded`/`mini` profiles reduce the
 compiled-in set.
 
@@ -201,10 +202,10 @@ handling, WebChannel communication, and context menu customization.
 
 | | |
 |---|---|
-| **Version** | 2.3.0 |
+| **Version** | 2.4.0 |
 | **License** | [MIT](https://github.com/mikewolfli/rust-widgets/blob/main/LICENSE) |
 | **Repository** | [github.com/mikewolfli/rust-widgets](https://github.com/mikewolfli/rust-widgets) |
-| **Tests** | 4000+ |
+| **Tests** | 4900+ |
 | **MSRV** | Rust 1.87 |
 
 Ready to begin? Head to [Getting Started](chapters/getting-started.md).

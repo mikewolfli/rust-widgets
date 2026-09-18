@@ -422,15 +422,15 @@ impl EventHandler for MyWidget {
 
 ---
 
-## `WidgetKind` 枚举 — 109+ 变体
+## `WidgetKind` 枚举 — 179 变体
 
 `WidgetKind` 枚举对每个控件类型进行分类。它通过特性门控：
-15 个变体始终可用；94+ 个需要非 `mini` 特性。
+28 个变体始终可用；151 个需要非 `mini` 特性。
 
 ```mermaid
 graph TB
     subgraph "始终可用（mini-safe）"
-        ALWAYS["Window, Dialog, PopupWindow<br/>Button, CheckBox, RadioButton<br/>Label, LineEdit, ComboBox<br/>SpinBox, ListBox<br/>ProgressBar, Slider, ScrollBar<br/>ScrollArea, Panel, GroupBox<br/>ToggleButton, FreeformShape<br/>Line, Meter, MiniChart<br/>ImageView, MiniCanvas<br/>Arc, Spinner, Roller<br/>Dropdown, TextArea, Keyboard<br/>Switch"]
+        ALWAYS["Window, PopupWindow<br/>Button, CheckBox, RadioButton<br/>Label, LineEdit, ComboBox<br/>SpinBox, ListBox<br/>ProgressBar, Slider, ScrollBar<br/>ScrollArea, Panel, GroupBox<br/>Frame, ToggleButton, FreeformShape<br/>Line, Meter, MiniChart<br/>ImageView, MiniCanvas<br/>Arc, Spinner, Roller<br/>Dropdown, TextArea, Keyboard<br/>Switch"]
     end
 
     subgraph "特性门控（非 mini）"
@@ -443,7 +443,7 @@ graph TB
         WEB["Web<br/>WebView, WebEngineView<br/>WebEnginePage, WebEngineSettings<br/>WebEngineCookieStore"]
         CHART["Chart<br/>LineChart, BarChart<br/>PieChart, Sparkline"]
         MODERN["Modern UI<br/>Switch, AnimatedImage<br/>TabView, Chip, Badge<br/>FAB, BottomSheet, Carousel<br/>QRCode, SkeletonLoader<br/>SegmentedControl, Avatar<br/>PullToRefresh, Rating<br/>HeroAnimation, Stepper"]
-        SPECIAL["Special<br/>Canvas, Grid, CodeEditor<br/>ColorPicker, DiffViewer<br/>TerminalView, MediaPlayer<br/>MapView, GanttWidget<br/>TimelineWidget, MarkdownEditor<br/>NotificationCenter, Snackbar<br/>Toast, Breadcrumb, CommandPalette"]
+        SPECIAL["Special<br/>Canvas, Grid, CodeEditor<br/>ColorPicker, DiffViewer<br/>TerminalView, MediaPlayer<br/>MapView, GanttWidget<br/>TimelineWidget, MarkdownEditor<br/>NotificationCenter, Snackbar<br/>Toast, Breadcrumb, CommandPalette<br/>SignaturePad, DropZone"]
     end
 
     ALWAYS --> INPUT
@@ -463,8 +463,9 @@ graph TB
 | 类别 | 变体 | Mini-Safe | 描述 |
 |---|---|---|---|
 | **窗口** | `Window` | ✓ | 顶级应用程序窗口 |
-| | `Dialog` | ✓ | 模态对话框 |
+| | `Dialog` | ✗ | 承载一个内容控件的带标题对话框 |
 | | `PopupWindow` | ✓ | 非模态弹出窗口 |
+| | `Frame` | ✓ | 围绕子控件绘制的边框/框架 |
 | **基础** | `Button` | ✓ | 按钮 |
 | | `CheckBox` | ✓ | 复选框（开/关/部分） |
 | | `RadioButton` | ✓ | 单选按钮（互斥组） |
@@ -618,6 +619,8 @@ graph TB
 | | `BezierCurveEditor` | ✗ | 贝塞尔曲线编辑器 |
 | | `LottieWidget` | ✗ | Lottie 动画播放器 |
 | | `RiveWidget` | ✗ | Rive 动画运行时 |
+| | `SignaturePad` | ✗ | 手写签名采集，带平滑、撤销与折线导出 |
+| | `DropZone` | ✗ | 按 MIME 类型过滤的命名拖放目标 |
 | **图表** | `LineChart` | ✗ | 折线图 |
 | | `BarChart` | ✗ | 柱状图 |
 | | `PieChart` | ✗ | 饼图 |

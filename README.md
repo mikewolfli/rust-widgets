@@ -28,7 +28,7 @@ There is no `CreateWindowExW`/`NSButton`/`gtk_button_new`/`android.widget.Button
 | Property | Self-drawn (this library) | Native controls |
 |---|---|---|
 | Appearance | **Identical on every OS** | Differs per OS toolkit and version |
-| Widget count | **175 kinds, all platforms** | Only what the OS toolkit offers |
+| Widget count | **179 kinds, all platforms** | Only what the OS toolkit offers |
 | Dependency weight | **No GUI toolkit linked** | GTK / AppKit / Win32 / Android SDK |
 | Headless & embedded | **Runs with no OS at all** (`mini`, SVG) | Impossible |
 | Deterministic tests | **Pixel/serialise snapshots** | Needs a real display |
@@ -46,7 +46,7 @@ A backend that cannot supply even a surface (for example a bare framebuffer) sti
 > **Migrating from 1.x?** Native control creation was removed from all ten backends in 2.0.0. See [`CHANGELOG.md`](CHANGELOG.md) and [`docs/MIGRATION_GUIDE.md`](docs/MIGRATION_GUIDE.md).
 
 All 179 widget kinds are self-drawn. Every one of them resolves a constructor through
-`factory_name_for_kind` (`456` accepted names in total, counting aliases);
+`factory_name_for_kind` (`377` accepted names in total, counting aliases);
 `tools/check_widget_registration_fidelity.sh` fails if a kind is added without an
 answer, or resolves to no constructor at all — the latter caught four `create_*`
 methods (`Frame`, `DockPanel`, `CupertinoSwitch` and nine WebEngine names) that
@@ -61,7 +61,7 @@ is generated from source and gated for drift in CI.
 [![tests](https://img.shields.io/badge/tests-5100%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
-**Verified in 2.4.0:** `4958` lib tests pass on `desktop` (`4714` on `tablet`, `4742` on
+**Verified in 2.4.0:** `4964` lib tests pass on `desktop` (`4720` on `tablet`, `4748` on
 `mobile`, `1549` on `embedded`, `1481` on `mini`), and `cargo test` reports 0 failures
 across all 27 test binaries. `cargo clippy --all-targets -- -D warnings` is clean and all
 five profiles build. **32 gates** pass; the one skip needs a macOS host and says so.
@@ -248,9 +248,9 @@ what the OS can draw.
 
 | Profile | Widget set | Registry | Custom-painted controls | GPU | i18n |
 |---------|-----------|:--------:|:-----------------------:|:---:|:----:|
-| `desktop` | **175 kinds** (full) | ✅ | ✅ | ✅ wgpu | ✅ |
-| `tablet` | **175 kinds** (full) | ✅ | ✅ | ✅ wgpu | ✅ |
-| `mobile` | **175 kinds** (full) | ✅ | ✅ | ✅ wgpu | ✅ |
+| `desktop` | **179 kinds** (full) | ✅ | ✅ | ✅ wgpu | ✅ |
+| `tablet` | **179 kinds** (full) | ✅ | ✅ | ✅ wgpu | ✅ |
+| `mobile` | **179 kinds** (full) | ✅ | ✅ | ✅ wgpu | ✅ |
 | `embedded` | reduced core set | — | — | — software | — |
 | `mini` | reduced core set | — | — | — software | — |
 
@@ -477,7 +477,7 @@ silently stay unreachable from a language.
 
 ### Desktop/Tablet/Mobile (179 widget kinds)
 
-**Core**: Window, Dialog, MessageBox, FileDialog, ColorDialog, FontDialog, InputDialog, ProgressDialog, PopupWindow, Button, CheckBox, RadioButton, Label, LineEdit, TextEdit, RichEdit, ComboBox, SpinBox, ListBox, ListView, TreeView, TreeTable, ProgressBar, Slider, ScrollBar, ScrollArea, TabWidget, Splitter, GroupBox, MenuBar, Menu, MenuItem, ContextMenu, ToolBar, StatusBar, Canvas, Table, Grid, Chart, ToggleButton
+**Core**: Window, Dialog, MessageBox, FileDialog, ColorDialog, FontDialog, InputDialog, ProgressDialog, PopupWindow, Button, CheckBox, RadioButton, Label, LineEdit, TextEdit, RichEdit, ComboBox, SpinBox, ListBox, ListView, TreeView, TreeTable, ProgressBar, Slider, ScrollBar, ScrollArea, TabWidget, Splitter, GroupBox, Frame, MenuBar, Menu, MenuItem, ContextMenu, ToolBar, StatusBar, Canvas, Table, Grid, Chart, ToggleButton
 
 **Date & Time**: Calendar, DateEdit, TimeEdit, DateTimeEdit, DatePicker, TimePicker, DateTimePicker, CupertinoDatePicker, DateRangePicker, MobileDatePicker
 

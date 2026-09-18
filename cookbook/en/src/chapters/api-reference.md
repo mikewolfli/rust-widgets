@@ -4,7 +4,7 @@ This chapter provides a comprehensive, module-by-module reference for the
 entire `rust_widgets` public API. Use this as a quick lookup when you need to
 find the right type, function, or trait for your task.
 
-The library version documented here is **2.3.0**. Code examples assume
+The library version documented here is **2.4.0**. Code examples assume
 `use rust_widgets::*;` or explicit paths as shown.
 
 ---
@@ -86,12 +86,18 @@ of `parent`.
 | `create_combo_box(parent, x, y, w, h)` | ComboBox | Dropdown selector |
 | `create_list_box(parent, x, y, w, h)` | ListBox | List selection |
 | `create_panel(parent, x, y, w, h)` | Panel (GroupBox) | Container panel |
+| `create_frame(parent, x, y, w, h)` | Frame | Draws a border/frame around its child |
+| `create_dialog(parent, title, x, y, w, h)` | Dialog | Generic titled dialog hosting one content widget |
 | `create_message_box(parent, title, text, x, y, w, h)` | MessageBox | Modal message dialog |
 | `create_file_dialog(parent, title, x, y, w, h)` | FileDialog | File picker |
 | `create_color_dialog(parent, title, x, y, w, h)` | ColorDialog | Color picker |
 | `create_font_dialog(parent, title, x, y, w, h)` | FontDialog | Font picker |
 | `create_spin_box(parent, x, y, w, h)` | SpinBox | Numeric spin control |
 | `create_list_view(parent, x, y, w, h)` | ListView | Table-style list |
+| `create_tree_table(parent, x, y, w, h)` | TreeTable | Tree rows plus table columns |
+| `create_breadcrumb(parent, x, y, w, h)` | Breadcrumb | Navigation trail of segments |
+| `create_signature_pad(parent, x, y, w, h)` | SignaturePad | Freehand signature capture surface |
+| `create_drop_zone(parent, x, y, w, h)` | DropZone | Named drag-and-drop target |
 | `create_scroll_area(parent, x, y, w, h)` | ScrollArea | Scrollable container |
 
 ### Widget Manipulation
@@ -512,24 +518,25 @@ pub trait Draw {
 
 ### Widget Kind Enum
 
-`WidgetKind` enumerates every widget type in the system. Selected variants:
+`WidgetKind` enumerates every widget type in the system (179 in a device profile). Selected variants:
 
 - `Button`, `CheckBox`, `RadioButton`, `Label`
 - `LineEdit`, `TextArea`, `ComboBox`, `ListBox`, `SpinBox`, `Dropdown`
 - `Slider`, `ProgressBar`, `ScrollBar`, `Spinner`, `Meter`, `Arc`, `Roller`
 - `ImageView`, `MiniCanvas`, `MiniChart`, `Line`, `LCDNumber`
-- `GroupBox`, `ScrollArea`, `Splitter`, `TabWidget`, `StackedWidget`
+- `GroupBox`, `Frame`, `ScrollArea`, `Splitter`, `TabWidget`, `StackedWidget`
 - `CollapsiblePane`, `DockWidget`, `MdiArea`, `ToolBox`
 - `Window`
-- `ToggleButton`, `Switch` (new widgets)
+- `ToggleButton`, `Switch`
 - `Calendar`, `DateEdit`, `TimeEdit`, `DateTimeEdit`, `Dial`
 - `KeySequenceEdit`, `PieMenu`, `RibbonBar`, `TabBar`
 - `Menu`, `MenuBar`, `StatusBar`, `ToolBar`, `ToolButton`
-- `MessageBox`, `FileDialog`, `ColorDialog`, `FontDialog`, `InputDialog`
+- `Dialog`, `MessageBox`, `FileDialog`, `ColorDialog`, `FontDialog`, `InputDialog`
 - `ProgressDialog`, `PopupWindow`
-- `ListView`, `TableView`, `TreeView`, `DataGrid`, `VirtualList`, `VirtualTable`
-- `WebView`, `WebEngine`
-- (60+ new widget types — see below)
+- `ListView`, `TreeView`, `TreeTable`, `Table`, `DataGrid`, `VirtualList`, `VirtualTable`
+- `Breadcrumb`, `SignaturePad`, `DropZone`
+- `WebEngineView`, `WebEnginePage`
+- (see the widget-system chapter for the complete list)
 
 ### Widget Categories
 
@@ -594,13 +601,14 @@ Dialog types *(all non-mini)*:
 
 | Widget | Description |
 |---|---|
+| `Dialog` | Generic titled dialog that hosts one content widget; modal by default |
 | `MessageBox` | Modal message dialog |
 | `FileDialog` (a.k.a. `DirectoryDialog`) | File/directory picker |
 | `ColorDialog` | Color picker |
 | `FontDialog` | Font picker |
 | `InputDialog` | Input prompt dialog |
 | `ProgressDialog` | Progress modal |
-| `PopupWindow` (a.k.a. `Dialog`) | Popup window |
+| `PopupWindow` | Chrome-only popup (title bar + content rect) |
 
 Menu/Toolbar types *(all non-mini)*:
 
@@ -636,13 +644,14 @@ Widgets from the former `new_widgets` module have been reclassified into dedicat
 | `media_widgets/` | `AnimatedImage`, `AudioVisualizer`, `CameraPreview`, `HeroAnimation`, `LottieWidget`, `RiveWidget`, `VideoPlayer` |
 | `overlay_widgets/` | `FAB`, `PullToRefresh`, `RefreshControl`, `SwipeToDismiss` |
 | `cupertino/` | `CupertinoAlertDialog`, `CupertinoDatePicker`, `CupertinoNavigationBar`, `CupertinoSegmentedControl`, `CupertinoSlider`, `CupertinoSwitch`, `MaterialNavigationRail`, `MaterialSnackbar` |
-| `misc_widgets/` | `Avatar`, `BarcodeScanner`, `BezierCurveEditor`, `DateRangePicker`, `MobileDatePicker`, `QRCode`, `SegmentedButton` |
+| `misc_widgets/` | `Avatar`, `BarcodeScanner`, `BezierCurveEditor`, `DateRangePicker`, `DropZone`, `MobileDatePicker`, `QRCode`, `SegmentedButton` |
 | `input_widgets/` (extended) | `AutoCompleteEdit`, `EditableComboBox`, `ImePreedit`, `InplaceEditor`, `MaskedEdit`, `MultiSelectComboBox`, `RangeSlider`, `SearchBar`, `SearchBox`, `ShortcutEditor`, `TagInput` |
 | `display_widgets/` (extended) | `Badge`, `ColorHistory`, `ColorWell`, `Divider`, `EmptyState`, `FloatingLabel`, `FontPreview`, `Icon`, `ProgressCircle`, `Rating`, `SkeletonLoader`, `Switch` |
 | `container_widgets/` (extended) | `Carousel`, `MasonryLayout`, `SafeArea`, `Stepper` |
-| `dialog/` (extended) | `BottomSheet`, `FindReplaceDialog`, `ModalBottomSheet`, `Popover`, `Tooltip`, `WizardDialog` |
+| `dialog/` (extended) | `BottomSheet`, `Dialog`, `FindReplaceDialog`, `ModalBottomSheet`, `Popover`, `Tooltip`, `WizardDialog` |
 | `menu_toolbar/` (extended) | `DropdownMenu`, `MenuButton` |
-| `view_widgets/` (extended) | `ImageGallery`, `PropertiesPanel`, `PropertyGrid` |
+| `special_widgets/` (extended) | `Breadcrumb`, `SignaturePad`, `TimelineWidget` |
+| `view_widgets/` (extended) | `ImageGallery`, `PropertiesPanel`, `PropertyGrid`, `TreeTable` |
 
 ### Web Widgets *(non-mini)*
 
@@ -2784,7 +2793,7 @@ The library uses a **three-axis feature system** — pick one from each axis:
 | `tablet` | Touch-first tablet | GPU, touch, i18n, quality |
 | `mobile` | Mobile-optimized | GPU, touch, i18n, quality, mobile API |
 | `embedded` | No GPU, software raster | Software, custom controls |
-| `mini` | LVGL-style minimal (~15 widgets) | Software, custom controls, `heapless`, `hashbrown`, `spin`, `bumpalo` |
+| `mini` | LVGL-style minimal (~28 widgets) | Software, custom controls, `heapless`, `hashbrown`, `spin`, `bumpalo` |
 
 ### Axis 2: OS Backend
 

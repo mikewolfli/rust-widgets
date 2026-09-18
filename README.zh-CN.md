@@ -31,7 +31,7 @@
 | 特性 | 自绘（本库） | 原生控件 |
 |---|---|---|
 | 外观 | **跨 OS 完全一致** | 随各 OS 工具包与版本变化 |
-| 控件数量 | **175 种，全平台可用** | 仅限该 OS 工具包提供的 |
+| 控件数量 | **179 种，全平台可用** | 仅限该 OS 工具包提供的 |
 | 依赖体积 | **不链接任何 GUI 工具包** | GTK / AppKit / Win32 / Android SDK |
 | 无OS与嵌入式 | **无 OS 也能运行**（`mini`、SVG） | 不可能 |
 | 测试确定性 | **像素／序列化快照** | 需要真实显示器 |
@@ -91,9 +91,9 @@
 
 | Profile | 控件集 | 注册表 | 自绘控件托管 | GPU | i18n |
 |---------|-------|:------:|:-----------:|:---:|:----:|
-| `desktop` | **175 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
-| `tablet` | **175 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
-| `mobile` | **175 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
+| `desktop` | **179 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
+| `tablet` | **179 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
+| `mobile` | **179 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
 | `embedded` | 精简核心集 | — | — | — 软件 | — |
 | `mini` | 精简核心集 | — | — | — 软件 | — |
 
@@ -122,7 +122,7 @@ Arc、Spinner、Roller、Dropdown、TextArea、Keyboard、Switch。
 ---
 
 179 种控件全部为自绘。每一种都能通过 `factory_name_for_kind` 解析出构造器
-（含别名共 **456** 个可解析名称）；
+（含别名共 **377** 个可解析名称）；
 新增 kind 若无法归类、或解析不出任何构造器，`tools/check_widget_registration_fidelity.sh`
 会直接失败 —— 后者已捕获 4 类 `create_*` 永远返回 id `0` 的缺陷
 （`Frame`、`DockPanel`、`CupertinoSwitch` 与 9 个 WebEngine 名称），而当时其余门禁全绿；
@@ -134,8 +134,8 @@ Arc、Spinner、Roller、Dropdown、TextArea、Keyboard、Switch。
 [![tests](https://img.shields.io/badge/tests-5100%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
-**2.4.0 实测：** `desktop` 档 **4958** 个库测试全通过（`tablet` **4714**、`mobile` **4742**、
-`embedded` **1549**、`mini` **1481**）；`cargo test` 在全部 27 个测试二进制上 **5171** 通过、0 失败。
+**2.4.0 实测：** `desktop` 档 **4964** 个库测试全通过（`tablet` **4720**、`mobile` **4748**、
+`embedded` **1549**、`mini` **1481**）；`cargo test` 在全部 27 个测试二进制上 **5177** 通过、0 失败。
 `cargo clippy --all-targets -- -D warnings` 0 warning，五个档位均可构建。
 共 **32** 个门禁全通过；唯一 skip 需 macOS 主机且已自述原因。
 详见
@@ -442,7 +442,7 @@ assert_eq!(report.patches.len(), 1);            // 一个 SetProperty，别无�
 
 ### 桌面/平板/手机（179 种控件）
 
-**核心**：Window、Dialog、MessageBox、FileDialog、ColorDialog、FontDialog、InputDialog、ProgressDialog、PopupWindow、Button、CheckBox、RadioButton、Label、LineEdit、TextEdit、RichEdit、ComboBox、SpinBox、ListBox、ListView、TreeView、TreeTable、ProgressBar、Slider、ScrollBar、ScrollArea、TabWidget、Splitter、GroupBox、MenuBar、Menu、MenuItem、ContextMenu、ToolBar、StatusBar、Canvas、Table、Grid、Chart、ToggleButton
+**核心**：Window、Dialog、MessageBox、FileDialog、ColorDialog、FontDialog、InputDialog、ProgressDialog、PopupWindow、Button、CheckBox、RadioButton、Label、LineEdit、TextEdit、RichEdit、ComboBox、SpinBox、ListBox、ListView、TreeView、TreeTable、ProgressBar、Slider、ScrollBar、ScrollArea、TabWidget、Splitter、GroupBox、Frame、MenuBar、Menu、MenuItem、ContextMenu、ToolBar、StatusBar、Canvas、Table、Grid、Chart、ToggleButton
 
 **日期与时间**：Calendar、DateEdit、TimeEdit、DateTimeEdit、DatePicker、TimePicker、DateTimePicker、CupertinoDatePicker、DateRangePicker、MobileDatePicker
 

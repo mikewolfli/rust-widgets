@@ -10,9 +10,30 @@
 # This gate extracts the real count from `src/widget/kind.rs` — the single
 # source of truth — and fails when a document states a different number.
 #
-# Note the enum is heavily `#[cfg]`-gated (137 of 167 variants), so the count is
-# the *maximum* number of variants across feature sets. That is the number the
-# docs describe; a per-feature count would need per-profile documents.
+# # Why the file list is explicit
+#
+# An earlier revision of this gate accepted the files to scan as its arguments
+# and was invoked with none, so it scanned nothing and always passed. A gate
+# that passes vacuously is worse than no gate: it advertises coverage that does
+# not exist. The list below is therefore hard-coded, and the script fails if it
+# resolves to zero files.
+#
+# # Why the pattern set is broad (BLUE/#2 iceberg)
+#
+# The first version only matched `"167 widget kinds"` and `"167 种控件"`. That
+# left several real spellings unchecked, and they drifted: `"175 kinds"`,
+# `"175 种"`, `"175 WidgetKind variants"` and the profile table's `"175 (full)"`
+# all stayed stale while the enum grew to 179. A gate whose pattern is narrower
+# than the prose it guards turns a missed edit into a silent lie. The matching
+# below accepts every form the docs actually use, in all three languages, and
+# tolerates line wrapping (the number and its noun may be on different lines).
+#
+# # What counts as a "total" claim (and what does not)
+#
+# Only 3-digit numbers are treated as widget-kind totals. A subset claim such as
+# `"28 are available under all profiles, and 151 are unlocked with non-mini"`
+# uses 2- and 3-digit numbers but never in one of the guarded forms, so it is not
+# mistaken for the total.
 # ============================================================================
 
 set -euo pipefail
@@ -42,55 +63,78 @@ print(len(variants))
 
 echo "WidgetKind variants (parsed from $KIND_FILE): $ACTUAL"
 
-ERRORS=0
+# Scans the documents below for widget-kind total claims and reports any that
+# disagree with ACTUAL. Exit code 1 when at least one mismatched.
+"$PYTHON" - "$ACTUAL" <<'PY'
+import re
+import sys
+from pathlib import Path
 
-# Any document line of the form "<n> variants" must agree with ACTUAL.
-check_doc() {
-  local file="$1"
-  [[ -f "$file" ]] || return 0
-  while IFS= read -r entry; do
-    local lineno="${entry%%:*}"
-    local text="${entry#*:}"
-    local num
-    num="$(printf '%s' "$text" | grep -oE '[0-9]+ variants' | grep -oE '[0-9]+' || true)"
-    [[ -z "$num" ]] && continue
-    if [[ "$num" != "$ACTUAL" ]]; then
-      echo "❌ ${file}:${lineno} states '${num} variants' but the enum has ${ACTUAL}" >&2
-      ERRORS=$((ERRORS + 1))
-    fi
-  done < <(grep -nE '[0-9]+ variants' "$file" || true)
-}
+actual = sys.argv[1]
 
-check_doc "docs/plans/codemap.md"
-check_doc "docs/plans/platform_capability_matrix.md"
-check_doc "README.md"
-check_doc "README.zh-CN.md"
+# Every document that states the widget-kind total. Kept explicit rather than
+# globbed so a renamed chapter cannot silently drop out of coverage; the
+# cookbook chapters are listed for all three languages.
+FILES = [
+    "README.md",
+    "README.zh-CN.md",
+    "docs/plans/codemap.md",
+    "docs/plans/platform_capability_matrix.md",
+]
+for lang in ("en", "zh-CN", "zh-TW"):
+    FILES += [
+        f"cookbook/{lang}/src/README.md",
+        f"cookbook/{lang}/src/chapters/architecture.md",
+        f"cookbook/{lang}/src/chapters/widget-system.md",
+        f"cookbook/{lang}/src/chapters/getting-started.md",
+        f"cookbook/{lang}/src/chapters/platform-support.md",
+        f"cookbook/{lang}/src/chapters/api-reference.md",
+    ]
 
-# The READMEs also advertise the widget-kind total in prose (e.g. "167 widget
-# kinds" / "167 种控件"). Those numbers must match too.
-check_prose_count() {
-  local file="$1"
-  [[ -f "$file" ]] || return 0
-  while IFS= read -r entry; do
-    local lineno="${entry%%:*}"
-    local text="${entry#*:}"
-    local num
-    num="$(printf '%s' "$text" | grep -oE '[0-9]+ (widget kinds|种控件)' | grep -oE '[0-9]+' || true)"
-    [[ -z "$num" ]] && continue
-    if [[ "$num" != "$ACTUAL" ]]; then
-      echo "❌ ${file}:${lineno} advertises '${num}' widget kinds but the enum has ${ACTUAL}" >&2
-      ERRORS=$((ERRORS + 1))
-    fi
-  done < <(grep -nE '[0-9]+ (widget kinds|种控件)' "$file" || true)
-}
+# Every spelling the docs use for "the total number of widget kinds". Each
+# pattern's first group is the number. `\s` matches newlines, so a wrapped claim
+# ("All 179\n  widget kinds") is still caught. Only 3-digit numbers are matched.
+PATTERNS = [
+    re.compile(r"\b(\d{3})\s+(?:built-in\s+)?(?:widget\s+)?[Kk]inds\b"),
+    re.compile(r"\b(\d{3})\s+(?:WidgetKind\s+)?[Vv]ariants\b"),
+    re.compile(r"\b(\d{3})\s*[種种]"),                       # 179 种控件 / 179 種
+    re.compile(r"\b(\d{3})\s*(?:個|个)?\s*[變变][體体]"),      # 179 變體 / 179 变体
+    re.compile(r"\b(\d{3})\s*[（(]\s*(?:full|完整)\s*[)）]"),  # 179 (full) / 179（完整）
+]
 
-check_prose_count "README.md"
-check_prose_count "README.zh-CN.md"
+scanned = 0
+errors = 0
+for fname in FILES:
+    path = Path(fname)
+    if not path.is_file():
+        print(f"❌ {fname} is listed in the gate but does not exist", file=sys.stderr)
+        errors += 1
+        continue
+    scanned += 1
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    for pattern in PATTERNS:
+        for match in pattern.finditer(text):
+            num = match.group(1)
+            if num == actual:
+                continue
+            lineno = text.count("\n", 0, match.start()) + 1
+            snippet = lines[lineno - 1].strip() if lineno <= len(lines) else ""
+            print(
+                f"❌ {fname}:{lineno} states '{num}' but the enum has {actual}: {snippet}",
+                file=sys.stderr,
+            )
+            errors += 1
 
-if [[ "$ERRORS" -ne 0 ]]; then
-  echo "" >&2
-  echo "check_widget_kind_count: FAILED (${ERRORS} mismatched count(s))" >&2
-  exit 1
-fi
+if scanned == 0:
+    print("check_widget_kind_count: FAILED (no documents were scanned)", file=sys.stderr)
+    sys.exit(1)
+
+if errors:
+    print(f"\ncheck_widget_kind_count: FAILED ({errors} mismatch(es))", file=sys.stderr)
+    sys.exit(1)
+
+print(f"check_widget_kind_count: {scanned} document(s) state the correct count ({actual})")
+PY
 
 echo "✅ check_widget_kind_count: documented variant counts match the enum"

@@ -401,40 +401,41 @@ pub trait EventHandler {
 
 `BaseWidget` 提供了一个默认实现，将平台事件映射为信号发射（click → `clicked.emit()`，鼠标移动 → `hover.emit(point)`）。
 
-### `WidgetKind` Enum — 109+ 变体
+### `WidgetKind` Enum — 179 变体
 
-`WidgetKind` 枚举对所有控件类型进行分类。变体受功能门控：15 个在所有配置文件中可用，94+ 个通过非 `mini` 功能解锁：
+`WidgetKind` 枚举对所有控件类型进行分类。变体受功能门控：28 个在所有配置文件中可用，151 个通过非 `mini` 功能解锁：
 
 ```rust
 pub enum WidgetKind {
-    // 始终可用（15 个）：
-    Window, Dialog, PopupWindow,
+    // 始终可用（28 个）：
+    Window, PopupWindow,
     Button, CheckBox, RadioButton, Label,
     LineEdit, ComboBox, SpinBox, ListBox,
     ProgressBar, Slider, ScrollBar, ScrollArea,
-    Panel, GroupBox, ToggleButton,
+    Panel, GroupBox, Frame, ToggleButton,
     FreeformShape,
     Line, Meter, MiniChart, ImageView,
     MiniCanvas, Arc, Spinner, Roller,
     Dropdown, TextArea, Keyboard, Switch,
 
-    // 功能门控（94+ 个）：
+    // 功能门控（151 个）：
     #[cfg(not(feature = "mini"))]
-    MessageBox, FileDialog, ColorDialog, FontDialog,
+    Dialog, MessageBox, FileDialog, ColorDialog, FontDialog,
     InputDialog, ProgressDialog,
     TextEdit, RichEdit,
-    ListView, TreeView, Table, Grid, Chart,
+    ListView, TreeView, TreeTable, Table, Grid, Chart,
     TabWidget, Splitter, MdiArea,
     MenuBar, Menu, MenuItem, ContextMenu,
     ToolBar, StatusBar, Canvas, DockPanel,
     Calendar, DatePicker, TimePicker, DateTimePicker,
-    WebView, WebEngineView, WebEnginePage,
+    WebEngineView, WebEnginePage,
     Action, ToolButton,
     TabBar, PieMenu, RibbonBar,
     SearchBox, Chip, Badge, SkeletonLoader,
     FAB, PullToRefresh, BottomSheet,
     BottomNavigationBar, NavigationDrawer, AppBar,
-    // ... 以及 50+ 更多
+    Breadcrumb, SignaturePad, DropZone,
+    // ... 以及更多
 }
 ```
 
@@ -866,7 +867,7 @@ pub trait ControlBackend {
 
 ### 调度策略
 
-`control_backend::dispatcher` 中的调度器根据编译时的功能标志将控件创建调用路由到相应的后端。`control_backend::routing` 中的路由系统处理 180+ 种控件类型，将每种类型映射到正确的自绘实现。
+`control_backend::dispatcher` 中的调度器根据编译时的功能标志将控件创建调用路由到相应的后端。`control_backend::routing` 中的路由系统覆盖全部 179 种控件类型；每种控件均为自绘，已无第二套（平台托管）机制可选。
 
 ---
 
@@ -917,7 +918,7 @@ pub type MiniString = heapless::String<128>;
 
 3. **信号/槽实现解耦。** 控件不知道它们的消费者。它们发出信号，消费者连接槽位。这实现了 UI 与逻辑的清晰分离。
 
-4. **编译时功能选择。** 死代码由编译器消除。mini 配置文件的二进制文件仅包含约 15 个控件实现，无来自未使用控件代码的开销。
+4. **编译时功能选择。** 死代码由编译器消除。mini 配置文件的二进制文件仅包含约 28 个控件实现，无来自未使用控件代码的开销。
 
 5. **单一后端契约。** `ControlBackend` trait 是新平台的唯一集成点。实现 180+ 个方法一次，整个控件库即可在新目标上运行。
 

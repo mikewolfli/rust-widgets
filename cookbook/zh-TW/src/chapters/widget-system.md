@@ -423,16 +423,16 @@ impl EventHandler for MyWidget {
 
 ---
 
-## `WidgetKind` 列舉——109+ 變體
+## `WidgetKind` 列舉——179 變體
 
-`WidgetKind` 列舉將每個控制項型別分類。它透過功能旗標進行門控：15 個變體始終可用；94+ 個需要非 `mini` 功能。
+`WidgetKind` 列舉將每個控制項型別分類。它透過功能旗標進行門控：28 個變體始終可用；151 個需要非 `mini` 功能。
 
 無論是哪一個後端在繪製，這些種類語意都相同——`WidgetKind::Button` 永遠代表自繪的按鈕，永遠不會是作業系統的原生按鈕。當一個種類需要 `mini` 未編譯進來的模組時，它就不存在；請據此拒絕該操作，而不是退回原生控制項（因為根本沒有原生控制項可退回）。
 
 ```mermaid
 graph TB
     subgraph "Always Available (mini-safe)"
-        ALWAYS["Window, Dialog, PopupWindow<br/>Button, CheckBox, RadioButton<br/>Label, LineEdit, ComboBox<br/>SpinBox, ListBox<br/>ProgressBar, Slider, ScrollBar<br/>ScrollArea, Panel, GroupBox<br/>ToggleButton, FreeformShape<br/>Line, Meter, MiniChart<br/>ImageView, MiniCanvas<br/>Arc, Spinner, Roller<br/>Dropdown, TextArea, Keyboard<br/>Switch"]
+        ALWAYS["Window, PopupWindow<br/>Button, CheckBox, RadioButton<br/>Label, LineEdit, ComboBox<br/>SpinBox, ListBox<br/>ProgressBar, Slider, ScrollBar<br/>ScrollArea, Panel, GroupBox<br/>Frame, ToggleButton, FreeformShape<br/>Line, Meter, MiniChart<br/>ImageView, MiniCanvas<br/>Arc, Spinner, Roller<br/>Dropdown, TextArea, Keyboard<br/>Switch"]
     end
 
     subgraph "Feature-Gated (non-mini)"
@@ -445,7 +445,7 @@ graph TB
         WEB["Web<br/>WebView, WebEngineView<br/>WebEnginePage, WebEngineSettings<br/>WebEngineCookieStore"]
         CHART["Chart<br/>LineChart, BarChart<br/>PieChart, Sparkline"]
         MODERN["Modern UI<br/>Switch, AnimatedImage<br/>TabView, Chip, Badge<br/>FAB, BottomSheet, Carousel<br/>QRCode, SkeletonLoader<br/>SegmentedControl, Avatar<br/>PullToRefresh, Rating<br/>HeroAnimation, Stepper"]
-        SPECIAL["Special<br/>Canvas, Grid, CodeEditor<br/>ColorPicker, DiffViewer<br/>TerminalView, MediaPlayer<br/>MapView, GanttWidget<br/>TimelineWidget, MarkdownEditor<br/>NotificationCenter, Snackbar<br/>Toast, Breadcrumb, CommandPalette"]
+        SPECIAL["Special<br/>Canvas, Grid, CodeEditor<br/>ColorPicker, DiffViewer<br/>TerminalView, MediaPlayer<br/>MapView, GanttWidget<br/>TimelineWidget, MarkdownEditor<br/>NotificationCenter, Snackbar<br/>Toast, Breadcrumb, CommandPalette<br/>SignaturePad, DropZone"]
     end
 
     ALWAYS --> INPUT
@@ -465,8 +465,9 @@ graph TB
 | 分類 | 變體 | Mini 安全 | 說明 |
 |---|---|---|---|
 | **Window** | `Window` | ✓ | 頂層應用程式視窗 |
-| | `Dialog` | ✓ | 模態對話方塊 |
+| | `Dialog` | ✗ | 承載一個內容控件的帶標題對話方塊 |
 | | `PopupWindow` | ✓ | 非模態彈出視窗 |
+| | `Frame` | ✓ | 圍繞子控件繪製的邊框/框架 |
 | **Base** | `Button` | ✓ | 按鈕 |
 | | `CheckBox` | ✓ | 核取方塊（開/關/部分） |
 | | `RadioButton` | ✓ | 選項按鈕（互斥群組） |
@@ -620,6 +621,8 @@ graph TB
 | | `BezierCurveEditor` | ✗ | 貝茲曲線編輯器 |
 | | `LottieWidget` | ✗ | Lottie 動畫播放器 |
 | | `RiveWidget` | ✗ | Rive 動畫執行環境 |
+| | `SignaturePad` | ✗ | 手寫簽名擷取，含平滑、復原與折線匯出 |
+| | `DropZone` | ✗ | 依 MIME 類型過濾的具名拖放目標 |
 | **Chart** | `LineChart` | ✗ | 折線圖 |
 | | `BarChart` | ✗ | 長條圖 |
 | | `PieChart` | ✗ | 圓餅圖 |

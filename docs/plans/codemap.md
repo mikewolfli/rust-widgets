@@ -251,7 +251,7 @@ EventHandler (handle_event)
             └── accessible_name / accessible_role
 
 Draw (draw, uses_custom_drawing)
-    └── All 170+ widget types implement Draw
+    └── All 179 widget kinds implement Draw
 
 Platform (Send + Sync)
     ├── create_window/create_button/create_checkbox/...
@@ -376,7 +376,7 @@ Rust API → extern "C" (C ABI)
 | Category | Count |
 |----------|-------|
 | Rust source files | 350+ |
-| Widget implementations | 170+ |
+| Widget kinds (`WidgetKind` variants) | 179 |
 | Layout managers | 14 |
 | Platform backends | 12 |
 | IME implementations | 4 |

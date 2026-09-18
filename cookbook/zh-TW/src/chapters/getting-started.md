@@ -52,7 +52,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-rust_widgets = "2.3.0"
+rust_widgets = "2.4.0"
 ```
 
 預設的功能集 (`desktop`) 會載入完整的桌面設定檔：透過 wgpu 的 GPU 渲染、作業系統原生平台後端、觸控支援、i18n、圖表、PDF/列印、無障礙存取以及進階 widgets。
@@ -71,11 +71,11 @@ rust-widgets 使用**三軸功能系統**，讓你可以組合出你真正需要
 | **Tablet** | `tablet` | 觸控優先、GPU、無桌面額外功能 |
 | **Mobile** | `mobile` | 觸控、GPU、行動 API 介面 |
 | **Embedded** | `embedded` | 軟體光柵化、無 GPU、低記憶體、精簡的 widget 集合 |
-| **Mini** | `mini` | LVGL 風格：約 15 個核心 widgets、軟體光柵化、無需大量記憶體配置的相依套件 |
+| **Mini** | `mini` | LVGL 風格：約 28 個核心 widgets、軟體光柵化、無需大量記憶體配置的相依套件 |
 
 > **設定檔決定的是有多少 widget 集合會被「編譯進去」— 從來不是哪個作業系統能使用哪些控件。**
 > 所有設定檔繪製的都是同一套自繪控件；`desktop`/`tablet`/`mobile` 會編譯全部
-> 167 種 widget，而 `embedded`/`mini` 只編譯精簡的核心集合。請參閱
+> 179 種 widget，而 `embedded`/`mini` 只編譯精簡的核心集合。請參閱
 > [platform-support.md § 1.2](platform-support.md#12-widget-可用性取決於設定檔而非作業系統)。
 
 ### 軸線 2：作業系統後端（選擇一個或自動偵測）
@@ -113,23 +113,23 @@ rust-widgets 使用**三軸功能系統**，讓你可以組合出你真正需要
 ```toml
 # 桌面 Linux 搭配 Wayland，保留所有功能：
 [dependencies]
-rust_widgets = { version = "2.3.0", features = ["desktop", "linux-wayland"] }
+rust_widgets = { version = "2.4.0", features = ["desktop", "linux-wayland"] }
 
 # 平板搭配自動偵測作業系統：
 [dependencies]
-rust_widgets = { version = "2.3.0", default-features = false, features = ["tablet"] }
+rust_widgets = { version = "2.4.0", default-features = false, features = ["tablet"] }
 
 # 最小內嵌（無 std）：
 [dependencies]
-rust_widgets = { version = "2.3.0", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "2.4.0", default-features = false, features = ["embedded"] }
 
 # 行動 Android：
 [dependencies]
-rust_widgets = { version = "2.3.0", default-features = false, features = ["mobile", "android"] }
+rust_widgets = { version = "2.4.0", default-features = false, features = ["mobile", "android"] }
 
 # WASM 網頁應用程式：
 [dependencies]
-rust_widgets = { version = "2.3.0", default-features = false, features = ["mobile", "wasm", "touch"] }
+rust_widgets = { version = "2.4.0", default-features = false, features = ["mobile", "wasm", "touch"] }
 ```
 
 ### 建構設定檔

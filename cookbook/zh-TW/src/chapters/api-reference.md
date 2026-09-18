@@ -2,7 +2,7 @@
 
 本章提供完整的、按模組劃分的 `rust_widgets` 公開 API 參考文件。當您需要為任務查找正確的型別、函式或特徵時，可將其用作快速查閱手冊。
 
-此處記載的函式庫版本為 **2.3.0**。程式碼範例假設使用 `use rust_widgets::*;` 或如所示使用顯式路徑。
+此處記載的函式庫版本為 **2.4.0**。程式碼範例假設使用 `use rust_widgets::*;` 或如所示使用顯式路徑。
 
 ---
 
@@ -80,12 +80,18 @@ pub fn create_window(title: &str, x: i32, y: i32, width: u32, height: u32) -> Ob
 | `create_combo_box(parent, x, y, w, h)` | ComboBox | 下拉選擇器 |
 | `create_list_box(parent, x, y, w, h)` | ListBox | 清單選取 |
 | `create_panel(parent, x, y, w, h)` | Panel (GroupBox) | 容器面板 |
+| `create_frame(parent, x, y, w, h)` | Frame | 為其子控件繪製邊框/框架 |
+| `create_dialog(parent, title, x, y, w, h)` | Dialog | 通用帶標題對話方塊，承載一個內容控件 |
 | `create_message_box(parent, title, text, x, y, w, h)` | MessageBox | 模態訊息對話方塊 |
 | `create_file_dialog(parent, title, x, y, w, h)` | FileDialog | 檔案選擇器 |
 | `create_color_dialog(parent, title, x, y, w, h)` | ColorDialog | 色彩選擇器 |
 | `create_font_dialog(parent, title, x, y, w, h)` | FontDialog | 字型選擇器 |
 | `create_spin_box(parent, x, y, w, h)` | SpinBox | 數值微調控制項 |
 | `create_list_view(parent, x, y, w, h)` | ListView | 表格樣式清單 |
+| `create_tree_table(parent, x, y, w, h)` | TreeTable | 樹狀列 + 表格欄 |
+| `create_breadcrumb(parent, x, y, w, h)` | Breadcrumb | 分段導覽路徑 |
+| `create_signature_pad(parent, x, y, w, h)` | SignaturePad | 手寫簽名擷取面 |
+| `create_drop_zone(parent, x, y, w, h)` | DropZone | 具名拖放目標 |
 | `create_scroll_area(parent, x, y, w, h)` | ScrollArea | 可捲動容器 |
 
 ### 控制項操作
@@ -506,24 +512,25 @@ pub trait Draw {
 
 ### 控制項種類列舉
 
-`WidgetKind` 列舉系統中的每一種控制項型別。選取的部分變體：
+`WidgetKind` 列舉系統中的每一種控制項型別（裝置設定檔下共 179 種）。選取的部分變體：
 
 - `Button`, `CheckBox`, `RadioButton`, `Label`
 - `LineEdit`, `TextArea`, `ComboBox`, `ListBox`, `SpinBox`, `Dropdown`
 - `Slider`, `ProgressBar`, `ScrollBar`, `Spinner`, `Meter`, `Arc`, `Roller`
 - `ImageView`, `MiniCanvas`, `MiniChart`, `Line`, `LCDNumber`
-- `GroupBox`, `ScrollArea`, `Splitter`, `TabWidget`, `StackedWidget`
+- `GroupBox`, `Frame`, `ScrollArea`, `Splitter`, `TabWidget`, `StackedWidget`
 - `CollapsiblePane`, `DockWidget`, `MdiArea`, `ToolBox`
 - `Window`
-- `ToggleButton`, `Switch`（新控制項）
+- `ToggleButton`, `Switch`
 - `Calendar`, `DateEdit`, `TimeEdit`, `DateTimeEdit`, `Dial`
 - `KeySequenceEdit`, `PieMenu`, `RibbonBar`, `TabBar`
 - `Menu`, `MenuBar`, `StatusBar`, `ToolBar`, `ToolButton`
-- `MessageBox`, `FileDialog`, `ColorDialog`, `FontDialog`, `InputDialog`
+- `Dialog`, `MessageBox`, `FileDialog`, `ColorDialog`, `FontDialog`, `InputDialog`
 - `ProgressDialog`, `PopupWindow`
-- `ListView`, `TableView`, `TreeView`, `DataGrid`, `VirtualList`, `VirtualTable`
-- `WebView`, `WebEngine`
-- （60+ 個新控制項型別 — 見下方）
+- `ListView`, `TreeView`, `TreeTable`, `Table`, `DataGrid`, `VirtualList`, `VirtualTable`
+- `Breadcrumb`, `SignaturePad`, `DropZone`
+- `WebEngineView`, `WebEnginePage`
+- （完整清單見控制項系統章節）
 
 ### 控制項分類
 
@@ -588,13 +595,14 @@ pub trait Draw {
 
 | 控制項 | 說明 |
 |---|---|
+| `Dialog` | 通用帶標題對話方塊，承載一個內容控件；預設為模態 |
 | `MessageBox` | 模態訊息對話方塊 |
 | `FileDialog`（別名 `DirectoryDialog`） | 檔案/目錄選擇器 |
 | `ColorDialog` | 色彩選擇器 |
 | `FontDialog` | 字型選擇器 |
 | `InputDialog` | 輸入提示對話方塊 |
 | `ProgressDialog` | 進度模態視窗 |
-| `PopupWindow`（別名 `Dialog`） | 彈出視窗 |
+| `PopupWindow` | 僅含外框的彈出層（標題列 + 內容區） |
 
 選單/工具列型別 *(均為非 mini)*：
 
@@ -630,13 +638,14 @@ pub trait Draw {
 | `media_widgets/` | `AnimatedImage`, `AudioVisualizer`, `CameraPreview`, `HeroAnimation`, `LottieWidget`, `RiveWidget`, `VideoPlayer` |
 | `overlay_widgets/` | `FAB`, `PullToRefresh`, `RefreshControl`, `SwipeToDismiss` |
 | `cupertino/` | `CupertinoAlertDialog`, `CupertinoDatePicker`, `CupertinoNavigationBar`, `CupertinoSegmentedControl`, `CupertinoSlider`, `CupertinoSwitch`, `MaterialNavigationRail`, `MaterialSnackbar` |
-| `misc_widgets/` | `Avatar`, `BarcodeScanner`, `BezierCurveEditor`, `DateRangePicker`, `MobileDatePicker`, `QRCode`, `SegmentedButton` |
+| `misc_widgets/` | `Avatar`, `BarcodeScanner`, `BezierCurveEditor`, `DateRangePicker`, `DropZone`, `MobileDatePicker`, `QRCode`, `SegmentedButton` |
 | `input_widgets/`（擴展） | `AutoCompleteEdit`, `EditableComboBox`, `ImePreedit`, `InplaceEditor`, `MaskedEdit`, `MultiSelectComboBox`, `RangeSlider`, `SearchBar`, `SearchBox`, `ShortcutEditor`, `TagInput` |
 | `display_widgets/`（擴展） | `Badge`, `ColorHistory`, `ColorWell`, `Divider`, `EmptyState`, `FloatingLabel`, `FontPreview`, `Icon`, `ProgressCircle`, `Rating`, `SkeletonLoader`, `Switch` |
 | `container_widgets/`（擴展） | `Carousel`, `MasonryLayout`, `SafeArea`, `Stepper` |
-| `dialog/`（擴展） | `BottomSheet`, `FindReplaceDialog`, `ModalBottomSheet`, `Popover`, `Tooltip`, `WizardDialog` |
+| `dialog/`（擴展） | `BottomSheet`, `Dialog`, `FindReplaceDialog`, `ModalBottomSheet`, `Popover`, `Tooltip`, `WizardDialog` |
 | `menu_toolbar/`（擴展） | `DropdownMenu`, `MenuButton` |
-| `view_widgets/`（擴展） | `ImageGallery`, `PropertiesPanel`, `PropertyGrid` |
+| `special_widgets/`（擴展） | `Breadcrumb`, `SignaturePad`, `TimelineWidget` |
+| `view_widgets/`（擴展） | `ImageGallery`, `PropertiesPanel`, `PropertyGrid`, `TreeTable` |
 
 ### Web 控制項 *(非 mini)*
 
@@ -2764,7 +2773,7 @@ pub mod java_jni;
 | `tablet` | 觸控優先平板 | GPU, touch, i18n, quality |
 | `mobile` | 行動裝置最佳化 | GPU, touch, i18n, quality, mobile API |
 | `embedded` | 無 GPU，軟體光柵化 | Software, custom controls |
-| `mini` | LVGL 風格最小化（約 15 個控制項） | Software, custom controls, `heapless`, `hashbrown`, `spin`, `bumpalo` |
+| `mini` | LVGL 風格最小化（約 28 個控制項） | Software, custom controls, `heapless`, `hashbrown`, `spin`, `bumpalo` |
 
 ### 軸 2：作業系統後端
 
