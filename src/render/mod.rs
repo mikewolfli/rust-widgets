@@ -48,11 +48,6 @@ mod backend;
 // (controls/ directory was migrated to pipeline/special.rs — see pipeline module)
 // Visual command pipeline for all widget types
 mod pipeline;
-// Web rendering
-// Types (WebEngine, WebView) are re-exported below for use by the render pipeline.
-// The web module no longer has dead_code gating; all types are properly wired.
-#[cfg(feature = "desktop")]
-pub mod web;
 // Projection/presentation-mode rendering (BLUE8 P4-5b, gated behind `projection`)
 #[cfg(feature = "projection")]
 pub mod projection;
@@ -62,8 +57,6 @@ pub mod gpu;
 // SVG rendering backend
 pub mod svg;
 
-// Adaptive quality
-pub mod quality;
 // Text caching
 #[cfg(test)]
 mod tests;
@@ -123,12 +116,6 @@ pub use gpu::{GpuCapability, GpuRenderer};
 // Projection types
 #[cfg(feature = "projection")]
 pub use projection::{PresentationController, ProjectionLayoutHelper, ProjectionRenderConfig};
-
-/// Web rendering types — available on desktop targets (not in mini mode)
-#[cfg(all(feature = "desktop", not(alloc_frugal)))]
-pub use web::engine::WebEngine;
-#[cfg(all(feature = "desktop", not(alloc_frugal)))]
-pub use web::view::WebView;
 
 /// Shared helper accessible to surface.rs and backend
 pub(crate) use pipeline::pixel_bytes_len;

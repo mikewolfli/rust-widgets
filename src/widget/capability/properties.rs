@@ -654,7 +654,7 @@ pub(crate) fn gantt_widget_capability() -> WidgetCapability {
         canonical_name: "gantt_widget",
         aliases: &["gantt"],
         properties: GANTT_WIDGET_PROPERTIES,
-        events: &["task_selected", "viewport_changed"],
+        events: &["task_selected"],
         commands: &["set_tasks", "zoom", "set_viewport", "select_task"],
     }
 }
@@ -1576,7 +1576,7 @@ pub(crate) fn bottom_sheet_capability() -> WidgetCapability {
         canonical_name: "bottom_sheet",
         aliases: &["sheet"],
         properties: BOTTOM_SHEET_PROPERTIES,
-        events: &["expanded_changed"],
+        events: &["dismissed"],
         commands: &["set_expanded", "set_peek_height"],
     }
 }
@@ -1600,7 +1600,7 @@ pub(crate) fn navigation_drawer_capability() -> WidgetCapability {
         canonical_name: "navigation_drawer",
         aliases: &["nav_drawer", "drawer"],
         properties: NAVIGATION_DRAWER_PROPERTIES,
-        events: &["open_changed"],
+        events: &["opened", "closed", "item_selected"],
         commands: &["set_open", "set_width"],
     }
 }
@@ -1744,7 +1744,7 @@ pub(crate) fn inplace_editor_capability() -> WidgetCapability {
         canonical_name: "inplace_editor",
         aliases: &["inline_editor"],
         properties: INPLACE_EDITOR_PROPERTIES,
-        events: &["edit_completed"],
+        events: &["edit_accepted", "edit_cancelled"],
         commands: &["set_text", "start_editing", "finish_editing"],
     }
 }
@@ -1996,7 +1996,7 @@ pub(crate) fn floating_label_capability() -> WidgetCapability {
         canonical_name: "floating_label",
         aliases: &["floating_input"],
         properties: FLOATING_LABEL_PROPERTIES,
-        events: &["changed", "focused"],
+        events: &["text_changed"],
         commands: &["set_text", "set_placeholder", "set_focused"],
     }
 }
@@ -2044,7 +2044,7 @@ pub(crate) fn refresh_control_capability() -> WidgetCapability {
         canonical_name: "refresh_control",
         aliases: &["pull_to_refresh"],
         properties: REFRESH_CONTROL_PROPERTIES,
-        events: &["refreshed"],
+        events: &["refresh_triggered"],
         commands: &["set_refreshing"],
     }
 }
@@ -2068,7 +2068,7 @@ pub(crate) fn find_replace_dialog_capability() -> WidgetCapability {
         canonical_name: "find_replace_dialog",
         aliases: &["find_replace"],
         properties: FIND_REPLACE_DIALOG_PROPERTIES,
-        events: &["find", "replace", "replace_all"],
+        events: &["find_next", "find_previous", "replace", "replace_all", "close"],
         commands: &["set_find_text", "set_replace_text", "set_match_case", "set_wrap_around"],
     }
 }

@@ -47,6 +47,14 @@ pub mod animation_group;
 pub mod css;
 /// Poll-based CSS file watcher that reloads a stylesheet into the global
 /// [`stylesheet::StyleSheetManager`] when the file changes.
+///
+/// Gated on `not(alloc_frugal)` for the same reason the glob re-export below is:
+/// the watcher polls the filesystem on a timer and is not part of the `mini`
+/// (allocation-frugal) surface. Without this gate the module itself was still
+/// compiled under `mini` while everything in it was `cfg`-ed out, so the
+/// `#[cfg(test)]` re-export of `stylesheet_test_guard` resolved to an empty
+/// module and `--all-targets` reported it as an unused import.
+#[cfg(not(alloc_frugal))]
 pub mod css_watcher;
 /// Position-varying colour ramps, used where a constant colour would be a
 /// special case of a gradient.
@@ -71,7 +79,10 @@ pub use gradient::*;
 pub use primitives::*;
 pub use selector::*;
 /// Serialises tests that touch the process-wide stylesheet manager.
-#[cfg(test)]
+///
+/// The watcher's tests are the other caller, so under `mini` (where the watcher
+/// is not compiled) this export has no consumer.
+#[cfg(all(test, not(alloc_frugal)))]
 pub(crate) use stylesheet::stylesheet_test_guard;
 pub use stylesheet::*;
 pub use theme::*;

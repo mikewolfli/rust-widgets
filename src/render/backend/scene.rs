@@ -3,6 +3,12 @@
 
 //! Render scene composition and auto-backend selection.
 use crate::compat::{lock, Mutex, OnceLock, Vec};
+// `GpuRenderError`'s `Display` impl and its `UploadFailed` payload are the only
+// users of these two names, and both sit behind `gpu-wgpu`. Importing them
+// unconditionally made a `--features gpu` build (which enables the render module
+// without the wgpu path) warn about unused imports.
+#[cfg(feature = "gpu-wgpu")]
+use crate::compat::{fmt, String};
 use crate::core::Color;
 #[cfg(feature = "quality-management")]
 use crate::quality::QualityManager;

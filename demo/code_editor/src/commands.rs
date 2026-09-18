@@ -466,12 +466,17 @@ mod tests {
     /// Rendered labels must match the host's notation, not a fixed convention.
     #[test]
     fn shortcut_labels_render_for_the_host_os() {
+        use rust_widgets::shortcut::PlatformShortcutStyle;
+
         let undo = Command::Undo.shortcut_label().expect("Undo has a shortcut");
-        if cfg!(target_os = "macos") {
-            assert_eq!(undo, "⌘Z");
-        } else {
-            assert_eq!(undo, "Ctrl+Z");
-        }
+        // The expected notation is a runtime fact of the current platform, not a
+        // compile-time `cfg!(target_os)` branch: the demo asks the library for the
+        // active shortcut style, just as a real caller would.
+        let expected = match rust_widgets::shortcut::PlatformShortcutStyle::current() {
+            PlatformShortcutStyle::Mac => "⌘Z",
+            PlatformShortcutStyle::Desktop => "Ctrl+Z",
+        };
+        assert_eq!(undo, expected);
 
         // Commands with no conventional binding must not invent one.
         assert!(Command::SortLines.shortcut_label().is_none());

@@ -40,15 +40,22 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+. "$ROOT_DIR/tools/lib_timeout.sh"
+
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "check_apple_native: unsupported host '$(uname -s)' (Apple native verification requires macOS)" >&2
   exit 2
 fi
 
+# The iOS probe drives a full Simulator build and launch, which is the longest
+# step in this gate; a stuck `simctl`/`xcodebuild` would otherwise leave the gate
+# hanging after its banner with no verdict.
+IOS_PROBE_TIMEOUT=2400
+
 # The static guard check is host-independent; run it first so an omission is
 # reported before the (slower) runtime probes.
 echo "=== [1/2] Static FFI thread-safety gate ==="
-bash "$ROOT_DIR/tools/check_apple_thread_safety.sh"
+rw_run_bounded "$IOS_PROBE_TIMEOUT" bash "$ROOT_DIR/tools/check_apple_thread_safety.sh"
 
 if [[ "${SKIP_IOS_PROBE:-0}" == "1" ]]; then
   echo ""
@@ -59,7 +66,7 @@ fi
 
 echo ""
 echo "=== [2/2] iOS Simulator integration probe ==="
-bash "$ROOT_DIR/tools/run_ios_testapp.sh"
+rw_run_bounded "$IOS_PROBE_TIMEOUT" bash "$ROOT_DIR/tools/run_ios_testapp.sh"
 
 echo ""
 echo "check_apple_native: ALL Apple native checks PASSED"

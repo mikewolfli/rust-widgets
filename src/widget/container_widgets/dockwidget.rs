@@ -24,6 +24,14 @@ pub struct DockWidget {
     allowed_areas: DockWidgetAreas,
     floating: bool,
     docked: bool,
+    /// Which edge this widget is docked to.
+    ///
+    /// The state [`DockWidget::dock_location_changed`] reports. It existed as an
+    /// enum and as a signal but had no field and no setter, so the documented
+    /// "fires only on an actual transition" event could not be produced by any
+    /// caller — the signal was declared, published in the capability, and
+    /// unreachable.
+    dock_location: DockWidgetArea,
     /// Emitted after the dock area changes, with the new [`DockWidgetArea`].
     /// Fires only on an actual transition, not when the same area is re-applied.
     pub dock_location_changed: Signal1<DockWidgetArea>,
@@ -123,6 +131,36 @@ impl Default for DockWidgetAreas {
     }
 }
 impl DockWidgetAreas {
+    /// Reports whether `area` is permitted by this set.
+    ///
+    /// # How the aggregate flags are read
+    ///
+    /// The struct carries per-edge flags plus two aggregates. A per-edge flag is the
+    /// authority for that edge; `all_dock_widget_areas` permits every edge and is
+    /// therefore treated as an override, which is what its name promises and what
+    /// [`DockWidgetAreas::all`] relies on (it sets every flag, so the two readings
+    /// agree there).
+    ///
+    /// [`DockWidgetArea::NoDockWidgetArea`] is always permitted: undocking is the one
+    /// transition that can never leave the widget in a forbidden place, so refusing it
+    /// would only trap the widget in an area the host no longer allows.
+    pub fn contains(&self, area: DockWidgetArea) -> bool {
+        match area {
+            DockWidgetArea::NoDockWidgetArea => true,
+            DockWidgetArea::LeftDockWidgetArea => {
+                self.all_dock_widget_areas || self.left_dock_widget_area
+            }
+            DockWidgetArea::RightDockWidgetArea => {
+                self.all_dock_widget_areas || self.right_dock_widget_area
+            }
+            DockWidgetArea::TopDockWidgetArea => {
+                self.all_dock_widget_areas || self.top_dock_widget_area
+            }
+            DockWidgetArea::BottomDockWidgetArea => {
+                self.all_dock_widget_areas || self.bottom_dock_widget_area
+            }
+        }
+    }
     /// Creates areas with all flags set.
     pub fn all() -> Self {
         Self {
@@ -171,6 +209,7 @@ impl DockWidget {
             allowed_areas: DockWidgetAreas::all(),
             floating: false,
             docked: true,
+            dock_location: DockWidgetArea::NoDockWidgetArea,
             dock_location_changed: Signal1::new(),
             features_changed: Signal1::new(),
             top_level_changed: Signal1::new(),
@@ -230,8 +269,55 @@ impl DockWidget {
         self.allowed_areas
     }
     /// Sets allowed areas.
+    ///
+    /// When the area the widget is currently docked to is no longer permitted, the
+    /// dock location moves to [`DockWidgetArea::NoDockWidgetArea`] and
+    /// [`DockWidget::dock_location_changed`] fires — the alternative would leave the
+    /// widget reporting a location its own configuration forbids.
     pub fn set_allowed_areas(&mut self, areas: DockWidgetAreas) {
         self.allowed_areas = areas;
+        if !areas.contains(self.dock_location) {
+            self.set_dock_location(DockWidgetArea::NoDockWidgetArea);
+        }
+        self.base.request_redraw();
+    }
+    /// Returns the dock area this widget is docked to.
+    pub fn dock_location(&self) -> DockWidgetArea {
+        self.dock_location
+    }
+    /// Moves the widget to `area`, emitting [`DockWidget::dock_location_changed`] on
+    /// an actual transition.
+    ///
+    /// # Why re-applying the same area is silent
+    ///
+    /// A host that re-runs its layout on every resize re-applies the same area many
+    /// times per second. Emitting each time would make the event useless as a change
+    /// notification, so the comparison is made here rather than left to callers.
+    ///
+    /// # An area that the widget does not allow
+    ///
+    /// A request for an area outside [`DockWidget::allowed_areas`] is refused (the
+    /// location is left alone) rather than silently honoured: the allowed set is the
+    /// constraint the host declared, and a widget docked where it is not allowed is
+    /// exactly the inconsistency the set exists to prevent. Use
+    /// [`DockWidgetArea::NoDockWidgetArea`] to undock, which is always permitted.
+    pub fn set_dock_location(&mut self, area: DockWidgetArea) {
+        if self.dock_location == area {
+            return;
+        }
+        if !self.allowed_areas.contains(area) {
+            log::warn!(
+                "dock widget refused dock area {area:?}: it is not in this widget's allowed \
+                 areas, so the location is left at {:?}",
+                self.dock_location
+            );
+            return;
+        }
+        self.dock_location = area;
+        // Docking to a real edge is, by definition, not floating.
+        self.floating = false;
+        self.docked = area != DockWidgetArea::NoDockWidgetArea;
+        self.dock_location_changed.emit(area);
         self.base.request_redraw();
     }
     /// Returns whether dock widget is floating.
@@ -568,7 +654,7 @@ mod tests {
     use crate::event::Event;
     use crate::widget::svg::render_to_svg;
     use crate::widget::Widget;
-    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     /// 1. Creation defaults
@@ -776,10 +862,19 @@ mod tests {
     }
 
     /// 11. Signal accessors
+    ///
+    /// # Why the dock-location case drives the widget rather than the signal
+    ///
+    /// An earlier revision called `dw.dock_location_changed.emit(..)` and then asserted
+    /// the subscriber fired. That only proves `Signal1` delivers — it is true of every
+    /// signal in the crate and says nothing about the widget. It also passed while
+    /// `DockWidget` had **no dock-location state at all**, so it certified a feature
+    /// that did not exist. The assertions below go through the real setter for exactly
+    /// that reason.
     #[test]
     fn test_signal_accessors() {
         let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
-        // dock_location_changed
+        // dock_location_changed, driven by the widget's own state transition.
         {
             let received = Arc::new(AtomicBool::new(false));
             let area_received = Arc::new(Mutex::new(DockWidgetArea::NoDockWidgetArea));
@@ -791,9 +886,10 @@ mod tests {
                     *area_received.lock().unwrap() = *area;
                 }
             });
-            dw.dock_location_changed.emit(DockWidgetArea::LeftDockWidgetArea);
-            assert!(received.load(Ordering::SeqCst));
+            dw.set_dock_location(DockWidgetArea::LeftDockWidgetArea);
+            assert!(received.load(Ordering::SeqCst), "a real transition must emit");
             assert_eq!(*area_received.lock().unwrap(), DockWidgetArea::LeftDockWidgetArea);
+            assert_eq!(dw.dock_location(), DockWidgetArea::LeftDockWidgetArea);
         }
         // features_changed
         {
@@ -823,6 +919,69 @@ mod tests {
             assert!(received.load(Ordering::SeqCst));
             assert!(floating_received.load(Ordering::SeqCst));
         }
+    }
+
+    /// Re-applying the current dock area must stay silent.
+    ///
+    /// A host re-runs its layout on every frame, so an emit per call would make the
+    /// event useless as a change notification. The signal's own doc states "Fires only
+    /// on an actual transition"; this is what holds the implementation to it.
+    #[test]
+    fn test_reapplying_the_same_dock_area_does_not_emit() {
+        let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
+        let count = Arc::new(AtomicUsize::new(0));
+        dw.dock_location_changed.connect({
+            let count = Arc::clone(&count);
+            move |_area: Arc<DockWidgetArea>| {
+                count.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        dw.set_dock_location(DockWidgetArea::TopDockWidgetArea);
+        dw.set_dock_location(DockWidgetArea::TopDockWidgetArea);
+        dw.set_dock_location(DockWidgetArea::TopDockWidgetArea);
+        assert_eq!(count.load(Ordering::SeqCst), 1, "only the first call is a transition");
+    }
+
+    /// An area the widget does not allow must be refused, not silently honoured.
+    #[test]
+    fn test_dock_location_refuses_a_forbidden_area() {
+        let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
+        dw.set_allowed_areas(DockWidgetAreas {
+            left_dock_widget_area: true,
+            right_dock_widget_area: false,
+            top_dock_widget_area: false,
+            bottom_dock_widget_area: false,
+            all_dock_widget_areas: false,
+            no_dock_widget_areas: false,
+        });
+        dw.set_dock_location(DockWidgetArea::BottomDockWidgetArea);
+        assert_eq!(
+            dw.dock_location(),
+            DockWidgetArea::NoDockWidgetArea,
+            "a forbidden edge must not be adopted"
+        );
+        dw.set_dock_location(DockWidgetArea::LeftDockWidgetArea);
+        assert_eq!(dw.dock_location(), DockWidgetArea::LeftDockWidgetArea);
+    }
+
+    /// Re-applying the current dock area must stay silent.
+    /// Narrowing the allowed set must move a now-forbidden location out, and say so.
+    #[test]
+    fn test_narrowing_allowed_areas_undocks_a_forbidden_location() {
+        let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
+        dw.set_dock_location(DockWidgetArea::RightDockWidgetArea);
+        assert_eq!(dw.dock_location(), DockWidgetArea::RightDockWidgetArea);
+
+        let seen = Arc::new(Mutex::new(None::<DockWidgetArea>));
+        dw.dock_location_changed.connect({
+            let seen = Arc::clone(&seen);
+            move |area: Arc<DockWidgetArea>| {
+                *seen.lock().unwrap() = Some(*area);
+            }
+        });
+        dw.set_allowed_areas(DockWidgetAreas::none());
+        assert_eq!(dw.dock_location(), DockWidgetArea::NoDockWidgetArea);
+        assert_eq!(*seen.lock().unwrap(), Some(DockWidgetArea::NoDockWidgetArea));
     }
 
     /// 12. Mouse event handling — close button

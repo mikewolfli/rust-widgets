@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Combo box widget.
-use crate::compat::{String, Vec, ToString};
+use crate::compat::{String, ToString, Vec};
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -136,17 +136,26 @@ impl ComboBox {
         self.current_index.and_then(|idx| self.items.get(idx)).cloned().unwrap_or_default()
     }
     /// Sets current text (for editable combo boxes).
+    ///
+    /// When the text matches an existing item, that item becomes current. When
+    /// it does not match and the box is editable, the text is added as a new
+    /// item, which then becomes current — the usual editable-combobox contract of
+    /// "type a custom value and it is kept". An empty string selects nothing.
+    /// Non-editable boxes ignore the call.
     pub fn set_current_text(&mut self, text: String) {
         if !self.editable {
             return;
         }
-        // Find matching item
         let index = self.items.iter().position(|item| item == &text);
+        let index = match index {
+            Some(idx) => Some(idx),
+            None if !text.is_empty() => {
+                self.items.push(text);
+                Some(self.items.len() - 1)
+            }
+            None => None,
+        };
         self.set_current_index(index);
-        // For editable combo boxes, we might want to add the text if not found
-        if index.is_none() && !text.is_empty() {
-            // In a real implementation, we might add it or keep it as custom text
-        }
     }
     /// Returns whether the combo box is editable.
     pub fn is_editable(&self) -> bool {
@@ -456,6 +465,46 @@ mod tests {
         assert!(cb.is_editable());
         cb.set_editable(false);
         assert!(!cb.is_editable());
+    }
+
+    #[test]
+    fn combobox_set_current_text_selects_existing_item() {
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        cb.set_editable(true);
+        cb.add_items(vec!["Apple".to_string(), "Banana".to_string()]);
+        cb.set_current_text("Banana".to_string());
+        assert_eq!(cb.current_index(), Some(1));
+        assert_eq!(cb.current_text(), "Banana");
+        assert_eq!(cb.count(), 2);
+    }
+
+    #[test]
+    fn combobox_set_current_text_adds_unknown_custom_value() {
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        cb.set_editable(true);
+        cb.add_items(vec!["Apple".to_string()]);
+        cb.set_current_text("Custom entry".to_string());
+        assert_eq!(cb.current_text(), "Custom entry");
+        assert_eq!(cb.count(), 2);
+        assert_eq!(cb.current_index(), Some(1));
+    }
+
+    #[test]
+    fn combobox_set_current_text_ignored_when_not_editable() {
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        cb.add_items(vec!["Apple".to_string()]);
+        cb.set_current_text("Apple".to_string());
+        assert_eq!(cb.current_index(), None);
+        assert_eq!(cb.count(), 1);
+    }
+
+    #[test]
+    fn combobox_set_current_text_empty_selects_nothing() {
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        cb.set_editable(true);
+        cb.set_current_text(String::new());
+        assert_eq!(cb.current_index(), None);
+        assert_eq!(cb.count(), 0);
     }
 
     #[test]

@@ -861,19 +861,35 @@ fn window_delegate_class() -> *const Class {
         let mut decl = ClassDecl::new("RustWidgetsWindowDelegate", superclass)
             .expect("the Objective-C runtime refused to declare RustWidgetsWindowDelegate");
         // SAFETY: `windowDidResize:` is `NSWindowDelegate` API and takes the notifying
-        // `NSWindow *`; the function pointer reproduces that ABI.
+        // `NSWindow *`; the function pointer reproduces that ABI. The registered
+        // implementation must have the safe `extern "C"` ABI `objc::declare` accepts,
+        // so the `unsafe fn` body is wrapped by `window_did_resize_impl`.
         unsafe {
             decl.add_method(
                 sel!(windowDidResize:),
-                window_did_resize as extern "C" fn(&Object, Sel, id),
+                window_did_resize_impl as extern "C" fn(&Object, Sel, id),
             );
         }
-        decl.register()
+        (decl.register() as *const Class) as usize
     })) as *const Class
 }
 
+/// Safe-ABI trampoline registered as the `windowDidResize:` implementation.
+///
+/// `objc::declare::ClassDecl::add_method` only accepts the **safe**
+/// `extern "C" fn(&Object, Sel, ..)` form, and Rust forbids casting an
+/// `unsafe extern "C" fn` item to a safe one (E0605). The wrapper therefore
+/// exists purely to give the runtime a safe pointer; every unsafe operation
+/// stays inside `window_did_resize`.
+extern "C" fn window_did_resize_impl(this: &Object, cmd: Sel, notification: id) {
+    // SAFETY: AppKit invokes this only through the `windowDidResize:` selector,
+    // which guarantees `this` is the delegate object and `notification` is the
+    // `NSNotification` for the window that resized.
+    unsafe { window_did_resize(this, cmd, notification) }
+}
+
 /// `windowDidResize:` — records the new client size and queues a `Resized` trigger.
-unsafe extern "C" fn window_did_resize(this: &Object, _cmd: Sel, notification: id) {
+unsafe fn window_did_resize(this: &Object, _cmd: Sel, notification: id) {
     let widget_id = associated_widget_id(this, window_association_key());
     if widget_id == 0 {
         return;
@@ -895,11 +911,10 @@ unsafe extern "C" fn window_did_resize(this: &Object, _cmd: Sel, notification: i
     if width == 0 || height == 0 {
         return;
     }
-    if let Some(platform) = super::platform_impl::active_platform() {
-        if let Some(macos) = platform.as_any().downcast_ref::<super::types::MacOSPlatform>() {
-            crate::queue_resize_trigger(widget_id, width, height);
-        }
-    }
+    // The trigger is queued on the process-wide resize queue the host polls;
+    // routing it through the platform singleton added nothing but a downcast
+    // whose result was discarded.
+    crate::queue_resize_trigger(widget_id, width, height);
 }
 
 /// Installs the resize delegate on `window` and tags it with `widget_id`.

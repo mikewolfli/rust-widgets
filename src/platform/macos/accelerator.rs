@@ -27,6 +27,12 @@
 // the dead-code lint is silenced rather than papered over with `_`-prefixed names.
 #![allow(dead_code)]
 
+// The accelerator parser builds owned key strings, so it needs the alloc bridge
+// rather than `std`: under `--no-default-features --features mini` the `std`
+// prelude is not the source of `String`/`ToString`, and the bare names used to
+// fail with 33 errors (`cannot find type String in this scope`).
+use crate::compat::{String, ToString};
+
 /// `NSEventModifierFlagShift`.
 pub(crate) const MOD_SHIFT: u64 = 1 << 17;
 /// `NSEventModifierFlagControl`.
@@ -132,6 +138,9 @@ pub(crate) fn parse_shortcut(shortcut: Option<&str>) -> (String, u64) {
 #[cfg(test)]
 mod parse_shortcut_tests {
     use super::{parse_shortcut, MOD_COMMAND, MOD_CONTROL, MOD_OPTION, MOD_SHIFT};
+    // `String` is not in the prelude of the frugal profiles this module also
+    // compiles under, so the test module imports it through the alloc bridge too.
+    use crate::compat::String;
 
     /// No shortcut, or an empty one, must yield "no accelerator".
     #[test]

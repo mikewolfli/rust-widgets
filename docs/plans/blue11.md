@@ -1104,3 +1104,44 @@ $ cargo check --all
 | 空函数体 | ~12 (测试 mock + trait default) | ✅ 合理 |
 | `unsafe` 代码 | ~60+ 块 | ⚠️ 均带 SAFETY 注释 |
 | `eprintln!` | 0 处 | ✅ 已迁移到 `log::info!` |
+
+---
+
+## R9.3 决议（2026-09-18，第 39 轮执行）
+
+**结论：删除 `src/render/web/`，不合并。**
+
+`blue11.md` R9.3 与 `scan_round3.md` §2.8 记录的问题（"web/ 与 render/web/ 重复，
+两套 WebView/WebEngine 类型"）在本轮被**实际处理**：
+
+取证（`grep` 全仓，`--include='*.rs'`，排除 `target/`）：
+
+| 类型 | 定义处 | 消费者 |
+|---|---|---|
+| `render::web::engine::WebEngine` | `src/render/web/engine.rs:18` | **零**（仅 `render/mod.rs` 的 `pub use`） |
+| `render::web::view::WebView` | `src/render/web/view.rs:20` | **零**（仅 `render/mod.rs` 的 `pub use`） |
+
+两者都是对 `crate::web::WebEngineViewEnhanced` / `crate::web::web_view::WebView*` 的
+纯转发包装：`render::web::engine.rs` 的 18 个方法全部逐字转调 `self.inner.*`，
+没有任何渲染层特有的逻辑。而 `crate::web::WebEngineViewEnhanced` 已经拥有
+`load_url` / `go_back` / `url` / `is_loading` 等全部方法（`src/web/web_core.rs:120-357`）。
+
+同时该模块的文档声称 *"These types are wired into `render::pipeline::special` for web
+widget rendering"* —— 实测 `grep -rn "WebEngine\|WebView" src/render/pipeline/` 为**空**，
+即"已接线"是**不成立的**（原则 #17/#18）。
+
+**为何删除而非合并**（原则 #51：共享抽象必须能带来真实消除才接入）：
+
+- 没有任何重复代码可消除 —— 包装层本身就是重复，删除即消除；
+- 反向"合并"（让 `crate::web` 依赖 `render`）会引入**无收益的间接层**，且违反分层方向
+  （`web` 是控件/引擎层，`render` 是绘制层）；
+- 保留则违反原则 #49（零消费者的同名模块不得以"看起来是另一个实现"的形式长期存在）。
+
+**影响**：`render::WebEngine` 与 `render::WebView` 是 `pub` 导出，故这是**主版本级 API 变更**。
+按原则 #21（向前兼容），已在 `docs/MIGRATION_GUIDE.md` 与 `CHANGELOG.md` 的 2.4.0 条目
+中写明迁移路径：改用 `rust_widgets::web::WebEngineViewEnhanced`（功能为其超集）。
+
+**同理处理** `src/render/quality/`：`AdaptiveRenderer` / `AdaptiveMetrics` 的消费者
+`grep` 全仓为**零**（仅自身与其测试）。仓里真正在用的质量 API 是
+`crate::quality::QualityManager`（经 `render::backend::scene.rs:14` 引用），
+`render::quality` 是它的一个无人问津的平行实现。

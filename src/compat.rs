@@ -656,8 +656,12 @@ impl core::ops::Sub<Duration> for Instant {
 
 #[cfg(alloc_frugal)]
 impl core::ops::SubAssign<Duration> for Instant {
-    /// The in-place spelling of [`Sub`], matching the `a -= interval` form the
+    /// The in-place spelling of `SubAssign`, matching the `a -= interval` form the
     /// desktop arm inherits from `std`.
+    ///
+    /// Written as a code span rather than a link: these impls only exist under
+    /// `alloc_frugal`, so on a `mini` doc build the traits are not in the resolved
+    /// scope and `rustdoc` reported `unresolved link to `Sub``.
     fn sub_assign(&mut self, rhs: Duration) {
         *self = *self - rhs;
     }
@@ -679,7 +683,8 @@ impl core::ops::Add<Duration> for Instant {
 #[cfg(alloc_frugal)]
 impl core::ops::AddAssign<Duration> for Instant {
     /// Provides the `a += interval` spelling used by the animation clock, which
-    /// is the same deadline arithmetic as [`Add`] written in place.
+    /// is the same deadline arithmetic as the `Add` impl written in place. Spelled
+    /// as a code span because `Add` does not resolve in every doc profile.
     fn add_assign(&mut self, rhs: Duration) {
         self.0 += rhs;
     }

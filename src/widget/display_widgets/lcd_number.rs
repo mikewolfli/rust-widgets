@@ -52,14 +52,17 @@ pub struct LCDNumber {
     small_decimal_point: bool,
     mode: LCDNumberMode,
     segment_style: SegmentStyle,
+    /// Set when the most recent [`LCDNumber::set_value`] call received a value
+    /// outside `min_value ..= max_value`; cleared by the next in-range set.
+    /// Mirrors [`LCDNumber::check_overflow`].
+    overflowed: bool,
     /// Emitted with the new value whenever [`LCDNumber::set_value`] actually
     /// changes it. Emits the *clamped* value, not the argument.
     pub value_changed: Signal1<f64>,
-    /// Emitted when the display is overflowed.
-    ///
-    /// Note: nothing in this type ever emits it, and
-    /// [`LCDNumber::check_overflow`] cannot be `true` for a value set through
-    /// the public API. Treat it as declared-but-inert.
+    /// Emitted when a value supplied to [`LCDNumber::set_value`] lies outside
+    /// `min_value ..= max_value` (an overflow attempt). The stored value is
+    /// still clamped into range; this signal notifies listeners that the
+    /// requested magnitude could not be represented.
     pub overflow: GenericSignal,
 }
 impl LCDNumber {
@@ -78,6 +81,7 @@ impl LCDNumber {
             small_decimal_point: false,
             mode: LCDNumberMode::Dec,
             segment_style: SegmentStyle::Filled,
+            overflowed: false,
             value_changed: Signal1::new(),
             overflow: GenericSignal::new(),
         }
@@ -115,16 +119,24 @@ impl LCDNumber {
     }
     /// Sets the displayed value, clamped into `min_value ..= max_value`.
     ///
-    /// A no-op when the clamped value is unchanged: no signal, no redraw.
-    /// Because of the clamp, [`LCDNumber::check_overflow`] can never be `true`
-    /// for a value set through this method.
+    /// When `value` is outside that range the stored value is clamped, the
+    /// `overflow` signal is emitted, and [`LCDNumber::check_overflow`] reports
+    /// `true` until the next in-range set clears it. When the clamped value is
+    /// unchanged from the current value this is a no-op (no signal, no redraw).
     pub fn set_value(&mut self, value: f64) {
+        let out_of_range = value < self.min_value || value > self.max_value;
         let clamped = value.clamp(self.min_value, self.max_value);
+        if out_of_range {
+            self.overflowed = true;
+            self.overflow.emit();
+        } else {
+            self.overflowed = false;
+        }
         if self.value != clamped {
             self.value = clamped;
             self.value_changed.emit(clamped);
-            self.base.request_redraw();
         }
+        self.base.request_redraw();
     }
     /// Sets the lower bound and re-applies it to the current value through
     /// [`LCDNumber::set_value`], so the value is clamped into the new range.
@@ -166,14 +178,14 @@ impl LCDNumber {
         self.segment_style = style;
         self.base.request_redraw();
     }
-    /// Returns whether the value lies outside `min_value ..= max_value`.
+    /// Returns whether the most recent value supplied to
+    /// [`LCDNumber::set_value`] overflowed `min_value ..= max_value`.
     ///
-    /// This is a comparison only. It never emits the `overflow` signal and is
-    /// not consulted by rendering — the display does not currently render an
-    /// overflow indication — so a caller wanting overflow notifications must
-    /// check this itself after calling the setter.
+    /// This is sticky: it stays `true` after an out-of-range set until an
+    /// in-range set clears it. It is the same state the `overflow` signal
+    /// announces and that [`LCDNumber::draw`] renders as an overflow indicator.
     pub fn check_overflow(&self) -> bool {
-        self.value < self.min_value || self.value > self.max_value
+        self.overflowed
     }
     /// Renders the value as text for the current mode, without any size or
     /// digit-count padding.
@@ -616,12 +628,40 @@ mod tests {
     #[test]
     fn lcd_overflow_detection() {
         let lcd = LCDNumber::new(Rect::new(0, 0, 200, 50));
-        // check_overflow exists and returns false for normal range
+        // Freshly constructed, no overflow has been requested.
         assert!(!lcd.check_overflow());
 
         let mut lcd = LCDNumber::new(Rect::new(0, 0, 200, 50));
         lcd.set_value(500000.0);
         assert!(!lcd.check_overflow()); // value is within default range
+    }
+
+    #[test]
+    fn lcd_overflow_is_emitted_and_sticky() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut lcd = LCDNumber::new(Rect::new(0, 0, 200, 50));
+        let emitted = Arc::new(AtomicUsize::new(0));
+        let counter = emitted.clone();
+        lcd.overflow.connect(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+
+        // An out-of-range value clamps the display and raises overflow.
+        lcd.set_value(9_999_999.0);
+        assert!(lcd.check_overflow());
+        assert_eq!(emitted.load(Ordering::SeqCst), 1);
+        assert!((lcd.value() - 999_999.0).abs() < f64::EPSILON);
+
+        // Sticky until the next in-range set clears it.
+        lcd.set_value(9_999_999.0);
+        assert!(lcd.check_overflow());
+        assert_eq!(emitted.load(Ordering::SeqCst), 2);
+
+        lcd.set_value(42.0);
+        assert!(!lcd.check_overflow());
+        assert_eq!(emitted.load(Ordering::SeqCst), 2);
     }
 
     #[test]

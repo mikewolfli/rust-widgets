@@ -267,12 +267,13 @@ pub fn ffmpeg_encode(buffer: &AudioBuffer, format: AudioFormat) -> Result<Vec<u8
     // Build and open the encoder before touching the muxer stream so we
     // can avoid borrowing `octx` through a `StreamMut` while encoding.
     let encoder_ctx = ffmpeg_next::codec::context::Context::new_with_codec(codec_descriptor);
-    let mut encoder_initial = encoder_ctx.encoder().audio().map_err(|e| {
-        format!(
-            "audio encoder '{encoder_name}' could not be created for codec \
-                     {codec_descriptor:?}: {e}"
-        )
-    })?;
+    // `codec_descriptor` is `ffmpeg::Codec`, whose `Debug` impl was removed in
+    // ffmpeg-next 9.0 (`Codec` is now a plain handle). `encoder_name` already names
+    // the same codec, and it is the more useful of the two in a diagnostic.
+    let mut encoder_initial = encoder_ctx
+        .encoder()
+        .audio()
+        .map_err(|e| format!("audio encoder '{encoder_name}' could not be created: {e}"))?;
 
     // ── Set encoder parameters ──────────────────────────────────────
     let channel_layout = match buffer.channels {

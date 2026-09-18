@@ -641,9 +641,12 @@ pub struct CupertinoSlider {
     value: f32,
     min: f32,
     max: f32,
-    /// Emitted with the new value whenever it changes. The widget never emits
-    /// it on its own: there is no drag handling, so the caller drives the value
-    /// and the signal is the notification channel out.
+    /// Emitted with the new value whenever it changes — both on a programmatic
+    /// [`CupertinoSlider::set_value`] that moves the knob and on a user drag.
+    /// The widget does not handle continuous drag-move, only press-to-jump; a
+    /// caller needing live drag updates drives [`CupertinoSlider::set_value`]
+    /// itself, which emits here too, so this signal is the single notification
+    /// channel out regardless of who changed the value.
     pub value_changed: Signal1<f32>,
 }
 
@@ -656,8 +659,15 @@ impl CupertinoSlider {
     }
 
     /// Sets the current value, clamped to [min, max].
+    ///
+    /// Emits `value_changed` with the clamped value when it actually changes;
+    /// re-applying the same clamped value is a no-op.
     pub fn set_value(&mut self, value: f32) {
-        self.value = value.clamp(self.min, self.max);
+        let clamped = value.clamp(self.min, self.max);
+        if self.value != clamped {
+            self.value = clamped;
+            self.value_changed.emit(clamped);
+        }
         self.base.request_redraw();
     }
 
@@ -666,18 +676,20 @@ impl CupertinoSlider {
         self.value
     }
 
-    /// Sets the minimum value.
+    /// Sets the minimum value, re-applying the clamp to the current value so an
+    /// out-of-range value is pulled into range (and `value_changed` is emitted
+    /// when it moves).
     pub fn set_min(&mut self, min: f32) {
         self.min = min;
-        self.value = self.value.clamp(self.min, self.max);
-        self.base.request_redraw();
+        self.set_value(self.value);
     }
 
-    /// Sets the maximum value.
+    /// Sets the maximum value, re-applying the clamp to the current value so an
+    /// out-of-range value is pulled into range (and `value_changed` is emitted
+    /// when it moves).
     pub fn set_max(&mut self, max: f32) {
         self.max = max;
-        self.value = self.value.clamp(self.min, self.max);
-        self.base.request_redraw();
+        self.set_value(self.value);
     }
 
     /// Returns the minimum value.
@@ -1088,7 +1100,7 @@ mod tests {
     use crate::core::Point;
     use crate::widget::svg::render_to_svg;
     use std::sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     };
 
@@ -1343,6 +1355,25 @@ mod tests {
         // Click at x=100 -> fraction ~ (100-12)/176 ~ 0.5
         sl.handle_event(&Event::MousePress { pos: Point::new(100, 20), button: 1 });
         assert!((sl.value() - 0.5).abs() < 0.05);
+    }
+
+    #[test]
+    fn cupertino_slider_set_value_emits_changed_only_on_real_change() {
+        let mut sl = CupertinoSlider::new(Rect::new(0, 0, 200, 40));
+        let seen = Arc::new(AtomicUsize::new(0));
+        {
+            let c = seen.clone();
+            sl.value_changed.connect(move |_| {
+                c.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        sl.set_value(0.5);
+        assert_eq!(seen.load(Ordering::SeqCst), 1);
+        sl.set_value(0.5); // no-op: same clamped value
+        assert_eq!(seen.load(Ordering::SeqCst), 1);
+        sl.set_value(0.9);
+        assert_eq!(seen.load(Ordering::SeqCst), 2);
     }
 
     #[test]

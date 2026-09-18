@@ -5,6 +5,66 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 2.4.0 (2026-09-18) — Real Signals, Real Animation
+
+Backward compatible. **No signature was removed and no control was deleted.** Eight places
+had declared behaviour that no code path could actually observe — signals that never fired, an
+animation that never animated, empty branches — and each is now real. The capability layer also
+advertised seven event names that no signal field could ever emit; those lists now name the
+signals the controls actually emit.
+
+### Fixed
+
+- **`LCDNumber::overflow` was inert.** The field existed, the capability advertised
+  `"overflow"`, and `draw(..)` even rendered an overflow indicator — but `set_value` clamps
+  the value into range, so `check_overflow` could never be `true` and the signal never fired.
+  `set_value` now detects an out-of-range argument *before* clamping, emits `overflow`, and
+  latches an `overflowed` flag that `check_overflow` reads and `draw(..)` renders, until an
+  in-range set clears it.
+- **`Action::hovered` was dead.** Declared and documented as "inert", it now fires on
+  `Event::MouseEnter`, giving the action a real pointer-enter notification.
+- **`ComboBox::set_current_text` had an empty branch.** The documented "we might add it as
+  custom text" comment was a placeholder. An editable combo box now adds an unknown, non-empty
+  value as a new item and selects it — the usual editable-combobox contract.
+- **`FloatingLabel` animation was fake.** `animation_progress` was written to a binary `0`/`1`
+  and then *never read by the draw pass* (the label teleported). It now interpolates toward a
+  target, advances via a new `FloatingLabel::tick(delta_ms)`, and the draw pass interpolates
+  the label's vertical position from it, so the float is a real, observable transition.
+- **Seven advertised event names named no emittable signal.** `bottom_sheet` ("expanded_changed"→
+  "dismissed"), `navigation_drawer` ("open_changed"→"opened"/"closed"/"item_selected"),
+  `inplace_editor` ("edit_completed"→"edit_accepted"/"edit_cancelled"), `gantt_widget`
+  (dropped "viewport_changed"), `floating_label` ("changed"/"focused"→"text_changed"),
+  `refresh_control` ("refreshed"→"refresh_triggered"), and `find_replace_dialog`
+  ("find"→"find_next"/"find_previous" + "close") now advertise the names their controls can
+  actually emit through `EventSignalBinder`.
+- **A `demo/` test branched on `cfg!(target_os)`.** `demo/code_editor` now derives the expected
+  shortcut notation from `PlatformShortcutStyle::current()` — the same runtime query a real
+  caller uses — rather than a compile-time OS check in an upper layer.
+- **`GpuStagingBufferPool::wait_for_slot` was an empty body.** Its comment admitted
+  "in a real implementation this would wait on a GPU fence" and the `if` did nothing. It now
+  recycles the slot (marks it free) — the honest, testable behaviour for a CPU-side staging
+  pool with no GPU fence primitive.
+- **`CupertinoSlider::set_value` changed the value but never emitted `value_changed`.** The
+  drag path emitted it, the programmatic setter did not, and the field's doc claimed the
+  reverse of what the code did. `set_value` now emits on a real change, and the doc is
+  corrected.
+
+### Added
+
+- **`FloatingLabel::tick(delta_ms)`** and **`FloatingLabel::animation_progress()`** — the
+  animation runtime and its observable read-back, following the `delta_ms`-based `tick`
+  convention of `Spinner` and the media widgets.
+
+### Verified in 2.4.0
+
+| Check | Result |
+|---|---|
+| `cargo test --lib` (desktop) | **4938** passed, 0 failed, 0 ignored |
+| `cargo test` (27 test binaries) | **5151** passed, 0 failed |
+| `tablet` / `mobile` lib | 4694 / 4722 passed |
+| `embedded` / `mini` lib | 1549 / 1481 passed |
+| `cargo clippy --all-targets -- -D warnings` | 0 warnings |
+
 ## 2.3.2 (2026-09-18) — One Name, One Meaning
 
 Backward compatible. **No signature changed and no control was removed.** Two things were

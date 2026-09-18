@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! List box widget.
-use crate::compat::{String, Vec, ToString};
+use crate::compat::{String, ToString, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -39,6 +39,12 @@ pub struct ListBox {
     selected_indices: Vec<usize>,
     selection_mode: SelectionMode,
     current_row: Option<usize>,
+    /// The row a Shift-extend grows from, set by the last non-extending selection.
+    ///
+    /// Only [`SelectionMode::Extended`] reads it, but it is maintained on every
+    /// selection so switching into that mode mid-session starts from the row the user
+    /// last touched rather than from nothing.
+    anchor: Option<usize>,
     item_height: f32,
     scroll_offset: usize,
     /// Emitted when the cursor row changes to a valid item, with that item's
@@ -71,7 +77,13 @@ pub enum SelectionMode {
     Single,
     /// Multiple rows can be selected (toggle behaviour).
     Multi,
-    /// Multiple rows can be selected with modifier keys (Ctrl/Shift).
+    /// Multiple rows can be selected with modifier keys: a plain click replaces the
+    /// selection, `Ctrl`/`Primary` toggles one row, and `Shift` extends from the
+    /// anchor.
+    ///
+    /// This is the Windows-explorer interaction model. It differs from [`Self::Multi`]
+    /// in that a *plain* click starts a new selection rather than adding to the old one,
+    /// which is why the two are not the same mode spelled twice.
     Extended,
     /// No row can be selected.
     None,
@@ -85,6 +97,7 @@ impl ListBox {
             selected_indices: Vec::new(),
             selection_mode: SelectionMode::Single,
             current_row: None,
+            anchor: None,
             item_height: 20.0,
             scroll_offset: 0,
             item_selected: Signal1::new(),
@@ -128,6 +141,13 @@ impl ListBox {
                     *current += 1;
                 }
             }
+            // The anchor is a row number too, so it shifts with the rows it points at.
+            // Leaving it behind would make a later Shift-extend grow from the wrong row.
+            if let Some(anchor) = &mut self.anchor {
+                if index <= *anchor {
+                    *anchor += 1;
+                }
+            }
         }
     }
     /// Removes item at specified index.
@@ -150,6 +170,13 @@ impl ListBox {
                     *current -= 1;
                 }
             }
+            // An anchor on the removed row no longer addresses anything, and one after
+            // it moves down with the rows.
+            self.anchor = match self.anchor {
+                Some(anchor) if anchor == index => None,
+                Some(anchor) if anchor > index => Some(anchor - 1),
+                other => other,
+            };
             self.selection_changed.emit();
         }
     }
@@ -158,6 +185,7 @@ impl ListBox {
         self.items.clear();
         self.selected_indices.clear();
         self.current_row = None;
+        self.anchor = None;
         self.selection_changed.emit();
     }
     /// Returns selection mode.
@@ -172,11 +200,17 @@ impl ListBox {
             SelectionMode::None => {
                 self.selected_indices.clear();
                 self.current_row = None;
+                self.anchor = None;
                 self.selection_changed.emit();
             }
             SelectionMode::Single if self.selected_indices.len() > 1 => {
                 self.selected_indices.truncate(1);
                 self.selection_changed.emit();
+            }
+            SelectionMode::Single => {
+                // A single selection has no range to extend from, so an anchor left over
+                // from `Extended` would be a stale row number nothing can use.
+                self.anchor = self.current_row;
             }
             // No action needed for this transition
             _ => {}
@@ -191,13 +225,21 @@ impl ListBox {
         self.selected_indices.contains(&index)
     }
     /// Selects an item.
+    ///
+    /// The mode decides what a plain selection means:
+    ///
+    /// * `Single` / `Multi` — as before.
+    /// * `Extended` — a plain call behaves like `Single` (a new selection), because in
+    ///   that mode the *modifiers* are what extend. Use [`ListBox::select_with_modifiers`]
+    ///   to express ctrl-toggle and shift-extend; a plain `select` cannot know them.
     pub fn select(&mut self, index: usize) {
         if index >= self.items.len() {
             return;
         }
         match self.selection_mode {
             SelectionMode::None => (),
-            SelectionMode::Single => {
+            SelectionMode::Single | SelectionMode::Extended => {
+                self.anchor = Some(index);
                 self.selected_indices.clear();
                 self.selected_indices.push(index);
                 self.current_row = Some(index);
@@ -212,16 +254,74 @@ impl ListBox {
                     self.selection_changed.emit();
                 }
             }
-            SelectionMode::Extended => {
-                // Similar to multi for now
-                if !self.selected_indices.contains(&index) {
-                    self.selected_indices.push(index);
-                    self.current_row = Some(index);
-                    self.item_selected.emit(index);
-                    self.selection_changed.emit();
-                }
-            }
         }
+    }
+
+    /// Selects `index` honouring the modifier keys held at the time.
+    ///
+    /// # What each modifier does
+    ///
+    /// * **Shift** — extends from the anchor to `index` (the range is inclusive and
+    ///   works in either direction), replacing the selection with that range.
+    /// * **Ctrl / Primary** — toggles `index` without touching the rest, and moves the
+    ///   anchor to it so a following Shift extends from there.
+    /// * **Neither** — a plain selection, identical to [`ListBox::select`].
+    ///
+    /// # Why this is a separate entry point
+    ///
+    /// `Event::MousePress` carries no modifier mask, so the widget layer cannot derive
+    /// the modifiers from the event. A caller that *does* have them (a keyboard-driven
+    /// host, or a backend that folds modifiers into the press) calls this instead. Before
+    /// it existed, `Extended` was documented as modifier-driven but its implementation
+    /// was a copy of `Multi`: no anchor, no range, no toggle.
+    ///
+    /// # Modes other than `Extended`
+    ///
+    /// This is only meaningful for [`SelectionMode::Extended`]. In the other modes it
+    /// delegates to [`ListBox::select`], so a caller does not have to know the current
+    /// mode to call it safely.
+    pub fn select_with_modifiers(&mut self, index: usize, modifiers: crate::shortcut::Modifiers) {
+        if index >= self.items.len() {
+            return;
+        }
+        if self.selection_mode != SelectionMode::Extended {
+            self.select(index);
+            return;
+        }
+        if modifiers.contains(crate::shortcut::Modifiers::SHIFT) {
+            // The anchor is the row the user last selected without extending. With no
+            // anchor (a Shift-click on a never-touched list) the range is just this row,
+            // which is also the anchor it leaves behind.
+            let anchor = self.anchor.unwrap_or(index).min(self.items.len() - 1);
+            let (low, high) = if anchor <= index { (anchor, index) } else { (index, anchor) };
+            self.selected_indices.clear();
+            self.selected_indices.extend(low..=high);
+            self.current_row = Some(index);
+            self.item_selected.emit(index);
+            self.selection_changed.emit();
+            return;
+        }
+        if modifiers.contains(crate::shortcut::Modifiers::CTRL) {
+            if let Some(pos) = self.selected_indices.iter().position(|&i| i == index) {
+                self.selected_indices.remove(pos);
+            } else {
+                self.selected_indices.push(index);
+                // Keep the list ordered so `selected_indices` reads as a set of rows in
+                // visual order rather than in click order.
+                self.selected_indices.sort_unstable();
+                self.item_selected.emit(index);
+            }
+            self.current_row = Some(index);
+            self.anchor = Some(index);
+            self.selection_changed.emit();
+            return;
+        }
+        self.select(index);
+    }
+
+    /// Returns the anchor a Shift-extend grows from, if one has been set.
+    pub fn selection_anchor(&self) -> Option<usize> {
+        self.anchor
     }
     /// Deselects an item.
     pub fn deselect(&mut self, index: usize) {
@@ -238,6 +338,7 @@ impl ListBox {
         if !self.selected_indices.is_empty() {
             self.selected_indices.clear();
             self.current_row = None;
+            self.anchor = None;
             self.selection_changed.emit();
         }
     }
@@ -266,6 +367,10 @@ impl ListBox {
             let rel_index = ((pos.y - rect.y) as f32 / self.item_height) as usize;
             let item_index = self.scroll_offset + rel_index;
             if item_index < self.items.len() {
+                // `Event::MousePress` carries no modifier mask, so a backend that wants
+                // ctrl-toggle / shift-extend folds the modifiers into the event it
+                // translates and calls `select_with_modifiers` instead of relying on
+                // this path. What a press *can* express is reaching here.
                 self.select(item_index);
                 self.base.clicked.emit();
             }
@@ -549,6 +654,15 @@ mod tests {
     use super::*;
     use crate::core::Rect;
 
+    /// A list box holding `count` items named `A`, `B`, …
+    fn listbox_with(count: usize) -> ListBox {
+        let mut lb = ListBox::new(Rect::new(0, 0, 200, 200));
+        for index in 0..count {
+            lb.add_item(format!("Item {index}"));
+        }
+        lb
+    }
+
     #[test]
     fn listbox_creation_defaults() {
         let lb = ListBox::new(Rect::new(0, 0, 200, 200));
@@ -693,6 +807,99 @@ mod tests {
         assert_eq!(lb.selection_mode(), SelectionMode::Extended);
         lb.set_selection_mode(SelectionMode::Single);
         assert_eq!(lb.selection_mode(), SelectionMode::Single);
+    }
+
+    /// `Extended` must behave like the Windows-explorer model, not like `Multi`.
+    ///
+    /// The two differ in what a **plain** selection does: `Multi` adds, `Extended`
+    /// replaces. Before this was fixed `Extended` was a literal copy of `Multi` (the
+    /// comment said "Similar to multi for now"), so the mode could not be told apart
+    /// from `Multi` by any caller.
+    #[test]
+    fn listbox_extended_plain_selection_replaces_rather_than_adds() {
+        let mut lb = listbox_with(5);
+        lb.set_selection_mode(SelectionMode::Extended);
+        lb.select(1);
+        lb.select(3);
+        assert_eq!(lb.selected_indices(), &[3], "a plain select replaces the selection");
+
+        let mut multi = listbox_with(5);
+        multi.set_selection_mode(SelectionMode::Multi);
+        multi.select(1);
+        multi.select(3);
+        assert_eq!(multi.selected_indices(), &[1, 3], "Multi still adds");
+    }
+
+    /// Shift must select the inclusive range from the anchor, in either direction.
+    #[test]
+    fn listbox_extended_shift_selects_the_anchor_range() {
+        use crate::shortcut::Modifiers;
+        let mut lb = listbox_with(6);
+        lb.set_selection_mode(SelectionMode::Extended);
+
+        lb.select(2);
+        assert_eq!(lb.selection_anchor(), Some(2));
+        lb.select_with_modifiers(4, Modifiers::SHIFT);
+        assert_eq!(lb.selected_indices(), &[2, 3, 4], "forward range from the anchor");
+
+        // Extending backwards keeps the rows in ascending order and moves the current row.
+        lb.select_with_modifiers(0, Modifiers::SHIFT);
+        assert_eq!(lb.selected_indices(), &[0, 1, 2], "backward range from the anchor");
+        assert_eq!(lb.current_row(), Some(0));
+    }
+
+    /// Ctrl must toggle one row without disturbing the rest, and re-arm the anchor.
+    #[test]
+    fn listbox_extended_ctrl_toggles_a_row() {
+        use crate::shortcut::Modifiers;
+        let mut lb = listbox_with(5);
+        lb.set_selection_mode(SelectionMode::Extended);
+        lb.select(0);
+        lb.select_with_modifiers(2, Modifiers::CTRL);
+        assert_eq!(lb.selected_indices(), &[0, 2], "ctrl adds without clearing");
+        lb.select_with_modifiers(0, Modifiers::CTRL);
+        assert_eq!(lb.selected_indices(), &[2], "ctrl on a selected row removes it");
+        assert_eq!(
+            lb.selection_anchor(),
+            Some(0),
+            "ctrl moves the anchor to the row it toggled, so a following shift extends from it"
+        );
+    }
+
+    /// A row removed from underneath the anchor must not leave a stale anchor behind.
+    #[test]
+    fn listbox_insert_and_remove_keep_the_anchor_addressable() {
+        use crate::shortcut::Modifiers;
+        let mut lb = listbox_with(5);
+        lb.set_selection_mode(SelectionMode::Extended);
+        lb.select(2);
+
+        lb.insert_item(0, "new".to_string());
+        assert_eq!(lb.selection_anchor(), Some(3), "an insert before the anchor shifts it");
+        lb.select_with_modifiers(4, Modifiers::SHIFT);
+        assert_eq!(lb.selected_indices(), &[3, 4]);
+
+        // Removing the anchored row drops the anchor: there is no row left to grow from.
+        lb.select(0);
+        assert_eq!(lb.selection_anchor(), Some(0));
+        lb.remove_item(0);
+        assert_eq!(lb.selection_anchor(), None);
+    }
+
+    /// The modifier entry point must be safe to call in any mode.
+    #[test]
+    fn listbox_select_with_modifiers_delegates_outside_extended_mode() {
+        use crate::shortcut::Modifiers;
+        let mut lb = listbox_with(4);
+        lb.set_selection_mode(SelectionMode::Single);
+        lb.select_with_modifiers(1, Modifiers::SHIFT);
+        lb.select_with_modifiers(2, Modifiers::SHIFT);
+        assert_eq!(lb.selected_indices(), &[2], "Single keeps its one-row rule");
+
+        let mut none = listbox_with(4);
+        none.set_selection_mode(SelectionMode::None);
+        none.select_with_modifiers(1, Modifiers::CTRL);
+        assert!(none.selected_indices().is_empty(), "None selects nothing");
     }
 
     #[test]

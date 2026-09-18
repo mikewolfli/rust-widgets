@@ -284,10 +284,10 @@ impl WidgetProperties for InplaceEditor {
     ///
     /// The two actions enter and leave edit mode through the control's own methods, so
     /// the guard against a redundant start, the revert-on-cancel and the
-    /// `edit_completed` signal all stay in one place. `finish_editing` accepts, which is
-    /// the meaning of the name: a caller that wants the revert spells it as
-    /// `set("editing", false)`, where the payload says so. `set_text` assigns the text
-    /// and is answered through the property route.
+    /// `edit_accepted` / `edit_cancelled` signals all stay in one place. `finish_editing`
+    /// accepts, which is the meaning of the name: a caller that wants the revert spells
+    /// it as `set("editing", false)`, where the payload says so. `set_text` assigns the
+    /// text and is answered through the property route.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
             "start_editing" => {

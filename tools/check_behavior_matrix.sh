@@ -4,6 +4,13 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+. "$ROOT_DIR/tools/lib_timeout.sh"
+
+# Each case is a `cargo test` (or a nested gate). Bounding per case keeps a wedge
+# localised: the report names which case hung instead of the whole matrix going
+# quiet. The case budget covers a cold compile of its feature set.
+CASE_TIMEOUT=900
+
 REPORT_DIR="target/qa"
 REPORT_FILE="$REPORT_DIR/behavior_matrix_report.md"
 mkdir -p "$REPORT_DIR"
@@ -14,9 +21,10 @@ run_case() {
   local output_file
   output_file="$(mktemp)"
   echo "- running: $title"
-  if ! "$@" >"$output_file" 2>&1; then
+  if ! rw_run_bounded "$CASE_TIMEOUT" "$@" >"$output_file" 2>&1; then
     cat "$output_file"
     rm -f "$output_file"
+    echo "❌ case failed or exceeded ${CASE_TIMEOUT}s: $title" >&2
     return 1
   fi
   cat "$output_file"

@@ -173,6 +173,11 @@ pub struct KanbanBoard {
     /// Emitted after a card moves, with the card's id and its new position.
     pub card_moved: Signal1<(String, CardPosition)>,
     /// Emitted when a card is activated (clicked without dragging), with its id.
+    ///
+    /// A press followed by a release that never crossed `CARD_DRAG_THRESHOLD` is a
+    /// *click*, not a drag: the session is discarded and this fires instead of
+    /// [`KanbanBoard::card_moved`]. That is what makes the board usable for opening a
+    /// card, and it is the case the sub-threshold drag test pins.
     pub card_activated: Signal1<String>,
 }
 
@@ -471,12 +476,42 @@ impl KanbanBoard {
     ///
     /// Returns whether the board moved anything, so the caller can tell a real drop
     /// from a cancelled one.
+    ///
+    /// A session that never crossed the drag threshold is a **click**, not a cancelled
+    /// drag, and it fires [`KanbanBoard::card_activated`]. Before this distinction was
+    /// made, a click on a card produced no signal at all: the press opened a session,
+    /// the release took the `!effect.is_accepted()` branch, and the card's id was
+    /// dropped on the floor — so the documented `card_activated` event could never fire
+    /// from a real pointer.
     fn finish_card_drag(&mut self, pos: Point) -> bool {
-        let Some(mut session) = self.drag.take() else {
+        let Some(session) = self.drag.take() else {
             return false;
         };
+        // Read `drag_origin` **without** taking it yet: the click branch below needs it,
+        // and the drop branch must still see it. Taking it up front forced an `Option`
+        // unwrap into the middle of the drop arithmetic, which is how an earlier
+        // revision of this function ended up shadowing the value it still needed.
         let origin = self.drag_origin.take();
         self.hovered_column = None;
+
+        // The press/release never became a drag, so the gesture is a click on the card
+        // the session was started from. `is_active()` is the shared machine's own
+        // verdict on "did the pointer travel far enough", so this stays in step with
+        // the threshold constant rather than re-deriving it here.
+        if !session.is_active() {
+            let activated = origin
+                .and_then(|start| {
+                    self.columns.get(start.column).and_then(|c| c.cards.get(start.card))
+                })
+                .map(|card| card.id.clone());
+            self.base.request_redraw();
+            if let Some(card_id) = activated {
+                self.card_activated.emit(card_id);
+            }
+            return false;
+        }
+
+        let mut session = session;
 
         // The shared machine decides whether this drop may happen at all; the board
         // only supplies the placement.
@@ -865,6 +900,9 @@ impl KanbanBoard {
 mod tests {
     use super::*;
     use crate::render::{PaintBackend, SoftwarePaintBackend};
+    // The activation tests observe delivery through a shared sink, so they need the
+    // same Arc/Mutex the signal machinery uses.
+    use crate::compat::{Arc, Mutex};
 
     /// A board with three columns and one card in the first.
     fn board() -> KanbanBoard {
@@ -1047,6 +1085,58 @@ mod tests {
         board.handle_event(&Event::mouse_press(centre.x, centre.y, 1));
         board.handle_event(&Event::mouse_move(centre.x + 1, centre.y));
         assert!(!board.is_dragging_card());
+    }
+
+    /// A sub-threshold press/release is a click, and a click must be observable.
+    ///
+    /// Before this was fixed the board produced `card_activated` from **nowhere**:
+    /// the press opened a drag session, the release discarded it, and the documented
+    /// signal never fired from a real pointer. The assertion is deliberately on
+    /// *delivery* (the id arriving), not on the gesture merely being non-dragging, so
+    /// it fails if the emit is removed again.
+    #[test]
+    fn kanban_click_without_drag_emits_card_activated() {
+        let mut board = board();
+        let centre = card_center(&board, CardPosition { column: 0, card: 0 });
+        let seen = Arc::new(Mutex::new(Option::<String>::None));
+        let sink = Arc::clone(&seen);
+        board.card_activated.connect(move |id: Arc<String>| {
+            *sink.lock().expect("activation sink poisoned") = Some(id.as_str().to_string());
+        });
+
+        board.handle_event(&Event::mouse_press(centre.x, centre.y, 1));
+        board.handle_event(&Event::mouse_move(centre.x + 1, centre.y));
+        board.handle_event(&Event::mouse_release(centre.x + 1, centre.y, 1));
+
+        assert_eq!(
+            seen.lock().expect("activation sink poisoned").as_deref(),
+            Some("a"),
+            "a click on card 'a' must emit card_activated with its id"
+        );
+        // A click is not a move: the card stays where it was.
+        assert_eq!(board.position_of("a"), Some(CardPosition { column: 0, card: 0 }));
+    }
+
+    /// A real drag must **not** report an activation, or a drop would look like a click.
+    #[test]
+    fn kanban_drag_does_not_emit_card_activated() {
+        let mut board = board();
+        let start = card_center(&board, CardPosition { column: 0, card: 0 });
+        let activations = Arc::new(Mutex::new(0usize));
+        let counter = Arc::clone(&activations);
+        board.card_activated.connect(move |_id: Arc<String>| {
+            *counter.lock().expect("activation counter poisoned") += 1;
+        });
+
+        board.handle_event(&Event::mouse_press(start.x, start.y, 1));
+        board.handle_event(&Event::mouse_move(start.x + 40, start.y + 10));
+        board.handle_event(&Event::mouse_release(start.x + 40, start.y + 10, 1));
+
+        assert_eq!(
+            *activations.lock().expect("activation counter poisoned"),
+            0,
+            "a drag that moved the card must not also report an activation"
+        );
     }
 
     #[test]

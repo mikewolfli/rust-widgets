@@ -118,13 +118,23 @@ fn every_published_command_is_dispatched_by_its_control() {
 
 /// A control that publishes commands must dispatch the ones it implements.
 ///
-/// # What this covers while the full rollout is in progress
+/// # What this covers
 ///
-/// The blanket test below is `#[ignore]`d until every capability's command list is
-/// implemented. This one covers the controls that *are* done, so the contract is
-/// protected now rather than at the end: for each name in this list, a constructed
-/// control must answer it with something other than `UnknownCommand`. A control that
-/// silently lost its implementation fails here.
+/// For each name in the list below, a constructed control must answer it with
+/// something other than `UnknownCommand`. A control that silently lost its
+/// implementation fails here.
+///
+/// # Why the list is explicit rather than "every published command"
+///
+/// The blanket test above already walks every published command, so this one exists to
+/// make a **regression in one control** fail with the control named, rather than as one
+/// entry in a 500-row list. It is deliberately a subset: a control whose commands are not
+/// yet implemented would otherwise have to be removed from the list, and removing an entry
+/// is exactly the silent weakening this test is supposed to prevent.
+///
+/// An earlier revision of this comment claimed the blanket test was `#[ignore]`d. It is
+/// not, and never was — see `every_published_command_is_dispatched_by_its_control`
+/// directly above, which carries a plain `#[test]`.
 #[test]
 fn implemented_commands_are_dispatched() {
     use rust_widgets::widget::capability::CapabilityAccessError;
@@ -132,8 +142,7 @@ fn implemented_commands_are_dispatched() {
     let factory = WidgetFactory::new_with_defaults();
 
     // (control name, command) pairs that must be answered. Each one is a command
-    // whose implementation exists; the pair is asserted rather than the whole list
-    // so this test does not have to be edited when a capability gains a command.
+    // whose implementation exists.
     let cases: &[(&str, &str)] = &[
         ("check_box", "toggle"),
         ("button", "click"),
@@ -147,11 +156,15 @@ fn implemented_commands_are_dispatched() {
         let Some(mut widget) = factory.create(control, Rect::new(0, 0, 96, 64), "") else {
             continue;
         };
-        // The published check passes; the control must then not answer UnknownCommand.
-        if let Err(CapabilityAccessError::UnknownCommand) =
-            factory.invoke_command(widget.as_mut(), command)
-        {
-            missing.push((control, command));
+        // The control must answer with something other than "never heard of it".
+        //
+        // `UnsupportedOnWidget` is *not* accepted here: `invoke_command` rewrites a
+        // control's `UnknownCommand` into that variant, so accepting it would make this
+        // assertion unable to detect a removed implementation — which is precisely how
+        // an earlier revision passed while the implementation it named was deleted.
+        match factory.invoke_command(widget.as_mut(), command) {
+            Ok(()) | Err(CapabilityAccessError::OutOfRange) => {}
+            _other => missing.push((control, command)),
         }
     }
 
@@ -159,6 +172,64 @@ fn implemented_commands_are_dispatched() {
         missing.is_empty(),
         "a command whose implementation exists is refused as unknown, so the dispatcher \
          and the control disagree (control, command): {missing:?}"
+    );
+}
+
+/// A command that reports success must actually **change** the control.
+///
+/// # The gap this closes
+///
+/// `Ok(())` means "the action ran". Nothing above checks that, so a `command` arm that
+/// was gutted to `Ok(())` with the work removed still passes every other test in this
+/// file — the return value is a claim, not evidence. This asserts the observable effect
+/// for the two commands whose effect is a pure state toggle, which is what makes it a
+/// behavioural test rather than another agreement check.
+///
+/// It is deliberately narrow: only commands whose whole effect is one readable flag can
+/// be checked this generically. `button.click` emits a signal, which needs a subscriber,
+/// and `toggle_button.toggle` on a disabled control is a sanctioned no-op.
+#[test]
+fn a_successful_command_has_an_observable_effect() {
+    let factory = WidgetFactory::new_with_defaults();
+
+    // `check_box.toggle` must flip `checked`.
+    let mut check_box =
+        factory.create("check_box", Rect::new(0, 0, 96, 64), "").expect("check_box constructs");
+    let before = factory
+        .read_property(check_box.as_ref(), "checked")
+        .expect("check_box publishes `checked`");
+    assert_eq!(factory.invoke_command(check_box.as_mut(), "toggle"), Ok(()));
+    let after = factory
+        .read_property(check_box.as_ref(), "checked")
+        .expect("check_box publishes `checked`");
+    assert_ne!(
+        before, after,
+        "`toggle` returned Ok but left `checked` unchanged, so the command is a shell"
+    );
+
+    // A second invocation must bring it back, which also proves the first was not a
+    // one-shot side effect of construction.
+    assert_eq!(factory.invoke_command(check_box.as_mut(), "toggle"), Ok(()));
+    let restored = factory
+        .read_property(check_box.as_ref(), "checked")
+        .expect("check_box publishes `checked`");
+    assert_eq!(restored, before, "a second `toggle` must return the control to its first state");
+
+    // `radio_button.set_checked` takes its payload from the property route, so it is
+    // exercised that way rather than through `invoke_command`.
+    let mut radio =
+        factory.create("radio_button", Rect::new(0, 0, 96, 64), "").expect("radio_button");
+    factory
+        .write_property(
+            radio.as_mut(),
+            "checked",
+            rust_widgets::widget::capability::CapabilityValue::Bool(true),
+        )
+        .expect("radio_button accepts `checked`");
+    assert_eq!(
+        factory.read_property(radio.as_ref(), "checked").expect("read back"),
+        rust_widgets::widget::capability::CapabilityValue::Bool(true),
+        "the value a property write stored must be the value a read returns"
     );
 }
 

@@ -57,12 +57,12 @@ capability matrix
 is generated from source and gated for drift in CI.
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.3.2-blue)]()
-[![tests](https://img.shields.io/badge/tests-4900%2B-brightgreen)]()
+[![version](https://img.shields.io/badge/version-2.4.0-blue)]()
+[![tests](https://img.shields.io/badge/tests-5100%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
-**Verified in 2.3.2:** `4916` lib tests pass on `desktop` (`4688` on `tablet`, `4716` on
-`mobile`, `1558` on `embedded`, `1497` on `mini`), and `cargo test` reports 0 failures
+**Verified in 2.4.0:** `4938` lib tests pass on `desktop` (`4694` on `tablet`, `4722` on
+`mobile`, `1549` on `embedded`, `1481` on `mini`), and `cargo test` reports 0 failures
 across all 27 test binaries. `cargo clippy --all-targets -- -D warnings` is clean and all
 five profiles build. **32 gates** pass; the one skip needs a macOS host and says so.
 See [`CHANGELOG.md`](CHANGELOG.md).

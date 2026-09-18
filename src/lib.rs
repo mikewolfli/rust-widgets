@@ -193,6 +193,39 @@ pub mod wgpu_backend;
 pub mod widget;
 // Re-export all widget types for convenience
 pub use widget::*;
+
+/// Translates a message key, or returns it verbatim when i18n is not compiled in.
+///
+/// # Why a function next to the `tr!` macro
+///
+/// `tr!` needs a **literal** key, so it cannot serve a caller that holds a key at
+/// runtime (a control's `set_translated_tooltip`, a data-driven label). Without this
+/// function such a caller has to write its own `cfg` pair, which is exactly how
+/// `set_translated_tooltip` ended up gating i18n on `desktop` and silently losing
+/// translations on `tablet`/`mobile` (principle #41).
+///
+/// Having one feature-independent entry point means a call site never needs to know
+/// whether the catalogue exists.
+///
+/// # The no-`i18n` behaviour
+///
+/// Returns the key itself and warns, matching [`tr!`]: a build without the catalogue
+/// must not look localized, and an empty string would be worse than the raw key(which
+/// at least names what is missing).
+#[cfg(feature = "i18n")]
+pub fn translate_key(key: &str) -> crate::compat::String {
+    crate::i18n::translate(key)
+}
+
+/// Translates a message key, or returns it verbatim when i18n is not compiled in.
+///
+/// See the `i18n` variant's documentation for why this function exists alongside the
+/// [`tr!`] macro.
+#[cfg(not(feature = "i18n"))]
+pub fn translate_key(key: &str) -> crate::compat::String {
+    log::warn!("i18n translate_key called but the i18n feature is disabled, key={key}");
+    crate::compat::String::from(key)
+}
 // NOTE: there is no top-level `chart` module. The chart *engine* (layout, axes,
 // ticks, SVG context, adapter) and the chart *widgets* live together under
 // `crate::widget::chart_widgets`, because they are two layers of one feature.

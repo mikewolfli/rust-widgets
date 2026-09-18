@@ -4,6 +4,14 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+. "$ROOT_DIR/tools/lib_timeout.sh"
+
+# One budget per `cargo` step. A profile check that compiles many modules can
+# take minutes cold, and a `cargo` waiting on a lock never returns on its own —
+# without this, a wedged step hangs the gate with no output at all.
+PROFILE_TIMEOUT=1200
+TEST_TIMEOUT=900
+
 # Runs one named test and fails if the filter matched nothing.
 #
 # `cargo test <filter>` exits **0** when the filter matches no test at all, so a
@@ -24,7 +32,7 @@ run_test_case() {
   local output_file
   output_file="$(mktemp)"
   echo "  - running: $title"
-  if ! "$@" >"$output_file" 2>&1; then
+  if ! rw_run_bounded "$TEST_TIMEOUT" "$@" >"$output_file" 2>&1; then
     cat "$output_file"
     rm -f "$output_file"
     echo "❌ $title FAILED" >&2
@@ -41,22 +49,22 @@ run_test_case() {
 }
 
 echo "[1/9] cargo check (default)"
-cargo check
+rw_run_bounded "$PROFILE_TIMEOUT" cargo check
 
 echo "[2/9] cargo check --examples"
-cargo check --examples
+rw_run_bounded "$PROFILE_TIMEOUT" cargo check --examples
 
 echo "[3/9] cargo check --no-default-features --features tablet --all-targets"
-cargo check --no-default-features --features tablet --all-targets
+rw_run_bounded "$PROFILE_TIMEOUT" cargo check --no-default-features --features tablet --all-targets
 
 echo "[4/9] cargo check --no-default-features --features mobile --all-targets"
-cargo check --no-default-features --features mobile --all-targets
+rw_run_bounded "$PROFILE_TIMEOUT" cargo check --no-default-features --features mobile --all-targets
 
 echo "[5/9] cargo check --no-default-features --features mini --all-targets"
-cargo check --no-default-features --features mini --all-targets
+rw_run_bounded "$PROFILE_TIMEOUT" cargo check --no-default-features --features mini --all-targets
 
 echo "[6/9] cargo check --no-default-features --features embedded --all-targets"
-cargo check --no-default-features --features embedded --all-targets
+rw_run_bounded "$PROFILE_TIMEOUT" cargo check --no-default-features --features embedded --all-targets
 
 echo "[7/9] embedded P4c regression gate"
 run_test_case "embedded selection-state roundtrip" \
@@ -82,6 +90,6 @@ run_test_case "gpu auto-compose mixed scene" \
   cargo test --lib --features gpu-wgpu render::tests::auto_compose_renders_mixed_commands_scene_with_gpu_or_cpu_backend
 run_test_case "gpu auto-compose cpu fallback" \
   cargo test --lib --features gpu-wgpu render::tests::auto_compose_falls_back_to_cpu_backend_when_gpu_path_is_rejected
-cargo check --features gpu-wgpu --example demo_wgpu_control_parity
+rw_run_bounded "$PROFILE_TIMEOUT" cargo check --features gpu-wgpu --example demo_wgpu_control_parity
 
 echo "All profile checks passed."

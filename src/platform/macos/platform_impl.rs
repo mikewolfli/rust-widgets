@@ -5,7 +5,7 @@
 
 #![allow(deprecated)] // Cocoa 0.24 fallback; remove when objc2 backend fully replaces cocoa
 
-use crate::compat::{String, Vec};
+use crate::compat::String;
 use crate::core::{ObjectId, PlatformFamily};
 use crate::platform::accessibility::AccessibilityBridge;
 use crate::platform::clipboard::RichClipboardBackend;
@@ -17,7 +17,7 @@ use cocoa::appkit::{
     NSBackingStoreBuffered, NSRunningApplication, NSView, NSWindow,
 };
 use cocoa::base::{id, nil, BOOL, NO};
-use cocoa::foundation::{NSAutoreleasePool, NSPoint, NSString};
+use cocoa::foundation::{NSAutoreleasePool, NSPoint, NSRect, NSString};
 use objc::{class, msg_send, sel, sel_impl};
 use std::ffi::CStr;
 use std::os::raw::c_char;
@@ -460,19 +460,4 @@ impl Platform for MacOSPlatform {
     fn accessibility_bridge(&self) -> Option<&dyn AccessibilityBridge> {
         Some(&self.a11y_bridge)
     }
-}
-
-/// The running platform, when it is this backend and it has been initialised.
-///
-/// # Why this is needed
-///
-/// A resize arrives as an Objective-C callback, which is handed the window and nothing
-/// else — it has no reference to the platform object. This is how such a callback gets
-/// back to the state it needs to report through. Returns `None` when the active backend
-/// is not this one (or none is installed), so a callback that fires during teardown
-/// cannot act on the wrong backend.
-pub(crate) fn active_platform() -> Option<&'static dyn crate::platform::Platform> {
-    let platform = crate::platform::runtime::get_platform();
-    platform.as_any().downcast_ref::<MacOSPlatform>()?;
-    Some(platform)
 }

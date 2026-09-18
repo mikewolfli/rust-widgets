@@ -261,19 +261,26 @@ impl BaseWidget {
     }
     /// Sets the tooltip by looking up a translation `key`.
     ///
-    /// Under the `desktop` feature the key is resolved through the i18n catalogue;
-    /// without it (or for an unknown key) the key itself is used verbatim, which is
-    /// convenient for debugging but must not be relied on to deliver real
-    /// translations in mini builds.
+    /// The key is resolved through the i18n catalogue whenever that capability is
+    /// compiled in; without it `crate::translate_key` returns the key verbatim, which
+    /// is convenient for debugging but must not be relied on to deliver real
+    /// translations.
+    ///
+    /// # Why this does not name `crate::i18n` directly
+    ///
+    /// `i18n` is a **capability** feature, and the module only exists when it is on, so
+    /// naming it here forces a `cfg`. An earlier revision used
+    /// `#[cfg(feature = "desktop")]`, which is the *wrong* question: `tablet` and
+    /// `mobile` enable `i18n` without `desktop` (see `Cargo.toml`, and
+    /// `src/platform/profile.rs`'s note that "`feature = \"i18n\"` is a capability
+    /// feature, not a profile gate"). Those profiles therefore compiled the
+    /// untranslated branch into a build that had a working, initialised catalogue, and a
+    /// tooltip read `common.button.cancel` instead of `Cancel`.
+    ///
+    /// `crate::translate_key` is the capability-correct entry point that keeps the
+    /// `cfg` in one place.
     pub fn set_translated_tooltip(&mut self, key: &str) {
-        #[cfg(feature = "desktop")]
-        {
-            self.tooltip = crate::compat::mini_string_from(crate::i18n::translate(key));
-        }
-        #[cfg(not(feature = "desktop"))]
-        {
-            self.tooltip = crate::compat::into_mini(key);
-        }
+        self.tooltip = crate::compat::mini_string_from(crate::translate_key(key));
     }
     /// Borrows the widget's visual style (colours, padding, touch target, etc.).
     pub fn style(&self) -> &WidgetStyle {
@@ -657,6 +664,38 @@ mod tests {
 
         bw.set_tooltip(crate::compat::into_mini("Help text"));
         assert_eq!(bw.tooltip(), "Help text");
+    }
+
+    /// `set_translated_tooltip` must store the **translation**, not the key.
+    ///
+    /// Gated on `i18n` because it asserts catalogue contents; the no-`i18n` behaviour
+    /// (key verbatim, plus a warning) is pinned by the test below, which runs in every
+    /// profile.
+    ///
+    /// The `desktop`-gated revision compiled a key-verbatim fallback into every
+    /// non-`desktop` build, including `tablet`/`mobile`, which enable the `i18n`
+    /// capability and therefore have a working catalogue and an initialised one. The
+    /// symptom was a tooltip reading `common.button.cancel` on a tablet build.
+    #[cfg(feature = "i18n")]
+    #[test]
+    fn test_translated_tooltip_stores_the_translation_not_the_key() {
+        crate::i18n::init();
+        let mut bw = make_base();
+        bw.set_translated_tooltip("common.button.cancel");
+        assert_eq!(bw.tooltip(), "Cancel");
+        assert_ne!(
+            bw.tooltip(),
+            "common.button.cancel",
+            "the catalogue key must not be what the user ends up reading"
+        );
+    }
+
+    /// An unknown key still yields something displayable rather than an empty tooltip.
+    #[test]
+    fn test_translated_tooltip_falls_back_to_the_key_for_unknown_keys() {
+        let mut bw = make_base();
+        bw.set_translated_tooltip("no.such.key.exists");
+        assert_eq!(bw.tooltip(), "no.such.key.exists");
     }
 
     #[test]

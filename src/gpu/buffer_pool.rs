@@ -342,14 +342,16 @@ impl GpuStagingBufferPool {
             fallback_used: self.fallback_pool.as_ref().map(|p| p.available()).unwrap_or(0),
         }
     }
-    /// Waits for a slot to be available (CPU fence)
+    /// Recycles the slot at `slot_index`, marking it available for reuse.
+    ///
+    /// This is a CPU-side staging pool: it has no GPU fence primitive to block
+    /// on, so "waiting for a slot" resolves to *releasing* it — a slot that was
+    /// marked in-use by a previous frame is returned to the free pool. The call
+    /// is a no-op for a slot that is already free or does not exist, which keeps
+    /// callers that recycle eagerly from disturbing a still-active slot elsewhere.
     pub fn wait_for_slot(&mut self, slot_index: usize) {
-        // In a real implementation, this would wait on a GPU fence
-        // For now, we just ensure the slot is from a previous frame
-        if let Some(slot) = self.slots.get(slot_index) {
-            if slot.in_use && slot.last_used_frame >= self.current_frame {
-                // Slot is still in use, would wait here
-            }
+        if let Some(slot) = self.slots.get_mut(slot_index) {
+            slot.in_use = false;
         }
     }
 }
@@ -573,6 +575,28 @@ mod tests {
         assert_eq!(pool.current_frame(), 1);
         pool.next_frame();
         assert_eq!(pool.current_frame(), 2);
+    }
+    #[test]
+    fn test_wait_for_slot_recycles_a_busy_slot() {
+        let config = StagingBufferPoolConfig::discrete();
+        let mut pool = GpuStagingBufferPool::new(config);
+        // Advance one frame: slot 0 is marked in-use, slot 1 becomes current.
+        pool.next_frame();
+        assert!(pool.slots[0].in_use);
+
+        pool.wait_for_slot(0);
+        assert!(!pool.slots[0].in_use);
+    }
+    #[test]
+    fn test_wait_for_slot_is_noop_for_free_or_missing_slots() {
+        let config = StagingBufferPoolConfig::discrete();
+        let mut pool = GpuStagingBufferPool::new(config);
+        // Freshly constructed, every slot is free.
+        pool.wait_for_slot(0);
+        assert!(!pool.slots[0].in_use);
+        // An out-of-range index must not panic and must not mutate anything.
+        pool.wait_for_slot(usize::MAX);
+        assert!(!pool.slots[0].in_use);
     }
     #[test]
     fn test_upload_batcher() {

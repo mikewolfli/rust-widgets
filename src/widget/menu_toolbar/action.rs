@@ -45,8 +45,8 @@ pub struct Action {
     /// came from [`Action::set_checked`] or from a trigger toggling a checkable
     /// action.
     pub toggled: Signal1<bool>,
-    /// Declared for pointer-enter notification, but never emitted: the action's
-    /// event handling ignores mouse motion. Treat as inert.
+    /// Emitted when the pointer enters the action's bounds (`Event::MouseEnter`).
+    /// Carries no payload; a listener is expected to know the action it attached to.
     pub hovered: GenericSignal,
     /// Emitted whenever any presentation or command state changes — text, icon,
     /// shortcut, checkable, checked, enabled, or a command sync. Carries no
@@ -340,6 +340,7 @@ impl EventHandler for Action {
         }
         match event {
             Event::MousePress { button, .. } if *button == 1 => self.trigger(),
+            Event::MouseEnter { .. } => self.hovered.emit(),
             _ => { /* Other events are not relevant */ }
         }
     }
@@ -500,6 +501,22 @@ mod tests {
         });
         a.set_checkable(true);
         assert!(changed_count.load(Ordering::SeqCst) > 0);
+    }
+
+    #[test]
+    fn action_hovered_signal_fires_on_mouse_enter() {
+        let mut a = Action::new("X", rect());
+        let hovered_count = Arc::new(AtomicUsize::new(0));
+        let c = hovered_count.clone();
+        a.hovered.connect(move || {
+            c.fetch_add(1, Ordering::SeqCst);
+        });
+        a.handle_event(&Event::mouse_enter(60, 30));
+        assert_eq!(hovered_count.load(Ordering::SeqCst), 1);
+
+        // Mouse press must not emit hovered.
+        a.handle_event(&Event::mouse_press(60, 30, 1));
+        assert_eq!(hovered_count.load(Ordering::SeqCst), 1);
     }
 
     // ── 9. Widget ID and kind ──

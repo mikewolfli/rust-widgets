@@ -23,9 +23,10 @@ use crate::{impl_widget_property_hooks, property_names_of};
 ///
 /// The label floats above the text field when the field is focused or contains
 /// text. When the field is empty and unfocused, the label appears inside the
-/// field (or a separate placeholder text is shown). The transition between
-/// states can be animated via `animation_progress` (0.0 = label inside field,
-/// 1.0 = label fully above).
+/// field (or a separate placeholder text is shown). The transition between these
+/// two states is animated: [`FloatingLabel::tick`] advances an interpolation
+/// value (`0.0` = label inside, `1.0` = label fully above) that [`FloatingLabel`]
+/// consumes when drawing, so the label smoothly rises rather than teleporting.
 pub struct FloatingLabel {
     base: BaseWidget,
     text: String,
@@ -33,7 +34,13 @@ pub struct FloatingLabel {
     placeholder: String,
     is_focused: bool,
     show_label_above: bool,
+    /// Interpolated float position, advanced toward `target_progress` by
+    /// [`FloatingLabel::tick`] and consumed by the draw pass. `0.0` draws the
+    /// label inline; `1.0` draws it fully above the field.
     animation_progress: f32,
+    /// The value `animation_progress` moves toward — `1.0` when the label should
+    /// float, `0.0` when it should rest inline.
+    target_progress: f32,
     /// Emitted when the text content changes.
     pub text_changed: Signal1<String>,
 }
@@ -51,6 +58,7 @@ impl FloatingLabel {
             is_focused: false,
             show_label_above: false,
             animation_progress: 0.0,
+            target_progress: 0.0,
             text_changed: Signal1::new(),
         }
     }
@@ -116,10 +124,49 @@ impl FloatingLabel {
         let should_float = self.is_focused || !self.text.is_empty();
         if should_float != self.show_label_above {
             self.show_label_above = should_float;
-            // In a real implementation, this would trigger an animation.
-            // For simplicity, we set animation_progress to 0 or 1.
-            self.animation_progress = if should_float { 1.0 } else { 0.0 };
+            // Retarget, rather than jump: `tick` then interpolates the visible
+            // position toward this target across subsequent frames.
+            self.target_progress = if should_float { 1.0 } else { 0.0 };
         }
+    }
+
+    /// Advances the floating-label animation toward its target.
+    ///
+    /// `delta_ms` is the elapsed time since the previous frame. The label travels
+    /// the full inline→floating distance in about 150 ms, then holds. Returns
+    /// `true` when the interpolation changed and the widget needs a redraw, so the
+    /// caller can schedule the next frame only while the animation is still moving
+    /// (the same contract [`crate::widget::display_widgets::spinner::Spinner::tick`]
+    /// and the other animated widgets follow).
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        if (self.animation_progress - self.target_progress).abs() < f32::EPSILON {
+            return false;
+        }
+        // Interpolate a fixed fraction of the remaining distance; `clamp` to 1.0
+        // means a single large `delta_ms` lands exactly on the target instead of
+        // overshooting.
+        const FULL_TRAVEL_MS: f32 = 150.0;
+        let step = (delta_ms as f32 / FULL_TRAVEL_MS).clamp(0.0, 1.0);
+        let next =
+            self.animation_progress + (self.target_progress - self.animation_progress) * step;
+        // Never step past the target: once the interpolation would cross it, settle
+        // exactly on it so the value stays in `0.0 ..= 1.0`.
+        self.animation_progress = if (next - self.target_progress).abs() < f32::EPSILON
+            || (next > self.animation_progress) == (self.target_progress > self.animation_progress)
+        {
+            next
+        } else {
+            self.target_progress
+        };
+        self.base.request_redraw();
+        true
+    }
+
+    /// Returns the current interpolation of the label's float position, in
+    /// `0.0 ..= 1.0`. Exposed for tests and animation-aware hosts; the draw pass
+    /// consumes the same value to place the label.
+    pub fn animation_progress(&self) -> f32 {
+        self.animation_progress
     }
 }
 
@@ -214,7 +261,8 @@ impl Draw for FloatingLabel {
             6i32
         };
 
-        // Draw the label (floating above or inline)
+        // Draw the label (floating above or inline), interpolating its vertical
+        // position by `animation_progress` so the float transition is smooth.
         if has_label {
             let label_color = if self.is_focused {
                 Color::rgba(52, 120, 246, 255)
@@ -224,10 +272,14 @@ impl Draw for FloatingLabel {
                 Color::rgba(180, 180, 180, 255)
             };
 
-            if self.show_label_above {
-                // Floating label above
+            // The two resting positions for the label baseline.
+            let above_y = rect.y + label_top_margin + 10;
+            let inline_y = rect.y + 6i32 + 14;
+            if self.show_label_above || self.animation_progress > 0.0 {
+                // Interpolate from the inline position up to the floating position.
+                let label_y =
+                    inline_y + ((above_y - inline_y) as f32 * self.animation_progress) as i32;
                 let label_x = rect.x + padding;
-                let label_y = rect.y + label_top_margin + 10;
                 context.draw_text(
                     Point::new(label_x, label_y),
                     &self.label,
@@ -238,9 +290,8 @@ impl Draw for FloatingLabel {
             } else if self.text.is_empty() && !self.is_focused {
                 // Label inline acts as placeholder
                 let label_x = rect.x + padding;
-                let label_y = rect.y + text_field_top_offset + 14;
                 context.draw_text(
-                    Point::new(label_x, label_y),
+                    Point::new(label_x, inline_y),
                     &self.label,
                     &input_font,
                     Color::rgba(160, 160, 160, 255),
@@ -359,9 +410,31 @@ mod tests {
         assert_eq!(fl.text(), "hello");
         assert!(!fl.is_empty());
 
-        // Label should float above since text is non-empty
+        // Label should float above since text is non-empty; the target is 1.0 and
+        // the interpolation animates toward it rather than jumping instantly.
         assert!(fl.show_label_above);
-        assert!((fl.animation_progress - 1.0).abs() < f32::EPSILON);
+        assert_eq!(fl.animation_progress(), 0.0);
+        assert!(fl.tick(16));
+        assert!(fl.animation_progress() > 0.0);
+    }
+
+    #[test]
+    fn floating_label_animation_reaches_target() {
+        let mut fl = FloatingLabel::new(Rect::new(0, 0, 200, 50));
+        fl.set_label("Email".to_string());
+        fl.set_focused(true);
+        assert!(fl.show_label_above);
+
+        // A single large step lands exactly on the target and stays there.
+        assert!(fl.tick(1000));
+        assert_eq!(fl.animation_progress(), 1.0);
+        assert!(!fl.tick(1000)); // already at target — no further work
+
+        // Losing focus retargets back to inline.
+        fl.set_focused(false);
+        assert!(!fl.show_label_above);
+        assert!(fl.tick(1000));
+        assert_eq!(fl.animation_progress(), 0.0);
     }
 
     #[test]

@@ -8,7 +8,6 @@ use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
-#[cfg(feature = "desktop")]
 use crate::tr;
 use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
@@ -90,8 +89,14 @@ impl StandardButton {
     }
 
     /// Returns the translated label for this button using the i18n system.
-    /// Available only on desktop target with i18n support enabled.
-    #[cfg(feature = "desktop")]
+    ///
+    /// # Why there is no `cfg` split here
+    ///
+    /// `crate::tr!` compiles to a real catalogue lookup when the `i18n` capability is
+    /// on and to the key's own English text otherwise (see the macro's stub in
+    /// `src/lib.rs`, whose doc says it exists "so call sites need no `cfg` of their
+    /// own"). Splitting on `desktop` instead meant `tablet`/`mobile` — which enable
+    /// `i18n` without `desktop` — silently took the untranslated branch.
     pub fn translated_label(&self) -> String {
         match self {
             StandardButton::Ok => tr!("common.button.ok"),
@@ -109,13 +114,6 @@ impl StandardButton {
             StandardButton::Ignore => tr!("common.button.ignore"),
             StandardButton::Help => tr!("common.button.help"),
         }
-    }
-
-    /// Returns the translated label for this button using the i18n system.
-    /// Fallback version when i18n is not compiled in — returns English label.
-    #[cfg(not(feature = "desktop"))]
-    pub fn translated_label(&self) -> String {
-        self.label().to_string()
     }
 }
 /// Message box dialog.
@@ -496,6 +494,53 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     // ── 1. Creating default message box ─────────────────────────────
+
+    /// A translated label must resolve through the catalogue, not echo its key.
+    ///
+    /// The catalogue is a process-global, so this initialises it explicitly rather
+    /// than relying on some other test having done so.
+    ///
+    /// Gated on `i18n`: without the catalogue the key *is* the correct answer, and
+    /// that behaviour is asserted separately below so it is pinned in every profile.
+    ///
+    /// This is the assertion that the `desktop`-gated copy of `translated_label`
+    /// would have failed on a `tablet`/`mobile` build: there the function was compiled
+    /// into its "fallback" body, so `"common.button.ok"` came back as the literal key
+    /// even though `i18n` was enabled and initialised.
+    #[cfg(feature = "i18n")]
+    #[test]
+    fn translated_label_resolves_through_the_catalogue() {
+        crate::i18n::init();
+        assert_eq!(
+            StandardButton::Ok.translated_label(),
+            "OK",
+            "a built-in button label must translate rather than echo its catalogue key"
+        );
+        assert_eq!(StandardButton::Cancel.translated_label(), "Cancel");
+    }
+
+    /// The translated label must differ from the key for a key the catalogue knows.
+    ///
+    /// Stated as a separate property so a catalogue regression that made `translate`
+    /// return its input would fail here and not only in the equality above.
+    #[cfg(feature = "i18n")]
+    #[test]
+    fn translated_label_is_not_the_catalogue_key() {
+        crate::i18n::init();
+        let translated = StandardButton::Yes.translated_label();
+        assert_ne!(translated, "common.button.yes");
+        assert!(!translated.is_empty(), "an unknown key still yields the key itself");
+    }
+
+    /// Without the catalogue the key is the honest answer, and must not be empty.
+    ///
+    /// This is the other half of the contract: a build that cannot translate has to say
+    /// so (the `tr!` stub logs a warning) rather than render nothing.
+    #[cfg(not(feature = "i18n"))]
+    #[test]
+    fn translated_label_without_i18n_returns_the_key() {
+        assert_eq!(StandardButton::Ok.translated_label(), "common.button.ok");
+    }
 
     #[test]
     fn test_default_creation() {

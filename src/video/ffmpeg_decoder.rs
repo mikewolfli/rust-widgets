@@ -217,12 +217,16 @@ impl FfmpegDecoder {
                 )
             })?;
 
+        // `width()`/`height()` moved from `codec::Context` to the *opened decoder* in
+        // ffmpeg-next 9.0, so asking the context first is what broke this build.
+        // The decoder is not open yet at this point, so the dimensions come from the
+        // codec parameters the stream already carries.
+        let (source_width, source_height) = {
+            let params = stream.parameters();
+            unsafe { ((*params.as_ptr()).width, (*params.as_ptr()).height) }
+        };
         let decoder = codec_ctx.decoder().video().map_err(|e| {
-            format!(
-                "video decoder {}x{} could not be opened: {e}",
-                codec_ctx.width(),
-                codec_ctx.height()
-            )
+            format!("video decoder {source_width}x{source_height} could not be opened: {e}")
         })?;
 
         // Create the RGBA scaler.
