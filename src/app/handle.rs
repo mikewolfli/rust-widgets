@@ -1986,6 +1986,11 @@ impl ScrollAreaHandle {
     }
 
     /// Set the content size (in virtual pixels).
+    ///
+    /// The height is what [`Self::scroll_to_bottom`] uses to compute the bottom
+    /// offset. The width is retained for callers that mirror the geometry
+    /// themselves, but has no consumer in the library's own scroll path (no
+    /// horizontal-scrollbar extent is derived from it).
     pub fn set_content_size(&self, w: u32, h: u32) {
         SCROLL_AREA_STATES.with(|map| {
             let mut map = map.borrow_mut();
@@ -1996,20 +2001,19 @@ impl ScrollAreaHandle {
     }
 
     /// Scroll to the bottom of the content.
+    ///
+    /// Computes the bottom offset from the last `set_content_size` height and
+    /// pushes it through [`Self::set_scroll_position`], so the native container
+    /// actually scrolls rather than only the in-process mirror moving.
     pub fn scroll_to_bottom(&self) {
-        SCROLL_AREA_STATES.with(|map| {
-            let mut map = map.borrow_mut();
-            let state = map.get(&self.raw_id()).cloned().unwrap_or_default();
-            let state_mut = map.entry(self.raw_id()).or_default();
-            state_mut.scroll_y = state.content_h as i32;
-        });
+        let bottom = SCROLL_AREA_STATES
+            .with(|map| map.borrow().get(&self.raw_id()).map(|s| s.content_h).unwrap_or(0));
+        self.set_scroll_position(0, bottom as i32);
     }
 
     /// Scroll to the top of the content.
     pub fn scroll_to_top(&self) {
-        SCROLL_AREA_STATES.with(|map| {
-            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).scroll_y = 0;
-        });
+        self.set_scroll_position(0, 0);
     }
 }
 
@@ -2042,6 +2046,12 @@ thread_local! {
 /// # List-view specific operations
 impl ListViewHandle {
     /// Add a column with the given title and width.
+    ///
+    /// Records the column in the in-process mirror for a caller that renders the
+    /// list itself; the library's own scroll/native backends do not consume this
+    /// mirror (there is no cross-OS native "add column" primitive, so the
+    /// self-drawn view is what a caller reads it back for). This is a local
+    /// bookkeeping call, not a rendering side effect.
     pub fn add_column(&self, title: &str, width: u32) {
         LIST_VIEW_STATES.with(|map| {
             let mut map = map.borrow_mut();
@@ -2064,7 +2074,30 @@ impl ListViewHandle {
         LIST_VIEW_STATES.with(|map| map.borrow().get(&self.raw_id()).and_then(|s| s.selected_row))
     }
 
+    /// Select a row by index, mirroring the in-process state and pushing the
+    /// selection to the native control.
+    ///
+    /// `None` clears the selection. Returns `false` when the backend has no
+    /// selection model or the id is unknown, in which case the mirror is left
+    /// unchanged so `selected_row()` keeps reporting the previous value.
+    pub fn select_row(&self, row: Option<usize>) -> bool {
+        let pushed = crate::platform::get_platform().set_widget_selected_index(self.raw_id(), row);
+        if pushed {
+            LIST_VIEW_STATES.with(|map| {
+                map.borrow_mut()
+                    .entry(self.raw_id())
+                    .or_insert_with(Default::default)
+                    .selected_row = row;
+            });
+        }
+        pushed
+    }
+
     /// Set the selection mode.
+    ///
+    /// Records the mode in the in-process mirror; there is no cross-OS native
+    /// primitive for selection mode, so this is local bookkeeping for a caller
+    /// that drives the selection itself rather than a rendering side effect.
     pub fn set_selection_mode(&self, mode: SelectionMode) {
         LIST_VIEW_STATES.with(|map| {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).selection_mode =
@@ -2142,13 +2175,13 @@ impl SpinBoxHandle {
 
     /// Set the prefix text displayed before the value.
     ///
-    /// **Self-drawn only.** There is no cross-OS native control with an affix
+    /// Stored in the in-process state for callers that render the value
+    /// themselves. There is no cross-OS native control with an affix
     /// concept — AppKit `NSStepper`/`NSTextField`, Win32 `UPDOWN_CLASS` and GTK
-    /// `SpinButton` all render a bare number, and formatting is left to the
-    /// application. This setter therefore changes what the self-drawn path
-    /// renders, and has no effect on a native control. Callers that need an
-    /// affix on a native control must format the value themselves where the value
-    /// is consumed; this is a genuine platform gap rather than a dropped write.
+    /// `SpinButton` all render a bare number — and the library's own self-drawn
+    /// path does not consume this mirror either, so it has **no effect on
+    /// rendering**; a caller that needs an affix must format the value where it is
+    /// displayed. This is a genuine platform gap rather than a dropped write.
     pub fn set_prefix(&self, prefix: &str) {
         SPINBOX_STATES.with(|map| {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).prefix =
@@ -2158,8 +2191,10 @@ impl SpinBoxHandle {
 
     /// Set the suffix text displayed after the value.
     ///
-    /// **Self-drawn only** — see [`SpinBoxHandle::set_prefix`] for why no native
-    /// backend can honour this.
+    /// See [`SpinBoxHandle::set_prefix`]: the value is stored in the in-process
+    /// state for callers that render it themselves, and has **no effect on
+    /// rendering** by the library (no native backend honours an affix, and the
+    /// self-drawn path does not read this mirror).
     pub fn set_suffix(&self, suffix: &str) {
         SPINBOX_STATES.with(|map| {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).suffix =

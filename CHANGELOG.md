@@ -5,6 +5,70 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 2.4.1 (2026-09-19) — Capability-Event Audit, Decoder Hardening, Platform Isolation
+
+Backward compatible. **No signature was removed and no control was deleted.** A whole-library
+multi-pass audit (signal integrity / panic·unsafe / platform isolation / fake implementations /
+type-safety) surfaced and fixed 25+ defects across three categories: capability tables that
+advertised event names no control could ever emit, image/video decoders that trusted untrusted
+indices and dimensions, and upper-layer code that leaked OS idioms. Each fix is reverse-verified
+with a unit test or a build gate.
+
+### Fixed
+
+- **23 capability `events:` lists advertised names no signal could emit.** `progress_bar` and
+  `scroll_bar` claimed `range_changed`; `color_dialog` claimed `color_changed`/`hex_changed` (it
+  actually emits `color_selected`/`accepted`/`rejected`); `grid`, `canvas`, `search_box`,
+  `text_edit`, `dial`, and 13 others claimed names their controls never fire, either because the
+  real signal has a different name (`stepper::value_changed`, `rating::rating_changed`, …) or
+  because the chart has no change signal at all (`line_chart`/`bar_chart`/`pie_chart`). Every
+  list now names exactly what the control emits. Two dead fields were removed outright
+  (`Dial::slider_moved`, `TextEdit::cursor_position_changed`).
+- **JPEG/QOI/MJPEG decoders hardened against untrusted input.** The JPEG parser indexed
+  `quant_tables`/`dc_huff`/`ac_huff` (each `[_; 4]`) with table-id nibbles read verbatim from the
+  file (0..=15), sliced with a short segment length, read 16-bit DQT entries past the loop guard,
+  and allocated `width*height*4` as a wrapping `u32`. QOI had the same dimension overflow. The
+  MJPEG frame decoder assumed every JPEG is RGB24 and panicked on a grayscale frame. All now
+  bounds-check table ids, guard slice/segment lengths, reject oversized dimensions with a
+  `16384x16384` cap, and convert by `pixel_format` (RGB24/L8/CMYK32).
+- **`StackAllocator::allocate` rejected non-power-of-two alignment.** A non-power-of-two (or
+  zero) `align` previously produced a misaligned pointer (UB once dereferenced); it now returns
+  `None`, and overflow is `checked_add`.
+- **`GridLayout` and `resize` used wrapping `u32` multiplication.** Hostile rows/cols or target
+  dimensions (from JSON or a resize request) could overflow the `u32` product and later index
+  out of a short `Vec`. Both now use checked/saturating arithmetic and defensive indexing.
+- **`examples/menu_shortcut_runtime.rs` leaked OS idioms** (`cfg(target_os)`, direct `cocoa`/`objc`
+  imports). The native menu-activation was moved into `Platform::activate_menu_item` (semantic
+  runtime capability, default `false`), and the example now uses `PlatformShortcutStyle::current()`
+  and `get_platform().activate_menu_item(..)` — zero `cfg(target_os)`, zero toolkit import.
+- **f32↔i32 casts truncated instead of rounding** in layout (`absolute`, `aspect_ratio`,
+  `box_layout`, `flex`, `constraint`), render (`batch`, `containers`), image (`color`), and
+  gesture (`swipe`), plus a divide-by-zero on a zero aspect ratio, a hairline stroke that lost the
+  `0.5`, and inconsistent `ascent`/`descent` text metrics. All now `.round()`, degenerate input is
+  ignored, and the SVG backend shares the software rasteriser's text-advance heuristic instead of
+  fabricating `8px/char`.
+- **`SvgPaintBackend::measure_text`/`shape_text` were fabricated.** They now honour the font and
+  produce a real single-run cluster list; `frame_rgba` documents that a vector backend has no
+  raster frame.
+- **`gpu::init::is_gpu_available()` claimed runtime detection it did not do.** It now honestly
+  reports "compiled in" and points runtime probing at `GpuManager::new().await`.
+- **Handle-layer write-only mirrors.** `ScrollAreaHandle::scroll_to_bottom`/`scroll_to_top` now
+  actually scroll (via `set_scroll_position`) instead of moving only an in-process mirror;
+  `ListViewHandle::select_row` was added so `selected_row()` can return a real value; and
+  `SpinBoxHandle::set_prefix`/`set_suffix`/`add_column`/`set_selection_mode` no longer claim a
+  rendering effect they do not have.
+- **`PieMenu::set_current_index` no longer selects a disabled item** (matching every other path),
+  and a stale `DateEdit::set_minimum_date` doc (which described pre-clamp behaviour) was corrected.
+- **Six stray `#[allow(unused_mut)]` and one redundant `#[allow(dead_code)]` were removed**, and
+  the remaining `unsafe` blocks gained `// SAFETY:` justifications.
+
+### Verified in 2.4.1
+
+`cargo test --no-default-features --features desktop` reports 5182 lib-tests passed with 0
+failures, `cargo clippy --all-targets -- -D warnings` is clean, and all five device profiles
+(`desktop`/`tablet`/`mobile`/`embedded`/`mini`) build. See
+[`docs/log/log-20260919-1.md`](docs/log/log-20260919-1.md) for the per-fix evidence.
+
 ## 2.4.0 (2026-09-18) — Real Signals, Real Animation
 
 Backward compatible. **No signature was removed and no control was deleted.** Eight places

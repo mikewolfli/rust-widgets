@@ -238,7 +238,6 @@ impl CustomPaintControlBackend {
 /// rather than on `WidgetKind` because it belongs to the factory's vocabulary, not
 /// to the enum. Alias variants are resolved by the callee.
 #[cfg(widgets_unstripped)]
-#[allow(dead_code)]
 pub(crate) fn kind_factory_name(kind: crate::widget::WidgetKind) -> &'static str {
     crate::widget::capability::factory_name_for_kind(kind)
 }

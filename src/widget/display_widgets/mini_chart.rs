@@ -3,7 +3,7 @@
 
 //! MiniChart widget — simplified line/bar chart for mini builds (BLUE13 R2.10).
 
-use crate::compat::{String, Vec, ToString};
+use crate::compat::{String, ToString, Vec};
 use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;

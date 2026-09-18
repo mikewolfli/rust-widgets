@@ -73,16 +73,16 @@ impl AspectRatioLayout {
 
             // Pick the one that fits entirely inside the parent.
             if by_width.1 <= parent_h {
-                (by_width.0 as u32, by_width.1 as u32)
+                (by_width.0.round() as u32, by_width.1.round() as u32)
             } else {
-                (by_height.0 as u32, by_height.1 as u32)
+                (by_height.0.round() as u32, by_height.1.round() as u32)
             }
         } else {
             // Allow child to exceed parent if necessary to maintain ratio.
             // Use parent width as the base, derive height.
             let w = parent_w;
             let h = w / ratio;
-            (w as u32, h as u32)
+            (w.round() as u32, h.round() as u32)
         };
 
         let x_offset = (parent.width.saturating_sub(child_w) / 2) as i32;

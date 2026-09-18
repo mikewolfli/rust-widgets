@@ -20,6 +20,10 @@ impl GridLayout {
     pub fn new(rows: u32, cols: u32, spacing: u32, margin: u32) -> Self {
         let safe_rows = rows.max(1);
         let safe_cols = cols.max(1);
+        // `rows`/`cols` may come from untrusted input (JSON), and their product can
+        // overflow `u32`. Cap the product so the cell Vec is always sized correctly
+        // and later `row * self.cols + col` indexing stays in bounds.
+        let cell_count = safe_rows.saturating_mul(safe_cols).min(1_000_000) as usize;
         Self {
             rows: safe_rows,
             cols: safe_cols,
@@ -27,13 +31,16 @@ impl GridLayout {
             margin,
             column_stretches: vec![1; safe_cols as usize],
             row_stretches: vec![1; safe_rows as usize],
-            cells: vec![None; (safe_rows * safe_cols) as usize],
+            cells: vec![None; cell_count],
         }
     }
     /// Assign widget to explicit cell.
     pub fn set_widget(&mut self, row: u32, col: u32, widget_id: ObjectId) {
         if row < self.rows && col < self.cols {
-            self.cells[(row * self.cols + col) as usize] = Some(widget_id);
+            let index = row.saturating_mul(self.cols).saturating_add(col) as usize;
+            if index < self.cells.len() {
+                self.cells[index] = Some(widget_id);
+            }
         }
     }
     /// Returns the number of occupied cells (widgets placed in grid).
@@ -252,7 +259,9 @@ impl Layout for GridLayout {
 
         for row in 0..self.rows {
             for col in 0..self.cols {
-                if let Some(widget_id) = self.cells[(row * self.cols + col) as usize] {
+                if let Some(widget_id) =
+                    self.cells.get((row * self.cols + col) as usize).copied().flatten()
+                {
                     let cell_width = col_widths[col as usize];
                     let cell_height = row_heights[row as usize];
                     let x = rect.x + margin as i32 + col_x_offsets[col as usize];

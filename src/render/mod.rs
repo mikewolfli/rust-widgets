@@ -120,6 +120,13 @@ pub use projection::{PresentationController, ProjectionLayoutHelper, ProjectionR
 /// Shared helper accessible to surface.rs and backend
 pub(crate) use pipeline::pixel_bytes_len;
 
+/// Advancing/text-shaping helpers shared with the SVG backend, so the vector
+/// output and the software rasteriser agree on text metrics (principle #51: one
+/// heuristic, not two drifting copies).
+pub(crate) use pipeline::{
+    cluster_ends_with_zwj, estimate_cluster_advance, is_combining_mark, is_variation_selector,
+};
+
 /// Arc and circle drawing helpers.
 pub mod arc_helpers;
 pub use arc_helpers::{draw_arc_segments, point_on_circle};

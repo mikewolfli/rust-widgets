@@ -62,6 +62,11 @@ impl MacOSAccessibilityBridge {
             Err(_) => return false,
         };
         let Some(ptr) = ptr else { return false };
+        // SAFETY: `ptr` is an object pointer this backend stored from a live native
+        // accessibility element; the `id` transmute is the standard pointer-width
+        // reinterpretation (usize -> object pointer), and the AppKit notification
+        // call only reads the element. Wrapped in `catch_unwind` for safety across
+        // the FFI boundary.
         let result = std::panic::catch_unwind(|| unsafe {
             let element: id = std::mem::transmute(ptr);
             let ns_name = NSString::alloc(nil).init_str(notification_name);
@@ -157,6 +162,9 @@ pub fn ns_accessibility_subrole(role: &super::A11yRole) -> Option<&'static str> 
 /// Convenience function to post any NSAccessibility notification string.
 #[cfg(target_os = "macos")]
 pub fn post_ns_accessibility_notification(element_ptr: usize, notification: &str) {
+    // SAFETY: `element_ptr` is an object pointer this crate created; the `id`
+    // transmute is the standard usize -> object-pointer reinterpretation, and
+    // `NSAccessibilityPostNotification` only reads the element it is given.
     unsafe {
         let element: id = std::mem::transmute(element_ptr);
         let ns_name = NSString::alloc(nil).init_str(notification);

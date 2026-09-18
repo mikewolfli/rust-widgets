@@ -227,11 +227,18 @@ impl Constraint {
             height = height.min(max);
         }
         if let Some(ratio) = self.aspect_ratio {
-            let current_ratio = width as f32 / height as f32;
+            // A zero or non-finite ratio cannot describe an aspect, so it changes
+            // nothing (principle #50: degenerate input is ignored, not propagated).
+            if !(ratio.is_finite() && ratio > 0.0) {
+                return Size::new(width, height);
+            }
+            // `height` is clamped to >= 1 so the division below cannot hit zero.
+            let height_f = height.max(1) as f32;
+            let current_ratio = width as f32 / height_f;
             if current_ratio > ratio {
-                width = (height as f32 * ratio) as u32;
+                width = (height_f * ratio).round() as u32;
             } else {
-                height = (width as f32 / ratio) as u32;
+                height = (width as f32 / ratio).round() as u32;
             }
         }
         Size::new(width, height)

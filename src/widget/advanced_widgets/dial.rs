@@ -32,10 +32,6 @@ pub struct Dial {
     /// Emitted with the new value whenever [`Dial::set_value`] actually changes
     /// it. Redundant sets do not fire it.
     pub value_changed: Signal1<i32>,
-    /// Declared for parity with [`Slider`](crate::widget::Slider), but never
-    /// emitted: the dial has no positional input path to drive it. Connect to
-    /// `value_changed` instead.
-    pub slider_moved: Signal1<i32>,
     /// Emitted when the primary mouse button is pressed while the dial is
     /// enabled. Purely a notification — the press does not change the value.
     pub slider_pressed: GenericSignal,
@@ -61,7 +57,6 @@ impl Dial {
             notch_target: 3.7,
             wrapping: false,
             value_changed: Signal1::new(),
-            slider_moved: Signal1::new(),
             slider_pressed: GenericSignal::new(),
             slider_released: GenericSignal::new(),
         }
@@ -465,7 +460,6 @@ mod tests {
     fn dial_signal_accessors() {
         let d = Dial::new(Rect::new(0, 0, 64, 64));
         let _ = &d.value_changed;
-        let _ = &d.slider_moved;
         let _ = &d.slider_pressed;
         let _ = &d.slider_released;
     }

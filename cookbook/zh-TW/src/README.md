@@ -21,7 +21,7 @@
 
 rust-widgets 讓您只需一套 Rust 程式碼庫，即可在各大平台上產出一致的介面。它包含了豐富的控制項庫、硬體自適應渲染，以及深度的平台整合——所有功能皆透過簡潔、地道風格的 Rust API 提供。
 
-> 下方程式碼片段僅用於說明預期的 API 形式。若需要能對 2.4.0 編譯的程式碼，請從 [`chapters/getting-started.md`](chapters/getting-started.md) 開始，
+> 下方程式碼片段僅用於說明預期的 API 形式。若需要能對 2.4.1 編譯的程式碼，請從 [`chapters/getting-started.md`](chapters/getting-started.md) 開始，
 > 該檔案已針對目前的 crate 驗證過。
 
 ```rust
@@ -167,7 +167,7 @@ TwoFingerTap、TwoFingerSwipe、LongPressDrag、Pinch 與 Rotate——並支援�
 
 | | |
 |---|---|
-| **版本** | 2.4.0 |
+| **版本** | 2.4.1 |
 | **授權條款** | [MIT](https://github.com/mikewolfli/rust-widgets/blob/main/LICENSE) |
 | **儲存庫** | [github.com/mikewolfli/rust-widgets](https://github.com/mikewolfli/rust-widgets) |
 | **測試數量** | 4900+ |

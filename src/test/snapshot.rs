@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use crate::compat::{format, String, Vec};
 use crate::compat::MiniToString;
+use crate::compat::{format, String, Vec};
 use core::hash::{Hash, Hasher};
 // NOTE: `DefaultHasher`, `fs` and `Path` are std-only; left on `std` deliberately.
 use std::collections::hash_map::DefaultHasher;

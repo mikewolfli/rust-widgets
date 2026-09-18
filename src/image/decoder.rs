@@ -615,11 +615,11 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
 
         // SOS — start of scan data
         if marker == 0xDA {
-            if pos + 4 > data.len() {
+            if pos + 4 >= data.len() {
                 break;
             }
             let seg_len = u16::from_be_bytes([data[pos + 2], data[pos + 3]]) as usize;
-            if pos + seg_len > data.len() {
+            if seg_len < 6 || pos + seg_len > data.len() {
                 break;
             }
             let num_sos_comp = data[pos + 4] as usize;
@@ -656,7 +656,7 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
             break;
         }
         let seg_len = u16::from_be_bytes([data[pos + 2], data[pos + 3]]) as usize;
-        if seg_len < 2 || pos + seg_len > data.len() {
+        if seg_len < 4 || pos + seg_len > data.len() {
             break;
         }
         let seg_data = &data[pos + 4..pos + seg_len];
@@ -676,11 +676,18 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
                     if off + 3 > seg_data.len() {
                         break;
                     }
+                    let quant_table = seg_data[off + 2];
+                    if quant_table >= 4 {
+                        return Err(format!(
+                            "JPEG SOF selects quantization table {quant_table}, but only \
+                             tables 0..=3 exist; the frame header is malformed"
+                        ));
+                    }
                     components.push(JpegComponent {
                         _id: seg_data[off],
                         h_sampling: (seg_data[off + 1] >> 4) & 0x0F,
                         v_sampling: seg_data[off + 1] & 0x0F,
-                        quant_table: seg_data[off + 2],
+                        quant_table,
                     });
                     off += 3;
                 }
@@ -688,11 +695,20 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
             0xDB => {
                 // DQT — quantization table
                 let mut off = 0;
-                while off + 65 <= seg_data.len() {
+                while off < seg_data.len() {
                     let precision = (seg_data[off] >> 4) & 0x0F;
                     let table_id = seg_data[off] & 0x0F;
+                    if table_id >= 4 {
+                        return Err(format!(
+                            "JPEG DQT selects quantization table {table_id}, but only tables \
+                             0..=3 exist; the marker is malformed"
+                        ));
+                    }
                     if precision == 0 {
-                        // 8-bit precision
+                        // 8-bit precision: 1 (precision) + 64 values
+                        if off + 65 > seg_data.len() {
+                            break;
+                        }
                         let mut table = [0u16; 64];
                         for i in 0..64 {
                             table[ZIGZAG[i]] = seg_data[off + 1 + i] as u16;
@@ -700,7 +716,10 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
                         quant_tables[table_id as usize] = Some(table);
                         off += 65;
                     } else {
-                        // 16-bit precision
+                        // 16-bit precision: 1 (precision) + 64 x u16 values
+                        if off + 129 > seg_data.len() {
+                            break;
+                        }
                         let mut table = [0u16; 64];
                         for i in 0..64 {
                             table[ZIGZAG[i]] = u16::from_be_bytes([
@@ -716,10 +735,19 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
             0xC4 => {
                 // DHT — Huffman table
                 let mut off = 0;
-                while off + 17 <= seg_data.len() {
+                while off < seg_data.len() {
                     let table_class = (seg_data[off] >> 4) & 0x0F;
                     let table_id = seg_data[off] & 0x0F;
+                    if table_id >= 4 {
+                        return Err(format!(
+                            "JPEG DHT selects Huffman table {table_id}, but only tables 0..=3 \
+                             exist; the marker is malformed"
+                        ));
+                    }
                     off += 1;
+                    if off + 16 > seg_data.len() {
+                        break;
+                    }
                     let mut counts = [0usize; 16];
                     let mut total_symbols = 0;
                     for i in 0..16 {
@@ -751,6 +779,14 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
         return Err(format!(
             "JPEG declares no usable size: SOF reported {width}x{height}, but both must be at \
              least 1 — the stream may be truncated before its SOF marker"
+        ));
+    }
+
+    // Reject dimensions whose pixel count would overflow the u32 allocation
+    // arithmetic below, matching the cap the Farbfeld decoder already enforces.
+    if (width as u64) * (height as u64) > 16_384u64 * 16_384 {
+        return Err(format!(
+            "JPEG dimensions {width}x{height} exceed the supported maximum of 16384x16384"
         ));
     }
 
@@ -1492,6 +1528,11 @@ fn decode_qoi(data: &[u8]) -> Result<DecodedImage, String> {
              least 1"
         ));
     }
+    if (width as u64) * (height as u64) > 16_384u64 * 16_384 {
+        return Err(format!(
+            "QOI dimensions {width}x{height} exceed the supported maximum of 16384x16384"
+        ));
+    }
 
     let total = (width * height) as usize;
     let mut pixels = Vec::with_capacity(total * 4);
@@ -2021,6 +2062,87 @@ mod tests {
         let result = decode_jpeg(&jpeg);
         // Minimal JPEG data (no quantization or Huffman tables) will fail during decode
         assert!(result.is_err(), "JPEG decoder should return error for incomplete data");
+    }
+
+    /// A SOF component selecting a quantization table id >= 4 must error, not panic.
+    #[test]
+    fn decode_jpeg_rejects_out_of_range_quant_table_id() {
+        let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xE0];
+        jpeg.extend_from_slice(&16u16.to_be_bytes());
+        jpeg.extend_from_slice(b"JFIF\x00");
+        jpeg.extend_from_slice(&[0u8; 9]);
+        jpeg.extend_from_slice(&[0xFF, 0xC0]); // SOF0
+        jpeg.extend_from_slice(&17u16.to_be_bytes()); // length = 2 + (1+2+2+1+9)
+        jpeg.push(8); // precision
+        jpeg.extend_from_slice(&200u16.to_be_bytes()); // height
+        jpeg.extend_from_slice(&300u16.to_be_bytes()); // width
+        jpeg.push(3); // number of components
+                      // Second component selects quant table 15 (>= 4): the first two are read.
+        jpeg.extend_from_slice(&[0x01, 0x11, 0x0F, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01]);
+        jpeg.extend_from_slice(&[0xFF, 0xD9]); // EOI
+
+        let err = decode_jpeg(&jpeg).unwrap_err();
+        assert!(err.contains("quantization table"), "unexpected error: {err}");
+    }
+
+    /// A DQT marker whose table id nibble is >= 4 must error, not panic.
+    #[test]
+    fn decode_jpeg_rejects_out_of_range_dqt_table_id() {
+        let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xDB];
+        // Two 8-bit tables: (precision/id byte + 64 values) x 2 = 130, + 2 length.
+        jpeg.extend_from_slice(&132u16.to_be_bytes());
+        jpeg.extend_from_slice(&[0u8; 130]); // table 0 (id 0) then table 1 (id 0)
+        jpeg[71] = 0x04; // overwrite the second table's id nibble to 4
+        jpeg.extend_from_slice(&[0xFF, 0xD9]); // EOI
+
+        let err = decode_jpeg(&jpeg).unwrap_err();
+        assert!(err.contains("quantization table"), "unexpected error: {err}");
+    }
+
+    /// A DHT marker whose table id nibble is >= 4 must error, not panic.
+    #[test]
+    fn decode_jpeg_rejects_out_of_range_dht_table_id() {
+        let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xC4];
+        // Two tables: (class/id + 16 counts) x 2 = 34, + 2 length.
+        jpeg.extend_from_slice(&36u16.to_be_bytes());
+        jpeg.extend_from_slice(&[0u8; 34]); // two all-zero-count tables
+        jpeg[6] = 0x04; // overwrite the second table's id nibble to 4
+        jpeg.extend_from_slice(&[0xFF, 0xD9]); // EOI
+
+        let err = decode_jpeg(&jpeg).unwrap_err();
+        assert!(err.contains("Huffman table"), "unexpected error: {err}");
+    }
+
+    /// Oversized JPEG dimensions must be rejected before the u32 pixel-count overflow.
+    #[test]
+    fn decode_jpeg_rejects_oversized_dimensions() {
+        let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xE0];
+        jpeg.extend_from_slice(&16u16.to_be_bytes());
+        jpeg.extend_from_slice(b"JFIF\x00");
+        jpeg.extend_from_slice(&[0u8; 9]);
+        jpeg.extend_from_slice(&[0xFF, 0xC0]); // SOF0
+        jpeg.extend_from_slice(&11u16.to_be_bytes()); // length = 2 + (1+2+2+1+3)
+        jpeg.push(8); // precision
+        jpeg.extend_from_slice(&0xFFFFu16.to_be_bytes()); // height
+        jpeg.extend_from_slice(&0xFFFFu16.to_be_bytes()); // width
+        jpeg.push(1); // number of components
+        jpeg.extend_from_slice(&[0x01, 0x11, 0x00]);
+        jpeg.extend_from_slice(&[0xFF, 0xD9]); // EOI
+
+        let err = decode_jpeg(&jpeg).unwrap_err();
+        assert!(err.contains("16384"), "unexpected error: {err}");
+    }
+
+    /// Oversized QOI dimensions must be rejected before a u32 width*height overflow.
+    #[test]
+    fn decode_qoi_rejects_oversized_dimensions() {
+        let mut qoi = b"qoif".to_vec();
+        qoi.extend_from_slice(&0xFFFF_FFFFu32.to_be_bytes()); // width
+        qoi.extend_from_slice(&0xFFFF_FFFFu32.to_be_bytes()); // height
+        qoi.extend_from_slice(&[4, 0]); // channels, colorspace
+        qoi.extend_from_slice(&[0, 0, 0, 0]); // pad to >= 18 bytes total
+        let err = decode_qoi(&qoi).unwrap_err();
+        assert!(err.contains("16384"), "unexpected error: {err}");
     }
 
     #[cfg(not(feature = "image-codecs"))]

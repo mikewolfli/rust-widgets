@@ -16,6 +16,12 @@ pub fn resize(
     if dst_w == 0 || dst_h == 0 {
         return Err(format!("resize target must be at least 1x1 pixels, got {dst_w}x{dst_h}"));
     }
+    // The target byte count must fit in `usize`; reject oversized dimensions rather
+    // than let a hostile `dst_w`/`dst_h` wrap the multiply and reallocate unbounded.
+    let total = (dst_w as usize)
+        .checked_mul(dst_h as usize)
+        .and_then(|px| px.checked_mul(4))
+        .ok_or("resize target dimensions overflow")?;
     let pixels = match &data {
         ImageData::Rgba8(d) => d,
         _ => {
@@ -37,8 +43,7 @@ pub fn resize(
             pixels.len()
         ));
     }
-    let total = (dst_w * dst_h) as usize;
-    let mut out = Vec::with_capacity(total * 4);
+    let mut out = Vec::with_capacity(total);
 
     let x_ratio = src_w as f32 / dst_w as f32;
     let y_ratio = src_h as f32 / dst_h as f32;
@@ -56,7 +61,7 @@ pub fn resize(
             let y_frac = sy - y1 as f32;
 
             let get_pixel = |x: u32, y: u32, c: usize| -> u8 {
-                let off = ((y * src_w + x) * 4 + c as u32) as usize;
+                let off = (y as usize * src_w as usize + x as usize) * 4 + c;
                 pixels[off]
             };
 

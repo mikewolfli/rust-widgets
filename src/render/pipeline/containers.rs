@@ -79,11 +79,12 @@ impl SoftwareSurface {
     pub fn measure_text(&self, text: &str, font: &Font) -> TextMetrics {
         let scale = self.buffer.dpi_scale();
         let line_height = (font.size() * scale).max(1.0);
-        let ascent = (line_height * 0.8) as u32;
-        let descent = (line_height - ascent as f32).max(0.0) as u32;
+        let height = line_height.round() as u32;
+        let ascent = (line_height * 0.8).round() as u32;
+        let descent = height.saturating_sub(ascent);
         let shaped = self.shape_text(text, font);
         let width = shaped.advance().round() as u32;
-        TextMetrics { width, height: line_height.round() as u32, ascent, descent }
+        TextMetrics { width, height, ascent, descent }
     }
     /// Shape text into unicode-aware clusters with logical advances.
     pub fn shape_text(&self, text: &str, font: &Font) -> ShapedText {
@@ -120,8 +121,8 @@ impl SoftwareSurface {
         let clip = self.current_clip();
         let x0 = rect.x.max(0) as u32;
         let y0 = rect.y.max(0) as u32;
-        let x1 = (rect.x + rect.width as f32 as i32).max(0) as u32;
-        let y1 = (rect.y + rect.height as f32 as i32).max(0) as u32;
+        let x1 = rect.x.saturating_add(rect.width as i32).max(0) as u32;
+        let y1 = rect.y.saturating_add(rect.height as i32).max(0) as u32;
         let x1 = x1.min(size.width);
         let y1 = y1.min(size.height);
         let frame = self.buffer.back_mut();

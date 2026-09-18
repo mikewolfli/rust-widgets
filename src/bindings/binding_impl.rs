@@ -2010,8 +2010,11 @@ pub extern "C" fn rw_platform_dpi_scale_factor() -> c_float {
 /// The setting is process-wide and applies to canvases created afterwards.
 pub extern "C" fn rw_set_render_aa_samples_per_axis(samples: c_uint) -> c_uint {
     c_try!({
+        // Clamp to 1..=8 in `c_uint` space *before* narrowing to u8, so a value like
+        // 256 wraps to 8 rather than truncating to 0 and then being promoted to 1.
+        let samples = samples.clamp(1, 8) as u8;
         let config =
-            crate::render::SoftwareRenderConfig { aa_samples_per_axis: samples as u8 }.normalized();
+            crate::render::SoftwareRenderConfig { aa_samples_per_axis: samples }.normalized();
         crate::render::set_default_software_render_config(config);
         crate::render::default_software_render_config().aa_samples_per_axis as c_uint
     })

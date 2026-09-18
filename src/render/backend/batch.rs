@@ -363,19 +363,24 @@ struct TransformState {
 impl TransformState {
     fn apply_to_rect(&self, rect: &Rect) -> Rect {
         Rect::new(
-            (rect.x as f32 + self.dx) as i32,
-            (rect.y as f32 + self.dy) as i32,
+            (rect.x as f32 + self.dx).round() as i32,
+            (rect.y as f32 + self.dy).round() as i32,
             rect.width,
             rect.height,
         )
     }
 
     fn apply_to_point(&self, pt: &Point) -> Point {
-        Point::new((pt.x as f32 + self.dx) as i32, (pt.y as f32 + self.dy) as i32)
+        Point::new((pt.x as f32 + self.dx).round() as i32, (pt.y as f32 + self.dy).round() as i32)
     }
 
     fn apply_to_color(&self, color: &Color) -> Color {
-        Color { r: color.r, g: color.g, b: color.b, a: (color.a as f32 * self.opacity) as u8 }
+        Color {
+            r: color.r,
+            g: color.g,
+            b: color.b,
+            a: (color.a as f32 * self.opacity).round() as u8,
+        }
     }
 }
 
@@ -411,7 +416,7 @@ impl BatchState {
                 Some(RenderCommand::DrawRectStroke {
                     rect: state.apply_to_rect(rect),
                     color: state.apply_to_color(color),
-                    width: *width as u32,
+                    width: (*width).round().max(1.0) as u32,
                 })
             }
 
@@ -420,7 +425,7 @@ impl BatchState {
                     from: state.apply_to_point(from),
                     to: state.apply_to_point(to),
                     color: state.apply_to_color(color),
-                    width: *width as u32,
+                    width: (*width).round().max(1.0) as u32,
                 })
             }
 

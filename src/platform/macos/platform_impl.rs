@@ -312,6 +312,40 @@ impl Platform for MacOSPlatform {
             Some(events.remove(0))
         }
     }
+
+    /// Drives a menu item through AppKit's own action dispatch.
+    ///
+    /// `NSMenuItem -performActionForItemAtIndex:` is the single path AppKit takes for
+    /// both a mouse click and a matched key equivalent, so a probe that reaches it is
+    /// exercising the real menu route rather than a synthetic event.
+    ///
+    /// Off the main thread, or with no live `NSMenuItem`, this returns `false`: AppKit
+    /// may only be driven from the main thread, and a state-only item has no action to
+    /// send.
+    fn activate_menu_item(&self, menu_item: ObjectId) -> bool {
+        let Some(handle) = self.get_native_handle(menu_item) else {
+            return false;
+        };
+        if !super::types::is_main_thread() {
+            return false;
+        }
+        // SAFETY: `get_native_handle` returns a pointer this backend created for a live
+        // `NSMenuItem`; the messages sent are the read-only `action`/`target` accessors
+        // and the item's own action dispatch. Main-thread-only is enforced above.
+        unsafe {
+            let item = handle as id;
+            if item == nil {
+                return false;
+            }
+            let action: objc::runtime::Sel = msg_send![item, action];
+            let target: id = msg_send![item, target];
+            if target == nil {
+                return false;
+            }
+            let _: () = msg_send![target, performSelector: action withObject: item];
+        }
+        true
+    }
     fn set_clipboard_text(&self, text: &str) -> bool {
         // `NSPasteboard` is a window-server singleton and may only be touched on
         // the AppKit main thread; off-main we go straight to state.

@@ -233,13 +233,20 @@ impl StackAllocator {
     /// Allocates `size` bytes at the given `align` boundary (in bytes) and returns
     /// a pointer to them.
     ///
-    /// Returns `None` without changing state when the buffer is too small. The
-    /// memory is *not* zeroed, and `align` must be a power of two — a non-power-of-
-    /// two value silently produces a misaligned pointer. `size` of zero is allowed
+    /// Returns `None` without changing state when the buffer is too small **or** when
+    /// `align` is not a power of two — a non-power-of-two alignment would silently
+    /// produce a misaligned pointer (undefined behaviour once dereferenced), so it is
+    /// rejected rather than rounded to an arbitrary boundary. `size` of zero is allowed
     /// and yields a pointer that must not be dereferenced.
     pub fn allocate(&mut self, size: usize, align: usize) -> Option<*mut u8> {
-        let aligned_offset = (self.offset + align - 1) & !(align - 1);
-        let new_offset = aligned_offset + size;
+        // A zero or non-power-of-two alignment cannot be honoured by the masking
+        // trick below; refusing is the only correct answer because a misaligned
+        // pointer is UB for the caller that dereferences it.
+        if !align.is_power_of_two() {
+            return None;
+        }
+        let aligned_offset = self.offset.checked_add(align - 1)? & !(align - 1);
+        let new_offset = aligned_offset.checked_add(size)?;
         if new_offset > self.buffer.len() {
             return None;
         }

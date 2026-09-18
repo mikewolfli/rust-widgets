@@ -208,8 +208,7 @@ mod tests {
             | WidgetKind::Meter
             | WidgetKind::MiniChart
             | WidgetKind::ImageView
-            | WidgetKind::MiniCanvas
-                => ControlRoutePreference::CustomRequired,
+            | WidgetKind::MiniCanvas => ControlRoutePreference::CustomRequired,
             // Media/animation widgets
             WidgetKind::AnimatedImage
             | WidgetKind::HeroAnimation
@@ -220,17 +219,14 @@ mod tests {
             | WidgetKind::ImageGallery
             | WidgetKind::AudioVisualizer
             | WidgetKind::CameraPreview
-            | WidgetKind::BarcodeScanner
-                => ControlRoutePreference::CustomRequired,
+            | WidgetKind::BarcodeScanner => ControlRoutePreference::CustomRequired,
             // Data table widgets
-            WidgetKind::GridTable
-                => ControlRoutePreference::CustomRequired,
+            WidgetKind::GridTable => ControlRoutePreference::CustomRequired,
             // Input and navigation widgets added in BLUE16 phase E-2
             WidgetKind::NumberPicker
             | WidgetKind::OtpInput
             | WidgetKind::Pagination
-            | WidgetKind::Banner
-                => ControlRoutePreference::CustomRequired,
+            | WidgetKind::Banner => ControlRoutePreference::CustomRequired,
             // Controls split out of an overloaded kind, or added in BLUE16 phase E-6
             WidgetKind::ColorPicker
             | WidgetKind::Toast
@@ -240,14 +236,12 @@ mod tests {
             | WidgetKind::DepthChart
             | WidgetKind::OrderBook
             | WidgetKind::QuoteBoard
-            | WidgetKind::IndicatorChart
-                => ControlRoutePreference::CustomRequired,
+            | WidgetKind::IndicatorChart => ControlRoutePreference::CustomRequired,
             // Controls promoted to their own kind in the 2.4.0 audit.
             WidgetKind::TreeTable
             | WidgetKind::Breadcrumb
             | WidgetKind::SignaturePad
-            | WidgetKind::DropZone
-                => ControlRoutePreference::CustomRequired,
+            | WidgetKind::DropZone => ControlRoutePreference::CustomRequired,
         }
     }
 

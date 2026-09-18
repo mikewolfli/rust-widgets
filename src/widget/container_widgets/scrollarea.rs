@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Scroll area widget.
-use crate::compat::{Rc, RefCell, Vec, ToString};
+use crate::compat::{Rc, RefCell, ToString, Vec};
 use crate::core::{Alignment, Color, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;

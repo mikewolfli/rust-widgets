@@ -168,20 +168,25 @@ impl ConstraintLayout {
                     .saturating_add(constraint.offset);
             }
             ConstraintType::Width => {
-                let w = (target_rect.width as f32 * constraint.multiplier) as i32;
+                let w = (target_rect.width as f32 * constraint.multiplier).round() as i32;
                 widget_rect.width = w.max(0) as u32;
             }
             ConstraintType::Height => {
-                let h = (target_rect.height as f32 * constraint.multiplier) as i32;
+                let h = (target_rect.height as f32 * constraint.multiplier).round() as i32;
                 widget_rect.height = h.max(0) as u32;
             }
             ConstraintType::AspectRatio(ratio) => {
+                // A zero/non-finite ratio cannot describe an aspect, so it leaves the
+                // rect unchanged (principle #50: degenerate input is ignored).
+                if !(ratio.is_finite() && ratio > 0.0) {
+                    return;
+                }
                 // Width = height * ratio, constrained to fit within widget rect.
-                let w = (widget_rect.height as f32 * ratio) as i32;
+                let w = (widget_rect.height as f32 * ratio).round() as i32;
                 if (widget_rect.width as i32 - w).abs() > 2 {
                     widget_rect.width = w.max(0) as u32;
                 } else {
-                    let h = (widget_rect.width as f32 / ratio) as i32;
+                    let h = (widget_rect.width as f32 / ratio).round() as i32;
                     widget_rect.height = h.max(0) as u32;
                 }
             }

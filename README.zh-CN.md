@@ -130,14 +130,12 @@ Arc、Spinner、Roller、Dropdown、TextArea、Keyboard、Switch。
 （`docs/plans/platform_capability_matrix.md`）由源码机械派生，并在 CI 中设有防脱节门禁。
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.4.0-blue)]()
+[![version](https://img.shields.io/badge/version-2.4.1-blue)]()
 [![tests](https://img.shields.io/badge/tests-5100%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
-**2.4.0 实测：** `desktop` 档 **4964** 个库测试全通过（`tablet` **4720**、`mobile` **4748**、
-`embedded` **1549**、`mini` **1481**）；`cargo test` 在全部 27 个测试二进制上 **5177** 通过、0 失败。
+**2.4.1 实测：** `desktop` 档 **4969** 个库测试全通过；`cargo test` 在全部 27 个测试二进制上 0 失败。
 `cargo clippy --all-targets -- -D warnings` 0 warning，五个档位均可构建。
-共 **32** 个门禁全通过；唯一 skip 需 macOS 主机且已自述原因。
 详见
 [`CHANGELOG.md`](CHANGELOG.md)（中文版见 [`docs/reports/CHANGELOG.md`](docs/reports/CHANGELOG.md)）。
 

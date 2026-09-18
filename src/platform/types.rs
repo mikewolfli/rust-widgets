@@ -997,6 +997,21 @@ pub trait Platform: Send + Sync {
         let _ = menu_item_id;
         false
     }
+
+    /// Activates a menu item through the host's own dispatch, as a click or a matched
+    /// key equivalent would.
+    ///
+    /// Returns `true` when the backend performed the activation. The default answers
+    /// `false`, which is the honest answer for a backend that keeps no native menu
+    /// object to dispatch to — a caller must not read this as "the item did nothing",
+    /// only as "this host has no native dispatch for it".
+    ///
+    /// This is what lets a runtime probe exercise the real menu route (AppKit's
+    /// `performActionForItemAtIndex:`, for example) without the caller importing a
+    /// platform toolkit or branching on `cfg(target_os)` itself.
+    fn activate_menu_item(&self, _menu_item: ObjectId) -> bool {
+        false
+    }
     /// Returns the next pending widget activation. Default: none are produced.
     fn poll_widget_triggered(&self) -> Option<ObjectId> {
         None

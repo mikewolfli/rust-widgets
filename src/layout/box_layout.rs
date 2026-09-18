@@ -193,8 +193,8 @@ impl Layout for BoxLayout {
             return;
         }
         let scale = context.layout_scale;
-        let scaled_spacing = (self.spacing as f32 * scale) as u32;
-        let scaled_margin = (self.margin as f32 * scale) as u32;
+        let scaled_spacing = (self.spacing as f32 * scale).round() as u32;
+        let scaled_margin = (self.margin as f32 * scale).round() as u32;
         let gaps = (self.items.len().saturating_sub(1)) as u32;
         let primary = match self.orientation {
             Orientation::Horizontal => rect.width,

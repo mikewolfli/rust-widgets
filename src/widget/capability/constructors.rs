@@ -1395,7 +1395,6 @@ pub fn create_property_grid(geometry: Rect, text: &str) -> Box<dyn Widget> {
 /// Creates an empty [`CandlestickChart`](crate::widget::special_widgets::finance::candlestick_chart::CandlestickChart).
 /// `text` is applied as a label beside the control, following the convention the
 /// other chart constructors use.
-#[allow(unused_mut)]
 pub fn create_candlestick_chart(geometry: Rect, text: &str) -> Box<dyn Widget> {
     let widget =
         crate::widget::special_widgets::finance::candlestick_chart::CandlestickChart::new(geometry);
@@ -1406,7 +1405,6 @@ pub fn create_candlestick_chart(geometry: Rect, text: &str) -> Box<dyn Widget> {
 /// Creates an empty [`VolumeChart`](crate::widget::special_widgets::finance::volume_chart::VolumeChart).
 /// `text` is applied as a label beside the control, following the convention the
 /// other chart constructors use.
-#[allow(unused_mut)]
 pub fn create_volume_chart(geometry: Rect, text: &str) -> Box<dyn Widget> {
     let widget = crate::widget::special_widgets::finance::volume_chart::VolumeChart::new(geometry);
     label(geometry, text, Box::new(widget))
@@ -1416,7 +1414,6 @@ pub fn create_volume_chart(geometry: Rect, text: &str) -> Box<dyn Widget> {
 /// Creates an empty [`DepthChart`](crate::widget::special_widgets::finance::depth_chart::DepthChart).
 /// `text` is applied as a label beside the control, following the convention the
 /// other chart constructors use.
-#[allow(unused_mut)]
 pub fn create_depth_chart(geometry: Rect, text: &str) -> Box<dyn Widget> {
     let widget = crate::widget::special_widgets::finance::depth_chart::DepthChart::new(geometry);
     label(geometry, text, Box::new(widget))
@@ -1426,7 +1423,6 @@ pub fn create_depth_chart(geometry: Rect, text: &str) -> Box<dyn Widget> {
 /// Creates an empty `OrderBookWidget`.
 /// `text` is applied as a label beside the control, following the convention the
 /// other chart constructors use.
-#[allow(unused_mut)]
 pub fn create_order_book(geometry: Rect, text: &str) -> Box<dyn Widget> {
     let widget =
         crate::widget::special_widgets::finance::order_book::OrderBookWidget::new(geometry);
@@ -1437,7 +1433,6 @@ pub fn create_order_book(geometry: Rect, text: &str) -> Box<dyn Widget> {
 /// Creates an empty [`QuoteBoard`](crate::widget::special_widgets::finance::quote_board::QuoteBoard).
 /// `text` is applied as a label beside the control, following the convention the
 /// other chart constructors use.
-#[allow(unused_mut)]
 pub fn create_quote_board(geometry: Rect, text: &str) -> Box<dyn Widget> {
     let widget = crate::widget::special_widgets::finance::quote_board::QuoteBoard::new(geometry);
     label(geometry, text, Box::new(widget))
@@ -1447,7 +1442,6 @@ pub fn create_quote_board(geometry: Rect, text: &str) -> Box<dyn Widget> {
 /// Creates an empty [`IndicatorChart`](crate::widget::special_widgets::finance::indicator_chart::IndicatorChart).
 /// `text` is applied as a label beside the control, following the convention the
 /// other chart constructors use.
-#[allow(unused_mut)]
 pub fn create_indicator_chart(geometry: Rect, text: &str) -> Box<dyn Widget> {
     let widget =
         crate::widget::special_widgets::finance::indicator_chart::IndicatorChart::new(geometry);

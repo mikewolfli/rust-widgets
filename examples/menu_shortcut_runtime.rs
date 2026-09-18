@@ -1,28 +1,38 @@
-//! Runtime probe for typed menu shortcuts, run on the AppKit main thread.
+//! Runtime probe for typed menu shortcuts, run on the host's UI main thread.
 //!
 //! The library's own test harness runs off the main thread, where the macOS
-//! backend deliberately takes its state-only path and no `NSMenuItem` exists. This
-//! binary runs the same assertions on the main thread so the native accelerator is
-//! genuinely created, read back from AppKit, and exercised.
+//! backend deliberately takes its state-only path and no native `NSMenuItem`
+//! exists. This binary runs the same assertions on the main thread so the native
+//! accelerator is genuinely created, read back from the host toolkit, and
+//! exercised.
+//!
+//! Everything platform-specific is asked of the backend at runtime: the notation
+//! comes from `PlatformShortcutStyle::current()`, and activating an item goes
+//! through [`rust_widgets::platform::Platform::activate_menu_item`]. This file
+//! therefore contains no `cfg(target_os)` branch and no toolkit import — it is
+//! ordinary upper-layer calling code, exactly like an application would be.
 //!
 //! Run with: cargo run --example menu_shortcut_runtime
 
-#[cfg(target_os = "macos")]
+use rust_widgets::platform::get_platform;
+use rust_widgets::shortcut::{Key, PlatformShortcutStyle, Shortcut};
+use std::time::Duration;
+
 fn main() {
     use rust_widgets::app::{App, WidgetHandle};
-    use rust_widgets::shortcut::{Key, Shortcut};
-    use std::time::Duration;
 
     let mut app = App::new();
     app.init();
 
     let mut failures: Vec<String> = Vec::new();
 
-    // 1. One declaration must render in the host's notation.
+    // 1. One declaration must render in the host's own notation, whatever that is.
     let rendered = rust_widgets::format_shortcut(&Shortcut::primary(Key::Z));
-    println!("[1] format_shortcut(Primary+Z) = {rendered:?}");
-    if rendered != "⌘Z" {
-        failures.push(format!("expected \"⌘Z\", got {rendered:?}"));
+    let style = PlatformShortcutStyle::current();
+    println!("[1] format_shortcut(Primary+Z) = {rendered:?} (style {style:?})");
+    let expected_undo = style.format(&Shortcut::primary(Key::Z));
+    if rendered != expected_undo {
+        failures.push(format!("expected {expected_undo:?}, got {rendered:?}"));
     }
 
     let win = app.new_window("Menu Shortcut Runtime", 0, 0, 900, 600);
@@ -52,20 +62,27 @@ fn main() {
     let redo_chord = rust_widgets::menu_item_shortcut(redo.raw_id());
     let plain_chord = rust_widgets::menu_item_shortcut(plain.raw_id());
     println!("[3] undo={undo_chord:?} redo={redo_chord:?} plain={plain_chord:?}");
-    if undo_chord.as_deref() != Some("⌘Z") {
-        failures.push(format!("undo should report ⌘Z, got {undo_chord:?}"));
+    let expected_redo = style.format(&Shortcut::primary_shift(Key::Z));
+    if undo_chord.as_deref() != Some(expected_undo.as_str()) {
+        failures.push(format!("undo should report {expected_undo:?}, got {undo_chord:?}"));
     }
-    if redo_chord.as_deref() != Some("⇧⌘Z") {
-        failures.push(format!("redo should report ⇧⌘Z, got {redo_chord:?}"));
+    if redo_chord.as_deref() != Some(expected_redo.as_str()) {
+        failures.push(format!("redo should report {expected_redo:?}, got {redo_chord:?}"));
     }
     if plain_chord.is_some() {
         failures.push(format!("plain item should report no chord, got {plain_chord:?}"));
     }
 
-    // 4. Activate the Undo item through the menu's real dispatch, which is the
-    //    same route a click and a key-equivalent press both take.
-    let fired = activate_menu_item(undo.raw_id());
-    println!("[4] activated undo item = {fired}");
+    // 4. Activate the Undo item through the host's own menu dispatch. The backend
+    //    reports whether it has such a route; a backend without a native menu says
+    //    so honestly instead of the probe branching on the OS itself.
+    let platform = get_platform();
+    if !platform.activate_menu_item(undo.raw_id()) {
+        failures.push(format!(
+            "the {} backend has no native menu dispatch for this item",
+            platform.backend_name()
+        ));
+    }
     match wait_for_trigger(Duration::from_secs(2)) {
         Some(id) if id == undo.raw_id() => println!("[4] poll_menu_triggered -> {id} (Undo)"),
         Some(id) => failures.push(format!("fired item {id}, expected {}", undo.raw_id())),
@@ -84,9 +101,8 @@ fn main() {
 }
 
 /// Polls the menu trigger queue until an item arrives or `budget` elapses.
-#[cfg(target_os = "macos")]
-fn wait_for_trigger(budget: std::time::Duration) -> Option<u64> {
-    use std::time::{Duration, Instant};
+fn wait_for_trigger(budget: Duration) -> Option<u64> {
+    use std::time::Instant;
     let deadline = Instant::now() + budget;
     while Instant::now() < deadline {
         if let Some(id) = rust_widgets::poll_menu_triggered() {
@@ -95,44 +111,4 @@ fn wait_for_trigger(budget: std::time::Duration) -> Option<u64> {
         std::thread::sleep(Duration::from_millis(10));
     }
     None
-}
-
-/// Activates a menu item the way AppKit does, so the probe exercises the real
-/// menu dispatch rather than a synthetic event.
-///
-/// Uses `NSMenu -performActionForItemAtIndex:`, which is the single path AppKit
-/// takes for both a mouse click and a matched key equivalent.
-#[cfg(target_os = "macos")]
-fn activate_menu_item(item_id: u64) -> bool {
-    use cocoa::base::{id, nil};
-    use objc::runtime::{Object, Sel};
-    use objc::{msg_send, sel, sel_impl};
-
-    let Some(ptr) = rust_widgets::native_handle(item_id) else {
-        eprintln!("no native handle for menu item {item_id}");
-        return false;
-    };
-    unsafe {
-        let item = ptr as *const Object as id;
-        if item == nil {
-            eprintln!("null NSMenuItem for {item_id}");
-            return false;
-        }
-        // Send the item its own action, exactly as the menu controller does when
-        // the chord matches. Using action/target (rather than a shortcut table
-        // lookup) keeps this on the same code path a key press takes.
-        let action: Sel = msg_send![item, action];
-        let target: id = msg_send![item, target];
-        if target == nil {
-            eprintln!("menu item {item_id} has no target");
-            return false;
-        }
-        let _: () = msg_send![target, performSelector: action withObject: item];
-    }
-    true
-}
-
-#[cfg(not(target_os = "macos"))]
-fn main() {
-    println!("This probe targets macOS only.");
 }

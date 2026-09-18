@@ -308,9 +308,9 @@ impl DateEdit {
     }
     /// Sets the inclusive lower bound for accepted dates.
     ///
-    /// The current date is **not** re-validated against the new bound, so the
-    /// widget can be left holding a date below its own minimum. The bound
-    /// itself is not validated either.
+    /// The current date is re-clamped into the new range, so raising the minimum
+    /// moves a now-out-of-range value up to the boundary rather than leaving the
+    /// widget holding a date below its own minimum.
     pub fn set_minimum_date(&mut self, date: Date) {
         self.minimum = date;
         // Re-clamp the current value into the new range. Without this the widget could

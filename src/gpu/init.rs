@@ -19,18 +19,22 @@ pub async fn init_with_strategy(
     GpuManager::with_strategy(strategy).await
 }
 
-/// Check if GPU is available by checking compile-time feature and runtime status.
+/// Reports whether the `wgpu` GPU backend is compiled in.
+///
+/// This is a compile-time fact, not a runtime probe: adapter selection is
+/// asynchronous (it may enumerate devices, apply a backend ladder, and consult
+/// `WGPU_BACKEND`), so a synchronous boolean cannot know whether a usable
+/// adapter exists. For a genuine runtime answer, call [`GpuManager::new`]
+/// (via [`init`]) and inspect the resulting manager's backend tier.
+#[cfg(feature = "wgpu")]
 pub fn is_gpu_available() -> bool {
-    #[cfg(feature = "wgpu")]
-    {
-        // Compile-time feature enabled; at runtime we need to try adapter creation.
-        // This is a best-effort check — for true runtime detection call `GpuManager::new().await`.
-        cfg!(feature = "wgpu")
-    }
-    #[cfg(not(feature = "wgpu"))]
-    {
-        false
-    }
+    true
+}
+
+/// Reports whether the `wgpu` GPU backend is compiled in.
+#[cfg(not(feature = "wgpu"))]
+pub fn is_gpu_available() -> bool {
+    false
 }
 
 /// Get a summary of the GPU subsystem with runtime-aware details.
@@ -43,8 +47,8 @@ pub fn subsystem_summary() -> String {
         if cfg!(feature = "wgpu") { "enabled" } else { "disabled" }
     ));
     summary.push_str(&format!(
-        "GPU support (runtime check): {}\n\n",
-        if is_gpu_available() { "available" } else { "not available" }
+        "GPU backend compiled in: {}\n\n",
+        if is_gpu_available() { "yes" } else { "no" }
     ));
     summary.push_str("Capabilities:\n");
     summary.push_str("  - Adapter selection: ");

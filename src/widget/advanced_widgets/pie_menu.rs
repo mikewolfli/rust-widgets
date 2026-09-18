@@ -178,6 +178,11 @@ impl PieMenu {
     /// index is **not** updated for an item that is disabled.
     pub fn set_current_index(&mut self, idx: usize) {
         if idx < self.items.len() {
+            // Mirror the click/hit-test paths: a disabled item is not selectable,
+            // so the index is left untouched and no signal fires.
+            if !self.items[idx].is_enabled() {
+                return;
+            }
             self.current_index = idx;
             self.triggered.emit(idx);
             if let Some(text) = self.items.get(idx).map(|item| item.text().to_string()) {

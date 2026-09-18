@@ -98,7 +98,7 @@ pub(crate) fn progress_bar_capability() -> WidgetCapability {
         canonical_name: "progress_bar",
         aliases: &[],
         properties: PROGRESS_BAR_PROPERTIES,
-        events: &["value_changed", "range_changed"],
+        events: &["value_changed"],
         commands: &["set_range", "set_value", "set_orientation"],
     }
 }
@@ -109,7 +109,7 @@ pub(crate) fn scroll_bar_capability() -> WidgetCapability {
         canonical_name: "scroll_bar",
         aliases: &[],
         properties: SCROLL_BAR_PROPERTIES,
-        events: &["value_changed", "range_changed", "slider_moved"],
+        events: &["value_changed", "slider_moved", "slider_pressed", "slider_released"],
         commands: &["set_range", "set_value", "set_steps", "set_orientation"],
     }
 }
@@ -154,7 +154,7 @@ pub(crate) fn dial_capability() -> WidgetCapability {
         canonical_name: "dial",
         aliases: &["knob"],
         properties: DIAL_PROPERTIES,
-        events: &["value_changed", "slider_moved", "slider_pressed", "slider_released"],
+        events: &["value_changed", "slider_pressed", "slider_released"],
         commands: &["set_range", "set_value", "set_wrapping"],
     }
 }
@@ -630,7 +630,7 @@ pub(crate) fn color_dialog_capability() -> WidgetCapability {
         canonical_name: "color_dialog",
         aliases: &["colour_dialog"],
         properties: COLOR_DIALOG_PROPERTIES,
-        events: &["color_changed", "hex_changed"],
+        events: &["color_selected", "accepted", "rejected"],
         commands: &["set_hex", "apply_preset"],
     }
 }
@@ -980,7 +980,7 @@ pub(crate) fn grid_capability() -> WidgetCapability {
         canonical_name: "grid",
         aliases: &["grid_widget", "gridwidget"],
         properties: GRID_PROPERTIES,
-        events: &["cell_clicked", "cell_double_clicked", "selection_changed"],
+        events: &["cell_clicked", "cell_hovered"],
         commands: &[
             "set_rows",
             "set_columns",
@@ -1188,7 +1188,7 @@ pub(crate) fn text_edit_capability() -> WidgetCapability {
         canonical_name: "text_edit",
         aliases: &[],
         properties: TEXT_EDIT_PROPERTIES,
-        events: &["text_changed", "cursor_position_changed"],
+        events: &["text_changed"],
         commands: &[
             "set_text",
             "set_placeholder_text",
@@ -1540,7 +1540,7 @@ pub(crate) fn canvas_capability() -> WidgetCapability {
         canonical_name: "canvas",
         aliases: &["canvas_widget", "drawing_surface"],
         properties: CANVAS_PROPERTIES,
-        events: &["clicked", "mouse_pressed", "mouse_released"],
+        events: &["mouse_pressed", "mouse_released", "mouse_moved", "double_clicked"],
         commands: &["set_zoom", "set_center", "clear"],
     }
 }
@@ -1552,7 +1552,7 @@ pub(crate) fn chart_capability() -> WidgetCapability {
         canonical_name: "chart",
         aliases: &["chart_widget", "chart_surface"],
         properties: CHART_PROPERTIES,
-        events: &["changed"],
+        events: &["data_point_clicked", "data_point_hovered"],
         commands: &[],
     }
 }
@@ -1564,7 +1564,7 @@ pub(crate) fn search_box_capability() -> WidgetCapability {
         canonical_name: "search_box",
         aliases: &["search"],
         properties: SEARCH_BOX_PROPERTIES,
-        events: &["changed", "search_submitted"],
+        events: &["text_changed"],
         commands: &["set_text", "set_placeholder", "clear"],
     }
 }
@@ -1684,7 +1684,7 @@ pub(crate) fn stepper_capability() -> WidgetCapability {
         canonical_name: "stepper",
         aliases: &["stepper_widget", "step_control"],
         properties: STEPPER_PROPERTIES,
-        events: &["changed"],
+        events: &["value_changed"],
         commands: &["set_value", "set_range", "set_step"],
     }
 }
@@ -1696,7 +1696,7 @@ pub(crate) fn rating_capability() -> WidgetCapability {
         canonical_name: "rating",
         aliases: &["rating_widget", "star_rating"],
         properties: RATING_PROPERTIES,
-        events: &["changed"],
+        events: &["rating_changed"],
         commands: &["set_value", "set_max"],
     }
 }
@@ -1960,7 +1960,7 @@ pub(crate) fn masked_edit_capability() -> WidgetCapability {
         canonical_name: "masked_edit",
         aliases: &["masked_input"],
         properties: MASKED_EDIT_PROPERTIES,
-        events: &["changed"],
+        events: &["text_changed"],
         commands: &["set_text", "set_mask"],
     }
 }
@@ -2020,7 +2020,7 @@ pub(crate) fn range_slider_capability() -> WidgetCapability {
         canonical_name: "range_slider",
         aliases: &["dual_slider"],
         properties: RANGE_SLIDER_PROPERTIES,
-        events: &["changed"],
+        events: &["range_changed"],
         commands: &["set_lower", "set_upper", "set_range"],
     }
 }
@@ -2140,7 +2140,7 @@ pub(crate) fn editable_combo_box_capability() -> WidgetCapability {
         canonical_name: "editable_combo_box",
         aliases: &["editable_combo"],
         properties: EDITABLE_COMBO_BOX_PROPERTIES,
-        events: &["changed"],
+        events: &["text_changed", "item_selected"],
         commands: &["set_text"],
     }
 }
@@ -2250,7 +2250,7 @@ pub(crate) fn line_chart_capability() -> WidgetCapability {
         canonical_name: "line_chart",
         aliases: &["line_graph"],
         properties: LINE_CHART_PROPERTIES,
-        events: &["changed"],
+        events: &[],
         commands: &["set_stroke_width"],
     }
 }
@@ -2274,7 +2274,7 @@ pub(crate) fn bar_chart_capability() -> WidgetCapability {
         canonical_name: "bar_chart",
         aliases: &["bar_graph"],
         properties: BAR_CHART_PROPERTIES,
-        events: &["changed"],
+        events: &[],
         commands: &["set_bar_spacing"],
     }
 }
@@ -2287,7 +2287,7 @@ pub(crate) fn candlestick_chart_capability() -> WidgetCapability {
         canonical_name: "candlestick_chart",
         aliases: &["candlestick", "kline", "k_line", "k_line_chart", "ohlc_chart"],
         properties: CANDLESTICK_CHART_PROPERTIES,
-        events: &["changed"],
+        events: &["bar_clicked", "bar_hovered", "bar_unhovered"],
         commands: &["set_series", "add_overlay"],
     }
 }
@@ -2299,7 +2299,7 @@ pub(crate) fn volume_chart_capability() -> WidgetCapability {
         canonical_name: "volume_chart",
         aliases: &["volume", "volume_histogram", "volume_bars"],
         properties: VOLUME_CHART_PROPERTIES,
-        events: &["changed"],
+        events: &["bar_clicked", "bar_hovered"],
         commands: &["set_series", "add_overlay"],
     }
 }
@@ -2311,7 +2311,7 @@ pub(crate) fn depth_chart_capability() -> WidgetCapability {
         canonical_name: "depth_chart",
         aliases: &["market_depth", "depth_graph", "liquidity_chart"],
         properties: DEPTH_CHART_PROPERTIES,
-        events: &["changed"],
+        events: &["level_hovered"],
         commands: &["set_series", "add_overlay"],
     }
 }
@@ -2323,7 +2323,7 @@ pub(crate) fn order_book_capability() -> WidgetCapability {
         canonical_name: "order_book",
         aliases: &["book_ladder", "market_depth_ladder"],
         properties: ORDER_BOOK_PROPERTIES,
-        events: &["changed"],
+        events: &["level_clicked", "level_hovered", "level_unhovered"],
         commands: &["set_series", "add_overlay"],
     }
 }
@@ -2335,7 +2335,7 @@ pub(crate) fn quote_board_capability() -> WidgetCapability {
         canonical_name: "quote_board",
         aliases: &["quotes", "watchlist", "quote_table", "market_watch"],
         properties: QUOTE_BOARD_PROPERTIES,
-        events: &["changed"],
+        events: &["quote_clicked", "quote_hovered", "selection_changed"],
         commands: &["set_series", "add_overlay"],
     }
 }
@@ -2347,7 +2347,7 @@ pub(crate) fn indicator_chart_capability() -> WidgetCapability {
         canonical_name: "indicator_chart",
         aliases: &["indicator", "technical_indicator", "oscillator", "macd_chart"],
         properties: INDICATOR_CHART_PROPERTIES,
-        events: &["changed"],
+        events: &["bar_clicked", "bar_hovered"],
         commands: &["set_series", "add_overlay"],
     }
 }
@@ -2358,7 +2358,7 @@ pub(crate) fn pie_chart_capability() -> WidgetCapability {
         canonical_name: "pie_chart",
         aliases: &["pie_graph"],
         properties: PIE_CHART_PROPERTIES,
-        events: &["changed"],
+        events: &[],
         commands: &["set_donut"],
     }
 }
@@ -2394,7 +2394,7 @@ pub(crate) fn bezier_curve_editor_capability() -> WidgetCapability {
         canonical_name: "bezier_curve_editor",
         aliases: &["curve_editor"],
         properties: BEZIER_CURVE_EDITOR_PROPERTIES,
-        events: &["changed"],
+        events: &["curve_changed"],
         commands: &["set_snap_to_grid"],
     }
 }

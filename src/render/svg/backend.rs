@@ -4,10 +4,10 @@
 //! SVG paint backend — converts `RenderCommand`s into SVG elements.
 
 use super::convert::{color_to_rgba, escape_xml, point_attrs, rect_attrs};
-use crate::compat::{format, vec, MiniToString, String, Vec};
+use crate::compat::{format, MiniToString, String, Vec};
 use crate::core::{Color, Font, Size};
 use crate::render::core::command::RenderCommand;
-use crate::render::core::types::{ShapedText, TextMetrics};
+use crate::render::core::types::{ShapedText, TextCluster, TextMetrics};
 use crate::render::{PaintBackend, SoftwareRenderConfig};
 use crate::style::gradient::GradientType;
 
@@ -497,15 +497,55 @@ impl PaintBackend for SvgPaintBackend {
         self.dpi_scale = dpi_scale;
     }
 
-    fn measure_text(&self, text: &str, _font: &Font) -> TextMetrics {
-        // Approximate measurement: 8px per character width, 16px height.
-        TextMetrics { width: text.len() as u32 * 8, height: 16, ascent: 12, descent: 4 }
+    fn measure_text(&self, text: &str, font: &Font) -> TextMetrics {
+        // Same advance heuristic as the software rasteriser, so layout computed
+        // against the SVG output agrees with the rasterised frame.
+        let scale = self.dpi_scale;
+        let line_height = (font.size() * scale).max(1.0);
+        let height = line_height.round() as u32;
+        let ascent = (line_height * 0.8).round() as u32;
+        let descent = height.saturating_sub(ascent);
+        let shaped = self.shape_text(text, font);
+        let width = shaped.advance().round() as u32;
+        TextMetrics { width, height, ascent, descent }
     }
 
-    fn shape_text(&self, text: &str, _font: &Font) -> ShapedText {
-        ShapedText { clusters: vec![], advance: text.len() as f32 * 8.0 }
+    fn shape_text(&self, text: &str, font: &Font) -> ShapedText {
+        // One run of unicode-aware clusters with logical advances — the same
+        // clustering the software surface produces, so the vector and raster
+        // backends wrap and position text identically.
+        let scale = self.dpi_scale;
+        let mut clusters = Vec::new();
+        for scalar in text.chars() {
+            let should_merge = clusters
+                .last()
+                .map(|cluster: &TextCluster| {
+                    crate::render::cluster_ends_with_zwj(cluster)
+                        || scalar == '\u{200D}'
+                        || crate::render::is_combining_mark(scalar)
+                        || crate::render::is_variation_selector(scalar)
+                })
+                .unwrap_or(false);
+            if should_merge {
+                if let Some(last) = clusters.last_mut() {
+                    last.text.push(scalar);
+                }
+            } else {
+                clusters.push(TextCluster { text: scalar.to_string(), advance: 0.0 });
+            }
+        }
+        let mut total_advance = 0.0f32;
+        for cluster in &mut clusters {
+            cluster.advance =
+                crate::render::estimate_cluster_advance(&cluster.text, font.size(), scale);
+            total_advance += cluster.advance;
+        }
+        ShapedText { clusters, advance: total_advance }
     }
 
+    /// The SVG backend produces vector markup, not a raster surface, so it has no
+    /// packed RGBA frame to hand back. Returning an empty slice is the honest
+    /// answer for a vector-only backend: the output is [`SvgPaintBackend::finish`].
     fn frame_rgba(&self) -> &[u8] {
         &[]
     }

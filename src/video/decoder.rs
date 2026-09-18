@@ -209,13 +209,50 @@ impl MjpegDecoder {
         let width = info.width as usize;
         let height = info.height as usize;
 
-        // Convert RGB to RGBA
+        // `decoder.decode()` returns the raw sample bytes in the stream's pixel
+        // format (L8/L16 grayscale, RGB24, or CMYK32), so the conversion must
+        // honour `info.pixel_format` rather than assume 3 bytes per pixel — a
+        // grayscale MJPEG frame would otherwise make the fixed `chunks(3)` read
+        // past the last pixel and panic.
         let mut rgba = Vec::with_capacity(width * height * 4);
-        for chunk in pixels.chunks(3) {
-            rgba.push(chunk[0]); // R
-            rgba.push(chunk[1]); // G
-            rgba.push(chunk[2]); // B
-            rgba.push(255); // A
+        match info.pixel_format {
+            jpeg_decoder::PixelFormat::RGB24 => {
+                for chunk in pixels.chunks_exact(3) {
+                    rgba.push(chunk[0]);
+                    rgba.push(chunk[1]);
+                    rgba.push(chunk[2]);
+                    rgba.push(255);
+                }
+            }
+            jpeg_decoder::PixelFormat::L8 => {
+                for &lum in &pixels {
+                    rgba.push(lum);
+                    rgba.push(lum);
+                    rgba.push(lum);
+                    rgba.push(255);
+                }
+            }
+            jpeg_decoder::PixelFormat::CMYK32 => {
+                // CMYK → RGB via naive inverse: R = C*K, G = M*K, B = Y*K (0..255).
+                for chunk in pixels.chunks_exact(4) {
+                    let c = chunk[0] as u32;
+                    let m = chunk[1] as u32;
+                    let y = chunk[2] as u32;
+                    let k = 255 - chunk[3] as u32;
+                    rgba.push(((255 - c) * k / 255) as u8);
+                    rgba.push(((255 - m) * k / 255) as u8);
+                    rgba.push(((255 - y) * k / 255) as u8);
+                    rgba.push(255);
+                }
+            }
+            other => {
+                // `decode()` falls back to RGB24 for L16 streams (it down-samples),
+                // but refuse any format we have not explicitly converted rather
+                // than emit wrong-colour pixels.
+                return Err(format!(
+                    "JPEG frame uses unsupported pixel format {other:?}; only RGB24, L8 and CMYK32 are handled"
+                ));
+            }
         }
         Ok(rgba)
     }

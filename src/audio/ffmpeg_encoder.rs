@@ -205,6 +205,11 @@ fn build_f32_frame(
     let total = frame_samples * channels;
     let end = (buffer_offset + total).min(buffer.samples.len());
     let src = &buffer.samples[buffer_offset..end];
+    // SAFETY: `src` is a live `&[f32]`, so `src.as_ptr()` is valid for reads of
+    // `src.len()` elements; reinterpreting it as `*const u8` and taking
+    // `src.len() * 4` bytes is the standard, well-defined way to view the
+    // underlying memory of an aligned `f32` slice as raw bytes (each `f32` is
+    // exactly 4 bytes), and the resulting slice stays within `src`'s allocation.
     let src_bytes = unsafe { std::slice::from_raw_parts(src.as_ptr() as *const u8, src.len() * 4) };
     let copy_len = dst.len().min(src_bytes.len());
     dst[..copy_len].copy_from_slice(&src_bytes[..copy_len]);

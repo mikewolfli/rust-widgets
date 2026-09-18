@@ -260,7 +260,7 @@ impl FlingGesture {
         // `Event::Fling::velocity` is documented as logical pixels per **second**,
         // so the per-millisecond ratio is scaled by 1000. Keep this in step with the
         // `Swipe` variants, which convert the same way.
-        Some(Point::new((dx / dt * 1000.0) as i32, (dy / dt * 1000.0) as i32))
+        Some(Point::new((dx / dt * 1000.0).round() as i32, (dy / dt * 1000.0).round() as i32))
     }
 }
 

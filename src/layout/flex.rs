@@ -624,8 +624,8 @@ impl Layout for FlexLayout {
         widgets: &mut dyn FnMut(ObjectId, Rect),
     ) {
         let scale = context.layout_scale;
-        let scaled_padding = (self.padding as f32 * scale) as i32;
-        let scaled_gap = (self.gap as f32 * scale) as i32;
+        let scaled_padding = (self.padding as f32 * scale).round() as i32;
+        let scaled_gap = (self.gap as f32 * scale).round() as i32;
 
         let content_rect = Rect::new(
             rect.x + scaled_padding,

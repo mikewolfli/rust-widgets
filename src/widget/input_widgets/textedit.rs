@@ -29,8 +29,6 @@ pub struct TextEdit {
     /// Emitted after the text changes: on edits, and after an undo/redo restore.
     /// Not emitted when a `set_text` is given the text the widget already holds.
     pub text_changed: Signal1<String>,
-    /// Emitted with the zero-based caret offset, in bytes, into the text.
-    pub cursor_position_changed: Signal1<usize>,
 }
 
 impl TextEdit {
@@ -47,7 +45,6 @@ impl TextEdit {
             history_target: Rc::new(RefCell::new(String::new())),
             restoring_history: false,
             text_changed: Signal1::new(),
-            cursor_position_changed: Signal1::new(),
         }
     }
     /// Returns current text.
@@ -508,6 +505,5 @@ mod tests {
     fn textedit_signal_accessors() {
         let te = TextEdit::new(Rect::new(0, 0, 100, 100));
         let _ = &te.text_changed;
-        let _ = &te.cursor_position_changed;
     }
 }

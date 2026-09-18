@@ -25,7 +25,7 @@ pub fn to_grayscale(
             let g = pixels[off + 1] as f32;
             let b = pixels[off + 2] as f32;
             // BT.709 luminosity weights
-            let lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) as u8;
+            let lum = (0.2126 * r + 0.7152 * g + 0.0722 * b).round() as u8;
             gray.push(lum);
         }
     }
@@ -61,7 +61,8 @@ pub fn adjust_contrast(data: &mut [u8], factor: f32) {
     let factor = factor.max(0.0);
     for pixel in data.chunks_exact_mut(4) {
         for val in pixel.iter_mut().take(3) {
-            let new_val = ((*val as f32 - 128.0) * factor + 128.0) as i32;
+            let new_val =
+                (((*val as f32 - 128.0) * factor + 128.0).round()).clamp(0.0, 255.0) as i32;
             *val = new_val.clamp(0, 255) as u8;
         }
     }
@@ -119,7 +120,11 @@ pub fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
     } else {
         (c, 0.0, x)
     };
-    (((r1 + m) * 255.0) as u8, ((g1 + m) * 255.0) as u8, ((b1 + m) * 255.0) as u8)
+    (
+        ((r1 + m) * 255.0).round().clamp(0.0, 255.0) as u8,
+        ((g1 + m) * 255.0).round().clamp(0.0, 255.0) as u8,
+        ((b1 + m) * 255.0).round().clamp(0.0, 255.0) as u8,
+    )
 }
 
 /// Convert between color spaces with actual pixel data transformation.

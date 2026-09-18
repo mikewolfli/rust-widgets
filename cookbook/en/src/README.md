@@ -36,7 +36,7 @@ hardware-adaptive rendering, and deep platform integration — all through a
 clean, idiomatic Rust API.
 
 > The snippet below is illustrative of the intended API shape. For code that
-> compiles against 2.4.0, start from [`chapters/getting-started.md`](chapters/getting-started.md),
+> compiles against 2.4.1, start from [`chapters/getting-started.md`](chapters/getting-started.md),
 > which is verified against the current crate.
 
 ```rust
@@ -202,7 +202,7 @@ handling, WebChannel communication, and context menu customization.
 
 | | |
 |---|---|
-| **Version** | 2.4.0 |
+| **Version** | 2.4.1 |
 | **License** | [MIT](https://github.com/mikewolfli/rust-widgets/blob/main/LICENSE) |
 | **Repository** | [github.com/mikewolfli/rust-widgets](https://github.com/mikewolfli/rust-widgets) |
 | **Tests** | 4900+ |
