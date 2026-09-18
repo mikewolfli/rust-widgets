@@ -917,6 +917,31 @@ impl WidgetProperties for RibbonBar {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["tab_count", "current_tab", "expanded", "minimized", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `ribbon_bar` publishes.
+    ///
+    /// `clear` is the one genuine zero-argument action here: it drops every tab,
+    /// group and item, which is exactly what [`RibbonBar::clear`] does. `add_tab`
+    /// takes a title and `add_group` / `add_item` / `add_large_item` take the tab,
+    /// group and label they place, so a payload-less invocation of any of them is
+    /// refused as [`CapabilityAccessError::OutOfRange`] — the names are right and the
+    /// arguments are what is missing, which is not `UnknownCommand`.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "clear" => {
+                self.clear();
+                Ok(())
+            }
+            "add_tab" | "add_group" | "add_item" | "add_large_item" => {
+                Err(CapabilityAccessError::OutOfRange)
+            }
+            // Any other `set_foo` name carries its value through the property route,
+            // so the shared default reports that a payload is needed rather than
+            // claiming the control has never heard of it.
+            _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 // ── EventHandler trait ────────────────────────────────────────────────────────

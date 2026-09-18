@@ -148,6 +148,23 @@ impl WidgetProperties for Window {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `window` publishes.
+    ///
+    /// `close` is payload-free and emits the window's `closed` signal, so it
+    /// executes here; `set_title` carries the new title and is answered through the
+    /// property route, which is why a bare invocation is refused as
+    /// [`CapabilityAccessError::OutOfRange`].
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "close" => {
+                self.close();
+                Ok(())
+            }
+            "set_title" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for Window {

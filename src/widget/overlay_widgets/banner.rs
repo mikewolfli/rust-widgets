@@ -400,6 +400,32 @@ impl WidgetProperties for Banner {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `banner` publishes.
+    ///
+    /// `show` maps onto the widget's real `show`, re-showing the same control
+    /// for a new message. `dismiss` runs the real `dismiss`, which reports
+    /// `false` when the banner is already acknowledged or offers no dismiss
+    /// affordance, so that case is answered as needing one rather than as a
+    /// successful acknowledgement. `set_actions` and `activate_action` need the
+    /// labels and the action index respectively.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "show" => {
+                self.show();
+                Ok(())
+            }
+            "dismiss" => {
+                if self.dismiss() {
+                    Ok(())
+                } else {
+                    Err(CapabilityAccessError::OutOfRange)
+                }
+            }
+            "set_actions" | "activate_action" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for Banner {

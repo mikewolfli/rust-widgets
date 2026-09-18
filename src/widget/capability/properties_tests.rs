@@ -881,11 +881,13 @@ fn published_enum_tokens_are_accepted_by_their_control() {
 ///
 /// # Why the count is asserted
 ///
-/// The per-control rollout is in progress, so this test reports the remaining count
-/// rather than failing on it. Pinning the number means the figure in the round-33 log
-/// and the figure here cannot silently drift apart, and a round that implements a batch
-/// of commands must update both — which is the point: the progress is a fact to state,
-/// not a claim to make.
+/// Every published command must be either executed or explicitly reported as needing a
+/// payload (`OutOfRange`). A command the control does not implement comes back as
+/// `UnsupportedOnWidget` — `invoke_command` translates the trait's `UnknownCommand`
+/// into that, precisely so a caller is not sent looking for a different control. This
+/// test checks for *both* shapes: an earlier revision matched only `UnknownCommand`,
+/// which `invoke_command` never returns, so the mismatch list stayed empty and the
+/// assertion could not fail.
 #[test]
 fn published_commands_are_recognised_by_their_control() {
     let factory = WidgetFactory::new_with_defaults();
@@ -906,7 +908,8 @@ fn published_commands_are_recognised_by_their_control() {
         for command in capability.commands {
             total += 1;
             match factory.invoke_command(widget.as_mut(), command) {
-                Err(CapabilityAccessError::UnknownCommand) => {
+                Err(CapabilityAccessError::UnknownCommand)
+                | Err(CapabilityAccessError::UnsupportedOnWidget) => {
                     unknown.push((capability.canonical_name, command));
                 }
                 _ => recognised += 1,
@@ -915,9 +918,18 @@ fn published_commands_are_recognised_by_their_control() {
     }
 
     assert!(total > 0, "no capability publishes commands, so this test proves nothing");
-    // The floor rises as the rollout proceeds; it must never fall, because every
-    // command that was recognised stays recognised unless an implementation is
-    // removed — which this assertion turns into a failure.
+    // The contract documented on `WidgetProperties::command` is that this test
+    // "fails if any is refused". It used to collect `unknown` and then assert only
+    // `recognised >= 5`, so a published-but-unimplemented command was recorded in a
+    // `log::debug!` and otherwise ignored — the failure list was computed and never
+    // checked. A published command must now be either executed or explicitly
+    // reported as needing a payload (`OutOfRange`); the trait default's
+    // `UnknownCommand` is the registry/implementation disagreement this catches.
+    assert!(
+        unknown.is_empty(),
+        "capability tables publish commands the controls refuse with UnknownCommand, so the \
+         `commands:` list is a promise nobody keeps: {unknown:?} (recognised {recognised}/{total})"
+    );
     assert!(
         recognised >= 5,
         "fewer published commands are recognised than the implemented base-control set, so an \

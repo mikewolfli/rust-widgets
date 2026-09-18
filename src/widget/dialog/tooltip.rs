@@ -243,6 +243,27 @@ impl WidgetProperties for Tooltip {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["text", "shown", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `tooltip` publishes.
+    ///
+    /// `show` and `hide` map onto the widget's real methods and take no payload
+    /// (each also cancels any pending timer). `set_text` carries the text the
+    /// caller wants shown, so a bare invocation is reported as needing one
+    /// rather than being called unknown.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "show" => {
+                self.show();
+                Ok(())
+            }
+            "hide" => {
+                self.hide();
+                Ok(())
+            }
+            "set_text" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for Tooltip {

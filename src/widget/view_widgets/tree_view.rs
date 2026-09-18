@@ -257,6 +257,21 @@ impl WidgetProperties for TreeView {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `tree_view` publishes. Both are payload-free.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "clear_selection" => {
+                self.clear_selection();
+                Ok(())
+            }
+            "clear_focused_node" => {
+                self.clear_focused_node();
+                Ok(())
+            }
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Draw for TreeView {

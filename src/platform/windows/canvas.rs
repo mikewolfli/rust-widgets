@@ -22,6 +22,7 @@
 
 use crate::core::{ObjectId, Point, Rect};
 use crate::event::Event;
+use crate::platform::types::MousePhase;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use winapi::shared::minwindef::{LPARAM, LRESULT, UINT, WPARAM};
@@ -77,8 +78,13 @@ fn canvas_origin(hwnd: HWND) -> (i32, i32) {
 }
 
 /// Encodes a Rust string as a NUL-terminated UTF-16 buffer for Win32 APIs.
+///
+/// Delegates to [`WindowsPlatform::to_wide`] rather than keeping a second
+/// implementation: this file previously had its own `encode_utf16` copy, so the
+/// same contract existed twice and could drift (the shared one uses
+/// `OsStrExt::encode_wide`).
 fn to_wide(value: &str) -> Vec<u16> {
-    value.encode_utf16().chain(std::iter::once(0)).collect()
+    crate::platform::windows::types::WindowsPlatform::to_wide(value)
 }
 
 extern "system" {
@@ -160,14 +166,6 @@ unsafe extern "system" fn canvas_wnd_proc(
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
-}
-
-/// Which mouse event to synthesise.
-#[derive(Clone, Copy)]
-enum MousePhase {
-    Press,
-    Release,
-    Drag,
 }
 
 /// Returns the widget id painted by `hwnd`.

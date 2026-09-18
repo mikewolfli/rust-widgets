@@ -54,7 +54,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-rust_widgets = "2.4.1"
+rust_widgets = "2.4.2"
 ```
 
 The default feature set (`desktop`) pulls in the full desktop profile: GPU
@@ -119,23 +119,23 @@ the binary you need. Pick one option from each axis:
 ```toml
 # Desktop Linux with Wayland, keep everything:
 [dependencies]
-rust_widgets = { version = "2.4.1", features = ["desktop", "linux-wayland"] }
+rust_widgets = { version = "2.4.2", features = ["desktop", "linux-wayland"] }
 
 # Tablet with auto-detected OS:
 [dependencies]
-rust_widgets = { version = "2.4.1", default-features = false, features = ["tablet"] }
+rust_widgets = { version = "2.4.2", default-features = false, features = ["tablet"] }
 
 # Minimal embedded (no std):
 [dependencies]
-rust_widgets = { version = "2.4.1", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "2.4.2", default-features = false, features = ["embedded"] }
 
 # Mobile Android:
 [dependencies]
-rust_widgets = { version = "2.4.1", default-features = false, features = ["mobile", "android"] }
+rust_widgets = { version = "2.4.2", default-features = false, features = ["mobile", "android"] }
 
 # WASM web app:
 [dependencies]
-rust_widgets = { version = "2.4.1", default-features = false, features = ["mobile", "wasm", "touch"] }
+rust_widgets = { version = "2.4.2", default-features = false, features = ["mobile", "wasm", "touch"] }
 ```
 
 ### Build Profiles

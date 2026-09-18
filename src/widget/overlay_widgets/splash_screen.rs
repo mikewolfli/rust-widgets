@@ -248,6 +248,23 @@ impl WidgetProperties for SplashScreen {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["title", "subtitle", "progress", "skippable", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `splash_screen` publishes.
+    ///
+    /// `finish` maps onto the widget's real `finish`, which emits `finished`;
+    /// unmounting the control stays the host's decision. `set_progress` and
+    /// `set_title` carry the fraction and the title, so those are answered as
+    /// needing a payload rather than being called unknown.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "finish" => {
+                self.finish();
+                Ok(())
+            }
+            "set_progress" | "set_title" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for SplashScreen {

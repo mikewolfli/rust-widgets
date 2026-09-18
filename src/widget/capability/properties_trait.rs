@@ -248,8 +248,29 @@ pub trait WidgetProperties {
     /// capability publishes; `capability::properties_tests` calls every published name
     /// on a constructed control and fails if any is refused, so the list and the
     /// dispatch cannot drift.
+    ///
+    /// # The name convention
+    ///
+    /// Most published commands are the property route under a verb name:
+    /// `set_text` assigns `text`, `set_alignment` assigns `alignment`, `set_range`
+    /// assigns the range, and so on. Rather than repeat one `match` block per control
+    /// (which drifts the moment a capability table gains a name), this default applies
+    /// that convention: a `set_foo` / `set_foo_bar` name is accepted as *carrying a
+    /// payload*, and answered with `OutOfRange` — the same answer the hand-written
+    /// overrides give — because a payload-less call cannot supply the value the
+    /// property route needs. A name that is not a `set_*` verb is genuinely unknown.
+    ///
+    /// A control may still override this wholesale when it has payload-free commands
+    /// that really execute (`clear`, `next_page`, `toggle`, `trigger`, …); those are
+    /// checked by the same test, so an override cannot silently drop them either.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
-        let _ = name;
+        // `set_foo` / `set_foo_bar` → the value is supplied through the property
+        // route, so a bare invocation reports that it needs one. Matching on the
+        // prefix alone (rather than inspecting the first character after it) keeps
+        // this from rejecting a legitimate name like `set_h1_size`.
+        if name.starts_with("set_") {
+            return Err(CapabilityAccessError::OutOfRange);
+        }
         Err(CapabilityAccessError::UnknownCommand)
     }
 }

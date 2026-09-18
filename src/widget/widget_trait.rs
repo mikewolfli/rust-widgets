@@ -16,7 +16,7 @@ use crate::style::{Margin, Padding, WidgetStyle};
 pub trait Widget: EventHandler + Any {
     /// Returns shared base widget state for default trait delegation.
     ///
-    /// Every concrete widget must override this method (all 167 kinds do). The
+    /// Every concrete widget must override this method (all `WidgetKind` variants do). The
     /// default panics instead of silently returning a fake state, so a widget
     /// that forgets the override fails loudly on first use rather than corrupting
     /// geometry/visibility bookkeeping.

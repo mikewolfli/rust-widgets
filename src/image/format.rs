@@ -242,11 +242,16 @@ impl ImageData {
         if matches!(self, ImageData::Rgba8(_)) {
             return self.clone();
         }
-        let total = (width * height) as usize;
+        let total = (width as usize).saturating_mul(height as usize);
         match self {
+            // `chunks_exact` rather than `chunks`: a trailing partial pixel is a
+            // malformed buffer, and the last `chunks` slice would be shorter
+            // than the tuple being unpacked, panicking on `chunk[k]`. This
+            // matches the convention already used in `wgpu_backend/raster.rs`
+            // and `audio/format.rs`.
             ImageData::Rgb8(d) => {
                 let mut rgba = Vec::with_capacity(total * 4);
-                for chunk in d.chunks(3) {
+                for chunk in d.chunks_exact(3) {
                     rgba.push(chunk[0]);
                     rgba.push(chunk[1]);
                     rgba.push(chunk[2]);
@@ -266,7 +271,7 @@ impl ImageData {
             }
             ImageData::Grayscale16(d) => {
                 let mut rgba = Vec::with_capacity(total * 4);
-                for chunk in d.chunks(2) {
+                for chunk in d.chunks_exact(2) {
                     let g = (u16::from_be_bytes([chunk[0], chunk[1]]) >> 8) as u8;
                     rgba.push(g);
                     rgba.push(g);
@@ -277,7 +282,7 @@ impl ImageData {
             }
             ImageData::Rgba16(d) => {
                 let mut rgba = Vec::with_capacity(total * 4);
-                for chunk in d.chunks(8) {
+                for chunk in d.chunks_exact(8) {
                     rgba.push((u16::from_be_bytes([chunk[0], chunk[1]]) >> 8) as u8);
                     rgba.push((u16::from_be_bytes([chunk[2], chunk[3]]) >> 8) as u8);
                     rgba.push((u16::from_be_bytes([chunk[4], chunk[5]]) >> 8) as u8);
@@ -287,7 +292,7 @@ impl ImageData {
             }
             ImageData::Rgb16(d) => {
                 let mut rgba = Vec::with_capacity(total * 4);
-                for chunk in d.chunks(6) {
+                for chunk in d.chunks_exact(6) {
                     rgba.push((u16::from_be_bytes([chunk[0], chunk[1]]) >> 8) as u8);
                     rgba.push((u16::from_be_bytes([chunk[2], chunk[3]]) >> 8) as u8);
                     rgba.push((u16::from_be_bytes([chunk[4], chunk[5]]) >> 8) as u8);

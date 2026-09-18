@@ -207,6 +207,23 @@ impl WidgetProperties for DiffViewer {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `diff_viewer` publishes.
+    ///
+    /// `select_index` names which diff line to select, and the control has no
+    /// defensible default — line 0 of a two-sided diff is not "the interesting one",
+    /// it is just the first — so a bare invocation is refused as
+    /// [`CapabilityAccessError::OutOfRange`]: the name is valid and the index is what
+    /// is missing. The property layer treats `selected_index` as read-only on purpose
+    /// (see the note on `TimelineWidget` for the same rule), which is why the command
+    /// is the only route and why it must not invent an argument. `set_texts` carries
+    /// both snapshots.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "select_index" | "set_texts" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for DiffViewer {

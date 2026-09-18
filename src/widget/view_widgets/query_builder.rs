@@ -556,6 +556,23 @@ impl WidgetProperties for QueryBuilder {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `query_builder` publishes.
+    ///
+    /// All four mutate a row and need the caller to name it: `add_row` takes the
+    /// field, `remove_row` the index, and `toggle_conjunction` the conjunction to
+    /// switch to (the widget has `set_conjunction`, but a bare call cannot guess
+    /// which of the two the caller means). `set_fields` similarly takes the
+    /// fields list, so every name here is answered as needing a payload rather
+    /// than being called unknown.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "set_fields" | "add_row" | "remove_row" | "toggle_conjunction" => {
+                Err(CapabilityAccessError::OutOfRange)
+            }
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Draw for QueryBuilder {

@@ -756,37 +756,43 @@ imports shared types through `compat.rs` from `core`/`alloc`, so flipping on
 on std; the attribute below is the design intent, not yet enabled:
 
 ```rust
-// In no_std mode, HashMap → BTreeMap (via compat.rs)
-// Mutex → RefCell
-// Vec → MiniVec
-// String → MiniString
-// All trait implementations must be Send + Sync compatible
-
 // Design intent for a true no_std build; mini currently compiles on std.
+//
+// NOTE: this example previously imported `rust_widgets::embedded::{EmbeddedConfig,
+// ResourceManager, ResourceConstraint, LightweightWidget, LightweightConfig}` and
+// called `rust_widgets::embedded::init_embedded(..)`. No such module exists in the
+// crate (see the rewritten "Embedded Support" chapter), so it could never compile.
+// What follows uses the real reduced-profile surface instead.
 
-use rust_widgets::embedded::{
-    EmbeddedConfig, ResourceManager, ResourceConstraint,
-    LightweightWidget, LightweightConfig,
-};
+use rust_widgets::platform::{FrameBuffer, SurfaceGeometry};
 use rust_widgets::render::SoftwarePaintBackend;
 use rust_widgets::core::{Size, Color};
 
 fn mini_main() {
-    let config = EmbeddedConfig::new(Size::new(320, 240))
-        .low_memory();
-    rust_widgets::embedded::init_embedded(config);
+    // A stripped profile reports whether it can host a drawing surface rather
+    // than mounting one and returning a blank window.
+    if !rust_widgets::supports_surfaces() {
+        return;
+    }
 
-    let mut resources = ResourceManager::new(ResourceConstraint::Low);
     let mut backend = SoftwarePaintBackend::new(Size::new(320, 240), 1.0);
+
+    // The host allocates the surface; `SurfaceGeometry` carries an explicit
+    // stride because a GPU backbuffer is often padded to an alignment.
+    let geometry = SurfaceGeometry::tight(320, 240);
+    let mut frame = FrameBuffer::new();
+    if !frame.resize(geometry) {
+        return;
+    }
 
     loop {
         backend.begin_frame(Color::WHITE);
         // ... render minimal UI ...
         backend.end_frame();
 
-        if resources.is_under_pressure() {
-            // Emergency memory recovery
-        }
+        // `FrameBuffer::frame_mut()` hands out exactly the current region.
+        let pixels = frame.frame_mut();
+        let _ = pixels.len();
     }
 }
 ```

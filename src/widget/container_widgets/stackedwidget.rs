@@ -158,6 +158,31 @@ impl WidgetProperties for StackedWidget {
         // Mirrors `STACKED_WIDGET_PROPERTIES`.
         property_names_of!["widget_count", "current_index", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `stacked_widget` publishes.
+    ///
+    /// Both names address a specific child by its `ObjectId`, so neither can run on
+    /// the bare name alone: `add_widget` has no id to add and `remove_widget` has no
+    /// id to remove, and guessing either would mutate the page stack the caller did
+    /// not name. Both are therefore [`CapabilityAccessError::OutOfRange`] — the names
+    /// are valid and the ids are what is missing. The `Widget` trait's `ObjectId` is
+    /// the only address these lists accept, so there is no default that would mean
+    /// anything here.
+    ///
+    /// # Why the `set_*` arm
+    ///
+    /// `set_current_index` is published by this capability. The property layer also
+    /// serves `current_index`, but a *command* call supplies no value, so the trait
+    /// default reports that one is needed; an override that named only the non-`set_`
+    /// commands replaced that answer with `UnknownCommand` by accident, which is the
+    /// contradiction this arm removes.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "add_widget" | "remove_widget" => Err(CapabilityAccessError::OutOfRange),
+            _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for StackedWidget {

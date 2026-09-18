@@ -9,10 +9,18 @@ Thank you for your interest in contributing.
 3. Run checks (same as CI):
 
 ```bash
-cargo check --all-features --all-targets
+# The device profiles are mutually exclusive, so name one explicitly.
+# Do NOT use `--all-features`: it enables `desktop` and `mini` together, and
+# `mini` switches the crate to `no_std`, so that combination cannot compile.
+cargo check --all-targets --no-default-features --features desktop
 cargo fmt --all -- --check
-cargo clippy --all-features --all-targets -- -D warnings
-cargo test --all-features -q
+cargo clippy --all-targets --no-default-features --features desktop -- -D warnings
+cargo test --no-default-features --features desktop -q
+
+# Every profile must still build:
+for profile in desktop tablet mobile mini embedded; do
+  cargo check --no-default-features --features "$profile"
+done
 ```
 
 ## Branch and commit
@@ -23,9 +31,10 @@ cargo test --all-features -q
 
 ## Pull request checklist
 
-- [ ] Code compiles with `cargo check --all-features --all-targets`.
-- [ ] Passes `cargo clippy --all-features --all-targets -- -D warnings`.
-- [ ] Tests pass with `cargo test --all-features -q`.
+- [ ] Code compiles with `cargo check --all-targets --no-default-features --features desktop`.
+- [ ] Passes `cargo clippy --all-targets --no-default-features --features desktop -- -D warnings`.
+- [ ] Tests pass with `cargo test --no-default-features --features desktop -q`.
+- [ ] All five device profiles still build (`desktop`, `tablet`, `mobile`, `mini`, `embedded`).
 - [ ] Formatting passes `cargo fmt --all -- --check`.
 - [ ] Documentation is updated when behavior changes.
 - [ ] No unrelated refactoring.

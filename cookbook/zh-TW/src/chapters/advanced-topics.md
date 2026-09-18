@@ -750,37 +750,42 @@ panic = "abort"
 下面的屬性為設計意圖，尚未啟用：
 
 ```rust
-// 在 no_std 模式下，HashMap → BTreeMap（透過 compat.rs）
-// Mutex → RefCell
-// Vec → MiniVec
-// String → MiniString
-// 所有特徵實作必須與 Send + Sync 相容
-
 // 真正的 no_std 建置設計意圖；mini 目前在 std 上編譯。
+//
+// 注意：本範例先前引用了 `rust_widgets::embedded::{EmbeddedConfig,
+// ResourceManager, ResourceConstraint, LightweightWidget, LightweightConfig}`
+// 並呼叫 `rust_widgets::embedded::init_embedded(..)`。crate 中**不存在**該模組
+// （見已重寫的「嵌入式支援」章節），因此它根本無法編譯。下文改用真實存在的
+// 裁剪檔介面。
 
-use rust_widgets::embedded::{
-    EmbeddedConfig, ResourceManager, ResourceConstraint,
-    LightweightWidget, LightweightConfig,
-};
+use rust_widgets::platform::{FrameBuffer, SurfaceGeometry};
 use rust_widgets::render::SoftwarePaintBackend;
 use rust_widgets::core::{Size, Color};
 
 fn mini_main() {
-    let config = EmbeddedConfig::new(Size::new(320, 240))
-        .low_memory();
-    rust_widgets::embedded::init_embedded(config);
+    // 裁剪檔會**如實**回報能否承載繪製面，而不是先掛載再交回一個空白視窗。
+    if !rust_widgets::supports_surfaces() {
+        return;
+    }
 
-    let mut resources = ResourceManager::new(ResourceConstraint::Low);
     let mut backend = SoftwarePaintBackend::new(Size::new(320, 240), 1.0);
+
+    // 繪製面由宿主分配；`SurfaceGeometry` 攜帶顯式 stride，
+    // 因為 GPU backbuffer 往往按對齊填充。
+    let geometry = SurfaceGeometry::tight(320, 240);
+    let mut frame = FrameBuffer::new();
+    if !frame.resize(geometry) {
+        return;
+    }
 
     loop {
         backend.begin_frame(Color::WHITE);
         // ... 渲染最小化 UI ...
         backend.end_frame();
 
-        if resources.is_under_pressure() {
-            // 緊急記憶體回收
-        }
+        // `FrameBuffer::frame_mut()` 只交出目前區域。
+        let pixels = frame.frame_mut();
+        let _ = pixels.len();
     }
 }
 ```

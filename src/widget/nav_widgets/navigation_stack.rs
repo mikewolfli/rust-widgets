@@ -209,6 +209,36 @@ impl WidgetProperties for NavigationStack {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["page_count", "current_page", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `navigation_stack` publishes.
+    ///
+    /// A page can only come from the caller, so `push` needs one and is refused as
+    /// [`CapabilityAccessError::OutOfRange`], as does `set_current_page`, which names
+    /// the page to land on.
+    ///
+    /// # Why an empty stack is `OutOfRange`
+    ///
+    /// `pop` has nothing to remove at the root, and the honest report for that is
+    /// `OutOfRange` rather than `Ok(())`: the trait's documented meaning of success is
+    /// "the command ran", and a bare `pop` on an empty stack did not run. It is also
+    /// the answer the rest of the crate gives to the same shape — `ListBox`'s
+    /// index-addressed commands and `GanttWidget::select_task` all report a
+    /// missing/unavailable argument this way — so a caller does not have to learn a
+    /// second convention for page stacks.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "pop" => {
+                if self.pop().is_some() {
+                    Ok(())
+                } else {
+                    Err(CapabilityAccessError::OutOfRange)
+                }
+            }
+            "push" => Err(CapabilityAccessError::OutOfRange),
+            _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Draw for NavigationStack {

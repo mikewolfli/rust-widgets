@@ -252,6 +252,21 @@ impl WidgetProperties for Chip {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `chip` publishes.
+    ///
+    /// Neither published command has a meaning without an argument: `toggle_index`
+    /// names *which* chip to toggle, and `move_focus` takes a signed delta whose
+    /// direction cannot be inferred. Both are therefore refused as
+    /// [`CapabilityAccessError::OutOfRange`] — the names are valid and the arguments
+    /// are what is missing — rather than `UnknownCommand`, which would deny that the
+    /// control has them. `set_items` carries the item list.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "toggle_index" | "move_focus" | "set_items" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for Chip {

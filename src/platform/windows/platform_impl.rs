@@ -283,14 +283,17 @@ impl Platform for WindowsPlatform {
     }
 
     /// Hands the job file to the shell's `Print` verb via PowerShell.
+    ///
+    /// The path is passed through `$args[0]` rather than interpolated into the
+    /// command text. Interpolating it inside a single-quoted PowerShell string
+    /// meant a path containing `'` (e.g. `C:\tmp\it's.pdf`) would terminate the
+    /// literal and the remainder would execute as PowerShell code.
     fn spawn_print_job(&self, job_file: &std::path::Path) -> Result<(), String> {
         let status = std::process::Command::new("powershell")
             .arg("-NoProfile")
             .arg("-Command")
-            .arg(format!(
-                "Start-Process -FilePath '{}' -Verb Print -PassThru | Out-Null",
-                job_file.display()
-            ))
+            .arg("Start-Process -FilePath $args[0] -Verb Print -PassThru | Out-Null")
+            .arg(job_file)
             .status();
         if let Ok(status) = status {
             if status.success() {

@@ -152,6 +152,27 @@ impl WidgetProperties for FontDialog {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["modal", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `font_dialog` publishes.
+    ///
+    /// `accept` and `reject` are the dialog's own commit/cancel actions and map
+    /// onto its real `accept` / `reject`; neither takes a payload. `set_current_font`
+    /// needs a font, so a bare invocation is reported as needing one rather than
+    /// being called unknown.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "accept" => {
+                self.accept();
+                Ok(())
+            }
+            "reject" => {
+                self.reject();
+                Ok(())
+            }
+            "set_current_font" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 impl EventHandler for FontDialog {
     fn handle_event(&mut self, event: &Event) {

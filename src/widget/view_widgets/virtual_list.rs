@@ -355,6 +355,24 @@ impl WidgetProperties for VirtualList {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `virtual_list` publishes.
+    ///
+    /// `clear_data_source` is payload-free and executes here;
+    /// `fetch_visible_rows` is a query and belongs to the read path.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "clear_data_source" => {
+                self.clear_data_source();
+                Ok(())
+            }
+            "fetch_visible_rows" => {
+                let _ = self.fetch_visible_rows();
+                Ok(())
+            }
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Draw for VirtualList {

@@ -272,6 +272,25 @@ impl WidgetProperties for TimelineWidget {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `timeline_widget` publishes.
+    ///
+    /// `zoom` takes a factor, and the factor the control's own wheel handler uses for
+    /// a zoom-in is the one a bare command should mean — this mirrors `gantt_widget`,
+    /// which answers the same-named command with the same fixed factor, so the two
+    /// timelines cannot answer a single published name two different ways. `select_index`
+    /// names which item to select and `set_items` / `set_viewport` carry their own
+    /// payloads, so all three are [`CapabilityAccessError::OutOfRange`].
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "zoom" => {
+                self.zoom(1.2);
+                Ok(())
+            }
+            "select_index" | "set_items" | "set_viewport" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for TimelineWidget {

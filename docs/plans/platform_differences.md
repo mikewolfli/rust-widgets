@@ -232,7 +232,6 @@ fn supports_custom_widgets(&self) -> bool { true }
 
 于是混合开启时：
 
-* **不再编译失败** —— `mini` 与 `desktop` 同时开启也能 build 通过；
 * `supports_custom_widgets()` 在 `mini`/`embedded` 下**如实返回 `false`**，宿主据此拒绝
   挂载，而不是挂上去得到一个空白窗口。
 
@@ -246,16 +245,21 @@ fn supports_custom_widgets(&self) -> bool { true }
 | 配置 | 命令 |
 |---|---|
 | desktop（默认） | `cargo check --lib` |
+| tablet | `cargo check --lib --no-default-features --features tablet` |
+| mobile | `cargo check --lib --no-default-features --features mobile` |
 | mini | `cargo check --lib --no-default-features --features mini` |
 | embedded | `cargo check --lib --no-default-features --features embedded` |
 | harmony | `cargo check --lib --features harmony` |
-| 全部特性 | `cargo check --lib --all-features` |
 | Windows + mini | `cargo check --lib --target x86_64-pc-windows-gnu --features mini` |
 | Windows + harmony | `cargo check --lib --target x86_64-pc-windows-gnu --features harmony` |
 | Windows（默认） | `cargo check --lib --target x86_64-pc-windows-gnu` |
 
-其中 `--all-features` 是最容易漏的 —— 它会把 `desktop` 与 `mini` 同时打开，
-正是最初暴露这个问题的地方。
+> **更正（本轮）**：本表曾列出 `cargo check --lib --all-features`，并声称它是最容易漏的一项。
+> 该命令**从未编译通过**，也不可能通过：`--all-features` 同时打开 `desktop` 与 `mini`，
+> 而 `mini` 会切到 `no_std`，绝大多数代码解析 `String`/`Vec` 所依赖的 `alloc` prelude
+> 随之消失（实测 833 个错误，其中 537 个是 `cannot find type String/Vec`）。
+> 「混合开启也能 build 通过」这句话与事实不符，已删除；真正的覆盖是**每个 device profile
+> 各测一遍**（device profile 之间互斥）。CI 与 `CONTRIBUTING.md` 已同步改为 profile 矩阵。
 
 ## 现状对照表
 

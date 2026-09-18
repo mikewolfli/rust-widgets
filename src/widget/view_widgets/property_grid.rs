@@ -178,6 +178,27 @@ impl WidgetProperties for PropertyGrid {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["property_count", "selected_index", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `property_grid` publishes.
+    ///
+    /// `clear` is the one genuine zero-argument action here: it drops every
+    /// property and resets the selection, which is exactly what
+    /// [`PropertyGrid::clear`] does. `add_property` takes the row to add, so a
+    /// payload-less call is refused as [`CapabilityAccessError::OutOfRange`].
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "clear" => {
+                self.clear();
+                Ok(())
+            }
+            "add_property" => Err(CapabilityAccessError::OutOfRange),
+            // Any other `set_foo` name carries its value through the property route,
+            // so the shared default reports that a payload is needed rather than
+            // claiming the control has never heard of it.
+            _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Draw for PropertyGrid {

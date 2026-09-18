@@ -693,6 +693,26 @@ impl WidgetProperties for KanbanBoard {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `kanban_board` publishes.
+    ///
+    /// `cancel_drag` is the one published command whose whole effect is to discard
+    /// state, so it is the only one that can run with no argument and it executes
+    /// here. The other three all describe *what* to add or where to move it — a
+    /// `KanbanColumn`, a `KanbanCard`, a `CardPosition` pair — and the control has no
+    /// defensible default for any of them, so they are refused as
+    /// [`CapabilityAccessError::OutOfRange`]: the names are valid and the payloads
+    /// are what is missing.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "cancel_drag" => {
+                self.cancel_drag();
+                Ok(())
+            }
+            "add_column" | "add_card" | "move_card" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for KanbanBoard {

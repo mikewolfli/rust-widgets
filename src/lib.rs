@@ -78,8 +78,13 @@ pub mod compat;
 
 /// Action/command system.
 pub mod action;
-/// Desktop-only: Generic asset file watcher.
-#[cfg(feature = "desktop")]
+/// Generic asset file watcher.
+///
+/// Gated on the capability it actually needs (`desktop-runtime` supplies
+/// `notify` + `crossbeam-channel`), not on the `desktop` profile: `tablet` and
+/// `mobile` enable the same capability, so gating on the profile removed a
+/// documented public path from builds that can support it (principle #41).
+#[cfg(all(feature = "desktop-runtime", not(alloc_frugal)))]
 pub mod asset;
 /// Audio module — format detection, decoding, encoding, sample processing, and normalization.
 #[cfg(feature = "audio")]
@@ -386,11 +391,16 @@ const KIND_STATUS_BAR: widget::WidgetKind = widget::WidgetKind::StatusBar;
 const KIND_STATUS_BAR: widget::WidgetKind = widget::WidgetKind::Panel;
 
 /// `WidgetKind::ListView` where available, else the always-present fallback.
+///
+/// The variant's own gate is `#[cfg(widgets_unstripped)]` (`src/widget/kind.rs`),
+/// not `desktop_surface` — `tablet`/`mobile` are not desktop surfaces yet do ship
+/// the item-view control. Gating on `desktop_surface` here made
+/// `create_list_view(..)` hand back a `Panel` on exactly those two profiles.
 #[cfg(not(alloc_frugal))]
-#[cfg(desktop_surface)]
+#[cfg(widgets_unstripped)]
 const KIND_LIST_VIEW: widget::WidgetKind = widget::WidgetKind::ListView;
 #[cfg(not(alloc_frugal))]
-#[cfg(not(desktop_surface))]
+#[cfg(not(widgets_unstripped))]
 const KIND_LIST_VIEW: widget::WidgetKind = widget::WidgetKind::Panel;
 
 /// `WidgetKind::MessageBox` where available, else the always-present fallback.
@@ -906,32 +916,13 @@ fn kind_name(kind: widget::WidgetKind) -> alloc::string::String {
     widget::capability::factory_name_for_kind(kind).to_string()
 }
 
-/// See the `full_widgets` definition: the capability registry is gated with the
-/// full widget set, so without it there is nothing to consult. Deriving the name
-/// from the variant's own spelling follows the same convention the registry uses,
-/// which is what keeps the two in step.
-#[cfg(all(not(alloc_frugal), not(full_widgets)))]
-#[allow(dead_code)]
-fn kind_name(kind: widget::WidgetKind) -> alloc::string::String {
-    use alloc::string::ToString;
-    let debug = alloc::format!("{kind:?}");
-    let mut snake = alloc::string::String::with_capacity(debug.len() + 4);
-    for (index, ch) in debug.chars().enumerate() {
-        if ch.is_ascii_uppercase() {
-            // A run of capitals (`QRCode`) is one word, so only a capital after a
-            // lowercase letter or digit starts a new one.
-            let starts_word =
-                index > 0 && !debug.chars().nth(index - 1).is_some_and(|p| p.is_ascii_uppercase());
-            if starts_word {
-                snake.push('_');
-            }
-            snake.push(ch.to_ascii_lowercase());
-        } else {
-            snake.push(ch);
-        }
-    }
-    snake.to_string()
-}
+// A second `kind_name` used to live here, gated `not(full_widgets)` and marked
+// `#[allow(dead_code)]`. Its only caller is gated `device_profile`, and `build.rs`
+// derives `full_widgets` and `device_profile` from the same `has_profile`
+// predicate, so the two gates could never both hold: the ~20-line `Debug`-derived
+// snake_case converter was unreachable in *every* configuration, and the allow was
+// hiding that rather than expressing a `cfg`-gated keep-alive. Deleted, because a
+// registry-backed arm that cannot be called is not a fallback (principle #4).
 
 /// Stub for mini mode (no platform runtime, no windows).
 #[cfg(alloc_frugal)]

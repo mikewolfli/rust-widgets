@@ -488,6 +488,29 @@ impl WidgetProperties for ToolBar {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `tool_bar` publishes.
+    ///
+    /// `clear` is the one genuine zero-argument action here: it drops every item,
+    /// which is exactly what [`ToolBar::clear`] does. `add_action` takes an id and a
+    /// label and `add_separator` appends a divider whose position the caller may
+    /// care about, so a payload-less invocation of either is refused as
+    /// [`CapabilityAccessError::OutOfRange`] — the names are right and the argument
+    /// is what is missing, which is not `UnknownCommand`.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "clear" => {
+                self.clear();
+                Ok(())
+            }
+            "add_action" | "add_separator" => Err(CapabilityAccessError::OutOfRange),
+            // Any other `set_foo` name carries its value through the property route,
+            // so the shared default reports that a payload is needed rather than
+            // claiming the control has never heard of it.
+            _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for ToolBar {

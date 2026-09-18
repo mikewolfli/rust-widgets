@@ -514,6 +514,29 @@ impl WidgetProperties for ListBox {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `list_box` publishes.
+    ///
+    /// `clear` and `clear_selection` are payload-free and operate on live state,
+    /// so they execute here. `add_item` / `remove_item` need text or an index and
+    /// `set_selection_mode` needs a mode; those are answered through the property
+    /// route, so a payload-less call reports `OutOfRange` as elsewhere.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "clear" => {
+                self.clear();
+                Ok(())
+            }
+            "clear_selection" => {
+                self.clear_selection();
+                Ok(())
+            }
+            "add_item" | "remove_item" | "set_selection_mode" => {
+                Err(CapabilityAccessError::OutOfRange)
+            }
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for ListBox {

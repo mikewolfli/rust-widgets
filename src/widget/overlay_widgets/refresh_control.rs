@@ -43,6 +43,9 @@ pub struct RefreshControl {
     threshold: f32,
     state: RefreshState,
     content: Option<Box<dyn Widget>>,
+    /// Screen position where the in-progress pull gesture started. `None` when
+    /// no pull is being tracked.
+    drag_origin_y: Option<f32>,
     /// Emitted when the pull distance exceeds the threshold and the user releases.
     pub refresh_triggered: GenericSignal,
 }
@@ -59,6 +62,7 @@ impl RefreshControl {
             threshold: 60.0,
             state: RefreshState::Idle,
             content: None,
+            drag_origin_y: None,
             refresh_triggered: GenericSignal::new(),
         }
     }
@@ -327,18 +331,47 @@ impl EventHandler for RefreshControl {
             return;
         }
         match event {
-            Event::MousePress { pos: _, button } => {
+            Event::MousePress { pos, button } => {
                 if *button == 1 {
+                    self.drag_origin_y = Some(pos.y as f32);
                     self.start_pull();
                 }
             }
-            Event::MouseMove { .. } => {
-                // delta would come from scroll position in real integration
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { pos, .. } => {
+                // A pull-down is the same gesture whether it arrives as a mouse
+                // drag or a touch drag (tablet/mobile parity).
+                self.drag_origin_y = Some(pos.y as f32);
+                self.start_pull();
+            }
+            Event::MouseMove { pos } => {
+                // A downward drag is a positive pull. The delta is measured from
+                // the previous sample and the origin advances with it, so the
+                // pull distance accumulates across the whole gesture.
+                if let Some(origin) = self.drag_origin_y {
+                    let delta = pos.y as f32 - origin;
+                    self.drag_origin_y = Some(pos.y as f32);
+                    self.update_pull(delta);
+                }
+            }
+            #[cfg(feature = "touch")]
+            Event::TouchMove { pos, .. } => {
+                if let Some(origin) = self.drag_origin_y {
+                    let delta = pos.y as f32 - origin;
+                    self.drag_origin_y = Some(pos.y as f32);
+                    self.update_pull(delta);
+                }
             }
             Event::MouseRelease { pos: _, button } => {
                 if *button == 1 {
+                    self.drag_origin_y = None;
                     self.end_pull();
                 }
+            }
+            #[cfg(feature = "touch")]
+            Event::TouchEnd { .. } => {
+                self.drag_origin_y = None;
+                self.end_pull();
             }
             _ => {
                 self.base.handle_event(event);
@@ -382,6 +415,68 @@ mod tests {
         assert_eq!(rc.refresh_state(), RefreshState::Idle);
         assert_eq!(rc.pull_distance(), 0.0);
         assert!(!rc.is_refreshing());
+    }
+
+    #[test]
+    fn refresh_control_drag_events_drive_the_pull() {
+        // The pull must be drivable through the real input path, not only via
+        // the programmatic `update_pull` API — otherwise a host that forwards
+        // events gets a control that never refreshes.
+        let mut rc = make_refresh_control();
+        let captured = Arc::new(AtomicBool::new(false));
+        rc.refresh_triggered.connect({
+            let captured = Arc::clone(&captured);
+            move || {
+                captured.store(true, Ordering::SeqCst);
+            }
+        });
+
+        rc.handle_event(&Event::MousePress { pos: Point::new(100, 20), button: 1 });
+        assert_eq!(rc.refresh_state(), RefreshState::Dragging);
+
+        // Three 30px downward steps accumulate to 90px, past the 60px default.
+        rc.handle_event(&Event::MouseMove { pos: Point::new(100, 50) });
+        rc.handle_event(&Event::MouseMove { pos: Point::new(100, 80) });
+        rc.handle_event(&Event::MouseMove { pos: Point::new(100, 110) });
+        assert_eq!(rc.pull_distance(), 90.0);
+
+        rc.handle_event(&Event::MouseRelease { pos: Point::new(100, 110), button: 1 });
+        assert_eq!(rc.refresh_state(), RefreshState::Triggered);
+        assert!(rc.is_refreshing());
+        assert!(captured.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn refresh_control_upward_drag_does_not_pull() {
+        // Dragging up must not produce a negative pull that could later read as
+        // a threshold crossing.
+        let mut rc = make_refresh_control();
+        rc.handle_event(&Event::MousePress { pos: Point::new(100, 200), button: 1 });
+        rc.handle_event(&Event::MouseMove { pos: Point::new(100, 120) });
+        assert_eq!(rc.pull_distance(), 0.0);
+
+        rc.handle_event(&Event::MouseRelease { pos: Point::new(100, 120), button: 1 });
+        assert_eq!(rc.refresh_state(), RefreshState::Idle);
+        assert!(!rc.is_refreshing());
+    }
+
+    #[cfg(feature = "touch")]
+    #[test]
+    fn refresh_control_touch_drag_drives_the_pull() {
+        let mut rc = make_refresh_control();
+        rc.handle_event(&Event::TouchBegin { pos: Point::new(100, 20), touch_id: 0 });
+        rc.handle_event(&Event::TouchMove { pos: Point::new(100, 100), touch_id: 0 });
+        assert_eq!(rc.pull_distance(), 80.0);
+        rc.handle_event(&Event::TouchEnd { pos: Point::new(100, 100), touch_id: 0 });
+        assert!(rc.is_refreshing());
+    }
+
+    #[test]
+    fn refresh_control_move_without_press_is_ignored() {
+        let mut rc = make_refresh_control();
+        rc.handle_event(&Event::MouseMove { pos: Point::new(100, 300) });
+        assert_eq!(rc.pull_distance(), 0.0);
+        assert_eq!(rc.refresh_state(), RefreshState::Idle);
     }
 
     #[test]

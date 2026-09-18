@@ -77,9 +77,11 @@ pub struct FileDialog {
     pub files_selected: Signal1<Vec<String>>,
     /// Emitted by [`FileDialog::select_file`] with the newly chosen path.
     pub file_selected: Signal1<String>,
-    /// Emitted when the file under the cursor changes. Nothing in this widget
-    /// emits it — it has no file list of its own to move through — so it exists
-    /// for a host that drives the selection.
+    /// Emitted when the file under the cursor changes.
+    ///
+    /// The dialog has no file list of its own, so nothing here moves a cursor: a
+    /// host that owns the list reports movement through
+    /// [`FileDialog::set_current_file`], which emits this.
     pub current_changed: Signal1<String>,
     /// Emitted by [`FileDialog::accept`], after `files_selected`.
     pub accepted: GenericSignal,
@@ -232,6 +234,16 @@ impl FileDialog {
         self.selected_files = vec![path.clone()];
         self.file_selected.emit(path);
     }
+    /// Reports that the host's file cursor moved onto `path`, emitting
+    /// `current_changed`.
+    ///
+    /// This dialog draws no file list, so the cursor is the host's state; this is
+    /// the reporting path that makes the `current_changed` contract obtainable
+    /// rather than an advertised signal with no emitter. It does **not** change the
+    /// selection — see [`FileDialog::select_file`] for that.
+    pub fn set_current_file(&mut self, path: impl Into<String>) {
+        self.current_changed.emit(path.into());
+    }
     /// Confirms the dialog: emits `files_selected` with the whole selection (or
     /// nothing at all when the selection is empty), then `accepted`, then hides
     /// the dialog.
@@ -312,6 +324,23 @@ impl WidgetProperties for FileDialog {
 
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["title", "modal", BASE_PROPERTY_NAMES]
+    }
+
+    /// Runs one of the commands `file_dialog` publishes.
+    ///
+    /// `open` is the dialog's own accept action and maps onto the real `accept`;
+    /// it takes no payload. `set_mode` and `set_directory` carry the value the
+    /// caller wants and belong on the property/inherent route, so a bare
+    /// invocation is reported as needing one rather than being called unknown.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "open" => {
+                self.accept();
+                Ok(())
+            }
+            "set_mode" | "set_directory" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
     }
 }
 impl EventHandler for FileDialog {
@@ -483,5 +512,30 @@ mod tests {
         assert_eq!(*rejected.lock().expect("rejected lock"), 1);
         assert!(dialog.selected_files().is_empty());
         assert!(!dialog.is_visible());
+    }
+
+    #[test]
+    fn set_current_file_emits_current_changed_without_touching_the_selection() {
+        // `current_changed` was declared and documented but had no emitter, so a
+        // subscriber could connect and never fire. This pins the reporting path.
+        let mut dialog = FileDialog::new(Rect::new(0, 0, 420, 280));
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&seen);
+
+        dialog.current_changed.connect(move |path| {
+            if let Ok(mut v) = sink.lock() {
+                v.push((*path).clone());
+            }
+        });
+
+        dialog.set_current_file("/tmp/hovered.txt");
+        dialog.set_current_file("/tmp/other.txt");
+
+        assert_eq!(
+            *seen.lock().expect("seen lock"),
+            vec!["/tmp/hovered.txt".to_string(), "/tmp/other.txt".to_string()]
+        );
+        // Moving the cursor is not a selection.
+        assert_eq!(dialog.selected_file(), None);
     }
 }

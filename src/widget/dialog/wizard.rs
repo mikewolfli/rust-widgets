@@ -266,6 +266,34 @@ impl WidgetProperties for WizardDialog {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `wizard_dialog` publishes.
+    ///
+    /// `next` / `back` are payload-free navigation and map onto the widget's real
+    /// `next` / `previous`. `set_current_step` needs an index and is answered
+    /// through `go_to_step`, and the wizard has no terminal "finish" action (its
+    /// last step is simply reached), so both report `OutOfRange` for a
+    /// payload-less call rather than pretending to complete something.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "next" => {
+                if self.next() {
+                    Ok(())
+                } else {
+                    Err(CapabilityAccessError::OutOfRange)
+                }
+            }
+            "back" => {
+                if self.previous() {
+                    Ok(())
+                } else {
+                    Err(CapabilityAccessError::OutOfRange)
+                }
+            }
+            "set_current_step" | "finish" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Draw for WizardDialog {

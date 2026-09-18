@@ -372,6 +372,34 @@ impl WidgetProperties for Pagination {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `pagination` publishes.
+    ///
+    /// `next_page` / `previous_page` carry no payload and have a real return
+    /// value, so they execute here. A `false` result means the pager is already
+    /// at that end — an argument fault (there is nowhere to go), which is what
+    /// `OutOfRange` reports. `set_page` / `set_total` need a number and are
+    /// therefore answered through the property route (`page` / `total`).
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "next_page" => {
+                if self.next_page() {
+                    Ok(())
+                } else {
+                    Err(CapabilityAccessError::OutOfRange)
+                }
+            }
+            "previous_page" => {
+                if self.previous_page() {
+                    Ok(())
+                } else {
+                    Err(CapabilityAccessError::OutOfRange)
+                }
+            }
+            "set_page" | "set_total" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for Pagination {

@@ -317,6 +317,34 @@ impl WidgetProperties for CommandPalette {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `command_palette` publishes.
+    ///
+    /// `clear_query` runs bare: it empties the search box and has no argument to be
+    /// missing. `activate_highlighted` needs a highlighted row to act on, and a
+    /// palette that has been cleared or filtered down to nothing has none, so that
+    /// case reports [`CapabilityAccessError::OutOfRange`] — the same "nothing to act
+    /// on" answer used elsewhere in the crate rather than a success for a command that
+    /// ran nothing. `move_highlight` takes a signed delta whose direction cannot be
+    /// inferred, and the `set_*` names carry their values.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "clear_query" => {
+                self.clear_query();
+                Ok(())
+            }
+            "activate_highlighted" => {
+                if self.activate_highlighted() {
+                    Ok(())
+                } else {
+                    Err(CapabilityAccessError::OutOfRange)
+                }
+            }
+            "move_highlight" => Err(CapabilityAccessError::OutOfRange),
+            _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for CommandPalette {

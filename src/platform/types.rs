@@ -8,6 +8,34 @@ use crate::core::{ObjectId, Orientation, PlatformFamily};
 #[cfg(all(feature = "serde", widgets_unstripped))]
 use serde::{Deserialize, Serialize};
 
+/// Which mouse event a canvas callback should synthesise.
+///
+/// Shared by the macOS and Windows canvas backends, which both turn a native
+/// mouse callback into the library's own `Event`. Each backend previously defined
+/// its own byte-identical copy (same variants, same doc, same derive), which is
+/// exactly the duplication rule #54 forbids: adding a variant would have had to be
+/// done twice, and nothing would have failed if only one was updated.
+///
+/// Gated to exactly the builds where a consumer exists. A canvas backend is itself
+/// OS- and feature-gated (`platform/macos/canvas.rs` needs `cocoa-legacy`,
+/// `platform/windows/canvas.rs` needs Windows), so naming those same conditions
+/// here is what keeps this definition from becoming dead code on a build that
+/// merely *could* have a canvas. The condition mirrors the consumers rather than
+/// re-deriving a conjunction at each site.
+#[cfg(all(
+    widgets_unstripped,
+    any(all(target_os = "macos", feature = "cocoa-legacy"), target_os = "windows")
+))]
+#[derive(Clone, Copy)]
+pub(crate) enum MousePhase {
+    /// Button went down.
+    Press,
+    /// Button came up.
+    Release,
+    /// Pointer moved while the button was held.
+    Drag,
+}
+
 /// Whether the CUPS print clients (`lp` or `lpr`) are installed.
 ///
 /// Shared by the Unix-oriented backends (macOS, Linux, Wayland) so the detection

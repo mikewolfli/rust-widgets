@@ -145,6 +145,14 @@ def main() -> int:
 
     print(f"capability-matrix truthfulness: checked {checked} ✅ desktop cells, "
           f"{contradictions} contradiction(s)")
+    if checked == 0:
+        print(
+            "note: the matrix marks no ✅ cell — under the one-creation-mechanism policy every "
+            "widget is custom-painted on every platform, so there is no per-platform primitive "
+            "claim to verify here. The 🟦 cells are audited by "
+            "`check_control_route_matrix` (StateBacked vs Placeholder), which is the gate that "
+            "catches a control losing its real implementation."
+        )
     return 1 if contradictions else 0
 
 

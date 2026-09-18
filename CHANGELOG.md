@@ -5,16 +5,143 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
-## 2.4.1 (2026-09-19) — Capability-Event Audit, Decoder Hardening, Platform Isolation
+## 2.4.2 (2026-09-19) — Capability-Command Closure, Gesture Wiring, Decoder Hardening
 
 Backward compatible. **No signature was removed and no control was deleted.** A whole-library
 multi-pass audit (signal integrity / panic·unsafe / platform isolation / fake implementations /
-type-safety) surfaced and fixed 25+ defects across three categories: capability tables that
-advertised event names no control could ever emit, image/video decoders that trusted untrusted
-indices and dimensions, and upper-layer code that leaked OS idioms. Each fix is reverse-verified
-with a unit test or a build gate.
+type-safety / command dispatch / documentation truthfulness) surfaced and fixed 40+ defects.
+Each fix is reverse-verified with a unit test, a negative control, or a build gate.
 
-### Fixed
+### The headline defect: `commands:` was a promise half the library could not keep
+
+A capability's `commands:` list is advertised to generic consumers (property editors, language
+bindings, the declarative engine) as actions they may offer for that control. The gate that was
+supposed to prove the list matched the implementation checked for `UnknownCommand` — a value
+`invoke_command` **never returns**, because it translates that into `UnsupportedOnWidget`. The
+mismatch list therefore stayed empty and the assertion could not fail.
+
+With the gate corrected to check what is actually returned, **346 of 503 published commands were
+found unimplemented**: `Label::set_text`, `Menu::clear`, `Table::clear_selection`,
+`WebEngineView::reload`, and so on — names a caller could read, offer, and get nothing from.
+Fixed by:
+
+- A **trait-level convention** so 120+ controls do not each repeat a `match` block: a `set_foo`
+  command is documented and enforced as carrying a payload (answered `OutOfRange`, with the value
+  supplied through the property route). This alone resolved 209 names and is the single place the
+  rule lives, so it cannot drift per widget.
+- **Payload-free commands executed for real** where a method exists: `clear`, `clear_selection`,
+  `clear_focused_row`, `clear_focused_node`, `clear_model`, `clear_data_source`, `next_page`,
+  `previous_page`, `select_row`, `undo`, `toggle`, `show`, `dismiss`, `accept`, `reject`,
+  `trigger`, `open_menu`, `close_menu`, `zoom`, `submit`, `cancel_drag`, `activate_selected`,
+  `dismiss_selected`, `push_segment`, `activate_action`, `clear_query`, `activate_highlighted`,
+  `show_today`, `finish`, `close`, `load_url`, `fetch_visible_window`, `fetch_visible_rows` and
+  the rest of the ~90 implemented across the widget set.
+- **Seven commands deleted from the tables** because they named methods that do not exist at all
+  (`grid.select_cell`, `grid.clear_selection`, and `add_overlay` on the five finance charts that
+  have no overlay API — only `CandlestickChart` implements it). Inventing an implementation to
+  satisfy a table would have been the fabricated fix the project forbids; removing the promise is
+  the honest repair.
+
+The `400`-command regression floor is now `handled == total` plus a non-vacuity floor, and the
+`TextEdit` property contract was completed alongside it (`text`, `placeholder_text`, `max_length`,
+`read_only`, `line_wrap` were declared unwritable while real setters existed and the property
+route refused them).
+
+### Fixed (behavioural)
+
+- **`SwipeToDismiss` could not detect a swipe.** `MousePress` had a comment where its body should
+  be and `MouseMove` discarded the position, so `swipe_offset` was only ever written by the tests
+  themselves (they assigned the private field directly). Real drag tracking now accumulates the
+  pointer delta from the press origin, `TouchBegin`/`TouchMove`/`TouchEnd` share the same path for
+  tablet/mobile parity, and the tests drive real event sequences.
+- **`RefreshControl` never accumulated a pull.** `update_pull` existed but nothing called it from
+  `handle_event`, so `pull_distance >= threshold` was unreachable through input and
+  `refresh_triggered` could not fire from a gesture. The `MouseMove`/`TouchMove` arms now feed it,
+  with a test that drags past the threshold and one that drags upward (which must not pull).
+- **`KIND_LIST_VIEW` was gated on the wrong alias.** `WidgetKind::ListView` is gated
+  `widgets_unstripped`, but the constant asked `desktop_surface`, so `create_list_view(..)`
+  silently produced a **`Panel`** on `tablet` and `mobile` — a wrong control behind a valid id.
+- **`crate::asset` was profile-gated on `desktop`** although its only dependency
+  (`desktop-runtime`: `notify` + `crossbeam-channel`) is enabled by `tablet` and `mobile` too. The
+  module — and the `AssetWatcher`/`AssetEvent` path `MIGRATION_GUIDE.md` documents unconditionally
+  — was absent from those builds. Verified by compiling a probe against `tablet` before and after.
+- **`FileDialog::current_changed` had no emitter.** A documented, `pub` signal beside two that do
+  fire. Added `set_current_file` (the host-driven cursor report the docs described) plus a test.
+- **`CoreConfig::version` reported `1.1.3`** — four minor releases stale — while three cookbook
+  translations documented the output as the current version. It now derives from
+  `CARGO_PKG_VERSION`, so it cannot drift again.
+
+### Fixed (safety, platform isolation, panics)
+
+- **Unchecked PNG `row_bytes * height`** overflowed the *unfiltered* buffer length even though the
+  `stride * height` guard above it passed (`row_bytes < stride`), allowing a small allocation to
+  be indexed by the full scanline loop. Now `checked_mul`.
+- **JPEG sampling factors were unvalidated.** The SOF nibble (0..=15) drives
+  `(1 << h_sampling) * 8`; at the maximum it sizes a 262144×262144 i16 plane (~128 GiB), and an
+  allocation failure aborts rather than returns. Now rejected outside the standard's `1..=4`
+  range while the header is parsed.
+- **Windows print job had a command injection.** The job path was interpolated into a PowerShell
+  `-Command` string inside single quotes, so a path containing `'` terminated the literal and the
+  remainder executed as PowerShell. The path is now passed via `$args[0]`.
+- **`set_pixel_cpu_rgba8` computed its offset with wrapping `u32` arithmetic** (debug panic,
+  silent wrong-pixel write in release); now widened to `usize` with a bounds guard.
+- **`to_rgba8` indexed `chunks(n)` sub-slices** without a length check, panicking on a trailing
+  partial pixel from a publicly constructible `ImageData`; switched to `chunks_exact`, matching
+  `wgpu_backend/raster.rs` and `audio/format.rs`.
+- **EXIF `ifd_offset + 2` could overflow its own bounds guard** on a 32-bit target (a supported
+  profile); compared from the length side instead.
+- **`MousePhase` was defined twice** (byte-identical copies in the macOS and Windows canvas
+  backends) and is now hoisted into `platform/types.rs`, gated to exactly its consumers.
+- **`to_wide` was implemented twice** in the Windows backend, with two different encoders
+  (`encode_wide` vs `encode_utf16`); the local copy now delegates to the shared one.
+- **`clamp_to_range` was triplicated** across `date_edit`/`time_edit`/`date_time_edit`; the
+  inverted-range rule now lives once in `clamp_ordered_range`.
+- **An unreachable second `kind_name`** (~20 lines, `#[allow(dead_code)]`) was deleted: its gate
+  `not(full_widgets)` and its only call site's gate `device_profile` are derived from the same
+  `build.rs` predicate, so it could never run in any configuration.
+- **`check_apple_thread_safety.sh` was failing in CI since 2.4.1.** `activate_menu_item` used
+  `performSelector:withObject:`, which rule C bans. Replaced with AppKit's documented
+  `NSApplication -sendAction:to:from:`, which is also semantically closer (the item is passed as
+  the `from:` sender a menu action expects, not as a bare argument). The gate is green again.
+
+### Fixed (gates and documentation)
+
+- **`check_capability_matrix_truthfulness` was vacuous** — it verified only ✅ cells and the
+  generator emits none, so it checked zero cells and could not fail. It now reports that
+  explicitly and names the gate that does cover the 🟦 cells.
+- **`check_event_model_signal_first.sh` silently skipped `demo/`** — its path list said `demos`,
+  which does not exist, and the loop dropped it without a word. A missing path is now fatal.
+- **`--all-features` was documented as a check in CI, `CONTRIBUTING.md` and a design doc, but
+  cannot compile** (`desktop` + `mini` ⇒ `mini`'s `no_std` removes the `alloc` prelude: 537
+  `String`/`Vec` errors). It was described as a "regression tripwire"; a command that never builds
+  cannot trip anything. CI and the docs now use the mutually-exclusive **profile matrix**.
+- **The cookbook taught two modules that do not exist.** The `embedded` chapter (~660 lines across
+  three languages) imported `rust_widgets::embedded::{EmbeddedConfig, ResourceManager,
+  WidgetPool, DpiScaler, LightweightStyle, InputFilter, TouchPoint, …}` and the platform-support
+  chapter imported `platform::virtual_keyboard::{VirtualKeyboard, KeyboardNotch, KeyboardState}` —
+  none of which resolve. Both were rewritten against the real surface
+  (`supports_surfaces()`, `SurfaceGeometry`/`FrameBuffer`, `capabilities()`, `ImeBridge`) in all
+  three languages, and `tests/cookbook_embedded_paths_test.rs` now resolves every path the chapter
+  names so a rename breaks a build instead of silently re-orphaning the docs.
+- **`MIGRATION_GUIDE.md` listed `CssWatcher` as deleted** while `src/style/css_watcher.rs` defines
+  it and `src/asset/mod.rs` relies on it; corrected.
+- **Stale counts corrected**: `CHANGELOG`'s "5182 lib-tests" (the run it cites reports 4986),
+  `Cargo.toml`'s "60+ widgets" (179), `README`'s `tests-5100+` badge, `widget_trait.rs`'s "all 167
+  kinds" (179), and `ToolBox::current_changed`'s doc (it described a page-collapse concept the
+  widget does not have).
+
+### Verified in 2.4.2
+
+`cargo test --no-default-features --features desktop` reports 4986 lib-tests passed with 0
+failures across 28 test binaries, `cargo clippy --all-targets -- -D warnings` and `cargo fmt
+--check` are clean, all five device profiles build with zero warnings, and the gate suite
+(`check_widget_kind_count`, `check_control_route_matrix`, `check_control_has_tests`,
+`check_capability_feature_gates`, `check_event_producers`, `check_single_creation_mechanism`,
+`check_apple_thread_safety`, `check_profiles`, `check_binding_symbol_coverage`, …) passes. See
+[`docs/log/log-20260919-2.md`](docs/log/log-20260919-2.md) for per-fix evidence, including the
+negative controls used to prove the repaired gates can now fail.
+
+### Also fixed in this release (signal integrity, decoder hardening, platform isolation)
 
 - **23 capability `events:` lists advertised names no signal could emit.** `progress_bar` and
   `scroll_bar` claimed `range_changed`; `color_dialog` claimed `color_changed`/`hex_changed` (it
@@ -61,13 +188,6 @@ with a unit test or a build gate.
   and a stale `DateEdit::set_minimum_date` doc (which described pre-clamp behaviour) was corrected.
 - **Six stray `#[allow(unused_mut)]` and one redundant `#[allow(dead_code)]` were removed**, and
   the remaining `unsafe` blocks gained `// SAFETY:` justifications.
-
-### Verified in 2.4.1
-
-`cargo test --no-default-features --features desktop` reports 5182 lib-tests passed with 0
-failures, `cargo clippy --all-targets -- -D warnings` is clean, and all five device profiles
-(`desktop`/`tablet`/`mobile`/`embedded`/`mini`) build. See
-[`docs/log/log-20260919-1.md`](docs/log/log-20260919-1.md) for the per-fix evidence.
 
 ## 2.4.0 (2026-09-18) — Real Signals, Real Animation
 

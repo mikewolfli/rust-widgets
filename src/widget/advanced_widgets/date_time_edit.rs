@@ -280,14 +280,11 @@ impl DateTimeEdit {
     /// Moves the current value inside `minimum..=maximum` if it fell outside.
     ///
     /// Called by both bound setters so "the value is within the range" holds after
-    /// any sequence of calls. An inverted range resolves to `minimum`, which keeps
-    /// the widget usable instead of wedged at a value no write can replace.
+    /// any sequence of calls. See [`clamp_ordered_range`] for why an inverted range
+    /// resolves to `minimum` — it keeps the widget usable instead of wedged at a
+    /// value no write can replace.
     fn clamp_to_range(&mut self) {
-        if self.datetime < self.minimum {
-            self.datetime = self.minimum;
-        } else if self.datetime > self.maximum {
-            self.datetime = if self.minimum > self.maximum { self.minimum } else { self.maximum };
-        }
+        self.datetime = super::clamp_ordered_range(self.datetime, self.minimum, self.maximum);
     }
     /// Stores the display-format pattern.
     ///

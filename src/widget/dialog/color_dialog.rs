@@ -228,6 +228,19 @@ impl WidgetProperties for ColorDialog {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["current_color", "modal", "options_alpha", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `color_dialog` publishes.
+    ///
+    /// `set_hex` takes the hex text and `apply_preset` takes the preset index, so
+    /// neither can complete without a payload: they are refused as
+    /// [`CapabilityAccessError::OutOfRange`], meaning the name is valid and the
+    /// argument is what is missing.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "set_hex" | "apply_preset" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 impl EventHandler for ColorDialog {
     fn handle_event(&mut self, event: &Event) {

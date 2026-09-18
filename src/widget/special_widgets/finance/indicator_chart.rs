@@ -671,6 +671,23 @@ impl WidgetProperties for IndicatorChart {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["mode", "period", "show_reference_levels", "series", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `indicator_chart` publishes.
+    ///
+    /// The pane's own studies are selected through `mode` and `period`, not stacked
+    /// as overlays, so `add_overlay` — whose method exists only on
+    /// `CandlestickChart` — is answered as
+    /// [`CapabilityAccessError::UnsupportedOnWidget`]. That refusal is an honest
+    /// answer, not a fix: the `commands` list still advertises an action this control
+    /// cannot take, and reconciling it is a registry decision. The `set_*` write names
+    /// carry their values.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "add_overlay" => Err(CapabilityAccessError::UnsupportedOnWidget),
+            _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 #[cfg(test)]

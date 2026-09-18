@@ -485,6 +485,25 @@ impl WidgetProperties for EmojiPicker {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `emoji_picker` publishes.
+    ///
+    /// `choose` takes the *id* of the glyph to pick, so a bare invocation has
+    /// nothing to choose — answering [`CapabilityAccessError::OutOfRange`] says the
+    /// name is right and the payload is missing, rather than `UnknownCommand`,
+    /// which would deny a command the control really has. `set_glyphs`,
+    /// `set_categories` and `set_search` are payload-carrying writes for the same
+    /// reason (the trait default would already say `OutOfRange` for the three
+    /// `set_*` names; they are listed here so the published set is answered in one
+    /// place).
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "choose" | "set_glyphs" | "set_categories" | "set_search" => {
+                Err(CapabilityAccessError::OutOfRange)
+            }
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Draw for EmojiPicker {

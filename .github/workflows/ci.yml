@@ -211,11 +211,30 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Cargo test (all features)
-        run: cargo test --all-features -q
+      # `--all-features` is deliberately NOT used here: it turns `desktop` and
+      # `mini` on together, and `mini` puts the crate in `no_std` mode, so the
+      # combination cannot compile (537 `String`/`Vec` sites resolve through the
+      # `alloc` prelude that `mini` suppresses). It was described as a "regression
+      # tripwire", but a command that never builds cannot trip anything — it just
+      # left this job permanently red and the documented contributor workflow
+      # unrunnable. The device profiles are mutually exclusive, so the honest
+      # coverage is one build per profile, with the desktop profile carrying the
+      # full test and lint run.
+      - name: Cargo test (desktop profile)
+        run: cargo test --no-default-features --features desktop -q
 
       - name: Cargo clippy (deny warnings)
-        run: cargo clippy --all-features --all-targets -- -D warnings
+        run: >-
+          cargo clippy --all-targets --no-default-features --features desktop
+          -- -D warnings
+
+      - name: Profile build matrix
+        run: |
+          for profile in desktop tablet mobile mini embedded; do
+            echo "::group::check $profile"
+            cargo check --no-default-features --features "$profile"
+            echo "::endgroup::"
+          done
 
       - name: Cargo fmt check
         run: cargo fmt --all -- --check

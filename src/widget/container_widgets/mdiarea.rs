@@ -455,6 +455,27 @@ impl WidgetProperties for MdiArea {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["subwindow_count", "active_subwindow", "view_mode", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `mdi_area` publishes.
+    ///
+    /// All three address a sub-window by its `ObjectId` (or, for `add_subwindow`, a
+    /// `Rect` alongside it), so none can run on the bare name: there is no sub-window
+    /// the control could pick that the caller did not name, and activating an
+    /// arbitrary one would move focus the caller never asked to move. They are all
+    /// [`CapabilityAccessError::OutOfRange`] — valid names whose arguments are what
+    /// is missing. `set_view_mode` is a payload-carrying write published by the same
+    /// capability and is refused the same way; an override that named only the
+    /// non-`set_` commands dropped the trait default's `set_` acceptance, which is
+    /// what the final arm restores.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "add_subwindow" | "remove_subwindow" | "activate_subwindow" => {
+                Err(CapabilityAccessError::OutOfRange)
+            }
+            _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for MdiArea {

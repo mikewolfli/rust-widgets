@@ -23,8 +23,12 @@ pub struct ToolBox {
     items: Vec<ToolBoxItem>,
     current_index: usize,
     orientation: Orientation,
-    /// Emitted with the new page index whenever the expanded page changes.
-    /// Collapsing the current page does emit; the page vector is unchanged.
+    /// Emitted with the new page index whenever the current page changes through
+    /// [`ToolBox::set_current_index`] or user input. `clear()` resets the index to
+    /// `0` without emitting, because it also empties the page vector.
+    ///
+    /// (An earlier version of this comment described a "collapse" notification;
+    /// a toolbox page has no collapsed state, so that contract was never real.)
     pub current_changed: Signal1<usize>,
     /// Optional shared registry for child widget forwarding.
     registry: Option<Rc<RefCell<SimpleRegistry>>>,
@@ -299,6 +303,23 @@ impl WidgetProperties for ToolBox {
     fn property_names(&self) -> &'static [&'static str] {
         // Mirrors `TOOL_BOX_PROPERTIES`.
         property_names_of!["item_count", "current_index", "orientation", BASE_PROPERTY_NAMES]
+    }
+
+    /// Runs one of the commands `tool_box` publishes.
+    ///
+    /// `add_item` takes the item's label and `remove_item` takes the index to
+    /// remove, so neither can complete without a payload: they are refused as
+    /// [`CapabilityAccessError::OutOfRange`], meaning the name is valid and the
+    /// argument is what is missing.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "add_item" | "remove_item" => Err(CapabilityAccessError::OutOfRange),
+            // Any other `set_foo` name carries its value through the property route,
+            // so the shared default reports that a payload is needed rather than
+            // claiming the control has never heard of it.
+            _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
     }
 }
 

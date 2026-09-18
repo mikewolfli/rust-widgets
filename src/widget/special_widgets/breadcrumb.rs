@@ -209,6 +209,24 @@ impl WidgetProperties for Breadcrumb {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["segment_count", "selected_index", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `breadcrumb` publishes.
+    ///
+    /// `clear_segments` discards the path and needs no argument, so a bare
+    /// invocation performs it. `push_segment` needs the [`BreadcrumbSegment`] to
+    /// append, so it is [`CapabilityAccessError::OutOfRange`] — the name is right and
+    /// the payload is missing — while `set_segments` carries the whole path and is
+    /// answered through the same refusal.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "clear_segments" => {
+                self.clear_segments();
+                Ok(())
+            }
+            "push_segment" | "set_segments" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for Breadcrumb {

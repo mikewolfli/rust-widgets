@@ -471,6 +471,29 @@ impl WidgetProperties for Menu {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["title", "item_count", "hovered_index", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `menu` publishes.
+    ///
+    /// `clear` is the one genuine zero-argument action here: it drops every entry,
+    /// which is exactly what [`Menu::clear`] does. `add_action` and `add_separator`
+    /// append an entry and therefore need the label (or the entry) the caller wants
+    /// appended, so a payload-less invocation is refused as
+    /// [`CapabilityAccessError::OutOfRange`] — the names are right and the argument
+    /// is what is missing, which is not `UnknownCommand`.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "clear" => {
+                self.clear();
+                Ok(())
+            }
+            "add_action" | "add_separator" => Err(CapabilityAccessError::OutOfRange),
+            // Any other `set_foo` name carries its value through the property route,
+            // so the shared default reports that a payload is needed rather than
+            // claiming the control has never heard of it.
+            _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for Menu {

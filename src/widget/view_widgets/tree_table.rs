@@ -384,6 +384,24 @@ impl WidgetProperties for TreeTable {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `tree_table` publishes.
+    ///
+    /// `clear_model` is payload-free and executes here. `expand_row` /
+    /// `collapse_row` / `select_row` need a row index and `set_model` needs a
+    /// model object, so those are answered through the property route.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "clear_model" => {
+                self.clear_model();
+                Ok(())
+            }
+            "set_model" | "expand_row" | "collapse_row" | "select_row" => {
+                Err(CapabilityAccessError::OutOfRange)
+            }
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Draw for TreeTable {

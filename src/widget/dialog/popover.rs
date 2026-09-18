@@ -231,6 +231,19 @@ impl WidgetProperties for Popover {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["shown", "text", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `popover` publishes.
+    ///
+    /// Both names carry a value — `set_visible` the boolean the property route
+    /// already accepts, `set_text` the content the popover mirrors and cannot be
+    /// given as a bare string — so a payload-less invocation is reported as
+    /// needing one rather than being called unknown.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "set_visible" | "set_text" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Draw for Popover {

@@ -105,14 +105,25 @@ fn every_published_command_is_dispatched_by_its_control() {
          consumer would offer an action that silently does nothing (control, command): \
          {refused:?}"
     );
-    // The floor rises as commands are added, and may never fall: a capability whose
-    // command list shrank, or a control that lost its `command` override, lowers this
-    // number and is caught here rather than silently.
+    // The floor tracks the published total and may never fall *silently*: a
+    // capability whose command list shrank, or a control that lost its `command`
+    // override, lowers this number and is caught here.
+    //
+    // It was 500 while the registry published 503 names. Seven of those named
+    // methods that do not exist on their control (`grid.select_cell`,
+    // `grid.clear_selection`, and `add_overlay` on the five finance charts that
+    // have no overlay API), so they were removed from the tables rather than left
+    // as actions nobody could obtain. 496 is that corrected total, not a
+    // regression: `handled == total` is still asserted below.
+    assert_eq!(
+        handled, total,
+        "a control lost its `command` implementation: {handled}/{total} handled, refused: \
+         {refused:?}"
+    );
     assert!(
-        handled >= 500,
-        "fewer published commands are handled than the registry declares: {handled}/{total} — \
-         a control lost its `command` implementation, or the registry stopped publishing a \
-         list it still advertises"
+        total >= 496,
+        "fewer commands are published than the registry declares: {total} — a capability \
+         stopped advertising a list it still implements"
     );
 }
 

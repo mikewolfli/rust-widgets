@@ -249,6 +249,23 @@ impl WidgetProperties for GanttWidget {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `gantt_widget` publishes.
+    ///
+    /// `zoom` is payload-free here: a bare invocation zooms in around the
+    /// centre, which is the direction the affordance always offers, so the
+    /// widget's real `zoom` receives a fixed factor. `set_tasks`, `set_viewport`
+    /// and `select_task` need the tasks, the bounds and the index respectively.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "zoom" => {
+                self.zoom(1.25);
+                Ok(())
+            }
+            "set_tasks" | "set_viewport" | "select_task" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for GanttWidget {

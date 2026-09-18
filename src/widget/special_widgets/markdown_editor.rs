@@ -262,6 +262,39 @@ impl WidgetProperties for MarkdownEditor {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `markdown_editor` publishes.
+    ///
+    /// `toggle_preview_mode` and `undo` are the genuine zero-argument actions here;
+    /// `undo` reports `false` when there is nothing to undo, which is the "could not
+    /// handle it" case, so it is answered with
+    /// [`CapabilityAccessError::OutOfRange`] rather than a success that did nothing.
+    /// `append_line` takes the line to append and `set_text` / `set_preview_mode`
+    /// assign state through the property route, so those are refused the same way —
+    /// the names are right and the payload is what is missing.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "toggle_preview_mode" => {
+                self.toggle_preview_mode();
+                Ok(())
+            }
+            "undo" => {
+                if self.undo() {
+                    Ok(())
+                } else {
+                    Err(CapabilityAccessError::OutOfRange)
+                }
+            }
+            "append_line" | "set_text" | "set_preview_mode" => {
+                Err(CapabilityAccessError::OutOfRange)
+            }
+            // Any other `set_foo` name carries its value through the property route,
+            // so the shared default reports that a payload is needed rather than
+            // claiming the control has never heard of it.
+            _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for MarkdownEditor {

@@ -135,6 +135,19 @@ impl WidgetProperties for BottomSheet {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["expanded", "peek_height", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `bottom_sheet` publishes.
+    ///
+    /// Both names carry a payload, so they are answered through the property
+    /// route (`expanded` / `peek_height`). The trait default would answer
+    /// `UnknownCommand` for names the capability does publish, which
+    /// `invoke_command` reports as a registry/implementation disagreement.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "set_expanded" | "set_peek_height" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Draw for BottomSheet {

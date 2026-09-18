@@ -49,7 +49,12 @@ pub mod macos;
 /// in the `native` sub-module, which is `#[cfg(all(target_os = "macos",
 /// feature = "macos"))]`-gated; elsewhere the backend runs in pure state
 /// mode. See BLUE14 D-1 for the precedent (`ime_windows`).
-#[cfg(any(feature = "macos", feature = "macos"))]
+// The second arm must name the *legacy* selector, not repeat `macos`:
+// `cargo build --features macos-legacy` turns on `cocoa-legacy` without
+// `macos`, so a duplicated `feature = "macos"` would match neither arm and
+// this module would silently vanish from a build that explicitly asked for a
+// macOS backend. Mirrors `src/platform/runtime.rs` and `macos/macos_bridge.rs`.
+#[cfg(any(feature = "macos", feature = "cocoa-legacy"))]
 pub mod macos_objc2;
 #[cfg(feature = "mobile-api")]
 pub mod mobile;

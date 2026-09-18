@@ -330,6 +330,33 @@ impl WidgetProperties for VirtualTable {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `virtual_table` publishes.
+    ///
+    /// `clear_data_source` is payload-free and executes here;
+    /// `fetch_visible_window` is a *query*, so it belongs to the read path (the
+    /// `visible_window` property) rather than an action. The remaining names need
+    /// a payload and are answered through the property route.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "clear_data_source" => {
+                self.clear_data_source();
+                Ok(())
+            }
+            "fetch_visible_window" => {
+                let _ = self.fetch_visible_window();
+                Ok(())
+            }
+            "set_data_source"
+            | "set_scroll_row"
+            | "set_scroll_column"
+            | "set_row_height"
+            | "set_column_width"
+            | "set_overscan_rows"
+            | "set_overscan_columns" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for VirtualTable {

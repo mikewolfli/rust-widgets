@@ -197,6 +197,23 @@ impl WidgetProperties for SegmentedControl {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["item_count", "selected_index", "selected_id", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `segmented_control` publishes.
+    ///
+    /// `move_selection` takes a signed delta, and the affordance the control itself
+    /// offers for a bare move is "advance one": its right-arrow handler calls
+    /// `move_selection(1)`. There is no way to express a direction without an
+    /// argument, so rather than guess one — which would silently do something the
+    /// caller did not ask for — the name is refused as
+    /// [`CapabilityAccessError::OutOfRange`], meaning the name is valid and the
+    /// argument is what is missing. `set_items` carries the item list and is refused
+    /// for the same reason.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "move_selection" | "set_items" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for SegmentedControl {

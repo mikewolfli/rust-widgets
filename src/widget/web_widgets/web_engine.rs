@@ -680,6 +680,43 @@ impl WidgetProperties for WebEngineView {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["url", "loading", "title", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `web_engine_view` publishes.
+    ///
+    /// `reload`, `go_back`, `go_forward` and `stop` are the browser's own
+    /// payload-free navigation controls — the same four a toolbar's buttons drive —
+    /// so a bare invocation performs them. Each is already guarded by the view's own
+    /// state: going back with no history is a no-op, stopping when nothing is loading
+    /// is a no-op, and reloading a view with no URL does nothing. Those are the right
+    /// outcomes for a control and not errors, so they answer `Ok(())`: the command
+    /// *ran*, it simply had nothing to change. Refusing them instead would make the
+    /// four buttons a toolbar is built from unusable through the command layer on a
+    /// freshly mounted view, which is the one state a toolbar always starts in.
+    /// `load_url` needs the URL to load, which is the one thing the command name
+    /// cannot supply, and `set_url` is the same write under its property name.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "reload" => {
+                self.reload();
+                Ok(())
+            }
+            "go_back" => {
+                self.go_back();
+                Ok(())
+            }
+            "go_forward" => {
+                self.go_forward();
+                Ok(())
+            }
+            "stop" => {
+                self.stop();
+                Ok(())
+            }
+            "load_url" => Err(CapabilityAccessError::OutOfRange),
+            _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 use crate::render::RenderContext;

@@ -187,7 +187,7 @@ methods from that impl — they are no longer part of the contract.
 | `platform::detector::DeviceEnvironment` | Deleted (no in-tree consumer) |
 | `platform::virtual_keyboard::VirtualKeyboard` | Deleted (no in-tree consumer) |
 | `render::text_cache::TextCache` | Deleted (no in-tree consumer) |
-| `style::css_watcher::CssWatcher` | Deleted (no in-tree consumer) |
+| `style::css_watcher::CssWatcher` | **Still present** — `rust_widgets::style::css_watcher::CssWatcher` (`src/style/css_watcher.rs`). This row previously claimed deletion while the type was live and used by `src/asset/mod.rs`; corrected. |
 | `widget::overlay_widgets::pull_to_refresh` | `rust_widgets::widget::PullToRefresh` (unchanged) |
 
 **ABI is unchanged**: `rw_bindings_api_version` remains `8`, and no exported `rw_*`

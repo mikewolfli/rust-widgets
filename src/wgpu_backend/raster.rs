@@ -1312,7 +1312,18 @@ fn box_blur_region_cpu(pixels: &mut [u8], width: u32, height: u32, region: Pixel
 }
 
 fn set_pixel_cpu_rgba8(pixels: &mut [u8], width: u32, x: u32, y: u32, color: Rgba8) {
-    let offset = ((y * width + x) * 4) as usize;
+    // Widened to `usize` before multiplying: in `u32` the product wraps for a
+    // large `y`, which in debug panics and in release silently writes a
+    // correctly-in-range but wrong pixel. The bounds check then makes the
+    // remaining out-of-range case (geometry beyond the framebuffer) a no-op
+    // instead of a panic, matching the callers' pre-clipping expectation.
+    let offset = y as usize * width as usize + x as usize;
+    let Some(offset) = offset.checked_mul(4) else {
+        return;
+    };
+    if offset + 3 >= pixels.len() {
+        return;
+    }
     pixels[offset] = color.r;
     pixels[offset + 1] = color.g;
     pixels[offset + 2] = color.b;

@@ -333,6 +333,40 @@ impl WidgetProperties for SplitButton {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["text", "action_count", "menu_open", "row_height", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `split_button` publishes.
+    ///
+    /// `open_menu` and `close_menu` are the genuine zero-argument actions here.
+    /// `trigger_primary` acts on the primary action and reports `false` when there
+    /// is no action to trigger, which is the "could not handle it" case, so it is
+    /// answered with [`CapabilityAccessError::OutOfRange`] rather than a success
+    /// that did nothing. `add_action` takes the action to add, so it is refused the
+    /// same way — the name is right and the argument is what is missing.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "open_menu" => {
+                self.open_menu();
+                Ok(())
+            }
+            "close_menu" => {
+                self.close_menu();
+                Ok(())
+            }
+            "trigger_primary" => {
+                if self.trigger_primary() {
+                    Ok(())
+                } else {
+                    Err(CapabilityAccessError::OutOfRange)
+                }
+            }
+            "add_action" => Err(CapabilityAccessError::OutOfRange),
+            // Any other `set_foo` name carries its value through the property route,
+            // so the shared default reports that a payload is needed rather than
+            // claiming the control has never heard of it.
+            _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for SplitButton {

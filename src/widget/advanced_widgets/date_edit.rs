@@ -344,17 +344,10 @@ impl DateEdit {
     /// Moves the current date inside `minimum..=maximum` if it fell outside.
     ///
     /// Called by every bound setter so the invariant "the value is within the range"
-    /// holds after any sequence of calls. When the range is inverted the minimum is
-    /// treated as authoritative, which keeps this total (it always terminates with a
-    /// value that `set_date` would accept).
+    /// holds after any sequence of calls. The inverted-range rule lives in
+    /// [`clamp_ordered_range`], shared with the sibling time widgets.
     fn clamp_to_range(&mut self) {
-        if self.date < self.minimum {
-            self.date = self.minimum;
-        } else if self.date > self.maximum {
-            // Only reachable when `minimum <= maximum`; an inverted range was already
-            // resolved to `minimum` by the branch above or by the comparison failing.
-            self.date = if self.minimum > self.maximum { self.minimum } else { self.maximum };
-        }
+        self.date = super::clamp_ordered_range(self.date, self.minimum, self.maximum);
     }
     /// Stores the display-format pattern.
     ///

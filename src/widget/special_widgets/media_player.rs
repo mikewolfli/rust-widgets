@@ -302,6 +302,38 @@ impl WidgetProperties for MediaPlayer {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `media_player` publishes.
+    ///
+    /// `clear_source`, `play` and `pause` are payload-free transport actions that
+    /// flip state the control already owns, so a bare invocation performs them.
+    /// `play` reports whether it could start: with no source loaded it returns
+    /// `false`, and reporting success for playback that did not begin is exactly the
+    /// silent-success failure this contract exists to prevent, so that case is
+    /// [`CapabilityAccessError::OutOfRange`] — the same "argument missing" answer the
+    /// index-addressed commands elsewhere in the crate give. `seek_to` needs the
+    /// target position and is answered through the property route for the same reason.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "clear_source" => {
+                self.clear_source();
+                Ok(())
+            }
+            "play" => {
+                if self.play() {
+                    Ok(())
+                } else {
+                    Err(CapabilityAccessError::OutOfRange)
+                }
+            }
+            "pause" => {
+                self.pause();
+                Ok(())
+            }
+            "seek_to" | "set_source" | "set_volume" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for MediaPlayer {

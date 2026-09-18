@@ -264,16 +264,30 @@ pub struct CoreConfig {
     pub capabilities: PlatformCapabilities,
     /// Core library version the caller was compiled against, used for the
     /// major-only compatibility check in [`Version::is_compatible_with`].
+    ///
+    /// Populated from [`CoreConfig::library_version`], which reads the crate's own
+    /// `CARGO_PKG_VERSION` so this cannot drift from the released version.
     pub version: Version,
 }
 impl CoreConfig {
+    /// The library version this build was compiled from.
+    ///
+    /// Derived from `CARGO_PKG_VERSION` rather than written by hand, so the
+    /// compatibility handshake cannot report a version the crate no longer is. A
+    /// hand-written literal here went stale for four minor releases while three
+    /// cookbook translations documented the output as the current version.
+    pub fn library_version() -> Version {
+        Version::parse_str(env!("CARGO_PKG_VERSION"))
+            .expect("CARGO_PKG_VERSION is always a valid major.minor.patch version")
+    }
+
     /// Creates default desktop configuration.
     pub fn desktop() -> Self {
         Self {
             profile: RuntimeProfile::Full,
             platform: PlatformFamily::Desktop,
             capabilities: PlatformCapabilities::desktop(),
-            version: Version::new(1, 1, 3),
+            version: Self::library_version(),
         }
     }
     /// Creates default embedded configuration.
@@ -282,7 +296,7 @@ impl CoreConfig {
             profile: RuntimeProfile::Embedded,
             platform: PlatformFamily::Embedded,
             capabilities: PlatformCapabilities::embedded(),
-            version: Version::new(1, 1, 3),
+            version: Self::library_version(),
         }
     }
     /// Creates default mobile configuration.
@@ -291,7 +305,7 @@ impl CoreConfig {
             profile: RuntimeProfile::Full,
             platform: PlatformFamily::Mobile,
             capabilities: PlatformCapabilities::mobile(),
-            version: Version::new(1, 1, 3),
+            version: Self::library_version(),
         }
     }
 }
@@ -415,7 +429,10 @@ mod tests {
         let desktop = CoreConfig::desktop();
         assert_eq!(desktop.profile, RuntimeProfile::Full);
         assert_eq!(desktop.platform, PlatformFamily::Desktop);
-        assert_eq!(desktop.version, Version::new(1, 1, 3));
+        // Must equal the crate's own version, not a literal that goes stale
+        // independently of `Cargo.toml`.
+        assert_eq!(desktop.version, CoreConfig::library_version());
+        assert_eq!(desktop.version.major, env!("CARGO_PKG_VERSION_MAJOR").parse::<u16>().unwrap());
 
         let embedded = CoreConfig::embedded();
         assert_eq!(embedded.profile, RuntimeProfile::Embedded);

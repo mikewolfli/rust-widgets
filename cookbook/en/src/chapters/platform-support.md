@@ -748,55 +748,41 @@ contract — ensuring deterministic behavior in all environments.
 
 ---
 
-## 12. Virtual Keyboard (Mobile)
+## 12. On-Screen Keyboard (Mobile)
 
-The `VirtualKeyboard` controller manages on-screen keyboard lifecycle and
-layout adaptation for touch-based text input.
+> **This section previously documented `rust_widgets::platform::virtual_keyboard::{VirtualKeyboard, KeyboardNotch, KeyboardState}`.**
+> No such module exists in the crate — it was removed before 2.0.0 (see
+> [`docs/MIGRATION_GUIDE.md`](../../../docs/MIGRATION_GUIDE.md), which lists
+> `platform::virtual_keyboard::VirtualKeyboard` as deleted). The example it showed
+> could never compile. It is replaced below with the APIs that do exist.
+
+The library does **not** own the on-screen keyboard. A soft keyboard is a host
+concern: iOS and Android show and hide it through the system, and the platform
+layer reports the resulting facts so layout code can react. The observable
+surface is the input-method (IME) contract plus the reported capabilities:
 
 ```rust
-use rust_widgets::platform::virtual_keyboard::{
-    VirtualKeyboard, KeyboardNotch, KeyboardState,
-};
-use rust_widgets::core::Rect;
+use rust_widgets::platform::{backend_name, capabilities, get_platform};
 
-let mut vkb = VirtualKeyboard::new();
+// Ask the backend what it is. There is no `cfg(target_os)` in caller code:
+// the answer is a runtime fact.
+println!("backend: {}", backend_name());
 
-// Request keyboard for a focused text field
-vkb.request_show(
-    text_field_id,
-    Rect::new(0, 700, 200, 40),  // Widget rect in screen coords
-    800,                           // Screen height
-    KeyboardNotch::new(300),       // Keyboard overlay height
-);
+// Text entry on touch devices goes through the input-method surface. Each
+// backend implements the `ImeBridge` trait (see `src/platform/ime.rs`); a host
+// drives composition through the platform's IME entry points rather than
+// through a keyboard-lifecycle object the library would have to invent.
+let _ = get_platform();
 
-// Check state
-assert_eq!(vkb.state(), KeyboardState::Showing);
-assert!(vkb.is_keyboard_active());
-
-// Transition to visible
-vkb.on_shown();
-
-// Apply layout shift to keep the widget visible
-let mut widget_rect = Rect::new(10, 200, 100, 30);
-vkb.apply_layout_shift(&mut widget_rect);
-// widget_rect.y is now shifted upward if it would be covered
-
-// Hide keyboard
-vkb.request_hide();
-vkb.on_hidden();
-assert_eq!(vkb.state(), KeyboardState::Hidden);
-
-// Reset all state (e.g., on window deactivation)
-vkb.reset();
+// Capabilities are facts the backend reports, so the same caller code runs on
+// every platform and adapts at runtime.
+let caps = capabilities();
+println!("ime: {}", caps.ime);
 ```
 
-### State Machine
-
-```
-Hidden → (request_show) → Showing → (on_shown) → Visible
-                                                      ↓
-Hidden ← (on_hidden) ← Hiding ← (request_hide) ←─────┘
-```
+Note the capability you check for text entry is `ime`; there is no separate
+"soft keyboard" flag, because whether the keyboard is hardware or on-screen is
+the host's business, while *IME composition* is the part the library supports.
 
 ---
 

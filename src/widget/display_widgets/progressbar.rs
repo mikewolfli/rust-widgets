@@ -223,6 +223,23 @@ impl WidgetProperties for ProgressBar {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `progress_bar` publishes.
+    ///
+    /// Every published name carries a payload (`value`, `orientation`, or the
+    /// two-number range), so each is answered through the property route with a
+    /// value — `value` / `orientation` / `minimum` + `maximum`. Reporting
+    /// `OutOfRange` for a payload-less call is the same convention the sibling
+    /// display controls (`lcd_number`, `scrollbar`, `slider`) already use, and it
+    /// is what an absent `command` override cannot do: the trait default answers
+    /// `UnknownCommand`, which `invoke_command` reports as a registry/
+    /// implementation disagreement for a name the capability does publish.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "set_value" | "set_orientation" | "set_range" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for ProgressBar {

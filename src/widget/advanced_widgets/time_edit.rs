@@ -310,13 +310,9 @@ impl TimeEdit {
     /// Moves the current time inside `minimum..=maximum` if it fell outside.
     ///
     /// Called by every bound setter so "the value is within the range" holds after
-    /// any sequence of calls. An inverted range resolves to `minimum`.
+    /// any sequence of calls. See [`clamp_ordered_range`] for the inverted-range rule.
     fn clamp_to_range(&mut self) {
-        if self.time < self.minimum {
-            self.time = self.minimum;
-        } else if self.time > self.maximum {
-            self.time = if self.minimum > self.maximum { self.minimum } else { self.maximum };
-        }
+        self.time = super::clamp_ordered_range(self.time, self.minimum, self.maximum);
     }
     /// Stores the display-format pattern.
     ///

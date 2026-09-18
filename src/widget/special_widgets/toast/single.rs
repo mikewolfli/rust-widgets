@@ -200,6 +200,23 @@ impl WidgetProperties for Toast {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["message", "level", "ttl_ms", "dismissible", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `toast` publishes.
+    ///
+    /// `dismiss` maps onto the widget's real `dismiss` and emits `dismissed`
+    /// with the current message. `set_message` and `set_level` carry the text
+    /// and the severity token respectively, so a bare invocation is reported as
+    /// needing one rather than being called unknown.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "dismiss" => {
+                self.dismiss();
+                Ok(())
+            }
+            "set_message" | "set_level" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for Toast {

@@ -649,6 +649,23 @@ impl WidgetProperties for TabBar {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `tab_bar` publishes.
+    ///
+    /// `add_tab` takes the new tab's title and `remove_tab` takes the index to
+    /// remove, so neither can complete without a payload: they are refused as
+    /// [`CapabilityAccessError::OutOfRange`], meaning the name is valid and the
+    /// argument is what is missing.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "add_tab" | "remove_tab" => Err(CapabilityAccessError::OutOfRange),
+            // Any other `set_foo` name carries its value through the property route,
+            // so the shared default reports that a payload is needed rather than
+            // claiming the control has never heard of it.
+            _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -565,6 +565,23 @@ impl WidgetProperties for PieMenu {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `pie_menu` publishes.
+    ///
+    /// `add_item` takes the label string and `remove_item` the index, so those
+    /// are answered as needing a payload rather than being called unknown.
+    /// `set_radius` is wired to the widget's real `set_radius`, which recomputes
+    /// the geometry, but the value is what the caller actually wants to change,
+    /// so a bare invocation is reported as needing it too. `set_current_index`
+    /// selects the item at that index, which likewise cannot be guessed.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "add_item" | "remove_item" | "set_radius" | "set_current_index" => {
+                Err(CapabilityAccessError::OutOfRange)
+            }
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for PieMenu {

@@ -330,6 +330,24 @@ impl WidgetProperties for Action {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `action` publishes.
+    ///
+    /// `trigger` is the genuine zero-argument action here: it delegates to the
+    /// inner command and emits the widget-level `triggered` signal, exactly as a
+    /// pointer activation does. `set_text`, `set_checkable` and `set_checked`
+    /// assign state through the property route, so a payload-less call is refused as
+    /// [`CapabilityAccessError::OutOfRange`].
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "trigger" => {
+                self.trigger();
+                Ok(())
+            }
+            "set_text" | "set_checkable" | "set_checked" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for Action {

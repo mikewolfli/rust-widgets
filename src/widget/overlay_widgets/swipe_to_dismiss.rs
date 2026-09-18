@@ -33,6 +33,9 @@ pub struct SwipeToDismiss {
     dismiss_threshold: f32,
     /// Current horizontal swipe offset in pixels.
     swipe_offset: f32,
+    /// X position where the active drag began, in the widget's coordinate space.
+    /// `None` when no left-button drag is in progress.
+    drag_origin_x: Option<f32>,
     /// Whether the widget has been dismissed (one-shot).
     is_dismissed: bool,
     /// Text displayed in the action background (e.g., "Delete").
@@ -50,6 +53,7 @@ impl SwipeToDismiss {
             child: None,
             dismiss_threshold: 100.0,
             swipe_offset: 0.0,
+            drag_origin_x: None,
             is_dismissed: false,
             action_text: "Delete".to_string(),
             dismissed: Signal1::new(),
@@ -252,19 +256,37 @@ impl EventHandler for SwipeToDismiss {
         }
 
         match event {
-            Event::MousePress { pos: _, button } => {
+            Event::MousePress { pos, button } => {
                 if *button == 1 {
-                    // Start tracking swipe
+                    // Remember where the drag started; the offset is the delta
+                    // from here, so the child only moves as far as the pointer.
+                    self.drag_origin_x = Some(pos.x as f32);
+                    self.swipe_offset = 0.0;
                 }
             }
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { pos, .. } => {
+                // Touch and mouse share the drag path: tablets/mobile report
+                // touches, desktops report mouse, and the gesture is identical.
+                self.drag_origin_x = Some(pos.x as f32);
+                self.swipe_offset = 0.0;
+            }
             Event::MouseMove { pos } => {
-                // In a real integration, delta would come from drag events.
-                // For testing purposes, we set the offset directly via
-                // programmatic APIs instead of computing delta here.
-                let _ = pos;
+                if let Some(origin) = self.drag_origin_x {
+                    self.swipe_offset = pos.x as f32 - origin;
+                    self.base.request_redraw();
+                }
+            }
+            #[cfg(feature = "touch")]
+            Event::TouchMove { pos, .. } => {
+                if let Some(origin) = self.drag_origin_x {
+                    self.swipe_offset = pos.x as f32 - origin;
+                    self.base.request_redraw();
+                }
             }
             Event::MouseRelease { pos: _, button } => {
                 if *button == 1 {
+                    self.drag_origin_x = None;
                     if self.swipe_offset.abs() >= self.dismiss_threshold {
                         self.is_dismissed = true;
                         self.dismissed.emit(());
@@ -272,6 +294,16 @@ impl EventHandler for SwipeToDismiss {
                     self.swipe_offset = 0.0;
                     self.base.request_redraw();
                 }
+            }
+            #[cfg(feature = "touch")]
+            Event::TouchEnd { .. } => {
+                self.drag_origin_x = None;
+                if self.swipe_offset.abs() >= self.dismiss_threshold {
+                    self.is_dismissed = true;
+                    self.dismissed.emit(());
+                }
+                self.swipe_offset = 0.0;
+                self.base.request_redraw();
             }
             // Delegate remaining events to child
             evt => {
@@ -384,7 +416,7 @@ mod tests {
     }
 
     #[test]
-    fn swipe_to_dismiss_release_past_threshold_triggers_dismiss() {
+    fn swipe_to_dismiss_drag_past_threshold_triggers_dismiss() {
         let mut sw = SwipeToDismiss::new(Rect::new(0, 0, 200, 50));
 
         let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -393,16 +425,42 @@ mod tests {
             f.store(true, std::sync::atomic::Ordering::SeqCst);
         });
 
-        // Simulate offset past threshold
-        sw.swipe_offset = -120.0; // Left swipe past 100px threshold
-        sw.handle_event(&Event::MouseRelease { pos: Point::new(0, 0), button: 1 });
+        // A real left drag: press at x=180, move to x=60 (120px left), release.
+        // This exercises the production input path; it must not need the
+        // private offset field to be written by the test.
+        sw.handle_event(&Event::MousePress { pos: Point::new(180, 25), button: 1 });
+        sw.handle_event(&Event::MouseMove { pos: Point::new(60, 25) });
+        // The offset tracks the pointer delta while the drag is in progress.
+        assert_eq!(sw.swipe_offset(), -120.0);
+        sw.handle_event(&Event::MouseRelease { pos: Point::new(60, 25), button: 1 });
+
+        assert!(sw.is_dismissed());
+        assert!(fired.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[cfg(feature = "touch")]
+    #[test]
+    fn swipe_to_dismiss_touch_drag_past_threshold_triggers_dismiss() {
+        let mut sw = SwipeToDismiss::new(Rect::new(0, 0, 200, 50));
+
+        let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let f = fired.clone();
+        sw.dismissed.connect(move |_: Arc<()>| {
+            f.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        // Touch and mouse must share one drag path (tablet/mobile parity).
+        sw.handle_event(&Event::TouchBegin { pos: Point::new(180, 25), touch_id: 0 });
+        sw.handle_event(&Event::TouchMove { pos: Point::new(50, 25), touch_id: 0 });
+        assert_eq!(sw.swipe_offset(), -130.0);
+        sw.handle_event(&Event::TouchEnd { pos: Point::new(50, 25), touch_id: 0 });
 
         assert!(sw.is_dismissed());
         assert!(fired.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[test]
-    fn swipe_to_dismiss_release_below_threshold_no_dismiss() {
+    fn swipe_to_dismiss_drag_below_threshold_no_dismiss() {
         let mut sw = SwipeToDismiss::new(Rect::new(0, 0, 200, 50));
 
         let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -411,12 +469,22 @@ mod tests {
             f.store(true, std::sync::atomic::Ordering::SeqCst);
         });
 
-        // Simulate offset below threshold
-        sw.swipe_offset = -50.0; // Only 50px, threshold is 100px
-        sw.handle_event(&Event::MouseRelease { pos: Point::new(0, 0), button: 1 });
+        // Only 50px left: below the 100px threshold, so the swipe must snap back.
+        sw.handle_event(&Event::MousePress { pos: Point::new(180, 25), button: 1 });
+        sw.handle_event(&Event::MouseMove { pos: Point::new(130, 25) });
+        sw.handle_event(&Event::MouseRelease { pos: Point::new(130, 25), button: 1 });
 
         assert!(!sw.is_dismissed());
         assert!(!fired.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(sw.swipe_offset(), 0.0);
+    }
+
+    #[test]
+    fn swipe_to_dismiss_ignores_move_without_press() {
+        // A pointer move with no preceding press is not a drag, so it must not
+        // move the child (the offset is a drag delta, not an absolute position).
+        let mut sw = SwipeToDismiss::new(Rect::new(0, 0, 200, 50));
+        sw.handle_event(&Event::MouseMove { pos: Point::new(10, 10) });
         assert_eq!(sw.swipe_offset(), 0.0);
     }
 

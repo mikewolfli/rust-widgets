@@ -302,6 +302,33 @@ impl WidgetProperties for GridWidget {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `grid` publishes.
+    ///
+    /// The grid addresses cells by *hover*, not by a stored selection, so
+    /// `select_cell` and `clear_selection` are names this control publishes through
+    /// the shared `GridLayout` schema but cannot itself perform; they are reported as
+    /// [`CapabilityAccessError::UnsupportedOnWidget`]. Note that the dispatcher
+    /// already folds the trait default's `UnknownCommand` into exactly that error
+    /// before the caller sees it, so the two spellings differ only in intent here.
+    ///
+    /// # Why the `set_*` arm
+    ///
+    /// `set_rows` / `set_columns` / `set_spacing` / `set_line_color` are published by
+    /// this capability and are payload-carrying writes. An earlier revision answered
+    /// them with `UnknownCommand`, which was a bug rather than a policy: the trait
+    /// default deliberately accepts a bare `set_foo` as "needs its value", and a
+    /// hand-written override that named only the non-`set_` commands silently
+    /// contradicted it. `set_spacing` in particular slips past the default's
+    /// `is_ascii_lowercase` prefix test, so `set_` names are matched here as a class
+    /// instead of being enumerated one by one.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "select_cell" | "clear_selection" => Err(CapabilityAccessError::UnsupportedOnWidget),
+            _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 // ── Draw ──────────────────────────────────────────────────

@@ -687,54 +687,36 @@ match contract {
 
 ---
 
-## 12. 虛擬鍵盤（行動裝置）
+## 12. 螢幕上鍵盤（行動裝置）
 
-`VirtualKeyboard` 控制器管理螢幕上鍵盤的生命週期和佈局調整，適用於觸控式文字輸入。
+> **本節先前記錄的是 `rust_widgets::platform::virtual_keyboard::{VirtualKeyboard, KeyboardNotch, KeyboardState}`。**
+> crate 中**不存在**該模組 —— 它在 2.0.0 之前就已被移除（見
+> [`docs/MIGRATION_GUIDE.md`](../../../docs/MIGRATION_GUIDE.md)，其中把
+> `platform::virtual_keyboard::VirtualKeyboard` 列為已刪除）。先前給出的範例**無法編譯**。
+> 下文已更換為真實存在的 API。
+
+本函式庫**不負責**螢幕上鍵盤。軟體鍵盤是宿主的職責：iOS 與 Android 透過系統顯示與隱藏它，
+平台層只把由此產生的事實報告出來，供佈局程式碼回應。可觀測的入口是輸入法（IME）契約
+加上後端報告的能力集：
 
 ```rust
-use rust_widgets::platform::virtual_keyboard::{
-    VirtualKeyboard, KeyboardNotch, KeyboardState,
-};
-use rust_widgets::core::Rect;
+use rust_widgets::platform::{backend_name, capabilities, get_platform};
 
-let mut vkb = VirtualKeyboard::new();
+// 詢問後端是什麼。呼叫方程式碼裡沒有 `cfg(target_os)`：答案是一個執行期事實。
+println!("backend: {}", backend_name());
 
-// 為已聚焦的文字欄位請求鍵盤
-vkb.request_show(
-    text_field_id,
-    Rect::new(0, 700, 200, 40),  // widget 在螢幕座標中的矩形
-    800,                           // 螢幕高度
-    KeyboardNotch::new(300),       // 鍵盤覆蓋高度
-);
+// 觸控裝置上的文字輸入走輸入法入口。每個後端實作 `ImeBridge` trait
+// （見 `src/platform/ime.rs`）；宿主透過平台的 IME 入口驅動組字過程，
+// 而不是透過一個本函式庫不得不憑空發明的「鍵盤生命週期物件」。
+let _ = get_platform();
 
-// 檢查狀態
-assert_eq!(vkb.state(), KeyboardState::Showing);
-assert!(vkb.is_keyboard_active());
-
-// 轉換為可見
-vkb.on_shown();
-
-// 套用佈局偏移以保持 widget 可見
-let mut widget_rect = Rect::new(10, 200, 100, 30);
-vkb.apply_layout_shift(&mut widget_rect);
-// widget_rect.y 現在會向上偏移（如果會被遮蓋）
-
-// 隱藏鍵盤
-vkb.request_hide();
-vkb.on_hidden();
-assert_eq!(vkb.state(), KeyboardState::Hidden);
-
-// 重設所有狀態（例如視窗停用時）
-vkb.reset();
+// 能力是後端報告的事實，因此同一份呼叫方程式碼在每個平台上都能執行並在執行期自適應。
+let caps = capabilities();
+println!("ime: {}", caps.ime);
 ```
 
-### 狀態機
-
-```
-Hidden → (request_show) → Showing → (on_shown) → Visible
-                                                      ↓
-Hidden ← (on_hidden) ← Hiding ← (request_hide) ←─────┘
-```
+注意：文字輸入應檢查的能力項是 `ime`；**沒有**單獨的「軟體鍵盤」旗標 —— 鍵盤是硬體還是
+螢幕上的，是宿主的事情；而 *輸入法組字* 才是本函式庫支援的部分。
 
 ---
 

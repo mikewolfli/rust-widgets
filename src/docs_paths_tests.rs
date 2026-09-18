@@ -312,7 +312,12 @@ fn documented_image_reexport_is_reachable() {
 }
 
 /// The `asset` path the migration guide points callers at.
-#[cfg(feature = "desktop")]
+///
+/// The gate mirrors the module's own gate (`desktop-runtime`, not the `desktop`
+/// profile). Mirroring a *wrong* gate is how the previous `#[cfg(feature =
+/// "desktop")]` here became unable to catch the module drifting out of
+/// tablet/mobile builds it was supposed to be in.
+#[cfg(all(feature = "desktop-runtime", not(alloc_frugal)))]
 #[test]
 fn documented_asset_paths_are_reachable() {
     fn takes_watcher(_: &dyn Fn()) {}

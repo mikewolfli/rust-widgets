@@ -281,6 +281,35 @@ impl WidgetProperties for NotificationCenter {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `notification_center` publishes.
+    ///
+    /// `clear` and `mark_all_read` are payload-free and map onto the widget's
+    /// real methods. `activate_selected` reports `OutOfRange` when nothing is
+    /// selected, because then there is no notification to activate. `push` needs
+    /// a whole `NotificationItem`, `set_read` an id and a flag, and
+    /// `select_index` an index, so those are answered as needing a payload.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "clear" => {
+                self.clear();
+                Ok(())
+            }
+            "mark_all_read" => {
+                self.mark_all_read();
+                Ok(())
+            }
+            "activate_selected" => {
+                if self.activate_selected() {
+                    Ok(())
+                } else {
+                    Err(CapabilityAccessError::OutOfRange)
+                }
+            }
+            "push" | "set_read" | "select_index" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for NotificationCenter {

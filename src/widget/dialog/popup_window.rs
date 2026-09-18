@@ -136,6 +136,18 @@ impl WidgetProperties for PopupWindow {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["title", "has_content", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `popup_window` publishes.
+    ///
+    /// `set_content_widget` takes an `ObjectId` payload, so it is answered through
+    /// the caller's own handle rather than the scalar property route; reporting
+    /// `OutOfRange` for a payload-less call is the established convention.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "set_content_widget" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 impl Draw for PopupWindow {
     /// Paints the popup's own chrome, then its content child.

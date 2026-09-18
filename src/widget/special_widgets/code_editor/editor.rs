@@ -3038,6 +3038,35 @@ impl WidgetProperties for CodeEditor {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `code_editor` publishes.
+    ///
+    /// `undo` is the genuine zero-argument action here. It reports `false` when the
+    /// undo stack is empty or the editor is read-only, which is the "could not
+    /// handle it" case, so it is answered with
+    /// [`CapabilityAccessError::OutOfRange`] rather than a success that did
+    /// nothing. `append_line` takes the line to append and `set_text` / `set_cursor`
+    /// assign state through the property route, so those are refused the same way
+    /// — the names are right and the payload is what is missing.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "undo" => {
+                if self.undo() {
+                    Ok(())
+                } else {
+                    Err(CapabilityAccessError::OutOfRange)
+                }
+            }
+            "append_line" | "set_text" | "set_markers" | "set_cursor" => {
+                Err(CapabilityAccessError::OutOfRange)
+            }
+            // Any other `set_foo` name carries its value through the property route,
+            // so the shared default reports that a payload is needed rather than
+            // claiming the control has never heard of it.
+            _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

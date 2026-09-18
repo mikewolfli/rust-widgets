@@ -236,6 +236,29 @@ impl WidgetProperties for MenuBar {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["entry_count", "active_index", "hovered_index", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `menu_bar` publishes.
+    ///
+    /// `clear` is the one genuine zero-argument action here: it drops every entry
+    /// and resets both cursors, which is exactly what [`MenuBar::clear`] does.
+    /// `add_menu` takes the entry's title and `remove_menu` takes the index to
+    /// remove, so a payload-less invocation of either is refused as
+    /// [`CapabilityAccessError::OutOfRange`] — the names are right and the argument
+    /// is what is missing, which is not `UnknownCommand`.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "clear" => {
+                self.clear();
+                Ok(())
+            }
+            "add_menu" | "remove_menu" => Err(CapabilityAccessError::OutOfRange),
+            // Any other `set_foo` name carries its value through the property route,
+            // so the shared default reports that a payload is needed rather than
+            // claiming the control has never heard of it.
+            _ if name.starts_with("set_") => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for MenuBar {

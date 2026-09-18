@@ -454,6 +454,24 @@ impl WidgetProperties for OrderBookWidget {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["depth", "decimals", "show_spread", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `order_book` publishes.
+    ///
+    /// A ladder is a table of levels, not a plotted series, so it has no overlay
+    /// model; `add_overlay` is published for the whole finance group and is answered
+    /// as [`CapabilityAccessError::UnsupportedOnWidget`] — the name is real and this
+    /// control cannot perform it. That refusal is an honest answer, not a fix: the
+    /// `commands` list still advertises an action this control cannot take, and
+    /// reconciling it is a registry decision. `set_series` / `set_depth` /
+    /// `set_decimals` carry their values and are refused as
+    /// [`CapabilityAccessError::OutOfRange`].
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "add_overlay" => Err(CapabilityAccessError::UnsupportedOnWidget),
+            "set_series" | "set_depth" | "set_decimals" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 #[cfg(test)]

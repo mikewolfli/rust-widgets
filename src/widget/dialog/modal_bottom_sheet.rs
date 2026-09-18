@@ -209,6 +209,30 @@ impl WidgetProperties for ModalBottomSheet {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["visible", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `modal_bottom_sheet` publishes.
+    ///
+    /// `show` and `dismiss` are payload-free and map onto the widget's real
+    /// methods. `dismiss` takes the same path every other close route takes —
+    /// [`ModalBottomSheet::hide`], which the property route's `visible = false`
+    /// and the overlay click also use — so the sheet ends up with no more than one
+    /// way to become hidden. `set_visible` carries the boolean the property route
+    /// already accepts, so a bare invocation is reported as needing one rather than
+    /// being called unknown.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "show" => {
+                self.show();
+                Ok(())
+            }
+            "dismiss" => {
+                self.hide();
+                Ok(())
+            }
+            "set_visible" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Draw for ModalBottomSheet {

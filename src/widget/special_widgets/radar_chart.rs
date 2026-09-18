@@ -370,6 +370,21 @@ impl WidgetProperties for RadarChart {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `radar_chart` publishes.
+    ///
+    /// `add_series` cannot execute bare: a series is a list of values per axis, and
+    /// `add_series` reports the index it appended at, so there is no default the
+    /// control could supply without inventing data. The name is valid and the
+    /// *argument* is what is missing, which is
+    /// [`CapabilityAccessError::OutOfRange`], not `UnknownCommand`. `set_axes` and
+    /// `set_series` likewise carry their own payloads.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "add_series" | "set_axes" | "set_series" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Draw for RadarChart {

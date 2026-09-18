@@ -151,6 +151,26 @@ impl WidgetProperties for TerminalView {
         // Mirrors `TERMINAL_VIEW_PROPERTIES`.
         property_names_of!["output_line_count", "input_line", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `terminal_view` publishes.
+    ///
+    /// `submit` maps onto the widget's real `submit`, which reports `false` for
+    /// an empty input line; that is reported as needing a payload rather than as
+    /// a submitted command. `append_output` carries the line to append, so a bare
+    /// invocation is answered the same way rather than being called unknown.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "submit" => {
+                if self.submit() {
+                    Ok(())
+                } else {
+                    Err(CapabilityAccessError::OutOfRange)
+                }
+            }
+            "append_output" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for TerminalView {

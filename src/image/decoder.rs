@@ -417,7 +417,14 @@ fn decode_png(data: &[u8]) -> Result<DecodedImage, String> {
 
     // Reconstruct scanlines by undoing the per-row PNG filters
     // (0=None, 1=Sub, 2=Up, 3=Average, 4=Paeth).
-    let unfiltered_len = row_bytes * height as usize;
+    //
+    // `stride * height` was already proved to fit in `usize` above, but
+    // `row_bytes * height` is the *unfiltered* size and must be recomputed the
+    // same way: `row_bytes < stride`, so a product that overflows here would
+    // wrap to a small allocation while the loop below still indexes up to
+    // `row_bytes * height` — an out-of-bounds panic on adversarial geometry.
+    let unfiltered_len =
+        row_bytes.checked_mul(height as usize).ok_or("PNG unfiltered scanline size overflow")?;
     let mut unfiltered = vec![0u8; unfiltered_len];
     let mut prev_row = vec![0u8; row_bytes];
     for y in 0..height as usize {
@@ -683,10 +690,24 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
                              tables 0..=3 exist; the frame header is malformed"
                         ));
                     }
+                    // ITU-T T.81 defines the sampling factors as 1..=4; a nibble
+                    // is 0..=15, so an unchecked value reaches the buffer sizing
+                    // below as `(1 << h_sampling) * 8`. At the maximum nibble that
+                    // is a 262144x262144 plane (~128 GiB for one i16 component),
+                    // and an allocation failure aborts the process rather than
+                    // returning an error. Reject it while the header is parsed.
+                    let h_sampling = (seg_data[off + 1] >> 4) & 0x0F;
+                    let v_sampling = seg_data[off + 1] & 0x0F;
+                    if !(1..=4).contains(&h_sampling) || !(1..=4).contains(&v_sampling) {
+                        return Err(format!(
+                            "JPEG SOF declares sampling factors {h_sampling}x{v_sampling}, \
+                             but the standard permits only 1..=4 in each axis"
+                        ));
+                    }
                     components.push(JpegComponent {
                         _id: seg_data[off],
-                        h_sampling: (seg_data[off + 1] >> 4) & 0x0F,
-                        v_sampling: seg_data[off + 1] & 0x0F,
+                        h_sampling,
+                        v_sampling,
                         quant_table,
                     });
                     off += 3;

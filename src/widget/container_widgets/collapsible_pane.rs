@@ -188,6 +188,23 @@ impl WidgetProperties for CollapsiblePane {
         // Mirrors `COLLAPSIBLE_PANE_PROPERTIES`.
         property_names_of!["title", "collapsed", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `collapsible_pane` publishes.
+    ///
+    /// `toggle` is payload-free and maps onto the widget's real `toggle`, which
+    /// flips the collapsed state and emits `toggled`. `set_title` and
+    /// `set_collapsed` carry the text and the state, so a bare invocation is
+    /// reported as needing one rather than being called unknown.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "toggle" => {
+                self.toggle();
+                Ok(())
+            }
+            "set_title" | "set_collapsed" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for CollapsiblePane {

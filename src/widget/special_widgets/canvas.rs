@@ -221,6 +221,23 @@ impl WidgetProperties for Canvas {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["command_count", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `canvas` publishes.
+    ///
+    /// `clear` discards the recorded drawing commands and needs no argument, so it
+    /// executes here. `set_zoom` and `set_center` belong to the `MapView` control
+    /// that shares this kind, so they carry a value this contract has no writer for
+    /// and are refused as [`CapabilityAccessError::OutOfRange`].
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "clear" => {
+                self.clear();
+                Ok(())
+            }
+            "set_zoom" | "set_center" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Draw for Canvas {

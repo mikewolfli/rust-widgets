@@ -5,6 +5,7 @@
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
+use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::undo::{TextSnapshotCommand, UndoStack};
@@ -223,15 +224,79 @@ impl Widget for TextEdit {
 /// of its own rather than claiming another control's.
 impl WidgetProperties for TextEdit {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
-        base_property_get(self, name)
+        match name {
+            "text" => Ok(CapabilityValue::String(self.text.clone())),
+            "placeholder_text" => Ok(CapabilityValue::String(self.placeholder_text.clone())),
+            "max_length" => {
+                Ok(CapabilityValue::UInt(self.max_length.map(|m| m as u64).unwrap_or(u64::MAX)))
+            }
+            "read_only" => Ok(CapabilityValue::Bool(self.read_only)),
+            "line_wrap" => Ok(CapabilityValue::Bool(self.line_wrap)),
+            _ => base_property_get(self, name),
+        }
     }
 
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        // These five are real, working accessors on this control, so the
+        // property route must reach them. Forwarding everything to
+        // `base_property_set` meant `rw_widget_property_set(id, "text", ..)`
+        // answered `UnknownProperty` even though `set_text` worked.
+        match name {
+            "text" => match value {
+                CapabilityValue::String(text) => {
+                    self.set_text(text);
+                    return Ok(());
+                }
+                _ => return Err(CapabilityAccessError::TypeMismatch),
+            },
+            "placeholder_text" => match value {
+                CapabilityValue::String(text) => {
+                    self.set_placeholder_text(text);
+                    return Ok(());
+                }
+                _ => return Err(CapabilityAccessError::TypeMismatch),
+            },
+            "max_length" => match value {
+                CapabilityValue::UInt(limit) => {
+                    let limit =
+                        usize::try_from(limit).map_err(|_| CapabilityAccessError::OutOfRange)?;
+                    self.set_max_length(Some(limit));
+                    return Ok(());
+                }
+                _ => return Err(CapabilityAccessError::TypeMismatch),
+            },
+            "read_only" => match value {
+                CapabilityValue::Bool(flag) => {
+                    self.set_read_only(flag);
+                    return Ok(());
+                }
+                _ => return Err(CapabilityAccessError::TypeMismatch),
+            },
+            "line_wrap" => match value {
+                CapabilityValue::Bool(flag) => {
+                    self.set_line_wrap(flag);
+                    return Ok(());
+                }
+                _ => return Err(CapabilityAccessError::TypeMismatch),
+            },
+            _ => {}
+        }
         base_property_set(self, name, value)
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        crate::widget::capability::properties_trait::BASE_PROPERTY_NAMES
+        // Must list every name `TEXT_EDIT_PROPERTIES` declares, because `get` /
+        // `set` below answer all five. Publishing only the shared four while the
+        // schema promised these names is the mismatch
+        // `schema_and_contract_publish_the_same_names` exists to catch.
+        property_names_of![
+            "text",
+            "placeholder_text",
+            "max_length",
+            "read_only",
+            "line_wrap",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `text_edit` publishes.
@@ -331,6 +396,35 @@ impl Draw for TextEdit {
 mod tests {
     use super::*;
     use crate::core::Rect;
+
+    #[test]
+    fn textedit_property_route_reaches_its_own_accessors() {
+        // `text_edit` publishes these five names, so the property route must
+        // accept them rather than answering `UnknownProperty`.
+        let mut te = TextEdit::new(Rect::new(0, 0, 300, 200));
+        use crate::widget::capability::types::CapabilityValue;
+
+        te.set("text", CapabilityValue::String("hello".to_string()))
+            .expect("`text` is a published, writable property");
+        assert_eq!(te.text(), "hello");
+        assert_eq!(te.get("text").unwrap(), CapabilityValue::String("hello".to_string()));
+
+        te.set("placeholder_text", CapabilityValue::String("type here".to_string()))
+            .expect("`placeholder_text` is writable");
+        assert_eq!(te.placeholder_text(), "type here");
+
+        te.set("max_length", CapabilityValue::UInt(16)).expect("`max_length` is writable");
+        assert_eq!(te.max_length(), Some(16));
+
+        te.set("read_only", CapabilityValue::Bool(true)).expect("`read_only` is writable");
+        assert!(te.is_read_only());
+
+        te.set("line_wrap", CapabilityValue::Bool(false)).expect("`line_wrap` is writable");
+        assert!(!te.line_wrap());
+
+        // A type mismatch is still reported rather than silently coerced.
+        assert!(te.set("read_only", CapabilityValue::UInt(1)).is_err());
+    }
 
     #[test]
     fn textedit_creation_defaults() {

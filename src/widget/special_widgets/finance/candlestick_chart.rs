@@ -819,6 +819,26 @@ impl WidgetProperties for CandlestickChart {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["series", "overlay_count", "show_price_levels", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `candlestick_chart` publishes.
+    ///
+    /// This is the one pane in the finance group whose `add_overlay` is a real
+    /// method, and it is the method the command names, so a bare invocation runs it
+    /// with the study the command's own affordance offers by default: a 20-period
+    /// moving average. That is the same overlay the property layer already uses when
+    /// it has to extend `overlay_count` with a default (see the `overlay_count`
+    /// setter), so the two routes to "add the standard overlay" agree instead of
+    /// inventing two different studies for one name. `set_series` carries the data.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "add_overlay" => {
+                self.add_overlay(Overlay::moving_average(20));
+                Ok(())
+            }
+            "set_series" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 /// Renders a series' closes as a comma-separated list.

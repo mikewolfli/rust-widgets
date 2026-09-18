@@ -409,6 +409,25 @@ impl WidgetProperties for ListView {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `list_view` publishes.
+    ///
+    /// Both are payload-free and operate on the live selection, so they execute
+    /// here. The trait default answered `UnknownCommand`, which `invoke_command`
+    /// reports as `UnsupportedOnWidget` for a name the capability table publishes.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "clear_selection" => {
+                self.clear_selection();
+                Ok(())
+            }
+            "clear_focused_row" => {
+                self.clear_focused_row();
+                Ok(())
+            }
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Draw for ListView {

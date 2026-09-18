@@ -11,6 +11,31 @@ pub mod pie_menu;
 pub mod ribbon_bar;
 pub mod tab_bar;
 pub mod time_edit;
+
+/// Moves `value` inside `minimum..=maximum`, returning the adjusted value.
+///
+/// Shared by the date/time edit family, whose three widgets each carried a
+/// byte-identical private `clamp_to_range` that differed only in the field it
+/// assigned. The inverted-range rule is the interesting part and is stated once
+/// here: when `minimum > maximum` the minimum is authoritative, which keeps the
+/// operation total (it always terminates with a value a bound setter would
+/// accept) instead of wedging the control at a value no write can replace.
+pub(crate) fn clamp_ordered_range<T: PartialOrd + Copy>(value: T, minimum: T, maximum: T) -> T {
+    if value < minimum {
+        minimum
+    } else if value > maximum {
+        // Only reachable when `minimum <= maximum`; an inverted range already
+        // resolved through the branch above or the comparison failing.
+        if minimum > maximum {
+            minimum
+        } else {
+            maximum
+        }
+    } else {
+        value
+    }
+}
+
 // Re-export advanced widget types
 pub use calendar::Calendar;
 pub use date_edit::DateEdit;

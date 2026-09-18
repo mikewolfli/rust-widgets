@@ -701,54 +701,36 @@ match contract {
 
 ---
 
-## 12. 虚拟键盘（移动端）
+## 12. 屏幕键盘（移动端）
 
-`VirtualKeyboard` 控制器管理屏幕键盘的生命周期和布局适配，用于基于触摸的文本输入。
+> **本节此前记录的是 `rust_widgets::platform::virtual_keyboard::{VirtualKeyboard, KeyboardNotch, KeyboardState}`。**
+> crate 中**不存在**该模块 —— 它在 2.0.0 之前就已被移除（见
+> [`docs/MIGRATION_GUIDE.md`](../../../docs/MIGRATION_GUIDE.md)，其中把
+> `platform::virtual_keyboard::VirtualKeyboard` 列为已删除）。此前给出的示例**无法编译**。
+> 下文已更换为真实存在的 API。
+
+本库**不负责**屏幕键盘。软键盘是宿主的职责：iOS 与 Android 通过系统显示和隐藏它，
+平台层只把由此产生的事实报告出来，供布局代码响应。可观测的入口是输入法（IME）契约
+加上后端报告的能力集：
 
 ```rust
-use rust_widgets::platform::virtual_keyboard::{
-    VirtualKeyboard, KeyboardNotch, KeyboardState,
-};
-use rust_widgets::core::Rect;
+use rust_widgets::platform::{backend_name, capabilities, get_platform};
 
-let mut vkb = VirtualKeyboard::new();
+// 询问后端是什么。调用方代码里没有 `cfg(target_os)`：答案是一个运行期事实。
+println!("backend: {}", backend_name());
 
-// 为获得焦点的文本字段请求键盘
-vkb.request_show(
-    text_field_id,
-    Rect::new(0, 700, 200, 40),  // 窗口部件在屏幕坐标中的矩形
-    800,                           // 屏幕高度
-    KeyboardNotch::new(300),       // 键盘覆盖高度
-);
+// 触摸设备上的文本输入走输入法入口。每个后端实现 `ImeBridge` trait
+// （见 `src/platform/ime.rs`）；宿主通过平台的 IME 入口驱动组合过程，
+// 而不是通过一个本库不得不凭空发明的“键盘生命周期对象”。
+let _ = get_platform();
 
-// 检查状态
-assert_eq!(vkb.state(), KeyboardState::Showing);
-assert!(vkb.is_keyboard_active());
-
-// 过渡到可见
-vkb.on_shown();
-
-// 应用布局偏移以保持窗口部件可见
-let mut widget_rect = Rect::new(10, 200, 100, 30);
-vkb.apply_layout_shift(&mut widget_rect);
-// 如果 widget_rect.y 会被键盘覆盖，现在向上偏移
-
-// 隐藏键盘
-vkb.request_hide();
-vkb.on_hidden();
-assert_eq!(vkb.state(), KeyboardState::Hidden);
-
-// 重置所有状态（例如，窗口停用时）
-vkb.reset();
+// 能力是后端报告的事实，因此同一份调用方代码在每个平台上都能运行并自适应。
+let caps = capabilities();
+println!("ime: {}", caps.ime);
 ```
 
-### 状态机
-
-```
-Hidden → (request_show) → Showing → (on_shown) → Visible
-                                                      ↓
-Hidden ← (on_hidden) ← Hiding ← (request_hide) ←─────┘
-```
+注意：文本输入应检查的能力项是 `ime`；**没有**单独的“软键盘”标志 —— 键盘是硬件还是
+屏幕上的，是宿主的事情；而 *输入法组合* 才是本库支持的部分。
 
 ---
 

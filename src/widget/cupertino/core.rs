@@ -96,6 +96,19 @@ impl WidgetProperties for CupertinoSwitch {
         // Mirrors `SWITCH_PROPERTIES`, which `cupertino_switch_capability` reuses.
         self.0.property_names()
     }
+
+    /// Runs one of the commands `cupertino_switch` publishes.
+    ///
+    /// The segment's `commands` list is the shared `SWITCH_PROPERTIES` contract, so
+    /// the dispatch is forwarded to the inner `Switch` rather than re-derived here:
+    /// `switch` and `cupertino_switch` are two names for one control, and letting
+    /// them answer differently is the drift this forward exists to prevent. A
+    /// wholesale forward — including the `Unknown` fallback — is used so a name
+    /// added to the inner contract cannot become silently unreachable through this
+    /// spelling.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        self.0.command(name)
+    }
 }
 
 impl Draw for CupertinoSwitch {
@@ -236,6 +249,27 @@ impl WidgetProperties for MaterialSnackbar {
 
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["message", "action_text", BASE_PROPERTY_NAMES]
+    }
+
+    /// Runs one of the commands `material_snackbar` publishes.
+    ///
+    /// Both `show` and `dismiss` map onto the widget's real methods and take no
+    /// payload. `set_message` and `set_action_text` carry the text the caller
+    /// wants displayed, so a bare invocation is reported as needing one rather
+    /// than being called unknown.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "show" => {
+                self.show();
+                Ok(())
+            }
+            "dismiss" => {
+                self.dismiss();
+                Ok(())
+            }
+            "set_message" | "set_action_text" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
     }
 }
 

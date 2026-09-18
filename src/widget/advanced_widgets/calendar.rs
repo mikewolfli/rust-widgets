@@ -405,6 +405,25 @@ impl WidgetProperties for Calendar {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `calendar` publishes.
+    ///
+    /// `show_today` maps onto the widget's real `show_today`: it needs no payload
+    /// and both moves the displayed month and re-selects today. The three
+    /// `set_*` names carry the date, the range and the weekday, so a bare
+    /// invocation is reported as needing one rather than being called unknown.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "show_today" => {
+                self.show_today();
+                Ok(())
+            }
+            "set_selected_date" | "set_date_range" | "set_first_day_of_week" => {
+                Err(CapabilityAccessError::OutOfRange)
+            }
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for Calendar {

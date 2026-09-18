@@ -269,6 +269,18 @@ impl WidgetProperties for ToolButton {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["text", "checked", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `tool_button` publishes.
+    ///
+    /// `set_text` and `set_checked` assign state through the property route, so a
+    /// payload-less call is refused as [`CapabilityAccessError::OutOfRange`] — the
+    /// names are right and the value is what is missing.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "set_text" | "set_checked" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for ToolButton {

@@ -432,6 +432,24 @@ impl WidgetProperties for DepthChart {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["depth", "bid_color", "ask_color", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `depth_chart` publishes.
+    ///
+    /// The pane has no overlay model — it draws the book it was given and nothing
+    /// else — so `add_overlay`, which the capability list shares with the other panes
+    /// in this module, is answered as
+    /// [`CapabilityAccessError::UnsupportedOnWidget`]: the name is real and this
+    /// control cannot perform it. That is an honest answer, not a fix: the
+    /// `commands` list still advertises an action this control cannot take, and
+    /// reconciling it is a registry decision. `set_series` / `set_depth` carry their
+    /// values.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "add_overlay" => Err(CapabilityAccessError::UnsupportedOnWidget),
+            "set_series" | "set_depth" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 #[cfg(test)]

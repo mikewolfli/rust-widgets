@@ -81,7 +81,11 @@ fn parse_tiff_exif(data: &[u8], exif: &mut ExifData) {
         u32::from_be_bytes([data[4], data[5], data[6], data[7]]) as usize
     };
 
-    if ifd_offset + 2 > data.len() {
+    // `ifd_offset` is a raw 32-bit value read out of the file, so on a 32-bit
+    // target (`usize == u32` — the `embedded`/`mini` profiles are in scope) the
+    // unchecked `+ 2` could wrap past this guard and let the reads below index
+    // out of bounds. Compare against the length from the safe side instead.
+    if ifd_offset > data.len().saturating_sub(2) {
         return;
     }
 

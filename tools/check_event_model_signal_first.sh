@@ -8,7 +8,7 @@ echo "[signal-first gate] scanning for wxWidgets event-table patterns"
 
 SEARCH_PATHS=(
   "src"
-  "demos"
+  "demo"
   "examples"
 )
 
@@ -16,6 +16,13 @@ EXISTING_PATHS=()
 for path in "${SEARCH_PATHS[@]}"; do
   if [[ -d "$path" ]]; then
     EXISTING_PATHS+=("$path")
+  else
+    # Dropping a path silently is how this scan previously ran without covering
+    # `demo/` at all — the list said `demos`, which does not exist, and the loop
+    # removed it without a word. A gate whose scope quietly shrinks is worse than
+    # no gate, so a missing path is fatal.
+    echo "error: scan path '$path' does not exist" >&2
+    exit 2
   fi
 done
 

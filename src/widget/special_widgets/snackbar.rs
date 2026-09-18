@@ -174,6 +174,23 @@ impl WidgetProperties for Snackbar {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["message", "action_label", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `snackbar` publishes.
+    ///
+    /// `dismiss` maps onto the widget's real `dismiss`; it needs no payload.
+    /// `show` and `show_with_action` both require the message (and the action
+    /// label, and the slot behind it) the caller wants shown, so a bare
+    /// invocation is reported as needing one rather than being called unknown.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "dismiss" => {
+                self.dismiss();
+                Ok(())
+            }
+            "show" | "show_with_action" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for Snackbar {

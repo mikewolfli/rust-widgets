@@ -57,13 +57,15 @@ capability matrix
 is generated from source and gated for drift in CI.
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.4.1-blue)]()
-[![tests](https://img.shields.io/badge/tests-5100%2B-brightgreen)]()
+[![version](https://img.shields.io/badge/version-2.4.2-blue)]()
+[![tests](https://img.shields.io/badge/tests-4900%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
-**Verified in 2.4.1:** `4969` lib tests pass on `desktop`, and `cargo test` reports 0
-failures across all 27 test binaries. `cargo clippy --all-targets -- -D warnings` is clean and
-all five profiles build. See [`CHANGELOG.md`](CHANGELOG.md).
+**Verified in 2.4.2:** `4986` lib tests pass on `desktop`, and `cargo test` reports 0
+failures across all 28 test binaries. `cargo clippy --all-targets -- -D warnings` and
+`cargo fmt --check` are clean, all five device profiles build with zero warnings, and the
+`tools/check_*.sh` gate suite passes. See [`CHANGELOG.md`](CHANGELOG.md) and
+[`docs/log/log-20260919-2.md`](docs/log/log-20260919-2.md) for per-fix evidence.
 
 <p align="center">
   <a href="README.zh-CN.md">
@@ -146,11 +148,15 @@ Menus and shortcuts are deliberately *not* affected: their code carries no
 `mini` gate, so a `mini` build is best described as **"no custom-painted widget
 surface, but fully working menus"**.
 
-> The `cargo test --all-features` CI command deliberately turns every feature on,
-> which includes `desktop` **and** `mini` at once. That combination is the
-> regression tripwire for this constraint; see
-> [`docs/plans/platform_differences.md`](docs/plans/platform_differences.md) for
-the full rationale and the verification matrix.
+The device profiles are **mutually exclusive**, so verification always names one
+profile explicitly — `cargo check --no-default-features --features <profile>`.
+
+> **Why not `--all-features`?** That command turns `desktop` and `mini` on at the
+> same time, and `mini` switches the crate to `no_std`, which removes the `alloc`
+> prelude that most of the code resolves `String`/`Vec` through. The combination
+> cannot compile, so it can never act as a check. CI and this guide used to
+> require it; that requirement made the documented contributor workflow
+> unrunnable. Use the profile matrix instead.
 
 #### `tablet` / `mobile` need an explicit OS backend
 

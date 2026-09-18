@@ -667,6 +667,23 @@ impl WidgetProperties for QuoteBoard {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["sort", "selected_index", "row_height", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `quote_board` publishes.
+    ///
+    /// The board renders rows of quotes and has no plotted series to hang an study
+    /// on, so `add_overlay` — shared across the finance group's command lists — is
+    /// answered as [`CapabilityAccessError::UnsupportedOnWidget`]: the name is real
+    /// and this control cannot perform it. That refusal is an honest answer, not a
+    /// fix: the `commands` list still advertises an action this control cannot take,
+    /// and reconciling it is a registry decision. `set_series` carries the quote set
+    /// and is refused as [`CapabilityAccessError::OutOfRange`].
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "add_overlay" => Err(CapabilityAccessError::UnsupportedOnWidget),
+            "set_series" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 #[cfg(test)]

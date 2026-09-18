@@ -981,14 +981,11 @@ pub(crate) fn grid_capability() -> WidgetCapability {
         aliases: &["grid_widget", "gridwidget"],
         properties: GRID_PROPERTIES,
         events: &["cell_clicked", "cell_hovered"],
-        commands: &[
-            "set_rows",
-            "set_columns",
-            "set_spacing",
-            "select_cell",
-            "clear_selection",
-            "set_line_color",
-        ],
+        // `select_cell` and `clear_selection` were advertised but no such method
+        // exists on `Grid`, so they named actions nobody could obtain. Removed
+        // rather than left as a promise with no implementation (principle #18);
+        // the cell-click path is covered by the `cell_clicked` event.
+        commands: &["set_rows", "set_columns", "set_spacing", "set_line_color"],
     }
 }
 
@@ -1648,7 +1645,9 @@ pub(crate) fn app_bar_capability() -> WidgetCapability {
         canonical_name: "app_bar",
         aliases: &["top_app_bar"],
         properties: APP_BAR_PROPERTIES,
-        events: &[],
+        // The widget emits both of these (`app_bar.rs`); advertising an empty
+        // list made a by-name subscriber unable to discover them.
+        events: &["back_pressed", "action_pressed"],
         commands: &["set_title"],
     }
 }
@@ -1912,7 +1911,9 @@ pub(crate) fn navigation_stack_capability() -> WidgetCapability {
         canonical_name: "navigation_stack",
         aliases: &["nav_stack"],
         properties: NAVIGATION_STACK_PROPERTIES,
-        events: &["page_changed"],
+        // `navigation_changed` carries a `NavigationEvent`; `page_changed` was
+        // advertised but never emitted by this widget.
+        events: &["navigation_changed"],
         commands: &["push", "pop", "set_current_page"],
     }
 }
@@ -1948,7 +1949,9 @@ pub(crate) fn dropdown_menu_capability() -> WidgetCapability {
         canonical_name: "dropdown_menu",
         aliases: &[],
         properties: DROPDOWN_MENU_PROPERTIES,
-        events: &["selected_changed"],
+        // The widget's signal is `item_selected`; `selected_changed` was never
+        // an emitted name, so a subscriber wired by it never fired.
+        events: &["item_selected"],
         commands: &["set_selected_index", "set_expanded"],
     }
 }
@@ -1972,7 +1975,8 @@ pub(crate) fn menu_button_capability() -> WidgetCapability {
         canonical_name: "menu_button",
         aliases: &["dropdown_button"],
         properties: MENU_BUTTON_PROPERTIES,
-        events: &["selected_changed"],
+        // `item_triggered` is the real signal; `selected_changed` is not emitted.
+        events: &["item_triggered"],
         commands: &["set_text", "set_expanded"],
     }
 }
@@ -2300,7 +2304,10 @@ pub(crate) fn volume_chart_capability() -> WidgetCapability {
         aliases: &["volume", "volume_histogram", "volume_bars"],
         properties: VOLUME_CHART_PROPERTIES,
         events: &["bar_clicked", "bar_hovered"],
-        commands: &["set_series", "add_overlay"],
+        // `add_overlay` was advertised but only `CandlestickChart` implements
+        // it; the other finance views have no overlay API, so naming it here
+        // promised an action that could not be obtained (principle #18).
+        commands: &["set_series"],
     }
 }
 
@@ -2312,7 +2319,10 @@ pub(crate) fn depth_chart_capability() -> WidgetCapability {
         aliases: &["market_depth", "depth_graph", "liquidity_chart"],
         properties: DEPTH_CHART_PROPERTIES,
         events: &["level_hovered"],
-        commands: &["set_series", "add_overlay"],
+        // `add_overlay` was advertised but only `CandlestickChart` implements
+        // it; the other finance views have no overlay API, so naming it here
+        // promised an action that could not be obtained (principle #18).
+        commands: &["set_series"],
     }
 }
 
@@ -2324,7 +2334,10 @@ pub(crate) fn order_book_capability() -> WidgetCapability {
         aliases: &["book_ladder", "market_depth_ladder"],
         properties: ORDER_BOOK_PROPERTIES,
         events: &["level_clicked", "level_hovered", "level_unhovered"],
-        commands: &["set_series", "add_overlay"],
+        // `add_overlay` was advertised but only `CandlestickChart` implements
+        // it; the other finance views have no overlay API, so naming it here
+        // promised an action that could not be obtained (principle #18).
+        commands: &["set_series"],
     }
 }
 
@@ -2336,7 +2349,10 @@ pub(crate) fn quote_board_capability() -> WidgetCapability {
         aliases: &["quotes", "watchlist", "quote_table", "market_watch"],
         properties: QUOTE_BOARD_PROPERTIES,
         events: &["quote_clicked", "quote_hovered", "selection_changed"],
-        commands: &["set_series", "add_overlay"],
+        // `add_overlay` was advertised but only `CandlestickChart` implements
+        // it; the other finance views have no overlay API, so naming it here
+        // promised an action that could not be obtained (principle #18).
+        commands: &["set_series"],
     }
 }
 
@@ -2348,7 +2364,10 @@ pub(crate) fn indicator_chart_capability() -> WidgetCapability {
         aliases: &["indicator", "technical_indicator", "oscillator", "macd_chart"],
         properties: INDICATOR_CHART_PROPERTIES,
         events: &["bar_clicked", "bar_hovered"],
-        commands: &["set_series", "add_overlay"],
+        // `add_overlay` was advertised but only `CandlestickChart` implements
+        // it; the other finance views have no overlay API, so naming it here
+        // promised an action that could not be obtained (principle #18).
+        commands: &["set_series"],
     }
 }
 

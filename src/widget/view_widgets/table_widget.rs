@@ -286,6 +286,21 @@ impl WidgetProperties for TableWidget {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `table` publishes. Both are payload-free.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "clear_selection" => {
+                self.clear_selection();
+                Ok(())
+            }
+            "clear_focused_row" => {
+                self.clear_focused_row();
+                Ok(())
+            }
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Draw for TableWidget {

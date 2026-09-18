@@ -278,6 +278,21 @@ impl WidgetProperties for ProgressDialog {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["title", "label_text", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `progress_dialog` publishes.
+    ///
+    /// All four names carry a value — `set_value` and `set_range` the progress,
+    /// `set_title` and `set_label_text` the text — so a payload-less invocation
+    /// is reported as needing one rather than being called unknown. Cancelling
+    /// is not published as a command, so it has no entry here.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "set_value" | "set_range" | "set_title" | "set_label_text" => {
+                Err(CapabilityAccessError::OutOfRange)
+            }
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 impl EventHandler for ProgressDialog {
     fn handle_event(&mut self, event: &Event) {

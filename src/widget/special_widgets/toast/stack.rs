@@ -193,6 +193,37 @@ impl WidgetProperties for ToastStack {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["toast_count", "selected_id", "row_height", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `toast_stack` publishes.
+    ///
+    /// `clear`, `activate_selected` and `dismiss_selected` are payload-free and
+    /// map onto the widget's real methods; the two `*_selected` actions report
+    /// `OutOfRange` when no toast is selected. `push` needs a whole `ToastItem`,
+    /// and `select_index` an index, so those are answered as needing a payload.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "clear" => {
+                self.clear();
+                Ok(())
+            }
+            "activate_selected" => {
+                if self.activate_selected() {
+                    Ok(())
+                } else {
+                    Err(CapabilityAccessError::OutOfRange)
+                }
+            }
+            "dismiss_selected" => {
+                if self.dismiss_selected() {
+                    Ok(())
+                } else {
+                    Err(CapabilityAccessError::OutOfRange)
+                }
+            }
+            "push" | "select_index" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for ToastStack {

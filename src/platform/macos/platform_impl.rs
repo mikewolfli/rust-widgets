@@ -338,11 +338,31 @@ impl Platform for MacOSPlatform {
                 return false;
             }
             let action: objc::runtime::Sel = msg_send![item, action];
+            // A menu item with no action carries a null selector; comparing against
+            // `Sel::from_ptr(null)` is how objc 0.2 exposes that check.
+            if action == objc::runtime::Sel::from_ptr(std::ptr::null()) {
+                return false;
+            }
             let target: id = msg_send![item, target];
             if target == nil {
                 return false;
             }
-            let _: () = msg_send![target, performSelector: action withObject: item];
+            // Route through `NSApplication -sendAction:to:from:`, the documented
+            // dispatch entry point, rather than `performSelector:withObject:`.
+            //
+            // Two reasons. First, `performSelector:` is the API the project's
+            // `check_apple_thread_safety.sh` gate bans in Apple native code (rule C),
+            // because it bypasses the action machinery and its selector is unchecked at
+            // runtime. Second, `sendAction:to:from:` is what a real menu click goes
+            // through: the sender is passed as the `from:` argument, so a handler that
+            // reads its sender (a common `validateMenuItem:`/action pattern) sees the
+            // item rather than `nil`. `performSelector:withObject:` passes the item as a
+            // plain argument, which an `NSMenuItem` action target does not expect.
+            let app: id = msg_send![objc::class!(NSApplication), sharedApplication];
+            if app == nil {
+                return false;
+            }
+            let _: bool = msg_send![app, sendAction: action to: target from: item];
         }
         true
     }

@@ -580,6 +580,32 @@ impl WidgetProperties for GridTableWidget {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `grid_table` publishes.
+    ///
+    /// `clear_data_source` and `clear_selection` discard state and need no argument,
+    /// so a bare invocation performs them — both are already no-ops on an unbound or
+    /// unselected table, which is the correct reading of "clear" either way.
+    /// `toggle_sort_column` names which column to sort and is therefore
+    /// [`CapabilityAccessError::OutOfRange`]: the name is valid and the column index
+    /// is what is missing. `set_data_source`, `set_scroll_row` and `set_scroll_column`
+    /// carry their own payloads for the same reason.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "clear_data_source" => {
+                self.clear_data_source();
+                Ok(())
+            }
+            "clear_selection" => {
+                self.clear_selection();
+                Ok(())
+            }
+            "toggle_sort_column" | "set_data_source" | "set_scroll_row" | "set_scroll_column" => {
+                Err(CapabilityAccessError::OutOfRange)
+            }
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 /// Publishes `GridTableSelectionMode` as the shared lower-case token.

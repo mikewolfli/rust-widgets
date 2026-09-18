@@ -29,6 +29,7 @@ use super::cg;
 use super::types::{self as macos_types, CocoaHandle, HandleKind, MacOSPlatform};
 use crate::core::{Color, ObjectId, Point, Rect, Size};
 use crate::event::Event;
+use crate::platform::types::MousePhase;
 use cocoa::appkit::NSWindow;
 use cocoa::base::{id, nil, YES};
 use cocoa::foundation::{NSAutoreleasePool, NSPoint, NSRect, NSSize, NSString};
@@ -258,14 +259,6 @@ extern "C" fn mouse_up(this: &Object, _cmd: Sel, event: id) {
 
 extern "C" fn mouse_dragged(this: &Object, _cmd: Sel, event: id) {
     forward_mouse(this, event, MousePhase::Drag);
-}
-
-/// Which mouse event to synthesise.
-#[derive(Clone, Copy)]
-enum MousePhase {
-    Press,
-    Release,
-    Drag,
 }
 
 /// Which touch responder method AppKit called.

@@ -558,6 +558,23 @@ impl WidgetProperties for DataGrid {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `data_grid` publishes.
+    ///
+    /// `clear_data_source` is payload-free and executes here. The remaining names
+    /// need a payload (a source, an index, a size) and are answered through the
+    /// property route.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "clear_data_source" => {
+                self.clear_data_source();
+                Ok(())
+            }
+            "set_data_source" | "set_scroll_row" | "set_scroll_column" | "set_row_height"
+            | "set_column_width" | "set_frozen_columns" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Draw for DataGrid {

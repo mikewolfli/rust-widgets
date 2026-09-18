@@ -18,7 +18,12 @@ macro_rules! impl_properties_input {
             PropertySchema::new("single_step", PropertyValueKind::Int, true, true),
             PropertySchema::new("page_step", PropertyValueKind::Int, true, true),
             PropertySchema::enumerated("orientation", true, true, &["horizontal", "vertical"]),
-            PropertySchema::enumerated("tick_position", true, true, &["noticks", "left", "right", "ticksbothsides"]),
+            PropertySchema::enumerated(
+                "tick_position",
+                true,
+                true,
+                &["noticks", "left", "right", "ticksbothsides"],
+            ),
             PropertySchema::new("tick_interval", PropertyValueKind::Int, true, true),
             PropertySchema::new("tracking", PropertyValueKind::Bool, true, true),
             PropertySchema::new("slider_position", PropertyValueKind::Int, true, true),
@@ -59,7 +64,12 @@ macro_rules! impl_properties_input {
 
         pub(crate) const LIST_BOX_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
-            PropertySchema::enumerated("selection_mode", true, true, &["none", "single", "multi", "extended"]),
+            PropertySchema::enumerated(
+                "selection_mode",
+                true,
+                true,
+                &["none", "single", "multi", "extended"],
+            ),
             PropertySchema::new("current_row", PropertyValueKind::UInt, true, true),
             PropertySchema::new("item_height", PropertyValueKind::Float, true, true),
             PropertySchema::new("selected_count", PropertyValueKind::UInt, true, false),
@@ -149,11 +159,16 @@ macro_rules! impl_properties_input {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const TEXT_EDIT_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema::new("text", PropertyValueKind::String, false, false),
-            PropertySchema::new("placeholder_text", PropertyValueKind::String, false, false),
-            PropertySchema::new("max_length", PropertyValueKind::UInt, false, false),
-            PropertySchema::new("read_only", PropertyValueKind::Bool, false, false),
-            PropertySchema::new("line_wrap", PropertyValueKind::Bool, false, false),
+            // These five are genuinely readable and writable: `TextEdit` routes
+            // them to its own `set_text` / `set_placeholder_text` /
+            // `set_max_length` / `set_read_only` / `set_line_wrap`. They were
+            // declared `false, false`, which made the property route refuse
+            // names the control publishes.
+            PropertySchema::new("text", PropertyValueKind::String, true, true),
+            PropertySchema::new("placeholder_text", PropertyValueKind::String, true, true),
+            PropertySchema::new("max_length", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("read_only", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("line_wrap", PropertyValueKind::Bool, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

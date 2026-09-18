@@ -333,6 +333,34 @@ impl WidgetProperties for VolumeChart {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["series", "color_mode", "headroom", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs one of the commands `volume_chart` publishes.
+    ///
+    /// `add_overlay` is published by every pane in this module, but the method only
+    /// exists on `CandlestickChart` — overlays are price-space studies, and this pane
+    /// plots volume, which has no price scale to compute a moving average against. It
+    /// is refused as [`CapabilityAccessError::UnsupportedOnWidget`]: the name is real
+    /// and this control cannot perform it. (The dispatcher maps the trait default's
+    /// `UnknownCommand` to that same error before the caller sees it, so a bare
+    /// fallback would report value as well; naming the case here is about intent, and
+    /// about keeping the refusal of a name this control genuinely has separate from
+    /// the fallback for names it has never heard of.)
+    ///
+    /// The refusal is an honest answer for a caller, not a fix: the capability's
+    /// `commands` list still advertises an action this control cannot take, and
+    /// reconciling that list is a registry decision rather than something a dispatch
+    /// arm can resolve without contradicting the task's "do not change `commands`"
+    /// constraint. The `set_series` / `set_color_mode` / `set_headroom` write names
+    /// carry their values and are refused as [`CapabilityAccessError::OutOfRange`].
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "add_overlay" => Err(CapabilityAccessError::UnsupportedOnWidget),
+            "set_series" | "set_color_mode" | "set_headroom" => {
+                Err(CapabilityAccessError::OutOfRange)
+            }
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 #[cfg(test)]
