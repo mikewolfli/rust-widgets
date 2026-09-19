@@ -782,16 +782,21 @@ public final class RustWidgets {
     /**
      * Poll for the next typed widget-trigger event.
      *
+     * The native side returns {@code long[2]} as {@code {widgetId, kindCode}},
+     * or {@code null} when nothing is pending. A two-element array rather than a
+     * packed {@code long} because an {@code ObjectId} is a full 64-bit value:
+     * packing it alongside a 32-bit kind code into one signed 64-bit value
+     * truncated the id to 32 bits, so any id above {@code 0xFFFF_FFFF} was
+     * reported as a different widget entirely.
+     *
      * @return a {@link TriggerEvent}, or {@code null} if no event is pending
      */
     public static TriggerEvent pollWidgetTriggerEvent() {
-        long packed = nativePollWidgetTriggerEvent();
-        if (packed == 0) {
+        long[] pair = nativePollWidgetTriggerEvent();
+        if (pair == null || pair.length < 2) {
             return null;
         }
-        int kindCode  = (int) (packed >>> 32);
-        long widgetId = packed & 0xFFFF_FFFFL;
-        return new TriggerEvent(widgetId, kindCode);
+        return new TriggerEvent(pair[0], (int) pair[1]);
     }
 
     /**
@@ -863,15 +868,17 @@ public final class RustWidgets {
     //  String memory management (advanced)
     // ======================================================================
 
-    /**
-     * Free a string pointer allocated by the native library.
-     * Only needed when working with raw pointer-based APIs.
-     *
-     * @param ptr the native pointer to free (0 is safe)
-     */
-    public static void freeString(long ptr) {
-        nativeFreeString(ptr);
-    }
+    // `public static void freeString(long ptr)` used to sit here, forwarding to
+    // `nativeFreeString`. It was removed because **no public Java API hands out an
+    // owned native string pointer**: every accessor (`getWidgetText`,
+    // `getClipboardText`, `backendName`, …) converts the string to a Java `String`
+    // and frees the native buffer internally, inside the JNI frame. The only
+    // reachable uses of the method were therefore a fabricated `long` (an
+    // arbitrary-address free) or a double free — both a process abort inside
+    // `CString::from_raw`. The private `nativeFreeString` declaration is kept
+    // below because the JNI symbol is part of the library's exported surface
+    // (checked by `tools/check_jni_signatures.sh`), but it is no longer reachable
+    // from Java.
 
     // ======================================================================
     //  Native method declarations (private — called via public API)
@@ -946,7 +953,7 @@ public final class RustWidgets {
 
     // Events
     private static native long nativePollWidgetTriggered();
-    private static native long nativePollWidgetTriggerEvent();
+    private static native long[] nativePollWidgetTriggerEvent();
 
     // Clipboard
     private static native boolean nativeSetClipboardText(String text);

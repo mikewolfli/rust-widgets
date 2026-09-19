@@ -196,10 +196,8 @@ impl EventHandler for VolumeChart {
                     self.base.request_redraw();
                 }
             }
-            Event::MouseLeave { .. } => {
-                if self.hovered_index.take().is_some() {
-                    self.base.request_redraw();
-                }
+            Event::MouseLeave { .. } if self.hovered_index.take().is_some() => {
+                self.base.request_redraw();
             }
             Event::MousePress { pos, .. } | Event::PointerPress { pos, .. } => {
                 let area = self.plot_area();

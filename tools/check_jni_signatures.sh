@@ -40,6 +40,32 @@ echo "[2/3] Android native-view binding (rust_widgets.RustWidgets)"
   --rust src/platform/android_jni.rs \
   --report "$QA_DIR/jni_android_view_map.json"
 
+# The public `RustWidgetsJNI` wrapper declares `public static native` methods that
+# bind to the **same** JNI symbols as `RustWidgets` (its own doc says: "call the
+# same JNI entry points"). The mangled prefix is therefore still
+# `Java_io_github_rustwidgets_RustWidgets_*`, so the symbol-owning class is what
+# must be passed here — passing `RustWidgetsJNI` as the class name would derive
+# the wrong prefix and report every declaration as missing.
+# It was previously unchecked, so an edit to this file alone would have kept the
+# gate green and produced `UnsatisfiedLinkError` at the first call.
+echo "[2b/3] Public JNI wrapper class (same symbols as RustWidgets)"
+"$PYTHON" tools/check_jni_signatures.py \
+  --java bindings/java/RustWidgetsJNI.java \
+  --java-class io.github.rustwidgets.RustWidgets \
+  --rust src/bindings/java_jni.rs \
+  --report "$QA_DIR/jni_public_wrapper_map.json"
+
+# The Android testapp wrapper's own declarations — a different subset from the
+# `RustWidgetsAndroid.java` surface checked in step [2], and previously never
+# parsed. It is checked fatally now: it declares exactly the exports the bridge
+# provides, so a mismatch there is a real `UnsatisfiedLinkError` waiting to happen.
+echo "  -- Android testapp wrapper"
+"$PYTHON" tools/check_jni_signatures.py \
+  --java bindings/android/java/rust_widgets/RustWidgets.java \
+  --java-class rust_widgets.RustWidgets \
+  --rust src/platform/android_jni.rs \
+  --report "$QA_DIR/jni_android_wrapper_map.json"
+
 echo "[3/3] Exported-symbol parity (optional, requires a built Android .so)"
 # Check every built Android target so a stale artifact for one ABI cannot mask
 # (or falsely flag) drift. Skip silently when none has been built yet.

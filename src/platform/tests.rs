@@ -42,7 +42,7 @@ fn the_selected_backend_is_real_and_not_the_unknown_stub() {
     let name = crate::platform::backend_name();
     assert!(!name.is_empty(), "a backend must name itself");
 
-    let has_device_profile = cfg!(any(feature = "desktop", feature = "tablet", feature = "mobile"));
+    let has_device_profile = cfg!(device_profile);
     if has_device_profile {
         assert_ne!(
             name, "unknown-runtime-stub",
@@ -211,13 +211,30 @@ fn stub_without_spooler_refuses_print_job() {
     assert!(result.is_err(), "a backend with no spooler must report the gap, not fake success");
 }
 
-/// Control routing asks the backend which native primitives exist instead of
-/// testing `cfg(target_os)`. A backend publishing nothing therefore yields the
-/// global policy verdict for every kind, including the Win32-only ones.
+/// Control routing resolves every kind through the global policy table, with no
+/// per-backend membership question.
+///
+/// This replaces a test that asserted `Platform::native_widget_kinds()` defaulted to
+/// empty. The method is gone — `control_backend/routing.rs` records that there is one
+/// painting mechanism now, so the question it answered no longer has two answers, and
+/// it had zero production callers. What remains worth pinning is the property that
+/// makes routing deterministic: every kind, including the kinds Win32 would once have
+/// claimed as native primitives, resolves the same way.
 #[test]
-fn native_widget_kinds_defaults_to_empty_so_routing_uses_global_policy() {
-    let platform = StubPlatform::new("test-desktop", PlatformFamily::Desktop);
-    assert!(platform.native_widget_kinds().is_empty());
+fn routing_resolves_every_kind_through_the_single_policy() {
+    use crate::control_backend::route_preference_for_widget_kind;
+    for kind in [
+        crate::widget::WidgetKind::ListBox,
+        crate::widget::WidgetKind::ScrollArea,
+        crate::widget::WidgetKind::SpinBox,
+        crate::widget::WidgetKind::Button,
+    ] {
+        assert_eq!(
+            route_preference_for_widget_kind(kind),
+            crate::control_backend::ControlRoutePreference::CustomRequired,
+            "{kind:?} must route through the single painting backend"
+        );
+    }
 }
 
 /// Guards the spooler probe against an exit-code false negative.

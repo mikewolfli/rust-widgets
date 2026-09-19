@@ -37,6 +37,31 @@
 //! binder.forward_mapped("value_changed", &self.value_changed, |_| {});
 //! ```
 //!
+//! # Wiring status (read this before assuming an event fires)
+//!
+//! **No control in this library wires itself to a hub.** Signals and the hub are two
+//! separate worlds by design: a control owns its typed signals and knows nothing
+//! about an application-level name space, and a hub knows nothing about controls. The
+//! join is the *host's* job, performed at mount time.
+//!
+//! `EventSignalBinder` is the mechanism for that join, and
+//! `tests/event_signal_bridge_test.rs` is its proof — but that test performs the
+//! wiring itself. It proves the binder **works**, not that this crate already did the
+//! wiring for any control. Two consequences a caller must know:
+//!
+//! * `WidgetFactory::connect_event` returns `Ok` for any published name whether or not
+//!   anything is wired to it, because "is this name valid?" and "is something
+//!   emitting it?" are different questions. Subscribing therefore cannot fail just
+//!   because a host skipped the wiring step — an event that is valid but unwired is
+//!   indistinguishable from an event that never occurs.
+//! * `EventSignalBinder::detached()` exists for a control built without a hub; its
+//!   forward calls are documented no-ops, so a host that uses it has opted out
+//!   explicitly rather than silently.
+//!
+//! [`crate::signal::EventSignalBinder::forward_widget_events`] is the host-facing
+//! entry point: one call per control, covering every name that control's capability
+//! publishes, so wiring a mounted widget is not a hand-maintained list.
+//!
 //! Exhaustiveness is stated by `tests/event_signal_bridge_test.rs`, which requires every
 //! name a capability publishes to be forwardable, so an event added to a capability
 //! without a forwarding site is caught rather than silently never firing.
@@ -102,6 +127,66 @@ impl EventSignalBinder {
         let name = alloc::string::String::from(event_name);
         let handle = signal.connect(move || hub.emit(&name));
         self.forwards.push(Forwarded { source: ForwardSource::Unit(signal.clone()), handle });
+    }
+
+    /// Wires every published event a mounted widget can actually emit.
+    ///
+    /// # Why this exists
+    ///
+    /// [`WidgetFactory::connect_event`](crate::widget::capability::WidgetFactory::connect_event)
+    /// validates a name against the capability table and registers a slot. It cannot
+    /// check that anything emits that name, because a control's typed signals and the
+    /// hub's names are separate worlds until a binder joins them. A host that only
+    /// called `connect_event` therefore got a subscriber that was never invoked.
+    ///
+    /// This is that join, in one call: it connects the widget's own `clicked` signal
+    /// to the hub under the names the widget's capability publishes, and owns the
+    /// subscriptions so they are released with the binder.
+    ///
+    /// # Which names it wires
+    ///
+    /// Only the names backed by a signal **every** `Widget` has — the base
+    /// `clicked` signal. A control's other events (`value_changed`, `toggled`, …) are
+    /// typed `Signal1<T>` and live on the concrete type, so bridging them needs a
+    /// payload decision this helper cannot make generically; use [`Self::forward_mapped`]
+    /// at the control's own construction site for those. Returning the number wired
+    /// lets a caller see that a widget contributed nothing rather than assuming it did.
+    ///
+    /// # Usage
+    ///
+    /// Call once per mounted widget, right after it is registered:
+    ///
+    /// ```ignore
+    /// let mut binder = EventSignalBinder::new(hub);
+    /// binder.forward_widget_events(widget.as_ref());
+    /// ```
+    pub fn forward_widget_events<W>(&mut self, widget: &W) -> usize
+    where
+        W: crate::widget::Widget,
+    {
+        // The capability registry is compiled out of a stripped profile, so there is no
+        // published name list to consult there. Returning `0` is the honest answer: the
+        // helper is documented as reporting how many events it wired.
+        #[cfg(full_widgets)]
+        {
+            let factory = crate::widget::capability::WidgetFactory::new_with_defaults();
+            let Some(capability) = factory.capability_for_kind_instance(widget) else {
+                return 0;
+            };
+            if !capability.events.contains(&"clicked") {
+                return 0;
+            }
+            // `clicked_signal` is a `Widget` trait method with a default body that reads
+            // the base signal, so it is available on every control without naming the
+            // concrete type.
+            self.forward_unit("clicked", widget.clicked_signal());
+            1
+        }
+        #[cfg(not(full_widgets))]
+        {
+            let _ = widget;
+            0
+        }
     }
 
     /// Forwards a signal whose payload the hub cannot carry, running `observe` first.

@@ -700,20 +700,16 @@ pub trait Platform: Send + Sync {
         false
     }
 
-    /// Native widget kinds this backend can construct as real OS controls.
-    ///
-    /// Control routing asks this instead of testing `cfg(target_os)`: a backend
-    /// reports the primitives it actually implements (`SysListView32` on Windows,
-    /// for instance), and everything not listed falls back to the custom-painted
-    /// backend. This keeps the routing table free of per-OS branches while still
-    /// letting a platform promote kinds as its native coverage grows
-    /// (principle #36).
-    ///
-    /// The default is empty: a backend that publishes nothing routes every kind
-    /// through the global policy table.
-    fn native_widget_kinds(&self) -> &'static [crate::widget::WidgetKind] {
-        &[]
-    }
+    // A `native_widget_kinds()` capability method used to sit here, asking which
+    // `WidgetKind`s a backend could build as real OS controls. It was deleted for the
+    // reason `control_backend/routing.rs` records in its own doc: there is one painting
+    // mechanism now, so "which mechanism paints this kind?" no longer has two answers.
+    // The method had zero production callers — `route_preference_for_widget_kind`
+    // returns `CustomRequired` unconditionally, no backend overrode it, and its only
+    // reference was the test asserting its default was empty (also removed). A runtime
+    // capability question whose answer no caller can act on is a claim, not a
+    // capability (principle #41/#53), and one that names a mechanism in the public
+    // `Platform` trait is exactly what principle #52 forbids.
 
     /// Creates a native web engine view, when this backend can host one.
     ///

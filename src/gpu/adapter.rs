@@ -619,14 +619,26 @@ impl GpuAdapter {
     pub fn detect_primary_gpu_type() -> Option<GpuType> {
         GpuType::detect_primary()
     }
-    /// Detects GPU memory in MB (estimated)
-    pub fn detect_gpu_memory_mb() -> u32 {
-        // Simplified detection - in production would query GPU driver
-        512
-    }
-    /// Checks if running on battery power
-    pub fn detect_battery_status() -> bool {
-        // Simplified - in production would query power management
-        false
+    /// Reports whether this build can measure the GPU's memory at all.
+    ///
+    /// There is deliberately no `detect_gpu_memory_mb()` beside this returning a
+    /// number: this crate has no portable way to query VRAM. wgpu exposes
+    /// `AdapterInfo` but no memory size (its `device` limits describe per-allocation
+    /// caps, not total VRAM), so any figure produced here would be invented.
+    ///
+    /// The previous pair of methods did exactly that — `detect_gpu_memory_mb() -> 512`
+    /// and `detect_battery_status() -> false`, each with a comment saying production
+    /// would query the real source — and neither had a single caller. A fabricated
+    /// measurement is worse than a missing one (principle #12/#37), so the two were
+    /// deleted rather than left as documentation of work not done.
+    ///
+    /// Callers that need a *real* battery fact use
+    /// [`crate::platform::Platform::is_on_battery`] via
+    /// [`crate::platform::platform_facts`], which every backend implements from its
+    /// own OS API.
+    pub fn can_detect_gpu_memory() -> bool {
+        // `true` only where the platform reports a real total, so an adaptive
+        // caller can decide between measuring and assuming instead of guessing.
+        crate::platform::platform_facts().total_memory_mb().is_some()
     }
 }

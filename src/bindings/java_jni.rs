@@ -14,7 +14,7 @@
 #![cfg(feature = "jni")]
 
 use jni::objects::{JClass, JString};
-use jni::sys::{jboolean, jint, jlong, jstring};
+use jni::sys::{jboolean, jint, jlong, jlongArray, jstring};
 use jni::JNIEnv;
 
 /// Width/height argument type for the C ABI layer. The `jni` crate exposes
@@ -638,23 +638,42 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativePollWidgetTr
     crate::bindings::rw_poll_widget_triggered() as jlong
 }
 
-/// Returns a long array of 2 elements: [widget_id, trigger_kind_code].
-/// Returns null if no event is available.
+/// Polls one widget trigger event.
+///
+/// Returns a `long[2]` — `{widget_id, kind_code}` — or `null` when no event is
+/// available.
+///
+/// # Why an array and not a packed `jlong`
+///
+/// `ObjectId` is a full `u64` and `kind_code` needs 32 bits, so the two cannot
+/// both fit in one signed 64-bit value. An earlier revision packed them as
+/// `kind_code << 32 | (widget_id & 0xFFFF_FFFF)`, which **silently truncated the
+/// id to 32 bits**: any id above `u32::MAX` was reported as a different,
+/// unrelated widget, and the intended one could not be recovered. An earlier
+/// doc comment even described a "long array of 2 elements" while the code
+/// returned a packed scalar — the comment described the fix.
+///
+/// Returning the pair losslessly is the honest shape: no bit of either value is
+/// discarded, and `RustWidgets.pollWidgetTriggerEvent` decodes two elements.
 #[no_mangle]
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativePollWidgetTriggerEvent(
-    _env: JNIEnv<'_>,
+    env: JNIEnv<'_>,
     _class: JClass<'_>,
-) -> jlong {
-    // Use C ABI poll_widget_trigger_event with a stack variable
+) -> jlongArray {
     let mut widget_id_out: u64 = 0;
     let kind_code =
         unsafe { crate::bindings::rw_poll_widget_trigger_event(&mut widget_id_out as *mut u64) };
     if kind_code == 0 {
-        return 0;
+        return std::ptr::null_mut();
     }
-    // Pack widget_id and kind_code into a single long:
-    // upper 32 bits = kind_code, lower 32 bits = widget_id
-    ((kind_code as jlong) << 32) | (widget_id_out as jlong & 0xFFFF_FFFF)
+    let values = [widget_id_out as jlong, kind_code as jlong];
+    let Ok(array) = env.new_long_array(2) else {
+        return std::ptr::null_mut();
+    };
+    if env.set_long_array_region(&array, 0, &values).is_err() {
+        return std::ptr::null_mut();
+    }
+    array.into_raw()
 }
 
 // ===========================================================================

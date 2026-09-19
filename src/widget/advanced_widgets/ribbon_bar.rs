@@ -530,14 +530,14 @@ impl RibbonBar {
     }
 
     /// Hit-test: given a position, returns which tab (if any) is under the cursor.
+    ///
+    /// Uses `Rect::contains_point` so the far edge stays **exclusive**, matching the
+    /// crate-wide convention. A hand-written `<= x + width` here made the boundary
+    /// column belong to the earlier tab while `draw` paints the later one over it.
     fn hit_tab(&self, pos: Point) -> Option<usize> {
         for i in 0..self.tabs.len() {
             if let Some(tr) = self.tab_rect(i) {
-                if pos.x >= tr.x
-                    && pos.x <= tr.x + tr.width as i32
-                    && pos.y >= tr.y
-                    && pos.y <= tr.y + tr.height as i32
-                {
+                if tr.contains_point(pos) {
                     return Some(i);
                 }
             }
@@ -565,12 +565,10 @@ impl RibbonBar {
             // Compute item rectangles within this group
             let item_rects = self.compute_item_rects(gi, &group);
             for (ii, ir) in item_rects {
-                if pos.x >= ir.x
-                    && pos.x <= ir.x + ir.width as i32
-                    && pos.y >= ir.y
-                    && pos.y <= ir.y + ir.height as i32
-                    && ii < items.len()
-                {
+                // Exclusive far edge, per `Rect::contains_point`. The hand-written
+                // comparison that stood here let the boundary column hit the earlier
+                // item even though `draw` paints the later one over it.
+                if ir.contains_point(pos) && ii < items.len() {
                     return Some((self.current_tab_index, gi, ii));
                 }
             }

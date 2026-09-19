@@ -14,6 +14,27 @@
  */
 typedef uint64_t ObjectId;
 
+/*
+ * The `rw_value_kind` discriminants written by `rw_get_widget_property` and
+ * read by `rw_set_widget_property` through their `out_kind`/`kind` argument.
+ *
+ * A binding MUST accept every value here and MUST free `out_str` with
+ * `rw_free_string` whenever it is non-null, including for the non-string
+ * kinds. `RW_VALUE_COLOR` and `RW_VALUE_RECT` carry their payload in
+ * `out_str` (as `#RRGGBBAA` and `x,y,w,h`), not in `out_num`; treating them
+ * as unknown leaks that buffer.
+ */
+typedef enum {
+    RW_VALUE_NULL = 0,
+    RW_VALUE_BOOL = 1,
+    RW_VALUE_INT = 2,
+    RW_VALUE_UINT = 3,
+    RW_VALUE_FLOAT = 4,
+    RW_VALUE_STRING = 5,
+    RW_VALUE_COLOR = 6,
+    RW_VALUE_RECT = 7,
+} rw_value_kind;
+
 #ifdef __cplusplus
 extern "C" {
 #endif

@@ -710,6 +710,61 @@ fn schema_and_contract_publish_the_same_names() {
     );
 }
 
+/// Every schema row marked `false,false` must genuinely not be served.
+///
+/// # Why this test exists
+///
+/// `schema_and_contract_publish_the_same_names` skips rows flagged
+/// `readable: false, writable: false`, on the assumption that such a row "promises
+/// nothing". That assumption hid a real defect in the opposite direction: 35 rows
+/// understated a capability their control **does** implement, so the
+/// `readable`/`writable` flags denied an operation the control supports.
+///
+/// A caller could not read or write those properties through
+/// `WidgetFactory::read_property` / `write_property` (they answer
+/// `UnsupportedOnWidget` / `ReadOnlyProperty`) even though the control's own contract
+/// serves them — `pie_menu.radius`, `scroll_area.scroll_position_x`,
+/// `input_dialog.text_value` and others. A design tool or manifest consumer saw the
+/// field as non-existent and never offered it.
+///
+/// This test closes the loop: a `false,false` row is now only legal when the control's
+/// own contract really rejects both directions. A row that *is* served must declare
+/// which direction it serves.
+#[test]
+fn a_property_flagged_unservable_must_really_be_unservable() {
+    let factory = WidgetFactory::new_with_defaults();
+    let mut wrongly_flagged = alloc::vec::Vec::new();
+
+    for capability in factory.capabilities() {
+        let Some(mut widget) =
+            factory.create(capability.canonical_name, Rect::new(0, 0, 64, 48), "x")
+        else {
+            continue;
+        };
+        for schema in capability.properties {
+            if schema.readable || schema.writable {
+                continue;
+            }
+            // `geometry` is the documented exception: every schema declares it, and
+            // `base_property_set` answers `ReadOnlyProperty` by design while the
+            // loader's `x`/`y`/`width`/`height` shorthand is the real input path.
+            if schema.name == "geometry" {
+                continue;
+            }
+            if widget_property_get(widget.as_mut(), schema.name).is_ok() {
+                wrongly_flagged.push((capability.canonical_name, schema.name));
+            }
+        }
+    }
+
+    assert!(
+        wrongly_flagged.is_empty(),
+        "these schema rows are flagged `readable: false, writable: false` but their control's \
+         own contract answers them, so the flags deny a capability the control has — mark at \
+         least one direction true (widget, property): {wrongly_flagged:?}"
+    );
+}
+
 /// Every `WidgetKind` claimed by more than one capability must have a tie-break.
 ///
 /// # Why this test exists

@@ -560,7 +560,15 @@ pub extern "C" fn rw_create_widget_of_kind(
 ///
 pub extern "C" fn rw_widget_kind_names(out: *mut c_char, cap: c_uint) -> c_uint {
     c_try!({
+        // The capability registry — and therefore the factory that enumerates it —
+        // exists only with a full device build (`full_widgets`). A build that has
+        // this ABI but no registry truthfully reports an empty list rather than
+        // failing to link; the gate is in the body so the symbol always exists
+        // (principle #41).
+        #[cfg(full_widgets)]
         let names = crate::widget::capability::WidgetFactory::new_with_defaults().widget_names();
+        #[cfg(not(full_widgets))]
+        let names: Vec<&str> = Vec::new();
         write_space_separated(&names, out, cap)
     })
 }
@@ -762,16 +770,38 @@ pub unsafe extern "C" fn rw_set_widget_property(
 /// Returns `false` when no theme is registered under `name`, leaving the current
 /// theme in place. See [`rw_theme_names`] for the registered names.
 ///
+/// # Profiles without a theme module
+///
+/// `crate::theme` is gated `device_profile`. A build that compiles this ABI
+/// without one (`android-jni` alone, for instance) therefore has no theme to
+/// select, and the honest answer is `false` — the same "this build cannot do
+/// that" the per-kind `create_*` functions give in a stripped profile. The
+/// branch is in the **body**, not around the function, so the symbol always
+/// exists in the library and a Java/C caller can link against it (principle
+/// #41: capability is a runtime fact, not a compile-time API fork).
+///
+/// Before this gate the reference to `crate::theme` was unconditional, so
+/// `cargo check --features "android-jni jni mobile-api …"` failed with
+/// `cannot find theme in crate` — the real Android build script's exact feature
+/// set.
 pub extern "C" fn rw_set_theme(name: *const c_char) -> CBool {
     c_try!({
         let requested = c_str_or_default(name);
-        let activated = crate::theme::global_theme_manager().set_theme(&requested);
-        if activated {
-            // Re-resolve every live control's style against the new theme, the same
-            // way the window-creation funnel does.
-            crate::reapply_active_theme();
+        #[cfg(device_profile)]
+        {
+            let activated = crate::theme::global_theme_manager().set_theme(&requested);
+            if activated {
+                // Re-resolve every live control's style against the new theme, the same
+                // way the window-creation funnel does.
+                crate::reapply_active_theme();
+            }
+            activated
         }
-        activated
+        #[cfg(not(device_profile))]
+        {
+            let _ = requested;
+            false
+        }
     })
 }
 #[no_mangle]
@@ -780,12 +810,17 @@ pub extern "C" fn rw_set_theme(name: *const c_char) -> CBool {
 /// Same convention as [`rw_widget_kind_names`]: the required size is returned and
 /// a null `out` with `cap == 0` queries it.
 ///
+/// A build without a theme module registers no themes, so it truthfully reports
+/// an empty list (`0`) instead of naming themes that do not exist.
 pub extern "C" fn rw_theme_names(out: *mut c_char, cap: c_uint) -> c_uint {
     c_try!({
+        #[cfg(device_profile)]
         let names = {
             let manager = crate::theme::global_theme_manager();
             manager.theme_names().iter().map(|name| name.to_string()).collect::<Vec<_>>()
         };
+        #[cfg(not(device_profile))]
+        let names: Vec<alloc::string::String> = Vec::new();
         let refs: Vec<&str> = names.iter().map(alloc::string::String::as_str).collect();
         write_space_separated(&refs, out, cap)
     })
@@ -796,6 +831,9 @@ pub extern "C" fn rw_theme_names(out: *mut c_char, cap: c_uint) -> c_uint {
 /// Applies to every control the library creates from here on, and re-applies to
 /// the live ones so a change takes effect without a rebuild.
 ///
+/// A build without a theme module has no high-contrast override to set, so this
+/// is a no-op there rather than a link error — see [`rw_set_theme`] for why the
+/// gate is in the body.
 pub extern "C" fn rw_set_high_contrast(mode: c_int) {
     c_try_void!({
         let enabled = mode != 0;
@@ -804,8 +842,15 @@ pub extern "C" fn rw_set_high_contrast(mode: c_int) {
         } else {
             crate::style::HighContrastMode::None
         };
-        crate::theme::set_global_high_contrast(mode);
-        crate::reapply_active_theme();
+        #[cfg(device_profile)]
+        {
+            crate::theme::set_global_high_contrast(mode);
+            crate::reapply_active_theme();
+        }
+        #[cfg(not(device_profile))]
+        {
+            let _ = mode;
+        }
     })
 }
 
@@ -1060,17 +1105,33 @@ pub unsafe extern "C" fn rw_widget_set_layout(
             "spacing": spacing,
             "margin": margin,
         });
-        match crate::json::parse_layout_kind(&spec)
-            .map(|kind| crate::json::create_layout_from_kind(&kind))
+        // `crate::json` is gated on the JSON engine (a device profile building with
+        // the JSON surface). A build with this ABI but without it has no layout-kind
+        // parser, so the honest answer is a recorded refusal rather than a link
+        // error; the symbol stays available either way (principle #41).
+        #[cfg(all(device_profile, feature = "serde_json"))]
         {
-            Ok(layout) => {
-                crate::layout::declarative::store_layout(parent, layout);
-                true
+            match crate::json::parse_layout_kind(&spec)
+                .map(|kind| crate::json::create_layout_from_kind(&kind))
+            {
+                Ok(layout) => {
+                    crate::layout::declarative::store_layout(parent, layout);
+                    true
+                }
+                Err(message) => {
+                    crate::error::ffi::record_message_error(&message);
+                    false
+                }
             }
-            Err(message) => {
-                crate::error::ffi::record_message_error(&message);
-                false
-            }
+        }
+        #[cfg(not(all(device_profile, feature = "serde_json")))]
+        {
+            let _ = spec;
+            crate::error::ffi::record_message_error(
+                "this build has no JSON layout engine, so a declarative layout kind cannot be \
+                 created here",
+            );
+            false
         }
     })
 }

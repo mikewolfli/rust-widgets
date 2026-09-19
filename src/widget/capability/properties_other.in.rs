@@ -322,9 +322,9 @@ macro_rules! impl_properties_other {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const WEB_VIEW_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema::new("url", PropertyValueKind::String, false, false),
-            PropertySchema::new("loading", PropertyValueKind::Bool, false, false),
-            PropertySchema::new("title", PropertyValueKind::String, false, false),
+            PropertySchema::new("url", PropertyValueKind::String, true, true),
+            PropertySchema::new("loading", PropertyValueKind::Bool, true, false),
+            PropertySchema::new("title", PropertyValueKind::String, true, true),
             PropertySchema::new("can_go_back", PropertyValueKind::Bool, false, false),
             PropertySchema::new("can_go_forward", PropertyValueKind::Bool, false, false),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),

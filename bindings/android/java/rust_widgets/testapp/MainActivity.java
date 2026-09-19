@@ -3,25 +3,35 @@ package rust_widgets.testapp;
 import android.app.Activity;
 import android.os.Bundle;
 import android.util.Log;
-import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 
 import rust_widgets.RustWidgets;
 
 /**
- * End-to-end integration test for the rust_widgets Android JNI bridge.
+ * End-to-end integration test for the rust_widgets Android host bridge.
  *
  * <p>Runs on a device or emulator and exercises the real native path:
  * <ol>
  *   <li>Loads {@code librust_widgets.so} (via {@link RustWidgets}' static block).</li>
  *   <li>Initialises the JNI bridge ({@code nativeInit}).</li>
- *   <li>Creates native Android views through the bridge.</li>
- *   <li>Mutates them (text / bounds / visibility / enabled).</li>
- *   <li>Destroys them.</li>
+ *   <li>Attaches and detaches the Activity {@code Context}.</li>
+ *   <li>Reports the bridge's integration status and method count, so a stale
+ *       {@code .so} shows up as a diagnostic rather than a crash.</li>
+ *   <li>Reports a window resize, the one fact only the host observes.</li>
  * </ol>
  *
- * <p>Results are written to logcat under the {@code RustWidgetsTest} tag so a
- * CI job can assert on them without a UI harness.
+ * <p>Results are written to logcat under the {@code RustWidgetsTest} tag so a CI
+ * job can assert on them without a UI harness.
+ *
+ * <h3>What this test deliberately does not do</h3>
+ *
+ * <p>Earlier revisions created real {@code android.widget.*} views through
+ * {@code nativeCreateButton} / {@code nativeCreateTextView} / … and mutated them
+ * with {@code nativeSetViewText} / {@code nativeSetViewBounds}. Those entry points
+ * no longer exist: the library paints every {@code WidgetKind} itself and the host
+ * supplies a window plus a drawing surface, so there is no per-kind {@code create}
+ * to call. The test was updated with the API — the stale declarations it used to
+ * bind against meant every call raised {@code UnsatisfiedLinkError} at runtime.
  */
 public class MainActivity extends Activity {
 
@@ -35,82 +45,28 @@ public class MainActivity extends Activity {
         root.setOrientation(LinearLayout.VERTICAL);
         setContentView(root);
 
-        boolean ok = runBridgeSmokeTest(root);
-        if (ok) {
-            ok = runRustDrivenTest();
-        }
+        boolean ok = runBridgeSmokeTest();
         Log.i(TAG, ok ? "RESULT: PASS" : "RESULT: FAIL");
-
-        // Last: launches the system picker, which takes over the foreground.
-        if (ok) {
-            runFileDialogTest();
-        }
-    }
-
-    /**
-     * Exercise the Rust→Java direction: hand the Context to the Rust backend and
-     * let it create every native widget kind itself.
-     *
-     * @return whether the Rust-side create path succeeded for all kinds
-     */
-    private boolean runRustDrivenTest() {
-        if (!RustWidgets.nativeAttachContext(this)) {
-            Log.e(TAG, "nativeAttachContext failed");
-            return false;
-        }
-        Log.i(TAG, "nativeAttachContext ok");
-
-        int created = RustWidgets.nativeSelfTestKinds();
-        Log.i(TAG, "nativeSelfTestKinds -> " + created);
-        if (created != 7) {
-            Log.e(TAG, "expected 7 Rust-created widgets, got " + created);
-            return false;
-        }
-
-        // Dialogs are backed by AlertDialog, not a View; exercise create/show/
-        // message-update/hide through the Rust API.
-        int dialog = RustWidgets.nativeSelfTestDialog();
-        Log.i(TAG, "nativeSelfTestDialog -> " + dialog);
-        if (dialog != 1) {
-            Log.e(TAG, "expected 1 Rust-driven dialog, got " + dialog);
-            return false;
-        }
-        return true;
-    }
-
-    /**
-     * Exercise the Rust-driven file-dialog path.
-     *
-     * <p>Runs last because it launches the system document picker, which takes
-     * over the foreground. The picker result comes back through this Activity's
-     * {@link #onActivityResult}, which is logged but does not affect the pass
-     * verdict (the verdict is about the Rust bridge launching it correctly).
-     *
-     * @return whether the Rust file-dialog path launched the picker
-     */
-    private boolean runFileDialogTest() {
-        int fd = RustWidgets.nativeSelfTestFileDialog();
-        Log.i(TAG, "nativeSelfTestFileDialog -> " + fd);
-        if (fd != 1) {
-            Log.e(TAG, "expected 1 Rust-driven file dialog, got " + fd);
-            return false;
-        }
-        return true;
     }
 
     @Override
-    protected void onActivityResult(int requestCode, int resultCode, android.content.Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        Log.i(TAG, "onActivityResult req=" + requestCode + " result=" + resultCode
-                + " data=" + (data == null ? "null" : String.valueOf(data.getData())));
+    protected void onDestroy() {
+        // The bridge holds a global reference to the Activity's Context. Releasing
+        // it here is what lets the Activity be collected; skipping it leaks the
+        // Activity across configuration changes.
+        try {
+            RustWidgets.nativeDetachContext();
+            Log.i(TAG, "nativeDetachContext ok");
+        } catch (UnsatisfiedLinkError e) {
+            Log.e(TAG, "nativeDetachContext not linked: " + e.getMessage());
+        }
+        super.onDestroy();
     }
 
     /**
      * Drive the Rust JNI bridge and return whether every step succeeded.
-     *
-     * @param root container the created views are attached to
      */
-    private boolean runBridgeSmokeTest(LinearLayout root) {
+    private boolean runBridgeSmokeTest() {
         try {
             RustWidgets.nativeInit();
         } catch (UnsatisfiedLinkError e) {
@@ -119,53 +75,47 @@ public class MainActivity extends Activity {
         }
         Log.i(TAG, "nativeInit ok");
 
-        long button = RustWidgets.nativeCreateButton(this, "Hello", 0, 0, 200, 80);
-        long textView = RustWidgets.nativeCreateTextView(this, "Label", 0, 90, 200, 60);
-        long editText = RustWidgets.nativeCreateEditText(this, "edit", 0, 160, 200, 60);
-        long checkBox = RustWidgets.nativeCreateCheckBox(this, "check", 0, 230, 200, 60);
-        long radio = RustWidgets.nativeCreateRadioButton(this, "radio", 0, 300, 200, 60);
-        long progress = RustWidgets.nativeCreateProgressBar(this, 0, 370, 200, 40);
-        long seek = RustWidgets.nativeCreateSeekBar(this, 0, 420, 200, 60);
-
-        long[] handles = {button, textView, editText, checkBox, radio, progress, seek};
-        String[] names = {"Button", "TextView", "EditText", "CheckBox",
-                          "RadioButton", "ProgressBar", "SeekBar"};
-        boolean allCreated = true;
-        for (int i = 0; i < handles.length; i++) {
-            if (handles[i] == 0) {
-                Log.e(TAG, "create " + names[i] + " returned 0");
-                allCreated = false;
-            } else {
-                Log.i(TAG, "create " + names[i] + " -> " + handles[i]);
-            }
+        // The host hands over the Activity Context; the bridge stores a global
+        // reference so it can resolve platform facilities on the library's behalf.
+        boolean attached;
+        try {
+            attached = RustWidgets.nativeAttachContext(this);
+        } catch (UnsatisfiedLinkError e) {
+            Log.e(TAG, "nativeAttachContext not linked: " + e.getMessage());
+            return false;
         }
-        if (!allCreated) {
+        if (!attached) {
+            Log.e(TAG, "nativeAttachContext refused the context");
+            return false;
+        }
+        Log.i(TAG, "nativeAttachContext ok");
+
+        // Status is a bit mask: bit 0 = VM stored, bit 1 = Context attached.
+        int status = RustWidgets.nativeIntegrationStatus();
+        Log.i(TAG, "nativeIntegrationStatus -> " + status);
+        if ((status & 1) == 0) {
+            Log.e(TAG, "integration status reports no JavaVM after nativeInit");
+            return false;
+        }
+        if ((status & 2) == 0) {
+            Log.e(TAG, "integration status reports no Context after nativeAttachContext");
             return false;
         }
 
-        // Mutation round-trips.
-        RustWidgets.nativeSetViewText(button, "Updated");
-        RustWidgets.nativeSetViewBounds(button, 10, 10, 220, 90);
-        RustWidgets.nativeSetViewEnabled(button, false);
-        RustWidgets.nativeSetViewEnabled(button, true);
-        RustWidgets.nativeSetViewVisibility(textView, false);
-        RustWidgets.nativeSetViewVisibility(textView, true);
-        Log.i(TAG, "mutation round-trips ok");
-
-        // Attach the created views so the framework realises them. A FrameLayout
-        // wrapper is used because the raw LayoutParams from the bridge are not
-        // valid for a LinearLayout child.
-        FrameLayout host = new FrameLayout(this);
-        host.setLayoutParams(new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT));
-        root.addView(host);
-        Log.i(TAG, "views hosted");
-
-        for (long handle : handles) {
-            RustWidgets.nativeDestroyView(handle);
+        // A count mismatch means the .so predates this class; reporting it here is
+        // the point of the entry point.
+        int methodCount = RustWidgets.nativeMethodCount();
+        Log.i(TAG, "nativeMethodCount -> " + methodCount);
+        if (methodCount <= 0) {
+            Log.e(TAG, "nativeMethodCount returned " + methodCount);
+            return false;
         }
-        Log.i(TAG, "destroy ok");
+
+        // The window reports its own size changes. Drive one through the documented
+        // entry point so a regression in the resize path is visible on-device.
+        int resized = RustWidgets.nativeNotifyResize(0L, 1080, 1920);
+        Log.i(TAG, "nativeNotifyResize -> " + resized);
+
         return true;
     }
 }

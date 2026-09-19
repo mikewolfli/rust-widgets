@@ -32,15 +32,20 @@
 //!
 //! # Gating
 //!
-//! `mini` and `embedded` compile the theme module out, so they need an
-//! `apply_active_theme` that does nothing. This module is compiled only where a
-//! device profile exists (see `crate::theme`), so the two functions cannot both be
-//! present: the real one under `not(alloc_frugal)`, the no-op under `alloc_frugal`.
-//! Keeping both here — rather than putting the no-op at a call site — is what stops
-//! a call site from growing its own `cfg` that then drifts out of step with the
-//! module's gate.
+//! The real `apply_active_theme` needs the capability registry (it classifies a
+//! widget by its factory name), so it is gated `not(alloc_frugal)` **and**
+//! `widgets_unstripped`. Two no-op arms cover the builds where it cannot work:
+//!
+//! * `alloc_frugal` (`mini`) — no theme module to apply at all;
+//! * `device_profile` with stripped widgets — a theme module exists but there is no
+//!   registry to resolve a role from, so a control keeps its own defaults rather
+//!   than being styled by a guess.
+//!
+//! Both arms return without styling, which is the truthful answer in each case.
+//! Keeping them here — rather than at a call site — is what stops a call site from
+//! growing its own `cfg` that then drifts out of step with the module's gate.
 
-#[cfg(not(alloc_frugal))]
+#[cfg(all(not(alloc_frugal), widgets_unstripped))]
 use crate::widget::Widget;
 
 /// Applies the active theme to a widget that is about to be registered.
@@ -52,7 +57,11 @@ use crate::widget::Widget;
 /// Does nothing when no theme is active. The global manager always has a theme
 /// registered, so in practice this always applies; the `None` case exists for a
 /// caller that replaced the manager with an empty one.
-#[cfg(not(alloc_frugal))]
+///
+/// Gated on `widgets_unstripped` because `factory_name_for_kind` is: the lookup
+/// needs the capability registry, which a stripped build does not compile. The
+/// no-op arm below covers that case.
+#[cfg(all(not(alloc_frugal), widgets_unstripped))]
 pub(crate) fn apply_active_theme(widget: &mut dyn Widget) {
     let kind_name = crate::widget::capability::factory_name_for_kind(widget.kind());
     if kind_name.is_empty() {
@@ -78,6 +87,21 @@ pub(crate) fn apply_active_theme(widget: &mut dyn Widget) {
     style.merge(&theme_style);
     widget.set_style(style);
 }
+
+/// Applies the active theme on a device build whose widget registry is stripped.
+///
+/// `crate::theme` is gated `device_profile`, which is *wider* than
+/// `widgets_unstripped`: a build that overlaps two axis-1 features (e.g.
+/// `--features "tablet,embedded"`) has a theme module but no capability registry,
+/// so `factory_name_for_kind` does not exist. Without this arm such a build failed
+/// to compile with `cannot find function factory_name_for_kind`.
+///
+/// Classification needs the factory name, so there is no honest way to resolve a
+/// role here. Doing nothing is the truthful answer: a control keeps its own
+/// defaults rather than being styled by a guess, which is the same rule the
+/// unresolvable-kind branch above follows.
+#[cfg(all(device_profile, not(widgets_unstripped)))]
+pub(crate) fn apply_active_theme(_widget: &mut dyn crate::widget::Widget) {}
 
 /// No-op for the allocation-frugal profile, which has no theme module.
 #[cfg(alloc_frugal)]

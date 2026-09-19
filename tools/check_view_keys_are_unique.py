@@ -72,6 +72,8 @@ INTENTIONAL_DUPLICATE_TESTS = {
         "same key in two different sibling sets must be legal, so it must build one",
     "duplicate_report_is_not_confused_by_grandchildren":
         "asserts a grandchild key does not collide with its parent's sibling",
+    "duplicate_sibling_keys_are_reported_rather_than_silently_mismatched":
+        "asserts `DiffReport::duplicate_keys` names the collision, so it must build one",
 }
 
 # `Node::new("button")` … optionally chained `.key("ok")`.

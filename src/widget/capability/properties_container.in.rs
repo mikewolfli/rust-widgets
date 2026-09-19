@@ -73,18 +73,18 @@ macro_rules! impl_properties_container {
             PropertySchema::new("widget_resizable", PropertyValueKind::Bool, true, true),
             PropertySchema::enumerated(
                 "horizontal_scroll_bar_policy",
-                false,
-                false,
+                true,
+                true,
                 &["always_on", "always_off", "as_needed"],
             ),
             PropertySchema::enumerated(
                 "vertical_scroll_bar_policy",
-                false,
-                false,
+                true,
+                true,
                 &["always_on", "always_off", "as_needed"],
             ),
-            PropertySchema::new("scroll_position_x", PropertyValueKind::Int, false, false),
-            PropertySchema::new("scroll_position_y", PropertyValueKind::Int, false, false),
+            PropertySchema::new("scroll_position_x", PropertyValueKind::Int, true, true),
+            PropertySchema::new("scroll_position_y", PropertyValueKind::Int, true, true),
             // The sticky list is written through `add_sticky_region` /
             // `clear_sticky_regions`; the count is what the property layer reports,
             // following the same convention as `Meter`'s threshold bands.
@@ -97,8 +97,8 @@ macro_rules! impl_properties_container {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const TAB_WIDGET_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema::new("tab_count", PropertyValueKind::UInt, false, false),
-            PropertySchema::new("current_index", PropertyValueKind::UInt, false, false),
+            PropertySchema::new("tab_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("current_index", PropertyValueKind::UInt, true, true),
             PropertySchema::new("closable", PropertyValueKind::Bool, false, false),
             PropertySchema::new("movable", PropertyValueKind::Bool, false, false),
             PropertySchema::enumerated(
@@ -115,8 +115,8 @@ macro_rules! impl_properties_container {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const STACKED_WIDGET_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema::new("widget_count", PropertyValueKind::UInt, false, false),
-            PropertySchema::new("current_index", PropertyValueKind::UInt, false, false),
+            PropertySchema::new("widget_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("current_index", PropertyValueKind::UInt, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -137,7 +137,7 @@ macro_rules! impl_properties_container {
         pub(crate) const DOCK_WIDGET_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("title", PropertyValueKind::String, true, true),
             PropertySchema::new("floating", PropertyValueKind::Bool, true, true),
-            PropertySchema::new("docked", PropertyValueKind::Bool, false, false),
+            PropertySchema::new("docked", PropertyValueKind::Bool, true, false),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -146,11 +146,11 @@ macro_rules! impl_properties_container {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const MDI_AREA_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema::new("subwindow_count", PropertyValueKind::UInt, false, false),
-            PropertySchema::new("active_subwindow", PropertyValueKind::UInt, false, false),
+            PropertySchema::new("subwindow_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("active_subwindow", PropertyValueKind::UInt, true, false),
             PropertySchema::enumerated(
                 "view_mode",
-                false,
+                true,
                 false,
                 &["list", "icon", "details", "thumbnails"],
             ),

@@ -22,26 +22,22 @@
 use crate::compat::OnceLock;
 #[cfg(feature = "controls-custom")]
 use crate::control_backend::custom::CustomPaintControlBackend;
-#[cfg(all(feature = "controls-native", widgets_unstripped))]
-use crate::control_backend::native::NativeControlBackend;
 use crate::control_backend::trait_def::ControlBackend;
 #[cfg(not(feature = "controls-custom"))]
 use crate::core::ObjectId;
 use crate::widget::WidgetKind;
 
-/// The wrapper backend over `Platform` primitives.
-///
-/// It is compiled where `controls-native` is enabled but nothing selects it:
-/// its control methods forward to `Platform` members whose defaults report "no
-/// such control", so choosing it would make every `rw_create_*` return `0`. It is
-/// kept because it is the named place a backend would report a genuine platform
-/// primitive from, and because the feature-completeness gate still builds it.
-#[cfg(all(feature = "controls-native", widgets_unstripped))]
-#[allow(dead_code)]
-fn native_control_backend() -> &'static NativeControlBackend {
-    static BACKEND: NativeControlBackend = NativeControlBackend::new();
-    &BACKEND
-}
+// A `native_control_backend()` factory used to live here, gated
+// `all(feature = "controls-native", widgets_unstripped)` and marked
+// `#[allow(dead_code)]`. Its only reference was its own definition — nothing selected
+// it, and the module doc above explains why: `controls-native` no longer selects
+// anything, so the native wrapper is reachable only as the type `NativeControlBackend`
+// re-exported from `control_backend::mod`. Deleted rather than kept behind the allow,
+// matching the precedent in `src/lib.rs` where a registry-backed arm that cannot be
+// called was removed with the same reasoning (principle #4: an unreachable factory is
+// not a fallback). The type itself is still built and exported, so the naming place a
+// genuine platform primitive would report from has not been lost.
+
 #[cfg(feature = "controls-custom")]
 fn custom_control_backend() -> &'static CustomPaintControlBackend {
     static BACKEND: OnceLock<CustomPaintControlBackend> = OnceLock::new();

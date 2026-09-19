@@ -31,13 +31,19 @@ use winapi::um::wingdi::{
     StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, SRCCOPY,
 };
 use winapi::um::winuser::{
-    BeginPaint, CloseTouchInputHandle, CreateWindowExW, DefWindowProcW, EndPaint, GetClientRect,
-    GetTouchInputInfo, InvalidateRect, LoadCursorW, RegisterClassW, RegisterTouchWindow, SetFocus,
-    SetWindowPos, TrackMouseEvent, UpdateWindow, CS_HREDRAW, CS_OWNDC, CS_VREDRAW, IDC_ARROW,
-    PAINTSTRUCT, SWP_NOACTIVATE, SWP_NOZORDER, TME_LEAVE, TOUCHEVENTF_DOWN, TOUCHEVENTF_MOVE,
-    TOUCHEVENTF_UP, TOUCHINPUT, TRACKMOUSEEVENT, TWF_WANTPALM, WM_ERASEBKGND, WM_KEYDOWN,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSELEAVE, WM_MOUSEMOVE, WM_PAINT, WM_SIZE, WM_TOUCH,
-    WNDCLASSW, WS_CHILD, WS_TABSTOP, WS_VISIBLE,
+    BeginPaint, CreateWindowExW, DefWindowProcW, EndPaint, GetClientRect, InvalidateRect,
+    LoadCursorW, RegisterClassW, SetFocus, SetWindowPos, TrackMouseEvent, UpdateWindow, CS_HREDRAW,
+    CS_OWNDC, CS_VREDRAW, IDC_ARROW, PAINTSTRUCT, SWP_NOACTIVATE, SWP_NOZORDER, TME_LEAVE,
+    TRACKMOUSEEVENT, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSELEAVE,
+    WM_MOUSEMOVE, WM_PAINT, WM_SIZE, WM_TOUCH, WNDCLASSW, WS_CHILD, WS_TABSTOP, WS_VISIBLE,
+};
+// Touch-only Win32 entry points. Grouped under one gate so a build without the
+// `touch` capability does not import symbols it never calls (which would be an
+// unused-import warning) and does not need `WM_TOUCH` handling at all.
+#[cfg(feature = "touch")]
+use winapi::um::winuser::{
+    CloseTouchInputHandle, GetTouchInputInfo, RegisterTouchWindow, TOUCHEVENTF_DOWN,
+    TOUCHEVENTF_MOVE, TOUCHEVENTF_UP, TOUCHINPUT, TWF_WANTPALM,
 };
 
 /// Child-window class name used for every self-drawn canvas.
@@ -157,8 +163,22 @@ unsafe extern "system" fn canvas_wnd_proc(
             0
         }
         WM_TOUCH => {
-            forward_touch(hwnd, wparam, lparam);
-            0
+            // `touch` is an independently composable capability, so a Windows build
+            // without it has no `Event::Touch*` variants to build (they are gated in
+            // `crate::event::types`). Fall through to `DefWindowProcW` rather than
+            // referencing `forward_touch`, whose whole body would fail to resolve —
+            // and note that `RegisterTouchWindow` below is gated the same way, so
+            // Win32 never sends this message in that configuration either.
+            #[cfg(feature = "touch")]
+            {
+                forward_touch(hwnd, wparam, lparam);
+                0
+            }
+            #[cfg(not(feature = "touch"))]
+            {
+                let _ = (wparam, lparam);
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
         }
         WM_KEYDOWN => {
             forward_key(hwnd, wparam);
@@ -353,19 +373,27 @@ unsafe fn forward_mouse(hwnd: HWND, lparam: LPARAM, phase: MousePhase) {
 /// finger contacts as `WM_TOUCH` carrying *screen* coordinates and its own per-contact
 /// ids; both are translated here.
 ///
-/// # One message, several contacts
-///
-/// A single `WM_TOUCH` can describe multiple simultaneous fingers — that is how the
-/// backend feeds the two independent contacts `Pinch`/`Rotate` need. Each contact is
-/// dispatched separately so the recognizers see one event per finger, which is the
-/// shape their state machines expect.
-///
 /// # Coordinate space
 ///
 /// `TOUCHINPUT` carries coordinates in *hundredths of a pixel* in *screen* space. They
 /// are converted to whole pixels relative to this window, then offset by the canvas
 /// origin to reach the absolute space the widget tree uses — the same space
 /// `forward_mouse` produces, so a touch and a click at the same place agree.
+///
+/// # Feature gate
+///
+/// Compiled only with `touch`, because `Event::TouchBegin`/`TouchMove`/`TouchEnd`
+/// are themselves gated in `crate::event::types`. The `WM_TOUCH` arm of `wnd_proc`
+/// and the `RegisterTouchWindow` opt-in at mount time carry the same gate, so a
+/// Windows build without the capability never reaches this function at all.
+///
+/// # One message, several contacts
+///
+/// A single `WM_TOUCH` can describe multiple simultaneous fingers — that is how the
+/// backend feeds the two independent contacts `Pinch`/`Rotate` need. Each contact is
+/// dispatched separately so the recognizers see one event per finger, which is the
+/// shape their state machines expect.
+#[cfg(feature = "touch")]
 unsafe fn forward_touch(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
     let input_count = (wparam & 0xFFFF) as u32;
     if input_count == 0 {
@@ -535,11 +563,18 @@ pub(crate) fn mount_canvas(parent: HWND, id: ObjectId, rect: Rect) -> Option<HWN
         // it is logged rather than treated as a mount error.
         // `TWF_WANTPALM` suppresses the default press-and-hold "palm check" delay,
         // which would otherwise make a tap take ~1s to be delivered.
-        if RegisterTouchWindow(hwnd, TWF_WANTPALM) == 0 {
-            log::debug!(
-                "[windows] mount_surface: RegisterTouchWindow declined for hwnd {hwnd:p}; \
-                 touch input will not be delivered to this canvas"
-            );
+        //
+        // Gated on `touch` together with `forward_touch`: without the capability there
+        // is no touch event to deliver, so asking Win32 for the messages would only
+        // produce a `WM_TOUCH` the window procedure has nothing to do with.
+        #[cfg(feature = "touch")]
+        {
+            if RegisterTouchWindow(hwnd, TWF_WANTPALM) == 0 {
+                log::debug!(
+                    "[windows] mount_surface: RegisterTouchWindow declined for hwnd {hwnd:p}; \
+                     touch input will not be delivered to this canvas"
+                );
+            }
         }
         invalidate_canvas(hwnd);
         UpdateWindow(hwnd);

@@ -120,10 +120,18 @@ impl Node {
 
     /// The keys that appear more than once among the **direct** children of this node.
     ///
-    /// Reported rather than asserted because a view is data; the caller (or the
-    /// `check_view_keys_are_unique` gate) decides whether duplicates are fatal. A
-    /// duplicate key is genuinely ambiguous: two siblings would claim the same identity,
-    /// so a diff could never move or remove either one unambiguously.
+    /// Reported rather than asserted because a view is data. A duplicate key is
+    /// genuinely ambiguous: two siblings would claim the same identity, so a diff could
+    /// never move or remove either one unambiguously.
+    ///
+    /// # Who consumes this
+    ///
+    /// [`crate::view::diff`] counts collisions itself and reports them through
+    /// [`DiffReport::duplicate_keys`](crate::view::diff::DiffReport::duplicate_keys), so
+    /// the condition is visible even if a caller never asks. This method is what lets a
+    /// caller *name* the offending keys — for a diagnostic, or to reject the view before
+    /// mounting it. The `tools/check_view_keys_are_unique.sh` gate checks the same
+    /// invariant statically, at the source level, for `Node` builder chains.
     pub fn duplicate_sibling_keys(&self) -> Vec<(&str, usize)> {
         let mut counts: HashMap<&str, usize> = HashMap::new();
         for child in &self.children {

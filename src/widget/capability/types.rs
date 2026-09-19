@@ -213,9 +213,11 @@ impl PropertySchema {
 
     /// A [`PropertyValueKind::Enum`] entry that publishes its legal spellings.
     ///
-    /// The tokens must be the spellings `set` actually accepts. `tokens_round_trip` in
-    /// this module's tests writes each one back, so a list that has drifted from the
-    /// control's parser fails rather than misleading a caller.
+    /// The tokens must be the spellings `set` actually accepts.
+    /// `published_enum_tokens_are_accepted_by_their_control` in
+    /// `properties_tests.rs` writes every writable enum token of every registered
+    /// capability back through `widget_property_set`, so a list that has drifted from
+    /// the control's parser fails rather than misleading a caller.
     pub const fn enumerated(
         name: &'static str,
         readable: bool,

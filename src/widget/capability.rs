@@ -296,6 +296,24 @@ pub fn factory_name_for_kind(kind: crate::widget::WidgetKind) -> &'static str {
 /// Gated with the full widget set because it names variants `embedded` compiles
 /// out (`ActivityIndicator`, `ColumnView`, …). The registry-free path resolves the
 /// same names from the variant's spelling, so nothing is lost there.
+///
+/// # Why `Panel` and `MenuItem` are here
+///
+/// Both variants are legitimate `WidgetKind`s with a real constructor, but neither
+/// has a capability row of its own, so `capability_by_kind` misses for both and
+/// they used to reach the `other` arm and return `""`:
+///
+/// * `Panel` — `panel_capability()` declares `kind: WidgetKind::GroupBox` (the two
+///   are the same control under two names, as `DockPanel` is to `DockWidget`), so
+///   the `panel` name lives on a `GroupBox`-kinded row.
+/// * `MenuItem` — a child created by its owning `Menu`, never by a factory call on
+///   its own name, so it publishes no capability row; the `menu_item` name is what
+///   the registry-free path derives from the variant.
+///
+/// An empty return is not harmless: `theme::apply_active_theme` bails out on it, so
+/// a `Panel`- or `MenuItem`-kinded widget silently received no theme role (the
+/// diagnostic was only `debug!`). Both rows were missing, which is the same class of
+/// bug the `DockPanel` note above records.
 #[cfg(full_widgets)]
 fn alias_factory_name(kind: crate::widget::WidgetKind) -> &'static str {
     // Alias variants resolve to the name their target type is registered under.
@@ -309,6 +327,12 @@ fn alias_factory_name(kind: crate::widget::WidgetKind) -> &'static str {
         crate::widget::WidgetKind::ContextMenu => "menu",
         crate::widget::WidgetKind::Wizard => "wizard_dialog",
         crate::widget::WidgetKind::DockPanel => "dock_widget",
+        // `Panel` is `GroupBox` under another name; the capability row is keyed on
+        // `GroupBox`, so this is an alias row, exactly like `DockPanel` above.
+        crate::widget::WidgetKind::Panel => "panel",
+        // A menu row: constructible, but only as a child of a `Menu`, so it has no
+        // capability row of its own and must be named here.
+        crate::widget::WidgetKind::MenuItem => "menu_item",
         other => {
             // Reached only if a kind is added to `WidgetKind` with neither a
             // capability nor an alias. Reported loudly rather than returning a

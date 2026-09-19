@@ -5,6 +5,113 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 2.4.4 (2026-09-19) — Uncompilable Backends, Silent State Loss, and a Broken ABI Contract
+
+Backward compatible. **No public signature was removed.** One public function was renamed
+(`native_handle` → `backend_handle`) and the old name remains as a `#[deprecated]` alias, so an
+existing call site gets a warning rather than a build break.
+
+### Measured facts
+
+- `5266` tests pass on `desktop`, `0` failed, `30` test binaries; the `13` "ignored" entries are
+  `ignore`d doc-test snippets, not skipped test targets (there are no `#[ignore]` tests).
+- `cargo clippy --all-targets` is warning-free on all five profiles.
+- All five profiles build clean on **two** targets: the host and `x86_64-pc-windows-msvc`.
+- `28` of the `30` gate scripts pass; the two that do not are host-gated (`check_apple_native`
+  requires macOS, `check_harmony_cross` requires the `aarch64-unknown-linux-ohos` target).
+
+### Whole backends did not compile, and no job had ever compiled them
+
+The Windows backend could not build at all in configurations that ship:
+
+- `winapi::um::windef::RECT` does not exist (the symbol is in `winapi::shared::windef`) — two sites.
+- `invalidate_surface_rect` used `super::canvas` without `widgets_unstripped`, while `windows/mod.rs`
+  gates that module on it. Same defect in `macos/platform_impl.rs`'s `create_window`.
+- `Event::TouchBegin`/`TouchMove`/`TouchEnd` were constructed with no `feature = "touch"` arm in
+  the Windows, GTK and macOS canvases, so a build without the capability failed (the enum variants
+  are gated in `event/types.rs`).
+- The whole Windows surface used bare `std` `String`/`Vec`/`HashMap`/`format!`/`to_string`, which
+  `mini`'s `#![no_std]` suppresses: **24 errors** on `--target x86_64-pc-windows-msvc --features mini`.
+
+They survived because the only job that compiled Windows passed a hand-written capability list with
+**no device profile**, making `full_widgets` false — so the device-gated half was never built either.
+`tools/check_profiles.sh` now cross-checks the Windows backend across `desktop`/`embedded`/`mini` and
+a no-profile/no-touch build, and fails loudly if the target is missing rather than skipping.
+
+### Silent state loss in the declarative layer
+
+- **A dropped property reset to `Null`, which most controls refuse.** Only about twenty handle `Null`
+  explicitly; the rest write through a typed extractor. `apply` now substitutes the value the
+  capability schema declares, so the reset is a real write. Before: the control kept its stale value
+  **permanently** (the next diff finds no key to retry) with only an ignored `ApplyReport` entry.
+- **Duplicate sibling keys were matched last-write-wins.** A stable list whose keys collided had its
+  controls destroyed and recreated — losing focus and scroll — while `positional_matches` and
+  `replaced_subtrees` both read zero, i.e. while the report implied the *best* match quality.
+  `DiffReport` gained a `duplicate_keys` field, and a duplicated key is now unmappable rather than
+  silently resolved to the wrong node.
+- **An alias respelling was treated as a type change.** `Node.widget` is a *creation* name and several
+  spellings mean one kind (`scrollarea` / `scroll_area`), so a rename produced a `Replace`, destroying
+  a control that had not changed. Comparison now goes through the factory's own kind resolution.
+- **`ModalBottomSheet` drag-to-dismiss was unreachable.** The `MouseMove` arm was an empty body with a
+  comment saying the origin "would be tracked", so `drag_offset` never left `0.0` and the one-third
+  threshold in `end_drag` could never be crossed through the event API. Fixed, with the same
+  `MouseLeave` cancellation applied to `NumberPicker`, `Slider`, `RangeSlider` and `BezierCurveEditor`,
+  each of which left its drag flag set when the pointer left the control.
+
+### The C ABI published no value-kind discriminators, so three bindings leaked
+
+`rw_get_widget_property` writes an `out_kind` from an 8-variant enum, but the generated header
+published **no** `rw_value_kind` at all — so each binding hand-declared its own constants, and all
+three stopped at `RW_VALUE_STRING`. Reading any `Color` or `Rect` property through Python, Node or C++
+returned "no such property" **and leaked the buffer the ABI had allocated**, because the caller had no
+constant to match and never reached its free call.
+
+`tools/generate_c_header.py` now emits the enum parsed from `src/bindings/binding_impl.rs` (the single
+source of truth) and fails if it parses none. All three bindings accept every kind and free on every
+non-null payload, including unrecognised kinds. `tools/check_binding_symbol_coverage.py` gained the
+`RW_VALUE_*` drift check that structurally could not exist before — reverse-injection verified.
+
+### JSON loader: wrong kinds, false warnings, and a spelling nothing published
+
+- `infer_kind`'s `_ => WidgetKind::Button` fallback meant every factory-routable name the table did
+  not list (`icon`, `chip`, `table`, …) was registered as a **`Button`**. Registration now reads the
+  live control's own `kind()`.
+- Seven keys read by a `create_widget` arm (`tristate`, `password`, `word_wrap`, `tab_shape`,
+  `h_policy`, `v_policy`, `alpha`) were absent from `is_loader_owned_key`, so the loader logged
+  *"was ignored"* about a value it had just applied. A test now derives the key set from the arm
+  table itself.
+- `min`/`max` were read by four arms but published by none of their controls (they publish
+  `minimum`/`maximum`), while `cupertino_slider` genuinely publishes `min`/`max` as **Float** — one
+  spelling meaning two different things. Both spellings now resolve, published name winning.
+- `fontdialog`'s `value` was read and then discarded in favour of `Font::default()`, so
+  `"Monospace 20"` silently became Arial 14. A real `Font::parse` now honours it, and an unparsable
+  value is reported instead of substituted.
+
+### CSS, capability and naming corrections
+
+- **`menu_bar { … }` matched nothing.** `CssSelector::matches` compared with `eq_ignore_ascii_case`
+  against the widget's `Debug` spelling, which bridges case but not separators — so the *canonical*
+  factory spelling silently styled nothing while `MenuBar` worked. Comparison now goes through the
+  crate's single name normaliser, and the `to_selector` path accepts the same spellings.
+- `Panel` and `MenuItem` resolved to an **empty** factory name (no capability row of their own), which
+  made `theme::apply_active_theme` skip them silently. Both now resolve, and a test asserts no
+  consumer-facing kind has an empty name.
+- `menu_config` reported a hard-coded `512` MB as "detected" GPU memory. It is now `Option<u32>` with
+  an explicit `gpu_memory_is_measured` flag, and the description says "memory not reportable" rather
+  than printing a constant as a measurement. Two dead fake probes in `gpu/adapter.rs` were deleted.
+- `pub fn native_handle` → `backend_handle` (principle #52: the public API must not name a mechanism).
+  `Platform::native_widget_kinds` and `native_control_backend()` were deleted as zero-caller dead code
+  whose own docs called them obsolete.
+- Hit-tests in `ToolBar`, `RibbonBar`, `AppBar` and `NavigationDrawer` used an **inclusive** far edge
+  while the crate convention is exclusive, making a boundary pixel resolve to a different item than
+  the one drawn there.
+
+### New gates and regression tests
+
+Every fix above is pinned by a test that was reverse-injection verified (the fix removed, the test
+observed failing, the fix restored). New gates: the Windows cross-profile check in
+`check_profiles.sh`, and the `RW_VALUE_*` coverage check in `check_binding_symbol_coverage.py`.
+
 ## 2.4.3 (2026-09-19) — Dead Indirection Removed, SVGZ Round Trip, Schema Truthfulness
 
 Backward compatible. **No signature was removed and no control was deleted.** The one public

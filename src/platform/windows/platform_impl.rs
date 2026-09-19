@@ -9,6 +9,12 @@ use crate::platform::clipboard::RichClipboardBackend;
 use crate::platform::ime::ImeBridge;
 use crate::platform::{Platform, PlatformCapabilities, WindowStateFlag};
 
+// `String` and `Vec` are imported from the compat bridge rather than used bare:
+// the `mini` profile is `no_std`, so the std prelude that normally supplies them
+// is suppressed and this module failed to compile with 10 `cannot find type
+// String/Vec in this scope` errors. Every other backend already routes alloc
+// types through `compat` (see `platform/linux/types.rs`).
+use crate::compat::{String, Vec};
 use crate::platform::windows::notify;
 use crate::platform::windows::types::*;
 use crate::platform::DropEvent;
@@ -373,7 +379,7 @@ impl Platform for WindowsPlatform {
     fn window_client_size(&self, window_id: ObjectId) -> Option<(u32, u32)> {
         use winapi::um::winuser::GetClientRect;
         if let Some(hwnd) = self.get_native_handle(window_id) {
-            let mut rect = winapi::um::windef::RECT { left: 0, top: 0, right: 0, bottom: 0 };
+            let mut rect = winapi::shared::windef::RECT { left: 0, top: 0, right: 0, bottom: 0 };
             // SAFETY: `hwnd` came from this backend's own handle table and Win32 fills
             // the RECT we pass. Zero dimensions are rejected below rather than reported.
             if unsafe { GetClientRect(hwnd, &mut rect) } != 0 {
@@ -408,6 +414,14 @@ impl Platform for WindowsPlatform {
             None => false,
         }
     }
+
+    /// Invalidate one rectangle of the canvas window.
+    ///
+    /// Gated on `widgets_unstripped` for the same reason as the two methods above:
+    /// it resolves an id through `super::canvas`, which only exists when the widget
+    /// registry does. Without the gate a `windows + mini`/`embedded` build failed to
+    /// compile with `cannot find canvas in super`.
+    #[cfg(widgets_unstripped)]
     fn invalidate_surface_rect(&self, id: ObjectId, rect: crate::core::Rect) -> bool {
         match super::canvas::hwnd_for_widget(id) {
             Some(hwnd) => super::canvas::invalidate_canvas_rect(hwnd, rect),

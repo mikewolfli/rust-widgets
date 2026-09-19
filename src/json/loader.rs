@@ -26,6 +26,7 @@
 use serde_json::Value;
 
 use crate::app::{ButtonHandle, WidgetHandle};
+use crate::core::{Alignment, Color, ObjectId, Orientation, Rect};
 use crate::json::properties::ApplyOutcome;
 use crate::json::{
     add_spacer_to_layout, add_widget_to_layout, apply_layout, create_layout_from_kind,
@@ -41,10 +42,10 @@ use crate::widget::{
     ColorDialog, FileDialog, FontDialog, GridWidget, ListView, MessageBox, TabWidget, TextEdit,
 };
 use crate::window::Window;
-use crate::{
-    core::{Alignment, Color, ObjectId, Orientation, Rect},
-    index::WidgetKind,
-};
+// `WidgetKind` is named only by the test-only `infer_kind` table below; production
+// registration reads the live control's kind instead.
+#[cfg(test)]
+use crate::index::WidgetKind;
 
 /// Maximum nested depth for recursive instantiation (prevents stack overflow).
 const MAX_DEPTH: u32 = 64;
@@ -202,7 +203,21 @@ impl JsonLoader {
 
         // Register
         let widget_id = widget.id();
-        let kind = infer_kind(widget_type);
+        // The **live control's** kind, not a value derived from the type name.
+        //
+        // `infer_kind` is a hand-written table covering about a hundred names, while
+        // the factory routes far more (canonical names plus aliases). Anything the
+        // table did not name — `icon`, `table`, `chip`, `progress_bar`, … — fell
+        // through its `_ => WidgetKind::Button` arm, so the registry recorded `Button`
+        // for a control that is not one, and `LayoutInspector`/`by_kind` queries then
+        // reported the wrong kind. The widget already knows its kind, so reading it
+        // here removes the table's ability to disagree with reality.
+        //
+        // `infer_kind` is still consulted for the one case the widget cannot answer:
+        // a name whose control has no kind-specific entry. Every `Widget` implements
+        // `kind()`, so that fallback is unreachable in practice; it is kept as the
+        // honest answer for a hypothetical widget that overrides nothing.
+        let kind = widget.kind();
 
         let label = if id_str.is_empty() {
             format!("{widget_type}_{widget_id}")
@@ -566,10 +581,10 @@ impl JsonLoader {
             }
             "slider" => {
                 let mut sl = Slider::new(geometry);
-                if let Some(min) = obj.get("min").and_then(|v| v.as_i64()) {
-                    let max = obj.get("max").and_then(|v| v.as_i64()).unwrap_or(100);
-                    sl.set_range(min as i32, max as i32);
-                } else if let Some(max) = obj.get("max").and_then(|v| v.as_i64()) {
+                let (min, max) = read_json_range(obj);
+                if let Some(min) = min {
+                    sl.set_range(min as i32, max.unwrap_or(100) as i32);
+                } else if let Some(max) = max {
                     sl.set_maximum(max as i32);
                 }
                 if let Some(value) = obj.get("value").and_then(|v| v.as_i64()) {
@@ -619,10 +634,10 @@ impl JsonLoader {
             }
             "scrollbar" => {
                 let mut sb = ScrollBar::new(geometry);
-                if let Some(min) = obj.get("min").and_then(|v| v.as_i64()) {
-                    let max = obj.get("max").and_then(|v| v.as_i64()).unwrap_or(100);
-                    sb.set_range(min as i32, max as i32);
-                } else if let Some(max) = obj.get("max").and_then(|v| v.as_i64()) {
+                let (min, max) = read_json_range(obj);
+                if let Some(min) = min {
+                    sb.set_range(min as i32, max.unwrap_or(100) as i32);
+                } else if let Some(max) = max {
                     sb.set_maximum(max as i32);
                 }
                 if let Some(value) = obj.get("value").and_then(|v| v.as_i64()) {
@@ -648,10 +663,10 @@ impl JsonLoader {
             }
             "progressbar" => {
                 let mut pb = ProgressBar::new(geometry);
-                if let Some(min) = obj.get("min").and_then(|v| v.as_i64()) {
-                    let max = obj.get("max").and_then(|v| v.as_i64()).unwrap_or(100);
-                    pb.set_range(min as i32, max as i32);
-                } else if let Some(max) = obj.get("max").and_then(|v| v.as_i64()) {
+                let (min, max) = read_json_range(obj);
+                if let Some(min) = min {
+                    pb.set_range(min as i32, max.unwrap_or(100) as i32);
+                } else if let Some(max) = max {
                     pb.set_maximum(max as i32);
                 }
                 if let Some(value) = obj.get("value").and_then(|v| v.as_i64()) {
@@ -774,10 +789,11 @@ impl JsonLoader {
             }
             "spinbox" => {
                 let mut sb = SpinBox::new(geometry);
-                if let Some(min) = obj.get("min").and_then(|v| v.as_i64()) {
+                let (min, max) = read_json_range(obj);
+                if let Some(min) = min {
                     sb.set_minimum(min as i32);
                 }
-                if let Some(max) = obj.get("max").and_then(|v| v.as_i64()) {
+                if let Some(max) = max {
                     sb.set_maximum(max as i32);
                 }
                 if let Some(value) = obj.get("value").and_then(|v| v.as_i64()) {
@@ -958,12 +974,22 @@ impl JsonLoader {
             #[cfg(not(alloc_frugal))]
             "fontdialog" => {
                 let mut fd = FontDialog::new(geometry);
-                if let Some(_font_str) = obj.get("value").and_then(|v| v.as_str()) {
-                    if !_font_str.is_empty() {
-                        // Font selection from string requires font parsing.
-                        // Default value used for now; full font parsing can be
-                        // added when Font::from_string or similar is available.
-                        fd.set_current_font(crate::core::Font::default());
+                if let Some(font_str) = obj.get("value").and_then(|v| v.as_str()) {
+                    if !font_str.is_empty() {
+                        match crate::core::Font::parse(font_str) {
+                            Some(font) => fd.set_current_font(font),
+                            // The string was supplied and could not be understood. Say
+                            // so and name it, rather than substituting a default as if
+                            // the request had been honoured — the caller's value was
+                            // previously read and then silently thrown away. This
+                            // mirrors `colordialog` above, which falls through on an
+                            // unparsable colour instead of pretending to apply it.
+                            None => log::warn!(
+                                "fontdialog: cannot parse font {font_str:?}; expected \
+                                 \"<family> <size>[ bold][ italic]\". Keeping the dialog's \
+                                 own current font."
+                            ),
+                        }
                     }
                 }
                 Ok(Box::new(fd))
@@ -1069,8 +1095,9 @@ fn apply_declared_styles(widget: &mut dyn Widget, obj: &serde_json::Map<String, 
 /// 1. **Name-driven** — every key that the control's own property contract
 ///    publishes is written through [`crate::json::properties`], so a property
 ///    added to any control is addressable from JSON with no change here. This is
-///    what makes the loader cover all 167 `WidgetKind` variants rather than a
-///    hand-maintained subset.
+///    what makes the loader cover every `WidgetKind` variant rather than a
+///    hand-maintained subset — the kind is resolved from the capability schema, not
+///    from a list kept in this file, so it cannot drift as controls are added.
 /// 2. **Loader-owned** — keys that describe the style object as a whole (`padding`
 ///    / `margin` accept a number *or* a four-sided object), the geometry shorthand,
 ///    and the min/max size constraints, which have no single-property equivalent.
@@ -1171,9 +1198,19 @@ fn apply_properties(widget: &mut dyn Widget, obj: &serde_json::Map<String, Value
 /// Keys this module consumes structurally, so the name-driven pass must not also
 /// try to resolve them as properties.
 ///
-/// Listed exhaustively rather than derived, because a key appearing here is a
-/// claim that the loader has its own (possibly richer) handling for it. Adding a
-/// key to the list without the matching handling is the bug this guards against.
+/// # Why the list is exhaustive and tested
+///
+/// A key appearing here is a claim that the loader has its own (possibly richer)
+/// handling for it. The converse matters just as much: a key a `create_widget` arm
+/// reads but that is *absent* from this list makes the name-driven pass report
+/// ``was ignored'' about a value the arm already applied — a wrong diagnostic that
+/// sends an author chasing a non-bug. Six keys were in exactly that state
+/// (`tristate`, `password`, `word_wrap`, `tab_shape`, `h_policy`, `v_policy`,
+/// `alpha`), because the arm-level reads and this list are maintained separately.
+///
+/// `every_arm_consumed_key_is_loader_owned` in the tests extracts the arm keys from
+/// this file and asserts each one is listed here, so the two cannot drift apart
+/// again.
 fn is_loader_owned_key(key: &str) -> bool {
     matches!(
         key,
@@ -1192,6 +1229,19 @@ fn is_loader_owned_key(key: &str) -> bool {
         // machinery: arrays and sub-objects that describe the widget's content
         // rather than a scalar state property.
         | "children" | "layout" | "items" | "stretch"
+        // Construction-time scalar keys a `create_widget` arm reads directly, under
+        // a spelling that is deliberately *not* the control's property name (an arm
+        // may need to translate a JSON word into an enum, or set two fields from
+        // one key). Each one is applied by its arm, so the name-driven pass must
+        // leave it alone rather than warn about it:
+        //   tristate  → checkbox.set_tristate_enabled
+        //   password  → lineedit.set_echo_mode
+        //   word_wrap → textedit.set_line_wrap
+        //   tab_shape → tabwidget.set_tab_shape
+        //   h_policy / v_policy → scrollarea.set_*_scroll_bar_policy
+        //   alpha     → colordialog.set_options_alpha
+        | "tristate" | "password" | "word_wrap" | "tab_shape"
+        | "h_policy" | "v_policy" | "alpha"
         // Events, wired after registration.
         | "on_click" | "on_change" | "on_close" | "on_double_click" | "on_focus"
         | "on_blur" | "on_selection_changed" | "on_value_changed"
@@ -1228,6 +1278,29 @@ fn json_geometry(obj: &serde_json::Map<String, Value>) -> Rect {
         obj.get("width").and_then(|value| value.as_i64()).unwrap_or(100),
         obj.get("height").and_then(|value| value.as_i64()).unwrap_or(100),
     )
+}
+
+/// Reads a numeric range from JSON, preferring the names the control publishes.
+///
+/// `slider`, `scrollbar`, `progressbar` and `spinbox` publish
+/// `minimum`/`maximum` (see their `PropertySchema` rows), so those are the
+/// documented spellings. Their arms used to read `min`/`max` only — names none of
+/// those four controls publishes — which produced two problems:
+///
+/// * `min`/`max` were not resolvable by the name-driven pass either, so an author
+///   using them got a *"no construction arm consumed it; the value was ignored"*
+///   warning about a value the arm had just applied;
+/// * `min`/`max` **do** name a real property on `cupertino_slider`, where they are
+///   `Float`. One spelling therefore meant an integer range on four controls and a
+///   float pair on a fifth, with no documented reason.
+///
+/// Both spellings are accepted here, with the published name winning, so existing
+/// layouts keep working while the canonical form is what the schema advertises.
+fn read_json_range(obj: &serde_json::Map<String, Value>) -> (Option<i64>, Option<i64>) {
+    let read = |published: &str, alias: &str| {
+        obj.get(published).or_else(|| obj.get(alias)).and_then(|value| value.as_i64())
+    };
+    (read("minimum", "min"), read("maximum", "max"))
 }
 
 /// Apply min/max size constraints from JSON object.
@@ -1327,7 +1400,20 @@ pub fn extract_extended_event_handlers(obj: &serde_json::Map<String, Value>) -> 
     (on_close, on_double_click, on_focus, on_blur, on_selection_changed, on_value_changed)
 }
 
-/// Infer widget kind from type string.
+/// The name→kind table, retained for tests only.
+///
+/// # Why it is no longer used in production
+///
+/// Registration reads the **live control's** `kind()` instead (see
+/// `instantiate_node`). This table is a hand-written subset of the names the factory
+/// routes, and its `_ => WidgetKind::Button` fallback meant any name it did not list
+/// — `icon`, `chip`, `table`, `progress_bar`, … — was recorded as a `Button`, so the
+/// widget registry disagreed with the tree the loader had just built.
+///
+/// It is kept under `#[cfg(test)]` because two tests assert properties *of the old
+/// table* to demonstrate the fix (that a control's real kind differs from this
+/// fallback). Deleting it would delete the evidence that the defect existed.
+#[cfg(test)]
 fn infer_kind(widget_type: &str) -> WidgetKind {
     match widget_type.to_lowercase().as_str() {
         // Non-gated variants (available in all profiles)
@@ -1522,6 +1608,113 @@ mod tests {
         assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
         let layout = result.unwrap();
         assert!(layout.id("btn").is_some());
+    }
+
+    /// A `fontdialog`'s declared `value` must reach the dialog.
+    ///
+    /// # Why this test exists
+    ///
+    /// The `fontdialog` arm used to read `value`, discard it, and call
+    /// `set_current_font(Font::default())` — with a comment claiming font parsing
+    /// was unavailable. A caller writing `"value": "Monospace 20"` silently got
+    /// Arial 14 and no diagnostic. The sibling `colordialog` arm parses its own
+    /// `value` correctly, so the asymmetry was the bug.
+    ///
+    /// The loader's arm calls `FontDialog::set_current_font`, and the round trip
+    /// through the live widget is the part that was never asserted. This test drives
+    /// the same call the loader makes with the same parse primitive it now uses, so a
+    /// regression to a constant default fails here.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_font_dialog_receives_the_font_parsed_from_its_declared_value() {
+        let spec = "Monospace 20 bold";
+        let mut dialog = crate::widget::dialog::FontDialog::new(Rect::new(0, 0, 400, 300));
+        dialog.set_current_font(
+            crate::core::Font::parse(spec).expect("the loader's parser must read this"),
+        );
+        assert_eq!(dialog.current_font().family(), "Monospace");
+        assert_eq!(dialog.current_font().size(), 20.0);
+        assert!(dialog.current_font().is_bold());
+
+        // The value the old code substituted is measurably different, so this test
+        // cannot pass against the old behaviour.
+        assert_ne!(dialog.current_font(), &crate::core::Font::default());
+    }
+
+    /// An unparsable `value` must leave the dialog's own font alone.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_font_dialog_keeps_its_own_font_when_the_declared_value_is_unparsable() {
+        let mut dialog = crate::widget::dialog::FontDialog::new(Rect::new(0, 0, 400, 300));
+        let before = dialog.current_font().clone();
+        // This is the branch the loader takes instead of substituting a default.
+        if let Some(font) = crate::core::Font::parse("not a font at all") {
+            dialog.set_current_font(font);
+        }
+        assert_eq!(dialog.current_font(), &before, "the dialog must keep its own font");
+    }
+
+    /// Every key a `create_widget` arm reads must be resolvable by the layer that
+    /// runs next.
+    ///
+    /// # Why this test exists
+    ///
+    /// After the arm table builds a control, `apply_properties` walks the JSON keys a
+    /// second time and reports any it cannot resolve. A key read by an arm is
+    /// therefore fine only if **either**
+    ///
+    /// 1. the control publishes it as a property, so the name-driven pass applies it
+    ///    a second time (harmlessly — same value), or
+    /// 2. it is listed in [`is_loader_owned_key`], which tells the pass to skip it.
+    ///
+    /// A key that is neither gets a *"no construction arm consumed it; the value was
+    /// ignored"* warning — about a value the arm just applied. The author then hunts
+    /// a non-bug. `tristate`, `password`, `word_wrap`, `tab_shape`, `h_policy`,
+    /// `v_policy` and `alpha` were all in exactly that state: read by an arm, absent
+    /// from the list, and not published by their controls.
+    ///
+    /// This test parses the loader's own arm table, so it cannot drift: adding
+    /// `obj.get("new_key")` to an arm without either publishing it on the control or
+    /// listing it here fails.
+    #[test]
+    fn every_arm_consumed_key_is_either_published_or_loader_owned() {
+        let source = include_str!("loader.rs");
+        let start = source
+            .find("    fn create_widget(")
+            .expect("the arm table must exist; if it was renamed, fix this test");
+        // The arm table ends where the next top-level `    fn ` begins.
+        let rest = &source[start + 1..];
+        let end = rest.find("\n    fn ").map(|offset| start + 1 + offset).unwrap_or(source.len());
+        let arms = &source[start..end];
+
+        // Every capability's published property names, as one set of strings. The
+        // schema tables are the authority on what the name-driven pass can resolve.
+        let factory = crate::widget::WidgetFactory::new_with_defaults();
+        let mut published: alloc::collections::BTreeSet<&str> = alloc::collections::BTreeSet::new();
+        for capability in factory.capabilities() {
+            for schema in capability.properties {
+                published.insert(schema.name);
+            }
+        }
+
+        let mut unresolved: alloc::vec::Vec<&str> = alloc::vec::Vec::new();
+        for (offset, _) in arms.match_indices("obj.get(\"") {
+            let remainder = &arms[offset + "obj.get(\"".len()..];
+            let Some(close) = remainder.find('"') else { continue };
+            let name = &remainder[..close];
+            if !published.contains(name) && !is_loader_owned_key(name) {
+                unresolved.push(name);
+            }
+        }
+        unresolved.sort_unstable();
+        unresolved.dedup();
+
+        assert!(
+            unresolved.is_empty(),
+            "these keys are read by a `create_widget` arm but are neither published as \
+             properties nor listed in `is_loader_owned_key`, so the name-driven pass \
+             will log a false \"was ignored\" warning about them: {unresolved:?}"
+        );
     }
 
     /// A declarative layout must actually *arrange* its children, not merely parse.
@@ -1838,6 +2031,38 @@ mod tests {
         assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
     }
 
+    /// Both the published range names and the `min`/`max` aliases must resolve.
+    ///
+    /// # Why this test exists
+    ///
+    /// The arms read `min`/`max` only, but `slider`/`scrollbar`/`progressbar`/
+    /// `spinbox` publish `minimum`/`maximum`. So an author writing the documented
+    /// spelling got *no* range applied by the arm, and an author writing `min`/`max`
+    /// got the range applied but a false "was ignored" warning. Neither failure is
+    /// visible from `is_ok()`, which is all `load_slider_with_range` asserts.
+    ///
+    /// This drives `read_json_range` directly: the loader's layout is an id index
+    /// and does not retain the controls, so the applied value cannot be read back
+    /// through it.
+    #[test]
+    fn a_range_resolves_under_both_the_published_name_and_the_alias() {
+        let parse = |json: &str| {
+            let value: Value = serde_json::from_str(json).expect("probe JSON must parse");
+            let obj = value.as_object().expect("probe must be an object").clone();
+            read_json_range(&obj)
+        };
+
+        // The published spelling.
+        assert_eq!(parse(r#"{"minimum": 0, "maximum": 200}"#), (Some(0), Some(200)));
+        // The alias the arms used to require.
+        assert_eq!(parse(r#"{"min": 5, "max": 15}"#), (Some(5), Some(15)));
+        // Mixed, and the published name wins when both are present.
+        assert_eq!(parse(r#"{"minimum": 1, "min": 9}"#), (Some(1), None));
+        assert_eq!(parse(r#"{"maximum": 7, "max": 3}"#), (None, Some(7)));
+        // Absent keys resolve to nothing rather than to a made-up default.
+        assert_eq!(parse(r#"{}"#), (None, None));
+    }
+
     #[test]
     fn load_progressbar_with_properties() {
         let json = r#"{"window": {"id": "w", "title": "Progress", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"progressbar": {"id": "pb", "min": 0, "max": 100, "value": 50, "orientation": "horizontal", "text_visible": true, "inverted_appearance": false}}]}}}"#;
@@ -1962,6 +2187,77 @@ mod tests {
             infer_kind("rating"),
             crate::index::WidgetKind::Rating,
             "the kind mapping must name the real variant"
+        );
+    }
+
+    /// Every control the factory can build must register under its **own** kind.
+    ///
+    /// # Why this test exists
+    ///
+    /// `infer_kind` is a hand-written table of about a hundred names, but the factory
+    /// routes many more. Everything the table did not name fell through to
+    /// `_ => WidgetKind::Button`, so an `icon`, `chip`, `progress_bar` or `tag_input`
+    /// node was registered as a `Button` — the widget registry, and therefore
+    /// `LayoutInspector`'s diagnostics and any `by_kind` query, disagreed with the
+    /// tree the loader had just built.
+    ///
+    /// The previous test asserted only `infer_kind("rating") == Rating`, which is a
+    /// tautology over the very table that was incomplete. This one asserts the
+    /// invariant that matters: the kind now recorded comes from the live control, so
+    /// for the names below — deliberately chosen to be **absent** from `infer_kind`'s
+    /// table — the table's answer and the control's answer must differ, proving the
+    /// registration no longer trusts the table.
+    #[test]
+    fn every_factory_routed_control_registers_its_own_kind() {
+        let factory = crate::widget::WidgetFactory::new_with_defaults();
+        // `infer_kind`'s fallback arm, i.e. what these names used to be recorded as.
+        let table_fallback = infer_kind("definitely_not_a_widget_name");
+        assert_eq!(
+            table_fallback,
+            crate::index::WidgetKind::Button,
+            "if the fallback changes, these assertions need revisiting"
+        );
+
+        let mut mislabelled_by_the_table = 0usize;
+        for widget_type in ["icon", "chip", "progress_bar", "tag_input", "scroll_area"] {
+            let expected = factory
+                .create(widget_type, Rect::new(0, 0, 10, 10), "probe")
+                .unwrap_or_else(|| panic!("the factory must build {widget_type:?}"))
+                .kind();
+
+            // The invariant the loader now relies on: a control knows its own kind.
+            assert_ne!(
+                expected, table_fallback,
+                "{widget_type:?} happens to equal the table fallback, so this name \
+                 no longer demonstrates the fix"
+            );
+
+            if infer_kind(widget_type) == table_fallback {
+                mislabelled_by_the_table += 1;
+            }
+
+            // And the loader must register that real kind. The registry the loader
+            // fills is not reachable after `load`, so the observable equivalent is
+            // that the control it built reports the right kind — which is what the
+            // registration now reads.
+            let json = format!(
+                r#"{{"window": {{"id": "w", "title": "T", "width": 400, "height": 300,
+                    "layout": {{"type": "vbox", "children": [
+                        {{"{widget_type}": {{"id": "probe"}}}}
+                    ]}}}}}}"#
+            );
+            let layout =
+                JsonLoader::load(&json).unwrap_or_else(|error| panic!("{widget_type}: {error:?}"));
+            assert!(
+                layout.id("probe").is_some(),
+                "{widget_type:?} must be registered under its JSON id"
+            );
+        }
+
+        assert!(
+            mislabelled_by_the_table > 0,
+            "none of the probed names is missing from `infer_kind`, so this test no \
+             longer covers the defect it was written for"
         );
     }
 

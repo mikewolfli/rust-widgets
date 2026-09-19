@@ -768,14 +768,14 @@ impl EventHandler for QueryBuilder {
             }
             // Typing goes to the active row's operand, so the builder is usable
             // without a separate text control per row.
-            Event::TextInput { text } if self.active_row.is_some() => {
-                if text.chars().all(|ch| !ch.is_control()) {
-                    if let Some(index) = self.active_row {
-                        if let Some(row) = self.rows.get_mut(index) {
-                            row.operand.push_str(text);
-                        }
-                        self.emit_query();
+            Event::TextInput { text }
+                if self.active_row.is_some() && text.chars().all(|ch| !ch.is_control()) =>
+            {
+                if let Some(index) = self.active_row {
+                    if let Some(row) = self.rows.get_mut(index) {
+                        row.operand.push_str(text);
                     }
+                    self.emit_query();
                 }
             }
             Event::KeyDown((8, _)) if self.active_row.is_some() => {

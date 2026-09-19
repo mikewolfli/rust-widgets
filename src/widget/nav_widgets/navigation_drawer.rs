@@ -340,7 +340,10 @@ impl EventHandler for NavigationDrawer {
                 let item_height: u32 = 48;
                 let start_y = rect.y + header_height as i32;
 
-                if pos.x >= rect.x && pos.x <= rect.x + panel_width as i32 {
+                // Exclusive far edge, matching `Rect::contains_point`. A `<=` here put
+                // the panel's boundary column inside it, so a click one pixel past the
+                // panel still selected an item.
+                if pos.x >= rect.x && pos.x < rect.x + panel_width as i32 {
                     let relative_y = pos.y - start_y;
                     if relative_y >= 0 {
                         let item_index = (relative_y as u32) / item_height;

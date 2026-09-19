@@ -489,10 +489,8 @@ impl crate::event::EventHandler for QuoteBoard {
                     self.base.request_redraw();
                 }
             }
-            Event::MouseLeave { .. } => {
-                if self.hovered.take().is_some() {
-                    self.base.request_redraw();
-                }
+            Event::MouseLeave { .. } if self.hovered.take().is_some() => {
+                self.base.request_redraw();
             }
             Event::MousePress { pos, .. } | Event::PointerPress { pos, .. } => {
                 if let Some(index) = self.row_at(pos.y) {

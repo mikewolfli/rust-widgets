@@ -730,10 +730,8 @@ impl EventHandler for KanbanBoard {
             Event::MouseMove { pos } if self.drag.is_some() => {
                 self.update_card_drag(*pos);
             }
-            Event::MouseRelease { pos, button } if *button == 1 => {
-                if self.drag.is_some() {
-                    self.finish_card_drag(*pos);
-                }
+            Event::MouseRelease { pos, button } if *button == 1 && self.drag.is_some() => {
+                self.finish_card_drag(*pos);
             }
             // A drag that loses the pointer (the window lost focus, the pointer left
             // the surface) must not leave a card half-attached to the cursor.

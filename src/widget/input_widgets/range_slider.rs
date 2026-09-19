@@ -466,6 +466,13 @@ impl EventHandler for RangeSlider {
             Event::MouseRelease { pos: _, button } if *button == 1 => {
                 self.dragging = None;
             }
+            // A press whose release lands outside the widget never reaches the arm
+            // above: the runtime's hit-test returns `None` for a point outside every
+            // control, so no `MouseRelease` is delivered. Without this arm `dragging`
+            // stayed set and the next hover kept moving a handle with no button held.
+            Event::MouseLeave { .. } if self.dragging.is_some() => {
+                self.dragging = None;
+            }
             Event::MouseMove { pos } => {
                 if let Some(is_lower) = self.dragging {
                     let rect = self.geometry();

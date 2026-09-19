@@ -96,6 +96,69 @@ fn a_slider_value_change_reaches_the_published_event_name_with_its_payload() {
     );
 }
 
+/// A host can wire a widget with one call, and the call really connects it.
+///
+/// # Why this test exists
+///
+/// `EventSignalBinder` is the documented join between a control's typed signals and a
+/// name-addressed hub, but the tests above perform that wiring by hand
+/// (`binder.forward_unit("clicked", button.clicked_signal())`). That proves the binder
+/// works; it does not prove a host has a way to wire a widget without knowing which
+/// signal backs which published name.
+///
+/// `forward_widget_events` is that way, and this test proves it end to end: the
+/// control is wired, the subscriber used only a published name, the emission is a real
+/// control emission, and the return value reports what was wired.
+#[test]
+fn a_widget_is_wired_with_one_call_through_the_published_name() {
+    let factory = WidgetFactory::new_with_defaults();
+    let hub = Arc::new(CustomSignalHub::new());
+    let button = Button::new("Go".to_string(), Rect::new(0, 0, 80, 30));
+
+    let mut binder = EventSignalBinder::new(Arc::clone(&hub));
+    let wired = binder.forward_widget_events(&button);
+    assert_eq!(wired, 1, "`button` publishes `clicked`, so it must be wired");
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&calls);
+    factory
+        .connect_event("button", "clicked", &hub, move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        })
+        .expect("`button` publishes `clicked`");
+
+    assert_eq!(calls.load(Ordering::SeqCst), 0, "nothing may fire before the click");
+    button.clicked_signal().emit();
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "a widget wired through `forward_widget_events` must reach the published name"
+    );
+
+    // Dropping the binder removes the subscription, so a later emission is not
+    // delivered — the ownership contract the binder documents.
+    drop(binder);
+    button.clicked_signal().emit();
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "a dropped binder must leave no live subscription behind"
+    );
+}
+
+/// A control that publishes no `clicked` event is reported as contributing nothing.
+#[test]
+fn wiring_a_widget_without_a_clicked_event_reports_zero() {
+    let hub = Arc::new(CustomSignalHub::new());
+    let label = rust_widgets::widget::Label::new("text".to_string(), Rect::new(0, 0, 40, 20));
+    let mut binder = EventSignalBinder::new(hub);
+    assert_eq!(
+        binder.forward_widget_events(&label),
+        0,
+        "`label` publishes no click event, so nothing may be wired"
+    );
+}
+
 /// A detached binder is inert rather than panic-prone or silently attached.
 #[test]
 fn a_detached_binder_forwards_nothing() {

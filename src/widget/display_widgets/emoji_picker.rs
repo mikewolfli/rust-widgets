@@ -670,12 +670,10 @@ impl EventHandler for EmojiPicker {
                     }
                 }
             }
-            Event::TextInput { text } => {
-                if text.chars().all(|ch| !ch.is_control()) {
-                    let mut search = self.search.clone();
-                    search.push_str(text);
-                    self.set_search(&search);
-                }
+            Event::TextInput { text } if text.chars().all(|ch| !ch.is_control()) => {
+                let mut search = self.search.clone();
+                search.push_str(text);
+                self.set_search(&search);
             }
             Event::KeyDown((key, _)) | Event::KeyPress { key, .. } => match *key {
                 // Backspace edits the search, which is the only text this control has.

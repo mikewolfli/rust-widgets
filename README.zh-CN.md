@@ -130,16 +130,17 @@ Arc、Spinner、Roller、Dropdown、TextArea、Keyboard、Switch。
 （`docs/plans/platform_capability_matrix.md`）由源码机械派生，并在 CI 中设有防脱节门禁。
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.4.3-blue)]()
-[![tests](https://img.shields.io/badge/tests-5200%2B-brightgreen)]()
+[![version](https://img.shields.io/badge/version-2.4.4-blue)]()
+[![tests](https://img.shields.io/badge/tests-5260%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
-**2.4.3 实测：** `desktop` 档 **5245** 个测试全通过；`cargo test` 在全部 30 个测试二进制上 0 失败。
-`cargo clippy --no-default-features --features desktop --all-targets` 0 warning，五个档位全部
-无 warning 构建通过，29 个 `tools/check_*.sh` 门禁全绿。
+**2.4.4 实测：** `desktop` 档 **5266** 个测试全通过；`cargo test` 在全部 30 个测试二进制上 0 失败。
+`cargo clippy --all-targets` 在五个档位全部 0 warning，五个档位在本机与 `x86_64-pc-windows-msvc`
+两个 target 上均无 warning 构建通过；30 个 `tools/check_*.sh` 门禁中 28 个通过——未通过的 2 个是
+宿主门限（`check_apple_native` 需 macOS，`check_harmony_cross` 需 OpenHarmony target）。
 详见
 [`CHANGELOG.md`](CHANGELOG.md)（中文版见 [`docs/reports/CHANGELOG.md`](docs/reports/CHANGELOG.md)）及
-[`docs/log/log-20260919-3.md`](docs/log/log-20260919-3.md)。
+[`docs/log/log-20260919-4.md`](docs/log/log-20260919-4.md)。
 
 <p align="center">
   <a href="README.md">

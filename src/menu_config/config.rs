@@ -48,8 +48,16 @@ impl MenuConfig {
     }
     fn detect_hardware_capabilities() -> HardwareCapabilities {
         let gpu_type = GpuAdapter::detect_primary_gpu_type().unwrap_or(GpuType::Integrated);
+        // `None` means no source could report VRAM, which is the honest answer here:
+        // wgpu exposes no memory size and the platform backends report system RAM
+        // only. `assumed_gpu_memory` supplies the figure the scoring model needs
+        // without letting that figure pose as a measurement.
         let gpu_memory_mb = Self::detect_gpu_memory();
-        let gpu_performance_score = Self::estimate_gpu_performance(&gpu_type, gpu_memory_mb);
+        let gpu_memory_is_measured = gpu_memory_mb.is_some();
+        let gpu_performance_score = Self::estimate_gpu_performance(
+            &gpu_type,
+            gpu_memory_mb.unwrap_or_else(|| Self::assumed_gpu_memory(&gpu_type)),
+        );
         let system_ram_mb = Self::detect_system_memory();
         let cpu_performance_score = Self::estimate_cpu_performance();
         let on_battery = Self::detect_battery_status();
@@ -63,6 +71,7 @@ impl MenuConfig {
         HardwareCapabilities {
             gpu_type,
             gpu_memory_mb,
+            gpu_memory_is_measured,
             gpu_performance_score,
             system_ram_mb,
             cpu_performance_score,
@@ -70,13 +79,34 @@ impl MenuConfig {
             performance_level,
         }
     }
-    fn detect_gpu_memory() -> u32 {
-        if let Ok(val) = std::env::var("RUST_WIDGETS_GPU_MEMORY_MB") {
-            if let Ok(mb) = val.parse::<u32>() {
-                return mb;
-            }
+    /// The GPU's memory, or `None` when no source on this host can report it.
+    ///
+    /// The environment override is the one real source available: a host or
+    /// deployment that knows its VRAM can state it without this crate pretending to
+    /// have probed the driver. Absent that, the answer is `None` — returning a
+    /// constant made the value indistinguishable from a measurement.
+    fn detect_gpu_memory() -> Option<u32> {
+        std::env::var("RUST_WIDGETS_GPU_MEMORY_MB")
+            .ok()
+            .and_then(|val| val.parse::<u32>().ok())
+            .filter(|mb| *mb > 0)
+    }
+    /// Test-only view of [`Self::detect_gpu_memory`], so the "unknown stays unknown"
+    /// contract can be asserted without making the production helper public.
+    #[cfg(test)]
+    pub(crate) fn detect_gpu_memory_for_test() -> Option<u32> {
+        Self::detect_gpu_memory()
+    }
+    /// The conservative VRAM assumption used only for scoring, never reported.
+    ///
+    /// Separated from [`Self::detect_gpu_memory`] so the number a *score* is computed
+    /// from cannot leak into a user-visible description as if it had been detected.
+    pub(crate) fn assumed_gpu_memory(gpu_type: &GpuType) -> u32 {
+        match gpu_type {
+            GpuType::Discrete => 4096,
+            GpuType::Integrated => 512,
+            GpuType::Cpu => 0,
         }
-        512
     }
     fn estimate_gpu_performance(gpu_type: &GpuType, memory_mb: u32) -> u32 {
         match gpu_type {

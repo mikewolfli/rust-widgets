@@ -38,7 +38,7 @@ pub(crate) unsafe extern "system" fn wnd_proc(
             if let Some(platform) = notify::active_windows_platform() {
                 if let Some(widget_id) = platform.widget_id_by_native_handle(hwnd) {
                     let mut rect =
-                        winapi::um::windef::RECT { left: 0, top: 0, right: 0, bottom: 0 };
+                        winapi::shared::windef::RECT { left: 0, top: 0, right: 0, bottom: 0 };
                     // SAFETY: `hwnd` is the window this procedure was called for, and
                     // Win32 fills the RECT we hand it. A failure leaves the zeros, which
                     // are rejected below rather than reported as a size.
@@ -166,7 +166,10 @@ impl WindowsPlatform {
     /// `SetWindowTextW`, `MessageBoxW`, …). `String`/`&str` cannot be passed
     /// directly because Win32 wide strings are neither length-prefixed nor
     /// guarantee-terminated by Rust.
-    pub fn to_wide(s: &str) -> Vec<u16> {
+    ///
+    /// `Vec` comes from `crate::compat` so this compiles under the `mini`
+    /// profile, which is `no_std` and has no `std` prelude to resolve `Vec` from.
+    pub fn to_wide(s: &str) -> crate::compat::Vec<u16> {
         use std::os::windows::ffi::OsStrExt;
         std::ffi::OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
     }

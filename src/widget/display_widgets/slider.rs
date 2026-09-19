@@ -471,6 +471,19 @@ impl EventHandler for Slider {
                     self.set_value(self.slider_position);
                 }
             }
+            // A press whose release lands outside the widget never reaches the arm
+            // above: the runtime's hit-test returns `None` for a point outside every
+            // control, so no `MouseRelease` is delivered. Without this arm the flag
+            // stayed set and the *next* hover moved the handle with no button held —
+            // the control behaved as if permanently dragging. Cancelling is the right
+            // answer rather than committing, because the user left the control.
+            Event::MouseLeave { .. } if self.mouse_pressed => {
+                self.mouse_pressed = false;
+                self.slider_released.emit();
+                if !self.tracking {
+                    self.set_value(self.slider_position);
+                }
+            }
             #[cfg(feature = "touch")]
             Event::TouchEnd { .. } => {
                 self.mouse_pressed = false;
@@ -1223,6 +1236,33 @@ mod tests {
             WidgetStyle { background_color: Some(Color::rgb(255, 0, 0)), ..WidgetStyle::default() };
         s.set_style(style.clone());
         assert_eq!(s.style().background_color, Some(Color::rgb(255, 0, 0)));
+    }
+
+    #[test]
+    fn a_drag_that_leaves_the_control_stops_tracking_the_pointer() {
+        // A press whose release lands outside the widget never delivers `MouseRelease`:
+        // the runtime's hit-test answers `None` for a point outside every control. With
+        // no `MouseLeave` arm `mouse_pressed` stayed set, so every later *hover* moved
+        // the handle with no button held — the slider behaved as if permanently
+        // dragging.
+        let mut s = make_slider();
+        s.set_range(0, 100);
+        s.set_value(50);
+
+        s.handle_event(&Event::MousePress { pos: Point::new(100, 15), button: 1 });
+        // The pointer leaves without a release being delivered.
+        s.handle_event(&Event::MouseLeave { pos: Point::new(0, 0) });
+
+        let after_leave = s.value();
+        // Hover moves must not change anything now: no button is held.
+        for x in [20, 40, 60, 160, 190] {
+            s.handle_event(&Event::MouseMove { pos: Point::new(x, 15) });
+        }
+        assert_eq!(
+            s.value(),
+            after_leave,
+            "hovering after the pointer left must not move the handle"
+        );
     }
 
     #[test]

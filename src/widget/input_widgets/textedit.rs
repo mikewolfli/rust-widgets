@@ -227,9 +227,17 @@ impl WidgetProperties for TextEdit {
         match name {
             "text" => Ok(CapabilityValue::String(self.text.clone())),
             "placeholder_text" => Ok(CapabilityValue::String(self.placeholder_text.clone())),
-            "max_length" => {
-                Ok(CapabilityValue::UInt(self.max_length.map(|m| m as u64).unwrap_or(u64::MAX)))
-            }
+            "max_length" => match self.max_length {
+                // An unset limit is `Null`, not a numeric sentinel. `LineEdit` answers
+                // the same question the same way, and the schema declares this property
+                // `UInt` — so returning `u64::MAX` for "unset" made the value
+                // un-writable: reading a `textedit` with no limit and writing the value
+                // back installed a nonsensical cap (or failed outright on a 32-bit
+                // target, where `usize::try_from(u64::MAX)` is out of range). A property
+                // whose read cannot be written back is a broken round trip.
+                Some(limit) => Ok(CapabilityValue::UInt(limit as u64)),
+                None => Ok(CapabilityValue::Null),
+            },
             "read_only" => Ok(CapabilityValue::Bool(self.read_only)),
             "line_wrap" => Ok(CapabilityValue::Bool(self.line_wrap)),
             _ => base_property_get(self, name),

@@ -30,6 +30,11 @@ pub struct ModalBottomSheet {
     is_visible: bool,
     drag_offset: f32,
     is_dragging: bool,
+    /// Pointer `y` where the current drag began, in the same space `Event` carries.
+    ///
+    /// Kept so `drag_to` can turn an absolute position into the delta `drag_offset`
+    /// accumulates from. `None` outside a drag.
+    drag_origin_y: Option<i32>,
     /// Emitted when the sheet is dismissed by user interaction.
     pub dismissed: GenericSignal,
 }
@@ -44,6 +49,7 @@ impl ModalBottomSheet {
             is_visible: false,
             drag_offset: 0.0,
             is_dragging: false,
+            drag_origin_y: None,
             dismissed: GenericSignal::new(),
         }
     }
@@ -136,16 +142,52 @@ impl ModalBottomSheet {
         }
     }
 
-    /// Called when the user ends the drag gesture.
+    /// Tracks a pointer position during a drag, relative to where the press began.
+    ///
+    /// This is what the `MouseMove` event arm uses. `update_drag` takes a *delta*,
+    /// but an event carries an absolute position, so the press origin has to be
+    /// remembered to derive it. Without that the `MouseMove` arm had nothing to
+    /// pass, `drag_offset` stayed `0.0`, and `end_drag` could never cross the
+    /// one-third threshold — so drag-to-dismiss was unreachable through the event
+    /// API even though the methods that implement it were correct and tested.
+    ///
+    /// The offset is recomputed from the origin rather than accumulated, so moving the
+    /// pointer back up restores the original position exactly.
+    pub fn drag_to(&mut self, y: i32) {
+        let Some(origin_y) = self.drag_origin_y else { return };
+        if !self.is_dragging {
+            return;
+        }
+        self.drag_offset = (y - origin_y).max(0) as f32;
+        self.base.request_redraw();
+    }
+
+    /// Ends a drag, dismissing the sheet when it was pulled far enough.
+    ///
     /// Dismisses the sheet if drag offset exceeds one third of the sheet height.
     pub fn end_drag(&mut self) {
         if self.is_dragging {
             self.is_dragging = false;
+            self.drag_origin_y = None;
             let sheet_height = self.compute_sheet_height();
             if self.drag_offset > sheet_height as f32 / 3.0 {
                 self.is_visible = false;
                 self.dismissed.emit();
             }
+            self.drag_offset = 0.0;
+            self.base.request_redraw();
+        }
+    }
+
+    /// Cancels a drag without dismissing, restoring the sheet's resting position.
+    ///
+    /// Used when the pointer leaves the sheet mid-drag: a release outside the
+    /// control is never delivered, so without this the sheet would stay in a
+    /// half-dragged state with `is_dragging` set.
+    pub fn cancel_drag(&mut self) {
+        if self.is_dragging {
+            self.is_dragging = false;
+            self.drag_origin_y = None;
             self.drag_offset = 0.0;
             self.base.request_redraw();
         }
@@ -321,8 +363,10 @@ impl EventHandler for ModalBottomSheet {
                     let in_sheet = pos.y >= sheet_y;
 
                     if in_sheet {
-                        // Start potential drag
+                        // Start a drag, recording where the pointer went down so
+                        // `drag_to` can measure from it.
                         self.start_drag();
+                        self.drag_origin_y = Some(pos.y);
                     } else {
                         // Click on overlay — dismiss
                         self.is_visible = false;
@@ -331,13 +375,24 @@ impl EventHandler for ModalBottomSheet {
                     }
                 }
             }
-            Event::MouseMove { pos: _ } => {
-                // In a real integration, delta_y would be tracked from MousePress origin
+            Event::MouseMove { pos } => {
+                // Driven through `drag_to`, which needs the press origin to turn an
+                // absolute pointer position into the offset `end_drag` tests. The arm
+                // used to be empty with a comment saying the origin "would be tracked",
+                // so `drag_offset` never left `0.0` and the one-third threshold in
+                // `end_drag` was unreachable from a real event sequence.
+                self.drag_to(pos.y);
             }
             Event::MouseRelease { pos: _, button } => {
                 if *button == 1 && self.is_dragging {
                     self.end_drag();
                 }
+            }
+            // A release outside the sheet is never delivered (the runtime's hit-test
+            // answers `None` outside every control), so the drag is cancelled here
+            // rather than left half-finished.
+            Event::MouseLeave { .. } if self.is_dragging => {
+                self.cancel_drag();
             }
             _ => {
                 self.base.handle_event(event);
@@ -432,6 +487,93 @@ mod tests {
         sheet.end_drag();
         assert!(!sheet.is_visible());
         assert!(dismissed.load(Ordering::SeqCst));
+    }
+
+    /// The same dismissal, driven through real `Event`s rather than the methods.
+    ///
+    /// # Why this test exists
+    ///
+    /// The test above calls `start_drag`/`update_drag`/`end_drag` directly, so it
+    /// passed even while the `MouseMove` event arm was an empty body with a comment
+    /// saying the origin "would be tracked". Through the event API `drag_offset`
+    /// therefore never left `0.0`, the one-third threshold in `end_drag` was
+    /// unreachable, and a user dragging the sheet down got nothing — with every unit
+    /// test green.
+    #[test]
+    fn a_real_drag_gesture_dismisses_the_sheet() {
+        let mut sheet = make_sheet();
+        sheet.show();
+        let rect = sheet.geometry();
+
+        let dismissed = Arc::new(AtomicBool::new(false));
+        sheet.dismissed.connect({
+            let d = Arc::clone(&dismissed);
+            move || {
+                d.store(true, Ordering::SeqCst);
+            }
+        });
+
+        // Press inside the sheet panel, near its bottom edge, as a user would.
+        let press_y = rect.y + rect.height as i32 - 20;
+        sheet.handle_event(&Event::MousePress { pos: Point::new(rect.x + 50, press_y), button: 1 });
+        assert!(sheet.is_dragging(), "a press inside the sheet must start a drag");
+
+        // Drag downward well past a third of the sheet height.
+        for step in 1..=8 {
+            sheet.handle_event(&Event::MouseMove {
+                pos: Point::new(rect.x + 50, press_y + step * 20),
+            });
+        }
+        assert!(
+            sheet.drag_offset() > 40.0,
+            "dragging down must accumulate an offset, got {}",
+            sheet.drag_offset()
+        );
+
+        sheet.handle_event(&Event::MouseRelease {
+            pos: Point::new(rect.x + 50, press_y + 160),
+            button: 1,
+        });
+        assert!(!sheet.is_visible(), "a long downward drag must dismiss the sheet");
+        assert!(dismissed.load(Ordering::SeqCst));
+    }
+
+    /// A short drag through real events must not dismiss, and must reset the offset.
+    #[test]
+    fn a_real_short_drag_leaves_the_sheet_visible_and_resets_the_offset() {
+        let mut sheet = make_sheet();
+        sheet.show();
+        let rect = sheet.geometry();
+        let press_y = rect.y + rect.height as i32 - 20;
+
+        sheet.handle_event(&Event::MousePress { pos: Point::new(rect.x + 50, press_y), button: 1 });
+        sheet.handle_event(&Event::MouseMove { pos: Point::new(rect.x + 50, press_y + 10) });
+        sheet.handle_event(&Event::MouseRelease {
+            pos: Point::new(rect.x + 50, press_y + 10),
+            button: 1,
+        });
+
+        assert!(sheet.is_visible(), "a 10px drag must not dismiss");
+        assert_eq!(sheet.drag_offset(), 0.0, "the offset must reset after the drag ends");
+        assert!(!sheet.is_dragging());
+    }
+
+    /// A drag whose pointer leaves the sheet is cancelled, not left half-finished.
+    #[test]
+    fn a_drag_that_leaves_the_sheet_is_cancelled() {
+        let mut sheet = make_sheet();
+        sheet.show();
+        let rect = sheet.geometry();
+        let press_y = rect.y + rect.height as i32 - 20;
+
+        sheet.handle_event(&Event::MousePress { pos: Point::new(rect.x + 50, press_y), button: 1 });
+        sheet.handle_event(&Event::MouseMove { pos: Point::new(rect.x + 50, press_y + 60) });
+        assert!(sheet.drag_offset() > 0.0);
+
+        sheet.handle_event(&Event::MouseLeave { pos: Point::new(0, 0) });
+        assert!(!sheet.is_dragging(), "leaving the sheet must end the drag");
+        assert_eq!(sheet.drag_offset(), 0.0, "the sheet must return to its resting position");
+        assert!(sheet.is_visible(), "leaving is not a dismissal");
     }
 
     #[test]

@@ -30,7 +30,12 @@ macro_rules! impl_properties_advanced {
             PropertySchema::new("selected_date", PropertyValueKind::String, true, true),
             PropertySchema::new("minimum_date", PropertyValueKind::String, true, true),
             PropertySchema::new("maximum_date", PropertyValueKind::String, true, true),
-            PropertySchema::enumerated("first_day_of_week", true, true, &["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]),
+            PropertySchema::enumerated(
+                "first_day_of_week",
+                true,
+                true,
+                &["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"],
+            ),
             PropertySchema::new("grid_visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("navigation_bar_visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("horizontal_header_visible", PropertyValueKind::Bool, true, true),
@@ -81,10 +86,10 @@ macro_rules! impl_properties_advanced {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const PIE_MENU_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema::new("item_count", PropertyValueKind::UInt, false, false),
-            PropertySchema::new("radius", PropertyValueKind::Float, false, false),
-            PropertySchema::new("inner_radius", PropertyValueKind::Float, false, false),
-            PropertySchema::new("current_index", PropertyValueKind::UInt, false, false),
+            PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("radius", PropertyValueKind::Float, true, true),
+            PropertySchema::new("inner_radius", PropertyValueKind::Float, true, true),
+            PropertySchema::new("current_index", PropertyValueKind::UInt, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -93,9 +98,9 @@ macro_rules! impl_properties_advanced {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const DATE_TIME_EDIT_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema::new("datetime", PropertyValueKind::String, false, false),
-            PropertySchema::new("display_format", PropertyValueKind::String, false, false),
-            PropertySchema::new("calendar_popup", PropertyValueKind::Bool, false, false),
+            PropertySchema::new("datetime", PropertyValueKind::String, true, true),
+            PropertySchema::new("display_format", PropertyValueKind::String, true, true),
+            PropertySchema::new("calendar_popup", PropertyValueKind::Bool, true, true),
             PropertySchema::new("minimum", PropertyValueKind::String, false, false),
             PropertySchema::new("maximum", PropertyValueKind::String, false, false),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),

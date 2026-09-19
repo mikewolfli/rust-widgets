@@ -245,6 +245,14 @@ impl Platform for MacOSPlatform {
             // The id has to exist before it can be associated with the delegate, so this
             // comes after `register_handle`. A window resized by the user then re-runs the
             // host's layout instead of keeping stale child geometry.
+            //
+            // Gated on `widgets_unstripped` because `macos::canvas` is: a
+            // `macos-legacy + mini|embedded` build has no `NSView` canvas to install a
+            // resize delegate on, and referencing the module ungated failed to compile
+            // with `cannot find canvas in super`. The state-only handle above is the
+            // whole window contract for those profiles, so there is nothing to
+            // delegate a resize to.
+            #[cfg(widgets_unstripped)]
             super::canvas::install_resize_delegate(window as id, id);
             self.state
                 .init_window_state(id, crate::platform::state::WindowStateRecord::new_window());

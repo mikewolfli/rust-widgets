@@ -80,10 +80,15 @@ pub enum WidgetKind {
     /// kind-role: base — `Panel` is a `pub type` for `GroupBox` under a second
     /// name. In a full build `create_panel` mounts the `panel` factory name, which
     /// reports `WidgetKind::GroupBox`; `Panel` is kept as a distinct variant only
-    /// as the always-available fallback kind for stripped profiles (see
-    /// `KIND_MENU_BAR` and friends in `lib.rs`). It publishes no capability of its
-    /// own, so `factory_name_for_kind(Panel)` is answered by the `panel` name, not
-    /// by a `Panel`-kinded capability.
+    /// as the always-available kind for a stripped profile, where the `panel` name
+    /// is the one `create_panel` mounts.
+    ///
+    /// It publishes no capability row of its own, so `capability_by_kind(Panel)`
+    /// misses and `factory_name_for_kind(Panel)` is answered by the `panel` alias
+    /// row in `capability::alias_factory_name` — not by a `Panel`-kinded
+    /// capability, because none exists. That alias row is load-bearing:
+    /// `theme::apply_active_theme` skips a widget whose factory name is empty, so
+    /// without it a `Panel`-kinded widget silently received no theme role.
     Panel,
     /// Container that draws a border or 3D frame around its child.
     ///
@@ -113,7 +118,10 @@ pub enum WidgetKind {
     /// Individual item inside a menu.
     ///
     /// kind-role: child — `MenuItem` rows are created by their owning `Menu`,
-    /// never constructed directly from a factory name.
+    /// never constructed directly from a factory name. It therefore has no
+    /// capability row either; `factory_name_for_kind(MenuItem)` resolves through
+    /// the `menu_item` alias row in `capability::alias_factory_name`, which the
+    /// theme layer needs in order to classify the row at all.
     #[cfg(widgets_unstripped)]
     MenuItem,
     /// Menu opened at the pointer position in response to a secondary click.

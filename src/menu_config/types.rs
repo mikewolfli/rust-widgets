@@ -25,8 +25,23 @@ pub struct UserOverrides {
 pub struct HardwareCapabilities {
     /// GPU type (Discrete, Integrated, CPU).
     pub gpu_type: GpuType,
-    /// GPU memory in MB.
-    pub gpu_memory_mb: u32,
+    /// GPU memory in MB, or `None` when it could not be measured.
+    ///
+    /// This crate has no portable way to query VRAM: wgpu's `AdapterInfo` carries no
+    /// memory size, and the platform backends expose total *system* memory only. The
+    /// field is therefore an `Option` so "not measurable" is representable, and
+    /// [`Self::gpu_memory_is_measured`] says whether the figure came from a real
+    /// source or from the conservative default.
+    ///
+    /// It used to be a bare `u32` that silently defaulted to `512`, which
+    /// `MenuConfigDialog::gpu_description` printed as if it were detected. Callers
+    /// must not present a defaulted value as a measurement (principle #37/#12).
+    pub gpu_memory_mb: Option<u32>,
+    /// Whether [`Self::gpu_memory_mb`] came from a real source.
+    ///
+    /// `false` means the value is the conservative assumption for the GPU type, not
+    /// a probe result. A UI that describes the hardware must say which it is.
+    pub gpu_memory_is_measured: bool,
     /// Estimated GPU performance score (0-100).
     pub gpu_performance_score: u32,
     /// System RAM in MB.

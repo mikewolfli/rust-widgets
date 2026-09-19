@@ -113,7 +113,16 @@ public final class RustWidgetsJNI {
     // ======================================================================
 
     public static native long nativePollWidgetTriggered();
-    public static native long nativePollWidgetTriggerEvent();
+
+    /**
+     * Poll for the next typed widget-trigger event.
+     *
+     * @return a two-element array {@code {widgetId, kindCode}}, or {@code null}
+     *         when no event is pending. An array (not a packed {@code long})
+     *         because {@code ObjectId} is a full 64-bit value and packing it with
+     *         a 32-bit kind code would truncate the id to 32 bits.
+     */
+    public static native long[] nativePollWidgetTriggerEvent();
 
     // ======================================================================
     //  Clipboard

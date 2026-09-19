@@ -26,6 +26,14 @@ import sys
 
 SYMBOL_RE = re.compile(r"\brw_[a-z0-9_]+\b")
 
+# The ABI's value-kind discriminators. `SYMBOL_RE` cannot see these — they are
+# `RW_VALUE_*`, not `rw_*` — which is exactly how three bindings shipped without
+# `RW_VALUE_COLOR`/`RW_VALUE_RECT` while this gate reported full coverage. A
+# binding that cannot name a kind returns "no such property" for it *and* leaks
+# the buffer the ABI allocated, so the gap is a correctness and a memory bug, not
+# just a missing constant.
+VALUE_KIND_RE = re.compile(r"\bRW_VALUE_[A-Z_]+\b")
+
 # Binding sources that name rw_* symbols directly, with the path used in the
 # failure message. Kept explicit (not globbed) so adding a binding is a
 # deliberate act: a new binding that nobody checks would defeat the gate.
@@ -76,6 +84,28 @@ def declared_symbols(source: pathlib.Path, root: pathlib.Path) -> set[str]:
     return symbols
 
 
+def published_value_kinds(header: pathlib.Path) -> set[str]:
+    """Return every RW_VALUE_* discriminator declared in the published C header."""
+    return set(VALUE_KIND_RE.findall(header.read_text(encoding="utf-8")))
+
+
+def declared_value_kinds(source: pathlib.Path, root: pathlib.Path) -> set[str]:
+    """Return every RW_VALUE_* discriminator a binding can name.
+
+    Follows `#include` for the same reason `declared_symbols` does: a binding that
+    includes the generated header has the enum in scope, and requiring it to repeat
+    the constants would be the third copy that drifts.
+    """
+    text = source.read_text(encoding="utf-8")
+    kinds = set(VALUE_KIND_RE.findall(text))
+    for include in re.findall(r'^\s*#\s*include\s*<([^>]+)>', text, re.MULTILINE):
+        for candidate in (root / "include" / include, root / include):
+            if candidate.exists() and candidate != source:
+                kinds.update(VALUE_KIND_RE.findall(candidate.read_text(encoding="utf-8")))
+                break
+    return kinds
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -96,6 +126,17 @@ def main() -> int:
         print(f"No rw_* declarations parsed from {header}", file=sys.stderr)
         return 1
 
+    expected_kinds = published_value_kinds(header)
+    if not expected_kinds:
+        # The header must publish the discriminators: without them every binding has
+        # to guess the numbers, which is the drift this check exists to catch.
+        print(
+            f"No RW_VALUE_* discriminators parsed from {header}; regenerate it with "
+            "tools/generate_c_header.py",
+            file=sys.stderr,
+        )
+        return 1
+
     failures: list[str] = []
 
     for name, relative in DIRECT_FFI_BINDINGS.items():
@@ -110,8 +151,21 @@ def main() -> int:
                 f"{name} ({relative}) is missing {len(missing)}/{len(expected)} "
                 f"published symbols: {', '.join(missing)}"
             )
-        else:
-            print(f"OK  {name:<8} {relative}: covers all {len(expected)} symbols")
+            continue
+
+        missing_kinds = sorted(expected_kinds - declared_value_kinds(path, root))
+        if missing_kinds:
+            failures.append(
+                f"{name} ({relative}) cannot name {len(missing_kinds)}/{len(expected_kinds)} "
+                f"value kinds: {', '.join(missing_kinds)} — a reader that cannot match a "
+                "kind returns 'no such property' and leaks the payload it did not free"
+            )
+            continue
+
+        print(
+            f"OK  {name:<8} {relative}: covers all {len(expected)} symbols "
+            f"and {len(expected_kinds)} value kinds"
+        )
 
     for name, relative in JNI_BINDINGS.items():
         path = root / relative

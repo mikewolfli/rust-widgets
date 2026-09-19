@@ -403,6 +403,16 @@ impl EventHandler for BezierCurveEditor {
                     self.base.set_mouse_pressed(false);
                 }
             }
+            // A press whose release lands outside the widget never reaches the arm
+            // above: the runtime's hit-test returns `None` for a point outside every
+            // control, so no `MouseRelease` is delivered. `dragging` (and the base's
+            // pressed flag) stayed set, so the next hover kept moving a control point
+            // with no button held. Cancelling on leave is the documented behaviour for
+            // this pattern elsewhere (`KanbanBoard::cancel_drag`).
+            Event::MouseLeave { .. } if self.dragging.is_some() => {
+                self.dragging = None;
+                self.base.set_mouse_pressed(false);
+            }
             Event::MouseMove { pos } => {
                 if let Some(target) = self.dragging {
                     let (cx, cy) = self.pixel_to_curve(pos.x, pos.y);

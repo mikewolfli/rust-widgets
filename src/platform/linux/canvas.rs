@@ -162,6 +162,11 @@ pub(crate) fn mount_canvas(
     // Touch: GDK reports finger contacts as their own event type, not as button
     // presses, so without this the gesture engine never saw a `TouchBegin` and all
     // eleven recognisers were reachable only from unit tests.
+    //
+    // Gated on the `touch` capability: `Event::Touch*` does not exist without it
+    // (see `crate::event::types`), so a build that omits `touch` must not install a
+    // handler that constructs those variants.
+    #[cfg(feature = "touch")]
     area.connect_touch_event(move |widget, event| {
         // `connect_touch_event` hands the handler the *generic* `gdk::Event`, and
         // `position()` is declared on the concrete `gdk::EventTouch` (it reads the

@@ -150,6 +150,69 @@ impl Font {
             && self.weight <= 900
             && self.weight.is_multiple_of(100)
     }
+    /// Parses a CSS-style shorthand font string.
+    ///
+    /// The accepted form is `"<family> <size>[ <style>...]"`, where the family may
+    /// itself contain spaces:
+    ///
+    /// ```text
+    /// "Monospace 20"          -> Monospace, 20, regular, upright
+    /// "Segoe UI 14 bold"      -> Segoe UI, 14, bold, upright
+    /// "Menlo 12 italic"       -> Menlo, 12, regular, italic
+    /// "Menlo 12 bold italic"  -> Menlo, 12, bold, italic
+    /// ```
+    ///
+    /// The size is the **last** token that parses as a positive number, so a family
+    /// containing digits (`"Roboto 2020 12"`) resolves to family `"Roboto 2020"` and
+    /// size `12` rather than treating `2020` as the size. Style tokens are recognised
+    /// after the size. An empty family, a missing or non-positive size, or an
+    /// unrecognised trailing token makes the whole string invalid and returns `None` —
+    /// the caller then decides the fallback explicitly instead of silently receiving a
+    /// default.
+    ///
+    /// This is the primitive the JSON loader previously assumed did not exist (its
+    /// comment said "full font parsing can be added when `Font::from_string` or
+    /// similar is available"), which is why a `fontdialog.value` was read and then
+    /// discarded.
+    pub fn parse(spec: &str) -> Option<Self> {
+        let tokens: alloc::vec::Vec<&str> = spec.split_whitespace().collect();
+        if tokens.is_empty() {
+            return None;
+        }
+
+        // Split into "everything before the size", the size, and "everything after".
+        // Scanning from the end means a digit-bearing family stays intact.
+        let mut size_index = None;
+        let mut size = 0.0f32;
+        for (index, token) in tokens.iter().enumerate().rev() {
+            if let Ok(parsed) = token.parse::<f32>() {
+                if parsed > 0.0 && parsed.is_finite() {
+                    size_index = Some(index);
+                    size = parsed;
+                    break;
+                }
+            }
+        }
+        let size_index = size_index?;
+
+        let family = tokens[..size_index].join(" ");
+
+        let mut weight = Self::REGULAR_WEIGHT;
+        let mut italic = false;
+        for token in &tokens[size_index + 1..] {
+            match token.to_ascii_lowercase().as_str() {
+                "bold" | "bolder" => weight = Self::BOLD_WEIGHT,
+                "italic" | "oblique" => italic = true,
+                "normal" | "regular" => {}
+                // A trailing token that is neither a style word nor a number makes the
+                // string ambiguous; refuse rather than silently dropping it.
+                _ => return None,
+            }
+        }
+
+        let font = Self::with_weight(family, size, weight, italic);
+        font.is_valid().then_some(font)
+    }
     /// Creates a font with modified size.
     pub fn with_size(&self, size: f32) -> Self {
         Self::with_weight(&self.family, size, self.weight, self.italic)
@@ -405,5 +468,86 @@ mod tests {
                 .expect("legacy font deserialize should succeed");
         assert_eq!(parsed_legacy.weight(), 700);
         assert!(parsed_legacy.is_bold());
+    }
+
+    #[test]
+    fn parse_reads_family_size_and_style() {
+        let plain = Font::parse("Monospace 20").expect("family + size must parse");
+        assert_eq!(plain.family(), "Monospace");
+        assert_eq!(plain.size(), 20.0);
+        assert!(!plain.is_bold());
+        assert!(!plain.is_italic());
+
+        // A family with spaces is preserved, not truncated at the first token.
+        let spaced = Font::parse("Segoe UI 14 bold").expect("multi-word family must parse");
+        assert_eq!(spaced.family(), "Segoe UI");
+        assert_eq!(spaced.size(), 14.0);
+        assert!(spaced.is_bold());
+
+        let italic = Font::parse("Menlo 12 italic").expect("italic must parse");
+        assert_eq!(italic.family(), "Menlo");
+        assert!(italic.is_italic());
+        assert!(!italic.is_bold());
+
+        let both = Font::parse("Menlo 12 bold italic").expect("bold+italic must parse");
+        assert!(both.is_bold() && both.is_italic());
+
+        // Style words are order-independent after the size, and `normal` is a no-op.
+        let reordered = Font::parse("Menlo 12 italic bold").expect("reordered styles must parse");
+        assert!(reordered.is_bold() && reordered.is_italic());
+        let normal = Font::parse("Menlo 12 normal").expect("normal must parse");
+        assert!(!normal.is_bold() && !normal.is_italic());
+    }
+
+    #[test]
+    fn parse_keeps_a_family_that_contains_digits() {
+        // The size is the *last* numerically-parsable token, so "2020" stays part of
+        // the family and "12" is the size. Taking the first number instead would
+        // silently rename the family to "Roboto" and leave "12" unparsed.
+        let font = Font::parse("Roboto 2020 12").expect("digit-bearing family must parse");
+        assert_eq!(font.family(), "Roboto 2020");
+        assert_eq!(font.size(), 12.0);
+    }
+
+    #[test]
+    fn parse_accepts_a_family_that_is_only_a_number_like_word_plus_extent() {
+        // "Segoe UI Optimized 11" — the family ends at the last number.
+        let font = Font::parse("Segoe UI Optimized 11").expect("long family must parse");
+        assert_eq!(font.family(), "Segoe UI Optimized");
+        assert_eq!(font.size(), 11.0);
+    }
+
+    #[test]
+    fn parse_accepts_a_fractional_size() {
+        let font = Font::parse("Inter 10.5").expect("fractional size must parse");
+        assert_eq!(font.size(), 10.5);
+    }
+
+    #[test]
+    fn parse_refuses_input_it_cannot_fully_honour() {
+        // No size at all.
+        assert!(Font::parse("Monospace").is_none());
+        // No family at all.
+        assert!(Font::parse("20").is_none());
+        // Empty and whitespace-only.
+        assert!(Font::parse("").is_none());
+        assert!(Font::parse("   ").is_none());
+        // Non-positive and non-finite sizes are not sizes.
+        assert!(Font::parse("Monospace 0").is_none());
+        assert!(Font::parse("Monospace -12").is_none());
+        assert!(Font::parse("Monospace inf").is_none());
+        assert!(Font::parse("Monospace NaN").is_none());
+        // A trailing token that is neither a style word nor a number is ambiguous.
+        assert!(Font::parse("Monospace 12 heavy").is_none());
+    }
+
+    #[test]
+    fn parse_output_always_satisfies_is_valid() {
+        // The caller relies on `Some(..)` meaning "usable as-is", which is what stops
+        // the JSON loader from having to re-validate.
+        for spec in ["Monospace 20", "Segoe UI 14 bold", "Menlo 12 bold italic", "Inter 10.5"] {
+            let font = Font::parse(spec).unwrap_or_else(|| panic!("{spec:?} should parse"));
+            assert!(font.is_valid(), "{spec:?} produced an invalid font: {font:?}");
+        }
     }
 }

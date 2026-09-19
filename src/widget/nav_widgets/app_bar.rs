@@ -250,7 +250,12 @@ impl EventHandler for AppBar {
                 // Right zone (action): last 80px if action_text is non-empty
                 // Title/general area: middle (handled below)
 
-                if self.show_back && pos.x >= rect.x && pos.x <= rect.x + 48 {
+                // Tap zones, with the crate's **exclusive** far edge convention:
+                // `Rect::contains_point` uses `x < x + width`, so a hand-written `<=`
+                // made the boundary column belong to both zones. The left zone is
+                // tested first, so at `rect.x + 48` the back arrow won even though the
+                // middle zone begins there.
+                if self.show_back && pos.x >= rect.x && pos.x < rect.x + 48 {
                     self.back_pressed.emit();
                     self.base.request_redraw();
                     return;
@@ -258,7 +263,7 @@ impl EventHandler for AppBar {
 
                 if !self.action_text.is_empty()
                     && pos.x >= rect.x + rect.width as i32 - 80
-                    && pos.x <= rect.x + rect.width as i32
+                    && pos.x < rect.x + rect.width as i32
                 {
                     self.action_pressed.emit();
                     self.base.request_redraw();

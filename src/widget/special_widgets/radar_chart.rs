@@ -647,11 +647,9 @@ impl EventHandler for RadarChart {
                     self.base.request_redraw();
                 }
             }
-            Event::MouseLeave { .. } => {
-                if self.hovered_axis.is_some() {
-                    self.hovered_axis = None;
-                    self.base.request_redraw();
-                }
+            Event::MouseLeave { .. } if self.hovered_axis.is_some() => {
+                self.hovered_axis = None;
+                self.base.request_redraw();
             }
             Event::MousePress { pos, button } if *button == 1 => {
                 self.base.set_mouse_pressed(true);

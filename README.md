@@ -57,16 +57,18 @@ capability matrix
 is generated from source and gated for drift in CI.
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.4.3-blue)]()
-[![tests](https://img.shields.io/badge/tests-5200%2B-brightgreen)]()
+[![version](https://img.shields.io/badge/version-2.4.4-blue)]()
+[![tests](https://img.shields.io/badge/tests-5260%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
-**Verified in 2.4.3:** `5245` tests pass on `desktop`, and `cargo test` reports 0
-failures across all 30 test binaries. `cargo clippy --no-default-features --features desktop
---all-targets` is clean, all five device profiles build with zero warnings, and all 29
-`tools/check_*.sh` gates pass. See
+**Verified in 2.4.4:** `5266` tests pass on `desktop`, and `cargo test` reports 0
+failures across all 30 test binaries. `cargo clippy --all-targets` is warning-free on all
+five device profiles, all five profiles build clean on both the host and
+`x86_64-pc-windows-msvc`, and 28 of the 30 `tools/check_*.sh` gates pass — the two that do
+not are host-gated (`check_apple_native` needs macOS, `check_harmony_cross` needs the
+OpenHarmony target). See
 [`CHANGELOG.md`](CHANGELOG.md) and
-[`docs/log/log-20260919-3.md`](docs/log/log-20260919-3.md) for per-fix evidence.
+[`docs/log/log-20260919-4.md`](docs/log/log-20260919-4.md) for per-fix evidence.
 
 <p align="center">
   <a href="README.zh-CN.md">

@@ -1035,13 +1035,13 @@ pub struct CoreConfig {
 ```rust
 use rust_widgets::core::CoreConfig;
 
-// Desktop: Full profile, Desktop platform, desktop capabilities, v2.4.3
+// Desktop: Full profile, Desktop platform, desktop capabilities, v2.4.4
 let desktop_config = CoreConfig::desktop();
 
-// Embedded: Embedded profile, Embedded platform, embedded capabilities, v2.4.3
+// Embedded: Embedded profile, Embedded platform, embedded capabilities, v2.4.4
 let embedded_config = CoreConfig::embedded();
 
-// Mobile: Full profile, Mobile platform, mobile capabilities, v2.4.3
+// Mobile: Full profile, Mobile platform, mobile capabilities, v2.4.4
 let mobile_config = CoreConfig::mobile();
 ```
 

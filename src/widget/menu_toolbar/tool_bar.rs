@@ -406,17 +406,13 @@ impl ToolBar {
         Rect { x: 0, y: 0, width: 0, height: 0 }
     }
     fn hit_item(&self, pos: Point) -> Option<usize> {
-        for i in 0..self.items.len() {
-            let r = self.item_rect(i);
-            if pos.x >= r.x
-                && pos.x <= r.x + r.width as i32
-                && pos.y >= r.y
-                && pos.y <= r.y + r.height as i32
-            {
-                return Some(i);
-            }
-        }
-        None
+        // `Rect::contains_point`, not a hand-written comparison: the crate's
+        // convention is an inclusive origin with an **exclusive** far edge (see
+        // `geometry.rs`), and `draw` paints these rects left to right so a later
+        // sibling overpaints the boundary column. Including it in the hit-test made
+        // that one pixel resolve to the *earlier* item — the opposite of what is drawn
+        // there.
+        (0..self.items.len()).find(|&i| self.item_rect(i).contains_point(pos))
     }
 }
 impl Widget for ToolBar {

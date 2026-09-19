@@ -91,8 +91,34 @@ def parse_bindings(source: str) -> list[FunctionDecl]:
     return functions
 
 
-def render_header(functions: list[FunctionDecl]) -> str:
-    """Render a sorted C header from parsed function declarations."""
+def parse_value_kinds(source: str) -> list[tuple[str, int]]:
+    """Extract the `rw_value_kind` discriminants from the Rust source.
+
+    Why this is parsed rather than hard-coded here: the enum's values are part of
+    the ABI contract, and every language binding must use the same numbers. A
+    hard-coded copy in this script would be a third place they could drift (the
+    Rust constants and each binding are the other two). Parsing keeps
+    `binding_impl.rs` the single source of truth, and `check_abi.sh` fails when
+    the committed header disagrees with what this produces.
+
+    Before this existed the header published no discriminators at all, so each
+    binding declared its own plain integer constants by hand — and all three
+    stopped at `RW_VALUE_STRING`, missing the `Color`/`Rect` kinds that were
+    appended later. The visible effect was that reading a colour property through
+    Python/Node/C++ returned "no such property" *and* leaked the string the ABI
+    had allocated, because the caller had no constant to match and never reached
+    its free call.
+    """
+    pattern = re.compile(
+        r"^const\s+(RW_VALUE_[A-Z_]+):\s*c_int\s*=\s*(-?\d+);", re.MULTILINE
+    )
+    return [(match.group(1), int(match.group(2))) for match in pattern.finditer(source)]
+
+
+def render_header(
+    functions: list[FunctionDecl], value_kinds: list[tuple[str, int]]
+) -> str:
+    """Render a sorted C header from parsed function and enum declarations."""
     lines: list[str] = []
     lines.append("#ifndef RW_GENERATED_H")
     lines.append("#define RW_GENERATED_H")
@@ -109,6 +135,21 @@ def render_header(functions: list[FunctionDecl]) -> str:
     lines.append(" * fail to compile for a reader who copies them.")
     lines.append(" */")
     lines.append("typedef uint64_t ObjectId;")
+    lines.append("")
+    lines.append("/*")
+    lines.append(" * The `rw_value_kind` discriminants written by `rw_get_widget_property` and")
+    lines.append(" * read by `rw_set_widget_property` through their `out_kind`/`kind` argument.")
+    lines.append(" *")
+    lines.append(" * A binding MUST accept every value here and MUST free `out_str` with")
+    lines.append(" * `rw_free_string` whenever it is non-null, including for the non-string")
+    lines.append(" * kinds. `RW_VALUE_COLOR` and `RW_VALUE_RECT` carry their payload in")
+    lines.append(" * `out_str` (as `#RRGGBBAA` and `x,y,w,h`), not in `out_num`; treating them")
+    lines.append(" * as unknown leaks that buffer.")
+    lines.append(" */")
+    lines.append("typedef enum {")
+    for name, value in value_kinds:
+        lines.append(f"    {name} = {value},")
+    lines.append("} rw_value_kind;")
     lines.append("")
     lines.append("#ifdef __cplusplus")
     lines.append('extern "C" {')
@@ -155,10 +196,22 @@ def main() -> None:
 
     source = bindings_path.read_text(encoding="utf-8")
     functions = parse_bindings(source)
-    header = render_header(functions)
+    value_kinds = parse_value_kinds(source)
+    if not value_kinds:
+        # A header without the discriminators is exactly the defect this parsing was
+        # added to fix, so an empty result is an error rather than an empty enum.
+        raise SystemExit(
+            f"no RW_VALUE_* constants found in {bindings_path}; the generated header "
+            "would publish no value-kind discriminators, and every binding would have "
+            "to guess them (which is how RW_VALUE_COLOR/RECT were missed)"
+        )
+    header = render_header(functions, value_kinds)
 
     output_path.write_text(header, encoding="utf-8")
-    print(f"generated {output_path} with {len(functions)} declarations")
+    print(
+        f"generated {output_path} with {len(functions)} declarations "
+        f"and {len(value_kinds)} value kinds"
+    )
 
 
 if __name__ == "__main__":

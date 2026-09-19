@@ -66,6 +66,50 @@ rw_run_bounded "$PROFILE_TIMEOUT" cargo check --no-default-features --features m
 echo "[6/9] cargo check --no-default-features --features embedded --all-targets"
 rw_run_bounded "$PROFILE_TIMEOUT" cargo check --no-default-features --features embedded --all-targets
 
+# Cross-target backend checks.
+#
+# Why these exist: the five profile checks above all run against the **host**
+# target. Everything behind `cfg(target_os = "windows")` or
+# `cfg(target_os = "macos")` is therefore cfg'd out and never compiled here,
+# which is how a broken `winapi::um::windef::RECT` path (the symbol lives in
+# `winapi::shared::windef`) and an ungated `super::canvas` reference survived:
+# the only job that compiled Windows was CI's `windows-cross-check`, and it
+# passes a hand-written capability list with **no device profile**, so
+# `full_widgets` was false there and the device-gated half of the Windows
+# backend was never built either. The result was thousands of lines of Windows
+# backend code that no job had ever compiled.
+#
+# `--target` is what makes these run; the target must be installed (rustup),
+# so a missing target is reported rather than silently skipped -- a check that
+# quietly does nothing is worse than no check (the same reasoning as
+# `run_test_case` refusing a filter that matches no test).
+if rustc --print target-list 2>/dev/null | grep -qx 'x86_64-pc-windows-msvc' \
+   && rustup target list --installed 2>/dev/null | grep -qx 'x86_64-pc-windows-msvc'; then
+  echo "[6b/9] cargo check --target x86_64-pc-windows-msvc (windows backend, mixed profiles)"
+  for profile in desktop embedded mini; do
+    echo "  - windows target, profile: $profile"
+    rw_run_bounded "$PROFILE_TIMEOUT" cargo check \
+      --target x86_64-pc-windows-msvc --no-default-features --features "$profile"
+  done
+  echo "  - windows target, no device profile and no touch capability"
+  rw_run_bounded "$PROFILE_TIMEOUT" cargo check \
+    --target x86_64-pc-windows-msvc --no-default-features \
+    --features "windows desktop-runtime controls-native controls-custom"
+else
+  echo "[6b/9] SKIPPED: x86_64-pc-windows-msvc target not installed"
+  echo "   install it with: rustup target add x86_64-pc-windows-msvc"
+fi
+
+# Android JNI build — the feature set `tools/build_android_testapp.sh` actually
+# passes. It has no device profile, so `crate::theme` and `crate::json` are
+# compiled out while `src/bindings/` is compiled in; any unconditional reference
+# to either from the ABI is a hard error. That combination was broken (9 errors)
+# and nothing checked it, so it is checked here.
+echo "[6c/9] cargo check (android-jni feature set, no device profile)"
+rw_run_bounded "$PROFILE_TIMEOUT" cargo check \
+  --no-default-features \
+  --features "android-jni jni mobile-api controls-custom controls-native serde serde_json"
+
 echo "[7/9] embedded P4c regression gate"
 run_test_case "embedded selection-state roundtrip" \
   cargo test --lib --no-default-features --features embedded platform::tests::embedded_profile_selection_state_roundtrip

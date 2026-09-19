@@ -137,6 +137,11 @@ pub mod windows {
     //! Reference: OpenClipboard, SetClipboardData, GetClipboardData, CF_TEXT
 
     use super::super::clipboard::{ClipboardContent, RichClipboardBackend};
+    // Alloc types come from the compat bridge: `mini` is `no_std`, so the std
+    // prelude that normally supplies `String`/`Vec`/`format!`/`to_string` is
+    // suppressed and this module failed to compile with 8 errors under
+    // `--target x86_64-pc-windows-msvc --features mini`.
+    use crate::compat::{format, String, ToString, Vec};
     use winapi::shared::minwindef::{FALSE, UINT};
     use winapi::um::winbase::GlobalAlloc;
     use winapi::um::winbase::{GlobalLock, GlobalSize, GlobalUnlock, GHND};

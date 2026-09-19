@@ -17,9 +17,8 @@
 //! type IDs for modern UI Automation (UIA) provider conformance.
 
 use super::AccessibilityBridge;
+use crate::compat::{lock, HashMap, Mutex, String, ToString};
 use crate::core::ObjectId;
-use std::collections::HashMap;
-use std::sync::Mutex;
 
 /// Windows UIAutomation bridge using NotifyWinEvent.
 pub struct WindowsAccessibilityBridge {
@@ -36,25 +35,19 @@ impl WindowsAccessibilityBridge {
 
     /// Register a native HWND handle for the given widget id.
     pub fn register_handle(&self, id: ObjectId, ptr: usize) {
-        if let Ok(mut handles) = self.native_handles.lock() {
-            handles.insert(id, ptr);
-        }
+        lock(&self.native_handles).insert(id, ptr);
     }
 
     /// Remove a native handle registration.
     pub fn unregister_handle(&self, id: ObjectId) {
-        if let Ok(mut handles) = self.native_handles.lock() {
-            handles.remove(&id);
-        }
+        lock(&self.native_handles).remove(&id);
     }
 
     /// Post a Win32 accessibility event via NotifyWinEvent.
     fn post_event(&self, id: ObjectId, event: u32) -> bool {
-        let ptr = match self.native_handles.lock() {
-            Ok(h) => h.get(&id).copied(),
-            Err(_) => return false,
+        let Some(hwnd_val) = lock(&self.native_handles).get(&id).copied() else {
+            return false;
         };
-        let Some(hwnd_val) = ptr else { return false };
         #[cfg(target_os = "windows")]
         {
             let hwnd = hwnd_val as winapi::shared::windef::HWND;
@@ -79,13 +72,11 @@ crate::impl_default_via_new!(WindowsAccessibilityBridge);
 
 impl AccessibilityBridge for WindowsAccessibilityBridge {
     fn set_accessibility_name(&self, id: ObjectId, name: &str) {
-        if let Ok(mut names) = self.names.lock() {
-            names.insert(id, name.to_string());
-        }
+        lock(&self.names).insert(id, name.to_string());
     }
 
     fn accessibility_name(&self, id: ObjectId) -> Option<String> {
-        self.names.lock().ok().and_then(|names| names.get(&id).cloned())
+        lock(&self.names).get(&id).cloned()
     }
 
     fn notify_name_changed(&self, id: ObjectId) {

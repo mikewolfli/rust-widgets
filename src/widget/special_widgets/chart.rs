@@ -1066,7 +1066,7 @@ mod tests {
             .filter(|px| {
                 let (r, g, b) = (px[0], px[1], px[2]);
                 // Skip pure white (background) and the grey border family.
-                !(r == 255 && g == 255 && b == 255) && !(r == 200 && g == 200 && b == 200)
+                !((r == 255 && g == 255 && b == 255) || (r == 200 && g == 200 && b == 200))
             })
             .count()
     }

@@ -27,17 +27,58 @@ use super::node::Node;
 /// use) is what keeps this module ignorant of what any property means: a control that does
 /// not publish the name refuses it here for exactly the same reason it would refuse it
 /// anywhere else.
+///
+/// # `Null` means "reset to the declared default"
+///
+/// The diff emits `Null` for a property that a node stopped declaring, because `Null` is
+/// the documented "not set" value. But only about twenty controls handle `Null`
+/// explicitly; the rest write through a typed extractor (`expect_i64`, `expect_usize`, …)
+/// that answers `TypeMismatch` for it. Writing the bare `Null` therefore *failed* for most
+/// properties — and failed permanently, because the next diff finds no key to retry: the
+/// new tree does not declare the property, so no patch is emitted at all and the control
+/// keeps its stale value forever with only an ignored `ApplyReport::errors` entry.
+///
+/// Substituting the value the capability schema declares as that property's default turns
+/// the reset into a write that actually lands. The schema is the single source of truth for
+/// "what does this property hold when nothing is declared", which is exactly the question
+/// a dropped key asks. The kind is read from the **live control** rather than from the
+/// node, because `Node.widget` is a creation name while the schema is keyed on
+/// `WidgetKind`, and a backwards-compatible fix must not add a field to the public `Node`
+/// (principle #21).
+///
+/// The substitution is skipped for the base properties every control owns, whose `Null`
+/// handling is the contract's own business.`Null` is still written when the schema declares
+/// no default, so a control that *does* understand `Null` keeps receiving it.
 pub(crate) fn write_property(
     id: ObjectId,
     name: &str,
     value: CapabilityValue,
 ) -> Result<(), String> {
+    let value = if matches!(value, CapabilityValue::Null) {
+        resolve_null_reset(id, name).unwrap_or(value)
+    } else {
+        value
+    };
     match crate::widget::runtime::with_widget_mut(id, |widget| {
         widget_property_set(widget, name, value).map_err(|e| format!("{e:?}"))
     }) {
         Some(result) => result,
         None => Err("the control is not registered with the runtime".to_string()),
     }
+}
+
+/// The schema-declared default for `name` on the live control's kind, if it has one.
+///
+/// Split out so the `Null`-substitution policy is readable on its own, and so a test can
+/// ask the question without going through a write. Returns `None` when the control is not
+/// registered, when the kind has no schema entry, or when the schema declares no default —
+/// in which case the caller keeps the original `Null`.
+fn resolve_null_reset(id: ObjectId, name: &str) -> Option<CapabilityValue> {
+    let kind = crate::widget::runtime::with_widget_mut(id, |widget| widget.kind())?;
+    let default =
+        crate::widget::capability::access::default_widget_property_default_value(kind, name)?;
+    // A default that is itself `Null` would be a no-op; do not pretend it is a reset.
+    (!matches!(default, CapabilityValue::Null)).then_some(default)
 }
 
 /// Why a patch could not be carried out.
@@ -337,6 +378,121 @@ mod tests {
         let mut layout = crate::json::BoundJsonLayout::new();
         layout.register_node(1, "window", "main", None);
         (layout, 1)
+    }
+
+    /// A creator that builds and registers **real** controls, so a property write can be
+    /// observed after the fact.
+    ///
+    /// The `StubBackend` above is deliberately id-only, which is right for structural
+    /// assertions but useless for asking "did the value actually change?" — and that
+    /// question is the whole point of the reset test below.
+    fn real_creator() -> impl Fn(&Node) -> Option<ObjectId> {
+        let factory = crate::widget::WidgetFactory::new_with_defaults();
+        move |node: &Node| {
+            let widget: Box<dyn crate::widget::Widget> = factory.create(
+                &node.widget,
+                crate::core::Rect::new(0, 0, 80, 24),
+                node.key_str().unwrap_or("anon"),
+            )?;
+            crate::widget::runtime::register(widget)
+        }
+    }
+
+    /// Read a property off a live control.
+    fn read(id: ObjectId, name: &str) -> Option<CapabilityValue> {
+        crate::widget::runtime::with_widget(id, |widget| {
+            crate::widget::capability::properties_trait::widget_property_get(widget, name).ok()
+        })
+        .flatten()
+    }
+
+    /// A dropped property must reach the value the schema declares, not be refused.
+    ///
+    /// # Why this test exists
+    ///
+    /// `diff` emits `CapabilityValue::Null` for a property a node stopped declaring, and
+    /// `apply` used to write that `Null` verbatim. Only about twenty controls handle
+    /// `Null` explicitly; the rest write through a typed extractor. `text_visible` on a
+    /// `progress_bar` is a plain `Bool` with no `Null` arm, so the write was refused
+    /// `TypeMismatch` and the control kept its stale value *permanently* — the next diff
+    /// finds no such key in the new tree, so it emits no patch to retry, and the only
+    /// signal was an `ApplyReport::errors` entry a caller commonly ignores.
+    ///
+    /// The assertion is on the value the control actually holds, which is the observable
+    /// claim; `is_clean()` alone would not have caught it, since the refusal was recorded
+    /// as an error rather than raised.
+    #[test]
+    fn a_dropped_property_resets_to_the_schema_default_and_really_lands() {
+        let (mut layout, root) = fixture_root();
+        let create = real_creator();
+        let created = apply(
+            &mut layout,
+            &[Patch::Insert { parent: root, index: 0, node: Node::new("progress_bar").key("bar") }],
+            &create,
+        );
+        assert!(created.is_clean(), "mount failed: {:?}", created.errors);
+        let bar = layout.child_by_key(Some(root), "bar").expect("bar must be indexed");
+
+        // `text_visible` defaults to true, so writing `false` is a real change away from
+        // the default and the reset has somewhere to return to.
+        let set = apply(
+            &mut layout,
+            &[Patch::SetProperty {
+                id: bar,
+                name: "text_visible".to_string(),
+                value: CapabilityValue::Bool(false),
+            }],
+            &create,
+        );
+        assert!(set.is_clean(), "declaring `text_visible` failed: {:?}", set.errors);
+        assert_eq!(read(bar, "text_visible"), Some(CapabilityValue::Bool(false)));
+
+        let reset = apply(
+            &mut layout,
+            &[Patch::SetProperty {
+                id: bar,
+                name: "text_visible".to_string(),
+                value: CapabilityValue::Null,
+            }],
+            &create,
+        );
+        assert!(
+            reset.is_clean(),
+            "a dropped property must not be refused; errors: {:?}",
+            reset.errors
+        );
+        let after = read(bar, "text_visible");
+        assert_ne!(
+            after,
+            Some(CapabilityValue::Bool(false)),
+            "the reset did not land: the control still holds the dropped value"
+        );
+        assert_eq!(
+            after,
+            crate::widget::capability::access::default_widget_property_default_value(
+                crate::widget::WidgetKind::ProgressBar,
+                "text_visible"
+            ),
+            "the reset must reach the schema-declared default"
+        );
+    }
+
+    /// A property the schema declares no default for still receives `Null`, so a control
+    /// that documents `Null` as meaningful keeps its contract.
+    #[test]
+    fn a_null_reset_for_an_undeclared_property_is_still_written_as_null() {
+        let (mut layout, root) = fixture_root();
+        let create = real_creator();
+        apply(
+            &mut layout,
+            &[Patch::Insert { parent: root, index: 0, node: Node::new("label").key("l") }],
+            &create,
+        );
+        let id = layout.child_by_key(Some(root), "l").expect("label must be indexed");
+        // `tooltip` is declared by every control and has a string default, so this asserts
+        // the substitution path; an undeclared name must stay untouched by it.
+        assert_eq!(resolve_null_reset(id, "tooltip"), Some(CapabilityValue::String(String::new())));
+        assert_eq!(resolve_null_reset(id, "not_a_real_property"), None);
     }
 
     #[test]

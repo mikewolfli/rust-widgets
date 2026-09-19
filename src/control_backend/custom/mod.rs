@@ -211,23 +211,20 @@ impl CustomPaintControlBackend {
     /// shadow copy, so a property cannot disagree with the control it describes
     /// (BLUE15 §10.3: the shadow maps were one of three duplicated truths).
     ///
-    /// The alloc-frugal profile has no widget registry at all, so the answer there
-    /// is always `None` rather than a compile error.
+    /// The gate is `not(alloc_frugal)` because the alloc-frugal profile has no widget
+    /// registry to read. A nested `#[cfg(alloc_frugal)]` arm returning `None` used to
+    /// sit in the body as well; `alloc_frugal` cannot be true inside an item that only
+    /// exists when it is false, so that arm was unreachable in every configuration and
+    /// has been removed. Callers already carry their own `alloc_frugal` arm (see
+    /// `create_widgets_helpers.in.rs`), so the honest `None` for a registry-free build
+    /// is still reachable where it matters.
     #[cfg(not(alloc_frugal))]
     pub(crate) fn with_live_widget<R>(
         &self,
         widget_id: crate::core::ObjectId,
         f: impl FnOnce(&mut dyn crate::widget::Widget) -> R,
     ) -> Option<R> {
-        #[cfg(not(alloc_frugal))]
-        {
-            crate::widget::runtime::with_widget_mut(widget_id, f)
-        }
-        #[cfg(alloc_frugal)]
-        {
-            let _ = (widget_id, f);
-            None
-        }
+        crate::widget::runtime::with_widget_mut(widget_id, f)
     }
 }
 

@@ -650,6 +650,55 @@ fn property_schema_lookup_is_normalized() {
 }
 
 #[test]
+fn every_kind_with_a_constructor_has_a_resolvable_factory_name() {
+    // `Panel` is a real `WidgetKind` with a real constructor, but it has no capability
+    // row of its own: `panel_capability()` is keyed on `GroupBox` (the same control
+    // under another name, exactly as `DockPanel` is to `DockWidget`). It therefore fell
+    // through to the `other` arm of `alias_factory_name` and returned `""`.
+    //
+    // An empty name is not inert: `theme::apply_active_theme` bails out on it, so a
+    // `Panel`-kinded widget silently received no theme role. This test pins the
+    // resolution so a future kind added without a capability row fails here rather than
+    // losing its theme silently.
+    let factory = WidgetFactory::new_with_defaults();
+    for kind in [WidgetKind::Panel, WidgetKind::DockPanel] {
+        let name = crate::widget::capability::factory_name_for_kind(kind);
+        assert!(
+            !name.is_empty(),
+            "{kind:?} resolves to an empty factory name, so `theme::apply_active_theme` \
+             will silently skip it; add an alias row in `alias_factory_name`"
+        );
+        // A non-empty name the factory rejects would be equally broken, so the
+        // resolved spelling has to be one the factory actually answers to.
+        assert!(
+            factory.capability(name).is_some(),
+            "factory_name_for_kind({kind:?}) = {name:?}, but the factory has no such name"
+        );
+    }
+
+    // `MenuItem` is the documented exception: `kind.rs` declares it `kind-role: child`
+    // ("created by their owning `Menu`, never constructed directly from a factory
+    // name"), so it has no capability row *and* no factory name by design. It must
+    // still resolve to a non-empty name, because the theme layer classifies on that
+    // name rather than on the factory lookup — an empty string silently skips theming.
+    let menu_item = crate::widget::capability::factory_name_for_kind(WidgetKind::MenuItem);
+    assert!(!menu_item.is_empty(), "MenuItem must still be nameable for theme classification");
+    assert_eq!(menu_item, "menu_item");
+}
+
+#[test]
+fn a_kind_alias_reaches_the_same_capability_as_its_canonical_spelling() {
+    // `context_menu` is an alias of `menu` (the kinds are the same control, as
+    // `src/widget/mod.rs` records with `pub type ContextMenu = Menu;`), so both
+    // spellings must land on one capability row rather than two.
+    let factory = WidgetFactory::new_with_defaults();
+    let by_alias = factory.capability("context_menu").expect("context_menu must resolve");
+    let by_name = factory.capability("menu").expect("menu must resolve");
+    assert_eq!(by_alias.canonical_name, by_name.canonical_name);
+    assert_eq!(by_alias.kind, by_name.kind);
+}
+
+#[test]
 fn capability_manifest_exports_defaults_and_metadata() {
     let factory = WidgetFactory::new_with_defaults();
 

@@ -880,12 +880,21 @@ pub fn create_widget_of_kind(
 
     // Prefer the caller's object; otherwise build from the factory, which is the
     // only component that knows every kind's constructor.
+    //
+    // The gate is `full_widgets`, not `device_profile`: the factory and
+    // `kind_name` both require the registry, which exists only when a device
+    // profile is present *and* the widgets were not stripped. Spelling it
+    // `device_profile` made the callee narrower than its caller, so a build that
+    // overlapped two axis-1 features (`--features "tablet,embedded"`) failed with
+    // `cannot find function kind_name` / `cannot find WidgetFactory`. `full_widgets`
+    // is exactly the conjunction the body needs, so there is no narrower gate left
+    // for this call site to drift away from (principle #47).
     let widget = widget.or_else(|| {
-        #[cfg(device_profile)]
+        #[cfg(all(device_profile, full_widgets))]
         {
             widget::WidgetFactory::new_with_defaults().create(&kind_name(kind), rect, text)
         }
-        #[cfg(not(device_profile))]
+        #[cfg(not(all(device_profile, full_widgets)))]
         {
             let _ = (text, rect);
             None
@@ -1697,18 +1706,24 @@ pub fn poll_menu_triggered() -> Option<crate::core::ObjectId> {
 pub fn menu_item_shortcut(menu_item: crate::core::ObjectId) -> Option<String> {
     control_backend::get_control_backend().menu_item_shortcut(menu_item)
 }
-/// Returns the backend's native handle for a widget, when it has one.
+/// Returns the backend's opaque handle for a widget, when it has one.
 ///
-/// The value is opaque: it is the platform's own object pointer or handle (an
-/// `NSView*` on macOS, an `HWND` on Windows, ...), and its meaning is entirely
-/// backend-specific. It exists so host code and integration tests can reach the
-/// underlying control for things the cross-platform API does not model.
+/// Named for the **intent** ("the backend's own handle for this control"), not for
+/// the mechanism. The value is opaque: it is whatever object the backend uses to
+/// represent the control, and its meaning is entirely backend-specific. It exists so
+/// host code and integration tests can reach the underlying object for things the
+/// cross-platform API does not model.
+///
+/// This was `native_handle`, which named a mechanism in the public API — the same
+/// vocabulary the surface API deliberately avoids (`src/lib.rs`'s mount/resize
+/// helpers, and principle #52). The old name remains as a deprecated alias so an
+/// existing call site gets a warning rather than a build break.
 ///
 /// Returns `None` when the widget is unknown, or when the backend created it in
-/// state-only mode (for example off the UI thread) and therefore has no native
-/// object to return.
+/// state-only mode (for example off the UI thread) and therefore holds no object to
+/// return.
 #[cfg(not(alloc_frugal))]
-pub fn native_handle(widget: crate::core::ObjectId) -> Option<usize> {
+pub fn backend_handle(widget: crate::core::ObjectId) -> Option<usize> {
     platform::get_platform().get_native_handle(widget)
 }
 /// Queues activation of a menu item as if the user had chosen it, for tests.
@@ -1918,6 +1933,20 @@ pub mod deprecated {
     pub fn supports_custom_widgets() -> bool {
         crate::supports_surfaces()
     }
+
+    /// Deprecated alias of [`crate::backend_handle`].
+    ///
+    /// Gated with its replacement: the `mini` profile has no platform singleton to ask,
+    /// so `backend_handle` does not exist there and an ungated alias would name a
+    /// missing function.
+    #[cfg(not(alloc_frugal))]
+    #[deprecated(
+        note = "renamed to `backend_handle`; 'native' named a mechanism, and which object a \
+                backend holds is its own business (principle #52)"
+    )]
+    pub fn native_handle(widget: crate::core::ObjectId) -> Option<usize> {
+        crate::backend_handle(widget)
+    }
 }
 
 // Old crate-root paths keep resolving, so a rename is a warning rather than a
@@ -1927,6 +1956,11 @@ pub use deprecated::{
     mount_custom_widget, request_custom_repaint, resize_custom_widget, supports_custom_widgets,
     unmount_custom_widget,
 };
+// Gated with `backend_handle`, which the alloc-frugal profile does not compile (it has
+// no platform singleton to ask), so the alias must not be re-exported there.
+#[cfg(not(alloc_frugal))]
+#[allow(deprecated)]
+pub use deprecated::native_handle;
 
 #[cfg(test)]
 mod docs_paths_tests;

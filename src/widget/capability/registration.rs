@@ -1,17 +1,22 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! Core widget registration — registers all 64 widget kinds in the factory.
+//! Core widget registration — registers every built-in widget kind in the factory.
 //!
 //! This module defines `register_core_widgets` which is called from
 //! [`WidgetFactory::new_with_defaults`] to populate the factory with every
 //! built-in widget kind.
+//!
+//! The count is deliberately not written down here: it is the number of
+//! `self.register(..)` calls below, which a comment cannot keep true as kinds are
+//! added. `every_widgetkind_variant_is_registered_or_declared_child_only` in the
+//! tests is the thing that keeps this file complete, and it reads the real counts.
 
 // Bring constructors, capability functions, and WidgetFactory into scope.
 use super::*;
 
 impl WidgetFactory {
-    /// Registers all 64 core widget kinds with their constructors and capabilities.
+    /// Registers every core widget kind with its constructor and capability.
     pub(crate) fn register_core_widgets(&mut self) {
         // ── Core widgets (always available) ─────────────────────────
         self.register(button_capability(), create_button);

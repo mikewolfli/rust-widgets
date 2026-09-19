@@ -97,11 +97,16 @@ impl MenuConfigDialog {
         self.config.hardware_caps().performance_level
     }
     /// Returns a description of the detected GPU.
+    ///
+    /// The memory figure is only printed when it was actually measured. This crate
+    /// cannot query VRAM portably (wgpu exposes no size, the platform backends report
+    /// system RAM), so on most hosts the honest description is the GPU type alone —
+    /// the previous wording printed a defaulted `512` MB as if it had been detected.
     pub fn gpu_description(&self) -> String {
-        format!(
-            "{} ({} MB)",
-            self.config.hardware_caps().gpu_type.description(),
-            self.config.hardware_caps().gpu_memory_mb
-        )
+        let caps = self.config.hardware_caps();
+        match (caps.gpu_memory_mb, caps.gpu_memory_is_measured) {
+            (Some(mb), true) => format!("{} ({mb} MB)", caps.gpu_type.description()),
+            _ => format!("{} (memory not reportable)", caps.gpu_type.description()),
+        }
     }
 }

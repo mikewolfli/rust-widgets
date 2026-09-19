@@ -110,22 +110,29 @@ fn canvas_view_class() -> *const Class {
             // Touch: AppKit delivers finger contacts through these responder methods
             // rather than the mouse path. Without them the gesture engine never saw a
             // `TouchBegin`, so all eleven recognisers were reachable only from tests.
-            decl.add_method(
-                sel!(touchesBeganWithEvent:),
-                touches_began as extern "C" fn(&Object, Sel, id),
-            );
-            decl.add_method(
-                sel!(touchesMovedWithEvent:),
-                touches_moved as extern "C" fn(&Object, Sel, id),
-            );
-            decl.add_method(
-                sel!(touchesEndedWithEvent:),
-                touches_ended as extern "C" fn(&Object, Sel, id),
-            );
-            decl.add_method(
-                sel!(touchesCancelledWithEvent:),
-                touches_cancelled as extern "C" fn(&Object, Sel, id),
-            );
+            //
+            // Registered only with the `touch` capability: `Event::Touch*` does not
+            // exist without it (see `crate::event::types`), so the handlers below are
+            // gated the same way and a build without `touch` has nothing to install.
+            #[cfg(feature = "touch")]
+            {
+                decl.add_method(
+                    sel!(touchesBeganWithEvent:),
+                    touches_began as extern "C" fn(&Object, Sel, id),
+                );
+                decl.add_method(
+                    sel!(touchesMovedWithEvent:),
+                    touches_moved as extern "C" fn(&Object, Sel, id),
+                );
+                decl.add_method(
+                    sel!(touchesEndedWithEvent:),
+                    touches_ended as extern "C" fn(&Object, Sel, id),
+                );
+                decl.add_method(
+                    sel!(touchesCancelledWithEvent:),
+                    touches_cancelled as extern "C" fn(&Object, Sel, id),
+                );
+            }
             decl.add_method(
                 sel!(acceptsFirstResponder),
                 accepts_first_responder as extern "C" fn(&Object, Sel) -> cocoa::base::BOOL,
@@ -262,6 +269,7 @@ extern "C" fn mouse_dragged(this: &Object, _cmd: Sel, event: id) {
 }
 
 /// Which touch responder method AppKit called.
+#[cfg(feature = "touch")]
 #[derive(Clone, Copy)]
 enum TouchPhase {
     Began,
@@ -270,16 +278,19 @@ enum TouchPhase {
 }
 
 /// `-touchesBeganWithEvent:` — one or more fingers landed on the canvas.
+#[cfg(feature = "touch")]
 extern "C" fn touches_began(this: &Object, _cmd: Sel, event: id) {
     forward_touches(this, event, TouchPhase::Began);
 }
 
 /// `-touchesMovedWithEvent:` — a tracked finger moved.
+#[cfg(feature = "touch")]
 extern "C" fn touches_moved(this: &Object, _cmd: Sel, event: id) {
     forward_touches(this, event, TouchPhase::Moved);
 }
 
 /// `-touchesEndedWithEvent:` — a tracked finger lifted.
+#[cfg(feature = "touch")]
 extern "C" fn touches_ended(this: &Object, _cmd: Sel, event: id) {
     forward_touches(this, event, TouchPhase::Ended);
 }
@@ -289,6 +300,7 @@ extern "C" fn touches_ended(this: &Object, _cmd: Sel, event: id) {
 /// Reported as an end, because the recognisers need a terminator for every begin: a
 /// `TouchBegin` with no matching `TouchEnd` leaves `PinchGesture` holding a phantom
 /// finger forever, and the next real pinch then measures against it.
+#[cfg(feature = "touch")]
 extern "C" fn touches_cancelled(this: &Object, _cmd: Sel, event: id) {
     forward_touches(this, event, TouchPhase::Ended);
 }
@@ -315,6 +327,13 @@ extern "C" fn touches_cancelled(this: &Object, _cmd: Sel, event: id) {
 /// must be for the recognisers to follow a finger across move and end. Its pointer is
 /// used as the id: AppKit guarantees it identifies the contact for its whole lifetime,
 /// and the address is only ever compared for equality.
+///
+/// # Feature gate
+///
+/// Compiled only with `touch`, together with the four responder methods that call it:
+/// `Event::TouchBegin`/`TouchMove`/`TouchEnd` are themselves gated in
+/// `crate::event::types`, so there is nothing to translate without the capability.
+#[cfg(feature = "touch")]
 fn forward_touches(this: &Object, event: id, phase: TouchPhase) {
     let outcome = std::panic::catch_unwind(|| {
         // SAFETY: `this` is the live canvas view; `event` is the NSEvent AppKit passed

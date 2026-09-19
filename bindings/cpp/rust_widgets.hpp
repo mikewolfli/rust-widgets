@@ -174,6 +174,13 @@ typedef enum {
     RW_VALUE_UINT = 3,
     RW_VALUE_FLOAT = 4,
     RW_VALUE_STRING = 5,
+    /* Colour and rectangle properties travel as their CSS-style string form
+     * (`#RRGGBBAA` and `x,y,w,h`) in the string slot, with a distinct kind so a
+     * caller can tell one from free text. A reader that does not accept these
+     * returns "no such property" and leaks the buffer, because it never reaches
+     * its `rw_free_string` call. */
+    RW_VALUE_COLOR = 6,
+    RW_VALUE_RECT = 7,
 } rw_value_kind;
 
 #ifdef __cplusplus

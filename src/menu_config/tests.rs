@@ -165,7 +165,8 @@ fn test_performance_level_enum() {
 fn test_hardware_capabilities() {
     let caps = HardwareCapabilities {
         gpu_type: GpuType::Discrete,
-        gpu_memory_mb: 4096,
+        gpu_memory_mb: Some(4096),
+        gpu_memory_is_measured: true,
         gpu_performance_score: 80,
         system_ram_mb: 16384,
         cpu_performance_score: 70,
@@ -173,7 +174,55 @@ fn test_hardware_capabilities() {
         performance_level: PerformanceLevel::High,
     };
     assert!(matches!(caps.gpu_type, GpuType::Discrete));
-    assert_eq!(caps.gpu_memory_mb, 4096);
+    assert_eq!(caps.gpu_memory_mb, Some(4096));
+    assert!(caps.gpu_memory_is_measured);
     assert!(!caps.on_battery);
     assert!(matches!(caps.performance_level, PerformanceLevel::High));
+}
+
+/// A host that cannot report VRAM must not be described as if it had been
+/// probed for it.
+#[test]
+fn test_unmeasured_gpu_memory_is_not_reported_as_detected() {
+    let caps = HardwareCapabilities {
+        gpu_type: GpuType::Integrated,
+        gpu_memory_mb: None,
+        gpu_memory_is_measured: false,
+        gpu_performance_score: 40,
+        system_ram_mb: 8192,
+        cpu_performance_score: 50,
+        on_battery: false,
+        performance_level: PerformanceLevel::Medium,
+    };
+    assert_eq!(caps.gpu_memory_mb, None);
+    assert!(!caps.gpu_memory_is_measured);
+    // The scoring input is separate from the reported figure, so a score can still
+    // be computed for a host whose VRAM is unknown.
+    assert_eq!(MenuConfig::assumed_gpu_memory(&GpuType::Integrated), 512);
+    assert_eq!(MenuConfig::assumed_gpu_memory(&GpuType::Discrete), 4096);
+    assert_eq!(MenuConfig::assumed_gpu_memory(&GpuType::Cpu), 0);
+}
+
+/// The environment override is the one real source of a VRAM figure.
+#[test]
+fn test_gpu_memory_override_is_used_when_present_and_absent_means_unknown() {
+    // Absent the override this host genuinely cannot report VRAM, so the answer is
+    // `None` rather than a constant that would be indistinguishable from a probe.
+    let previous = std::env::var("RUST_WIDGETS_GPU_MEMORY_MB").ok();
+    std::env::remove_var("RUST_WIDGETS_GPU_MEMORY_MB");
+    assert_eq!(MenuConfig::detect_gpu_memory_for_test(), None);
+
+    std::env::set_var("RUST_WIDGETS_GPU_MEMORY_MB", "8192");
+    assert_eq!(MenuConfig::detect_gpu_memory_for_test(), Some(8192));
+
+    // A zero or unparsable value is not a measurement either.
+    std::env::set_var("RUST_WIDGETS_GPU_MEMORY_MB", "0");
+    assert_eq!(MenuConfig::detect_gpu_memory_for_test(), None);
+    std::env::set_var("RUST_WIDGETS_GPU_MEMORY_MB", "not-a-number");
+    assert_eq!(MenuConfig::detect_gpu_memory_for_test(), None);
+
+    match previous {
+        Some(value) => std::env::set_var("RUST_WIDGETS_GPU_MEMORY_MB", value),
+        None => std::env::remove_var("RUST_WIDGETS_GPU_MEMORY_MB"),
+    }
 }

@@ -143,6 +143,18 @@ pub struct DiffReport {
     /// Each one is state that was destroyed: focus inside it, scroll offset, text
     /// selection, animation progress.
     pub replaced_subtrees: usize,
+    /// How many sibling keys were claimed by more than one child of the same parent.
+    ///
+    /// A duplicate key identifies none of its claimants, so the diff cannot match,
+    /// move or remove either one unambiguously; those children take the "new" path and
+    /// their old counterparts are removed. That is a real state loss, and it used to
+    /// happen with every counter reading clean — `positional_matches` and
+    /// `replaced_subtrees` both stayed at zero, so the report actively implied the
+    /// highest-quality match had been found. This field is what makes the condition
+    /// visible to a caller.
+    ///
+    /// [`crate::view::Node::duplicate_sibling_keys`] names the offending keys.
+    pub duplicate_keys: usize,
 }
 
 impl DiffReport {
@@ -197,6 +209,32 @@ pub fn diff(
     report
 }
 
+/// Whether two creation names denote the same control.
+///
+/// `Node.widget` is a name, not a `WidgetKind`, and the factory accepts several
+/// spellings for one kind. `WidgetFactory::capability` already owns that resolution
+/// (it normalises through the same name normaliser the registry was built with, and
+/// applies the alias table), so asking it is the single source of truth for "are these
+/// the same control?".
+///
+/// # Fallback
+///
+/// A build without the capability registry, or a name the factory does not know, cannot
+/// be resolved. Those fall back to a separator-and-case-insensitive comparison, which is
+/// strictly weaker but never claims two genuinely different controls are the same one —
+/// an unresolvable name compares equal only to itself modulo punctuation.
+fn same_control_kind(left: &str, right: &str) -> bool {
+    #[cfg(not(alloc_frugal))]
+    {
+        let factory = crate::widget::WidgetFactory::new_with_defaults();
+        if let (Some(a), Some(b)) = (factory.capability(left), factory.capability(right)) {
+            return a.kind == b.kind;
+        }
+    }
+    use crate::widget::capability::coercion::normalize_key;
+    normalize_key(left) == normalize_key(right)
+}
+
 /// Diff one pair of nodes, where `old` is at `path` in the old tree.
 #[allow(clippy::too_many_arguments)]
 fn diff_node(
@@ -213,7 +251,16 @@ fn diff_node(
     // A type change is not an update: `label` and `button` are different controls with
     // different capabilities, so every property of the old one would be refused by the
     // new one. Replacing is the honest description.
-    let type_changed = old.widget != new.widget;
+    //
+    // The comparison is on the resolved **kind**, not on the declared name. `Node.widget`
+    // is a *creation* name and several names resolve to one kind — `scrollarea`,
+    // `scroll_area` and `scroll widget` all mean `ScrollArea`, and the factory accepts
+    // all of them. Comparing names made a view that only respelled a node (a rename, a
+    // formatting change) look like a type change, so the control was destroyed and
+    // rebuilt — losing exactly the focus and scroll state `Patch::Replace` is documented
+    // to cost. Also compare the keyless positional rule's `widget` field below: it has
+    // the same requirement, so both go through `same_control_kind`.
+    let type_changed = !same_control_kind(&old.widget, &new.widget);
 
     // A path with no live id means this position in the old tree produced no control
     // (a `spacer`), so there is nothing to update — the new node must be inserted.
@@ -258,10 +305,14 @@ fn diff_node(
     }
     for name in old.props.keys() {
         if !new.props.contains_key(name) {
-            // Reset to the type's neutral value. `Null` is the documented "not set"
-            // value, and the property contract's own `set` path decides what that means
-            // per property; inventing a value here would hard-code one control's default
-            // into the diff engine.
+            // `Null` is the documented "not set" value and the contract's `set` path
+            // decides what it means per property.
+            //
+            // A bare `Null` is only meaningful where a control explicitly handles it
+            // (about twenty do); most properties write through a typed extractor that
+            // rejects it. `apply` therefore substitutes the schema-declared default
+            // before writing — it is the layer that can see the live control's kind,
+            // which is what the schema lookup is keyed on. See `apply_one`.
             report.patches.push(Patch::SetProperty {
                 id: old_id,
                 name: name.clone(),
@@ -299,12 +350,31 @@ fn diff_children(
     report: &mut DiffReport,
 ) {
     // Step 1: key → index in the old child list.
+    //
+    // A key claimed by more than one sibling is recorded as **unmappable** rather than
+    // last-write-wins. Previously this map was a plain insert, so with
+    // `old = [A(k="dup"), B(k="dup"), C]` both entries for `"dup"` resolved to B's
+    // index: the first new child consumed it, the second found it consumed and —
+    // because a *keyed* child deliberately does not fall through to positional
+    // matching — was treated as brand new and `Insert`ed, while the still-unconsumed
+    // original was `Remove`d. A stable list whose keys accidentally collided therefore
+    // destroyed and recreated controls (losing focus and scroll) while
+    // `positional_matches` and `replaced_subtrees` both read clean.
+    //
+    // The ambiguity is genuine: two siblings cannot share one identity. Recording it as
+    // unmappable means such a child takes the "genuinely new" path deterministically,
+    // and `duplicate_keys` makes the condition visible to the caller through
+    // `DiffReport` instead of hiding it.
     let mut old_key_index: HashMap<&str, usize> = HashMap::new();
+    let mut duplicated_keys: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for (i, child) in old.children.iter().enumerate() {
         if let Some(k) = child.key_str() {
-            old_key_index.insert(k, i);
+            if old_key_index.insert(k, i).is_some() {
+                duplicated_keys.insert(k);
+            }
         }
     }
+    report.duplicate_keys += duplicated_keys.len();
 
     let mut consumed: Vec<bool> = vec![false; old.children.len()];
     // For each new child, the old index it matched, or `None` when it is new.
@@ -317,16 +387,28 @@ fn diff_children(
         // would consume the position the real owner still needs. A key is a statement about
         // identity, so honouring it means an unmatched key means "this is new".
         let found = match child.key_str() {
-            Some(k) => old_key_index.get(k).copied().filter(|&i| !consumed[i]),
+            Some(k) => {
+                // A key shared by several old siblings identifies none of them, so it is
+                // unmappable and this child is treated as new — the same answer the
+                // key-not-found path gives, and the only deterministic one available.
+                if duplicated_keys.contains(k) {
+                    None
+                } else {
+                    old_key_index.get(k).copied().filter(|&i| !consumed[i])
+                }
+            }
             None => {
                 // Keyless children have no identity to honour, so they match the first
                 // unconsumed old child of the same widget type. Restricting by type keeps a
                 // reordered list from matching a `label` to a `button`, which would then
                 // emit a cascade of refused writes.
+                //
+                // "Same type" is the resolved kind, not the declared spelling: an alias
+                // respelling must not turn a positional match into a `Replace`.
                 old.children
                     .iter()
                     .enumerate()
-                    .position(|(i, c)| !consumed[i] && c.widget == child.widget)
+                    .position(|(i, c)| !consumed[i] && same_control_kind(&c.widget, &child.widget))
             }
         };
         if let Some(i) = found {
@@ -843,6 +925,92 @@ mod tests {
             "cross-parent edit produced no patch: {:?}",
             report.patches
         );
+    }
+
+    #[test]
+    fn duplicate_sibling_keys_are_reported_rather_than_silently_mismatched() {
+        // A key shared by two siblings identifies neither of them. The diff used to
+        // resolve it last-write-wins, so a reorder of the duplicated pair matched the
+        // wrong node, `Insert`ed the other, and `Remove`d the leftover — losing the
+        // control's state while `positional_matches` and `replaced_subtrees` both read
+        // zero, i.e. while the report implied the *best* match quality.
+        //
+        // The condition is now named in the report, and a caller can look up which keys
+        // collided with `Node::duplicate_sibling_keys`.
+        let old = Node::new("vbox")
+            .key("root")
+            .child(Node::new("label").key("dup").prop("text", s("A")))
+            .child(Node::new("label").key("dup").prop("text", s("B")))
+            .child(Node::new("label").key("c"));
+        let new = Node::new("vbox")
+            .key("root")
+            .child(Node::new("label").key("dup").prop("text", s("B")))
+            .child(Node::new("label").key("dup").prop("text", s("A")))
+            .child(Node::new("label").key("c"));
+
+        assert_eq!(
+            old.duplicate_sibling_keys(),
+            vec![("dup", 2)],
+            "the reporter must name the colliding key"
+        );
+
+        let report = run(&old, &new);
+        assert!(
+            report.duplicate_keys > 0,
+            "a duplicate key must be reported, not silently mismatched: {:?}",
+            report.patches
+        );
+    }
+
+    /// A tree with unique keys reports no duplicates, so the counter above is not a
+    /// constant.
+    #[test]
+    fn unique_sibling_keys_report_no_duplicates() {
+        let old = Node::new("vbox")
+            .key("root")
+            .child(Node::new("label").key("a"))
+            .child(Node::new("label").key("b"));
+        let new = Node::new("vbox")
+            .key("root")
+            .child(Node::new("label").key("b"))
+            .child(Node::new("label").key("a"));
+        assert!(old.duplicate_sibling_keys().is_empty());
+        let report = run(&old, &new);
+        assert_eq!(report.duplicate_keys, 0);
+        // A pure reorder of keyed, uniquely-named siblings is a `Move`, not a rebuild.
+        assert!(!report.patches_of_kind("Move").is_empty());
+        assert!(report.patches_of_kind("Replace").is_empty());
+    }
+
+    #[test]
+    fn respelling_a_node_with_an_alias_is_an_update_not_a_replace() {
+        // `Node.widget` is a *creation* name, and the factory accepts several spellings
+        // for one kind. Comparing declared names made a view that only respelled a node
+        // look like a type change, so the control was replaced — destroying focus and
+        // scroll state for a control that did not change kind at all.
+        let old = Node::new("scrollarea")
+            .key("body")
+            .prop("scroll_position_y", CapabilityValue::Int(120));
+        let new = Node::new("scroll_area")
+            .key("body")
+            .prop("scroll_position_y", CapabilityValue::Int(120));
+        let report = run(&old, &new);
+        assert!(
+            report.patches_of_kind("Replace").is_empty(),
+            "an alias respelling must not replace the control: {:?}",
+            report.patches
+        );
+        assert_eq!(report.replaced_subtrees, 0);
+    }
+
+    /// The converse: a genuinely different kind **must** still be replaced.
+    #[test]
+    fn a_different_control_under_another_name_is_still_replaced() {
+        let old = Node::new("label").key("a").prop("text", s("A"));
+        let new = Node::new("button").key("a");
+        let report = run(&old, &new);
+        assert_eq!(report.patches_of_kind("Replace").len(), 1, "{:?}", report.patches);
+        assert_eq!(report.replaced_subtrees, 1);
     }
 
     #[test]

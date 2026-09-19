@@ -390,13 +390,11 @@ impl EventHandler for NumberPicker {
         }
 
         match event {
-            Event::MousePress { pos, button: 1 } => {
-                if self.contains(*pos) {
-                    // A drag is measured from where it started, so the state is
-                    // recorded here and never accumulated during the move.
-                    self.drag_origin_y = Some(pos.y);
-                    self.drag_origin_value = self.value;
-                }
+            Event::MousePress { pos, button: 1 } if self.contains(*pos) => {
+                // A drag is measured from where it started, so the state is
+                // recorded here and never accumulated during the move.
+                self.drag_origin_y = Some(pos.y);
+                self.drag_origin_value = self.value;
             }
             Event::MouseMove { pos } => {
                 if let Some(origin_y) = self.drag_origin_y {
@@ -424,6 +422,14 @@ impl EventHandler for NumberPicker {
                 }
             }
             Event::MouseRelease { .. } => {
+                self.drag_origin_y = None;
+            }
+            // A press whose release lands outside the widget never reaches the arm
+            // above: the runtime's hit-test returns `None` for a point outside every
+            // control, so no `MouseRelease` is delivered and no pointer capture is
+            // taken. The origin stayed set, and every subsequent *hover* then drove the
+            // value — the picker scrolled with no button held.
+            Event::MouseLeave { .. } if self.drag_origin_y.is_some() => {
                 self.drag_origin_y = None;
             }
             // A click on the upper half steps down, the lower half steps up —
@@ -750,6 +756,32 @@ mod tests {
 
     /// Changing the value must announce it exactly once, so a listener cannot
     /// observe a value it never had.
+    #[test]
+    fn a_drag_that_leaves_the_control_stops_driving_the_value() {
+        // A press whose release lands outside the widget never delivers `MouseRelease`:
+        // the runtime's hit-test answers `None` for a point outside every control. With
+        // no `MouseLeave` arm the drag origin stayed set, so every later *hover* moved
+        // the value with no button held — the picker scrolled by itself.
+        let mut picker = NumberPicker::new(Rect::new(0, 0, 60, 200));
+        picker.set_range(0, 100);
+        picker.set_value(50);
+        let before = picker.value();
+
+        picker.handle_event(&Event::MousePress { pos: Point::new(30, 100), button: 1 });
+        // The pointer leaves upward without a release being delivered.
+        picker.handle_event(&Event::MouseLeave { pos: Point::new(30, 5) });
+
+        // Hover moves now must not change anything: no button is held.
+        for y in [80, 60, 40, 20] {
+            picker.handle_event(&Event::MouseMove { pos: Point::new(30, y) });
+        }
+        assert_eq!(
+            picker.value(),
+            before,
+            "hovering after the pointer left the control must not move the value"
+        );
+    }
+
     #[test]
     fn value_changed_fires_only_on_a_real_change() {
         use std::sync::{Arc, Mutex};

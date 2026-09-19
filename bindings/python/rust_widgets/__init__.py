@@ -40,6 +40,8 @@ __all__ = [
     "RW_VALUE_UINT",
     "RW_VALUE_FLOAT",
     "RW_VALUE_STRING",
+    "RW_VALUE_COLOR",
+    "RW_VALUE_RECT",
 ]
 
 # ---------------------------------------------------------------------------
@@ -52,6 +54,12 @@ RW_VALUE_INT = 2
 RW_VALUE_UINT = 3
 RW_VALUE_FLOAT = 4
 RW_VALUE_STRING = 5
+# Colour and rectangle properties travel as their CSS-style string form
+# (`#RRGGBBAA` and `x,y,w,h`) in the string slot, with a distinct kind so a
+# caller can tell one from free text. Every binding must accept these and free
+# the payload, or a colour read returns "no property" *and* leaks the buffer.
+RW_VALUE_COLOR = 6
+RW_VALUE_RECT = 7
 
 
 # ---------------------------------------------------------------------------
@@ -248,12 +256,21 @@ class RustWidgets:
 
         L = self._lib
 
-        # Common type aliases
+        # Common type aliases.
+        #
+        # Every `c_*` name used anywhere in this method must be listed here: these
+        # are **locals**, so they shadow nothing and an omission is a `NameError` at
+        # `_setup_argtypes` time — which is the first thing any public method does.
+        # `c_char` and `c_uint8` were missing, so `_setup_argtypes` raised
+        # `NameError: name 'c_uint8' is not defined` and **every** call through this
+        # binding failed, not just the one that named the type.
         c_bool = ctypes.c_bool
+        c_char = ctypes.c_char
         c_char_p = ctypes.c_char_p
         c_void_p = ctypes.c_void_p
         c_int = ctypes.c_int
         c_uint = ctypes.c_uint
+        c_uint8 = ctypes.c_uint8
         c_float = ctypes.c_float
         c_uint64 = ctypes.c_uint64
         c_int64 = ctypes.c_int64
@@ -424,7 +441,9 @@ class RustWidgets:
             c_char_p,
             POINTER(c_int),
             POINTER(c_int64),
-            POINTER(c_char_p),
+            # `c_void_p`, not `c_char_p`: the callee allocates this and the caller
+            # frees it, so the raw address must reach `rw_free_string`.
+            POINTER(c_void_p),
         ]
         L.rw_get_widget_property.restype = c_bool
 
@@ -489,7 +508,7 @@ class RustWidgets:
         L.rw_set_widget_text.restype = None
 
         L.rw_get_widget_text.argtypes = [c_uint64]
-        L.rw_get_widget_text.restype = c_char_p
+        L.rw_get_widget_text.restype = c_void_p
 
         L.rw_set_widget_enabled.argtypes = [c_uint64, c_bool]
         L.rw_set_widget_enabled.restype = None
@@ -531,7 +550,7 @@ class RustWidgets:
         L.rw_set_widget_accessibility_name.restype = c_bool
 
         L.rw_get_widget_accessibility_name.argtypes = [c_uint64]
-        L.rw_get_widget_accessibility_name.restype = c_char_p
+        L.rw_get_widget_accessibility_name.restype = c_void_p
 
         # ------------------------------------------------------------------ #
         # Menu operations                                                    #
@@ -579,7 +598,7 @@ class RustWidgets:
         L.rw_combo_box_item_count.restype = c_uint
 
         L.rw_combo_box_item_text.argtypes = [c_uint64, c_uint]
-        L.rw_combo_box_item_text.restype = c_char_p
+        L.rw_combo_box_item_text.restype = c_void_p
 
         # ------------------------------------------------------------------ #
         # List Box                                                           #
@@ -603,7 +622,7 @@ class RustWidgets:
         L.rw_list_box_item_count.restype = c_uint
 
         L.rw_list_box_item_text.argtypes = [c_uint64, c_uint]
-        L.rw_list_box_item_text.restype = c_char_p
+        L.rw_list_box_item_text.restype = c_void_p
 
         # ------------------------------------------------------------------ #
         # Clipboard & Drag                                                   #
@@ -612,7 +631,7 @@ class RustWidgets:
         L.rw_set_clipboard_text.restype = c_bool
 
         L.rw_get_clipboard_text.argtypes = []
-        L.rw_get_clipboard_text.restype = c_char_p
+        L.rw_get_clipboard_text.restype = c_void_p
 
         L.rw_begin_drag.argtypes = [
             c_uint64,  # source widget id
@@ -626,7 +645,7 @@ class RustWidgets:
         # Platform info                                                      #
         # ------------------------------------------------------------------ #
         L.rw_backend_name.argtypes = []
-        L.rw_backend_name.restype = c_char_p
+        L.rw_backend_name.restype = c_void_p
 
         L.rw_platform_capabilities.argtypes = []
         L.rw_platform_capabilities.restype = c_uint
@@ -683,7 +702,7 @@ class RustWidgets:
         # Mobile (only available with "mobile-api" feature)                   #
         # ------------------------------------------------------------------ #
         L.rw_mobile_backend_name.argtypes = []
-        L.rw_mobile_backend_name.restype = c_char_p
+        L.rw_mobile_backend_name.restype = c_void_p
 
         L.rw_mobile_attach_native_view.argtypes = [c_uint64]
         L.rw_mobile_attach_native_view.restype = c_bool
@@ -718,7 +737,13 @@ class RustWidgets:
         # ------------------------------------------------------------------ #
         # Memory                                                             #
         # ------------------------------------------------------------------ #
-        L.rw_free_string.argtypes = [c_char_p]
+        # `c_void_p`, not `c_char_p`: the argument is an **address** the caller
+        # obtained from an owned `char*` return (declared `c_void_p` for the same
+        # reason). With `c_char_p` here, ctypes rejects the `int` that
+        # `c_void_p` produces with `ArgumentError: wrong type`, and accepting a
+        # Python `bytes` instead would free a ctypes temporary rather than the
+        # Rust allocation.
+        L.rw_free_string.argtypes = [c_void_p]
         L.rw_free_string.restype = None
         L.rw_free_bytes.argtypes = [c_void_p, c_uint]
         L.rw_free_bytes.restype = None
@@ -732,7 +757,9 @@ class RustWidgets:
         L.rw_poll_drop_event.argtypes = [
             POINTER(c_uint64),  # source_out
             POINTER(c_uint64),  # target_out
-            POINTER(c_char_p),  # mime_out
+            # `c_void_p`, not `c_char_p`: the callee allocates this and the caller
+            # frees it, so the raw address must reach `rw_free_string`.
+            POINTER(c_void_p),  # mime_out
             POINTER(c_void_p),  # payload_out
             POINTER(c_uint),  # payload_len_out
         ]
@@ -745,7 +772,7 @@ class RustWidgets:
         L.rw_error_code.restype = c_int
 
         L.rw_error_message.argtypes = [c_uint64]
-        L.rw_error_message.restype = c_char_p
+        L.rw_error_message.restype = c_void_p
 
         # ------------------------------------------------------------------ #
         # Harmony node bridge (HarmonyOS native bridge)                       #
@@ -798,29 +825,30 @@ class RustWidgets:
         return text.encode("utf-8")
 
     @staticmethod
-    def _decode(ptr) -> str:
-        """Decode a ``*const c_char`` return value and free it.
+    @staticmethod
+    def _decode_and_free(lib: ctypes.CDLL, ptr) -> str:
+        """Decode an **owned** ``char*`` returned by the ABI, then free it.
 
-        If the pointer is null, returns an empty string.
+        # Why `ptr` must be the raw address
+
+        ``c_void_p`` is the required restype for every function that transfers
+        ownership of a string to the caller. ``c_char_p`` instead makes ctypes
+        *copy* the bytes into a Python ``bytes`` object and **throw the address
+        away**, so the value handed back here is not the allocation any more.
+        Passing it to ``rw_free_string`` then frees a ctypes-owned temporary
+        rather than the Rust allocation — an invalid free plus a permanent leak
+        of the real buffer. Every owned ``char*`` return is therefore declared
+        ``c_void_p`` and reaches this helper as an ``int``.
+
+        ``None`` and ``0`` both mean "no string", and both are safe: the ABI
+        null-checks before freeing.
         """
         if not ptr:
             return ""
         try:
-            return ptr.decode("utf-8")
+            return ctypes.string_at(ptr).decode("utf-8")
         finally:
-            # Free the Rust-allocated C string
-            pass  # we free in the caller wrapper methods
-
-    @staticmethod
-    def _decode_and_free(lib: ctypes.CDLL, ptr) -> str:
-        """Decode a ``*const c_char`` and free it via ``rw_free_string``."""
-        if not ptr:
-            return ""
-        try:
-            return ptr.decode("utf-8")
-        finally:
-            if ptr:
-                lib.rw_free_string(ptr)
+            lib.rw_free_string(ptr)
 
     # ------------------------------------------------------------------ #
     # Public API — Core lifecycle                                        #
@@ -1070,7 +1098,12 @@ class RustWidgets:
         """
         kind = ctypes.c_int(0)
         num = ctypes.c_int64(0)
-        text = ctypes.c_char_p()
+        # `c_void_p`, not `c_char_p`: the ABI allocates `out_str` and transfers
+        # ownership to us, so the **address** has to survive. `c_char_p` would make
+        # ctypes copy the bytes out and discard the pointer, and the subsequent
+        # `rw_free_string` would then free a ctypes temporary instead of the Rust
+        # allocation — an invalid free plus a leak of the real buffer.
+        text = ctypes.c_void_p()
         ok = self.lib.rw_get_widget_property(
             widget_id,
             self._encode(name),
@@ -1090,8 +1123,14 @@ class RustWidgets:
             return int(num.value)
         if kind.value == RW_VALUE_FLOAT:
             return _f64_from_bits(num.value & 0xFFFFFFFFFFFFFFFF)
-        if kind.value == RW_VALUE_STRING:
+        if kind.value in (RW_VALUE_STRING, RW_VALUE_COLOR, RW_VALUE_RECT):
+            # All three carry their payload in the string slot. Freeing it on every
+            # one of them is the point: `rw_get_widget_property` allocates for each,
+            # so a branch that returned without freeing leaked one buffer per call.
             return self._decode_and_free(self.lib, text.value)
+        # An unknown kind is a newer ABI than this binding knows about. Free the
+        # payload if there is one, so an unrecognised kind cannot leak either.
+        self._decode_and_free(self.lib, text.value)
         return None
 
     def set_widget_property(self, widget_id: int, name: str, value) -> bool:
@@ -1544,7 +1583,14 @@ class RustWidgets:
 
         Returns ``True`` on success.
         """
-        buf = (ctypes.c_uint8 * len(payload)).from_buffer_copy(payload)
+        # A zero-length `bytes` makes ctypes build a zero-length array whose address
+        # is NULL, which it rejects for a pointer parameter (and which would hand the
+        # backend a NULL slice for a non-zero length). Back the buffer with at least
+        # one byte and pass the **real** length, so an empty payload is a valid
+        # pointer with `len == 0`.
+        size = max(1, len(payload))
+        source = payload if payload else b"\x00"
+        buf = (ctypes.c_uint8 * size).from_buffer_copy(source)
         return bool(
             self.lib.rw_begin_drag(
                 source_widget_id,
@@ -1569,7 +1615,7 @@ class RustWidgets:
         """
         source_out = ctypes.c_uint64(0)
         target_out = ctypes.c_uint64(0)
-        mime_out = ctypes.c_char_p()
+        mime_out = ctypes.c_void_p()
         payload_out = ctypes.c_void_p()
         payload_len_out = ctypes.c_uint(0)
 
@@ -1584,28 +1630,33 @@ class RustWidgets:
             return None
 
         mime = ""
+        # Keyed on the **pointer**, not on the decoded content: the ABI always
+        # allocates `mime_out` on a successful poll (even for an empty MIME type,
+        # which it writes as a 1-byte allocation), so gating the free on
+        # `mime_out.value` being truthy skipped the free for every empty-MIME drop
+        # event and leaked one buffer per event.
         if mime_out.value:
             try:
-                mime = mime_out.value.decode("utf-8")
+                mime = ctypes.string_at(mime_out.value).decode("utf-8")
             finally:
                 self.lib.rw_free_string(mime_out)
 
         payload = b""
         if payload_out.value and payload_len_out.value > 0:
             payload = ctypes.string_at(payload_out.value, payload_len_out.value)
-            # Freed through the Rust-side deallocator that matches the allocation.
-            # `rw_free_bytes` takes the same pointer/length pair the getter wrote,
-            # so the Python copy above does not have to guess at the layout. Calling
-            # `rw_free_string` here (or `libc.free`) would deallocate through the
-            # wrong allocator: the payload is a byte buffer, not a NUL-terminated
-            # string, and Rust's global allocator need not be the system one.
+            # The single deallocation. `rw_free_bytes` takes the same pointer/length
+            # pair the getter wrote and rebuilds the `Box<[u8]>` from it, so the
+            # allocation is fully reclaimed here.
+            #
+            # There used to be a second `libc.free(payload_out.value)` after this
+            # line, guarded by a bare `except: pass`. That was a **use-after-free**:
+            # the pointer had already been released, and on Linux `libc.so.6` loads
+            # successfully, so the guard did not hide it — the process aborted with
+            # `double free or corruption` on the first drop event carrying a payload.
+            # Calling `rw_free_string` here would be equally wrong (a byte buffer is
+            # not a NUL-terminated string), which is exactly why `rw_free_bytes`
+            # exists.
             self.lib.rw_free_bytes(payload_out, payload_len_out.value)
-            # We'll free using ctypes free() — works if Rust uses system allocator.
-            try:
-                libc_c = ctypes.cdll.LoadLibrary("libc.so.6")
-                libc_c.free(payload_out.value)
-            except Exception:
-                pass  # best-effort
 
         return {
             "source": source_out.value,

@@ -336,14 +336,17 @@ fn native_handle_reports_the_host_window_handle() {
     // reported identically by both and stays honest.
     for probe in [host, 0xdead_beef_u64] {
         assert_eq!(
-            rust_widgets::native_handle(probe),
+            // The old name still resolves through the deprecated alias, which is the
+            // compatibility promise; this call site uses the new spelling so the crate's
+            // own tests do not emit deprecation warnings.
+            rust_widgets::backend_handle(probe),
             platform.get_native_handle(probe),
             "the accessor and the backend must agree for id {probe:#x}"
         );
     }
 
     assert_eq!(
-        rust_widgets::native_handle(0xdead_beef_u64),
+        rust_widgets::backend_handle(0xdead_beef_u64),
         None,
         "an id that addresses nothing must not produce a handle"
     );

@@ -77,6 +77,12 @@ const RW_VALUE_INT = 2;
 const RW_VALUE_UINT = 3;
 const RW_VALUE_FLOAT = 4;
 const RW_VALUE_STRING = 5;
+// Colour and rectangle properties travel as their CSS-style string form
+// (`#RRGGBBAA` and `x,y,w,h`) in the string slot, with a distinct kind so a
+// caller can tell one from free text. Every binding must accept these and free
+// the payload, or a colour read returns "no property" *and* leaks the buffer.
+const RW_VALUE_COLOR = 6;
+const RW_VALUE_RECT = 7;
 
 /**
  * Read an int64 out-parameter, which ffi-napi may expose as a Buffer.
@@ -285,7 +291,11 @@ function loadFunctions(libName) {
     rw_widget_list_clear: [cbool, [uint64]],
     rw_widget_list_count: [uint, [uint64]],
     rw_widget_list_item: [uint, [uint64, uint, charPtr, uint]],
-    rw_widget_property_tokens: [uint, [uint64, charPtr, charPtr, uint]],
+    // `name` is `"string"`, not `charPtr`: the wrapper passes a JS string, and
+    // `ffi-napi`'s `charPtr` accepts only a Buffer/pointer, so with `charPtr` every
+    // call to `propertyTokens` raised `TypeError: Argument "name" must be of type
+    // "pointer"` — the method was completely unusable.
+    rw_widget_property_tokens: [uint, [uint64, "string", charPtr, uint]],
     rw_widget_set_style: [cbool, [uint64, "string"]],
     rw_widget_set_layout: [cbool, [uint64, "string", int, int]],
     rw_widget_layout_add: [cbool, [uint64, uint64, uint]],
@@ -875,12 +885,25 @@ class RustWidgets {
     if (kind === RW_VALUE_BOOL) return num !== 0;
     if (kind === RW_VALUE_INT || kind === RW_VALUE_UINT) return num;
     if (kind === RW_VALUE_FLOAT) return f64FromBits(num);
-    if (kind === RW_VALUE_STRING) {
+    if (
+      kind === RW_VALUE_STRING ||
+      kind === RW_VALUE_COLOR ||
+      kind === RW_VALUE_RECT
+    ) {
+      // All three carry their payload in the string slot. Freeing on every one of
+      // them is the point: `rw_get_widget_property` allocates for each, so a branch
+      // that returned without freeing leaked one buffer per call.
       const ptr = strOut.deref();
       if (!ptr || ptr.isNull()) return "";
       const text = ptr.readCString();
       this._lib.rw_free_string(ptr);
       return text;
+    }
+    // An unknown kind is a newer ABI than this binding knows about. Free the payload
+    // if there is one, so an unrecognised kind cannot leak either.
+    const unknownPtr = strOut.deref();
+    if (unknownPtr && !unknownPtr.isNull()) {
+      this._lib.rw_free_string(unknownPtr);
     }
     return undefined;
   }
@@ -1264,13 +1287,15 @@ class RustWidgets {
   // ── Binding status ────────────────────────────────────────────────
 
   nodejsBindingStatus() {
-    // If rw_nodejs_binding_status exists, call it; otherwise synthesize
-    try {
-      return this._lib.rw_nodejs_binding_status();
-    } catch (_) {
-      // Synthesize: bit0 = C ABI available, bit1 = Node.js binding available
-      return (1 << 0) | (1 << 1);
-    }
+    // Unlike `platformCapabilities` / `hasPlatformCapability`, this asks the ABI
+    // for its Node binding status.
+    //
+    // There used to be a `catch` that synthesized `(1 << 0) | (1 << 1)` — i.e. it
+    // reported "C ABI available, Node binding available" for a symbol whose *call
+    // had just failed*. A capability probe that answers "yes" when it cannot
+    // answer at all is worse than one that throws, because the caller has no way
+    // to tell the two apart. Let the error surface.
+    return this._lib.rw_nodejs_binding_status();
   }
 
   pythonBindingStatus() {

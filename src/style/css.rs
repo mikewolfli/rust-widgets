@@ -64,6 +64,21 @@ impl CssSelector {
     }
 
     /// Check if this selector matches a widget with the given properties.
+    ///
+    /// # How a kind selector is compared
+    ///
+    /// Not with `eq_ignore_ascii_case`. The `kind` handed in is the widget's
+    /// `Debug` spelling (`"MenuBar"`, `"ToolBar"`, `"ProgressBar"`), while a
+    /// stylesheet author writes the spelling the rest of the library publishes —
+    /// the factory name (`"menu_bar"`, `"tool_bar"`), which is what
+    /// `factory_name_for_kind`, the capability registry and the JSON loader all
+    /// use. Case folding alone does not bridge the two: `menu_bar` would compare
+    /// unequal to `MenuBar` and the rule would apply to nothing, silently, because
+    /// the rule still parses and no diagnostic is emitted for a *match* failure.
+    ///
+    /// `normalize_key` is the crate's single name normaliser (it also strips `_`,
+    /// `-` and spaces), so comparing through it makes a selector accept exactly the
+    /// spellings the factory accepts.
     pub fn matches(
         &self,
         kind: &str,
@@ -73,7 +88,10 @@ impl CssSelector {
     ) -> bool {
         match self {
             CssSelector::Universal => true,
-            CssSelector::Kind(k) => k.eq_ignore_ascii_case(kind),
+            CssSelector::Kind(k) => {
+                use crate::widget::capability::coercion::normalize_key;
+                normalize_key(k) == normalize_key(kind)
+            }
             CssSelector::Class(c) => class == Some(c.as_str()),
             CssSelector::Id(i) => id == Some(i.as_str()),
             CssSelector::State(s) => state == Some(*s),
@@ -120,63 +138,125 @@ pub struct CssRule {
 /// whose subject the parser did not recognise would match windows instead of
 /// matching nothing, and the resulting mis-styling gave no hint about the cause.
 ///
-/// The table is a suffix of the full `WidgetKind` set. A kind absent from it is
-/// reported as unknown rather than guessed at; adding a name here is a deliberate
-/// act, and `every_widget_kind_name_resolves_or_is_declared_unknown` in the tests
-/// keeps the table honest about which kinds are covered.
+/// Resolves a CSS kind selector's spelling to a [`WidgetKind`].
+///
+/// # Why this is not a hand-written `match`
+///
+/// It used to be one, and it drifted: the table held three multi-word kinds
+/// (`ScrollArea`, `ScrollBar`, `GroupBox` and friends) but not `MenuBar`, `ToolBar`,
+/// `StatusBar`, `ProgressBar`, `TabWidget` or `MenuButton`, and every arm compared
+/// with `eq_ignore_ascii_case`. The consequence was silent — `menu_bar { … }` on the
+/// `to_selector` path resolved to `None`, so
+/// `StyleSheetManager::apply_to` matched nothing and the stylesheet was ignored with
+/// no diagnostic, while the same text spelled `MenuBar` worked.
+///
+/// The list below is therefore a **coverage list**, not a name table: each entry is a
+/// kind the CSS layer intends to support, and the comparison itself goes through
+/// [`normalize_key`], the crate's single name normaliser — the same one the widget
+/// factory uses to register canonical names and aliases. A selector therefore accepts
+/// exactly the spellings the factory accepts (`menu_bar`, `MenuBar`, `menubar`, …),
+/// and the two cannot drift apart again.
+///
+/// A kind absent from the list is refused rather than guessed at, so an unknown
+/// selector still selects nothing instead of silently becoming `Window`.
 fn widget_kind_from_str(name: &str) -> Option<WidgetKind> {
-    // Case-insensitive matching of all variants common in CSS selectors.
-    Some(match name {
-        n if n.eq_ignore_ascii_case("Window") => WidgetKind::Window,
-        n if n.eq_ignore_ascii_case("Button") => WidgetKind::Button,
-        n if n.eq_ignore_ascii_case("CheckBox") || n.eq_ignore_ascii_case("Checkbox") => {
-            WidgetKind::CheckBox
-        }
-        n if n.eq_ignore_ascii_case("RadioButton") || n.eq_ignore_ascii_case("Radiobutton") => {
-            WidgetKind::RadioButton
-        }
-        n if n.eq_ignore_ascii_case("Label") => WidgetKind::Label,
-        n if n.eq_ignore_ascii_case("LineEdit") => WidgetKind::LineEdit,
-        n if n.eq_ignore_ascii_case("ComboBox") => WidgetKind::ComboBox,
-        n if n.eq_ignore_ascii_case("SpinBox") => WidgetKind::SpinBox,
-        n if n.eq_ignore_ascii_case("ListBox") => WidgetKind::ListBox,
-        n if n.eq_ignore_ascii_case("ProgressBar") => WidgetKind::ProgressBar,
-        n if n.eq_ignore_ascii_case("Slider") => WidgetKind::Slider,
-        n if n.eq_ignore_ascii_case("ScrollBar") => WidgetKind::ScrollBar,
-        n if n.eq_ignore_ascii_case("ScrollArea") => WidgetKind::ScrollArea,
-        n if n.eq_ignore_ascii_case("Panel") => WidgetKind::Panel,
-        n if n.eq_ignore_ascii_case("Frame") => WidgetKind::Frame,
-        n if n.eq_ignore_ascii_case("GroupBox") => WidgetKind::GroupBox,
-        n if n.eq_ignore_ascii_case("Line") => WidgetKind::Line,
-        n if n.eq_ignore_ascii_case("Meter") => WidgetKind::Meter,
-        n if n.eq_ignore_ascii_case("MiniChart") => WidgetKind::MiniChart,
-        n if n.eq_ignore_ascii_case("ImageView") => WidgetKind::ImageView,
-        n if n.eq_ignore_ascii_case("Arc") => WidgetKind::Arc,
-        n if n.eq_ignore_ascii_case("Spinner") => WidgetKind::Spinner,
-        n if n.eq_ignore_ascii_case("Roller") => WidgetKind::Roller,
-        n if n.eq_ignore_ascii_case("Dropdown") => WidgetKind::Dropdown,
-        n if n.eq_ignore_ascii_case("TextArea") => WidgetKind::TextArea,
-        n if n.eq_ignore_ascii_case("Keyboard") => WidgetKind::Keyboard,
-        n if n.eq_ignore_ascii_case("Switch") => WidgetKind::Switch,
-        n if n.eq_ignore_ascii_case("MiniCanvas") => WidgetKind::MiniCanvas,
-        // `RadarChart` exists only with the full widget set, matching the kind's
-        // own gate in `kind.rs`. Without this the arm would name a variant the
-        // `mini`/`embedded` profiles compile out.
-        #[cfg(full_widgets)]
-        n if n.eq_ignore_ascii_case("RadarChart") => WidgetKind::RadarChart,
-        #[cfg(full_widgets)]
-        n if n.eq_ignore_ascii_case("KanbanBoard") => WidgetKind::KanbanBoard,
-        #[cfg(full_widgets)]
-        n if n.eq_ignore_ascii_case("Cascader") => WidgetKind::Cascader,
-        #[cfg(full_widgets)]
-        n if n.eq_ignore_ascii_case("QueryBuilder") => WidgetKind::QueryBuilder,
-        #[cfg(full_widgets)]
-        n if n.eq_ignore_ascii_case("EmojiPicker") => WidgetKind::EmojiPicker,
-        #[cfg(full_widgets)]
-        n if n.eq_ignore_ascii_case("Mention") => WidgetKind::Mention,
-        _ => return None,
-    })
+    use crate::widget::capability::coercion::normalize_key;
+    let wanted = normalize_key(name);
+    CSS_SUPPORTED_KINDS.iter().find(|kind| normalize_key(&format!("{kind:?}")) == wanted).copied()
 }
+
+/// The kinds a CSS kind selector may name.
+///
+/// Ordered for readability, grouped by area. Every entry must be a kind the widget
+/// factory can also create under some spelling; `every_kind_selector_spelling_resolves`
+/// checks each one resolves through both paths.
+///
+/// # Why entries are gated
+///
+/// `kind.rs` gates many variants on `widgets_unstripped`, so naming one ungated makes
+/// `mini`/`embedded` fail to compile with `no variant named X`. The gates here must
+/// therefore mirror `kind.rs` exactly. An earlier revision of this list (a
+/// hand-written `match`) carried only six such cfg attributes while listing
+/// twenty-eight gated variants, which is why `mini` was 47 errors — the list is now
+/// split so the requirement is visible rather than remembered.
+const CSS_SUPPORTED_KINDS: &[WidgetKind] = &[
+    // ── Always available (no gate in `kind.rs`) ──
+    WidgetKind::Window,
+    WidgetKind::Frame,
+    WidgetKind::Label,
+    WidgetKind::Button,
+    WidgetKind::CheckBox,
+    WidgetKind::RadioButton,
+    WidgetKind::GroupBox,
+    WidgetKind::Panel,
+    WidgetKind::Line,
+    WidgetKind::Arc,
+    WidgetKind::Meter,
+    WidgetKind::Slider,
+    WidgetKind::Spinner,
+    WidgetKind::Roller,
+    WidgetKind::Switch,
+    WidgetKind::LineEdit,
+    WidgetKind::ComboBox,
+    WidgetKind::SpinBox,
+    WidgetKind::ListBox,
+    WidgetKind::ScrollBar,
+    WidgetKind::ScrollArea,
+    WidgetKind::ProgressBar,
+    WidgetKind::ImageView,
+    WidgetKind::MiniChart,
+    WidgetKind::MiniCanvas,
+    WidgetKind::Keyboard,
+    WidgetKind::Dropdown,
+    // ── `widgets_unstripped` (same gate as their declaration in `kind.rs`) ──
+    #[cfg(widgets_unstripped)]
+    WidgetKind::ToggleButton,
+    #[cfg(widgets_unstripped)]
+    WidgetKind::TabWidget,
+    #[cfg(widgets_unstripped)]
+    WidgetKind::TabBar,
+    #[cfg(widgets_unstripped)]
+    WidgetKind::StackedWidget,
+    #[cfg(widgets_unstripped)]
+    WidgetKind::Splitter,
+    #[cfg(widgets_unstripped)]
+    WidgetKind::StatusBar,
+    #[cfg(widgets_unstripped)]
+    WidgetKind::MenuBar,
+    #[cfg(widgets_unstripped)]
+    WidgetKind::Menu,
+    #[cfg(widgets_unstripped)]
+    WidgetKind::MenuButton,
+    #[cfg(widgets_unstripped)]
+    WidgetKind::ToolBar,
+    #[cfg(widgets_unstripped)]
+    WidgetKind::ToolButton,
+    #[cfg(widgets_unstripped)]
+    WidgetKind::Badge,
+    #[cfg(widgets_unstripped)]
+    WidgetKind::Rating,
+    #[cfg(widgets_unstripped)]
+    WidgetKind::Divider,
+    #[cfg(widgets_unstripped)]
+    WidgetKind::ProgressCircle,
+    #[cfg(widgets_unstripped)]
+    WidgetKind::LCDNumber,
+    #[cfg(widgets_unstripped)]
+    WidgetKind::SkeletonLoader,
+    // ── `full_widgets` (a device profile **and** unstripped) ──
+    #[cfg(full_widgets)]
+    WidgetKind::RadarChart,
+    #[cfg(full_widgets)]
+    WidgetKind::KanbanBoard,
+    #[cfg(full_widgets)]
+    WidgetKind::Cascader,
+    #[cfg(full_widgets)]
+    WidgetKind::QueryBuilder,
+    #[cfg(full_widgets)]
+    WidgetKind::EmojiPicker,
+    #[cfg(full_widgets)]
+    WidgetKind::Mention,
+];
 
 /// CSS parser that converts CSS text into `StyleSheet` + property application.
 pub struct CssParser;
@@ -954,7 +1034,8 @@ pub fn get_declarations(rule_name: &str) -> Option<Vec<CssDeclaration>> {
 
 impl CssParser {
     /// Parse CSS text into StyleSheet with stored declarations.
-    /// Then use `apply_matched_rules` to apply matching rules to a WidgetStyle.
+    /// Then use `CssParser::parse_and_apply` (or `StyleSheetManager::apply_to`) to
+    /// apply the matching rules to a WidgetStyle.
     pub fn parse_and_apply(
         css: &str,
         kind: &str,
@@ -1218,6 +1299,119 @@ mod tests {
     fn known_kind_still_resolves() {
         let selector = CssParser::parse_selector("Button").expect("the text parses");
         assert_eq!(selector.to_selector(), Some(Selector::Kind(WidgetKind::Button)));
+    }
+
+    /// `widget_kind_from_str` must accept every spelling `CssSelector::matches` does.
+    ///
+    /// # Why this test exists
+    ///
+    /// The two CSS entry points disagreed about a kind name. `matches` compared strings
+    /// case-insensitively, while `widget_kind_from_str` (reached through
+    /// `CssSelector::to_selector`, which is what `RuleSet::parse` and
+    /// `StyleSheetManager::apply_to` use) had a hand-written table with only three
+    /// multi-word kinds in it — `MenuBar`, `ToolBar` and `StatusBar` were absent, so
+    /// `menu_bar { … }` resolved to `None` on that path and silently styled nothing.
+    ///
+    /// This test pins the invariant the module doc claims: every spelling that reaches a
+    /// kind through `matches` must also resolve through `widget_kind_from_str`.
+    ///
+    /// # Why the cases are gated
+    ///
+    /// Several of these variants exist only where `widgets_unstripped` is on (see
+    /// `kind.rs`), so naming them unconditionally would break `mini`/`embedded`. Each row
+    /// carries the same gate as its declaration, and the always-available rows stay
+    /// ungated so every profile exercises the table.
+    #[test]
+    fn every_kind_selector_spelling_resolves() {
+        // The `Debug` spelling a widget reports, and the factory spellings an author may
+        // reasonably write for it.
+        // `mut` is needed only where the `extend_from_slice` block below is compiled in
+        // (`widgets_unstripped`); a stripped profile builds the same list without
+        // extending it, hence the allow.
+        #[allow(unused_mut)]
+        let mut cases: alloc::vec::Vec<(&str, WidgetKind)> = alloc::vec::Vec::from([
+            ("Button", WidgetKind::Button),
+            ("button", WidgetKind::Button),
+            ("CheckBox", WidgetKind::CheckBox),
+            ("RadioButton", WidgetKind::RadioButton),
+            ("LineEdit", WidgetKind::LineEdit),
+            ("ScrollArea", WidgetKind::ScrollArea),
+            ("ScrollBar", WidgetKind::ScrollBar),
+            ("ProgressBar", WidgetKind::ProgressBar),
+            ("GroupBox", WidgetKind::GroupBox),
+            ("ImageView", WidgetKind::ImageView),
+            ("ListBox", WidgetKind::ListBox),
+            ("SpinBox", WidgetKind::SpinBox),
+            ("ComboBox", WidgetKind::ComboBox),
+        ]);
+        #[cfg(widgets_unstripped)]
+        {
+            cases.extend_from_slice(&[
+                ("MenuBar", WidgetKind::MenuBar),
+                ("menu_bar", WidgetKind::MenuBar),
+                ("menubar", WidgetKind::MenuBar),
+                ("ToolBar", WidgetKind::ToolBar),
+                ("tool_bar", WidgetKind::ToolBar),
+                ("StatusBar", WidgetKind::StatusBar),
+                ("status_bar", WidgetKind::StatusBar),
+                ("TabWidget", WidgetKind::TabWidget),
+                ("MenuButton", WidgetKind::MenuButton),
+                ("Splitter", WidgetKind::Splitter),
+            ]);
+        }
+
+        for (spelling, expected) in cases {
+            assert_eq!(
+                widget_kind_from_str(spelling),
+                Some(expected),
+                "{spelling:?} must resolve to {expected:?}"
+            );
+        }
+
+        // And a compound/unknown name is still refused rather than guessed at.
+        assert_eq!(widget_kind_from_str("NotAWidget"), None);
+    }
+
+    /// A kind selector matches the spellings the rest of the library publishes.
+    ///
+    /// # Why this test exists
+    ///
+    /// `CssSelector::matches` used to compare with `eq_ignore_ascii_case` against
+    /// the widget's `Debug` spelling. That bridges case but **not** separators, so
+    /// `menu_bar { … }` — the canonical factory name, and the spelling used by the
+    /// capability registry and the JSON loader — matched nothing, while `menubar`
+    /// worked. Nothing was logged: the rule parsed fine, so the "unknown kind"
+    /// diagnostic never ran, and the user simply saw their stylesheet ignored.
+    #[test]
+    fn a_kind_selector_accepts_the_same_spellings_the_factory_does() {
+        let widget_kind = "MenuBar";
+        for spelling in ["MenuBar", "menubar", "menu_bar", "MENU-BAR"] {
+            let selector = CssSelector::Kind(spelling.to_string());
+            assert!(
+                selector.matches(widget_kind, None, None, None),
+                "selector {spelling:?} must match the widget kind {widget_kind:?}"
+            );
+        }
+        // A different kind must still not match, so the fix is not a blanket accept.
+        assert!(!CssSelector::Kind("menu".to_string()).matches(widget_kind, None, None, None));
+        assert!(!CssSelector::Kind("tool_bar".to_string()).matches(widget_kind, None, None, None));
+    }
+
+    /// The separator-insensitive match must reach the applied style, not just the
+    /// predicate — this is the end-to-end path a stylesheet actually takes.
+    #[test]
+    fn a_separator_spelled_kind_selector_applies_its_rule() {
+        for spelling in ["menu_bar", "MenuBar", "menubar"] {
+            let css = format!("{spelling} {{ background-color: #ff0000; }}");
+            let mut style = WidgetStyle::default();
+            CssParser::parse_and_apply(&css, "MenuBar", None, None, None, &mut style)
+                .expect("the rule must parse");
+            assert_eq!(
+                style.background_color,
+                Some(Color::rgb(255, 0, 0)),
+                "the {spelling:?} rule must apply to a MenuBar"
+            );
+        }
     }
 
     /// The regression this guards: before the fix, `Stepper { … }` resolved to
