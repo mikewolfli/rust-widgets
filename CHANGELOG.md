@@ -5,6 +5,169 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 2.4.3 (2026-09-19) — Dead Indirection Removed, SVGZ Round Trip, Schema Truthfulness
+
+Backward compatible. **No signature was removed and no control was deleted.** The one public
+addition is `rw_free_bytes` in the C ABI (a new function, so no caller is affected).
+
+### The headline: a previous round's "fix" was a no-op, and the real defect was dead code
+
+2.4.2 recorded a `KIND_LIST_VIEW` gate change as a behaviour fix: "`tablet`/`mobile` used to
+mount a `Panel`". **That was wrong.** The nine `KIND_*` const pairs in `src/lib.rs` fed
+`backend_for_kind(..)` → `get_control_backend_for_widget(kind)`, which **discards its argument**
+(one creation mechanism, nothing to resolve), and every backend `create_*` hardcodes the kind it
+mounts. The stand-in never reached a widget, so repainting its gate — to any predicate — changed
+nothing observable. Measured on `embedded`, which is the profile whose behaviour the aliases were
+supposed to protect: identical output before and after.
+
+The reachable defect was the opposite of what the aliases implied, and the dead layer **hid** it.
+Everything is now expressed where the work actually happens:
+
+- The nine alias pairs are **deleted**; each of the nine `create_*` gates its own body on
+  `#[cfg(widgets_unstripped)]` and returns `NO_SUCH_CONTROL` (`0`) otherwise, matching the
+  `queue_resize_trigger` / `window_client_size` pattern already in the file. `0` can be tested for;
+  a valid id addressing the wrong thing cannot.
+- The `desktop_surface` alias is **retired** (zero remaining consumers), so the narrower predicate
+  that caused the original mistake cannot be reached for again.
+- `kind_factory_name` was gated `widgets_unstripped` while its only caller is `full_widgets`,
+  producing dead code on a no-device-profile build (`--features gpu`). Narrowed to `full_widgets`.
+
+New gate: `tests/kind_alias_gate_test.rs` runs on **all three** profiles that ship the unstripped
+widget set and asserts each alias route reaches the control it is named after — including a
+negative control pinning the stand-in's identity. `tests/control_backend_named_creation_test.rs`
+was gated `feature = "desktop"`, which is *the one profile where the defect could not occur*;
+that blind spot is now documented in the file so it is not reintroduced.
+
+### `svgz` was written and read in incompatible forms
+
+Three facts contradicted each other: `ImageFormat::Svgz` declares MIME `image/svg+xml-compressed`
+and extension `svgz`; `detect_format` routes any `1F 8B 08` input to `decode_svgz`; and yet the
+**encoder emitted uncompressed XML** while the **decoder never decompressed anything** (the raster
+branch passed raw gzip bytes to `usvg` under an error message that said "the decompressed
+payload"). Consequences: no other tool could open this crate's `.svgz`, the crate's own
+`decode(encode(img, Svgz))` round trip failed, and the encoder's test asserted the *bug*
+(`s.starts_with("<svg")`) so nothing failed.
+
+- `encode_svgz` + `gzip_compress`: `miniz_oxide` provides raw DEFLATE and zlib but **no gzip
+  framing**, so the member header/trailer (magic, `FLG = 0`, CRC-32, ISIZE) is written explicitly,
+  reusing the PNG encoder's `crc32` (PNG and gzip share the reflected `0xEDB88320` polynomial).
+- `gzip_body` + `gunzip_bounded` on the decode side: strips the 10-byte header and 8-byte trailer
+  and inflates the body, shared by both `svgz` branches. A member with optional header fields set
+  (`FLG != 0`) is refused by name rather than misparsed at the wrong offset.
+
+### Zip bombs and missing raster caps in the image pipeline
+
+- `decode_svgz`'s gzip decompression is now bounded (`MAX_SVGZ_DOCUMENT_BYTES`), and the bound is
+  reported as "exceeded the cap" rather than "corrupt stream". A 1029:1 gzip bomb is refused
+  instead of allocating its expansion.
+- The PNG zlib path uses `decompress_to_vec_zlib_with_limit` with the bound derived from the
+  header the image itself declares.
+- **Both SVG raster paths had no pixel cap** while every other raster decoder in the file limits
+  dimensions (PNG at `1 << 27` pixels, JPEG/BMP/PNM/QOI at `16384x16384`). `<svg width="500000"
+  height="500000">` asked for 1 TB with no further input. New `check_svg_raster_size` applies the
+  same `16384x16384` bound to `decode_svg` and `decode_svgz`.
+- `blend_pixel_cpu_rgba8` still computed `((y * width + x) * 4)` in `u32` — the sibling
+  `set_pixel_cpu_rgba8` was fixed in 2.4.2 and this one was missed. Widened to `usize` with
+  `checked_mul`/`checked_add`.
+
+### FFI ownership: a leaked payload and a mismatched free
+
+`rw_poll_drop_event` released its payload as `Box::into_raw(slice) as *mut u8` — a fat pointer
+cast to a thin one, discarding the length `Box::from_raw` needs — and there was **no free function
+at all**. The Node binding called `rw_free_string` on that pointer (a different allocator), and
+the Python binding's comment recorded that it deliberately leaked instead of risking the invalid
+free.
+
+- New `rw_free_bytes(ptr, len)` rebuilds the `Vec<u8>` with `from_raw_parts(ptr, len, len)`; the
+  getter releases an allocation whose capacity equals its length, so the rebuild is exact.
+- Both bindings now free through it, and the Python ctypes table registers the signature.
+- `record_message_error` no longer `Box::leak`s its message: the error slot already stores an
+owned `String`, so interning bought nothing and leaked one allocation per rejected input.
+- A null/zero free is a documented no-op, so a caller may free unconditionally.
+
+### Callback registry: a panicking callback silently unregistered itself
+
+`dispatch_trigger` moves the callback out of the registry before invoking it (so a re-entrant
+`remove_callbacks` cannot double-borrow) and put it back on the success path only. A callback that
+unwound took its own registration with it — the widget kept its handle and ignored every later
+click. Separately, both the removal and the insertion took `borrow_mut()`, so a callback that
+called `on_click` on its own handle panicked with `BorrowMutError`.
+
+`ClickCallGuard` / `ValueCallGuard` restore on the unwind path too, and `try_borrow_mut` is used
+throughout, matching `remove_callbacks`. Covered by three new tests, one of which fails against
+the previous implementation.
+
+### Geometry: `as f32 as i32` in twelve raster primitive spans
+
+`rect.x + rect.width as f32 as i32` has two defects a build cannot see. It **overflows `i32`**
+(both terms are promoted, then added unchecked — a panic in debug, a wrapped span in release),
+and it **loses precision above 2^24**, because `f32` has a 24-bit significand. The crate already
+exposes the correct helpers (`Rect::right` / `Rect::bottom`, using `saturating_add_unsigned`).
+All twelve sites now use them; `tests/render_primitive_geometry_test.rs` fails against the old
+form on both counts.
+
+### `commands:` claimed 27 things nobody could do
+
+The default `WidgetProperties::command` accepted **any** `set_`-prefixed name as "recognised", so
+deleting a command's implementation changed no test outcome. It now resolves `set_foo` against
+`property_names()` — the same route the caller is told to take — and `OutOfRange` is only returned
+when `foo` really is a writable property. Applying that immediately exposed 27 published commands
+pointing at nothing:
+
+- **Name mismatches** (~20): `freeform_shape.set_fill_color` → `set_fill_rgba`,
+  `date_edit.set_date_range` → `set_minimum_date`/`set_maximum_date`,
+  `scroll_area.set_horizontal_policy` → `set_horizontal_scroll_bar_policy`,
+  `avatar.set_image` → `set_image_source`, the `rive`/`video_player`/`camera_preview`/
+  `barcode_scanner` `set_playing`/`set_active`/`set_scanning` → `set_is_*`, and more.
+- **Unwired properties** (`input_dialog`): the schema had always declared `mode`, `text_value`,
+  `int_value`, `double_value`, and no `get`/`set`/`property_names` arm existed. Completed.
+- **No backing at all** (`message_box.set_icon`, `bottom_navigation_bar.set_items`): removed. The
+  names are gone rather than faked.
+
+`default_command` is now a trait method so a control with a `command()` override can delegate the
+names it does not handle — an override that ended in `UnknownCommand` was silently dropping the
+property-routed half of its own list.
+
+### Capability schema truthfulness
+
+A new gate follows the documented route instead of trusting the return value, and found:
+
+- `depth_chart` declared `bid_color` / `ask_color` as `PropertyValueKind::String` while `set`
+  destructures `CapabilityValue::Color` — so those properties were **unwritable through the ABI**.
+  Corrected to `Color`.
+- Five entries declared `writable: true` while their control refuses every write
+  (`splitter::pane_count`, `wizard_dialog::current_step`, `popover::text`, `order_book::show_spread`,
+  `quote_board::row_height`). Corrected to read-only, and the two commands pointing at them
+  (`set_pane_count`, `set_current_step`) removed.
+- `date_edit` advertised no `date_picker` alias although its two siblings answer to their own kind
+  names (`time_picker`, `date_time_picker`); `factory.create("date_picker")` returned `None`.
+
+`tests/capability_schema_truthfulness_test.rs` asserts the decidable structural claims: every
+published `set_X` is recognised by its control (accepting `Ok` or `OutOfRange`, rejecting the
+impossible `ReadOnlyProperty`/`TypeMismatch` for a payload-free call), every payload-free command
+is recognised, and every capability that publishes a surface is constructible.
+
+### Gate hygiene
+
+- **78 redundant inner `#[cfg(not(alloc_frugal))]` attributes** across eight `src/widget/*/mod.rs`
+  files. Each parent folder is `#[cfg(full_widgets)]`, which *implies* `!alloc_frugal`, so those
+  gates were true wherever the file compiled at all. They were justified by a comment claiming a
+  `full_widgets + mini` build was possible; `build.rs` defines `full_widgets = has_profile &&
+  !stripped`, so that combination cannot be constructed. Removed.
+- `src/widget/media_widgets/mod.rs` carried a comment stating "AnimatedImage is always available
+  (no cfg gate on mini)" — false, because the enclosing folder is excluded on the reduced profiles.
+- **46 other findings** of the same families as 2.4.2 (overflow on untrusted sizes, unbounded
+  loops, division guards, `chunks` indexing, lock discipline) were re-audited and reported clean.
+
+### Verified in 2.4.3
+
+`cargo test --no-default-features --features desktop` reports **5245 tests passing with 0 failures**
+across 30 test binaries. `cargo clippy --no-default-features --features desktop --all-targets` is
+clean (0 warnings), all five device profiles (`desktop`, `tablet`, `mobile`, `mini`, `embedded`)
+build with zero warnings, and all **29** `tools/check_*.sh` gates pass. The C ABI declares 130
+`rw_*` functions (up from 129). See [`docs/log/log-20260919-3.md`](docs/log/log-20260919-3.md) for
+per-fix evidence including reverse-injection proofs.
+
 ## 2.4.2 (2026-09-19) — Capability-Command Closure, Gesture Wiring, Decoder Hardening
 
 Backward compatible. **No signature was removed and no control was deleted.** A whole-library

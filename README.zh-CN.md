@@ -130,15 +130,16 @@ Arc、Spinner、Roller、Dropdown、TextArea、Keyboard、Switch。
 （`docs/plans/platform_capability_matrix.md`）由源码机械派生，并在 CI 中设有防脱节门禁。
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.4.2-blue)]()
-[![tests](https://img.shields.io/badge/tests-4900%2B-brightgreen)]()
+[![version](https://img.shields.io/badge/version-2.4.3-blue)]()
+[![tests](https://img.shields.io/badge/tests-5200%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
-**2.4.2 实测：** `desktop` 档 **4986** 个库测试全通过；`cargo test` 在全部 28 个测试二进制上 0 失败。
-`cargo clippy --all-targets -- -D warnings` 与 `cargo fmt --check` 均 0 warning，五个档位全部
-无 warning 构建通过，`tools/check_*.sh` 门禁套件全绿。
+**2.4.3 实测：** `desktop` 档 **5245** 个测试全通过；`cargo test` 在全部 30 个测试二进制上 0 失败。
+`cargo clippy --no-default-features --features desktop --all-targets` 0 warning，五个档位全部
+无 warning 构建通过，29 个 `tools/check_*.sh` 门禁全绿。
 详见
-[`CHANGELOG.md`](CHANGELOG.md)（中文版见 [`docs/reports/CHANGELOG.md`](docs/reports/CHANGELOG.md)）。
+[`CHANGELOG.md`](CHANGELOG.md)（中文版见 [`docs/reports/CHANGELOG.md`](docs/reports/CHANGELOG.md)）及
+[`docs/log/log-20260919-3.md`](docs/log/log-20260919-3.md)。
 
 <p align="center">
   <a href="README.md">

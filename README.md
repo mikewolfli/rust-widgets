@@ -57,15 +57,16 @@ capability matrix
 is generated from source and gated for drift in CI.
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.4.2-blue)]()
-[![tests](https://img.shields.io/badge/tests-4900%2B-brightgreen)]()
+[![version](https://img.shields.io/badge/version-2.4.3-blue)]()
+[![tests](https://img.shields.io/badge/tests-5200%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
-**Verified in 2.4.2:** `4986` lib tests pass on `desktop`, and `cargo test` reports 0
-failures across all 28 test binaries. `cargo clippy --all-targets -- -D warnings` and
-`cargo fmt --check` are clean, all five device profiles build with zero warnings, and the
-`tools/check_*.sh` gate suite passes. See [`CHANGELOG.md`](CHANGELOG.md) and
-[`docs/log/log-20260919-2.md`](docs/log/log-20260919-2.md) for per-fix evidence.
+**Verified in 2.4.3:** `5245` tests pass on `desktop`, and `cargo test` reports 0
+failures across all 30 test binaries. `cargo clippy --no-default-features --features desktop
+--all-targets` is clean, all five device profiles build with zero warnings, and all 29
+`tools/check_*.sh` gates pass. See
+[`CHANGELOG.md`](CHANGELOG.md) and
+[`docs/log/log-20260919-3.md`](docs/log/log-20260919-3.md) for per-fix evidence.
 
 <p align="center">
   <a href="README.zh-CN.md">
