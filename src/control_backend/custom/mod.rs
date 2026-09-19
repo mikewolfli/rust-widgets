@@ -237,7 +237,12 @@ impl CustomPaintControlBackend {
 /// resolve a kind to its constructor name the same way. The mapping lives here
 /// rather than on `WidgetKind` because it belongs to the factory's vocabulary, not
 /// to the enum. Alias variants are resolved by the callee.
-#[cfg(widgets_unstripped)]
+///
+/// Gated `full_widgets`, not `widgets_unstripped`, because the mount path below is
+/// the only caller and it is gated `full_widgets`. `widgets_unstripped` is the
+/// strictly wider predicate, so a build with no device profile (e.g.
+/// `--features gpu`) used to compile this function and never call it.
+#[cfg(full_widgets)]
 pub(crate) fn kind_factory_name(kind: crate::widget::WidgetKind) -> &'static str {
     crate::widget::capability::factory_name_for_kind(kind)
 }

@@ -992,6 +992,8 @@ pub fn default_widget_property_default_value(
         WidgetKind::MessageBox => match property_name {
             "title" => CapabilityValue::String(String::new()),
             "text" => CapabilityValue::String(String::new()),
+            // Mirrors `MessageBox::new`, which starts at `MessageBoxIcon::NoIcon`.
+            "icon" => CapabilityValue::String("none".to_string()),
             "modal" => CapabilityValue::Bool(true),
             _ => return None,
         },
@@ -1099,6 +1101,8 @@ pub fn default_widget_property_default_value(
         WidgetKind::Badge => match property_name {
             "text" => CapabilityValue::String(String::new()),
             "count" => CapabilityValue::Int(0),
+            // Mirrors `BadgeLevel::default()`, which is `Info`.
+            "level" => CapabilityValue::String("info".to_string()),
             _ => return None,
         },
         WidgetKind::SkeletonLoader => match property_name {

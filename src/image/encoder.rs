@@ -544,10 +544,18 @@ pub fn encode(image: &DecodedImage, format: ImageFormat) -> Result<Vec<u8>, Stri
         ImageFormat::Rgba8 | ImageFormat::Rgb8 => Ok(image.data.as_bytes().to_vec()),
         ImageFormat::Gif => encode_gif(image),
         ImageFormat::Tiff => encode_tiff(image),
-        ImageFormat::Svg | ImageFormat::Svgz => encode_svg(image),
+        ImageFormat::Svg => encode_svg(image),
+        // `Svgz` is the gzip-wrapped form (its MIME type is
+        // `image/svg+xml-compressed` and its extension is `svgz`), and the decoder
+        // side unwraps a gzip stream before handing the document to the rasterizer.
+        // Mapping `Svgz` to the plain encoder produced a file whose bytes and whose
+        // declared format disagreed: an `svgz` that no other tool would open, and
+        // that this library's own decoder rejected as "not an UTF-8 encoding".
+        ImageFormat::Svgz => encode_svgz(image),
         _ => Err(format!(
             "encoding to {format:?} is not supported; supported output formats are Png, Jpeg, \
-             Bmp, Qoi, Farbfeld, Pnm, Gif, Tiff, Svg and the raw Rgba8/Rgb8 pass-throughs"
+             Bmp, Qoi, Farbfeld, Pnm, Gif, Tiff, Svg, Svgz and the raw Rgba8/Rgb8 \
+             pass-throughs"
         )),
     }
 }
@@ -939,6 +947,46 @@ fn encode_svg(image: &DecodedImage) -> Result<Vec<u8>, String> {
     );
 
     Ok(xml.into_bytes())
+}
+
+/// Encodes the image as a gzip-compressed SVG document (the `svgz` container).
+///
+/// `svgz` is not a different image format — it is the same SVG document behind a
+/// gzip wrapper, which is how `image/svg+xml-compressed` is defined and what the
+/// decoder side (and `detect_format`'s `1F 8B 08` test) expects.
+///
+/// The wrapper is written out by hand because `miniz_oxide` provides only raw
+/// DEFLATE and the zlib container; it has no gzip framing. A gzip member is
+/// `header || deflate(body) || crc32(body) || isize(body)`, so all three of the
+/// surrounding parts come from here.
+fn encode_svgz(image: &DecodedImage) -> Result<Vec<u8>, String> {
+    let svg = encode_svg(image)?;
+    Ok(gzip_compress(&svg))
+}
+
+/// Wraps `data` in a gzip member (RFC 1952) with RFC 1951 DEFLATE as its body.
+///
+/// The header is `1F 8B 08 00` — magic, DEFLATE method, and `FLG = 0` meaning no
+/// extra fields, name, comment or header CRC — followed by a zero mtime (so the
+/// same input always produces the same bytes, which also keeps this deterministic
+/// enough to assert on) and a `XFL = 0`, `OS = 0xFF` ("unknown") pair.
+///
+/// The trailer is the CRC-32 of the **uncompressed** data and its size modulo
+/// 2^32, both little-endian. `crc32` here is the same function the PNG encoder
+/// uses: PNG's CRC and gzip's CRC are both the reflected IEEE 802.3 polynomial
+/// (`0xEDB88320`), so one implementation serves both.
+fn gzip_compress(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len() / 3 + 32);
+    out.extend_from_slice(&[0x1F, 0x8B, 0x08, 0x00]);
+    out.extend_from_slice(&[0, 0, 0, 0]); // mtime: unset, for deterministic output
+    out.push(0x00); // XFL: no extra flags
+    out.push(0xFF); // OS: unknown
+    out.extend_from_slice(&miniz_oxide::deflate::compress_to_vec(data, 6));
+    out.extend_from_slice(&crc32(data).to_le_bytes());
+    // ISIZE is the input length *modulo* 2^32 by definition, so the truncating
+    // cast is the format's own arithmetic rather than a lossy conversion.
+    out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    out
 }
 
 fn encode_png(image: &DecodedImage) -> Result<Vec<u8>, String> {
@@ -1351,11 +1399,57 @@ mod tests {
         assert!(s.starts_with("<svg"));
     }
 
+    /// `svgz` output must actually be gzip, and must round-trip back to the SVG.
+    ///
+    /// The previous assertion ("the bytes start with `<svg`") described the bug
+    /// rather than the contract: it held because the encoder ignored the requested
+    /// format and emitted plain SVG, which is why nothing noticed that an `svgz`
+    /// from this library could not be read back as an `svgz`.
     #[test]
     fn encode_svgz_dispatch() {
         let img = make_test_image();
         let svgz = encode(&img, ImageFormat::Svgz).unwrap();
-        let s = String::from_utf8_lossy(&svgz);
-        assert!(s.starts_with("<svg"));
+
+        // The container is gzip: magic \x1F\x8B, which is exactly what
+        // `detect_format` uses to route an `svgz` back here.
+        assert_eq!(
+            &svgz[..2],
+            b"\x1F\x8B",
+            "svgz output must carry the gzip magic number, not raw SVG text"
+        );
+        assert_eq!(
+            crate::image::detect_format(&svgz),
+            ImageFormat::Svgz,
+            "an encoded svgz must be detected as svgz"
+        );
+
+        // And it decompresses back to the same document the `Svg` encoder produces.
+        //
+        // `miniz_oxide::inflate::decompress_to_vec` cannot be used here: it handles
+        // raw DEFLATE and the zlib container, not the gzip wrapping, which is the
+        // whole reason `gzip_compress` exists and why this assertion is worth
+        // making. The trailer is therefore checked directly against the bytes the
+        // container promises, and the decoder's own gzip magic test is exercised via
+        // `detect_format` above.
+        let trailer = &svgz[svgz.len() - 8..];
+        let stored_crc = u32::from_le_bytes(trailer[..4].try_into().unwrap());
+        let stored_isize = u32::from_le_bytes(trailer[4..].try_into().unwrap());
+        let svg = encode(&img, ImageFormat::Svg).unwrap();
+        assert_eq!(stored_crc, super::crc32(&svg), "gzip trailer must carry the body's CRC-32");
+        assert_eq!(
+            stored_isize as usize,
+            svg.len(),
+            "gzip trailer must carry the uncompressed length"
+        );
+
+        // The deflate body between the 10-byte header and the 8-byte trailer must
+        // inflate to exactly the SVG document.
+        let body = &svgz[10..svgz.len() - 8];
+        assert_eq!(
+            miniz_oxide::inflate::decompress_to_vec(body).unwrap(),
+            svg,
+            "svgz must be the gzip of the svg encoding, byte for byte"
+        );
+        assert!(String::from_utf8_lossy(&svg).starts_with("<svg"));
     }
 }

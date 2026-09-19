@@ -613,3 +613,12 @@ required-features = ["desktop"]
 [[example]]
 name = "widget_reachability"
 required-features = ["desktop", "serde_json"]
+
+# The executable companion to the cookbook's embedded chapter. Declared with **no**
+# `required-features` on purpose: it is supposed to compile on every profile
+# (`desktop`, `tablet`, `mobile`, `mini`, `embedded`), which is what keeps the
+# chapter's code honest. `tests/cookbook_embedded_paths_test.rs` asserts this file
+# still exists so the chapter cannot point at a deleted example.
+[[example]]
+name = "embedded_host"
+path = "examples/embedded_host.rs"

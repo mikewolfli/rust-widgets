@@ -18,7 +18,7 @@ fn main() {
 
 /// Declares derived cfgs so gating conditions cannot drift apart.
 ///
-/// Seven aliases are emitted. They answer seven genuinely different questions, and
+/// Six aliases are emitted. They answer six genuinely different questions, and
 /// the distinctions matter — `--no-default-features --features gpu` selects no
 /// device profile at all, and `--no-default-features --features embedded` has no
 /// OS runtime, so no single `not(...)` expression substitutes for another:
@@ -26,10 +26,6 @@ fn main() {
 /// - `device_profile` — `desktop`, `tablet` or `mobile` is on. The question
 ///   "is this a device build?", answered without repeating the three-feature
 ///   `any(..)` at every site.
-/// - `desktop_surface` — a `desktop` build with a real OS runtime (not the
-///   embedded drawing surface). Names the `desktop = true && embedded_surface =
-///   false` conjunction that decided which `WidgetKind` a top-level `create_*`
-///   targets; it was hand-written ten times as an if/else pair.
 /// - `alloc_frugal` — `mini` is on. The build has no platform singleton and runs
 ///   on a tight allocation budget. Its complement (`not(feature = "mini")`) was
 ///   hand-written at ~1000 call sites.
@@ -54,10 +50,19 @@ fn main() {
 ///
 /// The names exist so a module can state its gate by *intent* (BLUE15 rule #57).
 /// Writing the same conjunction at 1000+ call sites is what guarantees drift.
+///
+/// A retired alias is worth one sentence of history: `desktop_surface`
+/// (`desktop && !embedded`) used to decide which `WidgetKind` the top-level
+/// `create_menu_bar`/`create_menu`/`create_tool_bar`/`create_status_bar` aliases
+/// targeted. It was the wrong question — those variants are gated
+/// `widgets_unstripped`, which is true on `tablet`/`mobile` where
+/// `desktop_surface` is false — so the four `create_*` calls silently produced a
+/// `Panel` on those two profiles. The alias is gone so that the narrower
+/// predicate cannot be reached for again; the kinds are routed on
+/// `widgets_unstripped` in `src/lib.rs`.
 fn declare_cfg_aliases() {
     // `cargo:rustc-check-cfg` keeps `--check-cfg` quiet on recent toolchains.
     println!("cargo:rustc-check-cfg=cfg(device_profile)");
-    println!("cargo:rustc-check-cfg=cfg(desktop_surface)");
     println!("cargo:rustc-check-cfg=cfg(full_widgets)");
     println!("cargo:rustc-check-cfg=cfg(stripped_widgets)");
     println!("cargo:rustc-check-cfg=cfg(widgets_unstripped)");
@@ -69,7 +74,6 @@ fn declare_cfg_aliases() {
         ["desktop", "tablet", "mobile"].iter().any(|feature| feature_enabled(feature));
     let is_mini = feature_enabled("mini");
     let is_embedded = feature_enabled("embedded");
-    let is_desktop = feature_enabled("desktop");
     let is_stripped = is_mini || is_embedded;
     let view_opted_out = feature_enabled("no-declarative-view");
 
@@ -81,11 +85,6 @@ fn declare_cfg_aliases() {
     }
     if has_profile {
         println!("cargo:rustc-cfg=device_profile");
-    }
-    // A desktop build with a real OS runtime: the pair that decides which
-    // `WidgetKind` a top-level `create_*` targets.
-    if is_desktop && !is_embedded {
-        println!("cargo:rustc-cfg=desktop_surface");
     }
     if !is_stripped {
         println!("cargo:rustc-cfg=widgets_unstripped");

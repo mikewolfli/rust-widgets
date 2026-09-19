@@ -24,8 +24,18 @@ macro_rules! impl_properties_dialog {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const MESSAGE_BOX_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema::new("title", PropertyValueKind::String, false, false),
-            PropertySchema::new("text", PropertyValueKind::String, false, false),
+            PropertySchema::new("title", PropertyValueKind::String, true, true),
+            PropertySchema::new("text", PropertyValueKind::String, true, true),
+            // The severity glyph. A standard message box carries one for
+            // warning/error prompts, and this control draws it — the JSON loader
+            // accepted an `icon` key all along, so the property layer and the
+            // capability table were the halves that were missing.
+            PropertySchema::enumerated(
+                "icon",
+                true,
+                true,
+                &["none", "information", "question", "warning", "critical"],
+            ),
             PropertySchema::new("modal", PropertyValueKind::Bool, false, false),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
@@ -126,7 +136,12 @@ macro_rules! impl_properties_dialog {
         #[cfg(not(alloc_frugal))]
         pub(crate) const WIZARD_DIALOG_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("title", PropertyValueKind::String, true, true),
-            PropertySchema::new("current_step", PropertyValueKind::UInt, true, true),
+            // Read-only, like its three neighbours: the wizard has no random-access
+            // step setter. Navigation moves through the `next` / `back` commands,
+            // which emit `step_changed`, and `WizardDialog::set` refuses a direct
+            // write. Declaring it writable made `set_current_step` a command whose
+            // property route answers `ReadOnlyProperty`.
+            PropertySchema::new("current_step", PropertyValueKind::UInt, true, false),
             PropertySchema::new("step_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("can_go_back", PropertyValueKind::Bool, true, false),
             PropertySchema::new("can_go_forward", PropertyValueKind::Bool, true, false),
@@ -166,7 +181,11 @@ macro_rules! impl_properties_dialog {
             // leaving `visible` to mean the base widget's visibility.
             PropertySchema::new("shown", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
-            PropertySchema::new("text", PropertyValueKind::String, true, true),
+            // Read-only: the text mirrors the installed content widget, so a write
+            // would either be discarded by the next layout or require synthesising a
+            // label the caller never asked for. `Popover::set` answers
+            // `ReadOnlyProperty` and `set_content` is the way to change it.
+            PropertySchema::new("text", PropertyValueKind::String, true, false),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),

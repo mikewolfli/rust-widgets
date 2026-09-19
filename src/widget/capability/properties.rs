@@ -229,7 +229,7 @@ pub(crate) fn splitter_capability() -> WidgetCapability {
         aliases: &["pane_splitter"],
         properties: SPLITTER_PROPERTIES,
         events: &["pane_layout_changed", "orientation_changed"],
-        commands: &["set_orientation", "set_ratio", "set_ratios"],
+        commands: &["set_orientation"],
     }
 }
 
@@ -345,10 +345,16 @@ pub(crate) fn date_edit_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::DatePicker,
         canonical_name: "date_edit",
-        aliases: &[],
+        // `date_picker` is the variant's own spelling (`WidgetKind::DatePicker`,
+        // and `pub type DatePicker = DateEdit` in `src/widget/mod.rs`), so a caller
+        // naming the control after the kind it is declared under must reach it. Its
+        // two siblings already answer to theirs (`time_picker`, `date_time_picker`),
+        // and the absence here made `factory.create("date_picker", ..)` return `None`
+        // while `factory.create("time_picker", ..)` succeeded.
+        aliases: &["date_picker"],
         properties: DATE_EDIT_PROPERTIES,
         events: &["date_changed"],
-        commands: &["set_date", "set_date_range", "set_display_format"],
+        commands: &["set_date", "set_minimum_date", "set_maximum_date", "set_display_format"],
     }
 }
 
@@ -360,7 +366,7 @@ pub(crate) fn time_edit_capability() -> WidgetCapability {
         aliases: &["time_picker"],
         properties: TIME_EDIT_PROPERTIES,
         events: &["time_changed"],
-        commands: &["set_time", "set_time_range", "set_display_format"],
+        commands: &["set_time", "set_minimum_time", "set_maximum_time", "set_display_format"],
     }
 }
 
@@ -691,7 +697,7 @@ pub(crate) fn map_view_capability() -> WidgetCapability {
         aliases: &[],
         properties: MAP_VIEW_PROPERTIES,
         events: &["center_changed", "zoom_changed", "marker_selected"],
-        commands: &["set_markers", "set_center", "set_zoom"],
+        commands: &["set_markers", "set_center_x", "set_center_y", "set_zoom"],
     }
 }
 
@@ -994,7 +1000,7 @@ pub(crate) fn freeform_shape_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::FreeformShape,
         canonical_name: "freeform_shape",
-        commands: &["set_fill_color", "set_stroke_color", "set_stroke_width"],
+        commands: &["set_fill_rgba", "set_stroke_rgba", "set_stroke_width"],
         aliases: &[],
         properties: FREEFORM_SHAPE_PROPERTIES,
         events: &["clicked", "hovered_changed", "pressed_changed"],
@@ -1010,6 +1016,10 @@ pub(crate) fn message_box_capability() -> WidgetCapability {
         aliases: &["msgbox"],
         properties: MESSAGE_BOX_PROPERTIES,
         events: &["button_clicked", "accepted", "rejected"],
+        // `set_icon` is the severity of the prompt (`warning`, `critical`, …). It is
+        // a real, drawn property of the control and was reachable from the JSON
+        // loader but not from this command list, so a generic consumer could not
+        // discover it.
         commands: &["set_text", "set_title", "set_icon"],
     }
 }
@@ -1106,7 +1116,11 @@ pub(crate) fn scroll_area_capability() -> WidgetCapability {
         aliases: &[],
         properties: SCROLL_AREA_PROPERTIES,
         events: &["scroll_position_changed"],
-        commands: &["set_widget_resizable", "set_horizontal_policy", "set_vertical_policy"],
+        commands: &[
+            "set_widget_resizable",
+            "set_horizontal_scroll_bar_policy",
+            "set_vertical_scroll_bar_policy",
+        ],
     }
 }
 
@@ -1622,7 +1636,7 @@ pub(crate) fn bottom_navigation_bar_capability() -> WidgetCapability {
         aliases: &["bottom_nav", "bottomnav"],
         properties: BOTTOM_NAVIGATION_BAR_PROPERTIES,
         events: &["selected_changed"],
-        commands: &["set_selected_index", "set_items"],
+        commands: &["set_selected_index"],
     }
 }
 
@@ -1684,7 +1698,7 @@ pub(crate) fn stepper_capability() -> WidgetCapability {
         aliases: &["stepper_widget", "step_control"],
         properties: STEPPER_PROPERTIES,
         events: &["value_changed"],
-        commands: &["set_value", "set_range", "set_step"],
+        commands: &["set_value", "set_minimum", "set_maximum", "set_step"],
     }
 }
 
@@ -1708,7 +1722,7 @@ pub(crate) fn avatar_capability() -> WidgetCapability {
         aliases: &["avatar_widget", "user_avatar"],
         properties: AVATAR_PROPERTIES,
         events: &[],
-        commands: &["set_initials", "set_image"],
+        commands: &["set_initials", "set_image_source"],
     }
 }
 
@@ -1840,7 +1854,11 @@ pub(crate) fn wizard_dialog_capability() -> WidgetCapability {
         aliases: &["wizard"],
         properties: WIZARD_DIALOG_PROPERTIES,
         events: &["finished", "cancelled"],
-        commands: &["set_current_step", "next", "back", "finish"],
+        // `set_current_step` was published against a read-only property, so its
+        // `OutOfRange` answer pointed the caller at a write the schema refuses.
+        // Navigation is fully covered by `next` / `back` / `finish`, which are the
+        // commands this control actually implements.
+        commands: &["next", "back", "finish"],
     }
 }
 
@@ -1852,7 +1870,7 @@ pub(crate) fn safe_area_capability() -> WidgetCapability {
         aliases: &["safe_area_insets"],
         properties: SAFE_AREA_PROPERTIES,
         events: &[],
-        commands: &["set_insets"],
+        commands: &["set_top_inset", "set_bottom_inset", "set_left_inset", "set_right_inset"],
     }
 }
 
@@ -2438,7 +2456,7 @@ pub(crate) fn rive_widget_capability() -> WidgetCapability {
         aliases: &["rive"],
         properties: RIVE_WIDGET_PROPERTIES,
         events: &["finished"],
-        commands: &["set_playing"],
+        commands: &["set_is_playing"],
     }
 }
 
@@ -2450,7 +2468,7 @@ pub(crate) fn video_player_capability() -> WidgetCapability {
         aliases: &["video"],
         properties: VIDEO_PLAYER_PROPERTIES,
         events: &["finished"],
-        commands: &["set_playing", "set_volume"],
+        commands: &["set_is_playing", "set_volume"],
     }
 }
 
@@ -2486,7 +2504,7 @@ pub(crate) fn camera_preview_capability() -> WidgetCapability {
         aliases: &["camera"],
         properties: CAMERA_PREVIEW_PROPERTIES,
         events: &[],
-        commands: &["set_active"],
+        commands: &["set_is_active"],
     }
 }
 
@@ -2498,7 +2516,7 @@ pub(crate) fn barcode_scanner_capability() -> WidgetCapability {
         aliases: &["scanner"],
         properties: BARCODE_SCANNER_PROPERTIES,
         events: &["barcode_detected"],
-        commands: &["set_scanning"],
+        commands: &["set_is_scanning"],
     }
 }
 

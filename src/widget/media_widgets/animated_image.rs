@@ -282,6 +282,24 @@ impl WidgetProperties for AnimatedImage {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["playing", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs the published playback commands.
+    ///
+    /// `set_playing` names no property: playback state is exposed as the read-only
+    /// `playing`, and starting it is the control's own [`Self::play`]. The default
+    /// `set_foo` convention would look for a `playing` property and, finding it but
+    /// with no payload route, have told the caller to supply a value the property
+    /// route then refuses. The command is real here, so an override is the honest
+    /// shape.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "set_playing" => {
+                self.play();
+                Ok(())
+            }
+            _ => self.default_command(name),
+        }
+    }
 }
 
 impl Draw for AnimatedImage {

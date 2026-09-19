@@ -512,6 +512,13 @@ macro_rules! impl_properties_other {
         pub(crate) const BADGE_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("text", PropertyValueKind::String, true, true),
             PropertySchema::new("count", PropertyValueKind::Int, true, true),
+            // The severity, which is what decides the badge's colour.
+            PropertySchema::enumerated(
+                "level",
+                true,
+                true,
+                &["info", "success", "warning", "error"],
+            ),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -851,8 +858,13 @@ macro_rules! impl_properties_other {
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
             PropertySchema::new("depth", PropertyValueKind::UInt, true, true),
-            PropertySchema::new("bid_color", PropertyValueKind::String, true, true),
-            PropertySchema::new("ask_color", PropertyValueKind::String, true, true),
+            // Declared `Color`, matching what `DepthChart::set` accepts: it destructures
+            // `CapabilityValue::Color` and answers `TypeMismatch` for anything else, so
+            // a `String` declaration made the property unwritable through the ABI —
+            // `write_property` validated a string against the schema and the control
+            // then refused it.
+            PropertySchema::new("bid_color", PropertyValueKind::Color, true, true),
+            PropertySchema::new("ask_color", PropertyValueKind::Color, true, true),
         ];
         /// Property schema for `order_book`.
         pub(crate) const ORDER_BOOK_PROPERTIES: &[PropertySchema] = &[
@@ -862,7 +874,10 @@ macro_rules! impl_properties_other {
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
             PropertySchema::new("depth", PropertyValueKind::UInt, true, true),
             PropertySchema::new("decimals", PropertyValueKind::UInt, true, true),
-            PropertySchema::new("show_spread", PropertyValueKind::Bool, true, true),
+            // Read-only: `OrderBookWidget::set` destructures the value and then
+            // refuses the write. The spread band is a display decision the control
+            // owns, so there is nothing for a caller to assign.
+            PropertySchema::new("show_spread", PropertyValueKind::Bool, true, false),
         ];
         /// Property schema for `quote_board`.
         pub(crate) const QUOTE_BOARD_PROPERTIES: &[PropertySchema] = &[
@@ -877,7 +892,10 @@ macro_rules! impl_properties_other {
                 &["none", "symbol", "last_descending", "change_magnitude"],
             ),
             PropertySchema::new("selected_index", PropertyValueKind::UInt, true, true),
-            PropertySchema::new("row_height", PropertyValueKind::UInt, true, true),
+            // Read-only: `QuoteBoard::set` answers `OutOfRange` because the board's
+            // row height is a layout decision the control owns, and `selected_index`
+            // is derived from the rows rather than assignable.
+            PropertySchema::new("row_height", PropertyValueKind::UInt, true, false),
         ];
         /// Property schema for `indicator_chart`.
         pub(crate) const INDICATOR_CHART_PROPERTIES: &[PropertySchema] = &[

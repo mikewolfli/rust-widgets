@@ -11,7 +11,9 @@
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::widget::capability::coercion::{expect_i64, expect_string};
+use crate::widget::capability::coercion::{
+    badge_level_to_str, expect_badge_level, expect_i64, expect_string,
+};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -167,10 +169,18 @@ impl Widget for Badge {
 /// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch, so callers see
 /// the same coercions and the same errors as before.
 impl WidgetProperties for Badge {
+    /// Returns `"text"`, `"count"` and `"level"`, delegating anything else to the
+    /// base widget's shared properties.
+    ///
+    /// `"level"` answers the severity as its lowercase spelling (`"info"`,
+    /// `"success"`, `"warning"`, `"error"`). It is the property that decides the
+    /// badge's colour, so leaving it unreadable meant a caller could not discover why
+    /// a badge was red — or set it without reaching for the inherent `set_level`.
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "text" => Ok(CapabilityValue::String(self.text().to_string())),
             "count" => Ok(CapabilityValue::Int(self.count() as i64)),
+            "level" => Ok(CapabilityValue::String(badge_level_to_str(self.level()).to_string())),
             _ => base_property_get(self, name),
         }
     }
@@ -188,12 +198,16 @@ impl WidgetProperties for Badge {
                 self.set_count(count);
                 Ok(())
             }
+            "level" => {
+                self.set_level(expect_badge_level(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["text", "count", BASE_PROPERTY_NAMES]
+        property_names_of!["text", "count", "level", BASE_PROPERTY_NAMES]
     }
 
     /// Runs one of the commands `badge` publishes.
@@ -310,6 +324,56 @@ mod tests {
 
         badge.set_count(1000);
         assert_eq!(badge.display_text(), "999+");
+    }
+
+    /// The severity must be reachable through the **property route**, not only through
+    /// the inherent `set_level`.
+    ///
+    /// `BadgeLevel` is what decides the badge's colour, so a caller that could not
+    /// read it had no way to learn why a badge renders red — and a generic consumer
+    /// (property editor, language binding) had no way to set it. `get`/`set` did not
+    /// answer `"level"` and `property_names` omitted it, while the schema was the
+    /// only half that would have declared it.
+    #[test]
+    fn badge_level_is_reachable_through_the_property_route() {
+        use crate::widget::capability::types::CapabilityValue;
+
+        let mut badge = Badge::new(Rect::new(0, 0, 40, 24));
+
+        // Readable, with the default reported as the `info` token.
+        assert_eq!(
+            badge.get("level").expect("`level` must be readable"),
+            CapabilityValue::String("info".to_string())
+        );
+
+        // Writable, and the write has the same effect the inherent setter has.
+        for (token, expected, colour) in [
+            ("info", BadgeLevel::Info, Color::INFO),
+            ("success", BadgeLevel::Success, Color::SUCCESS),
+            ("warning", BadgeLevel::Warning, Color::WARNING),
+            ("error", BadgeLevel::Error, Color::ERROR),
+        ] {
+            badge
+                .set("level", CapabilityValue::String(token.to_string()))
+                .unwrap_or_else(|e| panic!("set(\"level\", {token:?}) must be accepted: {e:?}"));
+            assert_eq!(badge.level(), expected);
+            assert_eq!(badge.level().color(), colour, "the level must drive the colour");
+            assert_eq!(badge.get("level").unwrap(), CapabilityValue::String(token.to_string()));
+        }
+
+        // `danger` is an accepted synonym for `error`, since that is the word a
+        // caller writing a failure badge reaches for.
+        badge
+            .set("level", CapabilityValue::String("danger".to_string()))
+            .expect("`danger` must be accepted as a synonym for `error`");
+        assert_eq!(badge.level(), BadgeLevel::Error);
+
+        // Published, so a generic consumer can discover it.
+        assert!(badge.property_names().contains(&"level"));
+
+        // An unknown token is refused rather than silently becoming `Info`.
+        assert!(badge.set("level", CapabilityValue::String("chartreuse".to_string())).is_err());
+        assert!(badge.set("level", CapabilityValue::Bool(true)).is_err());
     }
 
     #[test]

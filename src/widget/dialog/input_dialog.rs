@@ -32,6 +32,38 @@ pub enum InputMode {
     /// [`InputDialog::current_item`].
     Item,
 }
+
+/// The stable property spelling of [`InputMode`].
+///
+/// The capability schema for `mode` is `PropertySchema::enumerated(..)` over
+/// `["text", "integer", "double", "item"]`, and those are the exact strings
+/// returned here. Keeping one function as the single source of truth means the
+/// read route, the write route and the schema cannot drift apart: a value the
+/// schema advertises but this function does not produce would be a property the
+/// caller can see listed and never read.
+fn mode_name(mode: InputMode) -> &'static str {
+    match mode {
+        InputMode::Text => "text",
+        InputMode::Integer => "integer",
+        InputMode::Double => "double",
+        InputMode::Item => "item",
+    }
+}
+
+/// Parses the stable property spelling of [`InputMode`].
+///
+/// Returns [`CapabilityAccessError::OutOfRange`] rather than silently falling back
+/// to a default: a caller that misspells the mode has asked for something this
+/// control cannot do, and the schema already told it which four strings are valid.
+fn mode_from_name(name: &str) -> Result<InputMode, CapabilityAccessError> {
+    match name {
+        "text" => Ok(InputMode::Text),
+        "integer" => Ok(InputMode::Integer),
+        "double" => Ok(InputMode::Double),
+        "item" => Ok(InputMode::Item),
+        _ => Err(CapabilityAccessError::OutOfRange),
+    }
+}
 /// Input dialog for simple user input.
 pub struct InputDialog {
     base: BaseWidget,
@@ -337,6 +369,16 @@ impl WidgetProperties for InputDialog {
         match name {
             "title" => Ok(CapabilityValue::String(self.title().to_string())),
             "label_text" => Ok(CapabilityValue::String(self.label_text().to_string())),
+            // The four typed value properties. The schema in
+            // `INPUT_DIALOG_PROPERTIES` has always declared them, but neither the
+            // read nor the write arm existed, so the capability table published
+            // three commands (`set_mode`, `set_text_value`, `set_int_value`,
+            // `set_double_value`) against properties that answered
+            // `UnknownProperty` for a control that really does support them.
+            "mode" => Ok(CapabilityValue::String(mode_name(self.mode()).to_string())),
+            "text_value" => Ok(CapabilityValue::String(self.text_value().to_string())),
+            "int_value" => Ok(CapabilityValue::Int(self.int_value())),
+            "double_value" => Ok(CapabilityValue::Float(self.double_value())),
             _ => base_property_get(self, name),
         }
     }
@@ -351,12 +393,49 @@ impl WidgetProperties for InputDialog {
                 self.set_label_text(expect_string(value)?);
                 Ok(())
             }
+            "mode" => {
+                let requested = expect_string(value)?;
+                let mode = mode_from_name(&requested)?;
+                self.set_mode(mode);
+                Ok(())
+            }
+            "text_value" => {
+                let text = expect_string(value)?;
+                self.set_text_value(text);
+                Ok(())
+            }
+            "int_value" => {
+                let number = match value {
+                    CapabilityValue::Int(v) => v,
+                    CapabilityValue::Float(v) => v as i64,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_int_value(number);
+                Ok(())
+            }
+            "double_value" => {
+                let number = match value {
+                    CapabilityValue::Float(v) => v,
+                    CapabilityValue::Int(v) => v as f64,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_double_value(number);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["title", "label_text", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "title",
+            "label_text",
+            "mode",
+            "text_value",
+            "int_value",
+            "double_value",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 impl EventHandler for InputDialog {

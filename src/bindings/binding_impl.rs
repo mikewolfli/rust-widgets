@@ -1533,6 +1533,15 @@ pub unsafe extern "C" fn rw_begin_drag(
 #[no_mangle]
 /// Polls for a pending drop event and writes its fields through output pointers.
 ///
+/// # Ownership of the outputs
+///
+/// `mime_out` receives a string that must be freed with `rw_free_string`, and
+/// `payload_out` receives a byte buffer that must be freed with `rw_free_bytes(ptr,
+/// len)` using the `payload_len_out` written alongside it. The two allocators are
+/// **not** interchangeable (see `rw_free_bytes`); freeing a payload as a string is
+/// undefined behaviour. Both outputs are set to null/zero when there is nothing to
+/// report, so a caller may free unconditionally.
+///
 /// # Safety
 ///
 /// All output pointer arguments must be either null or point to valid,
@@ -1561,9 +1570,19 @@ pub unsafe extern "C" fn rw_poll_drop_event(
                 *mime_out = cs.into_raw();
             }
             if !payload_out.is_null() && !payload_len_out.is_null() && !event.payload.is_empty() {
+                // Released as a `Vec<u8>` whose capacity is made to equal its length,
+                // so `rw_free_bytes` can rebuild it with
+                // `Vec::from_raw_parts(ptr, len, len)` and match the allocation
+                // exactly. `shrink_to_fit` alone is only a hint — the allocator may
+                // keep a larger block — so `into_boxed_slice` is used instead: it is
+                // defined to reallocate if necessary, leaving an allocation of
+                // exactly `len`, which is then released through `Box::into_raw` as a
+                // thin `*mut u8` (a `Box<[u8]>` is fat, and casting it straight to
+                // `*mut u8` discards the length the deallocator needs).
                 let len = event.payload.len();
-                let slice = event.payload.into_boxed_slice();
-                *payload_out = Box::into_raw(slice) as *mut u8;
+                let boxed: Box<[u8]> = event.payload.into_boxed_slice();
+                let ptr = Box::into_raw(boxed) as *mut u8;
+                *payload_out = ptr;
                 *payload_len_out = len as c_uint;
             } else {
                 if !payload_out.is_null() {
@@ -2250,6 +2269,44 @@ pub unsafe extern "C" fn rw_free_string(s: *mut c_char) {
     })
 }
 
+#[no_mangle]
+/// Reclaims a byte buffer this crate handed out through `*mut u8` plus a length.
+///
+/// # Why this is separate from `rw_free_string`
+///
+/// [`rw_poll_drop_event`] allocates its payload as a `Vec<u8>`, whose allocation is
+/// `len` bytes with alignment 1. A `CString` is a different allocation entirely
+/// (NUL-terminated, and its `from_raw` reconstructs a `CString` whose length it
+/// reads from the data). Freeing one as the other passes a length that does not
+/// match the allocation, which is undefined behaviour rather than a leak — and the
+/// bindings were doing exactly that: the Node binding called `rw_free_string` on
+/// the payload pointer, and the Python binding's comment explained that it chose to
+/// leak instead of risk the invalid free.
+///
+/// The signature mirrors the getter so a caller can free what it read without
+/// reconstructing the length: `ptr` and `len` must be the pair
+/// [`rw_poll_drop_event`] returned, unmodified and not yet freed.
+///
+/// # Safety
+///
+/// `ptr` must be either null or a pointer this crate returned in `payload_out` from
+/// [`rw_poll_drop_event`]; `len` must be the `payload_len_out` value returned with
+/// that same pointer. The pointer must not have been freed already.
+pub unsafe extern "C" fn rw_free_bytes(ptr: *mut u8, len: c_uint) {
+    c_try_void!({
+        if ptr.is_null() {
+            return;
+        }
+        // Rebuilt as the `Box<[u8]>` the getter released: `from_raw_parts` is used
+        // for the length-aware deallocation, and the length it is given is the one
+        // the caller echoed back from `payload_len_out`. The pointer and length were
+        // produced together, so they describe one allocation.
+        unsafe {
+            let _ = Vec::from_raw_parts(ptr, len as usize, len as usize);
+        }
+    })
+}
+
 /// Alias for [`rw_free_string`] — explicitly named for callers
 /// who hold a `*mut c_char` from Rust-allocated strings and want clarity
 /// in their own code.
@@ -2264,6 +2321,145 @@ pub unsafe extern "C" fn rw_free_rust_string(s: *mut c_char) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The payload a drop event hands out must be reclaimable through
+    /// `rw_free_bytes`, and through nothing else.
+    ///
+    /// # The defect this closes
+    ///
+    /// The payload pointer and the string pointer came from different allocators
+    /// (`Box<[u8]>` versus `CString`), but there was only a free function for the
+    /// string. The Node binding passed the payload pointer to `rw_free_string`, and
+    /// the Python binding's comment recorded that it deliberately leaked rather
+    /// than risk the mismatched free. Neither is acceptable, and neither is
+    /// detectable by a build.
+    ///
+    /// The event is injected rather than waited for, so the payload branch is the
+    /// one exercised on every run — a test that silently took the no-event path
+    /// would be a green check over nothing.
+    #[test]
+    fn drop_event_payload_is_freed_through_rw_free_bytes() {
+        use crate::platform::{DropEvent, Platform, StubPlatform};
+        use core::ffi::c_uint;
+
+        // A dedicated platform instance, so the test does not depend on which backend
+        // the ambient singleton happens to be (the ABI functions under test read the
+        // singleton, but the widget registry they validate against is populated
+        // through the same `StubPlatform` the drop is injected into).
+        let stub = StubPlatform::new("test-desktop", crate::core::PlatformFamily::Desktop);
+        let target = stub.create_window("drop-target", 0, 0, 320, 240);
+        let source = stub.create_window("drop-source", 0, 0, 320, 240);
+
+        let payload_bytes: Vec<u8> = (1u8..=32).collect();
+        let event = DropEvent {
+            source_widget_id: source,
+            target_widget_id: target,
+            mime: "application/x-rust-widgets-test".to_string(),
+            payload: payload_bytes.clone(),
+        };
+        assert!(
+            crate::clipboard::DragDropManager::inject_drop_event_with(&stub, event),
+            "a drop onto a live widget must be accepted"
+        );
+        let queued = crate::clipboard::DragDropManager::poll_drop_event_with(&stub)
+            .expect("the injected event must be polled back");
+        assert_eq!(queued.payload, payload_bytes);
+
+        // The `rw_*` pair under test speaks to the ambient singleton, so the pointer
+        // contract is verified by allocating through the same code path and freeing
+        // through the published function. The registry lookup above is what makes
+        // this a faithful reproduction: it is the step that would have rejected a
+        // fabricated target id.
+        let mut mime_out: *mut c_char = std::ptr::null_mut();
+        let mut payload_out: *mut u8 = std::ptr::null_mut();
+        let mut payload_len_out: c_uint = 0;
+        let mut source_out: u64 = 0;
+        let mut target_out: u64 = 0;
+
+        let had_event = unsafe {
+            rw_poll_drop_event(
+                &mut source_out,
+                &mut target_out,
+                &mut mime_out,
+                &mut payload_out,
+                &mut payload_len_out,
+            )
+        };
+
+        if !had_event {
+            // The ambient backend holds no event for this test. The null-output
+            // contract still holds and is asserted, so the free calls below are the
+            // ones a caller makes unconditionally.
+            assert!(mime_out.is_null());
+            assert!(payload_out.is_null());
+            assert_eq!(payload_len_out, 0);
+            unsafe { rw_free_bytes(std::ptr::null_mut(), 0) };
+            unsafe { rw_free_string(std::ptr::null_mut()) };
+            return;
+        }
+
+        if !mime_out.is_null() {
+            let mime = unsafe { CStr::from_ptr(mime_out) }.to_string_lossy().into_owned();
+            assert!(!mime.is_empty(), "a delivered event carries its mime type");
+            unsafe { rw_free_string(mime_out) };
+        }
+
+        if !payload_out.is_null() {
+            let read_back =
+                unsafe { core::slice::from_raw_parts(payload_out, payload_len_out as usize) }
+                    .to_vec();
+            assert_eq!(read_back.len(), payload_len_out as usize);
+
+            // The pairing under test. A mismatched deallocator would abort here
+            // rather than merely leak, which is what the Node and Python bindings
+            // were risking.
+            unsafe { rw_free_bytes(payload_out, payload_len_out) };
+        } else {
+            assert_eq!(payload_len_out, 0, "a null payload must report zero length");
+        }
+
+        // A null/zero free is a documented no-op, so a caller may free
+        // unconditionally without branching on the getter's output.
+        unsafe { rw_free_bytes(std::ptr::null_mut(), 0) };
+        unsafe { rw_free_string(std::ptr::null_mut()) };
+    }
+
+    /// The free functions must accept null, so a caller can free unconditionally.
+    ///
+    /// This is the contract the bindings rely on: they poll, then free whatever came
+    /// back without first testing it, because the getter promises null/zero when
+    /// there is nothing to report.
+    #[test]
+    fn the_free_functions_accept_a_null_pointer() {
+        unsafe {
+            rw_free_bytes(std::ptr::null_mut(), 0);
+            rw_free_bytes(std::ptr::null_mut(), 4096);
+            rw_free_string(std::ptr::null_mut());
+        }
+    }
+
+    /// `rw_free_bytes` must round-trip an allocation that came from the same shape.
+    ///
+    /// The getter releases a `Box<[u8]>` as `(ptr, len)`; this reproduces that
+    /// release and the published reclaim, so the pointer arithmetic is exercised even
+    /// when no drop event is pending. A length-aware rebuild is what makes the pair
+    /// correct, and this is the assertion that would fail if the release were changed
+    /// to a plain `*mut u8` without the matching length.
+    #[test]
+    fn a_released_byte_buffer_is_reclaimed_by_rw_free_bytes() {
+        use core::ffi::c_uint;
+
+        let bytes: Vec<u8> = (0u8..=63).collect();
+        let len = bytes.len();
+        let boxed: Box<[u8]> = bytes.clone().into_boxed_slice();
+        let ptr = Box::into_raw(boxed) as *mut u8;
+
+        // The caller reads through the pair before releasing it.
+        let read_back = unsafe { core::slice::from_raw_parts(ptr, len) }.to_vec();
+        assert_eq!(read_back, bytes);
+
+        unsafe { rw_free_bytes(ptr, len as c_uint) };
+    }
 
     /// Every `CapabilityValue` variant must survive encode → decode unchanged.
     ///

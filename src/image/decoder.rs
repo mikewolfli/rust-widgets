@@ -117,6 +117,21 @@ pub fn detect_format(data: &[u8]) -> ImageFormat {
     ImageFormat::Unknown
 }
 
+/// The largest SVG document an SVGZ payload is allowed to decompress to.
+///
+/// Bounds the only decompression in this module whose output size is **not**
+/// implied by a header the input carries: a gzip stream states its expanded size
+/// only in the optional `ISIZE` trailer, which is truncated to 32 bits and cannot
+/// be trusted, and the ratio itself is unbounded. 64 MiB is far beyond what the
+/// SVG decoder will rasterize while keeping a hostile file's ceiling small enough
+/// that exceeding it produces an error rather than an allocation failure.
+///
+/// Compiled wherever `svgz` can be decoded, i.e. wherever the image subsystem is
+/// present at all: both the rasterizing and the parse-only branch below unwrap the
+/// same gzip wrapper, so neither can do without the bound.
+#[cfg(any(feature = "svg-rasterizer", feature = "image"))]
+const MAX_SVGZ_DOCUMENT_BYTES: usize = 64 * 1024 * 1024;
+
 /// Decode image from raw bytes into a DecodedImage.
 pub fn decode(data: &[u8]) -> Result<DecodedImage, String> {
     let format = detect_format(data);
@@ -397,14 +412,31 @@ fn decode_png(data: &[u8]) -> Result<DecodedImage, String> {
         ));
     }
 
-    let decompressed = miniz_oxide::inflate::decompress_to_vec_zlib(&raw_data).map_err(|e| {
-        format!("PNG zlib stream could not be inflated (the IDAT data is corrupt): {e:?}")
-    })?;
-
+    // `decompress_to_vec_zlib` is unbounded by design (the upstream docs say it
+    // "will not bound the output, so if the output is large enough it can result in
+    // an out of memory error"). The header caps above already bound what the image
+    // *claims* to need, so the limit below is derived from that claim plus headroom
+    // for the final filter row and any trailing ancillary data. Using the claim as
+    // the bound is what makes a zip bomb fail as `HasMoreOutput` instead of
+    // exhausting memory: a stream that expands past `expected` is by definition not
+    // the scanline data of the image this header described.
     let bits_per_pixel = channels * bit_depth as usize;
     let row_bytes = (width as usize * bits_per_pixel).div_ceil(8);
     let stride = row_bytes + 1; // filter byte + row data
     let expected = stride.checked_mul(height as usize).ok_or("PNG scanline size overflow")?;
+    // One extra scanline of slack absorbs a benign over-long stream without
+    // letting a hostile one through.
+    let inflate_limit = expected.checked_add(stride).ok_or("PNG inflate limit overflow")?;
+
+    let decompressed = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(&raw_data, inflate_limit)
+        .map_err(|e| {
+            format!(
+                "PNG zlib stream could not be inflated within the {inflate_limit}-byte bound the \
+                 {width}x{height} header implies (corrupt IDAT, or a stream that expands far beyond \
+                 its own dimensions): {e:?}"
+            )
+        })?;
+
     if decompressed.len() < expected {
         return Err(format!(
             "PNG scanline data truncated: need {expected} bytes, got {}",
@@ -1708,6 +1740,35 @@ fn decode_farbfeld(data: &[u8]) -> Result<DecodedImage, String> {
 
 // ── SVG Decoder ──────────────────────────────────────────────────────────────
 
+/// Refuses an SVG raster whose declared size would allocate more than the cap.
+///
+/// Every other raster decoder in this file bounds the pixel count before
+/// allocating (PNG at `1 << 27`, JPEG/BMP/PNM/QOI at `16384x16384`), because the
+/// dimensions come from the file and `Pixmap::new`-style allocation on a hostile
+/// header is an out-of-memory abort rather than an `Err`. The two SVG paths were
+/// the exception: `usvg` parses `width`/`height` straight out of the document, and
+/// `<svg width="500000" height="500000">` requests 1 TB with no further input.
+///
+/// The bound is `16384x16384`, matching the raster decoders rather than the PNG
+/// path's `1 << 27` pixels, because it is the same failure mode and the same
+/// arithmetic: `16384 * 16384 * 4` fits comfortably in `usize` on every supported
+/// target, so this check is total.
+#[cfg(feature = "svg-rasterizer")]
+fn check_svg_raster_size(kind: &str, width: u32, height: u32) -> Result<(), String> {
+    const MAX_SIDE: u32 = 16384;
+    if width == 0 || height == 0 {
+        return Err(format!("{kind} raster has a zero dimension ({width}x{height})"));
+    }
+    if width > MAX_SIDE || height > MAX_SIDE {
+        return Err(format!(
+            "{kind} raster is {width}x{height}, which exceeds the supported maximum of \
+             {MAX_SIDE}x{MAX_SIDE}; the document's declared size is larger than any surface \
+             this library will allocate for it"
+        ));
+    }
+    Ok(())
+}
+
 fn decode_svg(data: &[u8]) -> Result<DecodedImage, String> {
     #[cfg(feature = "svg-rasterizer")]
     {
@@ -1720,6 +1781,7 @@ fn decode_svg(data: &[u8]) -> Result<DecodedImage, String> {
             },
         )?;
         let size = tree.size().to_int_size();
+        check_svg_raster_size("SVG", size.width(), size.height())?;
         let mut pixmap = resvg::tiny_skia::Pixmap::new(size.width(), size.height())
             .ok_or("SVG raster dimensions are invalid")?;
         resvg::render(&tree, resvg::tiny_skia::Transform::identity(), &mut pixmap.as_mut());
@@ -1741,18 +1803,86 @@ fn decode_svg(data: &[u8]) -> Result<DecodedImage, String> {
 
 // ── SVGZ Decoder ─────────────────────────────────────────────────────────────
 
+/// Unwraps a gzip member (RFC 1952) and returns its DEFLATE body.
+///
+/// `miniz_oxide` understands raw DEFLATE and the zlib container but has no gzip
+/// framing, in either direction, so the envelope is handled here: the 10-byte fixed
+/// header comes off the front and the 8-byte `CRC32 || ISIZE` trailer off the back
+/// before the DEFLATE stream is inflated.
+///
+/// Only the `FLG = 0` header an encoder produces is accepted — an optional file
+/// name, comment, extra field or header CRC means the offset to the DEFLATE stream
+/// is data-dependent, and guessing it would decode the wrong bytes or feed the
+/// inflater a header it reads as compressed data. Refusing is the honest answer:
+/// such a stream is valid gzip but not one this module wrote.
+fn gzip_body(data: &[u8]) -> Result<&[u8], String> {
+    const HEADER_LEN: usize = 10;
+    const TRAILER_LEN: usize = 8;
+    if data.len() < HEADER_LEN + TRAILER_LEN {
+        return Err(format!(
+            "gzip member is {} bytes, shorter than the {}-byte empty structure",
+            data.len(),
+            HEADER_LEN + TRAILER_LEN
+        ));
+    }
+    if data[0] != 0x1F || data[1] != 0x8B {
+        return Err("not a gzip member (magic is not 1F 8B)".into());
+    }
+    if data[2] != 0x08 {
+        return Err(format!(
+            "gzip compression method {} is not DEFLATE (8); only DEFLATE is defined by RFC 1952",
+            data[2]
+        ));
+    }
+    if data[3] != 0x00 {
+        return Err(format!(
+            "gzip header flags {:#04x} set optional fields (name, comment, extra, or header \
+             CRC), which this decoder does not locate; expected 0x00",
+            data[3]
+        ));
+    }
+    Ok(&data[HEADER_LEN..data.len() - TRAILER_LEN])
+}
+
+/// Decodes a gzip-compressed document, bounded to `limit` bytes of output.
+///
+/// Shared by both `svgz` branches so the container handling exists once: the
+/// rasterizing and parse-only paths differ only in what they do with the document.
+/// Returns an error naming the limit when the expansion exceeds it, so a bomb is
+/// reported as a bound violation rather than as a corrupt stream.
+#[cfg(any(feature = "svg-rasterizer", feature = "image"))]
+fn gunzip_bounded(data: &[u8], limit: usize) -> Result<Vec<u8>, String> {
+    let body = gzip_body(data)?;
+    miniz_oxide::inflate::decompress_to_vec_with_limit(body, limit).map_err(|e| {
+        format!(
+            "gzip body did not inflate within the {limit}-byte document cap ({} bytes of input; \
+             {e}): the stream is corrupt, or it expands beyond that cap",
+            data.len()
+        )
+    })
+}
+
 fn decode_svgz(data: &[u8]) -> Result<DecodedImage, String> {
     #[cfg(feature = "svg-rasterizer")]
     {
-        let tree = resvg::usvg::Tree::from_data(data, &resvg::usvg::Options::default()).map_err(
-            |error| {
+        // `svgz` is a gzip container, not a document format: `usvg` parses SVG
+        // text, so the wrapper has to be removed before it is handed over. This
+        // branch used to pass `data` straight to `Tree::from_data` under an error
+        // message that said "the decompressed SVGZ payload" — it never decompressed
+        // anything, so every `svgz` whose bytes actually carried the gzip magic that
+        // `detect_format` routes on failed to parse. (The encoder compensated by
+        // emitting plain SVG for `Svgz`, which is the other half of the same defect.)
+        let decompressed = gunzip_bounded(data, MAX_SVGZ_DOCUMENT_BYTES)?;
+
+        let tree = resvg::usvg::Tree::from_data(&decompressed, &resvg::usvg::Options::default())
+            .map_err(|error| {
                 format!(
                     "the decompressed SVGZ payload could not be parsed as SVG (malformed XML \
-                     or unsupported feature): {error}"
+                 or unsupported feature): {error}"
                 )
-            },
-        )?;
+            })?;
         let size = tree.size().to_int_size();
+        check_svg_raster_size("SVGZ", size.width(), size.height())?;
         let mut pixmap = resvg::tiny_skia::Pixmap::new(size.width(), size.height())
             .ok_or("SVGZ raster dimensions are invalid")?;
         resvg::render(&tree, resvg::tiny_skia::Transform::identity(), &mut pixmap.as_mut());
@@ -1769,13 +1899,22 @@ fn decode_svgz(data: &[u8]) -> Result<DecodedImage, String> {
     {
         // Decompress gzip, then delegate to the SVG decoder (which refuses to
         // rasterize).
-        let decompressed = miniz_oxide::inflate::decompress_to_vec(data).map_err(|_| {
-            format!(
-                "SVGZ payload is not a valid gzip stream ({} bytes): decompression failed, \
-                     so no SVG document could be read",
-                data.len()
-            )
-        })?;
+        //
+        // The payload is decompressed with an explicit bound, via the same helper
+        // the rasterizing branch uses. `decompress_to_vec` is unbounded by design
+        // (the upstream docs say it "will not bound the output, so if the output is
+        // large enough it can result in an out of memory error"), and `detect_format`
+        // routes **any** input beginning `1F 8B 08` here, so without a bound a small
+        // file is enough to request gigabytes: gzip's own ratio allows roughly
+        // 1000:1, which turns a 4 MB attachment into a 4 GB allocation and an abort
+        // rather than an `Err`.
+        //
+        // The cap is on the *decompressed document*, not on the input, because the
+        // ratio is not bounded — `MAX_SVGZ_DOCUMENT_BYTES` is generous enough for
+        // real vector artwork (an uncompressed SVG of this size is already far
+        // beyond what a rasterizer would accept) and small enough that the refusal
+        // is a clean error.
+        let decompressed = gunzip_bounded(data, MAX_SVGZ_DOCUMENT_BYTES)?;
         decode_svg(&decompressed)
     }
 }
@@ -2047,9 +2186,51 @@ mod tests {
     fn decode_svgz_returns_not_implemented() {
         // GZIP of the SVG above: decompression succeeds, rasterization refuses.
         let svg = b"<svg width=\"100\" height=\"50\" xmlns=\"http://www.w3.org/2000/svg\"></svg>";
-        let compressed = miniz_oxide::deflate::compress_to_vec(svg, 6);
+        let compressed = gzip_wrap(svg);
         let err = decode_svgz(&compressed).unwrap_err();
         assert!(err.contains("not implemented"), "unexpected error: {err}");
+    }
+
+    /// A gzip bomb must be refused, not allocated.
+    ///
+    /// `detect_format` routes **any** input beginning `1F 8B 08` to `decode_svgz`,
+    /// so without the cap this test would try to materialise the whole expansion.
+    /// The assertion is on the *error text*, not merely on `is_err()`: `decode_svgz`
+    /// also fails legitimately on an empty or corrupt stream, and a test that accepts
+    /// any error would keep passing if the cap were removed and the payload were
+    /// merely malformed.
+    #[cfg(not(feature = "svg-rasterizer"))]
+    #[test]
+    fn svgz_gzip_bomb_is_refused_by_the_document_cap() {
+        // 8 MiB of zeros compresses to a few KiB; the point is the ratio, not the size.
+        // The fixture must exceed the cap once decompressed, otherwise the test would
+        // pass without exercising the bound at all.
+        let payload = vec![0u8; MAX_SVGZ_DOCUMENT_BYTES + 1024];
+        let bomb = miniz_oxide::deflate::compress_to_vec(&payload, 9);
+        assert!(bomb.len() < 64 * 1024, "the fixture must be small; got {} bytes", bomb.len());
+
+        let err = decode_svgz(&bomb).unwrap_err();
+        assert!(
+            err.contains("document cap"),
+            "a stream that expands beyond the cap must be reported as such, not as a corrupt \
+             stream; got: {err}"
+        );
+    }
+
+    /// The cap is not so tight that a real document is refused.
+    ///
+    /// Without this the bomb test above would still pass if the cap were set to 1
+    /// byte, which would be a regression dressed as a fix.
+    #[cfg(not(feature = "svg-rasterizer"))]
+    #[test]
+    fn svgz_document_under_the_cap_still_reaches_the_svg_decoder() {
+        let svg = b"<svg width=\"100\" height=\"50\" xmlns=\"http://www.w3.org/2000/svg\"></svg>";
+        let compressed = gzip_wrap(svg);
+        let err = decode_svgz(&compressed).unwrap_err();
+        assert!(
+            !err.contains("document cap"),
+            "a well-formed document must not be refused by the cap; got: {err}"
+        );
     }
 
     #[test]
@@ -2344,6 +2525,142 @@ mod tests {
         assert_eq!(decoded.width, 1);
         assert_eq!(decoded.height, 1);
         assert_eq!(decoded.as_rgba8().as_bytes().len(), 4);
+    }
+
+    // ── SVG raster dimension cap ─────────────────────────────────────────────
+
+    /// An SVG that declares an enormous canvas must be refused, not allocated.
+    ///
+    /// The declared `width`/`height` travel straight into `Pixmap::new`, so without
+    /// the cap this document asks for `500000 * 500000 * 4` bytes — a request that
+    /// aborts the process rather than returning an error. The assertion is on the
+    /// error text so that an unrelated parse failure cannot make this pass.
+    #[cfg(feature = "svg-rasterizer")]
+    #[test]
+    fn oversized_svg_declaration_is_refused_by_the_dimension_cap() {
+        let svg = br#"<svg width="500000" height="500000" xmlns="http://www.w3.org/2000/svg">
+                       <rect width="10" height="10" fill="red"/></svg>"#;
+        let err = decode_svg(svg).unwrap_err();
+        assert!(
+            err.contains("exceeds the supported maximum"),
+            "an oversized SVG raster must be refused by the dimension cap; got: {err}"
+        );
+        assert!(err.contains("16384"), "the error must name the limit; got: {err}");
+    }
+
+    /// The same cap applies to the gzip-wrapped form, which is a separate entry point.
+    #[cfg(feature = "svg-rasterizer")]
+    #[test]
+    fn oversized_svgz_declaration_is_refused_by_the_dimension_cap() {
+        let svg = br#"<svg width="500000" height="500000" xmlns="http://www.w3.org/2000/svg">
+                       <rect width="10" height="10" fill="red"/></svg>"#;
+        let compressed = gzip_wrap(svg);
+        let err = decode_svgz(&compressed).unwrap_err();
+        assert!(
+            err.contains("exceeds the supported maximum"),
+            "an oversized SVGZ raster must be refused by the dimension cap; got: {err}"
+        );
+    }
+
+    /// A zero dimension is its own failure and must not be reported as "too large".
+    #[cfg(feature = "svg-rasterizer")]
+    #[test]
+    fn zero_sized_svg_declaration_names_the_zero_dimension() {
+        let err = check_svg_raster_size("SVG", 0, 100).unwrap_err();
+        assert!(err.contains("zero dimension"), "got: {err}");
+        let err = check_svg_raster_size("SVG", 100, 0).unwrap_err();
+        assert!(err.contains("zero dimension"), "got: {err}");
+    }
+
+    /// The cap must not refuse ordinary artwork — otherwise the bomb test above
+    /// would pass with the limit set to any value at all.
+    #[cfg(feature = "svg-rasterizer")]
+    #[test]
+    fn a_normal_sized_svg_still_rasterizes() {
+        let svg = br#"<svg width="64" height="48" xmlns="http://www.w3.org/2000/svg">
+                       <rect width="64" height="48" fill="red"/></svg>"#;
+        let decoded = decode_svg(svg).unwrap();
+        assert_eq!((decoded.width, decoded.height), (64, 48));
+        assert_eq!(decoded.as_rgba8().as_bytes().len(), 64 * 48 * 4);
+    }
+
+    /// The `svgz` decoder must unwrap the gzip container the encoder writes.
+    ///
+    /// This is the end-to-end form of the round trip: the encoder produces bytes
+    /// whose magic `detect_format` routes to `decode_svgz`, and the decoder must
+    /// remove the wrapper before parsing. Before the fix the rasterizing branch
+    /// handed the compressed bytes to `usvg` and the encoder emitted plain SVG, so
+    /// the two agreed only by both being wrong; this asserts the real contract.
+    #[cfg(feature = "svg-rasterizer")]
+    #[test]
+    fn svgz_roundtrip_through_encode_and_decode() {
+        let image =
+            DecodedImage::new(ImageFormat::Rgba8, ImageData::Rgba8(vec![255, 0, 0, 255]), 1, 1);
+        let encoded = crate::image::encoder::encode(&image, ImageFormat::Svgz).unwrap();
+        assert_eq!(&encoded[..2], b"\x1F\x8B", "the encoder must emit a gzip container");
+        assert_eq!(
+            detect_format(&encoded),
+            ImageFormat::Svgz,
+            "the encoded bytes must be routed back to the svgz decoder"
+        );
+
+        let decoded = decode(&encoded).unwrap();
+        assert_eq!(decoded.format, ImageFormat::Svgz);
+        assert_eq!((decoded.width, decoded.height), (1, 1));
+        assert_eq!(decoded.as_rgba8().as_bytes(), &[255, 0, 0, 255]);
+    }
+
+    /// A gzip container that expands past the cap must be refused, not allocated.
+    ///
+    /// Complements the encoder-side round trip: it pins the *bound* rather than the
+    /// unwrapping, and runs on the reachable rasterizing branch.
+    #[cfg(feature = "svg-rasterizer")]
+    #[test]
+    fn svgz_payload_over_the_document_cap_is_refused() {
+        // A tiny gzip member whose body expands beyond MAX_SVGZ_DOCUMENT_BYTES.
+        let payload = vec![b' '; MAX_SVGZ_DOCUMENT_BYTES + 1024];
+        let compressed = gzip_wrap(&payload);
+        assert!(compressed.len() < 256 * 1024, "fixture must stay small");
+
+        let err = decode_svgz(&compressed).unwrap_err();
+        assert!(
+            err.contains("document cap"),
+            "expansion past the cap must be reported as such, not as a parse error; got: {err}"
+        );
+    }
+
+    /// Builds a gzip member around `data`, matching what the encoder emits.
+    ///
+    /// Test-local rather than reusing `encoder::gzip_compress` so that a change to
+    /// the encoder's framing cannot silently redefine the decoder's expectation:
+    /// these tests are the decoder's contract, so they state it independently.
+    fn gzip_wrap(data: &[u8]) -> Vec<u8> {
+        let mut out = vec![0x1F, 0x8B, 0x08, 0x00, 0, 0, 0, 0, 0x00, 0xFF];
+        out.extend_from_slice(&miniz_oxide::deflate::compress_to_vec(data, 6));
+        out.extend_from_slice(&[0, 0, 0, 0]); // CRC-32: not validated by this decoder
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out
+    }
+
+    /// A gzip member with optional header fields set must be refused, not misparsed.
+    ///
+    /// `FLG != 0` means the DEFLATE stream does not start at offset 10, so a decoder
+    /// that assumes the fixed header would feed the inflater header bytes. This pins
+    /// the honest refusal rather than a silent wrong-offset read.
+    #[cfg(feature = "svg-rasterizer")]
+    #[test]
+    fn gzip_member_with_optional_header_fields_is_refused() {
+        let mut member = gzip_wrap(b"<svg/>");
+        member[3] = 0x08; // FNAME set
+        let err = decode_svgz(&member).unwrap_err();
+        assert!(
+            err.contains("optional fields"),
+            "an unframed gzip header must be refused by name; got: {err}"
+        );
+
+        // And a body that is not gzip at all must be reported as such.
+        let err = decode_svgz(b"not gzip data at all, but long enough").unwrap_err();
+        assert!(err.contains("not a gzip member"), "got: {err}");
     }
 
     // ── PNG real-decode tests ────────────────────────────────────────────────

@@ -277,7 +277,20 @@ pub fn bollinger_bands(
         if !middle[index].is_finite() {
             continue;
         }
-        let window = &values[index + 1 - period..=index];
+        // The window is the `period` values ending at `index`, so it starts at
+        // `index + 1 - period`. That subtraction **underflows** for `index <
+        // period - 1`, which `middle[index].is_finite()` happens to exclude today
+        // only because `sma` leaves exactly the first `period - 1` entries `NAN`.
+        // Relying on that made the correctness of this function depend on another
+        // function's warm-up convention; the guard below makes the requirement
+        // local, so a change to `sma` cannot turn this into a slice panic.
+        let Some(start) = index.checked_add(1).and_then(|end| end.checked_sub(period)) else {
+            continue;
+        };
+        if start > index {
+            continue;
+        }
+        let window = &values[start..=index];
         if !window.iter().all(|v| v.is_finite()) {
             continue;
         }
@@ -959,6 +972,42 @@ mod tests {
         let (lower, middle, upper) = bollinger_bands(&values, 5, 2.0);
         assert!(lower[3].is_nan() && middle[3].is_nan() && upper[3].is_nan());
         assert!(middle[4].is_finite(), "the first full window is at index 4");
+    }
+
+    /// A window longer than the series must produce all-gaps, not underflow.
+    ///
+    /// `index + 1 - period` in the window computation evaluates in `usize`, so for
+    /// `period > index + 1` it wraps to a huge value and the slice range panics. Those
+    /// indices are unreachable only because `sma` leaves them `NAN`; this pins the
+    /// behaviour of the band function itself, so it stays correct if the warm-up
+    /// convention ever changes.
+    #[test]
+    fn bollinger_bands_with_period_longer_than_the_series_are_all_gaps() {
+        let values = [1.0, 2.0, 3.0];
+        for period in [4, 5, 100] {
+            let (lower, middle, upper) = bollinger_bands(&values, period, 2.0);
+            assert!(
+                lower.iter().chain(&middle).chain(&upper).all(|v| v.is_nan()),
+                "period {period} exceeds the series, so every band must be a gap"
+            );
+        }
+    }
+
+    /// `period == values.len()` is the boundary: the last index has a full window.
+    #[test]
+    fn bollinger_bands_with_period_equal_to_the_series_fills_the_last_index() {
+        // Window [2,4,4,4]: mean 3.5, population deviation sqrt(3)/2 ≈ 0.8660.
+        let values = [2.0, 4.0, 4.0, 4.0];
+        let (lower, middle, upper) = bollinger_bands(&values, 4, 1.0);
+        assert!(middle[..3].iter().all(|v| v.is_nan()), "warm-up is the first period-1");
+        assert!(close(middle[3], 3.5), "the single full window ends at the last index");
+        let deviation = 0.75f64.sqrt();
+        assert!(
+            close(upper[3] - 3.5, deviation) && close(3.5 - lower[3], deviation),
+            "the boundary window must be measured, not skipped: got upper {} lower {}",
+            upper[3],
+            lower[3]
+        );
     }
 
     /// A flat series has zero deviation, so all three bands collapse onto one line.

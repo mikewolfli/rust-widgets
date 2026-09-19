@@ -16,24 +16,16 @@
 //! - `nav_bar` — CupertinoNavigationBar
 //! - `segmented_control` — CupertinoSegmentedControl
 
-#[cfg(not(alloc_frugal))]
 pub mod core;
-#[cfg(not(alloc_frugal))]
 pub mod date_picker;
-#[cfg(not(alloc_frugal))]
 pub mod nav_bar;
-#[cfg(not(alloc_frugal))]
 pub mod segmented_control;
 
 // Re-exports from core
-#[cfg(not(alloc_frugal))]
 pub use core::{
     CupertinoAlertDialog, CupertinoSlider, CupertinoSwitch, MaterialNavigationRail,
     MaterialSnackbar, RailItem,
 };
-#[cfg(not(alloc_frugal))]
 pub use date_picker::CupertinoDatePicker;
-#[cfg(not(alloc_frugal))]
 pub use nav_bar::CupertinoNavigationBar;
-#[cfg(not(alloc_frugal))]
 pub use segmented_control::CupertinoSegmentedControl;

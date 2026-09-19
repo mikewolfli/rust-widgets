@@ -347,93 +347,46 @@ fn backend_for_kind(kind: widget::WidgetKind) -> &'static dyn control_backend::C
     control_backend::get_control_backend_for_widget(kind)
 }
 
-// ── Kinds that reduced profiles compile out ──
+// ── Absent kinds do not need a stand-in ──
 //
-// `embedded` drops these `WidgetKind` variants, but the `create_*` functions that
-// route on them must stay callable in **every** profile (the public API surface
-// must not vary — principle #53). These aliases name the variant when it exists
-// and substitute the closest always-present kind when it does not, so the call
-// site stays a single unconditional expression.
+// `mini`/`embedded` compile out `MenuBar`, `Menu`, `ToolBar`, `StatusBar`,
+// `ListView`, the dialogs and their `MessageBox`. The `create_*` functions that
+// route on them must still **exist** in every profile so the public surface does
+// not vary (principle #53), and the way that is expressed here is a single
+// `#[cfg(widgets_unstripped)]` gate on the body plus an honest failure otherwise.
 //
-// `Panel` is the stand-in: it exists in every profile, it is a container surface,
-// and the backends that run reduced profiles implement it.
+// # The dead layer this replaced
+//
+// There used to be nine `KIND_*` const pairs, each naming the variant under
+// `widgets_unstripped` and substituting `WidgetKind::Panel` otherwise, all fed
+// into `backend_for_kind(...)`. **That value was never read.**
+// `get_control_backend_for_widget` discards its argument (there is one creation
+// mechanism, so there is nothing to resolve), and every backend `create_*`
+// hardcodes the kind it mounts (`create_menu_bar` mounts `WidgetKind::MenuBar`
+// inside `control_backend/custom`). So the stand-in never reached a widget, and
+// repainting its gate — to `widgets_unstripped`, to `full_widgets`, to anything —
+// changed nothing observable. A prior round recorded a `KIND_LIST_VIEW` gate fix
+// as a behaviour change; it was not one.
+//
+// The reachable defect was the opposite of what the alias pair implied: on `mini`
+// and `embedded` the body still called `create_menu_bar`, which the custom backend
+// used to answer with a valid id addressing **nothing**, so a caller on those
+// profiles held an id that failed every later call. The body is now gated, so those
+// profiles get `0` — the documented "no such control here" answer, matching what
+// `tests/kind_alias_gate_test.rs` pins for the profiles that do ship the control.
 
-/// `WidgetKind::MenuBar` where available, else the always-present fallback.
-#[cfg(not(alloc_frugal))]
-#[cfg(desktop_surface)]
-const KIND_MENU_BAR: widget::WidgetKind = widget::WidgetKind::MenuBar;
-#[cfg(not(alloc_frugal))]
-#[cfg(not(desktop_surface))]
-const KIND_MENU_BAR: widget::WidgetKind = widget::WidgetKind::Panel;
-
-/// `WidgetKind::Menu` where available, else the always-present fallback.
-#[cfg(not(alloc_frugal))]
-#[cfg(desktop_surface)]
-const KIND_MENU: widget::WidgetKind = widget::WidgetKind::Menu;
-#[cfg(not(alloc_frugal))]
-#[cfg(not(desktop_surface))]
-const KIND_MENU: widget::WidgetKind = widget::WidgetKind::Panel;
-
-/// `WidgetKind::ToolBar` where available, else the always-present fallback.
-#[cfg(not(alloc_frugal))]
-#[cfg(desktop_surface)]
-const KIND_TOOL_BAR: widget::WidgetKind = widget::WidgetKind::ToolBar;
-#[cfg(not(alloc_frugal))]
-#[cfg(not(desktop_surface))]
-const KIND_TOOL_BAR: widget::WidgetKind = widget::WidgetKind::Panel;
-
-/// `WidgetKind::StatusBar` where available, else the always-present fallback.
-#[cfg(not(alloc_frugal))]
-#[cfg(desktop_surface)]
-const KIND_STATUS_BAR: widget::WidgetKind = widget::WidgetKind::StatusBar;
-#[cfg(not(alloc_frugal))]
-#[cfg(not(desktop_surface))]
-const KIND_STATUS_BAR: widget::WidgetKind = widget::WidgetKind::Panel;
-
-/// `WidgetKind::ListView` where available, else the always-present fallback.
+/// The id returned when the running profile does not ship the requested control.
 ///
-/// The variant's own gate is `#[cfg(widgets_unstripped)]` (`src/widget/kind.rs`),
-/// not `desktop_surface` — `tablet`/`mobile` are not desktop surfaces yet do ship
-/// the item-view control. Gating on `desktop_surface` here made
-/// `create_list_view(..)` hand back a `Panel` on exactly those two profiles.
-#[cfg(not(alloc_frugal))]
-#[cfg(widgets_unstripped)]
-const KIND_LIST_VIEW: widget::WidgetKind = widget::WidgetKind::ListView;
-#[cfg(not(alloc_frugal))]
-#[cfg(not(widgets_unstripped))]
-const KIND_LIST_VIEW: widget::WidgetKind = widget::WidgetKind::Panel;
-
-/// `WidgetKind::MessageBox` where available, else the always-present fallback.
-#[cfg(not(alloc_frugal))]
-#[cfg(full_widgets)]
-const KIND_MESSAGE_BOX: widget::WidgetKind = widget::WidgetKind::MessageBox;
-#[cfg(not(alloc_frugal))]
-#[cfg(not(full_widgets))]
-const KIND_MESSAGE_BOX: widget::WidgetKind = widget::WidgetKind::Panel;
-
-/// `WidgetKind::FileDialog` where available, else the always-present fallback.
-#[cfg(not(alloc_frugal))]
-#[cfg(full_widgets)]
-const KIND_FILE_DIALOG: widget::WidgetKind = widget::WidgetKind::FileDialog;
-#[cfg(not(alloc_frugal))]
-#[cfg(not(full_widgets))]
-const KIND_FILE_DIALOG: widget::WidgetKind = widget::WidgetKind::Panel;
-
-/// `WidgetKind::ColorDialog` where available, else the always-present fallback.
-#[cfg(not(alloc_frugal))]
-#[cfg(full_widgets)]
-const KIND_COLOR_DIALOG: widget::WidgetKind = widget::WidgetKind::ColorDialog;
-#[cfg(not(alloc_frugal))]
-#[cfg(not(full_widgets))]
-const KIND_COLOR_DIALOG: widget::WidgetKind = widget::WidgetKind::Panel;
-
-/// `WidgetKind::FontDialog` where available, else the always-present fallback.
-#[cfg(not(alloc_frugal))]
-#[cfg(full_widgets)]
-const KIND_FONT_DIALOG: widget::WidgetKind = widget::WidgetKind::FontDialog;
-#[cfg(not(alloc_frugal))]
-#[cfg(not(full_widgets))]
-const KIND_FONT_DIALOG: widget::WidgetKind = widget::WidgetKind::Panel;
+/// Not `Panel`'s id, and not any id that would address a different control: a
+/// caller that receives `0` can test for it, whereas a valid id addressing the
+/// wrong thing cannot be detected at all. `widget::runtime` documents `0` as "no
+/// widget", and the C ABI already reports it the same way.
+///
+/// Gated `not(widgets_unstripped)` because that is exactly where it is consumed:
+/// on a profile that ships the whole widget set every `create_*` reaches its real
+/// constructor and the fallback branch is compiled out.
+#[cfg(all(not(alloc_frugal), not(widgets_unstripped)))]
+const NO_SUCH_CONTROL: crate::core::ObjectId = 0;
 
 /// Create a top-level window with specified title and geometry.
 ///
@@ -580,6 +533,10 @@ pub fn create_panel(
 /// Create a message box dialog as a child of specified parent.
 ///
 /// Creates a message box. The backend chooses how it is hosted.
+///
+/// Returns `0` on a profile that does not ship the message box (`mini`,
+/// `embedded`). Callers must treat `0` as "no control was created" rather than
+/// using it as a parent: see the note above [`NO_SUCH_CONTROL`].
 pub fn create_message_box(
     parent: crate::core::ObjectId,
     title: &str,
@@ -589,12 +546,23 @@ pub fn create_message_box(
     width: u32,
     height: u32,
 ) -> crate::core::ObjectId {
-    backend_for_kind(KIND_MESSAGE_BOX).create_message_box(parent, title, text, x, y, width, height)
+    #[cfg(widgets_unstripped)]
+    {
+        backend_for_kind(widget::WidgetKind::MessageBox)
+            .create_message_box(parent, title, text, x, y, width, height)
+    }
+    #[cfg(not(widgets_unstripped))]
+    {
+        let _ = (parent, title, text, x, y, width, height);
+        NO_SUCH_CONTROL
+    }
 }
 #[cfg(not(alloc_frugal))]
 /// Create a file dialog as a child of specified parent.
 ///
 /// Creates a file dialog. The backend chooses how it is hosted.
+///
+/// Returns `0` on a profile that does not ship the file dialog.
 pub fn create_file_dialog(
     parent: crate::core::ObjectId,
     x: i32,
@@ -602,10 +570,21 @@ pub fn create_file_dialog(
     width: u32,
     height: u32,
 ) -> crate::core::ObjectId {
-    backend_for_kind(KIND_FILE_DIALOG).create_file_dialog(parent, "", x, y, width, height)
+    #[cfg(widgets_unstripped)]
+    {
+        backend_for_kind(widget::WidgetKind::FileDialog)
+            .create_file_dialog(parent, "", x, y, width, height)
+    }
+    #[cfg(not(widgets_unstripped))]
+    {
+        let _ = (parent, x, y, width, height);
+        NO_SUCH_CONTROL
+    }
 }
 #[cfg(not(alloc_frugal))]
 /// Create a color dialog as a child of specified parent.
+///
+/// Returns `0` on a profile that does not ship the color dialog.
 pub fn create_color_dialog(
     parent: crate::core::ObjectId,
     x: i32,
@@ -613,10 +592,21 @@ pub fn create_color_dialog(
     width: u32,
     height: u32,
 ) -> crate::core::ObjectId {
-    backend_for_kind(KIND_COLOR_DIALOG).create_color_dialog(parent, "", x, y, width, height)
+    #[cfg(widgets_unstripped)]
+    {
+        backend_for_kind(widget::WidgetKind::ColorDialog)
+            .create_color_dialog(parent, "", x, y, width, height)
+    }
+    #[cfg(not(widgets_unstripped))]
+    {
+        let _ = (parent, x, y, width, height);
+        NO_SUCH_CONTROL
+    }
 }
 #[cfg(not(alloc_frugal))]
 /// Create a font dialog as a child of specified parent.
+///
+/// Returns `0` on a profile that does not ship the font dialog.
 pub fn create_font_dialog(
     parent: crate::core::ObjectId,
     x: i32,
@@ -624,7 +614,16 @@ pub fn create_font_dialog(
     width: u32,
     height: u32,
 ) -> crate::core::ObjectId {
-    backend_for_kind(KIND_FONT_DIALOG).create_font_dialog(parent, "", x, y, width, height)
+    #[cfg(widgets_unstripped)]
+    {
+        backend_for_kind(widget::WidgetKind::FontDialog)
+            .create_font_dialog(parent, "", x, y, width, height)
+    }
+    #[cfg(not(widgets_unstripped))]
+    {
+        let _ = (parent, x, y, width, height);
+        NO_SUCH_CONTROL
+    }
 }
 #[cfg(not(alloc_frugal))]
 /// Creates a spin box. The backend chooses how it is hosted.
@@ -639,6 +638,8 @@ pub fn create_spin_box(
 }
 #[cfg(not(alloc_frugal))]
 /// Creates a list view. The backend chooses how it is hosted.
+///
+/// Returns `0` on a profile that does not ship the item view.
 pub fn create_list_view(
     parent: crate::core::ObjectId,
     x: i32,
@@ -646,7 +647,15 @@ pub fn create_list_view(
     width: u32,
     height: u32,
 ) -> crate::core::ObjectId {
-    backend_for_kind(KIND_LIST_VIEW).create_list_view(parent, x, y, width, height)
+    #[cfg(widgets_unstripped)]
+    {
+        backend_for_kind(widget::WidgetKind::ListView).create_list_view(parent, x, y, width, height)
+    }
+    #[cfg(not(widgets_unstripped))]
+    {
+        let _ = (parent, x, y, width, height);
+        NO_SUCH_CONTROL
+    }
 }
 /// Creates a scroll area. The backend chooses how it is hosted.
 #[cfg(not(alloc_frugal))]
@@ -1586,13 +1595,23 @@ pub fn create_menu_bar(
     width: u32,
     height: u32,
 ) -> crate::core::ObjectId {
-    backend_for_kind(KIND_MENU_BAR).create_menu_bar(parent, x, y, width, height)
+    #[cfg(widgets_unstripped)]
+    {
+        backend_for_kind(widget::WidgetKind::MenuBar).create_menu_bar(parent, x, y, width, height)
+    }
+    #[cfg(not(widgets_unstripped))]
+    {
+        let _ = (parent, x, y, width, height);
+        NO_SUCH_CONTROL
+    }
 }
 /// Adds a top-level menu to a menu bar.
 ///
 /// `parent` must be the **menu bar**, not the window: a menu's parent is
 /// structurally its bar and several backends silently do nothing when given a
 /// window instead.
+///
+/// Returns `0` on a profile that does not ship menus.
 #[cfg(not(alloc_frugal))]
 pub fn create_menu(
     parent: crate::core::ObjectId,
@@ -1602,7 +1621,15 @@ pub fn create_menu(
     width: u32,
     height: u32,
 ) -> crate::core::ObjectId {
-    backend_for_kind(KIND_MENU).create_menu(parent, text, x, y, width, height)
+    #[cfg(widgets_unstripped)]
+    {
+        backend_for_kind(widget::WidgetKind::Menu).create_menu(parent, text, x, y, width, height)
+    }
+    #[cfg(not(widgets_unstripped))]
+    {
+        let _ = (parent, text, x, y, width, height);
+        NO_SUCH_CONTROL
+    }
 }
 /// Attaches a menu bar to a window.
 ///
@@ -1696,6 +1723,8 @@ pub fn inject_menu_trigger(menu_item_id: crate::core::ObjectId) -> bool {
 ///
 /// The returned id can be wrapped in an `app::ToolBarHandle` for the
 /// typed operations (adding actions, changing orientation).
+///
+/// Returns `0` on a profile that does not ship the tool bar.
 #[cfg(not(alloc_frugal))]
 pub fn create_tool_bar(
     parent: crate::core::ObjectId,
@@ -1704,9 +1733,19 @@ pub fn create_tool_bar(
     width: u32,
     height: u32,
 ) -> crate::core::ObjectId {
-    backend_for_kind(KIND_TOOL_BAR).create_tool_bar(parent, x, y, width, height)
+    #[cfg(widgets_unstripped)]
+    {
+        backend_for_kind(widget::WidgetKind::ToolBar).create_tool_bar(parent, x, y, width, height)
+    }
+    #[cfg(not(widgets_unstripped))]
+    {
+        let _ = (parent, x, y, width, height);
+        NO_SUCH_CONTROL
+    }
 }
 /// Creates a status bar as a child of `parent`, with `text` as its message.
+///
+/// Returns `0` on a profile that does not ship the status bar.
 #[cfg(not(alloc_frugal))]
 pub fn create_status_bar(
     parent: crate::core::ObjectId,
@@ -1716,7 +1755,16 @@ pub fn create_status_bar(
     width: u32,
     height: u32,
 ) -> crate::core::ObjectId {
-    backend_for_kind(KIND_STATUS_BAR).create_status_bar(parent, text, x, y, width, height)
+    #[cfg(widgets_unstripped)]
+    {
+        backend_for_kind(widget::WidgetKind::StatusBar)
+            .create_status_bar(parent, text, x, y, width, height)
+    }
+    #[cfg(not(widgets_unstripped))]
+    {
+        let _ = (parent, text, x, y, width, height);
+        NO_SUCH_CONTROL
+    }
 }
 // Drag and Drop
 /// Starts a drag of `payload` out of `source_widget_id`, advertising it as

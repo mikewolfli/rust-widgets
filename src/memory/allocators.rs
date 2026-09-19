@@ -148,7 +148,14 @@ impl ArenaAllocator {
         let size = core::mem::size_of::<T>();
         let align = core::mem::align_of::<T>();
         let aligned_offset = self.offset.checked_add(align - 1)? & !(align - 1);
-        let new_offset = aligned_offset + size;
+        // Checked, not plain: the `?` above guards only the alignment padding, so
+        // without this an `aligned_offset` within `size` of `usize::MAX` would wrap
+        // `new_offset` to a small value, pass the bounds test below, and hand out a
+        // pointer past the end of the buffer. The layout makes that unreachable
+        // today (a real allocation is far from `usize::MAX`), but this function
+        // returns a raw pointer, so the check is worth having in the arithmetic
+        // rather than in an argument about the caller.
+        let new_offset = aligned_offset.checked_add(size)?;
         if new_offset > self.layout.size() {
             return None;
         }

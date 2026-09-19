@@ -62,6 +62,7 @@ uint64_t rw_embedded_engine_pending_task_count(void);
 uint64_t rw_embedded_engine_window_count(void);
 int rw_error_code(uint64_t _handle);
 char* rw_error_message(uint64_t _handle);
+void rw_free_bytes(uint8_t* ptr, unsigned int len);
 void rw_free_rust_string(char* s);
 void rw_free_string(char* s);
 const char* rw_get_clipboard_text(void);

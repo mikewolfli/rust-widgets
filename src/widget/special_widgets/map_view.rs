@@ -244,6 +244,21 @@ impl WidgetProperties for MapView {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Reports the one published command that names no property.
+    ///
+    /// `set_markers` replaces the whole marker list through [`Self::set_markers`].
+    /// `marker_count` is the read-only view of that list and is deliberately not
+    /// writable (setting it would not say *which* markers to remove), so the default
+    /// `set_foo` convention could not resolve `markers` to a property and reported the
+    /// command unknown. `OutOfRange` is the accurate answer: the command is real and
+    /// its payload is a marker list, which is not a [`CapabilityValue`].
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "set_markers" => Err(CapabilityAccessError::OutOfRange),
+            _ => self.default_command(name),
+        }
+    }
 }
 
 impl EventHandler for MapView {

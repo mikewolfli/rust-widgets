@@ -49,6 +49,10 @@ use crate::widget::advanced_widgets::date_edit::Date;
 #[cfg(full_widgets)]
 use crate::widget::advanced_widgets::time_edit::Time;
 use crate::widget::base_widgets::checkbox::CheckState;
+#[cfg(full_widgets)]
+use crate::widget::dialog::message_box::MessageBoxIcon;
+#[cfg(widgets_unstripped)]
+use crate::widget::display_widgets::badge::BadgeLevel;
 #[cfg(widgets_unstripped)]
 use crate::widget::display_widgets::lcd_number::{LCDNumberMode, SegmentStyle};
 #[cfg(widgets_unstripped)]
@@ -590,6 +594,91 @@ pub fn expect_segment_style(value: CapabilityValue) -> Result<SegmentStyle, Capa
         "filled" => Ok(SegmentStyle::Filled),
         "flat" => Ok(SegmentStyle::Flat),
         _ => Err(CapabilityAccessError::TypeMismatch),
+    }
+}
+
+/// Parses a [`BadgeLevel`]: `info`, `success`, `warning`, or `error`.
+///
+/// Case- and separator-insensitive; the tokens match [`badge_level_to_str`].
+///
+/// `Badge`'s severity decides its colour, and it was reachable only through the
+/// inherent `set_level` — a caller using the documented property route got
+/// `UnknownProperty` for the property that explains the badge's appearance.
+#[cfg(widgets_unstripped)]
+pub fn expect_badge_level(value: CapabilityValue) -> Result<BadgeLevel, CapabilityAccessError> {
+    let token = match value {
+        CapabilityValue::String(v) => normalize_key(&v),
+        _ => return Err(CapabilityAccessError::TypeMismatch),
+    };
+
+    match token.as_str() {
+        "info" | "information" => Ok(BadgeLevel::Info),
+        "success" | "ok" => Ok(BadgeLevel::Success),
+        "warning" | "warn" => Ok(BadgeLevel::Warning),
+        "error" | "danger" | "critical" => Ok(BadgeLevel::Error),
+        _ => Err(CapabilityAccessError::TypeMismatch),
+    }
+}
+
+/// The string spelling of a [`BadgeLevel`], the inverse of [`expect_badge_level`].
+#[cfg(widgets_unstripped)]
+pub fn badge_level_to_str(level: BadgeLevel) -> &'static str {
+    match level {
+        BadgeLevel::Info => "info",
+        BadgeLevel::Success => "success",
+        BadgeLevel::Warning => "warning",
+        BadgeLevel::Error => "error",
+    }
+}
+
+/// Parses a [`MessageBoxIcon`]: `none`, `information`, `question`, `warning`, or
+/// `critical`.
+///
+/// Case- and separator-insensitive, and the tokens match those produced by
+/// [`message_box_icon_to_str`]. The accepted spellings are the same ones the JSON
+/// loader accepts for a message box's `icon` key, so a document and a property write
+/// cannot disagree about what `"warning"` means.
+///
+/// # Why this exists
+///
+/// `MessageBox` has always had an icon — it is drawn, and `warning()` / `critical()`
+/// construct it — but the property layer could not reach it: `get`/`set` did not
+/// answer `"icon"`, `property_names` omitted it, and the capability table did not
+/// declare it. A caller using the documented property route therefore got
+/// `UnknownProperty` for a property the control plainly has, while the JSON loader
+/// happily accepted it. This codec is the missing half of that pair.
+#[cfg(full_widgets)]
+pub fn expect_message_box_icon(
+    value: CapabilityValue,
+) -> Result<MessageBoxIcon, CapabilityAccessError> {
+    let token = match value {
+        CapabilityValue::String(v) => normalize_key(&v),
+        _ => return Err(CapabilityAccessError::TypeMismatch),
+    };
+
+    match token.as_str() {
+        "none" | "no_icon" | "nicon" => Ok(MessageBoxIcon::NoIcon),
+        "information" | "info" => Ok(MessageBoxIcon::Information),
+        "question" => Ok(MessageBoxIcon::Question),
+        "warning" | "warn" => Ok(MessageBoxIcon::Warning),
+        "critical" | "error" => Ok(MessageBoxIcon::Critical),
+        _ => Err(CapabilityAccessError::TypeMismatch),
+    }
+}
+
+/// The string spelling of a [`MessageBoxIcon`], the inverse of
+/// [`expect_message_box_icon`].
+///
+/// The pair lives together so a control that can write an icon can always read it
+/// back, and so the two spellings cannot drift apart (BLUE15 §2).
+#[cfg(full_widgets)]
+pub fn message_box_icon_to_str(icon: MessageBoxIcon) -> &'static str {
+    match icon {
+        MessageBoxIcon::NoIcon => "none",
+        MessageBoxIcon::Information => "information",
+        MessageBoxIcon::Question => "question",
+        MessageBoxIcon::Warning => "warning",
+        MessageBoxIcon::Critical => "critical",
     }
 }
 

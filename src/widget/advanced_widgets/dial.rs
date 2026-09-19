@@ -288,6 +288,21 @@ impl WidgetProperties for Dial {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Reports the one published command that names no property.
+    ///
+    /// `set_range` sets two properties at once (`minimum` and `maximum`) through the
+    /// control's own [`Self::set_range`], so neither property name alone stands for
+    /// it. The default `set_foo` convention would have resolved `range` against
+    /// `property_names` and, finding nothing, answered `UnknownCommand` for a command
+    /// the control really implements. Answering `OutOfRange` says what is true: the
+    /// command exists and needs the caller to supply a value.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "set_range" => Err(CapabilityAccessError::OutOfRange),
+            _ => self.default_command(name),
+        }
+    }
 }
 
 impl EventHandler for Dial {

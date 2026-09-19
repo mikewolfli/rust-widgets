@@ -2,33 +2,34 @@
 // SPDX-License-Identifier: MIT
 
 //! Media widget types — rich content and media playback controls.
+//!
+//! # Gating
+//!
+//! The whole folder is declared `#[cfg(full_widgets)]` by `src/widget/mod.rs`, so
+//! nothing inside needs a second profile gate. `full_widgets` is
+//! `device_profile && !stripped`, which already excludes `mini` and `embedded`
+//! (`not(alloc_frugal)` and `widgets_unstripped` respectively) — repeating those
+//! predicates here produced gates that were true wherever the folder compiled at
+//! all, which is the kind of redundancy that makes a later reader believe a
+//! finer-grained gate is being enforced than really is.
+//!
+//! This doc comment used to claim "AnimatedImage is always available
+//! (animated_image.rs has no cfg gate on mini)". That was false in the way that
+//! matters: the module has no gate of its own, but the folder containing it is
+//! excluded on the reduced profiles, so `AnimatedImage` is absent there too.
 
-#[cfg(not(alloc_frugal))]
 pub mod animated_image;
-#[cfg(not(alloc_frugal))]
 pub mod audio_visualizer;
-#[cfg(not(alloc_frugal))]
 pub mod camera_preview;
-#[cfg(not(alloc_frugal))]
 pub mod hero_animation;
-#[cfg(not(alloc_frugal))]
 pub mod lottie_widget;
-#[cfg(not(alloc_frugal))]
 pub mod rive_widget;
-#[cfg(not(alloc_frugal))]
 pub mod video_player;
 
-// AnimatedImage is always available (animated_image.rs has no cfg gate on mini)
 pub use animated_image::{AnimatedFrame, AnimatedImage, AnimatedImageFormat};
-#[cfg(not(alloc_frugal))]
 pub use audio_visualizer::AudioVisualizer;
-#[cfg(not(alloc_frugal))]
 pub use camera_preview::CameraPreview;
-#[cfg(not(alloc_frugal))]
 pub use hero_animation::HeroAnimation;
-#[cfg(not(alloc_frugal))]
 pub use lottie_widget::LottieWidget;
-#[cfg(not(alloc_frugal))]
 pub use rive_widget::{RiveInput, RiveInputValue, RiveWidget};
-#[cfg(not(alloc_frugal))]
 pub use video_player::VideoPlayer;

@@ -24,6 +24,21 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 // Lottie shape data model
 // ──────────────────────────────────────────────
 
+/// The largest frame count a Lottie composition may declare.
+///
+/// A real composition is seconds long: at 60 fps this allows over four and a half
+/// hours of animation. The cap exists because `op`/`ip` are read straight from the
+/// document, so without it a single field can declare `u32::MAX` frames.
+const MAX_LOTTIE_FRAMES: u32 = 1_000_000;
+
+/// Frame-rate bounds a composition may declare, in frames per second.
+///
+/// The lower bound keeps the frame timer from advancing by a fraction that rounds
+/// to zero forever; the upper bound keeps `frame_rate` finite as an `f32` and well
+/// above any display's refresh rate.
+const MIN_LOTTIE_FPS: f32 = 0.01;
+const MAX_LOTTIE_FPS: f32 = 1000.0;
+
 /// A single keyframe for an animated property.
 #[derive(Debug, Clone)]
 pub struct LottieKeyFrame {
@@ -464,29 +479,58 @@ impl LottieWidget {
             .and_then(|v| v.as_f64())
             .ok_or_else(|| "Missing or invalid 'ip' field in Lottie JSON".to_string())?;
 
-        let total = (op - ip).max(0.0) as u32;
+        // `op` and `ip` come straight out of the document. `(op - ip)` is therefore
+        // attacker-controlled in both directions: it can be `NaN` (either field
+        // `NaN`, or both infinite with the same sign), and it can be astronomically
+        // large (`op = 1e12`), which a bare `as u32` would saturate to `u32::MAX` —
+        // a nonsensical animation length that every frame-advance loop would then
+        // dutifully walk. The clamp states the range this widget actually supports,
+        // and `round()` is used because `as` truncates (`op = 10.9, ip = 10.0` is one
+        // frame, not zero).
+        let span = op - ip;
+        if !span.is_finite() {
+            return Err(format!(
+                "Lottie animation has a non-finite frame range: in-point {ip}, out-point {op}"
+            ));
+        }
+        let total = span.clamp(0.0, MAX_LOTTIE_FRAMES as f64).round() as u32;
         if total == 0 {
             return Err(format!(
                 "Lottie animation has zero frames: its in-point {ip} and out-point {op} \
                  declare no playable range"
             ));
         }
+        if span > MAX_LOTTIE_FRAMES as f64 {
+            return Err(format!(
+                "Lottie animation declares {span} frames, which exceeds the {MAX_LOTTIE_FRAMES} \
+                 frame cap; the file is malformed or is not a Lottie composition"
+            ));
+        }
 
-        // Extract frame rate if present.
+        // Extract frame rate if present. Clamped rather than assigned directly: a
+        // hostile `fr` of `1e38` becomes `inf` as an `f32`, and an infinite rate
+        // makes the frame timer advance by zero every tick — an animation that can
+        // never finish.
         if let Some(fr) = parsed.get("fr").and_then(|v| v.as_f64()) {
-            if fr > 0.0 {
-                self.frame_rate = fr as f32;
+            if fr.is_finite() && fr > 0.0 {
+                self.frame_rate = fr.clamp(MIN_LOTTIE_FPS as f64, MAX_LOTTIE_FPS as f64) as f32;
             }
         }
 
-        // Extract composition dimensions.
+        // Extract composition dimensions. These scale every drawn layer, so a
+        // non-finite or negative value would propagate into the transform rather
+        // than merely looking wrong.
         if let Some(w) = parsed.get("w").and_then(|v| v.as_f64()) {
-            self.comp_width = w;
+            if w.is_finite() && w > 0.0 {
+                self.comp_width = w;
+            }
         }
         if let Some(h) = parsed.get("h").and_then(|v| v.as_f64()) {
-            self.comp_height = h;
+            if h.is_finite() && h > 0.0 {
+                self.comp_height = h;
+            }
         }
-        self.frame_offset = ip;
+        self.frame_offset = if ip.is_finite() { ip } else { 0.0 };
 
         // Parse layers.
         self.layers = if let Some(layers_arr) = parsed.get("layers").and_then(|v| v.as_array()) {
@@ -636,6 +680,28 @@ impl LottieWidget {
     /// Returns a reference to the parsed layers.
     pub fn layers(&self) -> &[LottieLayer] {
         &self.layers
+    }
+
+    /// The composition's declared width in the document's coordinate space.
+    ///
+    /// Read from `w` at load time and validated then (finite and positive), because
+    /// every layer transform is scaled by it: an unusable value would distort the
+    /// whole composition rather than fail one layer.
+    pub fn comp_width(&self) -> f64 {
+        self.comp_width
+    }
+
+    /// The composition's declared height, validated like [`Self::comp_width`].
+    pub fn comp_height(&self) -> f64 {
+        self.comp_height
+    }
+
+    /// The document's in-point (`ip`) as a frame offset.
+    ///
+    /// Non-finite in-points are stored as `0.0` at load time so that playback never
+    /// depends on a `NaN` comparison. See [`Self::comp_width`] for the rationale.
+    pub fn frame_offset(&self) -> f64 {
+        self.frame_offset
     }
 
     /// Render all layers for a given frame.
@@ -895,6 +961,36 @@ impl WidgetProperties for LottieWidget {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["playing", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs the published playback commands.
+    ///
+    /// `set_playing` names no property: playback is exposed as the read-only
+    /// `playing`, and starting it is the control's own [`Self::play`]. The default
+    /// `set_foo` convention would have reported the command unknown for a control
+    /// that implements it, and the property route a `set_playing` spelling implies
+    /// does not exist. The payload-free `play`/`pause`/`stop` verbs are accepted here
+    /// because they name the real methods directly.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "set_playing" => {
+                self.play();
+                Ok(())
+            }
+            "play" => {
+                self.play();
+                Ok(())
+            }
+            "pause" => {
+                self.pause();
+                Ok(())
+            }
+            "stop" => {
+                self.stop();
+                Ok(())
+            }
+            _ => self.default_command(name),
+        }
+    }
 }
 
 impl Draw for LottieWidget {
@@ -1127,6 +1223,86 @@ mod tests {
         let result = lottie.load_json("not valid json");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Invalid Lottie JSON"));
+    }
+
+    /// `op`/`ip` come straight from the document, so an absurd range must be refused.
+    ///
+    /// Before the clamp, `op = 1e12` became `u32::MAX` frames through a saturating
+    /// `as u32`: the widget would then report a frame count no loop could ever finish
+    /// and `total_frames` no longer described the file.
+    #[test]
+    fn lottie_widget_rejects_an_absurd_frame_range() {
+        let mut lottie = LottieWidget::new(Rect::new(0, 0, 200, 200));
+        let json = make_lottie_json(1.0e12, 0.0, 30.0);
+        let err = lottie.load_json(&json).unwrap_err();
+        assert!(
+            err.contains("frame cap"),
+            "an over-long range must be refused by name, not clamped silently; got: {err}"
+        );
+        assert_eq!(lottie.total_frames(), 0, "a refused load must not have taken effect");
+    }
+
+    /// The frame count rounds rather than truncating.
+    ///
+    /// `op = 10.9, ip = 10.0` is a one-frame composition; a bare `as u32` would read
+    /// it as zero and reject a valid file.
+    #[test]
+    fn lottie_widget_rounds_a_fractional_frame_range() {
+        let mut lottie = LottieWidget::new(Rect::new(0, 0, 200, 200));
+        lottie.load_json(&make_lottie_json(10.9, 10.0, 30.0)).unwrap();
+        assert_eq!(lottie.total_frames(), 1);
+    }
+
+    /// A hostile frame rate must not become infinite or zero.
+    ///
+    /// `fr = 1e38` is finite as `f64` but infinite as `f32`; `fr = 1e-9` rounds to a
+    /// timer increment that never reaches one frame. Both are clamped, and a
+    /// non-finite `fr` is ignored so the previous value survives.
+    #[test]
+    fn lottie_widget_clamps_the_declared_frame_rate() {
+        let mut lottie = LottieWidget::new(Rect::new(0, 0, 200, 200));
+
+        lottie.load_json(&make_lottie_json(10.0, 0.0, 1.0e38)).unwrap();
+        let high = lottie.frame_rate();
+        assert!(high.is_finite(), "frame_rate must stay finite, got {high}");
+        assert!(high <= MAX_LOTTIE_FPS, "frame_rate {high} exceeded the cap");
+
+        lottie.load_json(&make_lottie_json(10.0, 0.0, 1.0e-9)).unwrap();
+        let low = lottie.frame_rate();
+        assert!(low >= MIN_LOTTIE_FPS, "frame_rate {low} fell below the floor");
+    }
+
+    /// A non-finite composition size must not reach the layer transform.
+    ///
+    /// `1e400` would be rejected by the JSON parser itself, so the reachable cases
+    /// are a negative size and a zero size: both are finite, both would make
+    /// `widget_rect.width / comp_width` degenerate, and neither should replace the
+    /// default.
+    #[test]
+    fn lottie_widget_ignores_an_unusable_composition_size() {
+        let mut lottie = LottieWidget::new(Rect::new(0, 0, 200, 200));
+        let default_w = lottie.comp_width();
+        let default_h = lottie.comp_height();
+
+        let json = r#"{"op":10,"ip":0,"fr":30,"w":-50,"h":0,"layers":[]}"#;
+        lottie.load_json(json).unwrap();
+        assert_eq!(lottie.comp_width(), default_w, "a negative width must not be adopted");
+        assert_eq!(lottie.comp_height(), default_h, "a zero height must not be adopted");
+        assert!(lottie.comp_width().is_finite() && lottie.comp_width() > 0.0);
+        assert!(lottie.comp_height().is_finite() && lottie.comp_height() > 0.0);
+    }
+
+    /// A missing in-point must leave the frame offset at zero, not poison playback.
+    ///
+    /// `ip` is optional in practice (many exporters omit a zero in-point), and the
+    /// load path tolerates its absence for the range calculation by only reading `op`.
+    #[test]
+    fn lottie_widget_defaults_a_missing_in_point_to_zero() {
+        let mut lottie = LottieWidget::new(Rect::new(0, 0, 200, 200));
+        let json = r#"{"op":10,"ip":0,"fr":30,"w":100,"h":100,"layers":[]}"#;
+        lottie.load_json(json).unwrap();
+        assert_eq!(lottie.frame_offset(), 0.0);
+        assert!(lottie.frame_offset().is_finite());
     }
 
     #[test]

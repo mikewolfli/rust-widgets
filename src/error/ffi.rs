@@ -129,13 +129,18 @@ pub fn record_capability_error(error: crate::widget::capability::types::Capabili
 /// `"has no ':' separator"`, `"unknown property 'backgrond-color'"`. Substituting a
 /// generic message would throw away the only diagnostic the parser produced.
 ///
-/// Leaked rather than owned because the slot holds a `&'static str`; this runs only
-/// on the error path, so the leak is bounded by the number of failed calls a process
-/// makes.
+/// # Why this no longer interns
+///
+/// The message used to be converted to `&'static str` with `Box::leak`, justified
+/// by "this runs only on the error path, so the leak is bounded by the number of
+/// failed calls a process makes". That bound is not a bound: a caller retrying a
+/// rejected declaration — a host re-parsing an edited style sheet, a binding driven
+/// by user input — leaks one allocation per attempt, forever. The slot this feeds
+/// ([`record_last_ffi_error`]) already stores an owned `RwError` whose message is a
+/// `String`, so the leak bought nothing: the text is copied into the slot either
+/// way.
 pub fn record_message_error(message: &str) {
-    use crate::compat::MiniToString;
-    let owned: &'static str = alloc::boxed::Box::leak(message.to_string().into_boxed_str());
-    record_last_ffi_error(super::RwError::new(super::ErrorId::INVALID_ARGUMENT, owned));
+    record_last_ffi_error(super::RwError::new(super::ErrorId::INVALID_ARGUMENT, message));
 }
 
 /// Trait for C‑ABI‑safe types that provide a safe fallback value.

@@ -252,24 +252,83 @@ pub trait WidgetProperties {
     /// # The name convention
     ///
     /// Most published commands are the property route under a verb name:
-    /// `set_text` assigns `text`, `set_alignment` assigns `alignment`, `set_range`
-    /// assigns the range, and so on. Rather than repeat one `match` block per control
-    /// (which drifts the moment a capability table gains a name), this default applies
-    /// that convention: a `set_foo` / `set_foo_bar` name is accepted as *carrying a
-    /// payload*, and answered with `OutOfRange` — the same answer the hand-written
-    /// overrides give — because a payload-less call cannot supply the value the
-    /// property route needs. A name that is not a `set_*` verb is genuinely unknown.
+    /// `set_text` assigns `text`, `set_alignment` assigns `alignment`,
+    /// `set_range` assigns the range, and so on. Rather than repeat one `match` block
+    /// per control (which drifts the moment a capability table gains a name), this
+    /// default applies that convention: a `set_foo` / `set_foo_bar` name is accepted
+    /// as *carrying a payload*, and answered with `OutOfRange` — the same answer the
+    /// hand-written overrides give — because a payload-less call cannot supply the
+    /// value the property route needs.
     ///
-    /// A control may still override this wholesale when it has payload-free commands
-    /// that really execute (`clear`, `next_page`, `toggle`, `trigger`, …); those are
-    /// checked by the same test, so an override cannot silently drop them either.
+    /// # Why the convention is checked against the property list
+    ///
+    /// The convention is only sound when `foo` really is a property of the control,
+    /// because `set_foo` is otherwise an instruction the caller cannot carry out:
+    /// `invoke_command(id, "set_foo")` says "one moment, supply a value", and the
+    /// property route it points at then answers `UnknownProperty`. Accepting any
+    /// `set_`-prefixed string by prefix alone is what let the published `commands`
+    /// lists name properties that do not exist (`avatar` publishing `set_image`
+    /// while the property is `image_source`; `color_dialog` publishing `set_hex`
+    /// against `current_color`; `font_dialog` publishing `set_current_font` with no
+    /// font property at all) — each of them surviving a test that treats `OutOfRange`
+    /// as proof the command exists.
+    ///
+    /// So the name is resolved the same way the caller would resolve it: the `foo`
+    /// part must appear in [`WidgetProperties::property_names`]. A control whose
+    /// command genuinely does not correspond to a property (`clear`, `toggle`, …)
+    /// overrides this method, and the same test checks that override.
+    ///
+    /// The suffix match is exact, not a prefix or a case-folded comparison: property
+    /// names are lower-case ASCII and so are the published command names, so
+    /// anything that fails to match by equality is not the property it claims to be.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        self.default_command(name)
+    }
+
+    /// Applies the `set_foo` convention that [`WidgetProperties::command`] defaults to.
+    ///
+    /// # Why this is a method rather than only a default body
+    ///
+    /// A control whose `commands` list mixes the two kinds — genuine payload-free
+    /// verbs it implements itself *and* `set_foo` names that route to properties —
+    /// has to override `command` to add the first kind. If the override then ends in
+    /// `Err(UnknownCommand)` for everything else, it silently drops the second kind:
+    /// the published `set_value` / `set_zoom` / `set_title` names stop resolving even
+    /// though their properties exist. Delegating the unhandled names here keeps an
+    /// override additive, which is what "override to add, not to replace" means in
+    /// practice.
+    ///
+    /// # Why the convention is checked against the property list
+    ///
+    /// The convention is only sound when `foo` really is a property of the control,
+    /// because `set_foo` is otherwise an instruction the caller cannot carry out:
+    /// `invoke_command(id, "set_foo")` says "supply a value", and the property route
+    /// it points at then answers `UnknownProperty`. Accepting any `set_`-prefixed
+    /// string by prefix alone is what let the published `commands` lists name
+    /// properties that do not exist (`avatar` publishing `set_image` while the
+    /// property is `image_source`; `color_dialog` publishing `set_hex` against
+    /// `current_color`; `font_dialog` publishing `set_current_font` with no font
+    /// property at all) — each of them surviving a test that treats `OutOfRange` as
+    /// proof the command exists.
+    ///
+    /// So the name is resolved the same way the caller would resolve it: the `foo`
+    /// part must appear in [`WidgetProperties::property_names`]. The suffix match is
+    /// exact, not a prefix or a case-folded comparison: property names are lower-case
+    /// ASCII and so are the published command names, so anything that fails to match
+    /// by equality is not the property it claims to be.
+    fn default_command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         // `set_foo` / `set_foo_bar` → the value is supplied through the property
         // route, so a bare invocation reports that it needs one. Matching on the
-        // prefix alone (rather than inspecting the first character after it) keeps
-        // this from rejecting a legitimate name like `set_h1_size`.
-        if name.starts_with("set_") {
-            return Err(CapabilityAccessError::OutOfRange);
+        // prefix (rather than inspecting the first character after it) keeps this
+        // from rejecting a legitimate name like `set_h1_size`.
+        if let Some(property) = name.strip_prefix("set_") {
+            if self.property_names().contains(&property) {
+                return Err(CapabilityAccessError::OutOfRange);
+            }
+            // The verb points at something this control does not have. Reporting it
+            // as payload-needing would send the caller to a property route that
+            // answers `UnknownProperty`.
+            return Err(CapabilityAccessError::UnknownCommand);
         }
         Err(CapabilityAccessError::UnknownCommand)
     }

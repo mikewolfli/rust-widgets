@@ -468,6 +468,21 @@ impl WidgetProperties for DockWidget {
         // Mirrors `DOCK_WIDGET_PROPERTIES`.
         property_names_of!["title", "floating", "docked", BASE_PROPERTY_NAMES]
     }
+
+    /// Reports the two published commands that name no property.
+    ///
+    /// `set_features` and `set_allowed_areas` take a feature set and an area set —
+    /// bitflag enums, not [`CapabilityValue`] scalars — through the control's own
+    /// [`Self::set_features`] / [`Self::set_allowed_areas`]. `DOCK_WIDGET_PROPERTIES`
+    /// does not publish either as a property, so the default `set_foo` convention
+    /// could not resolve them and reported both commands unknown against a control
+    /// that implements them. `OutOfRange` reports that they need a payload.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "set_features" | "set_allowed_areas" => Err(CapabilityAccessError::OutOfRange),
+            _ => self.default_command(name),
+        }
+    }
 }
 
 impl EventHandler for DockWidget {

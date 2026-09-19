@@ -99,6 +99,35 @@ impl WidgetProperties for ImageView {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["scaled", BASE_PROPERTY_NAMES]
     }
+
+    /// Runs the two published commands that cannot travel as a property value.
+    ///
+    /// # Why this control needs an override
+    ///
+    /// The default [`WidgetProperties::command`] implements the `set_foo` convention
+    /// by resolving `foo` against [`Self::property_names`]. That works for scalar
+    /// properties, but an `Image` is not a [`CapabilityValue`] variant, so there is no
+    /// `image_source` property to route through — the payload is set with the control's
+    /// own [`Self::set_image`]. Naming the command after a property that does not exist
+    /// would leave the caller with an instruction they cannot carry out, which is
+    /// exactly what `set_image` used to be.
+    ///
+    /// `set_scaled` is handled here too rather than left to the default: it *does*
+    /// have a property, but this control already owns the typed setter, so the command
+    /// route and the property route end at the same place deliberately.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            // A bare invocation has no image to install; the caller supplies one
+            // through `set_image`. Reporting `OutOfRange` is the same answer a
+            // payload-carrying property command gives.
+            "set_image" => Err(CapabilityAccessError::OutOfRange),
+            "set_scaled" => {
+                self.set_scaled(true);
+                Ok(())
+            }
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl EventHandler for ImageView {

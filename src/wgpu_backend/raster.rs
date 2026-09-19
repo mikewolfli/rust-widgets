@@ -981,8 +981,21 @@ fn blend_pixel_cpu_rgba8(
         set_pixel_cpu_rgba8(pixels, width, x, y, source);
         return;
     }
-    let offset = ((y * width + x) * 4) as usize;
-    if offset + 3 >= pixels.len() {
+    // Widened to `usize` before multiplying, for the same reason
+    // `set_pixel_cpu_rgba8` documents: in `u32` the product wraps for a large `y`,
+    // which in debug panics and in release writes a correctly-in-range but wrong
+    // pixel. This is the read-modify-write sibling of that function and had been
+    // left on the wrapping form.
+    let offset = y as usize * width as usize + x as usize;
+    let Some(offset) = offset.checked_mul(4) else {
+        return;
+    };
+    // `offset + 3` can itself overflow `usize` on a 32-bit target, so the check is
+    // on the last written index rather than on the offset.
+    let Some(last) = offset.checked_add(3) else {
+        return;
+    };
+    if last >= pixels.len() {
         return;
     }
     let dest = Rgba8 {

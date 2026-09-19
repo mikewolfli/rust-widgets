@@ -47,6 +47,10 @@ macro_rules! impl_properties_container {
         #[cfg(not(alloc_frugal))]
         pub(crate) const SPLITTER_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::enumerated("orientation", true, true, &["horizontal", "vertical"]),
+            // Read-only: the count is derived from the registered panes, and
+            // `Splitter::set` answers `ReadOnlyProperty` for it. Declaring it
+            // writable made `set_pane_count` a command whose property route refuses
+            // the write it names.
             PropertySchema::new("pane_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
@@ -66,7 +70,7 @@ macro_rules! impl_properties_container {
         ];
 
         pub(crate) const SCROLL_AREA_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema::new("widget_resizable", PropertyValueKind::Bool, false, false),
+            PropertySchema::new("widget_resizable", PropertyValueKind::Bool, true, true),
             PropertySchema::enumerated(
                 "horizontal_scroll_bar_policy",
                 false,
@@ -121,8 +125,8 @@ macro_rules! impl_properties_container {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const COLLAPSIBLE_PANE_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema::new("title", PropertyValueKind::String, false, false),
-            PropertySchema::new("collapsed", PropertyValueKind::Bool, false, false),
+            PropertySchema::new("title", PropertyValueKind::String, true, true),
+            PropertySchema::new("collapsed", PropertyValueKind::Bool, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -131,8 +135,8 @@ macro_rules! impl_properties_container {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const DOCK_WIDGET_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema::new("title", PropertyValueKind::String, false, false),
-            PropertySchema::new("floating", PropertyValueKind::Bool, false, false),
+            PropertySchema::new("title", PropertyValueKind::String, true, true),
+            PropertySchema::new("floating", PropertyValueKind::Bool, true, true),
             PropertySchema::new("docked", PropertyValueKind::Bool, false, false),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),

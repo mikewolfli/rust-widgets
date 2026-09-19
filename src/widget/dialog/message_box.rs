@@ -9,7 +9,9 @@ use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::tr;
-use crate::widget::capability::coercion::expect_string;
+use crate::widget::capability::coercion::{
+    expect_message_box_icon, expect_string, message_box_icon_to_str,
+};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -352,20 +354,29 @@ impl Widget for MessageBox {
 /// `access_read_dialog.in.rs` dispatch. Both properties are read-only: the old
 /// write layer had no arm for this kind.
 impl WidgetProperties for MessageBox {
-    /// Returns `"title"` and `"text"` as strings (never `None` — the fields simply
-    /// default to empty), delegating anything else to the base widget's shared
-    /// properties such as geometry and visibility.
+    /// Returns `"title"`, `"text"` and `"icon"`, delegating anything else to the
+    /// base widget's shared properties such as geometry and visibility.
+    ///
+    /// `"icon"` answers the current [`MessageBoxIcon`] as its lowercase spelling
+    /// (`"warning"`, `"critical"`, …) — see [`expect_message_box_icon`] for the
+    /// accepted set, which is the same one the JSON loader uses.
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "title" => Ok(CapabilityValue::String(self.title().to_string())),
             "text" => Ok(CapabilityValue::String(self.text().to_string())),
+            "icon" => Ok(CapabilityValue::String(message_box_icon_to_str(self.icon()).to_string())),
             _ => base_property_get(self, name),
         }
     }
 
-    /// Accepts `"title"` and `"text"` and requires a string value for each,
-    /// rejecting other types with [`CapabilityAccessError`]. Other names fall
-    /// through to the base widget's setters. Both writes request a redraw.
+    /// Accepts `"title"`, `"text"` and `"icon"`, requiring a string value for each
+    /// and rejecting other types with [`CapabilityAccessError`]. Other names fall
+    /// through to the base widget's setters. Every write requests a redraw.
+    ///
+    /// The icon was previously unreachable from this route even though the control
+    /// draws it and offers `warning()` / `critical()` constructors: a caller using
+    /// the documented property API got `UnknownProperty` for a property the widget
+    /// plainly has.
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         match name {
             "title" => {
@@ -376,13 +387,32 @@ impl WidgetProperties for MessageBox {
                 self.set_text(expect_string(value)?);
                 Ok(())
             }
+            "icon" => {
+                self.set_icon(expect_message_box_icon(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
-    /// `"title"`, `"text"`, then every universally supported base property.
+    /// `"title"`, `"text"`, `"icon"`, then every universally supported base
+    /// property.
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["title", "text", BASE_PROPERTY_NAMES]
+        property_names_of!["title", "text", "icon", BASE_PROPERTY_NAMES]
+    }
+
+    /// Runs one of the commands `message_box` publishes.
+    ///
+    /// The convenience constructors (`warning()`, `critical()`, `question()`,
+    /// `information()`) cover the common cases, but a caller holding an already-built
+    /// box needs a way to switch its severity — and a generic consumer offering a
+    /// command palette needs a *name* for that. Both carry a payload, so both are
+    /// answered through the property route, which is where the value goes.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "set_text" | "set_title" | "set_icon" => Err(CapabilityAccessError::OutOfRange),
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
     }
 }
 /// Keyboard handling: Enter activates the default button and Escape activates
@@ -596,6 +626,104 @@ mod tests {
 
         mb.set_icon(MessageBoxIcon::NoIcon);
         assert_eq!(mb.icon(), MessageBoxIcon::NoIcon);
+    }
+
+    /// The icon must be reachable through the **property route**, not only through
+    /// the inherent `set_icon`.
+    ///
+    /// A warning/error prompt carries a severity glyph, and the control always drew
+    /// one — but `get`/`set` did not answer `"icon"`, `property_names` omitted it and
+    /// the capability table did not declare it, so a caller using the documented
+    /// property API got `UnknownProperty` for a property the widget plainly has,
+    /// while the JSON loader accepted an `icon` key. This pins all four halves.
+    #[test]
+    fn message_box_icon_is_reachable_through_the_property_route() {
+        use crate::widget::capability::types::CapabilityValue;
+
+        let mut mb = MessageBox::new(Rect::new(0, 0, 300, 150));
+
+        // Readable, and the default reads back as the `none` token.
+        assert_eq!(
+            mb.get("icon").expect("`icon` must be readable"),
+            CapabilityValue::String("none".to_string())
+        );
+
+        // Writable, by the same spellings the JSON loader accepts.
+        for (token, expected) in [
+            ("information", MessageBoxIcon::Information),
+            ("question", MessageBoxIcon::Question),
+            ("warning", MessageBoxIcon::Warning),
+            ("critical", MessageBoxIcon::Critical),
+            ("none", MessageBoxIcon::NoIcon),
+        ] {
+            mb.set("icon", CapabilityValue::String(token.to_string()))
+                .unwrap_or_else(|e| panic!("set(\"icon\", {token:?}) must be accepted: {e:?}"));
+            assert_eq!(mb.icon(), expected, "token {token:?} must select {expected:?}");
+            // Round-trips: what was written is what is read back.
+            assert_eq!(mb.get("icon").unwrap(), CapabilityValue::String(token.to_string()));
+        }
+
+        // `error` is an accepted synonym for `critical`, because that is what a
+        // caller writing an error prompt will reach for first.
+        mb.set("icon", CapabilityValue::String("error".to_string()))
+            .expect("`error` must be accepted as a synonym for `critical`");
+        assert_eq!(mb.icon(), MessageBoxIcon::Critical);
+
+        // The set is published, so a generic consumer can discover it.
+        assert!(
+            mb.property_names().contains(&"icon"),
+            "`icon` must appear in property_names, or the schema promises a property the \
+             contract does not publish"
+        );
+
+        // A bad token is refused rather than silently becoming `NoIcon` — the JSON
+        // loader's `_ =>` fallback is deliberate there, but a direct write must not
+        // guess.
+        assert!(
+            mb.set("icon", CapabilityValue::String("chartreuse".to_string())).is_err(),
+            "an unknown icon token must be refused"
+        );
+        // And a wrong type is a type error, not a silent coercion.
+        assert!(mb.set("icon", CapabilityValue::Bool(true)).is_err());
+    }
+
+    /// The convenience constructors set the severity a caller expects. A `warning()`
+    /// that produced `NoIcon` would be the worst kind of silent bug: the prompt still
+    /// appears, just without telling the user how serious it is.
+    #[test]
+    fn message_box_constructors_carry_their_severity() {
+        let cases: [(MessageBox, MessageBoxIcon); 4] = [
+            (
+                MessageBox::warning(Rect::new(0, 0, 300, 150), "Disk almost full", "12 MB left"),
+                MessageBoxIcon::Warning,
+            ),
+            (
+                MessageBox::critical(Rect::new(0, 0, 300, 150), "Save failed", "Disk is full"),
+                MessageBoxIcon::Critical,
+            ),
+            (
+                MessageBox::information(Rect::new(0, 0, 300, 150), "Done", "Export finished"),
+                MessageBoxIcon::Information,
+            ),
+            (
+                MessageBox::question(
+                    Rect::new(0, 0, 300, 150),
+                    "Discard?",
+                    "This cannot be undone",
+                ),
+                MessageBoxIcon::Question,
+            ),
+        ];
+
+        for (mb, expected) in cases {
+            assert_eq!(mb.icon(), expected);
+            // The severity is also readable through the property route, so a caller
+            // that builds a box one way can inspect it the other.
+            assert_eq!(
+                mb.get("icon").unwrap(),
+                CapabilityValue::String(message_box_icon_to_str(expected).to_string())
+            );
+        }
     }
 
     // ── 4. Setting buttons ──────────────────────────────────────────

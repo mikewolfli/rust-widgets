@@ -32,7 +32,24 @@
 //! the expected value is the alias target and the row is annotated. A method that
 //! quietly built something *unrelated* would have no such annotation and would fail.
 
-#![cfg(all(feature = "desktop", not(alloc_frugal)))]
+#![cfg(all(full_widgets, feature = "desktop"))] // widest table; see the header
+                                                //
+                                                // # Why the gate above is `desktop`, and what that cost
+                                                //
+                                                // The alias-routing defect this file was written to catch
+                                                // (`create_web_view` building a `MediaPlayer`) was a *capability* mismatch, and
+                                                // that class is desktop-only in practice. But the same file also walks every
+                                                // `create_*` alias route, and **those aliases are gated per profile**
+                                                // (`src/lib.rs`: `KIND_MENU_BAR`, `KIND_LIST_VIEW`, …). Gating the whole file on
+                                                // `desktop` meant the alias routes were only ever exercised where every alias
+                                                // resolves to the variant it names — the one profile where the bug cannot occur.
+                                                //
+                                                // The `widgets_unstripped` alias matrix is therefore asserted separately, in
+                                                // `tests/kind_alias_gate_test.rs`, which runs on **every** profile that ships the
+                                                // unstripped widget set (`desktop`, `tablet`, `mobile`) and compares each alias
+                                                // against the variant it must resolve to. Do not re-unify the two: this file's
+                                                // table is only meaningful where the full capability registry exists, and the
+                                                // matrix file's assertion is only meaningful where the profile differs.
 
 use rust_widgets::control_backend::{ControlBackend, CustomPaintControlBackend};
 use rust_widgets::core::ObjectId;

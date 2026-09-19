@@ -720,6 +720,8 @@ class RustWidgets:
         # ------------------------------------------------------------------ #
         L.rw_free_string.argtypes = [c_char_p]
         L.rw_free_string.restype = None
+        L.rw_free_bytes.argtypes = [c_void_p, c_uint]
+        L.rw_free_bytes.restype = None
 
         L.rw_free_rust_string.argtypes = [c_char_p]
         L.rw_free_rust_string.restype = None
@@ -1591,18 +1593,13 @@ class RustWidgets:
         payload = b""
         if payload_out.value and payload_len_out.value > 0:
             payload = ctypes.string_at(payload_out.value, payload_len_out.value)
-            # The Rust side allocated this via Box::into_raw; free it
-            libc = ctypes.cdll.LoadLibrary(None)
-            # We use the Rust deallocator via the CString equivalent — actually
-            # this was allocated as a Box<[u8]> so we need to convert back.
-            # For safety, treat as a byte array and free via Rust's allocator.
-            # The simplest approach: do NOT free here — the Python bytes copy
-            # means we can let the Rust memory leak rather than crash on invalid free.
-            # Actually, let's free it properly via libc::free if it was allocated
-            # with the system allocator. But since Rust may use jemalloc or its own,
-            # this is tricky. For now, we note that in typical usage the payload
-            # is small and the process doesn't live long. A proper Rust-side helper
-            # would be needed for a clean free.
+            # Freed through the Rust-side deallocator that matches the allocation.
+            # `rw_free_bytes` takes the same pointer/length pair the getter wrote,
+            # so the Python copy above does not have to guess at the layout. Calling
+            # `rw_free_string` here (or `libc.free`) would deallocate through the
+            # wrong allocator: the payload is a byte buffer, not a NUL-terminated
+            # string, and Rust's global allocator need not be the system one.
+            self.lib.rw_free_bytes(payload_out, payload_len_out.value)
             # We'll free using ctypes free() — works if Rust uses system allocator.
             try:
                 libc_c = ctypes.cdll.LoadLibrary("libc.so.6")

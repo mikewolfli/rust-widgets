@@ -493,6 +493,80 @@ thread_local! {
     static VALUE_CALLBACKS: RefCell<HashMap<ObjectId, ValueChangedCallback>> = RefCell::new(HashMap::new());
 }
 
+/// Removes and returns the click callback for `widget_id`.
+///
+/// `try_borrow_mut` rather than `borrow_mut`: this runs from [`dispatch_trigger`],
+/// which is itself reachable from inside a callback, and a refused borrow must not
+/// become a panic there. A refused borrow also means the map cannot be read, so the
+/// answer is "no callback" rather than a guess.
+fn take_click_callback(widget_id: ObjectId) -> Option<ClickCallback> {
+    CLICK_CALLBACKS.with(|map| map.try_borrow_mut().ok().and_then(|mut map| map.remove(&widget_id)))
+}
+
+/// Removes and returns the value-changed callback for `widget_id`.
+///
+/// See [`take_click_callback`] for why the borrow is attempted rather than taken.
+fn take_value_callback(widget_id: ObjectId) -> Option<ValueChangedCallback> {
+    VALUE_CALLBACKS.with(|map| map.try_borrow_mut().ok().and_then(|mut map| map.remove(&widget_id)))
+}
+
+/// Puts a click callback back when it goes out of scope.
+///
+/// The job of this type is the unwind path: `dispatch_trigger` moves the callback
+/// out of the map so a re-entrant `remove_callbacks` cannot double borrow, and a
+/// plain `insert` afterwards would be skipped if the callback panicked — leaving the
+/// widget registered as having a callback that is never invoked again. Holding it in
+/// a `Drop` type makes the restore unconditional.
+struct ClickCallGuard {
+    widget_id: ObjectId,
+    callback: Option<ClickCallback>,
+}
+
+impl Drop for ClickCallGuard {
+    fn drop(&mut self) {
+        if let Some(callback) = self.callback.take() {
+            CLICK_CALLBACKS.with(|map| {
+                if let Ok(mut map) = map.try_borrow_mut() {
+                    map.insert(self.widget_id, callback);
+                } else {
+                    log::warn!(
+                        "could not restore the click callback for widget {}: the registry is \
+                         already borrowed; the callback is dropped",
+                        self.widget_id
+                    );
+                }
+            });
+        }
+    }
+}
+
+/// Puts a value-changed callback back when it goes out of scope.
+///
+/// See [`ClickCallGuard`]; the two registries are separate, so each needs its own
+/// guard rather than one generic over the map.
+struct ValueCallGuard {
+    widget_id: ObjectId,
+    callback: Option<ValueChangedCallback>,
+}
+
+impl Drop for ValueCallGuard {
+    fn drop(&mut self) {
+        if let Some(callback) = self.callback.take() {
+            VALUE_CALLBACKS.with(|map| {
+                if let Ok(mut map) = map.try_borrow_mut() {
+                    map.insert(self.widget_id, callback);
+                } else {
+                    log::warn!(
+                        "could not restore the value callback for widget {}: the registry is \
+                         already borrowed; the callback is dropped",
+                        self.widget_id
+                    );
+                }
+            });
+        }
+    }
+}
+
 /// Remove all registered callbacks for the given widget id.
 ///
 /// Call this when a widget is destroyed to prevent callback leaks
@@ -520,32 +594,61 @@ pub fn remove_callbacks(id: ObjectId) {
 /// **re-inserted** afterwards, so that re-entrant calls to
 /// `remove_callbacks` (from a handle Drop inside the callback) do not
 /// panic on a double borrow.
+///
+/// # Panic and re-entrancy safety
+///
+/// Two hazards met in this function, both invisible to a build:
+///
+/// 1. **A panicking callback lost its registration permanently.** The removal
+///    above is what makes re-entrancy safe, but the re-insertion used to be a plain
+///    statement after the call: when the callback unwound, the `insert` was skipped
+///    and the widget kept its handle while silently ignoring every later click. The
+///    `ClickCallGuard` below re-inserts on the unwind path too, so the registration
+///    survives.
+/// 2. **A nested registration for the same id panicked with `BorrowMutError`.**
+///    `CLICK_CALLBACKS.with(..)` at the removal point and at the insertion point
+///    both took `borrow_mut()`, so a callback that called `on_click` on its own
+///    handle hit an already-mutably-borrowed `RefCell`. `try_borrow_mut` is used
+///    here, matching `remove_callbacks`, and a refused borrow is logged instead of
+///    panicking — the alternative is a panic inside a user callback, which is the
+///    worst place to put one.
 pub fn dispatch_trigger(widget_id: ObjectId, kind: WidgetTriggerKind) -> bool {
     match kind {
         WidgetTriggerKind::Clicked | WidgetTriggerKind::Unknown => {
-            let cb = CLICK_CALLBACKS.with(|map| map.borrow_mut().remove(&widget_id));
-            if let Some(cb) = cb {
-                (cb.borrow_mut())();
-                CLICK_CALLBACKS.with(|map| {
-                    map.borrow_mut().insert(widget_id, cb);
-                });
-                true
+            let Some(cb) = take_click_callback(widget_id) else {
+                return false;
+            };
+            // The guard holds the callback and puts it back when it goes out of
+            // scope, including on unwind, so a panicking callback cannot silently
+            // unregister itself.
+            let _guard = ClickCallGuard { widget_id, callback: Some(cb) };
+            let callback = _guard.callback.as_ref().expect("set just above");
+            if let Ok(mut f) = callback.try_borrow_mut() {
+                f();
             } else {
-                false
+                log::warn!(
+                    "the click callback for widget {widget_id} is already running; \
+                     refusing to re-enter it rather than panicking"
+                );
             }
+            true
         }
         WidgetTriggerKind::ValueChanged | WidgetTriggerKind::SelectionChanged => {
             let text = crate::get_widget_text(widget_id);
-            let cb = VALUE_CALLBACKS.with(|map| map.borrow_mut().remove(&widget_id));
-            if let Some(cb) = cb {
-                (cb.borrow_mut())(text);
-                VALUE_CALLBACKS.with(|map| {
-                    map.borrow_mut().insert(widget_id, cb);
-                });
-                true
+            let Some(cb) = take_value_callback(widget_id) else {
+                return false;
+            };
+            let _guard = ValueCallGuard { widget_id, callback: Some(cb) };
+            let callback = _guard.callback.as_ref().expect("set just above");
+            if let Ok(mut f) = callback.try_borrow_mut() {
+                f(text);
             } else {
-                false
+                log::warn!(
+                    "the value callback for widget {widget_id} is already running; \
+                     refusing to re-enter it rather than panicking"
+                );
             }
+            true
         }
         WidgetTriggerKind::Closed => {
             // Clean up callbacks when a widget is closed/destroyed.
@@ -2654,6 +2757,124 @@ mod tests {
         CLICK_CALLBACKS.with(|map| {
             assert!(!map.borrow().contains_key(&id));
         });
+    }
+
+    /// A click callback that panics must stay registered.
+    ///
+    /// # The defect this closes
+    ///
+    /// `dispatch_trigger` moves the callback out of the registry before invoking it
+    /// (so a re-entrant `remove_callbacks` cannot double-borrow) and puts it back
+    /// after. The restore used to be a plain statement on the success path, so a
+    /// callback that unwound took its own registration with it: the widget kept its
+    /// handle and quietly ignored every subsequent click. `ClickCallGuard` restores
+    /// on the unwind path; this test is what proves it, because the unwind is the
+    /// only way the two paths differ.
+    #[test]
+    fn a_panicking_click_callback_stays_registered() {
+        let id: ObjectId = 4301;
+        remove_callbacks(id);
+        let calls = Rc::new(RefCell::new(0usize));
+        let counter = Rc::clone(&calls);
+
+        CLICK_CALLBACKS.with(|map| {
+            map.borrow_mut().insert(
+                id,
+                Rc::new(RefCell::new(move || {
+                    *counter.borrow_mut() += 1;
+                    panic!("callback body panics on purpose");
+                })),
+            );
+        });
+
+        let first = std::panic::catch_unwind(|| dispatch_trigger(id, WidgetTriggerKind::Clicked));
+        assert!(first.is_err(), "the callback's panic must propagate to the test harness");
+        assert_eq!(*calls.borrow(), 1);
+
+        // The registration must have survived the unwind, so a second dispatch
+        // reaches the callback again rather than reporting no callback at all.
+        let second = std::panic::catch_unwind(|| dispatch_trigger(id, WidgetTriggerKind::Clicked));
+        assert!(second.is_err(), "the callback is still installed");
+        assert_eq!(*calls.borrow(), 2, "the second dispatch must have invoked the callback");
+
+        remove_callbacks(id);
+    }
+
+    /// A callback that re-registers itself must not panic with `BorrowMutError`.
+    ///
+    /// `on_click` writes to the same `RefCell` that `dispatch_trigger` was reading
+    /// when it invoked the callback. Each access therefore has to be attempted
+    /// rather than assumed; a plain `borrow_mut` on either side turned this ordinary
+    /// pattern into a panic inside user code.
+    #[test]
+    fn a_callback_that_reregisters_itself_does_not_panic() {
+        let id: ObjectId = 4302;
+        remove_callbacks(id);
+
+        let ran = Rc::new(RefCell::new(0usize));
+        let counter = Rc::clone(&ran);
+        CLICK_CALLBACKS.with(|map| {
+            map.borrow_mut().insert(
+                id,
+                Rc::new(RefCell::new(move || {
+                    *counter.borrow_mut() += 1;
+                    // Re-register under the same id, from inside the dispatch.
+                    CLICK_CALLBACKS.with(|map| {
+                        if let Ok(mut map) = map.try_borrow_mut() {
+                            map.insert(id, Rc::new(RefCell::new(|| {})));
+                        }
+                    });
+                })),
+            );
+        });
+
+        let result = std::panic::catch_unwind(|| dispatch_trigger(id, WidgetTriggerKind::Clicked));
+        assert!(result.is_ok(), "a re-registering callback must not panic");
+        assert_eq!(*ran.borrow(), 1, "the callback must have run exactly once");
+
+        remove_callbacks(id);
+    }
+
+    /// The value-changed path has the same unwind guarantee as the click path.
+    #[test]
+    fn a_panicking_value_callback_stays_registered() {
+        let id: ObjectId = 4303;
+        remove_callbacks(id);
+        let calls = Rc::new(RefCell::new(0usize));
+        let counter = Rc::clone(&calls);
+
+        VALUE_CALLBACKS.with(|map| {
+            map.borrow_mut().insert(
+                id,
+                Rc::new(RefCell::new(move |_text: String| {
+                    *counter.borrow_mut() += 1;
+                    panic!("value callback body panics on purpose");
+                })),
+            );
+        });
+
+        let first =
+            std::panic::catch_unwind(|| dispatch_trigger(id, WidgetTriggerKind::ValueChanged));
+        assert!(first.is_err());
+        assert_eq!(*calls.borrow(), 1);
+
+        let second =
+            std::panic::catch_unwind(|| dispatch_trigger(id, WidgetTriggerKind::ValueChanged));
+        assert!(second.is_err(), "the value callback must still be installed");
+        assert_eq!(*calls.borrow(), 2);
+
+        remove_callbacks(id);
+    }
+
+    /// A dispatch with no callback reports `false` rather than panicking.
+    #[test]
+    fn dispatching_without_a_callback_is_a_no_op() {
+        let id: ObjectId = 4304;
+        remove_callbacks(id);
+        assert!(!dispatch_trigger(id, WidgetTriggerKind::Clicked));
+        assert!(!dispatch_trigger(id, WidgetTriggerKind::ValueChanged));
+        // `Closed` is the teardown path and always answers `false`.
+        assert!(!dispatch_trigger(id, WidgetTriggerKind::Closed));
     }
 
     #[test]

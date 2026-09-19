@@ -44,17 +44,13 @@
 
 #[cfg(widgets_unstripped)]
 pub mod adapter;
-#[cfg(not(alloc_frugal))]
 pub mod bar_chart;
 #[cfg(widgets_unstripped)]
 pub mod charts;
 #[cfg(widgets_unstripped)]
 pub mod layout;
-#[cfg(not(alloc_frugal))]
 pub mod line_chart;
-#[cfg(not(alloc_frugal))]
 pub mod pie_chart;
-#[cfg(not(alloc_frugal))]
 pub mod sparkline;
 #[cfg(widgets_unstripped)]
 pub mod svg;
@@ -62,13 +58,9 @@ pub mod svg;
 pub mod types;
 
 // ── Control layer re-exports (the bare names mean the widgets) ──
-#[cfg(not(alloc_frugal))]
 pub use bar_chart::{BarChart, BarEntry};
-#[cfg(not(alloc_frugal))]
 pub use line_chart::LineChart;
-#[cfg(not(alloc_frugal))]
 pub use pie_chart::{PieChart, PieSlice};
-#[cfg(not(alloc_frugal))]
 pub use sparkline::Sparkline;
 
 // ── Engine layer re-exports (qualified, never shadowing the controls) ──

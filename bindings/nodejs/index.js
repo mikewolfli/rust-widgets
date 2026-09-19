@@ -386,6 +386,10 @@ function loadFunctions(libName) {
 
     // ── Memory ─────────────────────────────────────────────────────────
     rw_free_string: [void_t, [charPtr]],
+    // Frees a `uint8_t*` plus length pair handed out by `rw_poll_drop_event`.
+    // Distinct from `rw_free_string` on purpose: the payload is a byte allocation,
+    // so freeing it as a string passes a mismatched length to the deallocator.
+    rw_free_bytes: [void_t, [bytePtr, uint]],
     rw_free_rust_string: [void_t, [charPtr]],
 
     // ── Mobile ─────────────────────────────────────────────────────────
@@ -1216,8 +1220,10 @@ class RustWidgets {
     if (payPtr && !payPtr.isNull() && payLen > 0) {
       payload = Buffer.alloc(payLen);
       payPtr.copy(payload, 0, 0, payLen);
-      // Free the Rust-allocated payload buffer
-      this._lib.rw_free_string(payPtr);
+      // Free the Rust-allocated payload with its own deallocator: the buffer is a
+      // byte allocation, not a NUL-terminated string, so `rw_free_string` would
+      // pass a length that does not match the allocation.
+      this._lib.rw_free_bytes(payPtr, payLen);
     }
 
     return new DropEvent(sourceId, targetId, mime, payload);

@@ -39,8 +39,8 @@ impl SoftwareSurface {
         let clip = self.current_clip();
         let x0 = rect.x.max(0) as u32;
         let y0 = rect.y.max(0) as u32;
-        let x1 = (rect.x + rect.width as f32 as i32).max(0) as u32;
-        let y1 = (rect.y + rect.height as f32 as i32).max(0) as u32;
+        let x1 = rect.right().max(0) as u32;
+        let y1 = rect.bottom().max(0) as u32;
         let x1 = x1.min(size.width);
         let y1 = y1.min(size.height);
         let frame = self.buffer.back_mut();
@@ -64,8 +64,8 @@ impl SoftwareSurface {
         }
         let x0 = rect.x;
         let y0 = rect.y;
-        let x1 = rect.x + rect.width as f32 as i32 - 1;
-        let y1 = rect.y + rect.height as f32 as i32 - 1;
+        let x1 = rect.right() - 1;
+        let y1 = rect.bottom() - 1;
         self.draw_line_with_width(
             Point { x: x0, y: y0 },
             Point { x: x1, y: y0 },
@@ -103,8 +103,8 @@ impl SoftwareSurface {
         let frame = self.buffer.back_mut();
         let x0 = rect.x.max(0);
         let y0 = rect.y.max(0);
-        let x1 = (rect.x + rect.width as f32 as i32 - 1).min(width - 1);
-        let y1 = (rect.y + rect.height as f32 as i32 - 1).min(height - 1);
+        let x1 = (rect.right() - 1).min(width - 1);
+        let y1 = (rect.bottom() - 1).min(height - 1);
         let effective_radius = rounded_rect_effective_radius(rect, radius);
         for py in y0..=y1 {
             for px in x0..=x1 {
@@ -128,8 +128,8 @@ impl SoftwareSurface {
         let frame = self.buffer.back_mut();
         let x0 = rect.x.max(0);
         let y0 = rect.y.max(0);
-        let x1 = (rect.x + rect.width as f32 as i32 - 1).min(width - 1);
-        let y1 = (rect.y + rect.height as f32 as i32 - 1).min(height - 1);
+        let x1 = (rect.right() - 1).min(width - 1);
+        let y1 = (rect.bottom() - 1).min(height - 1);
         let effective_radius = rounded_rect_effective_radius(rect, radius);
         for py in y0..=y1 {
             for px in x0..=x1 {
@@ -159,8 +159,8 @@ impl SoftwareSurface {
         let frame = self.buffer.back_mut();
         let x0 = rect.x.max(0);
         let y0 = rect.y.max(0);
-        let x1 = (rect.x + rect.width as f32 as i32 - 1).min(width - 1);
-        let y1 = (rect.y + rect.height as f32 as i32 - 1).min(height - 1);
+        let x1 = (rect.right() - 1).min(width - 1);
+        let y1 = (rect.bottom() - 1).min(height - 1);
         let effective_radius = rounded_rect_effective_radius(rect, radius);
         let inner = inset_rect(rect, stroke_width as i32);
         let has_inner = inner.width > 0 && inner.height > 0;
@@ -202,8 +202,8 @@ impl SoftwareSurface {
         let frame = self.buffer.back_mut();
         let x0 = rect.x.max(0);
         let y0 = rect.y.max(0);
-        let x1 = (rect.x + rect.width as f32 as i32 - 1).min(width - 1);
-        let y1 = (rect.y + rect.height as f32 as i32 - 1).min(height - 1);
+        let x1 = (rect.right() - 1).min(width - 1);
+        let y1 = (rect.bottom() - 1).min(height - 1);
         let effective_radius = rounded_rect_effective_radius(rect, radius);
         let inner = inset_rect(rect, stroke_width as i32);
         let has_inner = inner.width > 0 && inner.height > 0;
