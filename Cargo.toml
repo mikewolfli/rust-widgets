@@ -19,7 +19,15 @@ include = [
     "examples/**/*",
     "include/**/*",
     "language/**/*",
+    # Both files under `tools/` are *declared* as Cargo targets below, so they must
+    # ship: a target whose path is absent from the package makes `cargo package`
+    # warn `ignoring test \`view_platform_gate_probe\` as
+    # `tools/view_platform_gate_probe.rs` is not included in the published package`,
+    # and a consumer building from the tarball then has no such target at all.
+    # The rest of `tools/` is gates and generators that are not part of the crate's
+    # build surface and stays excluded.
     "tools/widget_gallery.rs",
+    "tools/view_platform_gate_probe.rs",
     "LICENSE",
     "README.md",
     "README.zh-CN.md",

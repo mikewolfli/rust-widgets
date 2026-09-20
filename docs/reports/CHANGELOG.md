@@ -23,6 +23,33 @@ See [`docs/log/log-20260920-1.md`](docs/log/log-20260920-1.md) for per-fix evide
 - Zero `error`/`warning` from `cargo check --all-targets` on all five profiles, and on the
   installed cross targets `aarch64-apple-ios`, `aarch64-apple-ios-sim`, `x86_64-pc-windows-gnu`,
   `aarch64-unknown-linux-ohos` and `wasm32-unknown-unknown` (the `mini,wasm` combination included).
+- `cargo package` completes with **no warnings** and the packaged tarball verifies:
+  `Packaged 696 files, 11.4MiB (2.5MiB compressed)`.
+
+### Every declared Cargo target is now packaged
+
+`cargo package` warned:
+
+```text
+warning: ignoring test `view_platform_gate_probe` as
+         `tools/view_platform_gate_probe.rs` is not included in the published package
+```
+
+`Cargo.toml` declared an out-of-tree `[[test]]` target at `tools/view_platform_gate_probe.rs`
+while its `include` whitelist listed only `tools/widget_gallery.rs`. The file was therefore in
+neither `tests/` (so auto-discovery never covered it) nor the package.
+
+The consequence is larger than a warning: a target declared but not packaged **does not exist for
+anyone building from the published crate**. `cargo test` silently runs one fewer target, and removing
+a line from `include` produces no compile error anywhere — so the drift stays invisible until
+someone reads the warnings. Worse, the missing file is the probe `check_view_platform_gate.sh` relies
+on, so losing it would quietly hollow out that gate.
+
+Fixed by shipping the file, and guarded by a new `tools/check_declared_targets_ship.sh` that compares
+every explicit `path = "..."` target in `Cargo.toml` against `cargo package --list`. Reverse-injection
+confirms it fails when the `include` line is removed. All four declared targets
+(`examples/view_counter.rs`, `tools/view_platform_gate_probe.rs`, `tools/widget_gallery.rs`,
+`examples/embedded_host.rs`) are verified present in the package.
 
 ### One property write could abort the process
 
