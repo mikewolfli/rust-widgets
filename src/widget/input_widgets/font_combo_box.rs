@@ -35,6 +35,11 @@ pub struct FontComboBox {
     edit_buffer: Option<String>,
     max_visible_items: i32,
     expanded: bool,
+    /// `true` between a press that hit this control and the release ending it.
+    ///
+    /// The release is what commits the font change, so a press that began elsewhere must not
+    /// arm it — see `handle_event`.
+    pressed: bool,
     /// Emitted with the new font whenever [`FontComboBox::set_current_font`]
     /// actually changes it — including as a side effect of changing the index.
     pub current_font_changed: Signal1<Font>,
@@ -75,6 +80,7 @@ impl FontComboBox {
             edit_buffer: None,
             max_visible_items: 10,
             expanded: false,
+            pressed: false,
             current_font_changed: Signal1::new(),
             current_index_changed: Signal1::new(),
             activated: Signal1::new(),
@@ -393,19 +399,39 @@ impl EventHandler for FontComboBox {
                     }
                 }
             }
-            Event::MousePress { pos: _, button } if button == &1 => {
-                // Show the dropdown list
-                self.show_popup();
-                self.base.clicked.emit();
+            Event::MousePress { pos, button } if button == &1 => {
+                // Arm only for a press on the control; a press outside must not leave the
+                // cycle-on-release latch armed.
+                self.pressed = self.geometry().contains_point(*pos);
+                if self.pressed {
+                    // Show the dropdown list
+                    self.show_popup();
+                    self.base.clicked.emit();
+                }
             }
-            Event::MouseRelease { pos: _, button }
+            Event::MouseRelease { pos, button }
                 if button == &1
-                    // Cycle to next font on release
-                    && !self.fonts.is_empty() =>
+                    // Cycle to next font on release, but only for a completed press on this
+                    // control. The position was previously discarded (`pos: _`) and no press was
+                    // required, so **any** left release reached here and cycled the font — a
+                    // release the host routed from a drag that began on another control, or one
+                    // with no preceding press at all.
+                    && self.pressed =>
             {
-                let next = (self.current_index + 1) % self.fonts.len() as i32;
-                self.set_current_index(next);
-                self.activated.emit(next);
+                self.pressed = false;
+                // A release off the control cancels, matching `Button`/`Switch`.
+                if self.geometry().contains_point(*pos) && !self.fonts.is_empty() {
+                    let next = (self.current_index + 1) % self.fonts.len() as i32;
+                    self.set_current_index(next);
+                    self.activated.emit(next);
+                }
+            }
+            Event::MouseRelease { button: 1, .. } => {
+                self.pressed = false;
+            }
+            // Losing focus abandons a held press, so the latch cannot survive a window switch.
+            Event::FocusLost => {
+                self.pressed = false;
             }
             _ => { /* Other events are not relevant */ }
         }
@@ -625,4 +651,85 @@ mod tests {
         let svg = crate::widget::svg::render_to_svg(&mut fcb);
         assert!(svg.starts_with("<svg"));
     }
+    /// Only a completed press on the control cycles the font.
+    ///
+    /// `handle_event` cycled on `Event::MouseRelease` with the position discarded (`pos: _`) and
+    /// no press-arm, so **any** left release reached the arm: a release the host routed from a drag
+    /// that began on another control, or one with no preceding press at all. This is the same
+    /// defect class as `Switch`; `Button`, `CheckBox` and `Switch` all gate on a press-provided
+    /// flag.
+    #[test]
+    fn font_combo_box_cycles_only_on_a_completed_press() {
+        let inside = Point::new(50, 15);
+        let outside = Point::new(9000, 9000);
+        let build = || {
+            let mut c = FontComboBox::new(Rect::new(0, 0, 200, 30));
+            c.add_font("Arial".to_string());
+            c.add_font("Helvetica".to_string());
+            c.add_font("Menlo".to_string());
+            c
+        };
+        let run = |events: &[Event]| {
+            let mut c = build();
+            let before = c.current_index();
+            for event in events {
+                c.handle_event(event);
+            }
+            (before, c.current_index())
+        };
+
+        // A release with no press must not cycle, wherever it lands.
+        assert_eq!(run(&[Event::MouseRelease { pos: inside, button: 1 }]), (-1, -1));
+        assert_eq!(run(&[Event::MouseRelease { pos: outside, button: 1 }]), (-1, -1));
+
+        // A press outside does not arm the latch.
+        assert_eq!(
+            run(&[
+                Event::MousePress { pos: outside, button: 1 },
+                Event::MouseRelease { pos: inside, button: 1 },
+            ]),
+            (-1, -1),
+            "a drag that began outside must not commit"
+        );
+
+        // Pressing inside and releasing outside cancels.
+        assert_eq!(
+            run(&[
+                Event::MousePress { pos: inside, button: 1 },
+                Event::MouseRelease { pos: outside, button: 1 },
+            ]),
+            (-1, -1)
+        );
+
+        // A completed activation advances exactly one step.
+        assert_eq!(
+            run(&[
+                Event::MousePress { pos: inside, button: 1 },
+                Event::MouseRelease { pos: inside, button: 1 },
+            ]),
+            (-1, 0)
+        );
+
+        // Focus loss abandons a held press.
+        assert_eq!(
+            run(&[
+                Event::MousePress { pos: inside, button: 1 },
+                Event::FocusLost,
+                Event::MouseRelease { pos: inside, button: 1 },
+            ]),
+            (-1, -1)
+        );
+    }
+
+    /// A right-button release is ignored, armed or not.
+    #[test]
+    fn font_combo_box_ignores_non_primary_releases() {
+        let inside = Point::new(50, 15);
+        let mut c = FontComboBox::new(Rect::new(0, 0, 200, 30));
+        c.add_font("Arial".to_string());
+        c.add_font("Helvetica".to_string());
+        c.handle_event(&Event::MouseRelease { pos: inside, button: 3 });
+        assert_eq!(c.current_index(), -1);
+    }
+
 }

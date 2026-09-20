@@ -41,6 +41,12 @@ pub struct BaseWidget {
     /// Child widget IDs. Under mini, this is a fixed-capacity `MiniVec<ObjectId, 64>`
     /// (compile-time known size, no heap alloc). Under desktop, `alloc::vec::Vec`.
     pub(crate) children: crate::compat::MiniVec<ObjectId>,
+    /// How many additions were refused because `children` was at its fixed capacity.
+    ///
+    /// Always zero on desktop builds, where the list is unbounded. On the mini profile it is the
+    /// only trace of a child that could not be stored: the failing `push` result used to be
+    /// discarded outright.
+    pub(crate) child_overflow_count: usize,
     pub(crate) visible: bool,
     pub(crate) enabled: bool,
     pub(crate) mouse_pressed: bool,
@@ -106,6 +112,7 @@ impl BaseWidget {
             max_size: None,
             parent: None,
             children: crate::compat::MiniVec::new(),
+            child_overflow_count: 0,
             visible: true,
             enabled: true,
             mouse_pressed: false,
@@ -191,20 +198,70 @@ impl BaseWidget {
     /// link.
     ///
     /// Duplicates are *not* rejected, so adding the same id twice requires two
-    /// removals to undo. Under the `alloc_frugal` build the list is a fixed
-    /// capacity-64 array and an add beyond capacity is silently dropped (the
-    /// failing `push` result is discarded); on desktop builds the list grows
-    /// without bound.
+    /// removals to undo.
+    ///
+    /// # Capacity
+    ///
+    /// On desktop builds the list grows without bound and this always succeeds. Under the
+    /// `alloc_frugal` (mini) profile the list is a fixed-capacity `heapless::Vec<_, 64>`: an
+    /// add past 64 is refused. Use [`BaseWidget::try_add_child`] when the caller must know, or
+    /// [`BaseWidget::child_capacity`]/[`BaseWidget::child_overflow_count`] to observe it
+    /// afterwards.
     pub fn add_child(&mut self, child: ObjectId) {
+        let _ = self.try_add_child(child);
+    }
+
+    /// Appends `child`, reporting whether it was stored.
+    ///
+    /// Returns `true` on desktop builds (unbounded) and on the mini profile while the list has
+    /// room. Returns `false` when the mini profile's fixed capacity is reached, so a caller can
+    /// react instead of losing the child. [`BaseWidget::child_overflow_count`] also records it,
+    /// so the loss is observable even through [`BaseWidget::add_child`].
+    pub fn try_add_child(&mut self, child: ObjectId) -> bool {
         #[cfg(alloc_frugal)]
         {
-            // heapless::Vec::push returns Result under mini.
-            let _ = self.children.push(child);
+            // `heapless::Vec::push` fails atomically once the buffer is full. Counting the
+            // refusal is what keeps this from being the silent drop it used to be: nothing
+            // else in the widget layer was watching the discarded `Result`.
+            match self.children.push(child) {
+                Ok(()) => true,
+                Err(_) => {
+                    self.child_overflow_count = self.child_overflow_count.saturating_add(1);
+                    false
+                }
+            }
         }
         #[cfg(not(alloc_frugal))]
         {
             self.children.push(child);
+            true
         }
+    }
+
+    /// The maximum number of children this widget can hold, or `None` when unbounded.
+    ///
+    /// `None` on desktop builds, where the child list is a growable `Vec`. On the mini profile
+    /// it is the fixed capacity, so a caller building a large container can check before adding
+    /// rather than discovering the loss afterwards.
+    pub fn child_capacity(&self) -> Option<usize> {
+        #[cfg(alloc_frugal)]
+        {
+            Some(crate::compat::MINI_VEC_CAPACITY)
+        }
+        #[cfg(not(alloc_frugal))]
+        {
+            None
+        }
+    }
+
+    /// How many additions this widget refused because it was at capacity.
+    ///
+    /// Non-zero only on the mini profile, and only after [`BaseWidget::add_child`] or
+    /// [`BaseWidget::try_add_child`] hit the cap. The counter exists because the previous
+    /// behaviour discarded the failing `push` result outright: a container that dropped half its
+    /// children looked identical to one that was never given them.
+    pub fn child_overflow_count(&self) -> usize {
+        self.child_overflow_count
     }
     /// Removes every occurrence of `child` from the child list, keeping the
     /// relative order of the rest.
@@ -709,6 +766,72 @@ mod tests {
 
         bw.set_tooltip(crate::compat::into_mini("Help text"));
         assert_eq!(bw.tooltip(), "Help text");
+    }
+
+    /// Adding past the mini profile's capacity is reported, not silently dropped.
+    ///
+    /// `add_child` discarded the failing `push` result, so under `alloc_frugal` a container that
+    /// had reached its 64-child cap lost every further child with no trace: `add_child` returns
+    /// `()`, nothing logged, and the result was indistinguishable from a container that was never
+    /// given them. The refusal is now counted and `try_add_child` returns it.
+    #[test]
+    fn add_child_reports_capacity_overflow() {
+        let mut parent = make_base();
+        assert_eq!(parent.child_overflow_count(), 0);
+
+        let cap = parent.child_capacity();
+        // Add well past any capacity the profile might have.
+        let requested = cap.unwrap_or(0) + 10;
+        for id in 1..=requested as u64 {
+            parent.add_child(id);
+        }
+
+        match cap {
+            Some(capacity) => {
+                assert_eq!(parent.children().len(), capacity, "the list stops at capacity");
+                assert_eq!(
+                    parent.child_overflow_count(),
+                    requested - capacity,
+                    "every refused add must be counted"
+                );
+                // `try_add_child` reports the refusal directly.
+                assert!(!parent.try_add_child(9999), "a full list must refuse");
+                // Freeing a slot makes it usable again.
+                parent.remove_child(1);
+                assert!(parent.try_add_child(9999), "a freed slot must be usable");
+            }
+            None => {
+                assert_eq!(parent.children().len(), requested, "desktop has no cap");
+                assert_eq!(parent.child_overflow_count(), 0);
+                assert!(parent.try_add_child(9999));
+            }
+        }
+    }
+
+    /// A tooltip longer than the buffer keeps a prefix rather than vanishing.
+    ///
+    /// `into_mini` used to return an empty string for anything over the capacity, so an
+    /// over-long tooltip became indistinguishable from no tooltip at all. On desktop
+    /// `MiniString` is unbounded, so the truncation half only applies to `alloc_frugal`.
+    #[test]
+    fn an_over_long_tooltip_keeps_a_prefix() {
+        let mut bw = make_base();
+        let long = "y".repeat(crate::compat::MINI_STRING_CAPACITY * 3);
+        bw.set_tooltip(crate::compat::into_mini(&long));
+
+        #[cfg(alloc_frugal)]
+        assert_eq!(
+            bw.tooltip().len(),
+            crate::compat::MINI_STRING_CAPACITY,
+            "an over-long tooltip must keep a full-capacity prefix"
+        );
+        #[cfg(not(alloc_frugal))]
+        assert_eq!(bw.tooltip().len(), long.len(), "desktop keeps the whole string");
+
+        assert!(
+            !bw.tooltip().is_empty(),
+            "an over-long tooltip must never become empty"
+        );
     }
 
     /// `set_translated_tooltip` must store the **translation**, not the key.

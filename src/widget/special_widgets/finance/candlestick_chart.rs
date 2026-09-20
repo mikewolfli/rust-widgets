@@ -692,6 +692,9 @@ impl EventHandler for CandlestickChart {
     /// not broken by this control having a richer one.
     fn handle_event(&mut self, event: &crate::event::Event) {
         use crate::event::Event;
+        if !self.base.is_enabled() {
+            return;
+        }
         match event {
             Event::MouseMove { pos } | Event::PointerMove { pos, .. } => {
                 let area = self.plot_area();

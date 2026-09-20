@@ -197,8 +197,16 @@ impl Draw for ImePreedit {
 }
 
 impl EventHandler for ImePreedit {
+    /// Typing edits the preedit buffer only while the control is enabled.
+    ///
+    /// The disabled state was not consulted, so a host that disables the control — the usual way
+    /// to take a text entry out of play — still had characters appended to it by keystrokes meant
+    /// for whatever the user was actually looking at.
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        if !self.base.is_enabled() {
+            return;
+        }
         if let Event::KeyPress { key, modifiers } = event {
             if *key == 8 {
                 // Backspace — remove last character
@@ -272,4 +280,31 @@ mod tests {
         let svg = crate::widget::svg::render_to_svg(&mut ip);
         assert!(svg.starts_with("<svg"));
     }
+    /// A disabled preedit control ignores keystrokes.
+    ///
+    /// The handler never consulted `enabled`, so a host that disabled the control — the usual way
+    /// to take a text entry out of play — still had characters appended to it by keystrokes meant
+    /// for whatever the user was actually looking at.
+    #[test]
+    fn ime_preedit_ignores_keys_when_disabled() {
+        use crate::event::Event;
+        use crate::widget::Widget;
+
+        let mut preedit = ImePreedit::new(Rect::new(0, 0, 200, 30));
+        preedit.handle_event(&Event::KeyPress { key: 65, modifiers: 0 }); // 'A'
+        assert_eq!(preedit.text(), "A", "an enabled control accepts typed text");
+
+        preedit.set_enabled(false);
+        preedit.handle_event(&Event::KeyPress { key: 66, modifiers: 0 }); // 'B'
+        assert_eq!(preedit.text(), "A", "a disabled control must not accept text");
+
+        // Backspace is refused too, so the buffer is frozen rather than editable one way.
+        preedit.set_enabled(true);
+        preedit.handle_event(&Event::KeyPress { key: 67, modifiers: 0 }); // 'C'
+        assert_eq!(preedit.text(), "AC");
+        preedit.set_enabled(false);
+        preedit.handle_event(&Event::KeyPress { key: 8, modifiers: 0 }); // backspace
+        assert_eq!(preedit.text(), "AC", "a disabled control must not accept backspace either");
+    }
+
 }

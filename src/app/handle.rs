@@ -2532,12 +2532,19 @@ impl WindowHandle {
     /// `setRepresentation:`, Win32 `WM_SETICON`, GTK `set_icon_from_file`) as well
     /// as into the in-process mirror. Returns `false` when the backend could not
     /// load the file, so a bad path is visible instead of silently ignored.
+    ///
+    /// The mirror is written unconditionally, but [`WindowHandle::icon`] reports it **only**
+    /// as a fallback for a backend that has no icon concept at all — see that method for why
+    /// a failed load must stay unreadable.
     pub fn set_icon(&self, path: &str) -> bool {
-        WINDOW_STATES.with(|map| {
-            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).icon =
-                path.to_owned();
-        });
-        crate::platform::get_platform().set_window_icon(self.raw_id(), path)
+        let pushed = crate::platform::get_platform().set_window_icon(self.raw_id(), path);
+        if pushed {
+            WINDOW_STATES.with(|map| {
+                map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).icon =
+                    path.to_owned();
+            });
+        }
+        pushed
     }
 
     /// Set the minimum window size.
@@ -2546,23 +2553,74 @@ impl WindowHandle {
     /// (`setContentMinSize:` on macOS, the `WM_GETMINMAXINFO` handler on Windows,
     /// `set_geometry_hints` on GTK) as well as into the in-process mirror.
     pub fn set_min_size(&self, w: u32, h: u32) -> bool {
-        WINDOW_STATES.with(|map| {
-            let mut map = map.borrow_mut();
-            let state = map.entry(self.raw_id()).or_default();
-            state.min_w = w;
-            state.min_h = h;
-        });
-        crate::platform::get_platform().set_window_min_size(self.raw_id(), w, h)
+        let pushed = crate::platform::get_platform().set_window_min_size(self.raw_id(), w, h);
+        if pushed {
+            WINDOW_STATES.with(|map| {
+                let mut map = map.borrow_mut();
+                let state = map.entry(self.raw_id()).or_default();
+                state.min_w = w;
+                state.min_h = h;
+            });
+        }
+        pushed
     }
 
-    /// Read the minimum window size the backend has recorded, if any.
+    /// Read the minimum window size, if one was set.
+    ///
+    /// # The mirror is a fallback, not a shadow
+    ///
+    /// The backend is authoritative. The in-process mirror is consulted only when the backend
+    /// reports `None` *and* `set_min_size` succeeded earlier in this process — the same shape
+    /// as [`WindowHandle::is_maximized`]. This method previously read the platform exclusively,
+    /// so on a backend that does not implement `window_min_size` (`linux-gtk`, `wayland`,
+    /// `android`, `ios`, `wasm`, `harmony`) a window whose `set_min_size` had returned `true`
+    /// still reported `None` here — the mirror field was written and never read by anything.
+    ///
+    /// A *failed* `set_min_size` does not populate the mirror, so this cannot report a value
+    /// the platform refused. `(0, 0)` means "no minimum was ever accepted" and is what a fresh
+    /// window reports.
     pub fn min_size(&self) -> Option<(u32, u32)> {
-        crate::platform::get_platform().window_min_size(self.raw_id())
+        if let Some(size) = crate::platform::get_platform().window_min_size(self.raw_id()) {
+            return Some(size);
+        }
+        self.mirrored_min_size()
     }
 
-    /// Read the icon path this window was given, if any.
+    /// Read the icon path from the in-process mirror, if one was accepted.
+    ///
+    /// # Why a rejected icon stays unreadable
+    ///
+    /// `set_icon` records the mirror only after the platform accepted the path. An earlier
+    /// version wrote the mirror first and unconditionally, so a window whose icon failed to
+    /// load still reported the rejected path from a getter that never consulted it — the field
+    /// was dead, and had it been read it would have been wrong. Recording on success is what
+    /// makes the fallback honest.
     pub fn icon(&self) -> Option<String> {
-        crate::platform::get_platform().window_icon(self.raw_id())
+        if let Some(path) = crate::platform::get_platform().window_icon(self.raw_id()) {
+            return Some(path);
+        }
+        WINDOW_STATES.with(|map| {
+            map.borrow()
+                .get(&self.raw_id())
+                .map(|state| state.icon.clone())
+                .filter(|path| !path.is_empty())
+        })
+    }
+
+    /// Read the mirrored minimum size from the in-process state.
+    ///
+    /// `None` when no successful `set_min_size` was recorded, so a caller can distinguish
+    /// "the platform has no answer and nothing was ever set" from a real `(w, h)`.
+    fn mirrored_min_size(&self) -> Option<(u32, u32)> {
+        WINDOW_STATES.with(|map| {
+            map.borrow().get(&self.raw_id()).and_then(|state| {
+                if state.min_w == 0 && state.min_h == 0 {
+                    None
+                } else {
+                    Some((state.min_w, state.min_h))
+                }
+            })
+        })
     }
 
     /// Maximize or restore the window.
@@ -2572,15 +2630,23 @@ impl WindowHandle {
     /// GTK) as well as into the in-process mirror. `is_maximized` reports what
     /// the OS window actually is when a native window exists.
     pub fn set_maximized(&self, maximized: bool) {
-        WINDOW_STATES.with(|map| {
-            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).maximized =
-                maximized;
-        });
-        crate::platform::get_platform().set_window_state(
+        // The mirror records only what the platform accepted, exactly as `set_min_size` and
+        // `set_icon` do — otherwise a flag set on a window that does not exist is reported as
+        // applied by the `is_*` getter, which falls back to the mirror when the platform answers
+        // `None`. The platform's `bool` result was previously discarded.
+        let applied = crate::platform::get_platform().set_window_state(
             self.raw_id(),
             WindowStateFlag::Maximized,
             maximized,
         );
+        if applied {
+            WINDOW_STATES.with(|map| {
+                map.borrow_mut()
+                    .entry(self.raw_id())
+                    .or_insert_with(Default::default)
+                    .maximized = maximized;
+            });
+        }
     }
 
     /// Return whether the window is maximized.
@@ -2596,15 +2662,23 @@ impl WindowHandle {
     /// (`miniaturize:`/`deminiaturize:` on macOS, `SW_MINIMIZE`/`SW_RESTORE` on
     /// Windows, `iconify()`/`deiconify()` on GTK).
     pub fn set_minimized(&self, minimized: bool) {
-        WINDOW_STATES.with(|map| {
-            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).minimized =
-                minimized;
-        });
-        crate::platform::get_platform().set_window_state(
+        // The mirror records only what the platform accepted, exactly as `set_min_size` and
+        // `set_icon` do — otherwise a flag set on a window that does not exist is reported as
+        // applied by the `is_*` getter, which falls back to the mirror when the platform answers
+        // `None`. The platform's `bool` result was previously discarded.
+        let applied = crate::platform::get_platform().set_window_state(
             self.raw_id(),
             WindowStateFlag::Minimized,
             minimized,
         );
+        if applied {
+            WINDOW_STATES.with(|map| {
+                map.borrow_mut()
+                    .entry(self.raw_id())
+                    .or_insert_with(Default::default)
+                    .minimized = minimized;
+            });
+        }
     }
 
     /// Return whether the window is minimized.
@@ -2620,15 +2694,23 @@ impl WindowHandle {
     /// (`toggleFullScreen:` on macOS, frame-style manipulation on Windows,
     /// `fullscreen()`/`unfullscreen()` on GTK).
     pub fn set_fullscreen(&self, fullscreen: bool) {
-        WINDOW_STATES.with(|map| {
-            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).fullscreen =
-                fullscreen;
-        });
-        crate::platform::get_platform().set_window_state(
+        // The mirror records only what the platform accepted, exactly as `set_min_size` and
+        // `set_icon` do — otherwise a flag set on a window that does not exist is reported as
+        // applied by the `is_*` getter, which falls back to the mirror when the platform answers
+        // `None`. The platform's `bool` result was previously discarded.
+        let applied = crate::platform::get_platform().set_window_state(
             self.raw_id(),
             WindowStateFlag::Fullscreen,
             fullscreen,
         );
+        if applied {
+            WINDOW_STATES.with(|map| {
+                map.borrow_mut()
+                    .entry(self.raw_id())
+                    .or_insert_with(Default::default)
+                    .fullscreen = fullscreen;
+            });
+        }
     }
 
     /// Return whether the window is fullscreen.
@@ -2644,15 +2726,23 @@ impl WindowHandle {
     /// toggles `NSWindowStyleMaskResizable` on macOS, `WS_THICKFRAME` on
     /// Windows, and `set_resizable` on GTK.
     pub fn set_resizable(&self, resizable: bool) {
-        WINDOW_STATES.with(|map| {
-            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).resizable =
-                resizable;
-        });
-        crate::platform::get_platform().set_window_state(
+        // The mirror records only what the platform accepted, exactly as `set_min_size` and
+        // `set_icon` do — otherwise a flag set on a window that does not exist is reported as
+        // applied by the `is_*` getter, which falls back to the mirror when the platform answers
+        // `None`. The platform's `bool` result was previously discarded.
+        let applied = crate::platform::get_platform().set_window_state(
             self.raw_id(),
             WindowStateFlag::Resizable,
             resizable,
         );
+        if applied {
+            WINDOW_STATES.with(|map| {
+                map.borrow_mut()
+                    .entry(self.raw_id())
+                    .or_insert_with(Default::default)
+                    .resizable = resizable;
+            });
+        }
     }
 
     /// Return whether the window is resizable.
@@ -2668,15 +2758,23 @@ impl WindowHandle {
     /// toggles `NSWindowStyleMaskTitled` on macOS, `WS_CAPTION` on Windows, and
     /// `set_decorated` on GTK.
     pub fn set_decorated(&self, decorated: bool) {
-        WINDOW_STATES.with(|map| {
-            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).decorated =
-                decorated;
-        });
-        crate::platform::get_platform().set_window_state(
+        // The mirror records only what the platform accepted, exactly as `set_min_size` and
+        // `set_icon` do — otherwise a flag set on a window that does not exist is reported as
+        // applied by the `is_*` getter, which falls back to the mirror when the platform answers
+        // `None`. The platform's `bool` result was previously discarded.
+        let applied = crate::platform::get_platform().set_window_state(
             self.raw_id(),
             WindowStateFlag::Decorated,
             decorated,
         );
+        if applied {
+            WINDOW_STATES.with(|map| {
+                map.borrow_mut()
+                    .entry(self.raw_id())
+                    .or_insert_with(Default::default)
+                    .decorated = decorated;
+            });
+        }
     }
 
     /// Is the window decorated?
@@ -2931,4 +3029,191 @@ mod tests {
         assert_eq!(b.max_length(), 32767);
         assert!(b.is_read_only());
     }
+    /// A backend with no icon concept and no minimum-size read-back.
+    ///
+    /// Six of the shipped backends (`linux-gtk`, `wayland`, `android`, `ios`, `wasm`, `harmony`)
+    /// inherit the `Platform` defaults for `window_min_size`/`window_icon`, which answer `None`;
+    /// `macos` implements the size pair but not the icon pair. The mirror fallback exists for
+    /// exactly that case, and this stand-in reproduces it so the fallback is testable on any
+    /// host rather than only on the six backends this one cannot run.
+    struct NoReadbackBackend;
+
+    impl crate::platform::Platform for NoReadbackBackend {
+        fn as_any(&self) -> &dyn crate::compat::Any {
+            self
+        }
+        fn backend_name(&self) -> &'static str {
+            "no-readback-probe"
+        }
+        fn family(&self) -> crate::core::PlatformFamily {
+            crate::core::PlatformFamily::Desktop
+        }
+        fn init(&self) {}
+        fn run(&self) {}
+        fn quit(&self) {}
+        fn create_window(&self, _t: &str, _x: i32, _y: i32, _w: u32, _h: u32) -> ObjectId {
+            1
+        }
+        fn set_window_min_size(&self, _id: ObjectId, _w: u32, _h: u32) -> bool {
+            true
+        }
+        fn set_window_icon(&self, _id: ObjectId, _path: &str) -> bool {
+            true
+        }
+        // `window_min_size` and `window_icon` are deliberately *not* overridden: the trait
+        // defaults answer `None`, which is the condition the mirror covers.
+    }
+
+    static NO_READBACK: NoReadbackBackend = NoReadbackBackend;
+
+    /// A value the platform accepted is readable back even when the platform cannot answer.
+    ///
+    /// `min_size` and `icon` read the platform exclusively, so on a backend without those
+    /// readers a window whose setter returned `true` still reported `None` — the mirror fields
+    /// were written by every set and read by nothing. Both now fall back to the mirror, which is
+    /// the shape `is_maximized` already used.
+    #[test]
+    fn an_accepted_window_property_reads_back_without_platform_readers() {
+        crate::platform::runtime::with_platform(&NO_READBACK, || {
+            let window = WindowHandle::from_raw(4242);
+
+            assert_eq!(window.min_size(), None, "nothing was set yet");
+            assert_eq!(window.icon(), None, "nothing was set yet");
+
+            assert!(window.set_min_size(320, 240), "the backend accepts the call");
+            assert_eq!(
+                window.min_size(),
+                Some((320, 240)),
+                "a value the platform accepted must be readable back"
+            );
+
+            assert!(window.set_icon("/tmp/probe.png"));
+            assert_eq!(
+                window.icon(),
+                Some("/tmp/probe.png".to_string()),
+                "a path the platform accepted must be readable back"
+            );
+
+            // A later set replaces rather than accumulates.
+            assert!(window.set_min_size(640, 480));
+            assert_eq!(window.min_size(), Some((640, 480)));
+        });
+    }
+
+    /// A *rejected* set leaves nothing readable, on a backend that refuses.
+    ///
+    /// The mirror used to be written before the platform was asked, so a refused value was
+    /// recorded anyway. The fallback above is only honest because the write happens on success.
+    #[test]
+    fn a_rejected_window_property_is_not_reported_by_a_later_read() {
+        struct RejectingBackend;
+        impl crate::platform::Platform for RejectingBackend {
+            fn as_any(&self) -> &dyn crate::compat::Any {
+                self
+            }
+            fn backend_name(&self) -> &'static str {
+                "rejecting-probe"
+            }
+            fn family(&self) -> crate::core::PlatformFamily {
+                crate::core::PlatformFamily::Desktop
+            }
+            fn init(&self) {}
+            fn run(&self) {}
+            fn quit(&self) {}
+            fn create_window(&self, _t: &str, _x: i32, _y: i32, _w: u32, _h: u32) -> ObjectId {
+                1
+            }
+            fn set_window_min_size(&self, _id: ObjectId, _w: u32, _h: u32) -> bool {
+                false
+            }
+            fn set_window_icon(&self, _id: ObjectId, _path: &str) -> bool {
+                false
+            }
+        }
+        static REJECTING: RejectingBackend = RejectingBackend;
+
+        crate::platform::runtime::with_platform(&REJECTING, || {
+            let window = WindowHandle::from_raw(4243);
+            assert!(!window.set_min_size(320, 240), "the backend refuses");
+            assert_eq!(window.min_size(), None, "a refused size must not be reported");
+            assert!(!window.set_icon("/tmp/nope.png"), "the backend refuses");
+            assert_eq!(window.icon(), None, "a refused icon must not be reported");
+        });
+    }
+
+    /// An id that addresses no window leaves nothing readable on the active backend.
+    #[test]
+    fn a_rejected_set_on_the_active_backend_leaves_nothing_readable() {
+        let window = WindowHandle::from_raw(0);
+        assert!(!window.set_min_size(320, 240), "id 0 is not a window");
+        assert_eq!(window.min_size(), None, "a refused size must not be reported");
+        assert!(!window.set_icon("/tmp/does-not-exist.png"));
+        assert_eq!(window.icon(), None, "a refused icon path must not be reported");
+    }
+
+    /// Every mirror-backed getter follows one rule: platform first, mirror as fallback.
+    ///
+    /// # The decision this pins
+    ///
+    /// The `WindowState` mirror is kept, not deleted, and it is a *fallback* rather than a shadow.
+    /// Two reasons, both of which have to hold for a field to earn its place here:
+    ///
+    /// 1. **Six backends cannot read the value back.** `window_min_size`/`window_icon` fall through
+    ///    to `Platform` defaults returning `None` on `linux-gtk`, `wayland`, `android`, `ios`,
+    ///    `wasm` and `harmony` (and `macos` implements the size pair but not the icon pair). A
+    ///    setter that returned `true` there produced a `None` getter, so the mirror is the only
+    ///    source that can answer at all.
+    /// 2. **`apply_window_layout` needs the size on every backend**, including at construction
+    ///    before any native object exists — which is the documented reason `record_created_geometry`
+    ///    writes it.
+    ///
+    /// A field with neither property would be dead weight and should be deleted instead. This test
+    /// makes that a decision that has to be re-made rather than inherited: it drives each
+    /// mirror-backed accessor on the active backend and requires the platform to be consulted
+    /// first — proven by a set the backend *refuses* leaving the getter reporting nothing.
+    #[test]
+    fn every_mirror_backed_getter_defers_to_the_platform_first() {
+        // An id that addresses no window: every backend refuses the setters, so no mirror entry
+        // is created and every getter must report its honest "nothing" value.
+        let window = WindowHandle::from_raw(0);
+
+        assert!(!window.set_min_size(320, 240), "id 0 is not a window");
+        assert!(!window.set_icon("/tmp/does-not-exist.png"));
+        window.set_maximized(true);
+        window.set_minimized(true);
+        window.set_fullscreen(true);
+        window.set_resizable(false);
+        window.set_decorated(false);
+
+        // Each getter is total: no panic, and the "nothing set" answer rather than a stale value.
+        assert_eq!(window.min_size(), None, "a refused size must not be remembered");
+        assert_eq!(window.icon(), None, "a refused icon must not be remembered");
+        assert!(!window.is_maximized());
+        assert!(!window.is_minimized());
+        assert!(!window.is_fullscreen());
+        assert!(window.is_resizable(), "a fresh window is resizable");
+        assert!(window.is_decorated(), "a fresh window is decorated");
+    }
+
+    /// The two geometry mirrors exist because `apply_window_layout` reads them.
+    ///
+    /// `w`/`h` are not platform-read for the window: they are the client size a layout is solved
+    /// against, and `record_created_geometry` has to supply them before any native object exists.
+    /// `x`/`y` are read back by `WindowHandle::geometry` for a panel. This asserts the layout path
+    /// still receives the size it recorded, so the fields are not orphaned by a refactor.
+    #[test]
+    fn the_window_geometry_mirror_reaches_the_layout_path() {
+        let id = crate::platform::get_platform().create_window("probe", 10, 20, 400, 300);
+        WindowHandle::record_created_geometry(id, 10, 20, 400, 300);
+
+        let recorded = WINDOW_STATES.with(|map| {
+            map.borrow().get(&id).map(|state| (state.x, state.y, state.w, state.h))
+        });
+        assert_eq!(
+            recorded,
+            Some((10, 20, 400, 300)),
+            "the geometry mirror must carry what the constructor recorded"
+        );
+    }
+
 }

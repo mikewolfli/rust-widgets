@@ -2018,7 +2018,12 @@ pub(crate) fn auto_complete_edit_capability() -> WidgetCapability {
         canonical_name: "auto_complete_edit",
         aliases: &["autocomplete"],
         properties: AUTO_COMPLETE_EDIT_PROPERTIES,
-        events: &["changed", "selected"],
+        // The names must match the signals the control emits: `text_changed` (emitted by
+        // `set_text` and the edit path) and `suggestion_selected`. The previous spellings
+        // (`changed`, `selected`) were accepted by `connect_event`, which validates against this
+        // list and then subscribes on the hub — so a consumer got a live-looking subscription
+        // that no code path could ever invoke.
+        events: &["text_changed", "suggestion_selected"],
         commands: &["set_text"],
     }
 }
@@ -2407,7 +2412,11 @@ pub(crate) fn animated_image_capability() -> WidgetCapability {
         canonical_name: "animated_image",
         aliases: &["anim_image"],
         properties: ANIMATED_IMAGE_PROPERTIES,
-        events: &["finished"],
+        // `animation_finished` and `frame_changed` are the signals the control emits; the
+        // published name was `finished`, which nothing ever fired. See
+        // `auto_complete_edit` for why a name that does not match its signal is a live-looking
+        // subscription rather than a visible error.
+        events: &["animation_finished", "frame_changed"],
         commands: &["set_playing"],
     }
 }
@@ -2443,7 +2452,8 @@ pub(crate) fn lottie_widget_capability() -> WidgetCapability {
         canonical_name: "lottie_widget",
         aliases: &["lottie"],
         properties: LOTTIE_WIDGET_PROPERTIES,
-        events: &["finished"],
+        // `animation_finished` is the emitted signal; the published name was `finished`.
+        events: &["animation_finished"],
         commands: &["set_playing"],
     }
 }
@@ -2455,7 +2465,8 @@ pub(crate) fn rive_widget_capability() -> WidgetCapability {
         canonical_name: "rive_widget",
         aliases: &["rive"],
         properties: RIVE_WIDGET_PROPERTIES,
-        events: &["finished"],
+        // `animation_finished` is the emitted signal; the published name was `finished`.
+        events: &["animation_finished"],
         commands: &["set_is_playing"],
     }
 }
@@ -2467,7 +2478,9 @@ pub(crate) fn video_player_capability() -> WidgetCapability {
         canonical_name: "video_player",
         aliases: &["video"],
         properties: VIDEO_PLAYER_PROPERTIES,
-        events: &["finished"],
+        // The player publishes the four signals it actually emits; `finished` matched none of
+        // them.
+        events: &["playback_started", "playback_paused", "playback_ended", "time_updated"],
         commands: &["set_is_playing", "set_volume"],
     }
 }

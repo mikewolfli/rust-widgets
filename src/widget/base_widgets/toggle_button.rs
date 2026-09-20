@@ -297,19 +297,42 @@ impl Draw for ToggleButton {
     }
 }
 impl crate::event::EventHandler for ToggleButton {
+    /// Toggles on a completed activation, mirroring `Button`.
+    ///
+    /// # Why the hit test and the leave arm are load-bearing
+    ///
+    /// The press arm discarded the position (`pos: _`) and there was no `MouseLeave` arm, so a
+    /// press **anywhere** set `pressed = true` and nothing ever cleared it if the pointer left
+    /// without a release reaching the control. The latch then committed on an unrelated later
+    /// release, and `draw` kept painting the pressed state meanwhile. `Button` guards the release
+    /// on `self.pressed`; this control now does the same and arms only for a press that lands on it.
     fn handle_event(&mut self, event: &crate::event::Event) {
         self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
         }
         match event {
-            crate::event::Event::MousePress { pos: _, button } if *button == 1 => {
-                self.set_pressed(true);
+            crate::event::Event::MousePress { pos, button } if *button == 1 => {
+                // Arm only for a press on the control; a press outside must not leave the latch
+                // set for a later release.
+                self.set_pressed(self.geometry().contains_point(*pos));
             }
-            crate::event::Event::MouseRelease { pos: _, button } if *button == 1 => {
-                if self.pressed {
+            crate::event::Event::MouseRelease { pos, button } if *button == 1 => {
+                // Commit only a press that this control armed, and only while the pointer is
+                // still over it — the same two conditions `Button` applies.
+                if self.pressed && self.geometry().contains_point(*pos) {
                     self.toggle();
                 }
+                self.set_pressed(false);
+            }
+            crate::event::Event::MouseRelease { button: 1, .. } => {
+                self.set_pressed(false);
+            }
+            crate::event::Event::MouseLeave { .. } => {
+                // Abandon a held press; without arms this control had no leave handling at all.
+                self.set_pressed(false);
+            }
+            crate::event::Event::FocusLost => {
                 self.set_pressed(false);
             }
             _ => { /* Other events are not relevant */ }
@@ -320,7 +343,8 @@ impl crate::event::EventHandler for ToggleButton {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{Color, ObjectId, Rect};
+    use crate::core::{Color, ObjectId, Point, Rect};
+    use crate::event::{Event, EventHandler};
     use crate::style::WidgetStyle;
 
     #[test]
@@ -477,5 +501,57 @@ mod tests {
         // GenericSignal
         let _pressed = &tb.pressed_signal;
         let _released = &tb.released_signal;
+    }
+    /// A press that leaves the control is abandoned, and never latches.
+    ///
+    /// The press arm discarded the position and there was no `MouseLeave` arm, so a press
+    /// anywhere set `pressed = true` and only a release cleared it. A pointer that left while
+    /// held left the latch set, and the widget then toggled on an unrelated later release.
+    #[test]
+    fn toggle_button_mouse_leave_abandons_a_held_press() {
+        let inside = Point::new(20, 15);
+        let mut tb = ToggleButton::new("T".to_string(), Rect::new(0, 0, 100, 30));
+
+        tb.handle_event(&Event::MousePress { pos: inside, button: 1 });
+        assert!(tb.is_pressed(), "a press on the control arms the latch");
+
+        tb.handle_event(&Event::MouseLeave { pos: Point::new(-1, -1) });
+        assert!(!tb.is_pressed(), "leaving must clear the latch");
+
+        // The stray release must not commit, and the latch must already be clear.
+        tb.handle_event(&Event::MouseRelease { pos: inside, button: 1 });
+        assert!(!tb.is_checked(), "a release after leaving must not toggle");
+    }
+
+    /// A press that does not land on the control must not arm the latch.
+    #[test]
+    fn toggle_button_press_outside_does_not_arm() {
+        let mut tb = ToggleButton::new("T".to_string(), Rect::new(0, 0, 100, 30));
+        tb.handle_event(&Event::MousePress { pos: Point::new(9000, 9000), button: 1 });
+        assert!(!tb.is_pressed());
+        tb.handle_event(&Event::MouseRelease { pos: Point::new(20, 15), button: 1 });
+        assert!(!tb.is_checked(), "a drag that began outside must not commit");
+    }
+
+    /// A completed activation still toggles.
+    #[test]
+    fn toggle_button_completed_activation_toggles() {
+        let inside = Point::new(20, 15);
+        let mut tb = ToggleButton::new("T".to_string(), Rect::new(0, 0, 100, 30));
+        tb.handle_event(&Event::MousePress { pos: inside, button: 1 });
+        tb.handle_event(&Event::MouseRelease { pos: inside, button: 1 });
+        assert!(tb.is_checked());
+    }
+
+    /// Losing focus abandons a held press.
+    #[test]
+    fn toggle_button_focus_loss_abandons_a_held_press() {
+        let inside = Point::new(20, 15);
+        let mut tb = ToggleButton::new("T".to_string(), Rect::new(0, 0, 100, 30));
+        tb.handle_event(&Event::MousePress { pos: inside, button: 1 });
+        tb.handle_event(&Event::FocusLost);
+        assert!(!tb.is_pressed());
+        tb.handle_event(&Event::MouseRelease { pos: inside, button: 1 });
+        assert!(!tb.is_checked());
     }
 }

@@ -158,6 +158,8 @@ impl PieMenu {
     /// radius starts at 35% of the **effective** radius, keeping it inside the
     /// `2.0 ..= 0.95 * radius` band [`PieMenu::set_inner_radius`] documents.
     pub fn new(center: Point, radius: f32) -> Self {
+        let radius =
+            if radius.is_finite() { radius.max(Self::MIN_RADIUS) } else { Self::MIN_RADIUS };
         let size = (radius * 2.0) as u32;
         let geometry = Rect::new(center.x - radius as i32, center.y - radius as i32, size, size);
         let inner_radius = radius * 0.35;
@@ -319,7 +321,10 @@ impl PieMenu {
     /// `f32::max`/`f32::min` return the non-NaN operand, so a NaN input silently produced
     /// whatever the other operand was, which is not a value the caller asked for either.
     pub fn set_inner_radius(&mut self, inner_radius: f32) {
-        self.inner_radius = inner_radius.max(2.0).min(self.radius * 0.95);
+        if !inner_radius.is_finite() {
+            return;
+        }
+        self.inner_radius = inner_radius.min(self.radius * 0.95).max(2.0);
         self.update_geometry();
     }
 

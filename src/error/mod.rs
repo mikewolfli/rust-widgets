@@ -267,10 +267,26 @@ where
 
 /// Execute a closure, converting any panic into an `RwResult::Err`.
 ///
-/// See the `not(alloc_frugal)` definition above for why the `mini` arm cannot
-/// catch: `panic = "abort"` has no unwinding to catch. The signature is kept
-/// identical (`core::panic::UnwindSafe` is available in `core`) so callers do not
-/// have to be feature-gated.
+/// **Must** be used at every `extern "C" fn` entry point to prevent
+/// unwinding across the C ABI boundary.
+///
+/// # Under `mini`
+///
+/// `catch_unwind` lives in `std`: catching a panic needs the std unwinder and the panic-payload
+/// machinery, neither of which `core` provides. The `mini` arm therefore calls `f` directly and
+/// relies on the build aborting instead of unwinding.
+///
+/// That reliance is a property of the **profile**, not of this feature. Only
+/// `[profile.release-mini]` and `[profile.release-embedded]` set `panic = "abort"`; a `mini` build
+/// using `dev` or the plain `release` profile unwinds like any other, and there this function
+/// does **not** catch — the panic propagates as if `catch_panic` had not been called. Verified on a
+/// default `mini` build: an enclosing `std::panic::catch_unwind` observed the panic, so the value
+/// never reached the `Err` arm.
+///
+/// Callers that need a guarantee rather than a convention must set `panic = "abort"` in their own
+/// profile, which is what the shipped release profiles do. The alternative — forwarding to
+/// `std::panic::catch_unwind` — is not available here, because `mini` is `#![no_std]` and the
+/// crate links `std` only through the `extern crate std` macro shim in `lib.rs`.
 #[cfg(alloc_frugal)]
 pub fn catch_panic<F, T>(f: F) -> RwResult<T>
 where

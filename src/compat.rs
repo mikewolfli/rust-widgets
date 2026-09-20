@@ -89,20 +89,37 @@ pub use alloc::vec::Vec;
 /// elements fails** rather than reallocating. Under desktop builds it is an
 /// ordinary growable `alloc::vec::Vec<T>`, so code must not rely on the
 /// capacity limit being enforced.
+///
+/// The capacity is exposed as [`MINI_VEC_CAPACITY`] so a caller can check before
+/// pushing rather than discovering the refusal afterwards.
 #[cfg(alloc_frugal)]
-pub type MiniVec<T> = heapless::Vec<T, 64>;
+pub type MiniVec<T> = heapless::Vec<T, MINI_VEC_CAPACITY>;
 /// Growable vector alias used on desktop builds; see the `alloc_frugal`
 /// definition for the capacity-limited variant.
 #[cfg(not(alloc_frugal))]
 pub type MiniVec<T> = alloc::vec::Vec<T>;
 
+/// Element capacity of [`MiniVec`] under `alloc_frugal`.
+///
+/// Named so call sites do not repeat the literal and so the value can be quoted in a doc
+/// comment without drifting from the type. Meaningless on desktop builds, where `MiniVec` is
+/// unbounded.
+pub const MINI_VEC_CAPACITY: usize = 64;
+
+/// Byte capacity of [`MiniString`] under `alloc_frugal`.
+///
+/// The counterpart of [`MINI_VEC_CAPACITY`] for the fixed-capacity string. Compare
+/// `s.len()` against this to detect the truncation [`into_mini`] performs.
+pub const MINI_STRING_CAPACITY: usize = 256;
+
 /// Fixed-capacity string for mini builds. Falls back to `String` on desktop.
 ///
 /// Under `alloc_frugal` this is `heapless::String<256>`, so at most 256 bytes
-/// of UTF-8 are retained; see [`into_mini`], which silently truncates on
-/// overflow. Under desktop builds it is an unbounded `alloc::string::String`.
+/// of UTF-8 are retained; see [`into_mini`], which truncates to the longest
+/// whole-`char` prefix that fits. Under desktop builds it is an unbounded
+/// `alloc::string::String`.
 #[cfg(alloc_frugal)]
-pub type MiniString = heapless::String<256>;
+pub type MiniString = heapless::String<MINI_STRING_CAPACITY>;
 /// Growable string alias used on desktop builds; see the `alloc_frugal`
 /// definition for the capacity-limited variant.
 #[cfg(not(alloc_frugal))]
@@ -111,15 +128,30 @@ pub type MiniString = alloc::string::String;
 /// Convert a `&str` to `MiniString`. Under mini, copies into fixed buffer.
 /// Under desktop, creates an owned `String`.
 ///
-/// Truncation is **silent** under `alloc_frugal`: the `heapless` push fails on
-/// the byte that would cross 256, so the result is the longest whole-prefix of
-/// `s` that fits, cut at a UTF-8 boundary, with no error reported. A caller that
-/// must know the text survived intact has to compare lengths.
+/// # Truncation
+///
+/// Under `alloc_frugal` the result is the **longest whole-`char` prefix of `s` that fits** in
+/// the buffer, with no error reported. A caller that must know the text survived intact has to
+/// compare lengths.
+///
+/// This used to claim the same thing and do the opposite: it called `push_str` once, and
+/// `heapless`'s `push_str` delegates to `Vec::extend_from_slice`, whose contract is "won't fit
+/// in the `Vec`; **don't modify anything** and return an error". A 500-byte tooltip therefore
+/// became an **empty** string — the whole value silently lost, not a truncated prefix of it,
+/// which is strictly worse than the documented behaviour and indistinguishable from "no
+/// tooltip was set". The per-`char` loop below is what makes the documented prefix real.
 pub fn into_mini(s: &str) -> MiniString {
     #[cfg(alloc_frugal)]
     {
         let mut ms = MiniString::new();
-        let _ = ms.push_str(s);
+        for ch in s.chars() {
+            // Stop at the first character that does not fit rather than dropping everything:
+            // `heapless::String::push` fails atomically per character, so the buffer always
+            // holds a valid UTF-8 prefix.
+            if ms.push(ch).is_err() {
+                break;
+            }
+        }
         ms
     }
     #[cfg(not(alloc_frugal))]
@@ -853,3 +885,85 @@ crate::impl_default_via_new!(Condvar);
 /// what makes the blocking paths of `crate::event::queue` possible on this
 /// profile.
 pub use std::sync::Condvar;
+
+#[cfg(test)]
+mod mini_capacity_tests {
+    use super::*;
+
+    /// `into_mini` keeps the longest whole-`char` prefix that fits.
+    ///
+    /// The doc always said this; the code did not do it. `push_str` delegates to
+    /// `heapless::Vec::extend_from_slice`, whose contract is "won't fit in the `Vec`; don't
+    /// modify anything and return an error" — so a 500-byte input produced an **empty** string,
+    /// losing the whole value rather than truncating it. An empty tooltip is indistinguishable
+    /// from "none was set", which is why the difference matters.
+    #[test]
+    fn into_mini_truncates_instead_of_discarding_everything() {
+        #[cfg(alloc_frugal)]
+        {
+            // Fits exactly: retained in full.
+            let exact = "x".repeat(MINI_STRING_CAPACITY);
+            assert_eq!(into_mini(&exact).len(), MINI_STRING_CAPACITY);
+
+            // One byte over: truncated to the capacity, not dropped.
+            let over = "x".repeat(MINI_STRING_CAPACITY + 1);
+            assert_eq!(
+                into_mini(&over).len(),
+                MINI_STRING_CAPACITY,
+                "an over-long string must keep a full-capacity prefix, not become empty"
+            );
+
+            // Far over: still a full-capacity prefix.
+            let far = "x".repeat(MINI_STRING_CAPACITY * 4);
+            assert_eq!(into_mini(&far).len(), MINI_STRING_CAPACITY);
+            assert!(!into_mini(&far).is_empty(), "the value must not be lost entirely");
+        }
+        #[cfg(not(alloc_frugal))]
+        {
+            let long = "x".repeat(5000);
+            let got = into_mini(&long);
+            assert_eq!(got.len(), long.len(), "desktop MiniString is unbounded");
+        }
+    }
+
+    /// Truncation never splits a `char`, so the result is always valid UTF-8.
+    #[test]
+    fn into_mini_truncates_on_a_char_boundary() {
+        #[cfg(alloc_frugal)]
+        {
+            // Three bytes per character, so `MINI_STRING_CAPACITY` (256) is not a char
+            // boundary — a byte-wise copy would leave a lone continuation byte.
+            let cjk = "\u{4f60}".repeat(MINI_STRING_CAPACITY);
+            let got = into_mini(&cjk);
+            assert!(
+                core::str::from_utf8(got.as_bytes()).is_ok(),
+                "truncation must not split a char"
+            );
+            assert_eq!(got.len(), 255, "the last whole char starts at byte 255");
+        }
+        #[cfg(not(alloc_frugal))]
+        {
+            let cjk = "\u{4f60}".repeat(10);
+            assert_eq!(into_mini(&cjk), cjk);
+        }
+    }
+
+    /// The exported capacities agree with the types they describe.
+    #[test]
+    fn exported_capacities_match_their_types() {
+        #[cfg(alloc_frugal)]
+        {
+            let v: MiniVec<u8> = MiniVec::new();
+            assert_eq!(v.capacity(), MINI_VEC_CAPACITY);
+            let s: MiniString = MiniString::new();
+            assert_eq!(s.capacity(), MINI_STRING_CAPACITY);
+        }
+        #[cfg(not(alloc_frugal))]
+        {
+            // The constants are still defined (they are profile-independent), but they do not
+            // constrain the desktop aliases. This branch documents that.
+            assert_eq!(MINI_VEC_CAPACITY, 64);
+            assert_eq!(MINI_STRING_CAPACITY, 256);
+        }
+    }
+}

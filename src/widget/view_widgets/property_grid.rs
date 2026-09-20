@@ -70,6 +70,16 @@ impl PropertyGrid {
         let height = self.geometry().height;
         height.saturating_sub(FIRST_ROW_TOP) / ROW_HEIGHT
     }
+
+    /// The largest `scroll_offset` that still shows a row.
+    ///
+    /// One definition for the wheel, the arrow keys and the End key. Those three used to recompute
+    /// it from a locally-defined `row_height = 24` together with `height - (row_height + 1)`, a
+    /// formula that disagreed with [`visible_row_count`](Self::visible_row_count) by one row at
+    /// some heights and drifted from it whenever either changed.
+    fn max_scroll(&self) -> u32 {
+        (self.properties.len() as u32).saturating_sub(self.visible_row_count())
+    }
     /// Creates a new PropertyGrid with the given geometry.
     pub fn new(geometry: Rect) -> Self {
         Self {
@@ -124,8 +134,15 @@ impl PropertyGrid {
     }
 
     /// Returns the currently selected index, if any.
+    ///
+    /// A selection past the end of the list is reported as `None` rather than as a stale index.
+    /// [`properties_mut`](Self::properties_mut) hands out `&mut Vec<PropertyItem>`, so a caller can
+    /// shrink the list without either of the methods that maintain this invariant
+    /// ([`clear`](Self::clear), [`remove_property`](Self::remove_property)) running; the index then
+    /// named a row that does not exist, and `draw` highlighted nothing. Filtering here is what makes
+    /// the accessor honest regardless of how the list changed.
     pub fn selected_index(&self) -> Option<usize> {
-        self.selected_index
+        self.selected_index.filter(|&index| index < self.properties.len())
     }
 
     /// Sets the selected row index. Clamps to valid range.
@@ -146,6 +163,16 @@ impl PropertyGrid {
     }
 
     /// Returns a mutable reference to the properties slice.
+    ///
+    /// # The selection invariant
+    ///
+    /// This bypasses the selectors above, so shrinking the list here can leave
+    /// [`selected_index`](Self::selected_index) naming a row that no longer exists. That is
+    /// tolerated rather than prevented — an accessor returning `&mut Vec` cannot police its
+    /// borrow — and [`selected_index`](Self::selected_index) filters the stale value out on read,
+    /// so no caller observes a selection the grid cannot paint. Prefer
+    /// [`add_property`](Self::add_property) / [`remove_property`](Self::remove_property), which
+    /// keep the cursor in range.
     pub fn properties_mut(&mut self) -> &mut Vec<PropertyItem> {
         &mut self.properties
     }
@@ -377,22 +404,34 @@ impl EventHandler for PropertyGrid {
                 }
             }
             Event::Wheel { delta, .. } => {
-                let row_height = 24u32;
-                let max_scroll = (self.properties.len() as u32).saturating_sub(
-                    (self.geometry().height.saturating_sub(row_height + 1)) / row_height,
-                );
+                // `max_scroll` and the visible count both come from the shared helpers, so the
+                // wheel can never park the view past what `draw` paints. This arm used to recompute
+                // the count from a locally-defined `row_height = 24` and `height - (row_height + 1)`
+                // — a third copy of the geometry, which is how the three formulas drifted apart.
+                let max_scroll = self.max_scroll();
                 if delta.y > 0 {
                     self.scroll_offset = self.scroll_offset.saturating_sub(1);
                 } else if delta.y < 0 {
                     self.scroll_offset = (self.scroll_offset + 1).min(max_scroll);
                 }
+                // Clamp unconditionally: shrinking the row count or the geometry while scrolled
+                // must not leave the offset past the end.
+                self.scroll_offset = self.scroll_offset.min(max_scroll);
                 self.base.request_redraw();
             }
             Event::KeyPress { key, .. } => {
-                let row_height = 24u32;
-                let max_scroll = (self.properties.len() as u32).saturating_sub(
-                    (self.geometry().height.saturating_sub(row_height + 1)) / row_height,
-                );
+                let max_scroll = self.max_scroll();
+                // Keyboard navigation is refused when no row is painted. `draw` renders
+                // `[scroll_offset, scroll_offset + visible_row_count)`, and at a short geometry
+                // (`height < FIRST_ROW_TOP + ROW_HEIGHT`, i.e. under 49 px) that range is empty.
+                // The arms below used `self.selected_index.unwrap_or(0)`, so with nothing selected
+                // — and nothing visible — Down still committed `Some(0)`: a selection the grid can
+                // never paint. Refusing up front keeps the cursor consistent with what is on screen.
+                let visible = self.visible_row_count();
+                if visible == 0 {
+                    self.base.handle_event(event);
+                    return;
+                }
                 match *key {
                     38 => {
                         // Up arrow — move selection up
@@ -422,8 +461,7 @@ impl EventHandler for PropertyGrid {
                         };
                         self.selected_index = Some(new_idx);
                         self.selected.emit(new_idx);
-                        let visible =
-                            (self.geometry().height.saturating_sub(row_height + 1)) / row_height;
+                        let visible = self.visible_row_count();
                         // Scroll if selection moved below viewport
                         if new_idx >= self.scroll_offset as usize + visible as usize {
                             self.scroll_offset = (new_idx as u32 + 1).saturating_sub(visible);
@@ -445,8 +483,7 @@ impl EventHandler for PropertyGrid {
                             let last = self.properties.len() - 1;
                             self.selected_index = Some(last);
                             self.selected.emit(last);
-                            let visible = (self.geometry().height.saturating_sub(row_height + 1))
-                                / row_height;
+                            let visible = self.visible_row_count();
                             self.scroll_offset =
                                 (last as u32 + 1).saturating_sub(visible).min(max_scroll);
                             self.base.request_redraw();
@@ -745,4 +782,97 @@ mod tests {
         pg.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
         assert_eq!(*captured.lock().unwrap(), Some(1));
     }
+    /// Keyboard navigation is refused when the geometry paints no rows.
+    ///
+    /// `draw` renders `[scroll_offset, scroll_offset + visible_row_count)`. At `height = 48` that
+    /// range is empty (48 - 25 = 23, / 24 = 0 rows). The arrow arms used
+    /// `self.selected_index.unwrap_or(0)`, so with nothing selected Down still committed `Some(0)`:
+    /// a row the grid never paints. The click path already refused it via `visible_row_count()`.
+    #[test]
+    fn property_grid_keyboard_navigation_refuses_when_no_row_is_visible() {
+        let mut pg = PropertyGrid::new(Rect::new(0, 0, 300, 48));
+        for i in 0..5 {
+            pg.add_property(format!("p{i}"), format!("v{i}"), true);
+        }
+        assert_eq!(pg.visible_row_count(), 0, "the geometry paints no rows at all");
+
+        // Down arrow
+        pg.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+        assert_eq!(pg.selected_index(), None, "Down must not select an unpainted row");
+        // Up arrow
+        pg.handle_event(&Event::KeyPress { key: 38, modifiers: 0 });
+        assert_eq!(pg.selected_index(), None);
+        // End must not jump to the last row either.
+        pg.handle_event(&Event::KeyPress { key: 35, modifiers: 0 });
+        assert_eq!(pg.selected_index(), None);
+        // Home is the one harmless case; it selects 0, which is also unpainted.
+        pg.handle_event(&Event::KeyPress { key: 36, modifiers: 0 });
+        assert_eq!(pg.selected_index(), None, "no row is visible, so none can be selected");
+
+        // A tall-enough geometry still navigates.
+        let mut tall = PropertyGrid::new(Rect::new(0, 0, 300, 200));
+        for i in 0..5 {
+            tall.add_property(format!("p{i}"), format!("v{i}"), true);
+        }
+        tall.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+        assert_eq!(tall.selected_index(), Some(0));
+    }
+
+    /// A selection left dangling by `properties_mut` reads as `None`, not as a stale index.
+    ///
+    /// `properties_mut` returns `&mut Vec<PropertyItem>`, so a caller can shrink the list without
+    /// `clear` or `remove_property` running. The accessor then reported an index naming no row, and
+    /// `draw` highlighted nothing — the selection silently vanished while still being reported.
+    #[test]
+    fn property_grid_selection_does_not_outlive_its_row() {
+        let mut pg = PropertyGrid::new(Rect::new(0, 0, 300, 200));
+        for i in 0..5 {
+            pg.add_property(format!("p{i}"), format!("v{i}"), true);
+        }
+        pg.set_selected_index(Some(4));
+        assert_eq!(pg.selected_index(), Some(4));
+
+        pg.properties_mut().truncate(2);
+        assert_eq!(pg.property_count(), 2);
+        assert_eq!(
+            pg.selected_index(),
+            None,
+            "an index past the end must read as no selection"
+        );
+
+        // Re-growing the list must not resurrect the stale index.
+        pg.add_property("new", "v", true);
+        assert_eq!(pg.selected_index(), None);
+    }
+
+    /// The wheel and the keys cannot park the view past the last row.
+    ///
+    /// `max_scroll` used to be recomputed inline from a locally-defined `row_height = 24` and
+    /// `height - (row_height + 1)` — a second and third copy of the geometry that disagreed with
+    /// `visible_row_count()` by one row at some heights.
+    #[test]
+    fn property_grid_scroll_offset_stays_within_range() {
+        let mut pg = PropertyGrid::new(Rect::new(0, 0, 300, 200));
+        for i in 0..5 {
+            pg.add_property(format!("p{i}"), format!("v{i}"), true);
+        }
+        // 5 rows, 7 fit, so nothing to scroll.
+        assert_eq!(pg.max_scroll(), 0);
+
+        // Wheel down repeatedly.
+        for _ in 0..10 {
+            pg.handle_event(&Event::Wheel { delta: Point::new(0, -1), modifiers: 0 });
+        }
+        assert!(pg.scroll_offset <= pg.max_scroll(), "wheel must not scroll past the end");
+
+        // End key with a list longer than the viewport.
+        let mut long = PropertyGrid::new(Rect::new(0, 0, 300, 200));
+        for i in 0..50 {
+            long.add_property(format!("p{i}"), format!("v{i}"), true);
+        }
+        long.handle_event(&Event::KeyPress { key: 35, modifiers: 0 });
+        assert!(long.scroll_offset <= long.max_scroll());
+        assert_eq!(long.selected_index(), Some(49));
+    }
+
 }

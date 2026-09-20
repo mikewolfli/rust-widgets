@@ -140,14 +140,30 @@ impl WidgetProperties for MiniCanvas {
 }
 
 impl EventHandler for MiniCanvas {
+    /// Pointer events reach a canvas only while it is enabled and only when they land on it.
+    ///
+    /// Neither guard was here: a disabled canvas still emitted `mouse_pressed`,
+    /// `mouse_released` and `clicked` for a press anywhere in the window, so a host that
+    /// disables the widget to take it out of play kept receiving interaction callbacks from it.
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        if !self.base.is_enabled() {
+            return;
+        }
         match event {
             Event::MousePress { pos, .. } => {
+                // A press outside is not an interaction; without this check the position was
+                // recorded and the event reported for any pointer-down the host routed here.
+                if !self.geometry().contains_point(*pos) {
+                    return;
+                }
                 self.last_mouse_pos = *pos;
                 self.mouse_pressed.emit();
             }
             Event::MouseRelease { pos, .. } => {
+                if !self.geometry().contains_point(*pos) {
+                    return;
+                }
                 self.last_mouse_pos = *pos;
                 self.mouse_released.emit();
                 self.clicked.emit();
@@ -269,5 +285,56 @@ mod tests {
             }
             _ => panic!("Expected FillCircle command"),
         }
+    }
+    /// A disabled canvas reports nothing, and a press outside it is not an interaction.
+    ///
+    /// Neither guard existed: the handler emitted `mouse_pressed`, `mouse_released` and `clicked`
+    /// while disabled, and did so for a press anywhere in the window because the position was
+    /// never tested against the geometry.
+    #[test]
+    fn mini_canvas_ignores_input_when_disabled_and_when_outside() {
+        use crate::event::Event;
+        use crate::widget::Widget;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let geometry = Rect::new(0, 0, 100, 100);
+        let build = || {
+            let canvas = MiniCanvas::new(geometry);
+            let hits = Arc::new(AtomicUsize::new(0));
+            let sink = Arc::clone(&hits);
+            canvas.mouse_pressed.connect(move || {
+                sink.fetch_add(1, Ordering::SeqCst);
+            });
+            let clicks = Arc::new(AtomicUsize::new(0));
+            let sink = Arc::clone(&clicks);
+            canvas.clicked.connect(move || {
+                sink.fetch_add(1, Ordering::SeqCst);
+            });
+            (canvas, hits, clicks)
+        };
+
+        // Enabled and inside: both signals fire.
+        let (mut canvas, hits, clicks) = build();
+        canvas.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        canvas.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 });
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        assert_eq!(clicks.load(Ordering::SeqCst), 1);
+
+        // Disabled: nothing fires.
+        let (mut canvas, hits, clicks) = build();
+        canvas.set_enabled(false);
+        canvas.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        canvas.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 });
+        assert_eq!(hits.load(Ordering::SeqCst), 0, "a disabled canvas must stay out of play");
+        assert_eq!(clicks.load(Ordering::SeqCst), 0);
+
+        // Enabled but outside: nothing fires.
+        let (mut canvas, hits, clicks) = build();
+        let outside = Point::new(5000, 5000);
+        canvas.handle_event(&Event::MousePress { pos: outside, button: 1 });
+        canvas.handle_event(&Event::MouseRelease { pos: outside, button: 1 });
+        assert_eq!(hits.load(Ordering::SeqCst), 0, "a press outside is not an interaction");
+        assert_eq!(clicks.load(Ordering::SeqCst), 0);
     }
 }

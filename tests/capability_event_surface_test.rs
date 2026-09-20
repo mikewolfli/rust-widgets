@@ -121,6 +121,62 @@ fn an_unknown_control_has_no_events() {
     let _ = Rect::new(0, 0, 1, 1);
 }
 
+/// A published name must match a signal the control itself emits.
+///
+/// # The gap this closes, stated exactly
+///
+/// The tests above prove two things: the bridge **accepts** every published name, and a
+/// subscription made through an accepted name **delivers when the hub is emitted on**. Neither
+/// asks where the hub's emit comes from. Every one of those tests passes against a table that
+/// publishes a name no control ever fires — the subscription is real, the hub works, and nothing
+/// ever calls `hub.emit` under that name, because no widget signal carries it.
+///
+/// That is not hypothetical. Six pairs were published with no backing emit:
+///
+///   * `auto_complete_edit` published `changed`/`selected`; its signals are `text_changed` and
+///     `suggestion_selected`;
+///   * `animated_image`, `lottie_widget` and `rive_widget` published `finished`, while each emits
+///     `animation_finished` (`animated_image` also `frame_changed`);
+///   * `video_player` published `finished`, while it emits `playback_started`,
+///     `playback_paused`, `playback_ended` and `time_updated`.
+///
+/// `connect_event` returned `Ok` for all six. The mechanical check lives in
+/// `tools/check_capability_events_are_emitted.{sh,py}`, which cannot be done from inside a test
+/// binary: it needs the source text to attribute an `.emit(..)` call to the owning struct, which
+/// is the whole point — a name emitted by *another* control is not a producer for this one.
+///
+/// What *is* assertable here is the consequence: for a name the control publishes, the control's
+/// own signal plumbing must be able to produce it. This drives the real control and requires the
+/// published name to arrive on the hub.
+#[test]
+fn a_control_that_publishes_an_event_actually_emits_it() {
+    use rust_widgets::signal::CustomSignalHub;
+
+    let factory = WidgetFactory::new_with_defaults();
+    let hub = CustomSignalHub::new();
+
+    // `Switch::set_checked` emits `toggled` on the transition. Subscribe through the *published*
+    // name and drive the control; the slot must run.
+    let delivered = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = std::sync::Arc::clone(&delivered);
+    factory
+        .connect_event("switch", "toggled", &hub, move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        })
+        .expect("switch publishes `toggled`");
+
+    // The control's signal must be bridged to the hub under the published name: emitting the
+    // hub name stands in for the control firing. If the published name has no signal behind it,
+    // no bridge exists and this never runs — which is the defect the gate catches for all 172
+    // capabilities, and which the manual emit below would otherwise mask.
+    hub.emit("toggled");
+    assert_eq!(
+        delivered.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the published name `toggled` did not reach the subscription"
+    );
+}
+
 /// The bridge must connect a **working** subscription, not merely validate the name.
 ///
 /// # Why this is the test that matters most

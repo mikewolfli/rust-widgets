@@ -479,8 +479,15 @@ impl WidgetProperties for MdiArea {
 }
 
 impl EventHandler for MdiArea {
+    /// Sub-window activation and event forwarding stop while the area is disabled.
+    ///
+    /// Without the guard a disabled MDI area still raised whichever sub-window was clicked and
+    /// forwarded the event into it, so `set_enabled(false)` did not take the workspace out of play.
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        if !self.base.is_enabled() {
+            return;
+        }
         let mut hit_subwindow = false;
         if let Event::MousePress { pos, button } = event {
             if *button == 1 {

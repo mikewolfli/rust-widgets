@@ -331,6 +331,11 @@ impl EventHandler for MaterialSnackbar {
         if !self.base.is_visible() {
             return;
         }
+        // A disabled control stays out of play even while visible: without this the action
+        // button still fired for a snackbar the host had disabled.
+        if !self.base.is_enabled() {
+            return;
+        }
 
         match event {
             Event::MousePress { pos, button } | Event::MouseRelease { pos, button } => {
@@ -614,7 +619,15 @@ impl Draw for CupertinoAlertDialog {
 }
 
 impl EventHandler for CupertinoAlertDialog {
+    /// Interactions are ignored while the control is disabled.
+    ///
+    /// The disabled state was not consulted, so a host that disabled the control — the
+    /// usual way to take a control out of play — still received clicks and value changes
+    /// from it.
     fn handle_event(&mut self, event: &Event) {
+        if !self.base.is_enabled() {
+            return;
+        }
         match event {
             Event::MouseRelease { pos, button } | Event::MousePress { pos, button } => {
                 if *button != 1 {
@@ -859,7 +872,15 @@ impl Draw for CupertinoSlider {
 }
 
 impl EventHandler for CupertinoSlider {
+    /// Interactions are ignored while the control is disabled.
+    ///
+    /// The disabled state was not consulted, so a host that disabled the control — the
+    /// usual way to take a control out of play — still received clicks and value changes
+    /// from it.
     fn handle_event(&mut self, event: &Event) {
+        if !self.base.is_enabled() {
+            return;
+        }
         match event {
             Event::MousePress { pos, button } => {
                 if *button != 1 {
@@ -1098,7 +1119,15 @@ impl Draw for MaterialNavigationRail {
 }
 
 impl EventHandler for MaterialNavigationRail {
+    /// Interactions are ignored while the control is disabled.
+    ///
+    /// The disabled state was not consulted, so a host that disabled the control — the
+    /// usual way to take a control out of play — still received clicks and value changes
+    /// from it.
     fn handle_event(&mut self, event: &Event) {
+        if !self.base.is_enabled() {
+            return;
+        }
         match event {
             Event::MousePress { pos, button } | Event::MouseRelease { pos, button } => {
                 if *button != 1 {

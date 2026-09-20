@@ -313,6 +313,11 @@ impl EventHandler for Button {
             }
             Event::MouseLeave { .. } => {
                 self.hovered = false;
+                // A pointer that leaves while held abandons the press. Only `hovered` used to be
+                // cleared, so `pressed` stayed true: the widget then committed on the *next*
+                // release, including one for an unrelated interaction, and `draw` kept painting
+                // the pressed state for a button the user had already dragged away from.
+                self.pressed = false;
                 self.base.request_redraw();
             }
             _ => { /* Other events are not relevant */ }
