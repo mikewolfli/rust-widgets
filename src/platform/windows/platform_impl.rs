@@ -15,6 +15,7 @@ use crate::platform::{Platform, PlatformCapabilities, WindowStateFlag};
 // String/Vec in this scope` errors. Every other backend already routes alloc
 // types through `compat` (see `platform/linux/types.rs`).
 use crate::compat::{String, Vec};
+use crate::platform::types::windows_shell_spawnable;
 use crate::platform::windows::notify;
 use crate::platform::windows::types::*;
 use crate::platform::DropEvent;
@@ -313,13 +314,28 @@ impl Platform for WindowsPlatform {
         ))
     }
 
-    /// The shell `print` verb is always available on Windows.
+    /// Whether this process can reach a print spooler.
+    ///
+    /// # Why the previous probe was wrong
+    ///
+    /// It spawned `cmd /C "print /? 2>NUL"` and reported `status.success()`.
+    /// `print` is a `cmd` *built-in*, not an executable, so this measured whether
+    /// the built-in's usage text exits zero — and the `2>NUL` was `cmd`-dialect
+    /// redirection, so the check was not even asking a portable question.
+    ///
+    /// Principle #38 requires the test to be **spawnability**, not exit status,
+    /// for exactly the reason documented on [`unix_print_clients_available`]: a
+    /// spooler client that prints usage and exits non-zero is still installed.
+    ///
+    /// # Why the question is asked in-process
+    ///
+    /// `spawn_print_job` reaches the spooler through `Start-Process -Verb Print`,
+    /// which is the shell's print verb resolved by the current process's own
+    /// environment. Asking a child `cmd` about it answers a question about that
+    /// child, not about this process. Probing whether `powershell` itself can be
+    /// spawned is the fact that actually gates the submission path.
     fn has_print_support(&self) -> bool {
-        std::process::Command::new("cmd")
-            .args(["/C", "print /? 2>NUL"])
-            .output()
-            .map(|out| out.status.success())
-            .unwrap_or(false)
+        windows_shell_spawnable()
     }
 
     /// A library-painted widget gets a child `HWND` of its own class; `WM_PAINT`

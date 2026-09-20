@@ -13,6 +13,7 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use crate::widget::numeric::{ordered_clamp_i32};
 /// Scroll bar widget.
 pub struct ScrollBar {
     base: BaseWidget,
@@ -94,7 +95,7 @@ impl ScrollBar {
     }
     /// Sets value, clamped to valid range.
     pub fn set_value(&mut self, value: i32) {
-        let clamped = value.clamp(self.minimum, self.maximum);
+        let clamped = ordered_clamp_i32(value, self.minimum, self.maximum);
         if self.value == clamped {
             return;
         }
@@ -166,7 +167,7 @@ impl ScrollBar {
     /// Returns pixel position for a given value.
     fn value_to_pixel_pos(&self, value: i32) -> f32 {
         let rect = self.geometry();
-        let clamped = value.clamp(self.minimum, self.maximum);
+        let clamped = ordered_clamp_i32(value, self.minimum, self.maximum);
         let slider_size = self.slider_size();
         let range = (self.maximum - self.minimum) as f32;
         if range == 0.0 {

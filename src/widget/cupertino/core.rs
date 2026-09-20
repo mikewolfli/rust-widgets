@@ -19,6 +19,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::display_widgets::switch::Switch;
+use crate::widget::numeric::ordered_clamp;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -697,7 +698,7 @@ impl CupertinoSlider {
     /// Emits `value_changed` with the clamped value when it actually changes;
     /// re-applying the same clamped value is a no-op.
     pub fn set_value(&mut self, value: f32) {
-        let clamped = value.clamp(self.min, self.max);
+        let clamped = ordered_clamp(value, self.min, self.max);
         if self.value != clamped {
             self.value = clamped;
             self.value_changed.emit(clamped);
@@ -875,7 +876,7 @@ impl EventHandler for CupertinoSlider {
                 }
 
                 let new_value = self.value_from_x(pos.x, track_left, track_width);
-                let clamped = new_value.clamp(self.min, self.max);
+                let clamped = ordered_clamp(new_value, self.min, self.max);
                 if (clamped - self.value).abs() > f32::EPSILON {
                     self.value = clamped;
                     self.value_changed.emit(clamped);
@@ -1380,6 +1381,46 @@ mod tests {
         // Value should be clamped
         sl.set_value(5.0);
         assert!((sl.value() - 10.0).abs() < 1e-6);
+    }
+
+    /// Setting `min` above the current `max` must clamp, not abort the process.
+    ///
+    /// A slider is created with `(min, max) = (0.0, 1.0)`. Writing `min = 3.5`
+    /// through the public setter — which is precisely what the capability layer's
+    /// `write_property(w, "min", …)` does, and therefore what a JSON document or a
+    /// C-ABI caller does — used to reach `value.clamp(3.5, 1.0)`. `f32::clamp`
+    /// panics when `min > max`, so a caller who set two numbers in the "wrong"
+    /// order killed the host. Setter order is not something a GUI library may put
+    /// a precondition on.
+    #[test]
+    fn cupertino_slider_min_above_max_clamps_instead_of_panicking() {
+        let mut sl = CupertinoSlider::new(Rect::new(0, 0, 200, 40));
+        sl.set_min(3.5);
+        // The bounds may now be crossed; the value must still be a number inside
+        // the range the caller named, and reading it must not panic either.
+        let value = sl.value();
+        assert!(value.is_finite(), "value must remain finite after crossed bounds, got {value}");
+        assert!(
+            (1.0..=3.5).contains(&value),
+            "value {value} is outside the ordered range [1.0, 3.5]"
+        );
+
+        // The mirrored case: `max` below the current `min`.
+        let mut sl = CupertinoSlider::new(Rect::new(0, 0, 200, 40));
+        sl.set_min(5.0);
+        sl.set_max(2.0);
+        let value = sl.value();
+        assert!(value.is_finite(), "value must remain finite after crossed bounds, got {value}");
+    }
+
+    /// A `NaN` bound must be ignored rather than poison the value.
+    #[test]
+    fn cupertino_slider_nan_bound_does_not_poison_the_value() {
+        let mut sl = CupertinoSlider::new(Rect::new(0, 0, 200, 40));
+        sl.set_value(0.5);
+        sl.set_min(f32::NAN);
+        let value = sl.value();
+        assert!(!value.is_nan(), "a NaN bound must not make the value NaN; got {value}");
     }
 
     #[test]

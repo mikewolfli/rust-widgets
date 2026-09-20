@@ -194,6 +194,19 @@ fn documented_error_semantics_hold() {
 /// the published rows. A backend that overrides `capabilities()` is checked by
 /// requiring the README to record the override rather than the default — see
 /// `DOCUMENTED_OVERRIDES`.
+///
+/// # Why this test alone was not enough
+///
+/// This test compares the README against `default_capabilities_for(family)` — a
+/// *synthetic* struct built from the family the README itself claims. It never
+/// constructs a backend, so it verifies only that the README is self-consistent with
+/// the family it declares. The WASM backend shipped `family()` = `Desktop` while the
+/// README published `Embedded | ❌❌❌❌`, and this test passed throughout: the
+/// README's own `Embedded` claim was fed back in as the expectation.
+///
+/// [`documented_matrix_matches_real_backends`] closes that hole by constructing every
+/// backend that can be built on the running host and comparing its *actual*
+/// `capabilities()` against the published row.
 #[test]
 fn published_os_capability_matrix_matches_the_trait_default() {
     use crate::core::PlatformFamily;
@@ -270,6 +283,124 @@ fn published_os_capability_matrix_matches_the_trait_default() {
         (false, false, false, false),
         "an Embedded-family backend must report no host capabilities"
     );
+}
+
+/// Every backend that can be constructed on this host must report the capability row
+/// the README publishes for it.
+///
+/// # The defect this exists to catch
+///
+/// `src/platform/wasm/platform_impl.rs` answered `family() == Desktop` while the README's
+/// matrix printed `Web (WASM) | ... | Embedded | ❌ | ❌ | ❌ | ❌ | ❌`. Because the trait
+/// default derives every host flag from the family, the wasm backend was really claiming
+/// DPI scaling, IME, accessibility and a native menu.
+///
+/// `published_os_capability_matrix_matches_the_trait_default` did not notice, and could
+/// not: it asserts the README against a struct synthesised from the family *the README
+/// itself states*. Feeding a claim back in as its own expectation can never falsify it.
+///
+/// # How this one differs
+///
+/// It builds each backend for real and calls `capabilities()` on the live object, then
+/// compares against the published row. Backends that are not compiled into this build —
+/// another OS's backend, or one behind a disabled feature — are skipped by name and
+/// counted, so the test cannot pass by having checked nothing. On this macOS host the
+/// reachable set is macOS, iOS, portable and wasm; a Windows CI job reaches the Windows
+/// backend instead.
+#[test]
+fn documented_matrix_matches_real_backends() {
+    use crate::core::PlatformFamily;
+    use crate::platform::{Platform, PlatformCapabilities};
+
+    /// `(published_name, family, dpi, ime, a11y, native_menu)` — the README table's
+    /// per-backend row, named by `Platform::backend_name()`.
+    type Row = (&'static str, PlatformFamily, bool, bool, bool, bool);
+    const PUBLISHED: &[Row] = &[
+        ("WindowsPlatform", PlatformFamily::Desktop, true, true, true, true),
+        ("cocoa", PlatformFamily::Desktop, true, true, true, true),
+        ("macos-objc2-preview", PlatformFamily::Desktop, true, true, true, true),
+        ("linux-gtk", PlatformFamily::Desktop, true, true, true, true),
+        ("wayland", PlatformFamily::Desktop, true, true, true, false),
+        ("ios-state-backend", PlatformFamily::Mobile, true, true, true, false),
+        ("android-mobile", PlatformFamily::Mobile, true, true, true, false),
+        ("android-desktop", PlatformFamily::Mobile, true, true, true, false),
+        ("harmony-desktop", PlatformFamily::Desktop, true, true, true, false),
+        ("wasm-state-backend", PlatformFamily::Embedded, false, false, false, false),
+        ("portable", PlatformFamily::Embedded, false, false, false, false),
+    ];
+
+    // Every backend constructible on this host, paired with the row above that must
+    // describe it. A backend is constructible only where its module is compiled in,
+    // so each arm repeats the module's own gate — including the device profile's
+    // feature flags, which is why `cocoa` names `cocoa-legacy` rather than
+    // `target_os = "macos"` alone: a `tablet` or `mobile` build has a different
+    // default backend and must not be asked to construct this one.
+    //
+    // `Box::default()` is used at the three sites whose backend derives `Default`;
+    // the rest take explicit constructors because their `new()` is not `Default`.
+    // `vec_init_then_push` is expected here: the pushes below are `cfg`-gated, so the
+    // `vec![...]` form the lint suggests cannot express them — a target where no arm
+    // applies is legal, and must yield an empty vector for the assertion below.
+    #[allow(clippy::vec_init_then_push)]
+    let built: Vec<(&'static str, Box<dyn Platform>)> = {
+        #[allow(unused_mut)]
+        let mut built: Vec<(&'static str, Box<dyn Platform>)> = Vec::new();
+        #[cfg(all(target_os = "macos", feature = "cocoa-legacy"))]
+        built.push(("cocoa", Box::<crate::platform::macos::MacOSPlatform>::default()));
+        #[cfg(all(target_os = "macos", any(feature = "macos", feature = "cocoa-legacy")))]
+        built.push((
+            "macos-objc2-preview",
+            Box::<crate::platform::macos_objc2::MacOSObjc2Platform>::default(),
+        ));
+        #[cfg(target_os = "windows")]
+        built.push(("WindowsPlatform", Box::new(crate::platform::windows::WindowsPlatform::new())));
+        #[cfg(all(target_os = "linux", not(feature = "wayland-native")))]
+        built.push(("linux-gtk", Box::new(crate::platform::linux::LinuxPlatform::new())));
+        #[cfg(all(target_os = "linux", feature = "wayland-native"))]
+        built.push(("wayland", Box::new(crate::platform::wayland::WaylandPlatform::new())));
+        #[cfg(all(target_vendor = "apple", not(target_os = "macos")))]
+        built.push(("ios-state-backend", Box::new(crate::platform::ios::IosMobilePlatform::new())));
+        #[cfg(feature = "wasm")]
+        built.push(("wasm-state-backend", Box::<crate::platform::wasm::WasmPlatform>::default()));
+        // Built directly rather than via `portable::instance()`, which hands back a
+        // `&'static` reference that cannot be moved into the box. The name and family
+        // are the ones `portable/mod.rs` declares for itself.
+        built.push((
+            "portable",
+            Box::new(crate::platform::StubPlatform::new("portable", PlatformFamily::Embedded)),
+        ));
+        built
+    };
+
+    assert!(!built.is_empty(), "no backend was constructible, so nothing was verified");
+
+    for (name, backend) in &built {
+        let row = PUBLISHED.iter().find(|(row_name, ..)| row_name == name).unwrap_or_else(|| {
+            panic!(
+                "backend '{name}' is constructible but has no published README row; add \
+                     its row to PUBLISHED and to the README matrix"
+            )
+        });
+        let actual = backend.capabilities();
+        let expected = PlatformCapabilities {
+            dpi_scaling: row.2,
+            ime: row.3,
+            accessibility: row.4,
+            native_menu: row.5,
+            typed_widget_trigger: true,
+        };
+        assert_eq!(
+            actual, expected,
+            "backend '{name}' does not match its published README capability row; \
+             the README is the contract a host reads before choosing a build"
+        );
+        assert_eq!(
+            backend.family(),
+            row.1,
+            "backend '{name}' reports a family the README does not publish; the family \
+             drives the capability default, so a wrong family is a wrong capability set"
+        );
+    }
 }
 
 /// The `PlatformCapabilities` fields the README's OS matrix names.

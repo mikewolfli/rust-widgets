@@ -355,6 +355,14 @@ impl EventHandler for Popover {
             return;
         }
 
+        // A disabled popover must not act on input. `is_enabled` was unchecked here,
+        // so `set_enabled(false)` still let a click outside — or Escape — close it,
+        // which is a state change the caller explicitly asked to suspend.
+        if !self.base.is_enabled() {
+            self.base.handle_event(event);
+            return;
+        }
+
         match event {
             Event::MousePress { pos, button } => {
                 if *button == 1 && !self.body_rect.contains_point(*pos) {
@@ -483,6 +491,33 @@ mod tests {
 
         popover.handle_event(&Event::KeyPress { key: 27, modifiers: 0 });
         assert!(!popover.is_visible());
+    }
+
+    /// A disabled popover must not close on a click outside or on Escape.
+    ///
+    /// `handle_event` checked `visible` but never `enabled`, so a caller that
+    /// suspended the popover with `set_enabled(false)` still had it dismissed by a
+    /// stray click. Auto-dismissing is exactly the kind of state change `enabled`
+    /// exists to gate.
+    #[test]
+    fn popover_disabled_ignores_dismissal_input() {
+        let mut popover = Popover::new(Rect::new(0, 0, 400, 400));
+        popover.show(Rect::new(150, 100, 50, 20));
+        popover.set_enabled(false);
+
+        // Click far outside the body rect: would normally auto-dismiss.
+        popover.handle_event(&Event::MousePress { pos: Point::new(5, 5), button: 1 });
+        assert!(popover.is_visible(), "a disabled popover must not auto-dismiss");
+
+        // Escape: would normally dismiss.
+        popover.handle_event(&Event::KeyPress { key: 27, modifiers: 0 });
+        assert!(popover.is_visible(), "a disabled popover must not close on Escape");
+
+        // Re-enabling must restore the behaviour, so the gate is a suspension and not
+        // a permanent lock.
+        popover.set_enabled(true);
+        popover.handle_event(&Event::KeyPress { key: 27, modifiers: 0 });
+        assert!(!popover.is_visible(), "re-enabling must restore dismissal");
     }
 
     #[test]

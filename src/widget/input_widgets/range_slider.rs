@@ -18,6 +18,7 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use crate::widget::numeric::ordered_clamp_f64;
 
 /// Orientation of the RangeSlider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -76,7 +77,8 @@ impl RangeSlider {
     /// Sets the lower value, clamping it to be within bounds and respecting min_range.
     /// Emits `range_changed` if the value changes.
     pub fn set_lower_value(&mut self, value: f64) {
-        let clamped = value.clamp(self.min_value, self.upper_value - self.min_range);
+        let clamped =
+            ordered_clamp_f64(value, self.min_value, self.upper_value - self.min_range);
         let stepped = (clamped / self.step).round() * self.step;
         let stepped = stepped.max(self.min_value);
         let new_value = stepped.min(self.upper_value - self.min_range);
@@ -95,7 +97,8 @@ impl RangeSlider {
     /// Sets the upper value, clamping it to be within bounds and respecting min_range.
     /// Emits `range_changed` if the value changes.
     pub fn set_upper_value(&mut self, value: f64) {
-        let clamped = value.clamp(self.lower_value + self.min_range, self.max_value);
+        let clamped =
+            ordered_clamp_f64(value, self.lower_value + self.min_range, self.max_value);
         let stepped = (clamped / self.step).round() * self.step;
         let stepped = stepped.min(self.max_value);
         let new_value = stepped.max(self.lower_value + self.min_range);
@@ -108,8 +111,8 @@ impl RangeSlider {
 
     /// Sets both lower and upper values simultaneously, respecting all constraints.
     pub fn set_range(&mut self, lower: f64, upper: f64) {
-        let lower = lower.clamp(self.min_value, self.max_value - self.min_range);
-        let upper = upper.clamp(lower + self.min_range, self.max_value);
+        let lower = ordered_clamp_f64(lower, self.min_value, self.max_value - self.min_range);
+        let upper = ordered_clamp_f64(upper, lower + self.min_range, self.max_value);
         let lower_stepped = (lower / self.step).round() * self.step;
         let upper_stepped = (upper / self.step).round() * self.step;
         let lower_stepped = lower_stepped.max(self.min_value);
@@ -149,8 +152,8 @@ impl RangeSlider {
         if self.max_value < self.min_value {
             self.max_value = self.min_value;
         }
-        self.lower_value = self.lower_value.clamp(self.min_value, self.max_value);
-        self.upper_value = self.upper_value.clamp(self.lower_value, self.max_value);
+        self.lower_value = ordered_clamp_f64(self.lower_value, self.min_value, self.max_value);
+        self.upper_value = ordered_clamp_f64(self.upper_value, self.lower_value, self.max_value);
         self.emit_range_changed();
         self.base.request_redraw();
     }
@@ -168,8 +171,8 @@ impl RangeSlider {
         if self.min_value > self.max_value {
             self.min_value = self.max_value;
         }
-        self.lower_value = self.lower_value.clamp(self.min_value, self.max_value);
-        self.upper_value = self.upper_value.clamp(self.lower_value, self.max_value);
+        self.lower_value = ordered_clamp_f64(self.lower_value, self.min_value, self.max_value);
+        self.upper_value = ordered_clamp_f64(self.upper_value, self.lower_value, self.max_value);
         self.emit_range_changed();
         self.base.request_redraw();
     }

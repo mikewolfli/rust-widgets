@@ -157,8 +157,22 @@ mini = [
 ## a breaking change for a capability that is on today.
 no-declarative-view = []
 
-# ── Axis 2: OS BACKENDS (composable; `os-auto` picks by target_os) ──
-
+# ── Axis 2: OS BACKENDS (composable) ──
+#
+# Backend selection is performed by `cfg(target_os)` / `cfg(target_env)` arms in
+# `src/platform/runtime.rs` and `src/platform/profile.rs` — a compile-time fact that
+# Cargo features cannot express (a feature cannot say "whichever OS this target is").
+#
+# There used to be an `os-auto = []` feature here, documented as "picks by target_os",
+# which `desktop`/`tablet`/`mobile` all enabled. Nothing anywhere read it: grepping
+# for `feature = "os-auto"` over `src/` and `tools/` matched only the exclusion list in
+# `check_capability_feature_gates.sh`. It is an empty name asserting a gate that does
+# not exist (principle #47), so it is kept only as a documented no-op alias for build
+# scripts that still pass it.
+#
+# Legacy no-op alias: does NOT select a backend. Kept so `--features os-auto` in an
+# existing build script keeps working; new builds should name the backend feature
+# (`macos`, `linux-gtk`, `ios`, `android`, `harmony`, `wasm`) or the device profile.
 os-auto = []
 macos = [
     "dep:objc2",
@@ -427,6 +441,10 @@ objc2-foundation = { version = "0.3", optional = true }
 objc2-app-kit = { version = "0.3", optional = true }
 objc2-core-graphics = { version = "0.3", optional = true }
 cocoa = { version = "0.25", optional = true }
+# Backs `Platform::total_memory_mb` in `src/platform/darwin_probes.rs`
+# (`sysconf(_SC_PHYS_PAGES)`). Not optional: the probe is always compiled on this
+# target, and an optional dep behind no feature is a compile error waiting to happen.
+libc = "0.2"
 
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2 = { version = "0.6", optional = true }
@@ -434,6 +452,8 @@ objc2-foundation = { version = "0.3", optional = true }
 objc2-core-foundation = { version = "0.3", optional = true }
 objc2-core-graphics = { version = "0.3", optional = true }
 objc2-ui-kit = { version = "0.3", optional = true }
+# Same probe as macOS: iOS does not mount `/proc/meminfo`.
+libc = "0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = { version = "0.18", optional = true }

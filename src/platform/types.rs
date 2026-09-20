@@ -63,6 +63,81 @@ pub(crate) fn unix_print_clients_available() -> bool {
     })
 }
 
+/// Whether the Windows print submission path can be reached from this process.
+///
+/// [`Platform::spawn_print_job`](crate::platform::Platform::spawn_print_job) on
+/// Windows submits through `Start-Process -Verb Print`, which only `powershell`
+/// provides. The capability question is therefore "can this process spawn
+/// `powershell`", and the test is **spawnability** — principle #38 — not exit
+/// status: `powershell -NoProfile -Command "exit 0"` exiting zero proves nothing
+/// extra, while a `powershell` that starts and fails is still a `powershell` that
+/// exists.
+///
+/// Like [`unix_print_clients_available`], this stays available on every target and
+/// goes unused on the rest, so the gate expression is not duplicated here.
+#[allow(dead_code)]
+pub(crate) fn windows_shell_spawnable() -> bool {
+    // `is_ok()` means the process was created. That is the whole claim.
+    std::process::Command::new("powershell")
+        .args(["-NoProfile", "-Command", "exit 0"])
+        .output()
+        .is_ok()
+}
+
+// ── Kernel-adaptive probes ──
+//
+// The generic mobile backend is compiled for every host (its state machine is
+// platform-independent and unit-tested off-device), so it cannot name one kernel's
+// probe module directly. These three helpers pick the source at compile time from
+// the *host kernel* — a fact about where the code is running, not about which OS the
+// backend models — and never invent a figure:
+//
+//   * `target_vendor = "apple"` -> `darwin_probes` (`sysconf`, `pmset`, `ps`)
+//   * everything else           -> `os_probes`    (`/proc`, `/sys`)
+//
+// A host with neither source returns the trait's honest "unknown" answer, which is
+// what the caller sees as `None` / `false`.
+
+/// Installed physical memory from whichever kernel probe this host has.
+#[allow(dead_code)]
+pub(crate) fn host_memory_probe() -> Option<u64> {
+    #[cfg(target_vendor = "apple")]
+    {
+        crate::platform::darwin_probes::total_memory_mb()
+    }
+    #[cfg(not(target_vendor = "apple"))]
+    {
+        crate::platform::os_probes::total_memory_mb()
+    }
+}
+
+/// Battery-discharge state from whichever kernel probe this host has.
+#[allow(dead_code)]
+pub(crate) fn host_battery_probe() -> bool {
+    #[cfg(target_vendor = "apple")]
+    {
+        crate::platform::darwin_probes::is_on_battery()
+    }
+    #[cfg(not(target_vendor = "apple"))]
+    {
+        crate::platform::os_probes::is_on_battery()
+    }
+}
+
+/// This process's RSS-over-reserved-space ratio from whichever kernel probe this
+/// host has.
+#[allow(dead_code)]
+pub(crate) fn host_process_memory_probe() -> Option<f32> {
+    #[cfg(target_vendor = "apple")]
+    {
+        crate::platform::darwin_probes::process_memory_utilization()
+    }
+    #[cfg(not(target_vendor = "apple"))]
+    {
+        crate::platform::os_probes::process_memory_utilization()
+    }
+}
+
 /// The shortcut notation matching the OS this crate is compiled for.
 ///
 /// Apple platforms use AppKit glyphs (`⌘⇧Z`); everything else uses the spelled-out

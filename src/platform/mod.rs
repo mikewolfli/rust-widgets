@@ -54,7 +54,18 @@ pub mod macos;
 // `macos`, so a duplicated `feature = "macos"` would match neither arm and
 // this module would silently vanish from a build that explicitly asked for a
 // macOS backend. Mirrors `src/platform/runtime.rs` and `macos/macos_bridge.rs`.
-#[cfg(any(feature = "macos", feature = "cocoa-legacy"))]
+//
+// `target_vendor = "apple"` is added because the state machine is not the whole
+// backend: `platform_impl.rs` answers the four `Platform` OS probes from
+// [`darwin_probes`], which is Apple-only (it needs `libc`). Compiling the module
+// on a non-Apple host — a `cargo test` on Windows with the `macos` feature on, or
+// a cross-check of the Windows target — leaves those paths unresolvable.
+//
+// Known trade-off: this means the module's own state-machine unit tests do not
+// run on a non-Apple host. That is the honest cost of the probe change, and
+// `macos/tests.rs` plus `control_backend`'s route matrix cover the state contract
+// where it is reachable.
+#[cfg(all(any(feature = "macos", feature = "cocoa-legacy"), target_vendor = "apple"))]
 pub mod macos_objc2;
 #[cfg(feature = "mobile-api")]
 pub mod mobile;
@@ -70,6 +81,29 @@ pub mod wasm;
 /// Platform accessibility bridges (macOS, Windows, Linux).
 pub mod accessibility;
 
+/// Darwin-kernel system probes (`sysconf`, `pmset`, `ps`) shared by the backends
+/// that sit on the Apple family: macOS (cocoa and objc2) and iOS.
+///
+/// Kept separate from [`os_probes`] because that module parses `/proc` and `/sys`,
+/// which Apple targets do not mount: forwarding to it returned the "unknown"
+/// answer on every Apple host instead of a measurement.
+///
+/// # Why the gate is `apple` rather than `unix`
+///
+/// `libc` is linked for the Apple targets only (see the `[target.…]` sections of
+/// `Cargo.toml`), so the `sysconf` arm of [`darwin_probes::total_memory_mb`] can
+/// only resolve there. Compiling this module for a Linux-kernel target such as
+/// `aarch64-unknown-linux-ohos` fails to resolve `libc` — which is exactly what a
+/// bare `#[cfg(unix)]` gate did before this one was narrowed.
+///
+/// # Why `platform/ios/mod.rs` carries the matching gate
+///
+/// `src/platform/ios/` is declared unconditionally so its state machine can be
+/// unit-tested on any host, but `IosMobilePlatform` is only a real backend on an
+/// Apple target. Gating that module keeps "compiled everywhere" from meaning
+/// "calls probes that do not exist everywhere".
+#[cfg(target_vendor = "apple")]
+pub mod darwin_probes;
 /// Linux-kernel system probes (`/proc`, `/sys`) shared by the backends that sit
 /// on a Linux kernel: Android, HarmonyOS, Linux/GTK, Wayland and mobile.
 pub mod os_probes;

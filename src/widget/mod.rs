@@ -62,6 +62,13 @@ pub mod draw;
 pub mod draw_bridge;
 pub mod kind;
 
+/// Numeric helpers for widget value clamping.
+///
+/// Every value-carrying widget that holds a `min`/`max` pair clamps through here,
+/// so a caller that sets the two bounds in the "wrong" order gets a clamped value
+/// instead of an aborted process. See the module docs for the sequence that used
+/// to panic.
+pub mod numeric;
 #[cfg(not(alloc_frugal))]
 pub mod runtime;
 /// Byte-index helpers shared by the text-editing controls.

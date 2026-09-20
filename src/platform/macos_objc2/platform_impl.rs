@@ -31,27 +31,34 @@ impl Platform for MacOSObjc2Platform {
         PlatformFamily::Desktop
     }
 
-    /// Reads `MemTotal` from `/proc/meminfo` via [`crate::platform::os_probes`].
+    /// Reads installed physical memory via `sysconf(_SC_PHYS_PAGES)` in
+    /// [`crate::platform::darwin_probes`].
     fn total_memory_mb(&self) -> Option<u64> {
-        crate::platform::os_probes::total_memory_mb()
+        crate::platform::darwin_probes::total_memory_mb()
     }
 
-    /// Reports whether any battery in `/sys/class/power_supply` is discharging.
+    /// Reports whether `pmset -g batt` says the machine is drawing from its battery.
     fn is_on_battery(&self) -> bool {
-        crate::platform::os_probes::is_on_battery()
+        crate::platform::darwin_probes::is_on_battery()
     }
 
-    /// Samples RSS over VmSize for this process from `/proc/self/status`.
+    /// Samples RSS over VSZ for this process from `ps`, in
+    /// [`crate::platform::darwin_probes`].
     fn process_memory_utilization(&self) -> Option<f32> {
-        crate::platform::os_probes::process_memory_utilization()
+        crate::platform::darwin_probes::process_memory_utilization()
     }
 
-    /// Estimates CPU load as thread count over twice the available cores.
+    /// CPU tick accounting has no lock-free Darwin source here, so this reports
+    /// `None` rather than a fabricated figure.
     fn process_cpu_utilization(&self) -> Option<f32> {
-        crate::platform::os_probes::process_cpu_utilization()
+        None
     }
 
     /// Submits the job to the unix print spooler via [`crate::platform::os_probes`].
+    ///
+    /// The `lpr`/`lp` clients this reaches are the same on Darwin and on Linux, so
+    /// sharing the spooler runner with the Linux backends is correct — unlike the
+    /// `/proc`-based *probes* above, which Apple kernels cannot serve.
     fn spawn_print_job(&self, job_file: &std::path::Path) -> Result<(), String> {
         crate::platform::os_probes::spawn_print_job(job_file)
     }
@@ -59,6 +66,48 @@ impl Platform for MacOSObjc2Platform {
     /// macOS always ships CUPS, so the `lp`/`lpr` clients are present.
     fn has_print_support(&self) -> bool {
         crate::platform::types::unix_print_clients_available()
+    }
+
+    /// Mounts a library-painted widget onto a surface this host will present.
+    ///
+    /// # Why this backend must answer
+    ///
+    /// Every `WidgetKind` is painted by `src/widget/`, so no native view is created
+    /// per control and the host owes exactly two things a widget cannot provide: a
+    /// window and a drawing surface. This method records the surface; the AppKit view
+    /// that blits frames is created by `macos/canvas.rs` through the sibling cocoa
+    /// backend's identical contract.
+    ///
+    /// Without it this backend inherited the trait's `false` default, so the preview
+    /// backend reported "I cannot display a UI here" while the cocoa backend on the
+    /// same machine reported `true`. Which answer a host got depended on a feature
+    /// flag the host does not control, and a host that checks `supports_surfaces()`
+    /// before building a UI would refuse to start for no stated reason.
+    fn mount_surface(&self, _parent: ObjectId, id: ObjectId, rect: crate::core::Rect) -> bool {
+        self.state.mount_surface_record(id, rect)
+    }
+
+    /// Updates the rect of a mounted surface. `false` when `id` is not mounted.
+    fn resize_surface(&self, id: ObjectId, rect: crate::core::Rect) -> bool {
+        self.state.resize_surface_record(id, rect)
+    }
+
+    /// Releases a mounted surface.
+    fn unmount_surface(&self, id: ObjectId) -> bool {
+        self.state.unmount_surface_record(id)
+    }
+
+    /// Queues a repaint for the host to pick up. `false` when `id` is not mounted.
+    fn invalidate_surface(&self, id: ObjectId) -> bool {
+        self.state.invalidate_surface_record(id)
+    }
+
+    /// This backend displays library-painted widgets by handing the host their frames.
+    ///
+    /// Must agree with the cocoa backend on the same machine — see
+    /// [`Self::mount_surface`] for what went wrong when it did not.
+    fn supports_surfaces(&self) -> bool {
+        true
     }
 
     /// Renders menu accelerators with AppKit symbols (`⌘⇧Z`).

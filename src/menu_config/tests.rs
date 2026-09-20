@@ -226,3 +226,45 @@ fn test_gpu_memory_override_is_used_when_present_and_absent_means_unknown() {
         None => std::env::remove_var("RUST_WIDGETS_GPU_MEMORY_MB"),
     }
 }
+
+/// `save`/`load` must round-trip every field of `UserOverrides`.
+///
+/// # Why this is a real test and not a probe
+///
+/// `UserOverrides` has seven fields and the loader has seven `match` arms; a field
+/// added to the struct without an arm would be persisted and then silently dropped on
+/// read-back, which is the failure mode a user experiences as "my settings reset on
+/// restart". The setter/clamping tests above never touch persistence, so this is the
+/// only place the write→read contract is asserted.
+///
+/// Uses `std::env::temp_dir()` rather than a hardcoded path (principle #44) and
+/// removes the directory afterwards so repeated runs start clean.
+#[test]
+fn persistence_round_trips_every_user_override() {
+    let dir = std::env::temp_dir().join(format!("rw-menu-config-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    let persistence = ConfigPersistence::with_dir(dir.clone());
+
+    let mut config = MenuConfig::new();
+    config.set_animation_speed(1.25);
+    config.set_max_visible_items(12);
+    config.set_animations_enabled(false);
+    config.set_hardware_acceleration(true);
+    persistence.save(&config).expect("save must reach the temp dir");
+
+    let loaded = persistence.load().expect("load must read back what save wrote");
+    assert_eq!(loaded.animation_speed, Some(1.25), "animation_speed must round-trip");
+    assert_eq!(loaded.max_visible_items, Some(12), "max_visible_items must round-trip");
+    assert_eq!(loaded.animations, Some(false), "animations must round-trip");
+    assert_eq!(
+        loaded.hardware_acceleration,
+        Some(true),
+        "hardware_acceleration must round-trip"
+    );
+
+    // `clear` must actually remove the file, or a "reset to defaults" would be undone
+    // by the next launch.
+    persistence.clear().expect("clear must succeed on a saved config");
+    assert!(!persistence.exists(), "clear must remove the config file");
+    let _ = fs::remove_dir_all(&dir);
+}

@@ -72,24 +72,28 @@ impl Platform for MacOSPlatform {
         PlatformFamily::Desktop
     }
 
-    /// Reads `MemTotal` from `/proc/meminfo` via [`crate::platform::os_probes`].
+    /// Reads installed physical memory via `sysconf` (`_SC_PHYS_PAGES` x `_SC_PAGESIZE`).
+    ///
+    /// BSD spells this `sysctl hw.memsize`; `sysconf` answers the same question on the
+    /// same kernel and needs no FFI dependency the crate does not already link.
     fn total_memory_mb(&self) -> Option<u64> {
-        crate::platform::os_probes::total_memory_mb()
+        crate::platform::darwin_probes::total_memory_mb()
     }
 
-    /// Reports whether any battery in `/sys/class/power_supply` is discharging.
+    /// macOS ships `pmset`; `-g batt` prints a `'AC Power'`/`'Battery Power'` line.
     fn is_on_battery(&self) -> bool {
-        crate::platform::os_probes::is_on_battery()
+        crate::platform::darwin_probes::is_on_battery()
     }
 
-    /// Samples RSS over VmSize for this process from `/proc/self/status`.
+    /// Samples RSS over virtual size via `ps -o rss=,vsz=`.
     fn process_memory_utilization(&self) -> Option<f32> {
-        crate::platform::os_probes::process_memory_utilization()
+        crate::platform::darwin_probes::process_memory_utilization()
     }
 
-    /// Estimates CPU load as thread count over twice the available cores.
+    /// CPU tick accounting has no lock-free macOS source here, so this reports
+    /// `None` rather than a fabricated figure.
     fn process_cpu_utilization(&self) -> Option<f32> {
-        crate::platform::os_probes::process_cpu_utilization()
+        None
     }
 
     /// Submits the job to the unix print spooler via [`crate::platform::os_probes`].

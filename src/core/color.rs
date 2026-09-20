@@ -186,6 +186,57 @@ impl Color {
     pub const DISABLED_BACKGROUND: Self = Self::rgb(245, 245, 245);
     /// Text of a control that cannot be interacted with (`#999999`).
     pub const DISABLED_FOREGROUND: Self = Self::rgb(153, 153, 153);
+
+    /// How much of `DISABLED_FOREGROUND` is mixed into a disabled fill, in percent.
+    ///
+    /// Two thirds keeps the widget's own hue readable while making the reduced
+    /// emphasis obvious at a glance. Expressed as a constant so every disabled
+    /// surface desaturates by the same amount and the appearance is auditable in one
+    /// place rather than re-derived at each call site.
+    const DISABLED_MIX_PERCENT: u32 = 66;
+
+    /// A dimmed version of `color`, for a control that cannot be interacted with.
+    ///
+    /// # Why a mix rather than a flat replacement
+    ///
+    /// `DISABLED_BACKGROUND` is a single near-white grey. Painting it over every
+    /// disabled widget would erase the difference between a disabled primary button
+    /// and a disabled danger button — a caller who disabled the wrong one would lose
+    /// the only cue identifying it. Mixing toward the disabled tint instead keeps the
+    /// hue recognisable while making the state unmistakable.
+    ///
+    /// The alpha channel is preserved, so a translucent disabled surface stays as
+    /// translucent as its enabled counterpart.
+    ///
+    /// ```
+    /// # use rust_widgets::core::Color;
+    /// // A disabled fill is pulled toward the disabled tint on every channel.
+    /// let primary = Color::PRIMARY;
+    /// let dimmed = Color::disabled_variant_of(primary);
+    /// let tint = Color::DISABLED_FOREGROUND;
+    /// assert_ne!(dimmed, primary, "a disabled fill must differ from the enabled one");
+    /// // Each channel moves toward the tint, so the result is a genuine blend.
+    /// assert!(dimmed.r >= primary.r.min(tint.r) && dimmed.r <= primary.r.max(tint.r));
+    /// assert!(dimmed.g >= primary.g.min(tint.g) && dimmed.g <= primary.g.max(tint.g));
+    /// assert!(dimmed.b >= primary.b.min(tint.b) && dimmed.b <= primary.b.max(tint.b));
+    /// // Alpha is preserved so a translucent surface stays translucent.
+    /// let translucent = Color::rgba(10, 20, 30, 128);
+    /// assert_eq!(Color::disabled_variant_of(translucent).a, 128);
+    /// // A colour already equal to the tint is unchanged.
+    /// assert_eq!(Color::disabled_variant_of(tint), tint);
+    /// ```
+    pub fn disabled_variant_of(color: Color) -> Color {
+        let mix = |channel: u8, target: u8| -> u8 {
+            let keep = 100 - Self::DISABLED_MIX_PERCENT;
+            (((channel as u32) * keep + (target as u32) * Self::DISABLED_MIX_PERCENT) / 100) as u8
+        };
+        Color {
+            r: mix(color.r, Self::DISABLED_FOREGROUND.r),
+            g: mix(color.g, Self::DISABLED_FOREGROUND.g),
+            b: mix(color.b, Self::DISABLED_FOREGROUND.b),
+            a: color.a,
+        }
+    }
     /// Neutral colors.
     /// Pale blue-white tint (`#F0F8FF`).
     pub const ALICE_BLUE: Self = Self::rgb(240, 248, 255);

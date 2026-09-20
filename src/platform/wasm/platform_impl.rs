@@ -5,8 +5,9 @@
 
 use super::types::{WasmHandleKind, WasmPlatform};
 use crate::compat::atomic::Ordering;
+use crate::compat::{format, String};
 use crate::core::PlatformFamily;
-use crate::platform::{DropEvent, Platform};
+use crate::platform::{DropEvent, Platform, PlatformCapabilities};
 #[cfg(not(target_arch = "wasm32"))]
 use core::time::Duration;
 #[cfg(not(target_arch = "wasm32"))]
@@ -21,8 +22,33 @@ impl Platform for WasmPlatform {
         "wasm-state-backend"
     }
 
+    /// The browser sandbox has no operating system to delegate to.
+    ///
+    /// This is `Embedded`, not `Desktop`, and the distinction is load-bearing:
+    /// `capabilities()`'s trait default keys off the family, so reporting
+    /// `Desktop` made this backend claim DPI scaling, IME, accessibility and a
+    /// native menu — none of which a web page can obtain. It also contradicted
+    /// [`crate::platform::portable`], the other hostless backend, which reports
+    /// `Embedded` for exactly this reason. `README.md`'s published matrix has
+    /// always said `Embedded | ❌ | ❌ | ❌ | ❌ | ❌`.
     fn family(&self) -> PlatformFamily {
-        PlatformFamily::Desktop
+        PlatformFamily::Embedded
+    }
+
+    /// Every host-provided flag is a truthful `false`.
+    ///
+    /// Stated explicitly rather than inherited: see [`WasmPlatform::family`]. The
+    /// family now yields the same answer, but writing it out means a future edit
+    /// to `default_capabilities_for` cannot silently re-grant a capability the
+    /// sandbox does not have.
+    fn capabilities(&self) -> PlatformCapabilities {
+        PlatformCapabilities {
+            dpi_scaling: false,
+            ime: false,
+            accessibility: false,
+            native_menu: false,
+            typed_widget_trigger: true,
+        }
     }
 
     /// The browser sandbox exposes no host memory figure to a synchronous query.
@@ -287,7 +313,26 @@ mod tests {
     fn backend_name_and_family() {
         let p = make_platform();
         assert_eq!(p.backend_name(), "wasm-state-backend");
-        assert_eq!(p.family(), PlatformFamily::Desktop);
+        assert_eq!(p.family(), PlatformFamily::Embedded);
+    }
+
+    /// The browser sandbox must not advertise a single host capability.
+    ///
+    /// `family()` used to answer `Desktop`, which made the trait default claim DPI
+    /// scaling, IME, accessibility and a native menu on a web page. This pins the
+    /// published `README.md` row rather than the family default, so the two cannot
+    /// drift apart again.
+    #[test]
+    fn host_capabilities_are_all_false() {
+        let caps = make_platform().capabilities();
+        assert!(!caps.dpi_scaling, "a browser page cannot query host DPI");
+        assert!(!caps.ime, "the sandbox exposes no OS input-method bridge");
+        assert!(!caps.accessibility, "the sandbox exposes no OS accessibility tree");
+        assert!(!caps.native_menu, "a web page has no native menu bar");
+        assert!(
+            caps.typed_widget_trigger,
+            "typed triggers are produced by the library, not granted by the host"
+        );
     }
 
     /// A freshly created window is a plain state record, and the same handle is

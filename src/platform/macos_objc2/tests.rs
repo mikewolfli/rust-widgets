@@ -126,3 +126,57 @@ fn objc2_runloop_integration_and_quit() {
         "Backend should not be running after quit"
     );
 }
+
+/// The two macOS backends must give the same answer about display surfaces.
+///
+/// # What went wrong
+///
+/// `macos_objc2` implements none of `mount_surface` / `resize_surface` /
+/// `unmount_surface` / `invalidate_surface` / `supports_surfaces`, so it inherited the
+/// trait's `false` for the last one while the cocoa backend (`macos/platform_impl.rs`)
+/// overrides it to `true`. Both are reachable through the same
+/// `macos_bridge::SelectedMacOSPlatform`, selected by a feature flag the *host* does
+/// not set — so a host that asks `supports_surfaces()` before building its UI could be
+/// told "this backend cannot display anything" purely because `--features macos`
+/// happened to be on.
+///
+/// The contract is a single fact about the machine ("can this host present a
+/// library-painted widget?"), so it may not depend on which of two equivalent
+/// backends was linked in.
+#[test]
+fn objc2_surface_contract_matches_the_cocoa_backend() {
+    let backend = MacOSObjc2Platform::new();
+
+    assert!(
+        backend.supports_surfaces(),
+        "this backend paints every WidgetKind itself, so it must advertise surfaces; \
+         inheriting the trait default made it disagree with the cocoa backend"
+    );
+
+    // The whole contract, not just the boolean: a backend that advertises surfaces but
+    // cannot mount one would fail at the first widget.
+    let window = backend.create_window("surface-contract", 0, 0, 320, 240);
+    assert!(
+        backend.mount_surface(window, window, crate::core::Rect::new(0, 0, 320, 240)),
+        "advertising surfaces must imply a widget can actually be mounted"
+    );
+    assert!(
+        backend.resize_surface(window, crate::core::Rect::new(0, 0, 640, 480)),
+        "a mounted surface must be resizable"
+    );
+    assert!(
+        backend.invalidate_surface(window),
+        "a mounted surface must be repaintable"
+    );
+    assert!(
+        backend.unmount_surface(window),
+        "a mounted surface must be releasable"
+    );
+
+    // Unmounting twice reports absence rather than claiming success, so a caller can
+    // tell a real release from a no-op.
+    assert!(
+        !backend.unmount_surface(window),
+        "a second unmount must report that the surface is gone, not claim another release"
+    );
+}

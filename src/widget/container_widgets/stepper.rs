@@ -18,6 +18,7 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use crate::widget::numeric::{ordered_clamp_i32};
 
 /// Stepper widget for numeric increment/decrement with +/- buttons.
 pub struct Stepper {
@@ -47,7 +48,7 @@ impl Stepper {
     /// Sets the current value, clamped to [min, max].
     /// Emits `value_changed` signal if the value actually changes.
     pub fn set_value(&mut self, value: i32) {
-        let clamped = value.clamp(self.min, self.max);
+        let clamped = ordered_clamp_i32(value, self.min, self.max);
         if self.value != clamped {
             self.value = clamped;
             self.value_changed.emit(clamped);

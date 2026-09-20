@@ -14,6 +14,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::numeric::{ordered_clamp_i32};
 /// Progress dialog widget.
 /// Progress dialog widget.
 ///
@@ -182,7 +183,7 @@ impl ProgressDialog {
     /// value is set before hiding, so [`ProgressDialog::value`] still reports
     /// the maximum afterwards. A redraw is requested in all cases.
     pub fn set_value(&mut self, value: i32) {
-        self.value = value.clamp(self.minimum, self.maximum);
+        self.value = ordered_clamp_i32(value, self.minimum, self.maximum);
         if self.auto_close && self.value >= self.maximum {
             self.hide();
         }

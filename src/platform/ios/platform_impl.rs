@@ -55,24 +55,27 @@ impl Platform for IosMobilePlatform {
         PlatformFamily::Mobile
     }
 
-    /// Reads `MemTotal` from `/proc/meminfo` via [`crate::platform::os_probes`].
+    /// Reads installed physical memory via `sysconf(_SC_PHYS_PAGES)` in
+    /// [`crate::platform::darwin_probes`]. iOS does not mount `/proc/meminfo`.
     fn total_memory_mb(&self) -> Option<u64> {
-        crate::platform::os_probes::total_memory_mb()
+        crate::platform::darwin_probes::total_memory_mb()
     }
 
-    /// Reports whether any battery in `/sys/class/power_supply` is discharging.
+    /// Reports whether `pmset -g batt` says the device is drawing from its battery.
     fn is_on_battery(&self) -> bool {
-        crate::platform::os_probes::is_on_battery()
+        crate::platform::darwin_probes::is_on_battery()
     }
 
-    /// Samples RSS over VmSize for this process from `/proc/self/status`.
+    /// Samples RSS over VSZ for this process from `ps`, in
+    /// [`crate::platform::darwin_probes`].
     fn process_memory_utilization(&self) -> Option<f32> {
-        crate::platform::os_probes::process_memory_utilization()
+        crate::platform::darwin_probes::process_memory_utilization()
     }
 
-    /// Estimates CPU load as thread count over twice the available cores.
+    /// CPU tick accounting has no lock-free Darwin source here, so this reports
+    /// `None` rather than a fabricated figure.
     fn process_cpu_utilization(&self) -> Option<f32> {
-        crate::platform::os_probes::process_cpu_utilization()
+        None
     }
 
     /// iOS printing goes through `UIPrintInteractionController`, not a spooler

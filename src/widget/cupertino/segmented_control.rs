@@ -156,7 +156,12 @@ impl Draw for CupertinoSegmentedControl {
         let corner_radius = (rect.height as f32 / 2.0) as u32;
 
         // ── Background pill (gray) ──
-        context.fill_rounded_rect(rect, corner_radius, Color::rgba(220, 220, 223, 255));
+        // A disabled control is dimmed on both the track and the selection, so the
+        // appearance agrees with `handle_event`'s refusal to accept the tap.
+        let enabled = self.base.is_enabled();
+        let track_color =
+            if enabled { Color::rgba(220, 220, 223, 255) } else { Color::rgba(238, 238, 240, 255) };
+        context.fill_rounded_rect(rect, corner_radius, track_color);
 
         // ── Sliding highlight (white pill for selected segment) ──
         let sel_x = rect.x + (self.selected_index as i32) * seg_w;
@@ -166,7 +171,8 @@ impl Draw for CupertinoSegmentedControl {
             seg_w.saturating_sub(4) as u32,
             rect.height.saturating_sub(4),
         );
-        context.fill_rounded_rect(sel_rect, corner_radius, Color::WHITE);
+        let highlight_color = if enabled { Color::WHITE } else { Color::rgba(245, 245, 247, 255) };
+        context.fill_rounded_rect(sel_rect, corner_radius, highlight_color);
 
         // ── Segment labels ──
         let font = Font::new("sans-serif", 13.0, false, false);
@@ -176,7 +182,9 @@ impl Draw for CupertinoSegmentedControl {
             let text_x = seg_x + (seg_w - metrics.width as i32) / 2;
             let text_y = rect.y + (rect.height as i32 / 2) + (metrics.ascent as i32 / 2)
                 - (metrics.descent as i32 / 2);
-            let color = if i == self.selected_index {
+            let color = if !enabled {
+                Color::DISABLED_FOREGROUND
+            } else if i == self.selected_index {
                 Color::BLACK
             } else {
                 Color::rgba(100, 100, 100, 255)
@@ -196,6 +204,13 @@ impl EventHandler for CupertinoSegmentedControl {
     fn handle_event(&mut self, event: &Event) {
         match event {
             Event::MouseRelease { pos, button } => {
+                // A disabled control must not change its selection. Without this the
+                // `set_enabled(false)` API had no effect on this widget at all: the
+                // click was still accepted and `value_changed` still fired.
+                if !self.base.is_enabled() {
+                    self.base.handle_event(event);
+                    return;
+                }
                 if *button != 1 || self.segments.is_empty() {
                     return;
                 }
@@ -302,5 +317,52 @@ mod tests {
         sc.set_segments(vec!["Day".to_string(), "Week".to_string(), "Month".to_string()]);
         let svg = render_to_svg(&mut sc);
         assert!(svg.starts_with("<svg"));
+    }
+
+    /// A disabled segmented control must ignore taps.
+    ///
+    /// `handle_event` previously went straight to the hit test, so `set_enabled(false)`
+    /// had no effect on this widget: a tap still moved the selection and still emitted
+    /// `value_changed`. The neighbouring `LineEdit`/`Slider` gate on
+    /// `is_enabled()` first, so this was an inconsistency rather than a deliberate
+    /// policy.
+    #[test]
+    fn cupertino_segmented_control_disabled_ignores_taps() {
+        let mut sc = CupertinoSegmentedControl::new(Rect::new(0, 0, 300, 32));
+        sc.set_segments(vec!["A".to_string(), "B".to_string()]);
+        sc.set_enabled(false);
+
+        let fired = Arc::new(AtomicBool::new(false));
+        let f = fired.clone();
+        sc.value_changed.connect(move |_: std::sync::Arc<usize>| {
+            f.store(true, Ordering::SeqCst);
+        });
+
+        // Segment 1 (x 150-299) is not the selected one, so an enabled control would
+        // have changed selection here.
+        sc.handle_event(&Event::MouseRelease { pos: Point::new(200, 16), button: 1 });
+
+        assert!(!fired.load(Ordering::SeqCst), "a disabled control must not emit");
+        assert_eq!(sc.selected_index(), 0, "a disabled control must not change selection");
+    }
+
+    /// A disabled control must paint differently from an enabled one.
+    ///
+    /// The paint path ignored `enabled` entirely, so a control that refused taps
+    /// still looked fully interactive — the user taps and nothing happens.
+    #[test]
+    fn cupertino_segmented_control_disabled_renders_differently() {
+        let mut sc = CupertinoSegmentedControl::new(Rect::new(0, 0, 300, 32));
+        sc.set_segments(vec!["A".to_string(), "B".to_string()]);
+        let enabled_svg = render_to_svg(&mut sc);
+
+        sc.set_enabled(false);
+        let disabled_svg = render_to_svg(&mut sc);
+
+        assert_ne!(
+            enabled_svg, disabled_svg,
+            "the disabled state must be visible; otherwise the control lies about \
+             accepting input"
+        );
     }
 }

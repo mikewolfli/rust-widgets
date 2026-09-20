@@ -531,6 +531,14 @@ impl EventHandler for FindReplaceDialog {
             return;
         }
 
+        // A disabled dialog must not act on input: no focus changes, no find/replace
+        // actions, no close. Only `visible` was checked here, so `set_enabled(false)`
+        // left the whole dialog live.
+        if !self.base.is_enabled() {
+            self.base.handle_event(event);
+            return;
+        }
+
         match event {
             Event::MousePress { pos, button } => {
                 if *button == 1 {
@@ -815,6 +823,45 @@ mod tests {
         dialog.handle_event(&Event::KeyPress { key: 27, modifiers: 0 });
         assert!(!dialog.is_visible());
         assert!(fired.load(Ordering::SeqCst), "close_signal should fire on Escape");
+    }
+
+    /// A disabled dialog must neither close nor act on typed input.
+    ///
+    /// `handle_event` gated on `visible` only, so `set_enabled(false)` left the dialog
+    /// fully interactive — a suspended dialog could still be closed with Escape and
+    /// still ran find/replace on Enter.
+    #[test]
+    fn find_replace_dialog_disabled_ignores_input() {
+        let mut dialog = FindReplaceDialog::new(Rect::new(0, 0, 400, 80));
+        dialog.show();
+        dialog.set_enabled(false);
+
+        let fired = Arc::new(AtomicBool::new(false));
+        let fired_clone = Arc::clone(&fired);
+        dialog.close_signal.connect(move |_: Arc<()>| {
+            fired_clone.store(true, Ordering::SeqCst);
+        });
+
+        dialog.handle_event(&Event::KeyPress { key: 27, modifiers: 0 });
+        assert!(dialog.is_visible(), "a disabled dialog must not close on Escape");
+        assert!(
+            !fired.load(Ordering::SeqCst),
+            "a disabled dialog must not emit close_signal"
+        );
+
+        // The find action must not run either.
+        let find_fired = Arc::new(AtomicBool::new(false));
+        let ff = Arc::clone(&find_fired);
+        dialog.find_next_signal.connect(move |_: Arc<String>| {
+            ff.store(true, Ordering::SeqCst);
+        });
+        dialog.handle_event(&Event::KeyPress { key: 13, modifiers: 0 });
+        assert!(!find_fired.load(Ordering::SeqCst), "a disabled dialog must not run find");
+
+        // Re-enabling restores the behaviour, so the gate suspends rather than locks.
+        dialog.set_enabled(true);
+        dialog.handle_event(&Event::KeyPress { key: 27, modifiers: 0 });
+        assert!(!dialog.is_visible(), "re-enabling must restore Escape-to-close");
     }
 
     #[test]

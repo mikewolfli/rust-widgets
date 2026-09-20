@@ -32,6 +32,7 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use crate::widget::numeric::{ordered_clamp_u32};
 
 /// A colored band across part of the meter's range.
 ///
@@ -94,7 +95,7 @@ impl Meter {
     ///
     /// Emits `changed` signal when the value actually changes.
     pub fn set_value(&mut self, v: u32) {
-        let clamped = v.clamp(self.min, self.max);
+        let clamped = ordered_clamp_u32(v, self.min, self.max);
         if self.value == clamped {
             return;
         }
@@ -109,7 +110,7 @@ impl Meter {
     pub fn set_range(&mut self, min: u32, max: u32) {
         self.min = min.min(max);
         self.max = max.max(min);
-        let clamped = self.value.clamp(self.min, self.max);
+        let clamped = ordered_clamp_u32(self.value, self.min, self.max);
         if self.value != clamped {
             self.value = clamped;
             self.base.changed.emit();
@@ -231,7 +232,8 @@ impl Meter {
         if self.max <= self.min {
             return 0.0;
         }
-        ((value.clamp(self.min, self.max) - self.min) as f32) / (self.max - self.min) as f32
+        ((ordered_clamp_u32(value, self.min, self.max) - self.min) as f32)
+            / (self.max - self.min) as f32
     }
 
     /// The value a normalized position represents, for tick labels.

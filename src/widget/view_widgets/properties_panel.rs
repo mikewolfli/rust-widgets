@@ -399,6 +399,13 @@ impl EventHandler for PropertiesPanel {
     fn handle_event(&mut self, event: &Event) {
         match event {
             Event::MousePress { pos, button } => {
+                // A disabled panel must not edit values. Without this gate
+                // `set_enabled(false)` left the rows clickable, so a panel put into a
+                // read-only state still mutated its properties.
+                if !self.base.is_enabled() {
+                    self.base.handle_event(event);
+                    return;
+                }
                 if *button == 1 {
                     let geom = self.geometry();
                     let categories = self.properties_by_category();
@@ -661,6 +668,49 @@ mod tests {
             _ => panic!("Expected Bool"),
         }
         assert_eq!(count.load(Ordering::SeqCst), 1, "Signal should fire on toggle");
+    }
+
+    /// A disabled panel must not edit its properties.
+    ///
+    /// The click handler never consulted `is_enabled()`, so a panel suspended with
+    /// `set_enabled(false)` — the natural way for a caller to make it read-only — still
+    /// toggled values and still emitted `property_changed`. The signal matters most:
+    /// a host listening for changes would persist a value the user was not allowed to
+    /// set.
+    #[test]
+    fn properties_panel_disabled_ignores_edits() {
+        let mut panel = PropertiesPanel::new(Rect::new(0, 0, 300, 400));
+        panel.add_property(make_bool_property("Enabled", true, None));
+        panel.set_enabled(false);
+
+        let count = Arc::new(AtomicUsize::new(0));
+        let count_clone = Arc::clone(&count);
+        panel.property_changed.connect(move |_: Arc<(String, PropertyValue)>| {
+            count_clone.fetch_add(1, Ordering::SeqCst);
+        });
+
+        panel.handle_event(&Event::MousePress {
+            pos: Point::new(VALUE_COL_LEFT + 4, ROW_HEIGHT as i32 + ROW_HEIGHT as i32 / 2),
+            button: 1,
+        });
+
+        let val = panel.get_property_value("Enabled").unwrap();
+        match val {
+            PropertyValue::Bool(b) => assert!(b, "a disabled panel must not toggle the value"),
+            _ => panic!("Expected Bool"),
+        }
+        assert_eq!(count.load(Ordering::SeqCst), 0, "a disabled panel must not emit changes");
+
+        // Re-enabling restores editing, so the gate suspends rather than locks.
+        panel.set_enabled(true);
+        panel.handle_event(&Event::MousePress {
+            pos: Point::new(VALUE_COL_LEFT + 4, ROW_HEIGHT as i32 + ROW_HEIGHT as i32 / 2),
+            button: 1,
+        });
+        match panel.get_property_value("Enabled").unwrap() {
+            PropertyValue::Bool(b) => assert!(!b, "re-enabling must restore editing"),
+            _ => panic!("Expected Bool"),
+        }
     }
 
     #[test]

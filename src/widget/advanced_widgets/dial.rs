@@ -12,6 +12,7 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use crate::widget::numeric::{ordered_clamp_i32};
 /// Dial (rotary knob) widget.
 ///
 /// Holds an integer value in an inclusive `minimum ..= maximum` range and
@@ -148,7 +149,7 @@ impl Dial {
                 (value - self.minimum).rem_euclid(range) + self.minimum
             }
         } else {
-            value.clamp(self.minimum, self.maximum)
+            ordered_clamp_i32(value, self.minimum, self.maximum)
         };
         if self.value != clamped {
             self.value = clamped;

@@ -9,6 +9,7 @@ use super::{
 use crate::compat::atomic::{AtomicUsize, Ordering};
 use crate::compat::{HashMap, Mutex, OnceLock};
 use crate::core::{ObjectId, PlatformFamily};
+use crate::platform::types::{host_battery_probe, host_memory_probe, host_process_memory_probe};
 
 /// Logical handle kinds that survive the self-drawn widget strategy.
 ///
@@ -96,24 +97,35 @@ impl Platform for AndroidMobilePlatform {
         PlatformFamily::Mobile
     }
 
-    /// Reads `MemTotal` from `/proc/meminfo` via [`crate::platform::os_probes`].
+    /// Reads installed physical memory from whichever kernel probe this host has.
+    ///
+    /// This backend is the **Android** adapter, and Android sits on a Linux kernel,
+    /// so `/proc/meminfo` is the correct source and [`os_probes`](crate::platform::os_probes)
+    /// answers it. On an Apple host — where this type is compiled as the state-machine
+    /// stand-in rather than a real backend — the Darwin probes answer instead. Neither
+    /// is a fabricated figure, which is what principle #37 requires.
     fn total_memory_mb(&self) -> Option<u64> {
-        crate::platform::os_probes::total_memory_mb()
+        host_memory_probe()
     }
 
-    /// Reports whether any battery in `/sys/class/power_supply` is discharging.
+    /// Reports whether the machine is drawing from its battery.
+    ///
+    /// See [`Self::total_memory_mb`] for why the source follows the host kernel.
     fn is_on_battery(&self) -> bool {
-        crate::platform::os_probes::is_on_battery()
+        host_battery_probe()
     }
 
-    /// Samples RSS over VmSize for this process from `/proc/self/status`.
+    /// Samples this process's resident memory against its reserved address space.
+    ///
+    /// See [`Self::total_memory_mb`] for why the source follows the host kernel.
     fn process_memory_utilization(&self) -> Option<f32> {
-        crate::platform::os_probes::process_memory_utilization()
+        host_process_memory_probe()
     }
 
-    /// Estimates CPU load as thread count over twice the available cores.
+    /// CPU tick accounting has no lock-free source here, so this reports `None`
+    /// rather than a fabricated figure.
     fn process_cpu_utilization(&self) -> Option<f32> {
-        crate::platform::os_probes::process_cpu_utilization()
+        None
     }
 
     /// Android printing goes through the platform print framework via JNI, which

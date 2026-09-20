@@ -14,6 +14,7 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use crate::widget::numeric::{ordered_clamp_f64};
 /// LCD number display mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LCDNumberMode {
@@ -125,7 +126,7 @@ impl LCDNumber {
     /// unchanged from the current value this is a no-op (no signal, no redraw).
     pub fn set_value(&mut self, value: f64) {
         let out_of_range = value < self.min_value || value > self.max_value;
-        let clamped = value.clamp(self.min_value, self.max_value);
+        let clamped = ordered_clamp_f64(value, self.min_value, self.max_value);
         if out_of_range {
             self.overflowed = true;
             self.overflow.emit();

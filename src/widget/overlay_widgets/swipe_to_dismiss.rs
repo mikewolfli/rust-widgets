@@ -255,6 +255,17 @@ impl EventHandler for SwipeToDismiss {
             return;
         }
 
+        // A disabled container must not be dismissed. Clearing any in-flight drag
+        // first matters: disabling mid-gesture used to leave `drag_origin_x` set, so
+        // a later `MouseMove` would still move the child content (the pointer was
+        // never pressed, yet the offset changed).
+        if !self.base.is_enabled() {
+            self.drag_origin_x = None;
+            self.swipe_offset = 0.0;
+            self.base.handle_event(event);
+            return;
+        }
+
         match event {
             Event::MousePress { pos, button } => {
                 if *button == 1 {
@@ -436,6 +447,58 @@ mod tests {
 
         assert!(sw.is_dismissed());
         assert!(fired.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    /// A disabled container must not be dismissible by dragging.
+    ///
+    /// `handle_event` never consulted `is_enabled()`, so `set_enabled(false)` left the
+    /// gesture fully live. The same defect also made a mid-gesture disable dangerous:
+    /// the drag origin survived, so a subsequent `MouseMove` — with no button held —
+    /// still shifted the child content.
+    #[test]
+    fn swipe_to_dismiss_disabled_ignores_the_gesture() {
+        let mut sw = SwipeToDismiss::new(Rect::new(0, 0, 200, 50));
+        sw.set_enabled(false);
+
+        let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let f = fired.clone();
+        sw.dismissed.connect(move |_: Arc<()>| {
+            f.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        sw.handle_event(&Event::MousePress { pos: Point::new(180, 25), button: 1 });
+        sw.handle_event(&Event::MouseMove { pos: Point::new(60, 25) });
+        assert_eq!(
+            sw.swipe_offset(),
+            0.0,
+            "a disabled container must not track the pointer"
+        );
+        sw.handle_event(&Event::MouseRelease { pos: Point::new(60, 25), button: 1 });
+
+        assert!(!sw.is_dismissed(), "a disabled container must not dismiss");
+        assert!(!fired.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    /// Disabling mid-drag must clear the drag so a later move cannot shift content.
+    #[test]
+    fn swipe_to_dismiss_disabling_mid_drag_ends_the_gesture() {
+        let mut sw = SwipeToDismiss::new(Rect::new(0, 0, 200, 50));
+
+        sw.handle_event(&Event::MousePress { pos: Point::new(180, 25), button: 1 });
+        sw.handle_event(&Event::MouseMove { pos: Point::new(150, 25) });
+        assert_eq!(sw.swipe_offset(), -30.0, "the drag is live before disabling");
+
+        sw.set_enabled(false);
+        // A stray move arrives with no button held; it must not move anything.
+        sw.handle_event(&Event::MouseMove { pos: Point::new(40, 25) });
+
+        assert_eq!(
+            sw.swipe_offset(),
+            0.0,
+            "disabling must end the in-flight drag rather than leave the origin set"
+        );
+        sw.handle_event(&Event::MouseRelease { pos: Point::new(40, 25), button: 1 });
+        assert!(!sw.is_dismissed(), "the gesture was cancelled, not completed");
     }
 
     #[cfg(feature = "touch")]

@@ -235,6 +235,12 @@ impl EventHandler for CupertinoNavigationBar {
     fn handle_event(&mut self, event: &Event) {
         match event {
             Event::MouseRelease { pos, button } => {
+                // A disabled nav bar must not emit navigation. Without this,
+                // `set_enabled(false)` had no effect: the back button still fired.
+                if !self.base.is_enabled() {
+                    self.base.handle_event(event);
+                    return;
+                }
                 if *button != 1 {
                     return;
                 }
@@ -331,6 +337,28 @@ mod tests {
         // Click on back button area
         bar.handle_event(&Event::MouseRelease { pos: Point::new(20, 22), button: 1 });
         assert!(fired.load(Ordering::SeqCst));
+    }
+
+    /// A disabled nav bar must not emit `back_pressed`.
+    ///
+    /// `handle_event` went straight to the hit test, so `set_enabled(false)` had no
+    /// effect on this widget: the back affordance still fired navigation. Every
+    /// interactive widget in the crate gates on `is_enabled()` first, so a missing
+    /// gate turns `set_enabled` into a silent no-op rather than a policy choice.
+    #[test]
+    fn cupertino_nav_bar_disabled_ignores_back_click() {
+        let mut bar = CupertinoNavigationBar::new(Rect::new(0, 0, 375, 96));
+        bar.show_back_button(true);
+        bar.set_enabled(false);
+
+        let fired = Arc::new(AtomicBool::new(false));
+        let f = fired.clone();
+        bar.back_pressed.connect(move |_: std::sync::Arc<()>| {
+            f.store(true, Ordering::SeqCst);
+        });
+
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(20, 22), button: 1 });
+        assert!(!fired.load(Ordering::SeqCst), "a disabled nav bar must not navigate");
     }
 
     #[test]

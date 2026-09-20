@@ -75,6 +75,17 @@ fn platform_contract_negotiation_works() {
                 contract.typed_widget_trigger,
                 "Native contract must support typed_widget_trigger"
             );
+            // The fallback used to fabricate all-true, so a backend that publishes no
+            // contract of its own was told it had a native menu even while reporting a
+            // non-desktop family. The answer must now follow the family the backend
+            // actually reports.
+            let actual_family = rust_widgets::platform::get_platform().family();
+            let expected = rust_widgets::platform::default_capabilities_for(actual_family);
+            assert_eq!(
+                contract, expected,
+                "the negotiated contract must match the family the backend reports ({actual_family:?}); \
+                 a mismatch means the fallback invented capabilities"
+            );
         }
         CapabilityContract::Embedded(contract) => {
             assert!(
@@ -371,4 +382,72 @@ fn capability_matrix_matches_widget_kind() {
         "Matrix only has {} widget rows (expected >= 80)",
         matrix_widgets.len()
     );
+}
+
+// ---------------------------------------------------------------------------
+// Test 8: The negotiation fallback must not invent capabilities
+// ---------------------------------------------------------------------------
+//
+// `negotiate_capability_contract(Full)` falls back when a backend publishes no
+// `native_capability_contract()`. `Platform::native_capability_contract()` returns
+// `None` for every non-`Desktop` family, so the fallback is only ever reached from a
+// **non-desktop** backend — and it used to answer with all four flags `true`, telling
+// an embedded or mobile backend it had DPI scaling, IME, accessibility and a native
+// menu.
+//
+// This drives the **real** entry point with a real non-desktop backend installed
+// through `with_platform`, rather than asserting on the helper the fallback happens to
+// call. That distinction matters: a test written against `default_capabilities_for`
+// would keep passing if the fallback stopped using it, which is exactly the bug.
+#[test]
+fn capability_fallback_follows_the_family_and_never_invents() {
+    use rust_widgets::core::{PlatformFamily, RuntimeProfile};
+    use rust_widgets::platform::{
+        default_capabilities_for, negotiate_capability_contract, with_platform, CapabilityContract,
+        StubPlatform,
+    };
+
+    // A backend that publishes no `native_capability_contract()` of its own, because
+    // its family is not `Desktop`. This is the only input that reaches the fallback.
+    // `with_platform` needs a `&'static`, so the two are leaked once per test run.
+    static MOBILE_BACKEND: std::sync::LazyLock<StubPlatform> =
+        std::sync::LazyLock::new(|| StubPlatform::new("test-mobile", PlatformFamily::Mobile));
+    static EMBEDDED_BACKEND: std::sync::LazyLock<StubPlatform> =
+        std::sync::LazyLock::new(|| StubPlatform::new("test-embedded", PlatformFamily::Embedded));
+
+    for (name, backend, family) in [
+        ("mobile", &*MOBILE_BACKEND as &'static dyn rust_widgets::platform::Platform,
+         PlatformFamily::Mobile),
+        ("embedded", &*EMBEDDED_BACKEND as &'static dyn rust_widgets::platform::Platform,
+         PlatformFamily::Embedded),
+    ] {
+        // The precondition this test depends on: no published contract, so the
+        // fallback really is what answers.
+        assert!(
+            backend.native_capability_contract().is_none(),
+            "{name}: this test only means something for a backend without a published contract"
+        );
+
+        let contract = with_platform(backend, || {
+            negotiate_capability_contract(RuntimeProfile::Full)
+        });
+        let CapabilityContract::Native(caps) = contract else {
+            panic!("{name}: a Full profile must negotiate a Native contract");
+        };
+        let expected = default_capabilities_for(family);
+
+        assert_eq!(
+            caps, expected,
+            "{name}: the fallback contract must match the family the backend reports; \n\
+             a mismatch means it invented capabilities the host cannot serve"
+        );
+        assert!(
+            !(caps.dpi_scaling && caps.ime && caps.accessibility && caps.native_menu),
+            "{name}: a non-desktop backend must never receive an all-true contract"
+        );
+        assert!(
+            caps.typed_widget_trigger,
+            "{name}: typed triggers come from the library, never the host"
+        );
+    }
 }

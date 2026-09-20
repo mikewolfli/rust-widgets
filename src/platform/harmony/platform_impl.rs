@@ -15,6 +15,7 @@
 use super::super::{DropEvent, Platform};
 use super::types::*;
 use crate::compat::atomic::Ordering;
+use crate::compat::{format, String};
 use crate::core::PlatformFamily;
 use crate::{WidgetTriggerEvent, WidgetTriggerKind};
 

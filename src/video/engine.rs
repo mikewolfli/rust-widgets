@@ -7,6 +7,7 @@ use crate::video::format::{self, ContainerFormat};
 use crate::video::frame::VideoFrame;
 use crate::video::metadata::VideoMetadata;
 use crate::video::player::PlaybackState;
+use crate::widget::numeric::ordered_clamp_f64;
 
 #[cfg(feature = "video-codecs")]
 use crate::video::ffmpeg_decoder::FfmpegDecoder;
@@ -94,8 +95,15 @@ impl VideoEngine {
     }
 
     /// Seek to a specific time in seconds.
+    ///
+    /// The clamp uses [`ordered_clamp_f64`] rather than `f64::clamp` because
+    /// `metadata.duration` is a public field a host fills from its own container
+    /// parser. A `NaN` duration — what a malformed or truncated container yields —
+    /// makes `time.clamp(0.0, duration)` **panic**, which would abort the host
+    /// process on a `seek` call rather than reporting a decode failure. The helper
+    /// ignores the unusable bound and clamps only against the floor.
     pub fn seek(&mut self, time: f64) -> Result<(), String> {
-        let time = time.clamp(0.0, self.metadata.duration);
+        let time = ordered_clamp_f64(time, 0.0, self.metadata.duration);
         self.decoder.seek(time)?;
         self.current_time = time;
         Ok(())

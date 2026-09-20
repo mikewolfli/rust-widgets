@@ -3,6 +3,7 @@
 
 //! WASM platform types and runtime state.
 
+use crate::compat::{String, ToString};
 use crate::platform::state::BackendState;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::AtomicBool;
@@ -168,8 +169,21 @@ impl WasmPlatform {
             return false;
         };
         observer.observe(&canvas);
-        *self.resize_observer.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
-            Some(observer);
+        // `compat::Mutex` is `std::sync::Mutex` under a std profile and `spin::Mutex`
+        // under `mini`. They differ exactly here: `std`'s `lock()` returns a `Result`
+        // a caller must recover from on poisoning, while `spin`'s returns the guard
+        // directly. Recovering via `into_inner()` is the right behaviour for a
+        // poisoned observer slot — the slot holds a JS handle with no invariants to
+        // protect — so the std arm keeps it and the spin arm needs no recovery.
+        #[cfg(not(alloc_frugal))]
+        {
+            *self.resize_observer.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                Some(observer);
+        }
+        #[cfg(alloc_frugal)]
+        {
+            *self.resize_observer.lock() = Some(observer);
+        }
         true
     }
 

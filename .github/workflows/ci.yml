@@ -431,6 +431,20 @@ jobs:
         uses: Swatinem/rust-cache@v2
       - name: WASM check
         run: cargo check --target wasm32-unknown-unknown --no-default-features --features wasm
+      # `wasm` is a backend feature and is orthogonal to the device profile, so it has
+      # to compile against each of them. Checking it alone (above) does not cover the
+      # combination: `mini` is `#![no_std]` + `alloc_frugal`, which removes the `std`
+      # prelude, and the wasm backend was missing a `use crate::compat::String` — plus
+      # it locked a `compat::Mutex` with `std`'s poisoned-`Result` recovery, which
+      # `spin::Mutex` does not have. Both are `mini`-only failures that the bare
+      # `--features wasm` build could not reach.
+      - name: WASM check (with each device profile)
+        run: |
+          for profile in desktop tablet mobile mini embedded; do
+            echo "--- wasm + ${profile} ---"
+            cargo check --target wasm32-unknown-unknown \
+              --no-default-features --features "wasm,${profile}"
+          done
       # The JavaScript engine pulls `rand` 0.8 -> `getrandom` 0.2, which refuses to
       # build for wasm32 without its entropy backend enabled. `Cargo.toml` turns
       # that feature on for this target, and this step keeps the combination from

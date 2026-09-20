@@ -241,6 +241,51 @@ impl BaseWidget {
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }
+
+    /// A foreground colour that honours the enabled flag.
+    ///
+    /// # Why this exists
+    ///
+    /// `set_enabled(false)` only stores a flag, so a widget that gates its input but
+    /// paints with a fixed colour ends up in the worst possible state: it silently
+    /// swallows clicks while looking fully interactive. Roughly a third of the paint
+    /// paths in this crate had that shape, each with its own ad-hoc grey.
+    ///
+    /// Callers pick their enabled colour and let this substitute the shared disabled
+    /// one, so "is this disabled?" is answered by one constant instead of a
+    /// per-widget literal:
+    ///
+    /// ```text
+    /// let color = self.base.effective_foreground(Color::FOREGROUND);
+    /// ```
+    ///
+    /// Widgets whose disabled appearance needs more than a colour swap (a dimmed
+    /// track, a suppressed hover highlight) should still branch on
+    /// [`Self::is_enabled`] directly — this covers the common case.
+    pub fn effective_foreground(&self, enabled_color: crate::core::Color) -> crate::core::Color {
+        if self.enabled {
+            enabled_color
+        } else {
+            crate::core::Color::DISABLED_FOREGROUND
+        }
+    }
+
+    /// A fill colour that honours the enabled flag.
+    ///
+    /// The counterpart to [`Self::effective_foreground`] for backgrounds: a disabled
+    /// surface is desaturated toward the shared disabled tint rather than left at its
+    /// full-strength colour, so a disabled panel does not read as an active one.
+    ///
+    /// Implemented as a channel-wise mix toward `DISABLED_FOREGROUND` rather than a
+    /// flat replacement, which keeps each widget's own hue recognisable while making
+    /// the reduced emphasis visible.
+    pub fn effective_fill(&self, enabled_color: crate::core::Color) -> crate::core::Color {
+        if self.enabled {
+            enabled_color
+        } else {
+            crate::core::Color::disabled_variant_of(enabled_color)
+        }
+    }
     /// Replaces the tooltip text with an already-localised string.
     pub fn set_tooltip(&mut self, tooltip: crate::compat::MiniString) {
         self.tooltip = tooltip;

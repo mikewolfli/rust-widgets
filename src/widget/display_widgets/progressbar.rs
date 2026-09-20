@@ -15,6 +15,7 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use crate::widget::numeric::{ordered_clamp_i32};
 /// Progress bar widget.
 pub struct ProgressBar {
     base: BaseWidget,
@@ -80,7 +81,7 @@ impl ProgressBar {
     }
     /// Sets value, clamped to valid range.
     pub fn set_value(&mut self, value: i32) {
-        let clamped = value.clamp(self.minimum, self.maximum);
+        let clamped = ordered_clamp_i32(value, self.minimum, self.maximum);
         if self.value == clamped {
             return;
         }

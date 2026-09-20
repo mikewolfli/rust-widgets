@@ -167,6 +167,14 @@ for triple in "$PRIMARY" "${LINKABLE[@]}"; do
     echo "[4/6] ${triple}: stripped profile"
     rw_run_bounded "$OHOS_CHECK_TIMEOUT" cargo ohos check -t "$short" --no-default-features --features embedded
 
+    # `mini` is `#![no_std]` + `alloc_frugal`, which removes the `std` prelude. Two
+    # backends were missing a `use crate::compat::String` and only failed here: the
+    # Harmony backend (3 x E0425) and the wasm backend under `mini,wasm`. Neither was
+    # covered by this script, which stopped at `embedded`.
+    echo "[4a/6] ${triple}: alloc-frugal profile (no_std prelude)"
+    rw_run_bounded "$OHOS_CHECK_TIMEOUT" cargo ohos check -t "$short" --no-default-features --features mini
+    rw_run_bounded "$OHOS_CHECK_TIMEOUT" cargo ohos check -t "$short" --no-default-features --all-targets --features mini
+
     # `check` never links, so on its own it cannot catch a missing sysroot: the C
     # dependencies in the graph (minimp3-sys, ...) only fail at link/build time.
     # This step produces a real shared object and verifies its machine type, so a

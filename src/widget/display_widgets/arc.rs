@@ -12,6 +12,7 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use crate::widget::numeric::{ordered_clamp_u32};
 
 /// Arc widget for displaying circular progress or angular values.
 pub struct Arc {
@@ -91,7 +92,7 @@ impl Arc {
     ///
     /// Emits the `changed` signal when the value actually changes.
     pub fn set_value(&mut self, value: u32) {
-        let clamped = value.clamp(self.min, self.max);
+        let clamped = ordered_clamp_u32(value, self.min, self.max);
         if self.value == clamped {
             return;
         }
@@ -116,7 +117,7 @@ impl Arc {
     pub fn set_range(&mut self, min: u32, max: u32) {
         self.min = min.min(max);
         self.max = max.max(min);
-        let clamped = self.value.clamp(self.min, self.max);
+        let clamped = ordered_clamp_u32(self.value, self.min, self.max);
         if self.value != clamped {
             self.value = clamped;
             self.base.changed.emit();

@@ -15,6 +15,7 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use crate::widget::numeric::{ordered_clamp_i32};
 /// Slider widget.
 pub struct Slider {
     base: BaseWidget,
@@ -151,7 +152,7 @@ impl Slider {
     }
     /// Sets value, clamped to valid range.
     pub fn set_value(&mut self, value: i32) {
-        let clamped = value.clamp(self.minimum, self.maximum);
+        let clamped = ordered_clamp_i32(value, self.minimum, self.maximum);
         if self.value == clamped {
             return;
         }
@@ -219,7 +220,7 @@ impl Slider {
     }
     /// Sets slider position (without emitting signals).
     pub fn set_slider_position(&mut self, position: i32) {
-        let new_position = position.clamp(self.minimum, self.maximum);
+        let new_position = ordered_clamp_i32(position, self.minimum, self.maximum);
         if self.slider_position == new_position {
             return;
         }
@@ -275,7 +276,7 @@ impl Slider {
     /// Returns pixel position for a given value.
     fn value_to_pixel_pos(&self, value: i32) -> f32 {
         let rect = self.geometry();
-        let clamped = value.clamp(self.minimum, self.maximum);
+        let clamped = ordered_clamp_i32(value, self.minimum, self.maximum);
         let range = (self.maximum - self.minimum) as f32;
         if range == 0.0 {
             return match self.orientation {

@@ -341,6 +341,13 @@ impl EventHandler for AdaptiveScaffold {
     fn handle_event(&mut self, event: &Event) {
         match event {
             Event::MousePress { pos, button } | Event::MouseRelease { pos, button } => {
+                // A disabled scaffold must not navigate between destinations, nor
+                // forward the click to its app bar. Without this gate
+                // `set_enabled(false)` had no effect on this widget.
+                if !self.base.is_enabled() {
+                    self.base.handle_event(event);
+                    return;
+                }
                 if *button != 1 {
                     return;
                 }
@@ -509,6 +516,29 @@ mod tests {
         // Click on tab 2 (x in [250..374])
         scaffold.handle_event(&Event::MousePress { pos: Point::new(300, 780), button: 1 });
         assert_eq!(scaffold.selected_nav_index(), 2);
+    }
+
+    /// A disabled scaffold must not change its selected destination on a click.
+    ///
+    /// `handle_event` hit-tested the bottom nav bar without consulting `is_enabled()`,
+    /// so `set_enabled(false)` left navigation fully live — the flag was stored and
+    /// never honoured.
+    #[test]
+    fn adaptive_scaffold_disabled_ignores_nav_click() {
+        let mut scaffold = make_scaffold();
+        scaffold.set_enabled(false);
+
+        scaffold.handle_event(&Event::MousePress { pos: Point::new(300, 780), button: 1 });
+        assert_eq!(
+            scaffold.selected_nav_index(),
+            0,
+            "a disabled scaffold must keep its selection"
+        );
+
+        // Re-enabling restores navigation, so the gate suspends rather than locks.
+        scaffold.set_enabled(true);
+        scaffold.handle_event(&Event::MousePress { pos: Point::new(300, 780), button: 1 });
+        assert_eq!(scaffold.selected_nav_index(), 2, "re-enabling must restore navigation");
     }
 
     #[test]
