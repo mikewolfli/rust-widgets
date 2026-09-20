@@ -5,6 +5,141 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 2.4.5 (2026-09-20) — Probe Truthfulness, Value-Bound Crashes, and a Gate That Could Not Fail
+
+Backward compatible. **No public signature was removed or changed.** One function gained a
+variant-free companion (`Color::disabled_variant_of`) and one new module landed
+(`widget::numeric`); everything else is a behaviour fix inside existing APIs.
+
+See [`docs/log/log-20260920-1.md`](docs/log/log-20260920-1.md) for per-fix evidence.
+
+### Measured facts
+
+- `5309` tests pass on `desktop`, `0` failed, `31` test binaries; the `13` "ignored" entries are
+  `ignore`d doc-test snippets, not skipped test targets (there are no `#[ignore]` tests anywhere).
+- `cargo test` passes on every device profile: `tablet` 5008, `mobile` 5039, `mini` 1558,
+  `embedded` 1645 — `0` failures on all five.
+- `cargo clippy --all-targets` is warning-free on all five profiles.
+- Zero `error`/`warning` from `cargo check --all-targets` on all five profiles, and on the
+  installed cross targets `aarch64-apple-ios`, `aarch64-apple-ios-sim`, `x86_64-pc-windows-gnu`,
+  `aarch64-unknown-linux-ohos` and `wasm32-unknown-unknown` (the `mini,wasm` combination included).
+
+### One property write could abort the process
+
+`f32::clamp` **panics** when `min > max` or either bound is `NaN` — it does not clamp. Widgets that
+held a `min`/`max` pair called it at the point of use:
+
+```text
+min > max, or either was NaN. min = 3.5, max = 1.0
+```
+
+Both bounds are public setters **and** writable capability properties, so an ordinary sequence of
+two documented calls reaches it:
+
+```text
+cupertino_slider: create (min=0.0, max=1.0)
+write_property("min", 3.5)   ->  abort
+```
+
+That path is reachable from Rust, from declarative JSON, and from every language binding through the
+C ABI. Fourteen sites were affected (`cupertino_slider`, `lcd_number`, `meter`, `scroll_bar`, `arc`,
+`slider`, `progress_bar`, `progress_dialog`, `stepper`, `spin_box`, `dial`, `range_slider`,
+`VideoEngine::seek`).
+
+Fixed with one seam — `src/widget/numeric.rs` — rather than fourteen local guards: `ordered_clamp`
+treats the pair as unordered, ignores a `NaN` bound, and is bit-identical to `std::f64::clamp` when
+the bounds are already ordered, so correct callers see no behaviour change.
+
+### The Apple backends asked a Linux kernel for their measurements
+
+The cocoa, objc2, iOS and generic-mobile backends forwarded `total_memory_mb`, `is_on_battery` and
+`process_memory_utilization` to `os_probes`, which parses `/proc/meminfo`, `/sys/class/power_supply`
+and `/proc/self/status`. **Those files do not exist on an Apple kernel**, so every query silently
+degraded to the "unknown" answer:
+
+```text
+backend=cocoa
+ total_memory_mb=None          # on a 16 GiB machine
+ is_on_battery=false
+ process_memory_utilization=None
+```
+
+It went unnoticed because `None` and `false` are *legal* return values — the trait documentation
+even requires them over a fabricated constant — so "honest unknown" and "probe wired to the wrong
+kernel" were indistinguishable by return value. The same documentation promised `sysctl hw.memsize`
+and `ps`, which the code never called.
+
+Fixed by adding `src/platform/darwin_probes.rs` (`sysconf(_SC_PHYS_PAGES)`, `pmset -g batt`,
+`ps -o rss=,vsz=`) beside `os_probes`, and returning **real measurements**:
+
+```text
+backend=cocoa
+ total_memory_mb=Some(16384)
+ is_on_battery=true
+ process_memory_utilization=Some(1.2663635e-5)
+ process_cpu_utilization=None   # no stable one-shot source; not fabricated
+```
+
+### The capability-matrix gate was structurally unable to fail
+
+`published_os_capability_matrix_matches_the_trait_default` compared `README.md` against
+`default_capabilities_for(family)` for the family **the README itself declares**. It never built a
+backend, so it fed the document's own claim back in as its expectation. Meanwhile the wasm backend
+answered `family()` = `Desktop` (making the trait default claim DPI scaling, IME, accessibility and
+a native menu on a web page) while the README printed `Embedded | ❌❌❌❌` — and the gate passed
+throughout.
+
+Two fixes: the wasm backend now reports `Embedded` and overrides `capabilities()` with the four
+truthful `false` values, and a new `documented_matrix_matches_real_backends` test **constructs every
+backend reachable on the running host** and compares its live `capabilities()`/`family()` against the
+published row. Reverse-injection was used to confirm the new gate fails when the old bug is
+restored, and passes when it is not.
+
+Same class, second instance: `negotiate_capability_contract`'s fallback fabricated an all-`true`
+contract whenever a backend published none — and `native_capability_contract()` returns `None` for
+every non-`Desktop` family, so the fallback was *only* ever reached by a non-desktop backend and told
+it the opposite of the truth. The fallback now derives from `default_capabilities_for(family)`.
+
+### Two more builds did not compile
+
+- `mini` on OpenHarmony failed with three `cannot find type String` errors: the Harmony backend was
+  the only one missing `use crate::compat::{format, String}` for the `#![no_std]` prelude.
+- `mini,wasm` failed with nine errors from the same cause in the wasm backend, plus a `compat::Mutex`
+  lock written against `std`'s poisoned-`Result` recovery, which `spin::Mutex` does not have.
+
+Neither combination was in any gate: `check_harmony_cross.sh` stopped at `embedded`, and CI's
+`wasm-check` job never combined `wasm` with a device profile. Both gaps are now closed.
+
+### Widgets that refused input while looking interactive
+
+`set_enabled(false)` was a silent no-op on several widgets: they gated nothing in `handle_event`
+(so a disabled control still changed state and still emitted its signals) and painted with fixed
+colours (so it looked fully interactive). Fixed on `cupertino_segmented_control`,
+`cupertino_nav_bar`, `adaptive_scaffold`, `properties_panel`, `find_replace_dialog`, `popover` and
+`swipe_to_dismiss`. A shared seam (`BaseWidget::effective_foreground`/`effective_fill` plus
+`Color::disabled_variant_of`, which preserves hue and alpha) keeps disabled appearance consistent
+instead of re-deriving a grey per widget. `swipe_to_dismiss` also had a latent defect: disabling
+mid-drag left the drag origin set, so a later pointer move with no button held still shifted content.
+
+### The gate runner was documented but absent
+
+`tools/lib_timeout.sh`, `CHANGELOG.md` and three round logs all referenced
+`tools/run_all_gates.sh`, and it had been **deleted** in the 2.4.0 commit. Restored, and hardened:
+per-gate wall-clock bound via `rw_run_bounded`, the gate name printed *before* it runs (so a hang is
+locatable from the output alone), and a `TIMEOUT` verdict distinct from `FAIL` that exits non-zero
+without being reported as a defect in the code under test.
+
+### Process rules added (principle #58–#60)
+
+Every potentially blocking command — tests, gates, `cargo`, cross-compiles — must carry an explicit
+timeout, because a wedged command consumes the whole task while looking like progress. Specifically:
+never wrap the runner in an *outer* `timeout` (it competes with the inner watchdog and was measured
+reporting all 30 gates as failed while each passed standalone); prefer narrow targeted verification
+over a full matrix sweep; and report a timeout as "result unknown", never as a pass and never as a
+failure.
+
+---
+
 ## 2.4.4 (2026-09-19) — Uncompilable Backends, Silent State Loss, and a Broken ABI Contract
 
 Backward compatible. **No public signature was removed.** One public function was renamed

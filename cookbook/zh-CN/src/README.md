@@ -21,7 +21,7 @@
 
 rust-widgets 让您只需一套 Rust 代码库，即可在各大平台上生成一致的界面。它包含了丰富的控件库、硬件自适应渲染以及深度平台集成——这一切都通过简洁、地道的 Rust API 实现。
 
-> 下文的代码片段仅用于说明预期的 API 形式。若需要能对 2.4.4 编译的代码，请从 [`chapters/getting-started.md`](chapters/getting-started.md) 开始，
+> 下文的代码片段仅用于说明预期的 API 形式。若需要能对 2.4.5 编译的代码，请从 [`chapters/getting-started.md`](chapters/getting-started.md) 开始，
 > 该文件已针对当前的 crate 验证过。
 
 ```rust
@@ -84,7 +84,7 @@ fn main() {
 | Android (JNI) | JNI 表面 | `android` |
 | HarmonyOS | NAPI 桥接 | `harmony` |
 | Web (WASM) | DOM canvas + 浏览器事件 | `wasm` |
-| Portable / 无头 | 内存帧缓冲，无操作系统 | `embedded` / `mini` |
+| Portable / 无OS | 内存帧缓冲，无操作系统 | `embedded` / `mini` |
 
 ### 触控与手势
 
@@ -158,10 +158,10 @@ fn main() {
 
 | | |
 |---|---|
-| **版本** | 2.4.4 |
+| **版本** | 2.4.5 |
 | **许可证** | [MIT](https://github.com/mikewolfli/rust-widgets/blob/main/LICENSE) |
 | **仓库** | [github.com/mikewolfli/rust-widgets](https://github.com/mikewolfli/rust-widgets) |
-| **测试** | 5260+ |
+| **测试** | 5300+ |
 | **MSRV** | Rust 1.87 |
 
 准备好了吗？前往[快速入门](chapters/getting-started.md)开始吧。

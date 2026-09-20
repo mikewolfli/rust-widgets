@@ -1027,13 +1027,13 @@ pub struct CoreConfig {
 ```rust
 use rust_widgets::core::CoreConfig;
 
-// Desktop：Full 設定檔、Desktop 平台、桌面功能、v2.4.4
+// Desktop：Full 設定檔、Desktop 平台、桌面功能、v2.4.5
 let desktop_config = CoreConfig::desktop();
 
-// Embedded：Embedded 設定檔、Embedded 平台、內嵌功能、v2.4.4
+// Embedded：Embedded 設定檔、Embedded 平台、內嵌功能、v2.4.5
 let embedded_config = CoreConfig::embedded();
 
-// Mobile：Full 設定檔、Mobile 平台、行動功能、v2.4.4
+// Mobile：Full 設定檔、Mobile 平台、行動功能、v2.4.5
 let mobile_config = CoreConfig::mobile();
 ```
 
