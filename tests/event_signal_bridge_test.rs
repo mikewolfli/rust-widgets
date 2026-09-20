@@ -284,8 +284,8 @@ fn every_published_event_accepts_a_forwarding_call() {
     let mut unsound: Vec<(&str, &str)> = Vec::new();
     for capability in factory.capabilities() {
         for event in capability.events {
-            if factory.event_is_subscribable(capability.canonical_name, event, &hub).is_err() {
-                unsound.push((capability.canonical_name, event));
+            if factory.event_is_subscribable(capability.canonical_name, event.name, &hub).is_err() {
+                unsound.push((capability.canonical_name, event.name));
             }
         }
     }

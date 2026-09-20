@@ -1869,8 +1869,19 @@ impl CodeEditor {
     }
 
     /// Returns `true` when `line` starts a currently folded region.
+    ///
+    /// # Why this reads the model, not the cache
+    ///
+    /// This used to scan `folded_lines`, a *derived* cache rebuilt by
+    /// `refresh_derived_state`, while [`CodeEditor::folded_line_count`] and the
+    /// render path's row visibility both answered from the model. Two sources for
+    /// one fact is how they drift: the cache is only as fresh as the last refresh,
+    /// so a state change that had not yet triggered one could be reported
+    /// differently by this predicate than by the count. The model is the single
+    /// authority; the cache is a render-path detail and no longer decides public
+    /// answers.
     pub fn is_line_folded(&self, line: usize) -> bool {
-        self.folded_lines.as_slice().contains(&line)
+        self.model.borrow().folds.iter().any(|region| region.folded && region.start_line == line)
     }
 
     fn after_fold_change(&mut self) {

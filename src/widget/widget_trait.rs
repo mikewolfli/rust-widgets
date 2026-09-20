@@ -505,6 +505,38 @@ pub trait Widget: EventHandler + Any {
     fn layout_requested_signal(&self) -> &GenericSignal {
         self.base().layout_requested_signal()
     }
+    /// Returns the signal behind a published event name, with its payload erased.
+    ///
+    /// # Why this exists
+    ///
+    /// Wiring a designer's connection means turning a **name** into a subscription, and the name
+    /// is only known at run time. Without this, the host had to write one `match` arm per event per
+    /// control — which is exactly the work a designer cannot pre-generate, because it does not know
+    /// which wires the user will draw.
+    ///
+    /// # Contract
+    ///
+    /// The name must be one the control's capability publishes; a name it does not publish, or an
+    /// event whose signal this control does not expose, returns `None`. The default implementation
+    /// returns `None` for every name, so a control that has not been converted yet is honest about
+    /// it rather than appearing to offer wiring it cannot do.
+    ///
+    /// The list this resolves against is the one [`connect_event`] validates against, so a name
+    /// this returns `Some` for is a name that method accepts — and, with the binder, actually
+    /// reaches.
+    ///
+    /// # Why it is an addition rather than a change
+    ///
+    /// Every existing accessor (`clicked_signal`, `value_changed`, …) is untouched: they return
+    /// concrete types and stay the way a Rust caller should reach a signal. This is the erased
+    /// companion for the dynamic path, not a replacement.
+    ///
+    /// [`connect_event`]: crate::widget::capability::WidgetFactory::connect_event
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        let _ = name;
+        None
+    }
+
     /// Whether this widget has ever asked to be repainted.
     ///
     /// Delegates to [`BaseWidget::has_ever_requested_redraw`]. Used by the runtime's

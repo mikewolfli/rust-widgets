@@ -121,6 +121,25 @@ pub fn ordered_clamp_i32(value: i32, a: i32, b: i32) -> i32 {
     value.min(high).max(low)
 }
 
+/// `i64` counterpart of [`ordered_clamp_i32`].
+///
+/// Needed because `InputDialog` carries its bounds as `i64` (so that
+/// `i64::MIN`/`i64::MAX` remain usable as open bounds) and its `get_int`
+/// constructor takes them as parameters — a caller-supplied pair that
+/// `i64::clamp` panics on when crossed.
+///
+/// ```
+/// # use rust_widgets::widget::numeric::ordered_clamp_i64;
+/// assert_eq!(ordered_clamp_i64(5, 0, 10), 5);
+/// assert_eq!(ordered_clamp_i64(5, 10, 0), 5);
+/// assert_eq!(ordered_clamp_i64(-1, 10, 0), 0);
+/// ```
+pub fn ordered_clamp_i64(value: i64, a: i64, b: i64) -> i64 {
+    let low = a.min(b);
+    let high = a.max(b);
+    value.min(high).max(low)
+}
+
 /// `u32` counterpart of [`ordered_clamp_i32`].
 ///
 /// ```
@@ -199,6 +218,9 @@ mod tests {
     fn crossed_integer_bounds_are_reordered() {
         assert_eq!(ordered_clamp_i32(5, 10, 0), 5);
         assert_eq!(ordered_clamp_i32(20, 10, 0), 10);
+        assert_eq!(ordered_clamp_i64(5, 10, 0), 5);
+        assert_eq!(ordered_clamp_i64(20, 10, 0), 10);
+        assert_eq!(ordered_clamp_i64(-20, 10, 0), 0);
         assert_eq!(ordered_clamp_u32(20, 10, 0), 10);
         assert_eq!(ordered_clamp_usize(20, 10, 0), 10);
     }

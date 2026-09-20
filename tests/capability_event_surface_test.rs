@@ -10,8 +10,9 @@
 //! 1. `canonical_name` / `aliases` — round 31.
 //! 2. `properties` — round 32.
 //! 3. `commands` — round 33 (contract added; per-control rollout in progress).
-//! 4. `events` — **159 capabilities publish 281 event names**, and until this round
-//!    nothing consumed the list at all.
+//! 4. `events` — **159 capabilities published 281 event names** at the time of the audit, and until
+//!    that round nothing consumed the list at all. (Both figures have since grown; see the counts
+//!    note below.)
 //!
 //! For a command, "unused" meant a promise with no invocation path (round 33) — now
 //! fixed by `WidgetFactory::invoke_command`. For an **event**, there is no invocation
@@ -33,6 +34,15 @@
 //! * every published event name is a **connected name**, so it can be subscribed to;
 //! * an event the control does not publish is **refused**, so the bridge does not
 //!   accept anything and report success.
+//!
+//! # The counts in the paragraph above are historical
+//!
+//! They read "159 capabilities publish 281 event names" when the surface was first audited.
+//! An audit of the *reverse* direction — every name a control **emits** must also be
+//! **published** — found 13 capabilities emitting 24 names they never published, so the
+//! table now publishes **172 capabilities / 326 pairs across 186 distinct names**. The
+//! per-name check is `tools/check_capability_events_are_emitted.{sh,py}`; the end-to-end
+//! consequence is pinned by `every_emitted_event_name_is_subscribable` below.
 
 #![cfg(all(feature = "desktop", not(alloc_frugal)))]
 
@@ -55,8 +65,8 @@ fn every_published_event_name_is_subscribable() {
             // The consumer's path: take the name the registry published, hand it to
             // the bridge, and the bridge must accept it. A name it refuses is a name
             // no consumer can use, which makes the published list decorative.
-            if factory.event_is_subscribable(capability.canonical_name, event, &hub).is_err() {
-                refused.push((capability.canonical_name, event));
+            if factory.event_is_subscribable(capability.canonical_name, event.name, &hub).is_err() {
+                refused.push((capability.canonical_name, event.name));
             }
         }
     }
@@ -216,11 +226,70 @@ fn a_published_event_subscription_actually_delivers() {
     );
 }
 
+/// A name a control **emits** but never **published** must not exist.
+///
+/// # The direction nothing checked
+///
+/// The tests above all ask whether a *published* name is backed by a signal. None asked the
+/// mirror question: is every name a control *emits* actually published? A signal that is
+/// `pub`, emitted from production code and documented — but absent from the capability's
+/// `events:` list — is rejected by `connect_event` with `UnknownCommand`, so the control's own
+/// documented event cannot be subscribed to by name. That is the same "inert contract" defect,
+/// arrived at from the other side.
+///
+/// It was not hypothetical: 24 names across 13 capabilities were in exactly that state, e.g.
+/// `Slider::slider_pressed`/`slider_released`, `ToolButton::triggered`,
+/// `ChartWidget::data_point_unhovered`, `FileDialog::current_changed` and `PopupWindow`'s
+/// `opened`/`closed`. Each was reachable through its Rust field accessor and by no other route.
+///
+/// The mechanical half lives in `tools/check_capability_events_are_emitted.{sh,py}` (it needs
+/// the source text to attribute a declare+emit pair to one struct). This asserts the
+/// consequence for the names that were fixed, so a regression in the table is a test failure
+/// and not only a gate failure.
+#[test]
+fn every_emitted_event_name_is_subscribable() {
+    let factory = WidgetFactory::new_with_defaults();
+    let hub = CustomSignalHub::new();
+
+    // (control, event) pairs that each control declares, emits from production code, and
+    // documents — so each must be accepted by the bridge.
+    const EMITTED: &[(&str, &str)] = &[
+        ("slider", "slider_pressed"),
+        ("slider", "slider_released"),
+        ("tool_button", "triggered"),
+        ("chart", "data_point_unhovered"),
+        ("file_dialog", "current_changed"),
+        ("popup_window", "opened"),
+        ("popup_window", "closed"),
+        ("empty_state", "action_pressed"),
+        ("search_bar", "canceled"),
+        ("toggle_button", "state_changed"),
+        ("wizard_dialog", "step_changed"),
+        ("color_history", "color_hovered"),
+        ("adaptive_scaffold", "nav_selected"),
+        ("rich_edit", "read_only_changed"),
+        ("code_editor", "fold_changed"),
+    ];
+
+    let mut refused: Vec<(&str, &str)> = Vec::new();
+    for (control, event) in EMITTED {
+        if factory.event_is_subscribable(control, event, &hub).is_err() {
+            refused.push((control, event));
+        }
+    }
+    assert!(
+        refused.is_empty(),
+        "these controls emit and document an event that the capability table does not publish, \
+         so `connect_event` answers `UnknownCommand` and the only way to reach it is the Rust \
+         field accessor (control, event): {refused:?}"
+    );
+}
+
 /// Events with a payload must be reachable too, by the same published name.
 ///
 /// # Why the payload case needs its own assertion
 ///
-/// Most of the 281 published names carry a value (`value_changed` with an `f32`,
+/// Most of the published names carry a value (`value_changed` with an `f32`,
 /// `text_changed` with a `String`). A bridge that only wired up zero-argument signals
 /// would leave the majority unusable, and the count-based test above would not notice.
 #[test]

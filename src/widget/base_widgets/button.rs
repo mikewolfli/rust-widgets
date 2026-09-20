@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Button widget implementation.
-use crate::compat::{String, ToString};
+use crate::compat::{format, String, ToString};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -187,6 +187,39 @@ impl Button {
     }
 }
 impl Widget for Button {
+    /// Resolves the published event names this control emits to their signals.
+    ///
+    /// # The mapping
+    ///
+    /// | published name | signal | payload |
+    /// |---|---|---|
+    /// | `clicked` | `base.clicked` | none |
+    /// | `pressed` | `pressed_signal` | none |
+    /// | `released` | `released_signal` | none |
+    /// | `state_changed` | `state_changed` | `ButtonState` as a token string |
+    ///
+    /// The names are the ones `button_capability` publishes, so a name `connect_event` accepts is a
+    /// name that resolves here — that correspondence is what `tools/check_event_signal_dyn.sh`
+    /// verifies for every converted control.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            // `clicked` lives on the base, so every control has it; the `Widget` trait exposes it
+            // whether or not the concrete type does anything with it.
+            "clicked" => Some(EventSignalRef::unit("clicked", self.clicked_signal())),
+            "pressed" => Some(EventSignalRef::unit("pressed", &self.pressed_signal)),
+            "released" => Some(EventSignalRef::unit("released", &self.released_signal)),
+            // An enum payload travels as its token spelling, which is the same representation the
+            // property side uses for `PropertyValueKind::Enum` — one spelling, not two.
+            "state_changed" => {
+                Some(EventSignalRef::mapped("state_changed", &self.state_changed, |state| {
+                    crate::widget::capability::CapabilityValue::String(format!("{state:?}"))
+                }))
+            }
+            _ => None,
+        }
+    }
+
     fn base(&self) -> &BaseWidget {
         &self.base
     }

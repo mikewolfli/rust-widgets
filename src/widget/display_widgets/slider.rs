@@ -13,9 +13,9 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::numeric::ordered_clamp_i32;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
-use crate::widget::numeric::{ordered_clamp_i32};
 /// Slider widget.
 pub struct Slider {
     base: BaseWidget,
@@ -311,6 +311,44 @@ pub enum SliderAction {
 }
 // Implement Widget trait
 impl Widget for Slider {
+    /// Resolves the published event names this control emits to their signals.
+    ///
+    /// | published name | signal | payload |
+    /// |---|---|---|
+    /// | `value_changed` | `value_changed` | `i32` |
+    /// | `slider_moved` | `slider_moved` | `i32` |
+    /// | `slider_pressed` | `slider_pressed` | none |
+    /// | `slider_released` | `slider_released` | none |
+    ///
+    /// `value_changed` and `slider_moved` carry the same type but mean different things: the first
+    /// fires on every value change including a programmatic setter, the second only while the handle
+    /// is dragged. A designer offers both because they are both published, and the payload type it
+    /// shows is the same for each.
+    ///
+    /// `clicked` is deliberately **not** here: the control owns that signal on its base, but its
+    /// capability does not publish the name, so an arm resolving it would be dead code that looks
+    /// like support. `tools/check_event_signal_dyn.py` fails on either half of that mismatch.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "value_changed" => {
+                Some(EventSignalRef::mapped("value_changed", &self.value_changed, |value| {
+                    CapabilityValue::Int(*value as i64)
+                }))
+            }
+            "slider_moved" => {
+                Some(EventSignalRef::mapped("slider_moved", &self.slider_moved, |value| {
+                    CapabilityValue::Int(*value as i64)
+                }))
+            }
+            "slider_pressed" => Some(EventSignalRef::unit("slider_pressed", &self.slider_pressed)),
+            "slider_released" => {
+                Some(EventSignalRef::unit("slider_released", &self.slider_released))
+            }
+            _ => None,
+        }
+    }
+
     fn base(&self) -> &BaseWidget {
         &self.base
     }

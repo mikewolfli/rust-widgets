@@ -12,6 +12,7 @@ use core::cell::RefCell;
 
 use crate::core::{ObjectId, Orientation, Rect};
 use crate::platform::{WidgetTriggerKind, WindowStateFlag};
+use crate::widget::numeric::{ordered_clamp_i32, ordered_clamp_u32};
 
 // ═══════════════════════════════════════════════════════════════
 // Supporting types used by widget handles
@@ -1524,7 +1525,7 @@ impl SliderHandle {
         SLIDER_STATES.with(|map| {
             let mut map = map.borrow_mut();
             let state = map.entry(self.raw_id()).or_default();
-            state.value = value.clamp(state.min, state.max);
+            state.value = ordered_clamp_i32(value, state.min, state.max);
         });
         crate::platform::get_platform().set_widget_value(self.raw_id(), f64::from(self.value()));
     }
@@ -1537,14 +1538,24 @@ impl SliderHandle {
         SLIDER_STATES.with(|map| map.borrow().get(&self.raw_id()).map(|s| s.value).unwrap_or(50))
     }
 
-    /// Set the slider range (min/max). The current value is clamped.
+    /// Set the slider range (min/max). The current value is clamped into it.
+    ///
+    /// # Crossed bounds
+    ///
+    /// The two bounds are ordered rather than trusted: `set_range(100, 0)` is a
+    /// descending slider, and the current value is clamped into the span it
+    /// defines. This used to write the pair through and then clamp against it,
+    /// and `i32::clamp` **panics** on `min > max` — so a perfectly ordinary
+    /// descending range took the process down at the first call. The range is
+    /// still forwarded to the backend exactly as given, because which end is
+    /// the minimum is the caller's choice, not something to silently rewrite.
     pub fn set_range(&self, min: i32, max: i32) {
         SLIDER_STATES.with(|map| {
             let mut map = map.borrow_mut();
             let state = map.entry(self.raw_id()).or_default();
             state.min = min;
             state.max = max;
-            state.value = state.value.clamp(state.min, state.max);
+            state.value = ordered_clamp_i32(state.value, state.min, state.max);
         });
         crate::platform::get_platform().set_widget_range(
             self.raw_id(),
@@ -1612,7 +1623,7 @@ impl ProgressBarHandle {
         PROGRESS_BAR_STATES.with(|map| {
             let mut map = map.borrow_mut();
             let state = map.entry(self.raw_id()).or_default();
-            state.value = value.clamp(state.min, state.max);
+            state.value = ordered_clamp_u32(value, state.min, state.max);
         });
         crate::platform::get_platform().set_widget_value(self.raw_id(), f64::from(self.value()));
     }
@@ -1627,13 +1638,23 @@ impl ProgressBarHandle {
     ///
     /// Mirrored into the in-process state *and* pushed to the native control
     /// through [`crate::platform::Platform::set_widget_range`].
+    ///
+    /// # Crossed bounds
+    ///
+    /// `set_min(100)` on a bar still at its `0..100` default crosses the bounds.
+    /// `u32::clamp` panics on that, and although the panic is not reachable here
+    /// (the call sites clamp with the ordering already applied) the pair was
+    /// forwarded to the backend as `(100, 0)` — an inverted range stored in the
+    /// native control, read back verbatim by `widget_range()`. Both are fixed by
+    /// the same change: order the bounds once, use that ordering for the clamp
+    /// and for the write.
     pub fn set_min(&self, min: u32) {
         let range = PROGRESS_BAR_STATES.with(|map| {
             let mut map = map.borrow_mut();
             let state = map.entry(self.raw_id()).or_default();
             state.min = min;
-            state.value = state.value.clamp(state.min, state.max);
-            (state.min, state.max)
+            state.value = ordered_clamp_u32(state.value, state.min, state.max);
+            (state.min.min(state.max), state.min.max(state.max))
         });
         crate::platform::get_platform().set_widget_range(
             self.raw_id(),
@@ -1646,13 +1667,19 @@ impl ProgressBarHandle {
     ///
     /// Mirrored into the in-process state *and* pushed to the native control
     /// through [`crate::platform::Platform::set_widget_range`].
+    ///
+    /// # Crossed bounds
+    ///
+    /// Mirror image of [`ProgressBarHandle::set_min`]: `set_max(0)` on a `0..100`
+    /// bar crosses the bounds, and the inverted pair used to be written through.
+    /// The ordering is applied once and used for both the clamp and the write.
     pub fn set_max(&self, max: u32) {
         let range = PROGRESS_BAR_STATES.with(|map| {
             let mut map = map.borrow_mut();
             let state = map.entry(self.raw_id()).or_default();
             state.max = max;
-            state.value = state.value.clamp(state.min, state.max);
-            (state.min, state.max)
+            state.value = ordered_clamp_u32(state.value, state.min, state.max);
+            (state.min.min(state.max), state.min.max(state.max))
         });
         crate::platform::get_platform().set_widget_range(
             self.raw_id(),
@@ -2250,7 +2277,7 @@ impl SpinBoxHandle {
         SPINBOX_STATES.with(|map| {
             let mut map = map.borrow_mut();
             let state = map.entry(self.raw_id()).or_default();
-            state.value = value.clamp(state.min, state.max);
+            state.value = ordered_clamp_i32(value, state.min, state.max);
         });
         crate::platform::get_platform().set_widget_value(self.raw_id(), f64::from(self.value()));
     }
@@ -2260,14 +2287,20 @@ impl SpinBoxHandle {
         SPINBOX_STATES.with(|map| map.borrow().get(&self.raw_id()).map(|s| s.value).unwrap_or(0))
     }
 
-    /// Set the spin-box range. The current value is clamped.
+    /// Set the spin-box range (min/max). The current value is clamped into it.
+    ///
+    /// # Crossed bounds
+    ///
+    /// Same defect and same repair as [`SliderHandle::set_range`]: the pair is
+    /// ordered before clamping, so a descending range (`set_range(100, 0)`) is a
+    /// valid call instead of an `i32::clamp` panic.
     pub fn set_range(&self, min: i32, max: i32) {
         SPINBOX_STATES.with(|map| {
             let mut map = map.borrow_mut();
             let state = map.entry(self.raw_id()).or_default();
             state.min = min;
             state.max = max;
-            state.value = state.value.clamp(state.min, state.max);
+            state.value = ordered_clamp_i32(state.value, state.min, state.max);
         });
         crate::platform::get_platform().set_widget_range(
             self.raw_id(),
@@ -2641,10 +2674,8 @@ impl WindowHandle {
         );
         if applied {
             WINDOW_STATES.with(|map| {
-                map.borrow_mut()
-                    .entry(self.raw_id())
-                    .or_insert_with(Default::default)
-                    .maximized = maximized;
+                map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).maximized =
+                    maximized;
             });
         }
     }
@@ -2673,10 +2704,8 @@ impl WindowHandle {
         );
         if applied {
             WINDOW_STATES.with(|map| {
-                map.borrow_mut()
-                    .entry(self.raw_id())
-                    .or_insert_with(Default::default)
-                    .minimized = minimized;
+                map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).minimized =
+                    minimized;
             });
         }
     }
@@ -2705,10 +2734,8 @@ impl WindowHandle {
         );
         if applied {
             WINDOW_STATES.with(|map| {
-                map.borrow_mut()
-                    .entry(self.raw_id())
-                    .or_insert_with(Default::default)
-                    .fullscreen = fullscreen;
+                map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).fullscreen =
+                    fullscreen;
             });
         }
     }
@@ -2737,10 +2764,8 @@ impl WindowHandle {
         );
         if applied {
             WINDOW_STATES.with(|map| {
-                map.borrow_mut()
-                    .entry(self.raw_id())
-                    .or_insert_with(Default::default)
-                    .resizable = resizable;
+                map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).resizable =
+                    resizable;
             });
         }
     }
@@ -2769,10 +2794,8 @@ impl WindowHandle {
         );
         if applied {
             WINDOW_STATES.with(|map| {
-                map.borrow_mut()
-                    .entry(self.raw_id())
-                    .or_insert_with(Default::default)
-                    .decorated = decorated;
+                map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).decorated =
+                    decorated;
             });
         }
     }
@@ -3206,14 +3229,12 @@ mod tests {
         let id = crate::platform::get_platform().create_window("probe", 10, 20, 400, 300);
         WindowHandle::record_created_geometry(id, 10, 20, 400, 300);
 
-        let recorded = WINDOW_STATES.with(|map| {
-            map.borrow().get(&id).map(|state| (state.x, state.y, state.w, state.h))
-        });
+        let recorded = WINDOW_STATES
+            .with(|map| map.borrow().get(&id).map(|state| (state.x, state.y, state.w, state.h)));
         assert_eq!(
             recorded,
             Some((10, 20, 400, 300)),
             "the geometry mirror must carry what the constructor recorded"
         );
     }
-
 }

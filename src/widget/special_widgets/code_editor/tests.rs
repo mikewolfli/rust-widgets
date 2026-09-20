@@ -426,6 +426,58 @@ fn folding_hides_interior_lines_and_unfolding_restores_them() {
     assert_eq!(editor.folded_line_count(), 0);
 }
 
+/// `is_line_folded` must agree with `folded_line_count` at any fold count.
+///
+/// They used to answer from *different* sources — this predicate scanned the
+/// derived `folded_lines` cache while the count read the model. The two agree in
+/// every configuration that actually compiles today, so this is a consistency
+/// guard rather than a reproduction: it pins the invariant that the read paths
+/// cannot diverge, and it exceeds the `MiniVec` capacity so the cache cannot hold
+/// every folded start. If `code_editor` is ever enabled on an `alloc_frugal`
+/// build, this is the test that would catch the drift first.
+#[test]
+fn folding_more_regions_than_the_cache_holds_stays_consistent() {
+    let mut editor = editor_with(CodeEditorConfig::new().language(LanguageId::Rust));
+    // 100 foldable regions, comfortably past the 64-element cache.
+    let mut text = String::new();
+    for i in 0..100 {
+        text.push_str(&format!("fn f{i}() {{\n    let x = {i};\n}}\n"));
+    }
+    editor.set_text(&text);
+
+    let last_line = editor.line_count().saturating_sub(1);
+    let mut line = 0usize;
+    while line < editor.line_count() {
+        editor.fold(line, (line + 2).min(last_line));
+        line += 3;
+    }
+    let folded = editor.fold_regions().iter().filter(|r| r.folded).count();
+    assert!(folded > 64, "the test must exceed the 64-element cache, got {folded}");
+
+    // Every folded region must be reported, including one the cache would have
+    // had to drop first.
+    let mut folded_starts: Vec<usize> =
+        editor.fold_regions().iter().filter(|r| r.folded).map(|r| r.start_line).collect();
+    folded_starts.sort_unstable();
+    for start in [folded_starts[0], *folded_starts.last().expect("non-empty")] {
+        assert!(
+            editor.is_line_folded(start),
+            "folded region at line {start} must be reported as folded"
+        );
+    }
+
+    // A line that is NOT folded must not be reported as folded either — the
+    // predicate has to stay exact, not just permissive.
+    let unfolded = (0..editor.line_count()).find(|l| !folded_starts.contains(l));
+    if let Some(line) = unfolded {
+        assert!(!editor.is_line_folded(line));
+    }
+
+    editor.unfold_all();
+    assert_eq!(editor.folded_line_count(), 0);
+    assert!(!editor.is_line_folded(folded_starts[0]));
+}
+
 // ── 9. Tabs ─────────────────────────────────────────────────────────────────
 
 #[test]

@@ -1,0 +1,191 @@
+# Published capability events, one control per line: control: name, name, ...
+# Generated from src/widget/capability/properties.rs by tools/derive_event_payloads.py.
+# This file is the census the event payload table is derived from; edit it to publish or
+# withdraw a name, and re-run the tool.
+action: triggered, toggled, hovered, changed
+adaptive_scaffold: nav_selected
+animated_image: animation_finished, frame_changed
+app_bar: back_pressed, action_pressed
+arc: changed
+audio_visualizer:
+auto_complete_edit: text_changed, suggestion_selected
+avatar:
+badge:
+banner: action_clicked, dismissed
+bar_chart:
+barcode_scanner: barcode_detected
+bezier_curve_editor: curve_changed
+bottom_navigation_bar: selected_changed
+bottom_sheet: dismissed
+breadcrumb: segment_activated
+button: clicked, pressed, released, state_changed
+calendar: selection_changed
+camera_preview:
+candlestick_chart: bar_clicked, bar_hovered, bar_unhovered
+canvas: mouse_pressed, mouse_released, mouse_moved, double_clicked
+carousel: page_changed
+cascader: selection_changed
+chart: data_point_clicked, data_point_hovered, data_point_unhovered
+check_box: toggled, state_changed
+chip: chip_toggled
+code_editor: text_changed, cursor_moved, selection_changed, tab_changed, fold_changed, search_changed, completion_changed
+collapsible_pane: toggled
+color_dialog: color_selected, accepted, rejected
+color_history: color_selected, color_hovered
+color_picker: color_changed, hex_changed
+color_well: clicked
+combo_box: current_index_changed, current_text_changed, activated
+command_link: clicked, hovered
+command_palette: command_activated, query_changed
+cupertino_alert_dialog: confirmed, cancelled
+cupertino_date_picker: date_changed
+cupertino_navigation_bar: back_pressed
+cupertino_segmented_control: value_changed
+cupertino_slider: value_changed
+cupertino_switch: toggled
+data_grid: visible_window_changed
+data_view: selection_changed, visible_window_changed
+date_edit: date_changed
+date_range_picker: range_changed
+date_time_edit: datetime_changed
+depth_chart: level_hovered
+dial: value_changed, slider_pressed, slider_released
+dialog: accepted, rejected, opened, closed
+diff_viewer: compared
+divider:
+dock_widget: dock_location_changed, features_changed, top_level_changed
+drop_zone: payload_dropped
+dropdown: changed
+dropdown_menu: item_selected
+editable_combo_box: text_changed, item_selected
+emoji_picker: glyph_chosen
+empty_state: action_pressed
+fab: clicked
+file_dialog: file_selected, files_selected, accepted, rejected, current_changed
+find_replace_dialog: find_next, find_previous, replace, replace_all, close
+floating_label: text_changed
+font_combo_box: current_font_changed, current_index_changed, activated, text_edited, popup_shown, popup_hidden
+font_dialog: font_selected, accepted, rejected
+font_preview:
+frame:
+freeform_shape: clicked, hovered_changed, pressed_changed
+gantt_widget: task_selected
+grid: cell_clicked, cell_hovered
+grid_table: cell_selected, cell_double_clicked, sort_changed, header_clicked
+group_box: toggled
+hero_animation: animation_completed
+icon:
+image_gallery: image_changed
+image_view:
+ime_preedit:
+indicator_chart: bar_clicked, bar_hovered
+inplace_editor: edit_accepted, edit_cancelled
+input_dialog: text_value_changed, int_value_changed, double_value_changed, accepted, rejected
+kanban_board: card_moved, card_activated
+keyboard: key_pressed, enter_pressed, backspace_pressed, space_pressed
+label:
+lcd_number: value_changed, overflow
+line:
+line_chart:
+line_edit: text_changed, editing_finished, return_pressed
+list_box: item_selected, item_activated, selection_changed
+list_view: selection_changed, focused_row_changed
+lottie_widget: animation_finished
+map_view: center_changed, zoom_changed, marker_selected
+markdown_editor: text_changed, preview_mode_changed
+masked_edit: text_changed
+masonry_layout:
+material_navigation_rail: selected_changed
+material_snackbar: action_pressed, dismissed
+mdi_area: subwindow_activated
+media_player: playback_changed, position_changed, volume_changed, source_changed
+mention: mention_inserted, popup_toggled, text_changed
+menu: triggered, triggered_index, about_to_show, about_to_hide
+menu_bar: triggered, hovered_entry
+menu_button: item_triggered
+message_box: button_clicked, accepted, rejected
+meter: changed
+mini_canvas: clicked, mouse_pressed, mouse_released
+mini_chart:
+mobile_date_picker: date_changed
+modal_bottom_sheet: dismissed
+multi_select_combo_box: selection_changed
+navigation_drawer: opened, closed, item_selected
+navigation_stack: navigation_changed
+notification_center: notification_selected, notification_activated, unread_count_changed
+number_picker: value_changed
+order_book: level_clicked, level_hovered, level_unhovered
+otp_input: value_changed, completed
+pagination: page_changed
+panel: toggled
+pie_chart:
+pie_menu: triggered, triggered_text, about_to_show, about_to_hide
+popover:
+popup_window: opened, closed
+progress_bar: value_changed
+progress_circle:
+progress_dialog: canceled
+properties_panel: property_changed
+property_grid: selected
+qr_code:
+query_builder: query_changed
+quote_board: quote_clicked, quote_hovered, selection_changed
+radar_chart: series_clicked, axis_hovered
+radio_button: selected, checked_changed
+range_slider: range_changed
+rating: rating_changed
+refresh_control: refresh_triggered
+ribbon_bar: current_tab_changed, item_triggered
+rich_edit: text_changed, selection_changed, cursor_position_changed, read_only_changed
+rive_widget: animation_finished
+roller: changed
+safe_area:
+scroll_area: scroll_position_changed
+scroll_bar: value_changed, slider_moved, slider_pressed, slider_released
+search_bar: text_changed, search_submitted, canceled
+search_box: text_changed
+segmented_button: selected_changed
+segmented_control: selection_changed
+shortcut_editor: shortcut_changed
+signature_pad: changed, stroke_completed
+skeleton_loader:
+slider: value_changed, slider_moved, slider_pressed, slider_released
+snackbar: action_triggered, dismissed
+sparkline:
+spin_box: value_changed, editing_finished
+spinner:
+splash_screen: finished, skipped
+split_button: triggered, action_selected, menu_toggled
+splitter: pane_layout_changed, orientation_changed
+stacked_widget: current_changed
+status_bar: message_changed
+stepper: value_changed
+swipe_to_dismiss: dismissed
+switch: toggled
+tab_bar: current_changed, tab_close_requested, tab_moved
+tab_view: tab_changed
+tab_widget: current_changed, tab_close_requested
+table: selection_changed, focused_row_changed
+table_widget: selection_changed, focused_row_changed
+tag_input: tags_changed
+terminal_view: command_submitted
+text_area: changed
+text_edit: text_changed
+time_edit: time_changed
+timeline_widget: item_selected
+toast: dismissed
+toast_stack: toast_activated, toast_dismissed
+toggle_button: toggled, checked_changed, pressed, released, state_changed
+tool_bar: action_triggered, orientation_changed, top_level_changed, visibility_changed
+tool_box: current_changed
+tool_button: clicked, toggled, triggered
+tooltip:
+tree_table: projection_changed, selection_changed
+tree_view: selection_changed, focused_node_changed
+video_player: playback_started, playback_paused, playback_ended, time_updated
+virtual_list: selection_changed, visible_window_changed
+virtual_table: visible_window_changed
+volume_chart: bar_clicked, bar_hovered
+web_engine_view: loading_started, loading_finished, title_changed, url_changed, error_occurred, navigation_state_changed, page_created, page_destroyed, console_message, download_requested, certificate_error
+window: closed
+wizard_dialog: finished, cancelled, step_changed

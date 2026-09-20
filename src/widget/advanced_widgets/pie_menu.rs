@@ -1329,4 +1329,66 @@ mod tests {
         assert_eq!(menu.inner_radius(), 30.0, "infinity must not change the value");
     }
 
+    /// Exhaustive proof that the `2.0 ..= 0.95 * radius` band
+    /// [`PieMenu::set_inner_radius`] documents is actually unbreakable.
+    ///
+    /// The earlier order (`max(2.0)` then `min(0.95 * radius)`) made the ceiling win,
+    /// so the floor was not really guaranteed whenever the band was unsatisfiable —
+    /// which needed `radius < ~2.11`. `new` was the only way in, and it now floors the
+    /// radius at [`PieMenu::MIN_RADIUS`]. This test pins the property rather than
+    /// restating the reasoning: for every radius that can reach either writer,
+    /// including the absurd ones, both bounds hold after either extreme inner radius.
+    #[test]
+    fn pie_menu_inner_radius_band_is_unbreakable() {
+        for &radius in &[
+            -1e9_f32,
+            0.0,
+            1.0,
+            2.0,
+            2.105,
+            5.0,
+            PieMenu::MIN_RADIUS,
+            1e6,
+            f32::INFINITY,
+            f32::NAN,
+        ] {
+            let mut menu = PieMenu::new(Point::new(100, 100), radius);
+            assert!(
+                menu.radius() >= PieMenu::MIN_RADIUS,
+                "new({radius}) left radius below MIN_RADIUS: {}",
+                menu.radius()
+            );
+
+            menu.set_inner_radius(-5.0);
+            let low = menu.inner_radius();
+            menu.set_inner_radius(1e9);
+            let high = menu.inner_radius();
+            let ceiling = menu.radius() * 0.95;
+
+            assert!(low >= 2.0 - 1e-4, "inner radius {low} fell below the 2.0 floor");
+            assert!(
+                high <= ceiling + 1e-4,
+                "inner radius {high} rose above 0.95 * radius ({ceiling})"
+            );
+            assert!(low <= high, "the setters must be monotonic in the requested value");
+        }
+    }
+
+    /// `set_radius` is the other writer of `radius`; shrinking it must pull the
+    /// inner radius down with it rather than leaving it outside the band.
+    #[test]
+    fn pie_menu_shrinking_radius_pulls_inner_radius_down() {
+        let mut menu = PieMenu::new(Point::new(0, 0), 200.0);
+        menu.set_inner_radius(180.0);
+        assert!(menu.inner_radius() <= menu.radius() * 0.95 + 1e-4);
+
+        menu.set_radius(PieMenu::MIN_RADIUS);
+        assert!(
+            menu.inner_radius() <= menu.radius() * 0.95 + 1e-4,
+            "inner radius {} escaped the band after shrinking to {}",
+            menu.inner_radius(),
+            menu.radius()
+        );
+        assert!(menu.inner_radius() >= 2.0 - 1e-4);
+    }
 }

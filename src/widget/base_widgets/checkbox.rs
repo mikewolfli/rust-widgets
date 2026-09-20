@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Checkbox widget implementation.
-use crate::compat::{String, ToString};
+use crate::compat::{format, String, ToString};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -135,6 +135,36 @@ impl CheckBox {
     }
 }
 impl Widget for CheckBox {
+    /// Resolves the published event names this control emits to their signals.
+    ///
+    /// | published name | signal | payload |
+    /// |---|---|---|
+    /// | `toggled` | `toggled` | `bool` |
+    /// | `state_changed` | `state_changed` | `CheckState` as a token string |
+    ///
+    /// `toggled` and `state_changed` differ deliberately: `toggled` collapses
+    /// [`CheckState::PartiallyChecked`] to `false`, so a wire that needs the three-way answer must
+    /// name `state_changed`. Both are published, so both are resolvable.
+    ///
+    /// `clicked` is deliberately **not** here: the control owns that signal on its base, but its
+    /// capability does not publish the name, so `connect_event` would refuse a subscription to it
+    /// and an arm resolving it would be dead code that looks like support.
+    /// `tools/check_event_signal_dyn.py` fails on either half of that mismatch.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "toggled" => Some(EventSignalRef::mapped("toggled", &self.toggled, |value| {
+                CapabilityValue::Bool(*value)
+            })),
+            "state_changed" => {
+                Some(EventSignalRef::mapped("state_changed", &self.state_changed, |state| {
+                    CapabilityValue::String(format!("{state:?}"))
+                }))
+            }
+            _ => None,
+        }
+    }
+
     fn base(&self) -> &BaseWidget {
         &self.base
     }

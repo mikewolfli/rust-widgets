@@ -59,12 +59,24 @@
 //!   explicitly rather than silently.
 //!
 //! [`crate::signal::EventSignalBinder::forward_widget_events`] is the host-facing
-//! entry point: one call per control, covering every name that control's capability
-//! publishes, so wiring a mounted widget is not a hand-maintained list.
+//! convenience entry point: one call per control, wiring the one name every `Widget` is
+//! guaranteed to have — the base `clicked` signal. It does **not** cover a control's
+//! other published names (`value_changed` is `Signal1<i32>`, `toggled` is `Signal1<bool>`),
+//! which need a per-event payload decision and so are wired with `forward_mapped` at the
+//! control's own construction site. The count it returns is the number of names it wired,
+//! so a caller that receives `0` can see the control contributed nothing instead of
+//! assuming it did — this doc previously said it covered "every name that control's
+//! capability publishes", which the implementation never did and which would have led a
+//! host to believe the remaining events were wired for it.
 //!
-//! Exhaustiveness is stated by `tests/event_signal_bridge_test.rs`, which requires every
-//! name a capability publishes to be forwardable, so an event added to a capability
-//! without a forwarding site is caught rather than silently never firing.
+//! Exhaustiveness of the *subscribable* side is stated by
+//! `tests/event_signal_bridge_test.rs`'s `every_published_event_accepts_a_forwarding_call`,
+//! which requires every name a capability publishes to be accepted by `forward_unit`/`forward_mapped`
+//! (i.e. to have a hub destination). That is a real guarantee, but it is narrower than it sounds:
+//! it proves a forwarding call **can** be made for each published name, not that this crate
+//! **does** make one. Nothing here wires a control's non-`clicked` events automatically —
+//! see "Wiring status" above — so a control whose events are never forwarded by its host still
+//! has published names that are valid and inert.
 
 use super::CustomSignalHub;
 use crate::signal::{ConnectionHandle, GenericSignal, Signal1};
@@ -129,6 +141,141 @@ impl EventSignalBinder {
         self.forwards.push(Forwarded { source: ForwardSource::Unit(signal.clone()), handle });
     }
 
+    /// Wires **every** event a mounted control publishes, in one call.
+    ///
+    /// # Why this is the entry point a designer needs
+    ///
+    /// A designer's wires are decided at run time: the user drew a line from `value_changed`, and
+    /// the program learns which name that was when the project is loaded. So the host cannot be
+    /// asked to write `forward_unit("clicked", ..)` / `forward_mapped("value_changed", ..)` per
+    /// control — those lines would have to be generated for wires that do not exist yet, which is
+    /// exactly the host work rule #98 rules out.
+    ///
+    /// This walks the control's *published* events instead, asking the control for each one's signal
+    /// through [`Widget::event_signal_dyn`], and subscribes to all of them. A converted control
+    /// therefore needs **one** line at its mount site, and every name its capability offers in the
+    /// panel **is** wired.
+    ///
+    /// # What happens to the payload
+    ///
+    /// The hub carries names, not values, so the slot forwards the name and drops the value — the
+    /// same loss [`Self::forward_unit`] makes, stated here rather than left implicit. A consumer
+    /// that needs the value subscribes through `connect_event` (which reaches the same slot) and
+    /// reads it from the binding layer's event object.
+    ///
+    /// # Returns
+    ///
+    /// The number of events wired. A control that has not been converted yet reports `0`, so a
+    /// caller can see that it contributed nothing instead of assuming it did.
+    ///
+    /// # Relationship to [`Self::forward_widget_events`]
+    ///
+    /// That method is the earlier, weaker version: it wires `clicked` and nothing else, because when
+    /// it was written a control had no way to name its other signals. This one supersedes it for a
+    /// call that is choosing between the two; the narrower method remains so an existing caller
+    /// keeps working.
+    ///
+    /// [`Widget::event_signal_dyn`]: crate::widget::Widget::event_signal_dyn
+    pub fn forward_all<W>(&mut self, widget: &W) -> usize
+    where
+        W: crate::widget::Widget,
+    {
+        // A stripped profile compiles the capability table out, so there is no published name list
+        // to walk. `0` is the honest answer: the method reports how many events it wired.
+        #[cfg(full_widgets)]
+        {
+            let factory = crate::widget::capability::WidgetFactory::new_with_defaults();
+            let Some(capability) = factory.capability_for_kind_instance(widget) else {
+                return 0;
+            };
+            let mut wired = 0usize;
+            for schema in capability.events {
+                // A control that publishes a name it cannot resolve would otherwise be wired
+                // silently short. Treating it as zero keeps the return value honest, and
+                // `tools/check_event_signal_dyn.sh` fails the build-time counterpart of this case.
+                if self.wire_one(widget, schema.name) {
+                    wired += 1;
+                }
+            }
+            wired
+        }
+        #[cfg(not(full_widgets))]
+        {
+            let _ = widget;
+            0
+        }
+    }
+
+    /// Wires one published event of `widget`, reporting whether it was wired.
+    ///
+    /// The single-event form of [`Self::forward_all`], for a caller that wants to skip a name (a
+    /// designer with one hand-made exception) or to check a name without wiring the rest.
+    pub fn forward_one<W>(&mut self, widget: &W, event_name: &str) -> bool
+    where
+        W: crate::widget::Widget,
+    {
+        self.wire_one(widget, event_name)
+    }
+
+    /// The shared body of [`Self::forward_all`] and [`Self::forward_one`].
+    ///
+    /// Keeping the two entry points on one implementation is what stops the single-event form from
+    /// drifting from the all-events form: a fix to how a name is resolved is a fix to both.
+    fn wire_one<W>(&mut self, widget: &W, event_name: &str) -> bool
+    where
+        W: crate::widget::Widget,
+    {
+        let Some(reference) = widget.event_signal_dyn(event_name) else {
+            return false;
+        };
+        let Some(hub) = self.hub.clone() else {
+            // A detached binder registers nothing; it is documented as a no-op, and reporting
+            // `true` here would claim a wire that no slot backs.
+            return false;
+        };
+        // The slot owns the name because it outlives this call.
+        let name = alloc::string::String::from(event_name);
+        let handle = reference.subscribe(alloc::boxed::Box::new(move |_value| hub.emit(&name)));
+
+        // `EventSignalRef` is not `Clone` (its closures are not), so the disconnect closure resolves
+        // the signal a second time from the widget. That lookup is cheap and — unlike making the
+        // type cloneable — cannot leave two copies of a slot count that disagree.
+        let source = widget.event_signal_dyn(event_name);
+        self.forwards.push(Forwarded {
+            source: ForwardSource::Erased(alloc::boxed::Box::new(move |handle| {
+                // The boolean is discarded because `ForwardSource::disconnect` reports nothing; it
+                // is here so the closure's return type matches the shared alias.
+                let _ = source.as_ref().is_some_and(|reference| reference.disconnect(handle));
+            })),
+            handle,
+        });
+        true
+    }
+
+    /// Reports whether any subscriber reaches `widget`'s `event_name`.
+    ///
+    /// # Why this is the query rule #97 requires
+    ///
+    /// `WidgetFactory::connect_event` returns `Ok` for a published name whether or not anything was
+    /// ever wired to it: "is this name valid?" and "is something emitting it?" are different
+    /// questions. Until this method existed, the difference was **unaskable**, which made
+    /// "subscribed successfully but never called" a silent failure with no way to detect it.
+    ///
+    /// `false` means exactly that: the name is valid (a caller should not receive `false` for a name
+    /// the control does not publish — see [`Self::forward_all`]'s return value for that case) but no
+    /// wire reaches it.
+    pub fn event_is_wired<W>(&self, widget: &W, event_name: &str) -> bool
+    where
+        W: crate::widget::Widget,
+    {
+        match widget.event_signal_dyn(event_name) {
+            // A subscriber count on the signal itself, so this cannot report wired when the slot was
+            // dropped, nor unwired when a slot another binder added is live.
+            Some(reference) => reference.slot_count() > 0,
+            None => false,
+        }
+    }
+
     /// Wires every published event a mounted widget can actually emit.
     ///
     /// # Why this exists
@@ -173,7 +320,7 @@ impl EventSignalBinder {
             let Some(capability) = factory.capability_for_kind_instance(widget) else {
                 return 0;
             };
-            if !capability.events.contains(&"clicked") {
+            if !capability.events.iter().any(|schema| schema.name == "clicked") {
                 return 0;
             }
             // `clicked_signal` is a `Widget` trait method with a default body that reads
@@ -252,6 +399,11 @@ enum ForwardSource {
     Unit(GenericSignal),
     /// A payload-carrying signal, erased to a disconnect closure.
     Typed(Box<dyn Fn(ConnectionHandle) + Send>),
+    /// A signal resolved by name, erased by the control itself.
+    ///
+    /// Separate from `Typed` because the handle does not come from a signal this module can name:
+    /// it came from `EventSignalRef`, whose whole purpose is to hide which concrete signal it is.
+    Erased(Box<dyn Fn(ConnectionHandle) + Send>),
 }
 
 impl ForwardSource {
@@ -261,6 +413,7 @@ impl ForwardSource {
                 signal.disconnect(handle);
             }
             Self::Typed(disconnect) => disconnect(handle),
+            Self::Erased(disconnect) => disconnect(handle),
         }
     }
 }

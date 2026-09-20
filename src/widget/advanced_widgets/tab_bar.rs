@@ -378,8 +378,16 @@ impl TabBar {
     }
 
     /// Sets the minimum tab width.
+    ///
+    /// Raises the maximum to match if the new minimum would exceed it, mirroring
+    /// [`Self::set_tab_max_width`]. Without that the pair could be left inverted, and
+    /// [`Self::compute_tab_width`]`s `clamp(min, max)` **panics** on `min > max` — reaching it via
+    /// `set_tab_min_width(5000)` on a bar whose maximum was still the 200 default. The two setters
+    /// were asymmetric: `set_tab_max_width` already pulled the maximum up to the minimum, this one
+    /// left the maximum behind.
     pub fn set_tab_min_width(&mut self, width: u32) {
         self.tab_min_width = width.max(1);
+        self.tab_max_width = self.tab_max_width.max(self.tab_min_width);
     }
 
     /// Returns the maximum tab width.
@@ -388,6 +396,8 @@ impl TabBar {
     }
 
     /// Sets the maximum tab width.
+    ///
+    /// Floors at the current minimum, so the pair the clamp is applied to is never inverted.
     pub fn set_tab_max_width(&mut self, width: u32) {
         self.tab_max_width = width.max(self.tab_min_width);
     }
@@ -947,6 +957,44 @@ mod tests {
         let svg = crate::widget::svg::render_to_svg(&mut tb);
         assert!(svg.starts_with("<svg"));
         assert!(svg.len() > 100);
+    }
+
+    /// Regression: `set_tab_min_width` used to leave `tab_max_width` behind, so a minimum above
+    /// the default maximum produced an inverted pair and `compute_tab_width`'s `clamp(min, max)`
+    /// **panicked**. Both setters must keep `min <= max`.
+    #[test]
+    fn tabbar_min_width_above_max_does_not_invert_pair() {
+        let mut tb = TabBar::new(Rect::new(0, 0, 400, 24));
+        assert!(tb.tab_min_width() <= tb.tab_max_width());
+
+        tb.set_tab_min_width(5000);
+        assert_eq!(tb.tab_min_width(), 5000);
+        assert!(
+            tb.tab_min_width() <= tb.tab_max_width(),
+            "min {} must not exceed max {}",
+            tb.tab_min_width(),
+            tb.tab_max_width()
+        );
+        assert_eq!(tb.tab_max_width(), 5000, "maximum must rise to meet the new minimum");
+
+        // The clamp itself must not panic, and neither must a full render.
+        tb.add_tab("A very long tab title that would exceed the default maximum".to_string());
+        assert!(tb.tab_rect(0).is_some());
+        let svg = crate::widget::svg::render_to_svg(&mut tb);
+        assert!(svg.starts_with("<svg"));
+    }
+
+    /// The mirror case: an inverted *maximum* must be pulled back up to the minimum, not left to
+    /// poison the clamp.
+    #[test]
+    fn tabbar_max_width_below_min_does_not_invert_pair() {
+        let mut tb = TabBar::new(Rect::new(0, 0, 400, 24));
+        tb.set_tab_min_width(120);
+        tb.set_tab_max_width(10);
+        assert!(tb.tab_min_width() <= tb.tab_max_width());
+        assert_eq!(tb.tab_max_width(), 120);
+        tb.add_tab("X".to_string());
+        assert!(tb.tab_rect(0).is_some());
     }
 
     #[test]

@@ -4,6 +4,12 @@
 use super::types::{PropertySchema, PropertyValueKind, WidgetCapability};
 use crate::widget::WidgetKind;
 
+// ── Published event schemas (generated from the signals) ─────────
+// Included ahead of the capability constructors so `events_of!` is in scope for them. The
+// generated table is the single place a name and its payload type are written down, which is
+// what keeps the two from drifting (BLUE19 rule #95).
+include!("event_payloads.rs");
+
 // ── Property schema definitions (split into per-category files) ──
 include!("properties_base.in.rs");
 include!("properties_input.in.rs");
@@ -43,7 +49,7 @@ pub(crate) fn button_capability() -> WidgetCapability {
         canonical_name: "button",
         aliases: &["pushbutton", "btn"],
         properties: BUTTON_PROPERTIES,
-        events: &["clicked", "pressed", "released", "state_changed"],
+        events: events_of!("button"),
         commands: &["click"],
     }
 }
@@ -65,7 +71,7 @@ pub(crate) fn check_box_capability() -> WidgetCapability {
         canonical_name: "check_box",
         aliases: &[],
         properties: CHECK_BOX_PROPERTIES,
-        events: &["toggled", "state_changed"],
+        events: events_of!("check_box"),
         commands: &["set_checked", "toggle", "set_state"],
     }
 }
@@ -76,7 +82,7 @@ pub(crate) fn radio_button_capability() -> WidgetCapability {
         canonical_name: "radio_button",
         aliases: &[],
         properties: RADIO_BUTTON_PROPERTIES,
-        events: &["selected", "checked_changed"],
+        events: events_of!("radio_button"),
         commands: &["set_checked", "set_group_id"],
     }
 }
@@ -87,7 +93,7 @@ pub(crate) fn slider_capability() -> WidgetCapability {
         canonical_name: "slider",
         aliases: &[],
         properties: SLIDER_PROPERTIES,
-        events: &["value_changed", "slider_moved"],
+        events: events_of!("slider"),
         commands: &["set_range", "set_value", "set_slider_position"],
     }
 }
@@ -98,7 +104,7 @@ pub(crate) fn progress_bar_capability() -> WidgetCapability {
         canonical_name: "progress_bar",
         aliases: &[],
         properties: PROGRESS_BAR_PROPERTIES,
-        events: &["value_changed"],
+        events: events_of!("progress_bar"),
         commands: &["set_range", "set_value", "set_orientation"],
     }
 }
@@ -109,7 +115,7 @@ pub(crate) fn scroll_bar_capability() -> WidgetCapability {
         canonical_name: "scroll_bar",
         aliases: &[],
         properties: SCROLL_BAR_PROPERTIES,
-        events: &["value_changed", "slider_moved", "slider_pressed", "slider_released"],
+        events: events_of!("scroll_bar"),
         commands: &["set_range", "set_value", "set_steps", "set_orientation"],
     }
 }
@@ -120,7 +126,7 @@ pub(crate) fn list_box_capability() -> WidgetCapability {
         canonical_name: "list_box",
         aliases: &[],
         properties: LIST_BOX_PROPERTIES,
-        events: &["item_selected", "item_activated", "selection_changed"],
+        events: events_of!("list_box"),
         commands: &["add_item", "remove_item", "clear", "clear_selection", "set_selection_mode"],
     }
 }
@@ -131,7 +137,7 @@ pub(crate) fn spin_box_capability() -> WidgetCapability {
         canonical_name: "spin_box",
         aliases: &[],
         properties: SPIN_BOX_PROPERTIES,
-        events: &["value_changed", "editing_finished"],
+        events: events_of!("spin_box"),
         commands: &["set_range", "set_value", "step_up", "step_down"],
     }
 }
@@ -142,7 +148,7 @@ pub(crate) fn combo_box_capability() -> WidgetCapability {
         canonical_name: "combo_box",
         aliases: &[],
         properties: COMBO_BOX_PROPERTIES,
-        events: &["current_index_changed", "current_text_changed", "activated"],
+        events: events_of!("combo_box"),
         commands: &["set_items", "set_current_index", "clear"],
     }
 }
@@ -154,7 +160,7 @@ pub(crate) fn dial_capability() -> WidgetCapability {
         canonical_name: "dial",
         aliases: &["knob"],
         properties: DIAL_PROPERTIES,
-        events: &["value_changed", "slider_pressed", "slider_released"],
+        events: events_of!("dial"),
         commands: &["set_range", "set_value", "set_wrapping"],
     }
 }
@@ -165,7 +171,7 @@ pub(crate) fn window_capability() -> WidgetCapability {
         canonical_name: "window",
         aliases: &["main_window"],
         properties: WINDOW_PROPERTIES,
-        events: &["closed"],
+        events: events_of!("window"),
         commands: &["set_title", "close"],
     }
 }
@@ -176,7 +182,7 @@ pub(crate) fn group_box_capability() -> WidgetCapability {
         canonical_name: "group_box",
         aliases: &[],
         properties: GROUP_BOX_PROPERTIES,
-        events: &["toggled"],
+        events: events_of!("group_box"),
         commands: &["set_title", "set_checkable", "set_checked", "toggle"],
     }
 }
@@ -204,7 +210,7 @@ pub(crate) fn panel_capability() -> WidgetCapability {
         canonical_name: "panel",
         aliases: &[],
         properties: GROUP_BOX_PROPERTIES,
-        events: &["toggled"],
+        events: events_of!("panel"),
         commands: &["set_title", "set_checkable", "set_checked", "toggle"],
     }
 }
@@ -228,7 +234,7 @@ pub(crate) fn splitter_capability() -> WidgetCapability {
         canonical_name: "splitter",
         aliases: &["pane_splitter"],
         properties: SPLITTER_PROPERTIES,
-        events: &["pane_layout_changed", "orientation_changed"],
+        events: events_of!("splitter"),
         commands: &["set_orientation"],
     }
 }
@@ -240,7 +246,7 @@ pub(crate) fn lcd_number_capability() -> WidgetCapability {
         canonical_name: "lcd_number",
         aliases: &[],
         properties: LCD_NUMBER_PROPERTIES,
-        events: &["value_changed", "overflow"],
+        events: events_of!("lcd_number"),
         commands: &["set_value", "set_mode", "set_segment_style"],
     }
 }
@@ -252,7 +258,7 @@ pub(crate) fn command_link_capability() -> WidgetCapability {
         canonical_name: "command_link",
         aliases: &[],
         properties: COMMAND_LINK_PROPERTIES,
-        events: &["clicked", "hovered"],
+        events: events_of!("command_link"),
         commands: &["set_text", "set_description", "set_enabled", "click"],
     }
 }
@@ -264,14 +270,7 @@ pub(crate) fn font_combo_box_capability() -> WidgetCapability {
         canonical_name: "font_combo_box",
         aliases: &[],
         properties: FONT_COMBO_BOX_PROPERTIES,
-        events: &[
-            "current_font_changed",
-            "current_index_changed",
-            "activated",
-            "text_edited",
-            "popup_shown",
-            "popup_hidden",
-        ],
+        events: events_of!("font_combo_box"),
         commands: &[
             "set_current_index",
             "set_editable",
@@ -289,7 +288,7 @@ pub(crate) fn action_capability() -> WidgetCapability {
         canonical_name: "action",
         aliases: &["command_action"],
         properties: ACTION_PROPERTIES,
-        events: &["triggered", "toggled", "hovered", "changed"],
+        events: events_of!("action"),
         commands: &["set_text", "set_checkable", "set_checked", "trigger"],
     }
 }
@@ -301,7 +300,7 @@ pub(crate) fn tool_box_capability() -> WidgetCapability {
         canonical_name: "tool_box",
         aliases: &[],
         properties: TOOL_BOX_PROPERTIES,
-        events: &["current_changed"],
+        events: events_of!("tool_box"),
         commands: &["add_item", "remove_item", "set_current_index", "set_orientation"],
     }
 }
@@ -323,7 +322,7 @@ pub(crate) fn tab_bar_capability() -> WidgetCapability {
         canonical_name: "tab_bar",
         aliases: &[],
         properties: TAB_BAR_PROPERTIES,
-        events: &["current_changed", "tab_close_requested", "tab_moved"],
+        events: events_of!("tab_bar"),
         commands: &["add_tab", "remove_tab", "set_current_index", "set_closable", "set_movable"],
     }
 }
@@ -335,7 +334,7 @@ pub(crate) fn calendar_capability() -> WidgetCapability {
         canonical_name: "calendar",
         aliases: &["date_calendar"],
         properties: CALENDAR_PROPERTIES,
-        events: &["selection_changed"],
+        events: events_of!("calendar"),
         commands: &["set_selected_date", "set_date_range", "set_first_day_of_week", "show_today"],
     }
 }
@@ -353,7 +352,7 @@ pub(crate) fn date_edit_capability() -> WidgetCapability {
         // while `factory.create("time_picker", ..)` succeeded.
         aliases: &["date_picker"],
         properties: DATE_EDIT_PROPERTIES,
-        events: &["date_changed"],
+        events: events_of!("date_edit"),
         commands: &["set_date", "set_minimum_date", "set_maximum_date", "set_display_format"],
     }
 }
@@ -365,7 +364,7 @@ pub(crate) fn time_edit_capability() -> WidgetCapability {
         canonical_name: "time_edit",
         aliases: &["time_picker"],
         properties: TIME_EDIT_PROPERTIES,
-        events: &["time_changed"],
+        events: events_of!("time_edit"),
         commands: &["set_time", "set_minimum_time", "set_maximum_time", "set_display_format"],
     }
 }
@@ -376,7 +375,7 @@ pub(crate) fn line_edit_capability() -> WidgetCapability {
         canonical_name: "line_edit",
         aliases: &["text_input", "input"],
         properties: LINE_EDIT_PROPERTIES,
-        events: &["text_changed", "editing_finished", "return_pressed"],
+        events: events_of!("line_edit"),
         commands: &["clear", "select_all"],
     }
 }
@@ -388,7 +387,7 @@ pub(crate) fn list_view_capability() -> WidgetCapability {
         canonical_name: "list_view",
         aliases: &[],
         properties: LIST_VIEW_PROPERTIES,
-        events: &["selection_changed", "focused_row_changed"],
+        events: events_of!("list_view"),
         commands: &["clear_selection", "clear_focused_row"],
     }
 }
@@ -400,7 +399,7 @@ pub(crate) fn tree_view_capability() -> WidgetCapability {
         canonical_name: "tree_view",
         aliases: &[],
         properties: TREE_VIEW_PROPERTIES,
-        events: &["selection_changed", "focused_node_changed"],
+        events: events_of!("tree_view"),
         commands: &["clear_selection", "clear_focused_node"],
     }
 }
@@ -412,7 +411,7 @@ pub(crate) fn table_widget_capability() -> WidgetCapability {
         canonical_name: "table_widget",
         aliases: &[],
         properties: TABLE_WIDGET_PROPERTIES,
-        events: &["selection_changed", "focused_row_changed"],
+        events: events_of!("table_widget"),
         commands: &["clear_selection", "clear_focused_row"],
     }
 }
@@ -441,7 +440,7 @@ pub(crate) fn table_capability() -> WidgetCapability {
         canonical_name: "table",
         aliases: &[],
         properties: TABLE_WIDGET_PROPERTIES,
-        events: &["selection_changed", "focused_row_changed"],
+        events: events_of!("table"),
         commands: &["clear_selection", "clear_focused_row"],
     }
 }
@@ -453,7 +452,7 @@ pub(crate) fn data_grid_capability() -> WidgetCapability {
         canonical_name: "data_grid",
         aliases: &[],
         properties: DATA_GRID_PROPERTIES,
-        events: &["visible_window_changed"],
+        events: events_of!("data_grid"),
         commands: &[
             "set_data_source",
             "clear_data_source",
@@ -473,7 +472,7 @@ pub(crate) fn tree_table_capability() -> WidgetCapability {
         canonical_name: "tree_table",
         aliases: &[],
         properties: TREE_TABLE_PROPERTIES,
-        events: &["projection_changed", "selection_changed"],
+        events: events_of!("tree_table"),
         commands: &["set_model", "clear_model", "expand_row", "collapse_row", "select_row"],
     }
 }
@@ -485,7 +484,7 @@ pub(crate) fn virtual_table_capability() -> WidgetCapability {
         canonical_name: "virtual_table",
         aliases: &[],
         properties: VIRTUAL_TABLE_PROPERTIES,
-        events: &["visible_window_changed"],
+        events: events_of!("virtual_table"),
         commands: &[
             "set_data_source",
             "clear_data_source",
@@ -507,7 +506,7 @@ pub(crate) fn virtual_list_capability() -> WidgetCapability {
         canonical_name: "virtual_list",
         aliases: &[],
         properties: VIRTUAL_LIST_PROPERTIES,
-        events: &["selection_changed", "visible_window_changed"],
+        events: events_of!("virtual_list"),
         commands: &["clear_data_source", "fetch_visible_rows"],
     }
 }
@@ -541,7 +540,7 @@ pub(crate) fn data_view_capability() -> WidgetCapability {
         canonical_name: "data_view",
         aliases: &[],
         properties: VIRTUAL_LIST_PROPERTIES,
-        events: &["selection_changed", "visible_window_changed"],
+        events: events_of!("data_view"),
         commands: &["clear_data_source", "fetch_visible_rows"],
     }
 }
@@ -553,7 +552,7 @@ pub(crate) fn menu_capability() -> WidgetCapability {
         canonical_name: "menu",
         aliases: &["context_menu"],
         properties: MENU_PROPERTIES,
-        events: &["triggered", "triggered_index", "about_to_show", "about_to_hide"],
+        events: events_of!("menu"),
         commands: &["clear", "add_action", "add_separator"],
     }
 }
@@ -565,7 +564,7 @@ pub(crate) fn menu_bar_capability() -> WidgetCapability {
         canonical_name: "menu_bar",
         aliases: &[],
         properties: MENU_BAR_PROPERTIES,
-        events: &["triggered", "hovered_entry"],
+        events: events_of!("menu_bar"),
         commands: &["clear", "add_menu", "remove_menu"],
     }
 }
@@ -577,12 +576,7 @@ pub(crate) fn tool_bar_capability() -> WidgetCapability {
         canonical_name: "tool_bar",
         aliases: &[],
         properties: TOOL_BAR_PROPERTIES,
-        events: &[
-            "action_triggered",
-            "orientation_changed",
-            "top_level_changed",
-            "visibility_changed",
-        ],
+        events: events_of!("tool_bar"),
         commands: &["clear", "add_action", "add_separator"],
     }
 }
@@ -594,7 +588,7 @@ pub(crate) fn ribbon_bar_capability() -> WidgetCapability {
         canonical_name: "ribbon_bar",
         aliases: &["ribbon"],
         properties: RIBBON_BAR_PROPERTIES,
-        events: &["current_tab_changed", "item_triggered"],
+        events: events_of!("ribbon_bar"),
         commands: &["add_tab", "add_group", "add_item", "add_large_item", "clear"],
     }
 }
@@ -610,7 +604,7 @@ pub(crate) fn color_picker_capability() -> WidgetCapability {
         canonical_name: "color_picker",
         aliases: &[],
         properties: COLOR_PICKER_PROPERTIES,
-        events: &["color_changed", "hex_changed"],
+        events: events_of!("color_picker"),
         commands: &["set_hex", "apply_preset"],
     }
 }
@@ -636,7 +630,7 @@ pub(crate) fn color_dialog_capability() -> WidgetCapability {
         canonical_name: "color_dialog",
         aliases: &["colour_dialog"],
         properties: COLOR_DIALOG_PROPERTIES,
-        events: &["color_selected", "accepted", "rejected"],
+        events: events_of!("color_dialog"),
         commands: &["set_hex", "apply_preset"],
     }
 }
@@ -648,7 +642,7 @@ pub(crate) fn code_editor_capability() -> WidgetCapability {
         canonical_name: "code_editor",
         aliases: &[],
         properties: CODE_EDITOR_PROPERTIES,
-        events: &["text_changed", "cursor_moved", "selection_changed"],
+        events: events_of!("code_editor"),
         commands: &["set_text", "append_line", "set_markers", "set_cursor"],
     }
 }
@@ -660,7 +654,7 @@ pub(crate) fn gantt_widget_capability() -> WidgetCapability {
         canonical_name: "gantt_widget",
         aliases: &["gantt"],
         properties: GANTT_WIDGET_PROPERTIES,
-        events: &["task_selected"],
+        events: events_of!("gantt_widget"),
         commands: &["set_tasks", "zoom", "set_viewport", "select_task"],
     }
 }
@@ -672,7 +666,7 @@ pub(crate) fn terminal_view_capability() -> WidgetCapability {
         canonical_name: "terminal_view",
         aliases: &["terminal"],
         properties: TERMINAL_VIEW_PROPERTIES,
-        events: &["command_submitted"],
+        events: events_of!("terminal_view"),
         commands: &["append_output", "submit"],
     }
 }
@@ -684,7 +678,7 @@ pub(crate) fn snackbar_capability() -> WidgetCapability {
         canonical_name: "snackbar",
         aliases: &["toast_bar"],
         properties: SNACKBAR_PROPERTIES,
-        events: &["action_triggered", "dismissed"],
+        events: events_of!("snackbar"),
         commands: &["show", "show_with_action", "dismiss"],
     }
 }
@@ -696,7 +690,7 @@ pub(crate) fn map_view_capability() -> WidgetCapability {
         canonical_name: "map_view",
         aliases: &[],
         properties: MAP_VIEW_PROPERTIES,
-        events: &["center_changed", "zoom_changed", "marker_selected"],
+        events: events_of!("map_view"),
         commands: &["set_markers", "set_center_x", "set_center_y", "set_zoom"],
     }
 }
@@ -708,7 +702,7 @@ pub(crate) fn media_player_capability() -> WidgetCapability {
         canonical_name: "media_player",
         aliases: &[],
         properties: MEDIA_PLAYER_PROPERTIES,
-        events: &["playback_changed", "position_changed", "volume_changed", "source_changed"],
+        events: events_of!("media_player"),
         commands: &["set_source", "clear_source", "play", "pause", "seek_to", "set_volume"],
     }
 }
@@ -720,7 +714,7 @@ pub(crate) fn breadcrumb_capability() -> WidgetCapability {
         canonical_name: "breadcrumb",
         aliases: &["nav_breadcrumb"],
         properties: BREADCRUMB_PROPERTIES,
-        events: &["segment_activated"],
+        events: events_of!("breadcrumb"),
         commands: &["set_segments", "push_segment", "clear_segments"],
     }
 }
@@ -732,7 +726,7 @@ pub(crate) fn signature_pad_capability() -> WidgetCapability {
         canonical_name: "signature_pad",
         aliases: &["signature"],
         properties: SIGNATURE_PAD_PROPERTIES,
-        events: &["changed", "stroke_completed"],
+        events: events_of!("signature_pad"),
         commands: &["undo"],
     }
 }
@@ -744,7 +738,7 @@ pub(crate) fn drop_zone_capability() -> WidgetCapability {
         canonical_name: "drop_zone",
         aliases: &["drop_target"],
         properties: DROP_ZONE_PROPERTIES,
-        events: &["payload_dropped"],
+        events: events_of!("drop_zone"),
         commands: &[],
     }
 }
@@ -762,7 +756,7 @@ pub(crate) fn timeline_widget_capability() -> WidgetCapability {
         canonical_name: "timeline_widget",
         aliases: &["timeline", "timeline_view"],
         properties: TIMELINE_WIDGET_PROPERTIES,
-        events: &["item_selected"],
+        events: events_of!("timeline_widget"),
         commands: &["set_items", "set_viewport", "zoom", "select_index"],
     }
 }
@@ -774,7 +768,7 @@ pub(crate) fn command_palette_capability() -> WidgetCapability {
         canonical_name: "command_palette",
         aliases: &["command_box"],
         properties: COMMAND_PALETTE_PROPERTIES,
-        events: &["command_activated", "query_changed"],
+        events: events_of!("command_palette"),
         commands: &[
             "set_entries",
             "set_query",
@@ -792,7 +786,7 @@ pub(crate) fn notification_center_capability() -> WidgetCapability {
         canonical_name: "notification_center",
         aliases: &["notifications"],
         properties: NOTIFICATION_CENTER_PROPERTIES,
-        events: &["notification_selected", "notification_activated", "unread_count_changed"],
+        events: events_of!("notification_center"),
         commands: &[
             "push",
             "clear",
@@ -811,7 +805,7 @@ pub(crate) fn diff_viewer_capability() -> WidgetCapability {
         canonical_name: "diff_viewer",
         aliases: &["diff"],
         properties: DIFF_VIEWER_PROPERTIES,
-        events: &["compared"],
+        events: events_of!("diff_viewer"),
         commands: &["set_texts", "select_index"],
     }
 }
@@ -823,7 +817,7 @@ pub(crate) fn markdown_editor_capability() -> WidgetCapability {
         canonical_name: "markdown_editor",
         aliases: &["md_editor"],
         properties: MARKDOWN_EDITOR_PROPERTIES,
-        events: &["text_changed", "preview_mode_changed"],
+        events: events_of!("markdown_editor"),
         commands: &["set_text", "append_line", "toggle_preview_mode", "set_preview_mode", "undo"],
     }
 }
@@ -835,7 +829,7 @@ pub(crate) fn toast_stack_capability() -> WidgetCapability {
         canonical_name: "toast_stack",
         aliases: &["toasts"],
         properties: TOAST_STACK_PROPERTIES,
-        events: &["toast_activated", "toast_dismissed"],
+        events: events_of!("toast_stack"),
         commands: &["push", "clear", "select_index", "activate_selected", "dismiss_selected"],
     }
 }
@@ -851,7 +845,7 @@ pub(crate) fn otp_input_capability() -> WidgetCapability {
         canonical_name: "otp_input",
         aliases: &["otp"],
         properties: OTP_INPUT_PROPERTIES,
-        events: &["value_changed", "completed"],
+        events: events_of!("otp_input"),
         commands: &["insert_char", "backspace", "paste", "clear"],
     }
 }
@@ -863,7 +857,7 @@ pub(crate) fn banner_capability() -> WidgetCapability {
         canonical_name: "banner",
         aliases: &["notice"],
         properties: BANNER_PROPERTIES,
-        events: &["action_clicked", "dismissed"],
+        events: events_of!("banner"),
         commands: &["dismiss", "show", "set_actions", "activate_action"],
     }
 }
@@ -875,7 +869,7 @@ pub(crate) fn toast_capability() -> WidgetCapability {
         canonical_name: "toast",
         aliases: &["notification", "toast_message"],
         properties: TOAST_PROPERTIES,
-        events: &["dismissed"],
+        events: events_of!("toast"),
         commands: &["dismiss", "set_message", "set_level"],
     }
 }
@@ -890,7 +884,7 @@ pub(crate) fn splash_screen_capability() -> WidgetCapability {
         // Dismissal is by the program, so the events are lifecycle rather than
         // interaction: `finished` when initialisation completes, `skipped` when the
         // user takes the optional skip affordance.
-        events: &["finished", "skipped"],
+        events: events_of!("splash_screen"),
         commands: &["finish", "set_progress", "set_title"],
     }
 }
@@ -902,7 +896,7 @@ pub(crate) fn pagination_capability() -> WidgetCapability {
         canonical_name: "pagination",
         aliases: &["pager", "page_numbers"],
         properties: PAGINATION_PROPERTIES,
-        events: &["page_changed"],
+        events: events_of!("pagination"),
         commands: &["next_page", "previous_page", "set_page", "set_total"],
     }
 }
@@ -914,7 +908,7 @@ pub(crate) fn number_picker_capability() -> WidgetCapability {
         canonical_name: "number_picker",
         aliases: &["picker"],
         properties: NUMBER_PICKER_PROPERTIES,
-        events: &["value_changed"],
+        events: events_of!("number_picker"),
         commands: &["scroll_rows", "set_value", "set_range", "set_step"],
     }
 }
@@ -926,7 +920,7 @@ pub(crate) fn grid_table_capability() -> WidgetCapability {
         canonical_name: "grid_table",
         aliases: &[],
         properties: GRID_TABLE_WIDGET_PROPERTIES,
-        events: &["cell_selected", "cell_double_clicked", "sort_changed", "header_clicked"],
+        events: events_of!("grid_table"),
         commands: &[
             "set_data_source",
             "clear_data_source",
@@ -945,7 +939,7 @@ pub(crate) fn split_button_capability() -> WidgetCapability {
         canonical_name: "split_button",
         aliases: &[],
         properties: SPLIT_BUTTON_PROPERTIES,
-        events: &["triggered", "action_selected", "menu_toggled"],
+        events: events_of!("split_button"),
         commands: &["add_action", "open_menu", "close_menu", "trigger_primary"],
     }
 }
@@ -957,7 +951,7 @@ pub(crate) fn segmented_control_capability() -> WidgetCapability {
         canonical_name: "segmented_control",
         aliases: &[],
         properties: SEGMENTED_CONTROL_PROPERTIES,
-        events: &["selection_changed"],
+        events: events_of!("segmented_control"),
         commands: &["set_items", "move_selection"],
     }
 }
@@ -974,7 +968,7 @@ pub(crate) fn chip_capability() -> WidgetCapability {
         canonical_name: "chip",
         aliases: &["chips"],
         properties: CHIP_PROPERTIES,
-        events: &["chip_toggled"],
+        events: events_of!("chip"),
         commands: &["set_items", "toggle_index", "move_focus"],
     }
 }
@@ -986,7 +980,7 @@ pub(crate) fn grid_capability() -> WidgetCapability {
         canonical_name: "grid",
         aliases: &["grid_widget", "gridwidget"],
         properties: GRID_PROPERTIES,
-        events: &["cell_clicked", "cell_hovered"],
+        events: events_of!("grid"),
         // `select_cell` and `clear_selection` were advertised but no such method
         // exists on `Grid`, so they named actions nobody could obtain. Removed
         // rather than left as a promise with no implementation (principle #18);
@@ -1003,7 +997,7 @@ pub(crate) fn freeform_shape_capability() -> WidgetCapability {
         commands: &["set_fill_rgba", "set_stroke_rgba", "set_stroke_width"],
         aliases: &[],
         properties: FREEFORM_SHAPE_PROPERTIES,
-        events: &["clicked", "hovered_changed", "pressed_changed"],
+        events: events_of!("freeform_shape"),
     }
 }
 
@@ -1015,7 +1009,7 @@ pub(crate) fn message_box_capability() -> WidgetCapability {
         canonical_name: "message_box",
         aliases: &["msgbox"],
         properties: MESSAGE_BOX_PROPERTIES,
-        events: &["button_clicked", "accepted", "rejected"],
+        events: events_of!("message_box"),
         // `set_icon` is the severity of the prompt (`warning`, `critical`, …). It is
         // a real, drawn property of the control and was reachable from the JSON
         // loader but not from this command list, so a generic consumer could not
@@ -1031,7 +1025,7 @@ pub(crate) fn file_dialog_capability() -> WidgetCapability {
         canonical_name: "file_dialog",
         aliases: &[],
         properties: FILE_DIALOG_PROPERTIES,
-        events: &["file_selected", "files_selected", "accepted", "rejected"],
+        events: events_of!("file_dialog"),
         commands: &["set_mode", "set_directory", "open"],
     }
 }
@@ -1043,7 +1037,7 @@ pub(crate) fn font_dialog_capability() -> WidgetCapability {
         canonical_name: "font_dialog",
         aliases: &[],
         properties: FONT_DIALOG_PROPERTIES,
-        events: &["font_selected", "accepted", "rejected"],
+        events: events_of!("font_dialog"),
         commands: &["set_current_font", "accept", "reject"],
     }
 }
@@ -1055,13 +1049,7 @@ pub(crate) fn input_dialog_capability() -> WidgetCapability {
         canonical_name: "input_dialog",
         aliases: &[],
         properties: INPUT_DIALOG_PROPERTIES,
-        events: &[
-            "text_value_changed",
-            "int_value_changed",
-            "double_value_changed",
-            "accepted",
-            "rejected",
-        ],
+        events: events_of!("input_dialog"),
         commands: &["set_mode", "set_text_value", "set_int_value", "set_double_value"],
     }
 }
@@ -1073,7 +1061,7 @@ pub(crate) fn progress_dialog_capability() -> WidgetCapability {
         canonical_name: "progress_dialog",
         aliases: &[],
         properties: PROGRESS_DIALOG_PROPERTIES,
-        events: &["canceled"],
+        events: events_of!("progress_dialog"),
         commands: &["set_value", "set_range", "set_title", "set_label_text"],
     }
 }
@@ -1085,7 +1073,7 @@ pub(crate) fn popup_window_capability() -> WidgetCapability {
         canonical_name: "popup_window",
         aliases: &["popup"],
         properties: POPUP_WINDOW_PROPERTIES,
-        events: &[],
+        events: events_of!("popup_window"),
         commands: &["set_content_widget"],
     }
 }
@@ -1097,7 +1085,7 @@ pub(crate) fn dialog_capability() -> WidgetCapability {
         canonical_name: "dialog",
         aliases: &[],
         properties: DIALOG_PROPERTIES,
-        events: &["accepted", "rejected", "opened", "closed"],
+        events: events_of!("dialog"),
         commands: &["accept", "reject"],
     }
 }
@@ -1115,7 +1103,7 @@ pub(crate) fn scroll_area_capability() -> WidgetCapability {
         canonical_name: "scroll_area",
         aliases: &[],
         properties: SCROLL_AREA_PROPERTIES,
-        events: &["scroll_position_changed"],
+        events: events_of!("scroll_area"),
         commands: &[
             "set_widget_resizable",
             "set_horizontal_scroll_bar_policy",
@@ -1131,7 +1119,7 @@ pub(crate) fn tab_widget_capability() -> WidgetCapability {
         canonical_name: "tab_widget",
         aliases: &[],
         properties: TAB_WIDGET_PROPERTIES,
-        events: &["current_changed", "tab_close_requested"],
+        events: events_of!("tab_widget"),
         commands: &[
             "add_tab",
             "remove_tab",
@@ -1150,7 +1138,7 @@ pub(crate) fn stacked_widget_capability() -> WidgetCapability {
         canonical_name: "stacked_widget",
         aliases: &["stacked"],
         properties: STACKED_WIDGET_PROPERTIES,
-        events: &["current_changed"],
+        events: events_of!("stacked_widget"),
         commands: &["add_widget", "remove_widget", "set_current_index"],
     }
 }
@@ -1162,7 +1150,7 @@ pub(crate) fn collapsible_pane_capability() -> WidgetCapability {
         canonical_name: "collapsible_pane",
         aliases: &["collapsible"],
         properties: COLLAPSIBLE_PANE_PROPERTIES,
-        events: &["toggled"],
+        events: events_of!("collapsible_pane"),
         commands: &["set_title", "set_collapsed", "toggle"],
     }
 }
@@ -1174,7 +1162,7 @@ pub(crate) fn dock_widget_capability() -> WidgetCapability {
         canonical_name: "dock_widget",
         aliases: &["dock"],
         properties: DOCK_WIDGET_PROPERTIES,
-        events: &["dock_location_changed", "features_changed", "top_level_changed"],
+        events: events_of!("dock_widget"),
         commands: &["set_title", "set_floating", "set_features", "set_allowed_areas"],
     }
 }
@@ -1186,7 +1174,7 @@ pub(crate) fn mdi_area_capability() -> WidgetCapability {
         canonical_name: "mdi_area",
         aliases: &["mdi"],
         properties: MDI_AREA_PROPERTIES,
-        events: &["subwindow_activated"],
+        events: events_of!("mdi_area"),
         commands: &["add_subwindow", "remove_subwindow", "set_view_mode", "activate_subwindow"],
     }
 }
@@ -1199,7 +1187,7 @@ pub(crate) fn text_edit_capability() -> WidgetCapability {
         canonical_name: "text_edit",
         aliases: &[],
         properties: TEXT_EDIT_PROPERTIES,
-        events: &["text_changed"],
+        events: events_of!("text_edit"),
         commands: &[
             "set_text",
             "set_placeholder_text",
@@ -1235,14 +1223,7 @@ pub(crate) fn web_view_capability() -> WidgetCapability {
         canonical_name: "web_engine_view",
         aliases: &["webview", "web_view"],
         properties: WEB_VIEW_PROPERTIES,
-        events: &[
-            "loading_started",
-            "loading_finished",
-            "title_changed",
-            "url_changed",
-            "error_occurred",
-            "navigation_state_changed",
-        ],
+        events: events_of!("web_engine_view"),
         commands: &["set_url", "load_url", "reload", "go_back", "go_forward", "stop"],
     }
 }
@@ -1255,7 +1236,7 @@ pub(crate) fn pie_menu_capability() -> WidgetCapability {
         canonical_name: "pie_menu",
         aliases: &["radial_menu"],
         properties: PIE_MENU_PROPERTIES,
-        events: &["triggered", "triggered_text", "about_to_show", "about_to_hide"],
+        events: events_of!("pie_menu"),
         commands: &["add_item", "remove_item", "set_radius", "set_current_index"],
     }
 }
@@ -1271,7 +1252,7 @@ pub(crate) fn toggle_button_capability() -> WidgetCapability {
         canonical_name: "toggle_button",
         aliases: &["toggle"],
         properties: TOGGLE_BUTTON_PROPERTIES,
-        events: &["toggled", "checked_changed", "pressed", "released"],
+        events: events_of!("toggle_button"),
         commands: &["set_checked", "toggle", "set_text"],
     }
 }
@@ -1282,7 +1263,7 @@ pub(crate) fn arc_capability() -> WidgetCapability {
         canonical_name: "arc",
         aliases: &["arc_widget"],
         properties: ARC_PROPERTIES,
-        events: &["changed"],
+        events: events_of!("arc"),
         commands: &["set_value", "set_range"],
     }
 }
@@ -1304,7 +1285,7 @@ pub(crate) fn roller_capability() -> WidgetCapability {
         canonical_name: "roller",
         aliases: &["roller_widget", "scroll_wheel"],
         properties: ROLLER_PROPERTIES,
-        events: &["changed"],
+        events: events_of!("roller"),
         commands: &["set_options", "set_selected_index", "set_visible_count"],
     }
 }
@@ -1315,7 +1296,7 @@ pub(crate) fn dropdown_capability() -> WidgetCapability {
         canonical_name: "dropdown",
         aliases: &["dropdown_widget", "combo"],
         properties: DROPDOWN_PROPERTIES,
-        events: &["changed"],
+        events: events_of!("dropdown"),
         commands: &["set_items", "set_selected_index", "set_expanded", "toggle"],
     }
 }
@@ -1326,7 +1307,7 @@ pub(crate) fn text_area_capability() -> WidgetCapability {
         canonical_name: "text_area",
         aliases: &["multiline_edit"],
         properties: TEXT_AREA_PROPERTIES,
-        events: &["changed"],
+        events: events_of!("text_area"),
         commands: &["set_text", "set_placeholder", "set_read_only", "insert", "delete_char"],
     }
 }
@@ -1337,7 +1318,7 @@ pub(crate) fn keyboard_capability() -> WidgetCapability {
         canonical_name: "keyboard",
         aliases: &["keyboard_widget", "virtual_keyboard"],
         properties: KEYBOARD_PROPERTIES,
-        events: &["key_pressed", "enter_pressed", "backspace_pressed", "space_pressed"],
+        events: events_of!("keyboard"),
         commands: &["set_layout", "set_lowercase", "toggle_shift"],
     }
 }
@@ -1353,7 +1334,7 @@ pub(crate) fn switch_capability() -> WidgetCapability {
         // `create_cupertino_switch(..)` produced id `0`.
         aliases: &["switch_widget", "toggle_switch"],
         properties: SWITCH_PROPERTIES,
-        events: &["toggled"],
+        events: events_of!("switch"),
         commands: &["set_checked", "toggle"],
     }
 }
@@ -1374,7 +1355,7 @@ pub(crate) fn cupertino_switch_capability() -> WidgetCapability {
         canonical_name: "cupertino_switch",
         aliases: &["ios_switch"],
         properties: SWITCH_PROPERTIES,
-        events: &["toggled"],
+        events: events_of!("cupertino_switch"),
         commands: &["set_checked", "toggle"],
     }
 }
@@ -1396,7 +1377,7 @@ pub(crate) fn meter_capability() -> WidgetCapability {
         canonical_name: "meter",
         aliases: &["meter_widget", "gauge"],
         properties: METER_PROPERTIES,
-        events: &["changed"],
+        events: events_of!("meter"),
         commands: &["set_value", "set_range"],
     }
 }
@@ -1412,7 +1393,7 @@ pub(crate) fn radar_chart_capability() -> WidgetCapability {
         canonical_name: "radar_chart",
         aliases: &["radar", "spider_chart"],
         properties: RADAR_CHART_PROPERTIES,
-        events: &["series_clicked", "axis_hovered"],
+        events: events_of!("radar_chart"),
         commands: &["set_axes", "set_series", "add_series"],
     }
 }
@@ -1429,7 +1410,7 @@ pub(crate) fn mention_capability() -> WidgetCapability {
         canonical_name: "mention",
         aliases: &["mention_edit", "at_mention"],
         properties: MENTION_PROPERTIES,
-        events: &["mention_inserted", "popup_toggled", "text_changed"],
+        events: events_of!("mention"),
         commands: &["set_candidates", "set_trigger", "complete", "open_popup"],
     }
 }
@@ -1445,7 +1426,7 @@ pub(crate) fn emoji_picker_capability() -> WidgetCapability {
         canonical_name: "emoji_picker",
         aliases: &["emoji"],
         properties: EMOJI_PICKER_PROPERTIES,
-        events: &["glyph_chosen"],
+        events: events_of!("emoji_picker"),
         commands: &["set_glyphs", "set_categories", "set_search", "choose"],
     }
 }
@@ -1462,7 +1443,7 @@ pub(crate) fn query_builder_capability() -> WidgetCapability {
         canonical_name: "query_builder",
         aliases: &["filter_builder"],
         properties: QUERY_BUILDER_PROPERTIES,
-        events: &["query_changed"],
+        events: events_of!("query_builder"),
         commands: &["set_fields", "add_row", "remove_row", "toggle_conjunction"],
     }
 }
@@ -1478,7 +1459,7 @@ pub(crate) fn cascader_capability() -> WidgetCapability {
         canonical_name: "cascader",
         aliases: &["cascade", "multi_level_select"],
         properties: CASCADER_PROPERTIES,
-        events: &["selection_changed"],
+        events: events_of!("cascader"),
         commands: &["set_options", "set_selected_path", "expand", "collapse"],
     }
 }
@@ -1494,7 +1475,7 @@ pub(crate) fn kanban_board_capability() -> WidgetCapability {
         canonical_name: "kanban_board",
         aliases: &["kanban", "board"],
         properties: KANBAN_BOARD_PROPERTIES,
-        events: &["card_moved", "card_activated"],
+        events: events_of!("kanban_board"),
         commands: &["add_column", "add_card", "move_card", "cancel_drag"],
     }
 }
@@ -1527,7 +1508,7 @@ pub(crate) fn mini_canvas_capability() -> WidgetCapability {
         canonical_name: "mini_canvas",
         aliases: &[],
         properties: MINI_CANVAS_PROPERTIES,
-        events: &["clicked", "mouse_pressed", "mouse_released"],
+        events: events_of!("mini_canvas"),
         commands: &["fill_rect", "draw_rect", "draw_line", "fill_circle", "clear"],
     }
 }
@@ -1538,7 +1519,7 @@ pub(crate) fn date_time_edit_capability() -> WidgetCapability {
         canonical_name: "date_time_edit",
         aliases: &["datetimepicker", "date_time_picker"],
         properties: DATE_TIME_EDIT_PROPERTIES,
-        events: &["datetime_changed"],
+        events: events_of!("date_time_edit"),
         commands: &["set_datetime", "set_display_format", "set_calendar_popup"],
     }
 }
@@ -1551,7 +1532,7 @@ pub(crate) fn canvas_capability() -> WidgetCapability {
         canonical_name: "canvas",
         aliases: &["canvas_widget", "drawing_surface"],
         properties: CANVAS_PROPERTIES,
-        events: &["mouse_pressed", "mouse_released", "mouse_moved", "double_clicked"],
+        events: events_of!("canvas"),
         commands: &["set_zoom", "set_center", "clear"],
     }
 }
@@ -1563,7 +1544,7 @@ pub(crate) fn chart_capability() -> WidgetCapability {
         canonical_name: "chart",
         aliases: &["chart_widget", "chart_surface"],
         properties: CHART_PROPERTIES,
-        events: &["data_point_clicked", "data_point_hovered"],
+        events: events_of!("chart"),
         commands: &[],
     }
 }
@@ -1575,7 +1556,7 @@ pub(crate) fn search_box_capability() -> WidgetCapability {
         canonical_name: "search_box",
         aliases: &["search"],
         properties: SEARCH_BOX_PROPERTIES,
-        events: &["text_changed"],
+        events: events_of!("search_box"),
         commands: &["set_text", "set_placeholder", "clear"],
     }
 }
@@ -1611,7 +1592,7 @@ pub(crate) fn fab_capability() -> WidgetCapability {
         canonical_name: "fab",
         aliases: &["floating_action_button", "action_button"],
         properties: FAB_PROPERTIES,
-        events: &["clicked"],
+        events: events_of!("fab"),
         commands: &["set_icon"],
     }
 }
@@ -1623,7 +1604,7 @@ pub(crate) fn bottom_sheet_capability() -> WidgetCapability {
         canonical_name: "bottom_sheet",
         aliases: &["sheet"],
         properties: BOTTOM_SHEET_PROPERTIES,
-        events: &["dismissed"],
+        events: events_of!("bottom_sheet"),
         commands: &["set_expanded", "set_peek_height"],
     }
 }
@@ -1635,7 +1616,7 @@ pub(crate) fn bottom_navigation_bar_capability() -> WidgetCapability {
         canonical_name: "bottom_navigation_bar",
         aliases: &["bottom_nav", "bottomnav"],
         properties: BOTTOM_NAVIGATION_BAR_PROPERTIES,
-        events: &["selected_changed"],
+        events: events_of!("bottom_navigation_bar"),
         commands: &["set_selected_index"],
     }
 }
@@ -1647,7 +1628,7 @@ pub(crate) fn navigation_drawer_capability() -> WidgetCapability {
         canonical_name: "navigation_drawer",
         aliases: &["nav_drawer", "drawer"],
         properties: NAVIGATION_DRAWER_PROPERTIES,
-        events: &["opened", "closed", "item_selected"],
+        events: events_of!("navigation_drawer"),
         commands: &["set_open", "set_width"],
     }
 }
@@ -1661,7 +1642,7 @@ pub(crate) fn app_bar_capability() -> WidgetCapability {
         properties: APP_BAR_PROPERTIES,
         // The widget emits both of these (`app_bar.rs`); advertising an empty
         // list made a by-name subscriber unable to discover them.
-        events: &["back_pressed", "action_pressed"],
+        events: events_of!("app_bar"),
         commands: &["set_title"],
     }
 }
@@ -1673,7 +1654,7 @@ pub(crate) fn mobile_date_picker_capability() -> WidgetCapability {
         canonical_name: "mobile_date_picker",
         aliases: &[],
         properties: MOBILE_DATE_PICKER_PROPERTIES,
-        events: &["date_changed"],
+        events: events_of!("mobile_date_picker"),
         commands: &["set_selected_date"],
     }
 }
@@ -1697,7 +1678,7 @@ pub(crate) fn stepper_capability() -> WidgetCapability {
         canonical_name: "stepper",
         aliases: &["stepper_widget", "step_control"],
         properties: STEPPER_PROPERTIES,
-        events: &["value_changed"],
+        events: events_of!("stepper"),
         commands: &["set_value", "set_minimum", "set_maximum", "set_step"],
     }
 }
@@ -1709,7 +1690,7 @@ pub(crate) fn rating_capability() -> WidgetCapability {
         canonical_name: "rating",
         aliases: &["rating_widget", "star_rating"],
         properties: RATING_PROPERTIES,
-        events: &["rating_changed"],
+        events: events_of!("rating"),
         commands: &["set_value", "set_max"],
     }
 }
@@ -1733,7 +1714,7 @@ pub(crate) fn empty_state_capability() -> WidgetCapability {
         canonical_name: "empty_state",
         aliases: &["empty_placeholder"],
         properties: EMPTY_STATE_PROPERTIES,
-        events: &[],
+        events: events_of!("empty_state"),
         commands: &["set_message", "set_description"],
     }
 }
@@ -1745,7 +1726,7 @@ pub(crate) fn color_history_capability() -> WidgetCapability {
         canonical_name: "color_history",
         aliases: &[],
         properties: COLOR_HISTORY_PROPERTIES,
-        events: &["color_selected"],
+        events: events_of!("color_history"),
         commands: &[],
     }
 }
@@ -1757,7 +1738,7 @@ pub(crate) fn color_well_capability() -> WidgetCapability {
         canonical_name: "color_well",
         aliases: &[],
         properties: COLOR_WELL_PROPERTIES,
-        events: &["clicked"],
+        events: events_of!("color_well"),
         commands: &["set_color"],
     }
 }
@@ -1769,7 +1750,7 @@ pub(crate) fn tag_input_capability() -> WidgetCapability {
         canonical_name: "tag_input",
         aliases: &["tag_editor", "chip_input"],
         properties: TAG_INPUT_PROPERTIES,
-        events: &["tags_changed"],
+        events: events_of!("tag_input"),
         commands: &["add_tag", "remove_tag", "set_placeholder"],
     }
 }
@@ -1793,7 +1774,7 @@ pub(crate) fn inplace_editor_capability() -> WidgetCapability {
         canonical_name: "inplace_editor",
         aliases: &["inline_editor"],
         properties: INPLACE_EDITOR_PROPERTIES,
-        events: &["edit_accepted", "edit_cancelled"],
+        events: events_of!("inplace_editor"),
         commands: &["set_text", "start_editing", "finish_editing"],
     }
 }
@@ -1829,7 +1810,7 @@ pub(crate) fn material_snackbar_capability() -> WidgetCapability {
         canonical_name: "material_snackbar",
         aliases: &[],
         properties: MATERIAL_SNACKBAR_PROPERTIES,
-        events: &["action_pressed", "dismissed"],
+        events: events_of!("material_snackbar"),
         commands: &["show", "dismiss", "set_message", "set_action_text"],
     }
 }
@@ -1841,7 +1822,7 @@ pub(crate) fn adaptive_scaffold_capability() -> WidgetCapability {
         canonical_name: "adaptive_scaffold",
         aliases: &["scaffold"],
         properties: ADAPTIVE_SCAFFOLD_PROPERTIES,
-        events: &[],
+        events: events_of!("adaptive_scaffold"),
         commands: &["set_title"],
     }
 }
@@ -1853,7 +1834,7 @@ pub(crate) fn wizard_dialog_capability() -> WidgetCapability {
         canonical_name: "wizard_dialog",
         aliases: &["wizard"],
         properties: WIZARD_DIALOG_PROPERTIES,
-        events: &["finished", "cancelled"],
+        events: events_of!("wizard_dialog"),
         // `set_current_step` was published against a read-only property, so its
         // `OutOfRange` answer pointed the caller at a write the schema refuses.
         // Navigation is fully covered by `next` / `back` / `finish`, which are the
@@ -1881,7 +1862,7 @@ pub(crate) fn cupertino_alert_dialog_capability() -> WidgetCapability {
         canonical_name: "cupertino_alert_dialog",
         aliases: &["ios_alert"],
         properties: CUPERTINO_ALERT_DIALOG_PROPERTIES,
-        events: &["confirmed", "cancelled"],
+        events: events_of!("cupertino_alert_dialog"),
         commands: &["set_title", "set_message"],
     }
 }
@@ -1893,7 +1874,7 @@ pub(crate) fn cupertino_slider_capability() -> WidgetCapability {
         canonical_name: "cupertino_slider",
         aliases: &["ios_slider"],
         properties: CUPERTINO_SLIDER_PROPERTIES,
-        events: &["value_changed"],
+        events: events_of!("cupertino_slider"),
         commands: &["set_value", "set_min", "set_max"],
     }
 }
@@ -1917,7 +1898,7 @@ pub(crate) fn segmented_button_capability() -> WidgetCapability {
         canonical_name: "segmented_button",
         aliases: &["segmented_btn"],
         properties: SEGMENTED_BUTTON_PROPERTIES,
-        events: &["selected_changed"],
+        events: events_of!("segmented_button"),
         commands: &["set_selected_index"],
     }
 }
@@ -1931,7 +1912,7 @@ pub(crate) fn navigation_stack_capability() -> WidgetCapability {
         properties: NAVIGATION_STACK_PROPERTIES,
         // `navigation_changed` carries a `NavigationEvent`; `page_changed` was
         // advertised but never emitted by this widget.
-        events: &["navigation_changed"],
+        events: events_of!("navigation_stack"),
         commands: &["push", "pop", "set_current_page"],
     }
 }
@@ -1969,7 +1950,7 @@ pub(crate) fn dropdown_menu_capability() -> WidgetCapability {
         properties: DROPDOWN_MENU_PROPERTIES,
         // The widget's signal is `item_selected`; `selected_changed` was never
         // an emitted name, so a subscriber wired by it never fired.
-        events: &["item_selected"],
+        events: events_of!("dropdown_menu"),
         commands: &["set_selected_index", "set_expanded"],
     }
 }
@@ -1981,7 +1962,7 @@ pub(crate) fn masked_edit_capability() -> WidgetCapability {
         canonical_name: "masked_edit",
         aliases: &["masked_input"],
         properties: MASKED_EDIT_PROPERTIES,
-        events: &["text_changed"],
+        events: events_of!("masked_edit"),
         commands: &["set_text", "set_mask"],
     }
 }
@@ -1994,7 +1975,7 @@ pub(crate) fn menu_button_capability() -> WidgetCapability {
         aliases: &["dropdown_button"],
         properties: MENU_BUTTON_PROPERTIES,
         // `item_triggered` is the real signal; `selected_changed` is not emitted.
-        events: &["item_triggered"],
+        events: events_of!("menu_button"),
         commands: &["set_text", "set_expanded"],
     }
 }
@@ -2023,7 +2004,7 @@ pub(crate) fn auto_complete_edit_capability() -> WidgetCapability {
         // (`changed`, `selected`) were accepted by `connect_event`, which validates against this
         // list and then subscribes on the hub — so a consumer got a live-looking subscription
         // that no code path could ever invoke.
-        events: &["text_changed", "suggestion_selected"],
+        events: events_of!("auto_complete_edit"),
         commands: &["set_text"],
     }
 }
@@ -2035,7 +2016,7 @@ pub(crate) fn multi_select_combo_box_capability() -> WidgetCapability {
         canonical_name: "multi_select_combo_box",
         aliases: &["multi_combo"],
         properties: MULTI_SELECT_COMBO_BOX_PROPERTIES,
-        events: &["selection_changed"],
+        events: events_of!("multi_select_combo_box"),
         commands: &["set_expanded"],
     }
 }
@@ -2047,7 +2028,7 @@ pub(crate) fn range_slider_capability() -> WidgetCapability {
         canonical_name: "range_slider",
         aliases: &["dual_slider"],
         properties: RANGE_SLIDER_PROPERTIES,
-        events: &["range_changed"],
+        events: events_of!("range_slider"),
         commands: &["set_lower", "set_upper", "set_range"],
     }
 }
@@ -2059,7 +2040,7 @@ pub(crate) fn floating_label_capability() -> WidgetCapability {
         canonical_name: "floating_label",
         aliases: &["floating_input"],
         properties: FLOATING_LABEL_PROPERTIES,
-        events: &["text_changed"],
+        events: events_of!("floating_label"),
         commands: &["set_text", "set_placeholder", "set_focused"],
     }
 }
@@ -2083,7 +2064,7 @@ pub(crate) fn cupertino_navigation_bar_capability() -> WidgetCapability {
         canonical_name: "cupertino_navigation_bar",
         aliases: &["cupertinonavbar", "ios_nav_bar"],
         properties: CUPERTINO_NAVIGATION_BAR_PROPERTIES,
-        events: &["back_pressed"],
+        events: events_of!("cupertino_navigation_bar"),
         commands: &["set_title", "set_large_title"],
     }
 }
@@ -2095,7 +2076,7 @@ pub(crate) fn cupertino_segmented_control_capability() -> WidgetCapability {
         canonical_name: "cupertino_segmented_control",
         aliases: &["cupertinosegmented", "ios_segmented"],
         properties: CUPERTINO_SEGMENTED_CONTROL_PROPERTIES,
-        events: &["value_changed"],
+        events: events_of!("cupertino_segmented_control"),
         commands: &["set_selected_index"],
     }
 }
@@ -2107,7 +2088,7 @@ pub(crate) fn refresh_control_capability() -> WidgetCapability {
         canonical_name: "refresh_control",
         aliases: &["pull_to_refresh"],
         properties: REFRESH_CONTROL_PROPERTIES,
-        events: &["refresh_triggered"],
+        events: events_of!("refresh_control"),
         commands: &["set_refreshing"],
     }
 }
@@ -2119,7 +2100,7 @@ pub(crate) fn modal_bottom_sheet_capability() -> WidgetCapability {
         canonical_name: "modal_bottom_sheet",
         aliases: &["modal_sheet"],
         properties: MODAL_BOTTOM_SHEET_PROPERTIES,
-        events: &["dismissed"],
+        events: events_of!("modal_bottom_sheet"),
         commands: &["set_visible", "show", "dismiss"],
     }
 }
@@ -2131,7 +2112,7 @@ pub(crate) fn find_replace_dialog_capability() -> WidgetCapability {
         canonical_name: "find_replace_dialog",
         aliases: &["find_replace"],
         properties: FIND_REPLACE_DIALOG_PROPERTIES,
-        events: &["find_next", "find_previous", "replace", "replace_all", "close"],
+        events: events_of!("find_replace_dialog"),
         commands: &["set_find_text", "set_replace_text", "set_match_case", "set_wrap_around"],
     }
 }
@@ -2143,7 +2124,7 @@ pub(crate) fn properties_panel_capability() -> WidgetCapability {
         canonical_name: "properties_panel",
         aliases: &["property_panel"],
         properties: PROPERTIES_PANEL_PROPERTIES,
-        events: &["property_changed"],
+        events: events_of!("properties_panel"),
         commands: &[],
     }
 }
@@ -2155,7 +2136,7 @@ pub(crate) fn cupertino_date_picker_capability() -> WidgetCapability {
         canonical_name: "cupertino_date_picker",
         aliases: &["ios_date_picker"],
         properties: CUPERTINO_DATE_PICKER_PROPERTIES,
-        events: &["date_changed"],
+        events: events_of!("cupertino_date_picker"),
         commands: &["set_selected_date"],
     }
 }
@@ -2167,7 +2148,7 @@ pub(crate) fn editable_combo_box_capability() -> WidgetCapability {
         canonical_name: "editable_combo_box",
         aliases: &["editable_combo"],
         properties: EDITABLE_COMBO_BOX_PROPERTIES,
-        events: &["text_changed", "item_selected"],
+        events: events_of!("editable_combo_box"),
         commands: &["set_text"],
     }
 }
@@ -2179,7 +2160,7 @@ pub(crate) fn date_range_picker_capability() -> WidgetCapability {
         canonical_name: "date_range_picker",
         aliases: &["range_picker"],
         properties: DATE_RANGE_PICKER_PROPERTIES,
-        events: &["range_changed"],
+        events: events_of!("date_range_picker"),
         commands: &["set_start_date", "set_end_date"],
     }
 }
@@ -2193,7 +2174,7 @@ pub(crate) fn rich_edit_capability() -> WidgetCapability {
         canonical_name: "rich_edit",
         aliases: &["rich_text_editor"],
         properties: RICH_EDIT_PROPERTIES,
-        events: &["text_changed"],
+        events: events_of!("rich_edit"),
         commands: &["set_text"],
     }
 }
@@ -2205,7 +2186,7 @@ pub(crate) fn carousel_capability() -> WidgetCapability {
         canonical_name: "carousel",
         aliases: &["carousel_widget", "swipe_view"],
         properties: CAROUSEL_PROPERTIES,
-        events: &["page_changed"],
+        events: events_of!("carousel"),
         commands: &[],
     }
 }
@@ -2217,7 +2198,7 @@ pub(crate) fn material_navigation_rail_capability() -> WidgetCapability {
         canonical_name: "material_navigation_rail",
         aliases: &["nav_rail", "navigation_rail"],
         properties: MATERIAL_NAVIGATION_RAIL_PROPERTIES,
-        events: &["selected_changed"],
+        events: events_of!("material_navigation_rail"),
         commands: &["set_selected_index"],
     }
 }
@@ -2229,7 +2210,7 @@ pub(crate) fn tab_view_capability() -> WidgetCapability {
         canonical_name: "tab_view",
         aliases: &["page_tab_view"],
         properties: TAB_VIEW_PROPERTIES,
-        events: &["tab_changed"],
+        events: events_of!("tab_view"),
         commands: &["set_selected_index"],
     }
 }
@@ -2241,7 +2222,7 @@ pub(crate) fn search_bar_capability() -> WidgetCapability {
         canonical_name: "search_bar",
         aliases: &["search_field"],
         properties: SEARCH_BAR_PROPERTIES,
-        events: &["text_changed", "search_submitted"],
+        events: events_of!("search_bar"),
         commands: &["set_text", "set_placeholder"],
     }
 }
@@ -2253,7 +2234,7 @@ pub(crate) fn shortcut_editor_capability() -> WidgetCapability {
         canonical_name: "shortcut_editor",
         aliases: &["keyboard_shortcut_editor"],
         properties: SHORTCUT_EDITOR_PROPERTIES,
-        events: &["shortcut_changed"],
+        events: events_of!("shortcut_editor"),
         commands: &["set_filter_text"],
     }
 }
@@ -2265,7 +2246,7 @@ pub(crate) fn swipe_to_dismiss_capability() -> WidgetCapability {
         canonical_name: "swipe_to_dismiss",
         aliases: &["swipe_dismiss"],
         properties: SWIPE_TO_DISMISS_PROPERTIES,
-        events: &["dismissed"],
+        events: events_of!("swipe_to_dismiss"),
         commands: &[],
     }
 }
@@ -2314,7 +2295,7 @@ pub(crate) fn candlestick_chart_capability() -> WidgetCapability {
         canonical_name: "candlestick_chart",
         aliases: &["candlestick", "kline", "k_line", "k_line_chart", "ohlc_chart"],
         properties: CANDLESTICK_CHART_PROPERTIES,
-        events: &["bar_clicked", "bar_hovered", "bar_unhovered"],
+        events: events_of!("candlestick_chart"),
         commands: &["set_series", "add_overlay"],
     }
 }
@@ -2326,7 +2307,7 @@ pub(crate) fn volume_chart_capability() -> WidgetCapability {
         canonical_name: "volume_chart",
         aliases: &["volume", "volume_histogram", "volume_bars"],
         properties: VOLUME_CHART_PROPERTIES,
-        events: &["bar_clicked", "bar_hovered"],
+        events: events_of!("volume_chart"),
         // `add_overlay` was advertised but only `CandlestickChart` implements
         // it; the other finance views have no overlay API, so naming it here
         // promised an action that could not be obtained (principle #18).
@@ -2341,7 +2322,7 @@ pub(crate) fn depth_chart_capability() -> WidgetCapability {
         canonical_name: "depth_chart",
         aliases: &["market_depth", "depth_graph", "liquidity_chart"],
         properties: DEPTH_CHART_PROPERTIES,
-        events: &["level_hovered"],
+        events: events_of!("depth_chart"),
         // `add_overlay` was advertised but only `CandlestickChart` implements
         // it; the other finance views have no overlay API, so naming it here
         // promised an action that could not be obtained (principle #18).
@@ -2356,7 +2337,7 @@ pub(crate) fn order_book_capability() -> WidgetCapability {
         canonical_name: "order_book",
         aliases: &["book_ladder", "market_depth_ladder"],
         properties: ORDER_BOOK_PROPERTIES,
-        events: &["level_clicked", "level_hovered", "level_unhovered"],
+        events: events_of!("order_book"),
         // `add_overlay` was advertised but only `CandlestickChart` implements
         // it; the other finance views have no overlay API, so naming it here
         // promised an action that could not be obtained (principle #18).
@@ -2371,7 +2352,7 @@ pub(crate) fn quote_board_capability() -> WidgetCapability {
         canonical_name: "quote_board",
         aliases: &["quotes", "watchlist", "quote_table", "market_watch"],
         properties: QUOTE_BOARD_PROPERTIES,
-        events: &["quote_clicked", "quote_hovered", "selection_changed"],
+        events: events_of!("quote_board"),
         // `add_overlay` was advertised but only `CandlestickChart` implements
         // it; the other finance views have no overlay API, so naming it here
         // promised an action that could not be obtained (principle #18).
@@ -2386,7 +2367,7 @@ pub(crate) fn indicator_chart_capability() -> WidgetCapability {
         canonical_name: "indicator_chart",
         aliases: &["indicator", "technical_indicator", "oscillator", "macd_chart"],
         properties: INDICATOR_CHART_PROPERTIES,
-        events: &["bar_clicked", "bar_hovered"],
+        events: events_of!("indicator_chart"),
         // `add_overlay` was advertised but only `CandlestickChart` implements
         // it; the other finance views have no overlay API, so naming it here
         // promised an action that could not be obtained (principle #18).
@@ -2416,7 +2397,7 @@ pub(crate) fn animated_image_capability() -> WidgetCapability {
         // published name was `finished`, which nothing ever fired. See
         // `auto_complete_edit` for why a name that does not match its signal is a live-looking
         // subscription rather than a visible error.
-        events: &["animation_finished", "frame_changed"],
+        events: events_of!("animated_image"),
         commands: &["set_playing"],
     }
 }
@@ -2428,7 +2409,7 @@ pub(crate) fn hero_animation_capability() -> WidgetCapability {
         canonical_name: "hero_animation",
         aliases: &["hero"],
         properties: HERO_ANIMATION_PROPERTIES,
-        events: &["animation_completed"],
+        events: events_of!("hero_animation"),
         commands: &["set_animation_progress"],
     }
 }
@@ -2440,7 +2421,7 @@ pub(crate) fn bezier_curve_editor_capability() -> WidgetCapability {
         canonical_name: "bezier_curve_editor",
         aliases: &["curve_editor"],
         properties: BEZIER_CURVE_EDITOR_PROPERTIES,
-        events: &["curve_changed"],
+        events: events_of!("bezier_curve_editor"),
         commands: &["set_snap_to_grid"],
     }
 }
@@ -2453,7 +2434,7 @@ pub(crate) fn lottie_widget_capability() -> WidgetCapability {
         aliases: &["lottie"],
         properties: LOTTIE_WIDGET_PROPERTIES,
         // `animation_finished` is the emitted signal; the published name was `finished`.
-        events: &["animation_finished"],
+        events: events_of!("lottie_widget"),
         commands: &["set_playing"],
     }
 }
@@ -2466,7 +2447,7 @@ pub(crate) fn rive_widget_capability() -> WidgetCapability {
         aliases: &["rive"],
         properties: RIVE_WIDGET_PROPERTIES,
         // `animation_finished` is the emitted signal; the published name was `finished`.
-        events: &["animation_finished"],
+        events: events_of!("rive_widget"),
         commands: &["set_is_playing"],
     }
 }
@@ -2480,7 +2461,7 @@ pub(crate) fn video_player_capability() -> WidgetCapability {
         properties: VIDEO_PLAYER_PROPERTIES,
         // The player publishes the four signals it actually emits; `finished` matched none of
         // them.
-        events: &["playback_started", "playback_paused", "playback_ended", "time_updated"],
+        events: events_of!("video_player"),
         commands: &["set_is_playing", "set_volume"],
     }
 }
@@ -2492,7 +2473,7 @@ pub(crate) fn image_gallery_capability() -> WidgetCapability {
         canonical_name: "image_gallery",
         aliases: &["gallery"],
         properties: IMAGE_GALLERY_PROPERTIES,
-        events: &["image_changed"],
+        events: events_of!("image_gallery"),
         commands: &["set_current_index"],
     }
 }
@@ -2528,7 +2509,7 @@ pub(crate) fn barcode_scanner_capability() -> WidgetCapability {
         canonical_name: "barcode_scanner",
         aliases: &["scanner"],
         properties: BARCODE_SCANNER_PROPERTIES,
-        events: &["barcode_detected"],
+        events: events_of!("barcode_scanner"),
         commands: &["set_is_scanning"],
     }
 }
@@ -2540,7 +2521,7 @@ pub(crate) fn tool_button_capability() -> WidgetCapability {
         canonical_name: "tool_button",
         aliases: &["toolbar_button"],
         properties: TOOL_BUTTON_PROPERTIES,
-        events: &["clicked", "toggled"],
+        events: events_of!("tool_button"),
         commands: &["set_text", "set_checked"],
     }
 }
@@ -2552,7 +2533,7 @@ pub(crate) fn status_bar_capability() -> WidgetCapability {
         canonical_name: "status_bar",
         aliases: &["status"],
         properties: STATUS_BAR_PROPERTIES,
-        events: &["message_changed"],
+        events: events_of!("status_bar"),
         commands: &["set_message"],
     }
 }
@@ -2565,7 +2546,7 @@ pub(crate) fn property_grid_capability() -> WidgetCapability {
         canonical_name: "property_grid",
         aliases: &["inspector"],
         properties: PROPERTY_GRID_PROPERTIES,
-        events: &["selected"],
+        events: events_of!("property_grid"),
         commands: &["add_property", "set_value", "clear", "set_selected_index"],
     }
 }

@@ -13,6 +13,7 @@ use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::numeric::{ordered_clamp_f64, ordered_clamp_i64};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Input dialog input mode.
 ///
@@ -156,6 +157,15 @@ impl InputDialog {
     /// [`InputDialog::int_value`] to see what was actually taken. `step` is stored
     /// but nothing in this widget applies increments, so it does not affect the
     /// value.
+    ///
+    /// # Crossed bounds
+    ///
+    /// The `min`/`max` arguments are *inputs*, so `get_int(.., 500, 100, 0, ..)`
+    /// is a call a caller can make, and `i64::clamp` **panics** on `min > max`.
+    /// The two bounds are therefore ordered once here and the ordered pair is both
+    /// stored and clamped against, so a descending range yields the same answer as
+    /// its ascending twin instead of taking the process down. `value` is `i64`, so
+    /// `i64::MIN`/`i64::MAX` remain usable as open bounds.
     pub fn get_int(
         geometry: Rect,
         title: impl Into<String>,
@@ -168,9 +178,9 @@ impl InputDialog {
         let mut d = Self::new(geometry);
         d.title = title.into();
         d.label_text = label.into();
-        d.int_value = value.clamp(min, max);
-        d.int_min = min;
-        d.int_max = max;
+        d.int_min = min.min(max);
+        d.int_max = min.max(max);
+        d.int_value = value.clamp(d.int_min, d.int_max);
         d.int_step = step;
         d.mode = InputMode::Integer;
         d
@@ -275,7 +285,7 @@ impl InputDialog {
     /// request that was clamped back to what was already there is not reported as
     /// a change.
     pub fn set_int_value(&mut self, v: i64) {
-        let clamped = v.clamp(self.int_min, self.int_max);
+        let clamped = ordered_clamp_i64(v, self.int_min, self.int_max);
         if clamped == self.int_value {
             return;
         }
@@ -295,7 +305,7 @@ impl InputDialog {
         if v.is_nan() {
             return;
         }
-        let clamped = v.clamp(self.double_min, self.double_max);
+        let clamped = ordered_clamp_f64(v, self.double_min, self.double_max);
         if clamped == self.double_value {
             return;
         }
@@ -547,6 +557,47 @@ mod tests {
         let dialog = InputDialog::get_int(Rect::new(0, 0, 320, 180), "T", "L", 500, 0, 100, 5);
         assert_eq!(dialog.mode(), InputMode::Integer);
         assert_eq!(dialog.int_value(), 100);
+    }
+
+    /// Regression: `min`/`max` are `get_int` *parameters*, so a caller can cross
+    /// them. `i64::clamp` panics on `min > max`, and it did so here during
+    /// construction — before the dialog existed to be inspected. The pair is now
+    /// ordered as it is stored, so a descending range behaves like its ascending
+    /// twin.
+    #[test]
+    fn get_int_with_crossed_bounds_does_not_panic() {
+        let dialog = InputDialog::get_int(Rect::new(0, 0, 320, 180), "T", "L", 500, 100, 0, 5);
+        assert_eq!(dialog.int_value(), 100, "500 clamps into the ordered span [0, 100]");
+        assert_eq!(dialog.mode(), InputMode::Integer);
+
+        // A value below both bounds clamps up, in either written order.
+        let dialog = InputDialog::get_int(Rect::new(0, 0, 320, 180), "T", "L", -50, 100, 0, 5);
+        assert_eq!(dialog.int_value(), 0);
+    }
+
+    /// The same defect through the mutator, which clamps against whatever the
+    /// dialog is currently holding.
+    #[test]
+    fn set_int_value_survives_a_collapsed_range() {
+        let mut dialog = InputDialog::get_int(Rect::new(0, 0, 320, 180), "T", "L", 0, 0, 0, 1);
+        dialog.set_int_value(42);
+        assert_eq!(dialog.int_value(), 0, "the collapsed span [0, 0] pulls the value to 0");
+
+        let mut dialog = InputDialog::get_int(Rect::new(0, 0, 320, 180), "T", "L", 0, 10, 10, 1);
+        dialog.set_int_value(-5);
+        assert_eq!(dialog.int_value(), 10, "the collapsed span [10, 10] pulls the value to 10");
+    }
+
+    /// `set_double_value` rejects `NaN` outright rather than clamping it. Keep
+    /// that pinned: `NaN` compares false against every bound, so "clamping" it
+    /// would store a value the control cannot place inside its own range.
+    #[test]
+    fn set_double_value_rejects_nan_and_clamps_otherwise() {
+        let mut dialog = InputDialog::new(Rect::new(0, 0, 320, 180));
+        dialog.set_double_value(2.5);
+        assert_eq!(dialog.double_value(), 2.5);
+        dialog.set_double_value(f64::NAN);
+        assert_eq!(dialog.double_value(), 2.5, "NaN must leave the stored value untouched");
     }
 
     #[test]

@@ -720,7 +720,7 @@ fn capability_manifest_exports_defaults_and_metadata() {
     // and those spellings must still resolve.
     assert!(factory.capability("table_widget").is_some());
     assert!(factory.capability("tablewidget").is_some());
-    assert!(manifest.events.contains(&"selection_changed"));
+    assert!(manifest.events.iter().any(|event| event.name == "selection_changed"));
     assert!(manifest.commands.contains(&"clear_selection"));
 
     let has_model = manifest
@@ -1120,8 +1120,5 @@ fn declared_defaults_are_published_properties() {
             }
         }
     }
-    assert!(
-        violations.is_empty(),
-        "defaults declared for unpublished properties: {violations:?}"
-    );
+    assert!(violations.is_empty(), "defaults declared for unpublished properties: {violations:?}");
 }

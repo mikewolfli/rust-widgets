@@ -194,6 +194,32 @@ def collect_struct_emits() -> dict[str, set[str]]:
     return emits
 
 
+def collect_struct_declares() -> dict[str, set[str]]:
+    """Type name -> the `pub` signal fields / accessors *it* declares.
+
+    The reverse-direction counterpart of `collect_struct_emits`: a name this type both declares and
+    emits is a public event of that control, so the capability table has to publish it.
+    """
+    declares: dict[str, set[str]] = {}
+    for path in sorted(SRC.rglob("*.rs")):
+        production = strip_test_modules(path.read_text())
+        for match in re.finditer(r"\npub struct (\w+)[^{]*\{", production):
+            struct = match.group(1)
+            depth = 1
+            index = match.end()
+            while index < len(production) and depth > 0:
+                char = production[index]
+                if char == "{":
+                    depth += 1
+                elif char == "}":
+                    depth -= 1
+                index += 1
+            body = production[match.end() : index]
+            for field in re.finditer(r"pub\s+(\w+)\s*:\s*[^;=\n]*Signal", body):
+                declares.setdefault(struct, set()).add(field.group(1))
+    return declares
+
+
 def main() -> int:
     if not PROPERTIES.exists():
         print(f"❌ {PROPERTIES} not found (run from the repo root)")
@@ -202,6 +228,7 @@ def main() -> int:
     source = PROPERTIES.read_text()
     signals = collect_signals()
     struct_emits = collect_struct_emits()
+    struct_declares = collect_struct_declares()
     aliases = collect_type_aliases()
 
     def resolve_owner(capability: str) -> tuple[str, bool]:
@@ -220,6 +247,7 @@ def main() -> int:
     unresolved: list[tuple[str, str]] = []
     unemitted: list[tuple[str, str, str, str]] = []
     unattributable: list[tuple[str, str, str]] = []
+    unpublished: list[tuple[str, str, str]] = []
     pairs = 0
     distinct: set[str] = set()
 
@@ -265,6 +293,41 @@ def main() -> int:
             if not (resolved & owned):
                 unemitted.append((capability, event, ", ".join(sorted(resolved)), struct))
 
+    # ── Reverse direction ─────────────────────────────────────────────────────
+    #
+    # The checks above ask whether every *published* name is backed by an emit. Nothing asked the
+    # mirror question: is every name a control *emits* actually published? A signal that is
+    # declared `pub`, emitted from production code, and documented — but absent from the table —
+    # is rejected by `connect_event` with `UnknownCommand`, so the control's own documented event
+    # cannot be subscribed to by name at all. 24 such names were found across 13 capabilities when
+    # this direction was added; `Slider::slider_pressed`/`slider_released`, `ToolButton::triggered`,
+    # `ChartWidget::data_point_unhovered` and `FileDialog::current_changed` are all emitted and
+    # tested, so each was reachable by a Rust field accessor and by nothing else.
+    #
+    # Only names the struct **both declares and emits** count, which is what keeps framework noise
+    # out: `BaseWidget`'s `hover`/`mouse_down`/`focus_gained` are declared there but emitted by
+    # `BaseWidget` rather than by the control, so no capability owns them.
+    for match in CAPABILITY_RE.finditer(source):
+        body = match.group(1)
+        name_match = NAME_RE.search(body)
+        events_match = EVENTS_RE.search(body)
+        if not name_match or not events_match:
+            continue
+        capability = name_match.group(1)
+        published = set(QUOTED_RE.findall(events_match.group(1)))
+        struct, _ = resolve_owner(capability)
+        if capability in SHARED_PRODUCERS:
+            struct = SHARED_PRODUCERS[capability]
+        declared = struct_declares.get(struct, set())
+        emitted = struct_emits.get(struct, set())
+        for signal in sorted(declared & emitted):
+            base = signal[: -len("_signal")] if signal.endswith("_signal") else signal
+            if signal in published or base in published:
+                continue
+            if signal in DATA_SOURCE_SIGNALS:
+                continue
+            unpublished.append((capability, signal, struct))
+
     failures = 0
     print(f"Published events: {pairs} pairs across {len(distinct)} distinct names")
     print(f"Public signal names discovered: {len(signals)}")
@@ -295,6 +358,16 @@ def main() -> int:
         print()
         print("   Add the capability to PRODUCER_ELSEWHERE with the type that emits its events,")
         print("   or fix the `canonical_name` so the convention resolves.")
+
+    if unpublished:
+        failures += 1
+        print(f"❌ {len(unpublished)} emitted signal(s) are NOT published by their capability:")
+        for capability, signal, struct in sorted(unpublished):
+            print(f"   {capability}: {signal}  (struct `{struct}`)")
+        print()
+        print("   The control emits and documents it, but `connect_event(name, event)` answers")
+        print("   `UnknownCommand`, so it can only be reached through the Rust field accessor.")
+        print("   Add the name to the capability's `events:` list, or mark the signal internal.")
 
     if failures:
         return 1

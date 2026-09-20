@@ -455,6 +455,25 @@ pub mod properties;
 #[cfg(full_widgets)]
 pub(crate) use properties::*;
 
+/// The designer's JSON view of a capability: export, re-load, and the type vocabulary the two
+/// sides share.
+///
+/// The module is compiled in every profile because the vocabulary (`value_kind_token`,
+/// `shape_token` and their inverses) belongs to the property contract, which exists everywhere.
+/// The three entry points that walk registered controls are `full_widgets`-gated individually —
+/// there is no capability table to walk in a stripped profile — so the re-export here is split the
+/// same way rather than gating the module and losing the vocabulary with it.
+pub mod designer_manifest;
+#[cfg(full_widgets)]
+pub use designer_manifest::{
+    all_capability_manifests_json, capability_manifest_json, designer_manifest,
+};
+pub use designer_manifest::{
+    events_of_manifest, manifest_to_json, shape_from_token, shape_token, value_kind_from_token,
+    value_kind_token, DesignerEvent, DesignerManifest, DesignerProperty, ManifestExportError,
+    ManifestParseError,
+};
+
 #[cfg(widgets_unstripped)]
 pub mod access;
 
@@ -933,7 +952,8 @@ impl WidgetFactory {
         // Normalised, so `"value-changed"` and `"value_changed"` reach the same event
         // — the same tolerance `invoke_command` and `read_property` provide.
         let normalized = normalize_key(event_name);
-        let published = capability.events.iter().any(|name| normalize_key(name) == normalized);
+        let published =
+            capability.events.iter().any(|schema| normalize_key(schema.name) == normalized);
         if !published {
             return Err(CapabilityAccessError::UnknownCommand);
         }
@@ -1212,12 +1232,25 @@ impl WidgetFactory {
             properties.push(CapabilityPropertyManifest { schema: *property, default_value });
         }
 
+        // Owned copies, because a manifest outlives the `&'static` capability table it came from.
+        // The name is copied as well as the payload: a designer holds a manifest, and a borrowed
+        // name would tie its lifetime to a table it may outlive.
+        let events = capability
+            .events
+            .iter()
+            .map(|schema| EventManifest {
+                name: schema.name.into(),
+                payload: schema.payload,
+                shape: schema.shape,
+            })
+            .collect();
+
         Ok(WidgetCapabilityManifest {
             kind: capability.kind,
             canonical_name: capability.canonical_name,
             aliases: capability.aliases.to_vec(),
             properties,
-            events: capability.events.to_vec(),
+            events,
             commands: capability.commands.to_vec(),
         })
     }

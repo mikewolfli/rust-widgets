@@ -233,6 +233,119 @@ impl PropertySchema {
     }
 }
 
+/// How an event's payload is *shaped*, separately from what it holds.
+///
+/// # Why this is a second field rather than more [`PropertyValueKind`] variants
+///
+/// A real signal payload is not always one scalar. `PaneLayoutChanged` carries
+/// `Vec<f32>`, `TabMoved` carries `(usize, usize)`, `RichEdit::selection_changed`
+/// carries `Option<(usize, usize)>`. Folding those into the kind enum would either
+/// multiply it (`Tuple2UInt`, `Tuple3UInt`, `ListFloat`, …) or force a false claim:
+/// describing a pair of integers as `UInt` loses the second component, and describing
+/// it as `String` loses the fact that both are numbers.
+///
+/// Two fields keep the two questions separate, and each is answerable exactly:
+///
+/// * `payload_kind` — *what* the value is; the counterpart of
+///   [`PropertySchema::value_kind`], which is what makes a wire to a property
+///   checkable, and what the JSON round-trip asserts on.
+/// * `payload_shape` — *how many* and *in what arrangement*; what a designer needs
+///   to render "value: number" versus "values: 2 numbers".
+///
+/// # Why a `Mixed` row still declares a kind
+///
+/// A payload such as `(String, u32, String)` has no single kind. It declares
+/// [`PropertyValueKind::String`] plus [`EventPayloadShape::Mixed`]: the kind is the
+/// type the value is *carried* as across a boundary, and the shape is the honest
+/// statement that the real payload is richer. Declaring a scalar shape for it would
+/// claim the value is safely usable as that scalar, which is exactly the kind of
+/// overstatement that makes a designer offer a wire which cannot exist.
+///
+/// [`PropertyValueKind`]: PropertyValueKind
+/// [`PropertySchema::value_kind`]: PropertySchema::value_kind
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EventPayloadShape {
+    /// Exactly one value of the declared kind.
+    Scalar,
+    /// Zero or one value of the declared kind (`Option<T>`); `CapabilityValue::Null`
+    /// is the absent case.
+    OptionalScalar,
+    /// A variable-length list of the declared kind (`Vec<T>`); empty is a legal value,
+    /// so it is distinct from [`Self::OptionalScalar`].
+    ListScalar,
+    /// Two values of the declared kind: `(T, T)`.
+    Tuple2,
+    /// Three values of the declared kind: `(T, T, T)`.
+    Tuple3,
+    /// Four values of the declared kind: `(T, T, T, T)`.
+    Tuple4,
+    /// An optional pair of the declared kind: `Option<(T, T)>` — a selection that may
+    /// cover more than one position, or be absent.
+    OptionalTuple2,
+    /// More than one kind in one payload (`(String, u32, String)`). The declared kind is
+    /// how the whole value travels; there is no arity to promise, because the parts are
+    /// not of one type.
+    Mixed,
+}
+
+/// Metadata for one published event, the counterpart of [`PropertySchema`].
+///
+/// # Why the event side needed this
+///
+/// The property side of a capability carries a type ([`PropertyValueKind`]) and a runtime
+/// value ([`CapabilityValue`]); the event side used to carry a bare name. A name says
+/// nothing a consumer can act on: a designer cannot render the payload type, a wire cannot
+/// be type-checked, and JSON cannot express a mapping. Every one of those is a *first*
+/// requirement of the designer this library is being prepared for, not a last one.
+///
+/// # Compatibility
+///
+/// [`WidgetCapability::events`] changed from `&'static [&'static str]` to
+/// `&'static [EventSchema]`. `connect_event` resolves the same names as before — a name
+/// published then is published now, and a name refused then is refused now — so this is a
+/// widening of the declaration, not a change of behaviour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EventSchema {
+    /// The event's name, spelled exactly as `connect_event` accepts it.
+    pub name: &'static str,
+    /// The declared type of the payload, or `None` for an event that carries no value.
+    ///
+    /// `None` is the honest answer for `clicked`, `dismissed` and the rest of the
+    /// payload-free majority; it is also the answer for a payload that is the unit type,
+    /// because "an event that happened" and "an event that happened and reported `()`"
+    /// are the same fact and two representations of it would be indistinguishable.
+    pub payload: Option<PropertyValueKind>,
+    /// The arrangement of the payload, or `None` when there is no payload.
+    pub shape: Option<EventPayloadShape>,
+}
+
+impl EventSchema {
+    /// A schema for an event that carries no value.
+    pub const fn unit(name: &'static str) -> Self {
+        Self { name, payload: None, shape: None }
+    }
+
+    /// A schema for an event carrying exactly one value of `kind`.
+    pub const fn scalar(name: &'static str, kind: PropertyValueKind) -> Self {
+        Self { name, payload: Some(kind), shape: Some(EventPayloadShape::Scalar) }
+    }
+
+    /// A schema for an event whose payload is a list of `kind`.
+    pub const fn list(name: &'static str, kind: PropertyValueKind) -> Self {
+        Self { name, payload: Some(kind), shape: Some(EventPayloadShape::ListScalar) }
+    }
+
+    /// A schema for an event carrying a pair of `kind`.
+    pub const fn pair(name: &'static str, kind: PropertyValueKind) -> Self {
+        Self { name, payload: Some(kind), shape: Some(EventPayloadShape::Tuple2) }
+    }
+
+    /// Whether this event carries a value a subscriber can read.
+    pub const fn has_payload(&self) -> bool {
+        self.payload.is_some()
+    }
+}
+
 /// Capability metadata for a widget kind.
 #[derive(Debug, Clone)]
 pub struct WidgetCapability {
@@ -248,8 +361,15 @@ pub struct WidgetCapability {
     /// Every property this kind publishes, for discovery and for validating a
     /// name before using it.
     pub properties: &'static [PropertySchema],
-    /// Names of the events the kind can emit, for wiring handlers by name.
-    pub events: &'static [&'static str],
+    /// Every event the kind publishes, with its payload type, for discovery and for
+    /// validating a name before subscribing to it.
+    ///
+    /// The names are the ones [`WidgetFactory::connect_event`] accepts; the payload is
+    /// derived from the signal the name resolves to in the control's own source, and kept
+    /// honest by `tools/check_event_payload_types.py`.
+    ///
+    /// [`WidgetFactory::connect_event`]: crate::widget::capability::WidgetFactory::connect_event
+    pub events: &'static [EventSchema],
     /// Names of the commands the kind accepts.
     pub commands: &'static [&'static str],
 }
@@ -263,6 +383,22 @@ pub struct CapabilityPropertyManifest {
     /// write. Captured so a consumer can tell an untouched property from one set
     /// to its default explicitly.
     pub default_value: CapabilityValue,
+}
+
+/// One event entry in an exported capability manifest.
+///
+/// The owned counterpart of [`EventSchema`]. It exists for the same reason
+/// [`CapabilityPropertyManifest`] does: a manifest outlives the `&'static` capability table it
+/// came from, so every borrowed field is copied out — including the name, which a designer may
+/// hold long after the table is gone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventManifest {
+    /// The published event name, as `connect_event` accepts it.
+    pub name: String,
+    /// The declared payload type, or `None` when the event carries no value.
+    pub payload: Option<PropertyValueKind>,
+    /// The arrangement of the payload.
+    pub shape: Option<EventPayloadShape>,
 }
 
 /// Exportable snapshot for one widget capability.
@@ -280,8 +416,8 @@ pub struct WidgetCapabilityManifest {
     pub aliases: Vec<&'static str>,
     /// Every published property with its default value.
     pub properties: Vec<CapabilityPropertyManifest>,
-    /// Names of the events the kind can emit.
-    pub events: Vec<&'static str>,
+    /// Every published event with its payload type.
+    pub events: Vec<EventManifest>,
     /// Names of the commands the kind accepts.
     pub commands: Vec<&'static str>,
 }
