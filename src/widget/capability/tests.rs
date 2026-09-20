@@ -1047,3 +1047,81 @@ fn derived_names_reject_writes_on_newly_registered_controls() {
         );
     }
 }
+
+/// Every schema default must agree with the control the schema describes.
+///
+/// # Why this is a test and not a comment
+///
+/// A schema default is load-bearing, not documentation: `view::apply`'s
+/// `resolve_null_reset` substitutes it for every `CapabilityValue::Null` patch, so a
+/// wrong default is a wrong *value* reaching a live control — dropping a `visible`
+/// binding in a view manifest would hide a control the manifest never mentioned.
+///
+/// The `visible` entry in `access.rs` had drifted from four controls at once. It
+/// excluded `Tooltip`/`Popover`/`StatusBar` on the theory that those kinds read bare
+/// `visible` as their own popup state, but all three route the name to the base flag
+/// and publish popup state under a *different* name (`shown`, `message`). The result
+/// was a schema saying `false` for controls whose live answer is `true`.
+///
+/// This asserts the invariant directly for the property that broke, and asserts the
+/// weaker "no default is reported for a property the control does not publish"
+/// invariant across the whole registry.
+#[test]
+fn declared_visible_default_matches_the_constructed_control() {
+    let factory = WidgetFactory::new_with_defaults();
+    let rect = Rect::new(0, 0, 200, 60);
+
+    let mut checked = 0usize;
+    for capability in factory.capabilities() {
+        let name = capability.canonical_name;
+        let Ok(declared) = factory.default_property_value(name, "visible") else {
+            continue;
+        };
+        let Some(widget) = factory.create(name, rect, "") else {
+            continue;
+        };
+        let Ok(live) = factory.read_property(widget.as_ref(), "visible") else {
+            continue;
+        };
+        assert_eq!(
+            declared, live,
+            "`{name}` declares `visible` default {declared:?} but a freshly \
+             constructed control reports {live:?}"
+        );
+        checked += 1;
+    }
+    assert!(checked >= 20, "expected the `visible` default to cover many kinds, got {checked}");
+}
+
+/// A schema default must never name a property the control does not publish.
+///
+/// `default_property_value` resolves through `capability().kind` to the shared
+/// per-kind tables, so a kind whose row is shared by two controls (`table` and
+/// `virtual_list` both declare `WidgetKind::Table`) can hand one control the other's
+/// defaults. This checks the property *name* is one the capability advertises, which
+/// is the part that is checkable without constructing every kind.
+#[test]
+fn declared_defaults_are_published_properties() {
+    let factory = WidgetFactory::new_with_defaults();
+
+    let mut violations = Vec::new();
+    for capability in factory.capabilities() {
+        let name = capability.canonical_name;
+        for property in capability.properties {
+            let Ok(value) = factory.default_property_value(name, property.name) else {
+                continue;
+            };
+            let published = capability
+                .properties
+                .iter()
+                .any(|schema| normalize_key(schema.name) == normalize_key(property.name));
+            if !published {
+                violations.push(format!("{name}::{} -> {value:?}", property.name));
+            }
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "defaults declared for unpublished properties: {violations:?}"
+    );
+}

@@ -362,30 +362,20 @@ impl ListBox {
     }
     /// Selects item at a pixel position (maps screen coords to item index).
     fn select_at_pos(&mut self, pos: Point) {
-        let rect = self.geometry();
-        if rect.contains(pos) {
-            let rel_index = ((pos.y - rect.y) as f32 / self.item_height) as usize;
-            let item_index = self.scroll_offset + rel_index;
-            if item_index < self.items.len() {
-                // `Event::MousePress` carries no modifier mask, so a backend that wants
-                // ctrl-toggle / shift-extend folds the modifiers into the event it
-                // translates and calls `select_with_modifiers` instead of relying on
-                // this path. What a press *can* express is reaching here.
-                self.select(item_index);
-                self.base.clicked.emit();
-            }
+        if let Some(item_index) = self.item_index_at_y(pos) {
+            // `Event::MousePress` carries no modifier mask, so a backend that wants
+            // ctrl-toggle / shift-extend folds the modifiers into the event it
+            // translates and calls `select_with_modifiers` instead of relying on
+            // this path. What a press *can* express is reaching here.
+            self.select(item_index);
+            self.base.clicked.emit();
         }
     }
     /// Activates item at a pixel position (select + activate signal).
     fn activate_at_pos(&mut self, pos: Point) {
-        let rect = self.geometry();
-        if rect.contains(pos) {
-            let rel_index = ((pos.y - rect.y) as f32 / self.item_height) as usize;
-            let item_index = self.scroll_offset + rel_index;
-            if item_index < self.items.len() {
-                self.select(item_index);
-                self.item_activated.emit(item_index);
-            }
+        if let Some(item_index) = self.item_index_at_y(pos) {
+            self.select(item_index);
+            self.item_activated.emit(item_index);
         }
     }
     /// Sets current row.
@@ -428,6 +418,35 @@ impl ListBox {
         let end = self.items.len().min(start + visible_items);
         (start, end)
     }
+    /// Returns the absolute index of the item drawn at widget-relative `y`.
+    ///
+    /// `draw` maps absolute item `i` to `y = i * item_height` (see
+    /// [`visible_range`](Self::visible_range), which yields absolute indices and is
+    /// what `draw` iterates). Scrolling therefore pushes items off the **top** of the
+    /// widget rather than shifting the remainder down, so the row index derived from a
+    /// click *is* the absolute item index and `scroll_offset` must not be added again.
+    ///
+    /// It used to be: with `scroll_offset = 3`, a click on the row painted as item 3
+    /// selected item 6 — every click off by exactly `scroll_offset` rows.
+    fn item_index_at_y(&self, pos: Point) -> Option<usize> {
+        let rect = self.geometry();
+        if !rect.contains(pos) || self.item_height <= 0.0 {
+            return None;
+        }
+        let row = ((pos.y - rect.y) as f32 / self.item_height).floor();
+        // A click in the widget's bottom padding, or above its top edge, addresses no
+        // row. Without the lower-bound check a negative offset casts to a huge index.
+        if !(0.0..).contains(&row) {
+            return None;
+        }
+        let index = row as usize;
+        if index < self.items.len() {
+            Some(index)
+        } else {
+            None
+        }
+    }
+
     /// Scrolls the list by the given delta (positive = down, negative = up).
     pub fn scroll(&mut self, delta: i32) {
         if self.items.is_empty() {
@@ -787,6 +806,44 @@ mod tests {
         lb.select(1);
         assert!(lb.is_selected(1));
         assert_eq!(lb.selected_indices().len(), 1);
+    }
+
+    /// A click must select the row `draw` paints under the pointer.
+    ///
+    /// `draw` maps absolute item `i` to `y = i * item_height`, so scrolling pushes
+    /// items off the top and the row index derived from a click is already the absolute
+    /// item index. The hit-test added `scroll_offset` a second time, so every click on a
+    /// scrolled list selected an item `scroll_offset` rows away from the one visible.
+    #[test]
+    fn listbox_click_selects_the_row_that_is_drawn_there() {
+        let geometry = Rect::new(0, 0, 200, 100);
+        let mut lb = ListBox::new(geometry);
+        for i in 0..20 {
+            lb.add_item(format!("item {i}"));
+        }
+        lb.set_item_height(20.0);
+        lb.scroll(3);
+
+        // `draw` paints item 3 at y = 60 and item 6 at y = 120 (below the widget).
+        let click = |y: i32| {
+            let mut list = ListBox::new(geometry);
+            for i in 0..20 {
+                list.add_item(format!("item {i}"));
+            }
+            list.set_item_height(20.0);
+            list.scroll(3);
+            list.handle_event(&Event::MousePress { pos: Point::new(50, y), button: 1 });
+            list.current_row()
+        };
+
+        assert_eq!(click(10), Some(0), "y=10 is row 0, painted as item 0");
+        assert_eq!(click(30), Some(1), "y=30 is row 1, painted as item 1");
+        assert_eq!(click(60), Some(3), "y=60 is row 3, painted as item 3");
+        // Below the last drawn row: no selection rather than a wrapped index.
+        assert_eq!(click(100), None);
+        assert_eq!(click(120), None);
+        // Above the widget's own top edge must not wrap through `as usize`.
+        assert_eq!(click(-5), None);
     }
 
     #[test]

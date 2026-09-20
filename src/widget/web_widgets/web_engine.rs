@@ -734,12 +734,18 @@ impl EventHandler for WebEngineView {
             return;
         }
         match event {
-            Event::MousePress { pos: _, button }
-                // Handle mouse click — simulate link navigation
-                if *button == 1 => {
-                    let new_url = format!("https://example.com/{}", 12345);
-                    self.set_url(new_url);
+            // A press on the view is reported through the shared `clicked` signal; the
+            // host decides what it navigates to. Two defects were stacked here: the
+            // position was discarded (so any click anywhere in the window navigated),
+            // and the URL was the hard-coded literal `https://example.com/12345`,
+            // identical on every press. A control cannot know which link was clicked
+            // without a DOM hit-test, so inventing a URL was the wrong answer in both
+            // respects — it is removed, and the click is reported instead.
+            Event::MousePress { pos, button } if *button == 1 => {
+                if self.geometry().contains_point(*pos) {
+                    self.base.clicked.emit();
                 }
+            }
             Event::KeyPress { key, modifiers } => {
                 match *key {
                     37 => {

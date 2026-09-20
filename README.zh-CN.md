@@ -130,17 +130,18 @@ Arc、Spinner、Roller、Dropdown、TextArea、Keyboard、Switch。
 （`docs/plans/platform_capability_matrix.md`）由源码机械派生，并在 CI 中设有防脱节门禁。
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.4.5-blue)]()
+[![version](https://img.shields.io/badge/version-2.4.6-blue)]()
 [![tests](https://img.shields.io/badge/tests-5300%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
-**2.4.5 实测：** `desktop` 档 **5309** 个测试全通过，共 31 个测试二进制、0 失败；五个档位全部 0 失败（`tablet` 5008、`mobile` 5039、`mini` 1558、`embedded` 1645）。
-`cargo clippy --all-targets` 在五个档位全部 0 warning；五个档位在本机、`x86_64-pc-windows-msvc`、
-`aarch64-apple-ios`、`x86_64-pc-windows-gnu`、`aarch64-unknown-linux-ohos`、`wasm32-unknown-unknown`
-上均无 warning 构建通过（含此前从未被覆盖的 `mini,wasm` 组合）。
+**2.4.6 实测：** `desktop` 档 **5347** 个测试（5103 lib + 集成目标）全通过，共 31 个测试二进制、0 失败；五个档位全部 0 失败（`tablet` 5046、`mobile` 5077、`mini` 1575、`embedded` 1662）。
+`cargo clippy --all-targets` 在 `desktop` 档 0 warning；所有档位在本机构建均无 warning——
+包括 `tools/check_profiles.sh` 新增覆盖的 `mini` × 后端矩阵——并在
+`wasm32-unknown-unknown`、`aarch64-apple-ios`、`x86_64-pc-windows-gnu`、
+`aarch64-unknown-linux-ohos`、`aarch64-apple-darwin` 上全部通过。
 详见
 [`CHANGELOG.md`](CHANGELOG.md)（中文版见 [`docs/reports/CHANGELOG.md`](docs/reports/CHANGELOG.md)）及
-[`docs/log/log-20260920-1.md`](docs/log/log-20260920-1.md)。
+[`docs/log/log-20260920-2.md`](docs/log/log-20260920-2.md)。
 
 <p align="center">
   <a href="README.md">

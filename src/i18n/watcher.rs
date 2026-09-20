@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! i18n watcher - file system monitoring for hot reload
+use crate::compat::{String, ToString, Vec};
 use crate::i18n::global::get_manager;
 use crate::i18n::types::ReloadEvent;
 use crossbeam_channel::{unbounded, Receiver, Sender};

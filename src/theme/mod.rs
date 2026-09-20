@@ -55,8 +55,8 @@ pub use crate::style::HighContrastMode;
 /// race against, and holding this would only couple unrelated code.
 pub use manager::theme_test_guard;
 pub use manager::{
-    global_high_contrast, global_theme_manager, resolved_theme_style, set_global_high_contrast,
-    ThemeManager,
+    global_high_contrast, global_theme_manager, resolved_theme_style, resolved_theme_style_for,
+    set_global_high_contrast, ThemeManager,
 };
 pub use types::{
     AppearanceMode, Borders, Colors, Fonts, ShadowOverride, ShadowToken, Spacing, Theme,
@@ -495,4 +495,72 @@ mod tests {
         let restored = resolved_theme_style("button").expect("a theme is active");
         assert_eq!(restored.background_color, before.background_color);
     }
+    /// A node's `class` must not replace the widget kind when the role is resolved.
+    ///
+    /// `resolve_style` classifies its argument with `WidgetRole::for_kind_name`, whose table is
+    /// keyed on **control kinds** (`button`, `label`, `line_edit`, ...). The JSON loader passed
+    /// a node's `class` in place of its kind, so `<button class="primary">` was classified from
+    /// the string `"primary"` — not a control kind — and fell through to `WidgetRole::Surface`.
+    /// The button was painted as a grey panel instead of a filled brand-coloured control, i.e.
+    /// the class silently discarded the role it was there to select.
+    ///
+    /// `resolve_style_for` keeps the two vocabularies apart: the kind picks the role, the class
+    /// only selects an override.
+    #[test]
+    fn a_class_does_not_replace_the_kind_when_resolving_a_role() {
+        let _guard = theme_test_guard();
+        let manager = global_theme_manager();
+
+        let by_kind = manager.resolve_style_for("Button", None, None);
+        let with_class = manager.resolve_style_for("Button", Some("primary"), None);
+
+        // The role default is what the kind gives; the class must not change it into Surface.
+        assert_eq!(
+            with_class.background_color, by_kind.background_color,
+            "a class must not reclassify the widget's role"
+        );
+        assert_ne!(
+            with_class.background_color,
+            Some(Color::rgb(240, 240, 240)),
+            "the class must not collapse the button to the Surface role"
+        );
+
+        // And the misclassification this guards against is still what a bare class name does:
+        // a name that is not a control kind resolves as Surface when it is used *as* the kind.
+        let as_kind = manager.resolve_style_for("primary", None, None);
+        assert_eq!(
+            as_kind.background_color,
+            Some(Color::rgb(240, 240, 240)),
+            "the regression this test pins: 'primary' is not a control kind"
+        );
+    }
+
+    /// A class-level override is still consulted, now through the class argument.
+    #[test]
+    fn a_class_override_still_applies() {
+        use crate::compat::HashMap;
+        use crate::theme::types::{ThemeOverrides, ThemeStyleToken};
+
+        let _guard = theme_test_guard();
+        let mut manager = ThemeManager::new();
+        let Some(mut theme) = manager.get_theme("default").cloned() else {
+            panic!("the default theme must be registered");
+        };
+        let mut overrides = ThemeOverrides { styles: HashMap::new() };
+        overrides.styles.insert(
+            "primary".to_string(),
+            ThemeStyleToken { background: Some(Color::rgb(1, 2, 3)), ..Default::default() },
+        );
+        theme.overrides = overrides;
+        manager.register_theme(theme);
+        assert!(manager.set_theme("default"));
+
+        let styled = manager.resolve_style_for("Button", Some("primary"), None);
+        assert_eq!(
+            styled.background_color,
+            Some(Color::rgb(1, 2, 3)),
+            "a theme override keyed by the class must still win over the role default"
+        );
+    }
+
 }

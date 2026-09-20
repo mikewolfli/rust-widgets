@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 //! i18n options - configuration and initialization types
+
+// `String`/`Vec` resolve through the `compat` bridge rather than the prelude,
+// which `#![no_std]` removes on the `mini` profile. `MiniToString` supplies the
+// `ToString` trait, which the no-std prelude does not carry either.
+use crate::compat::{MiniToString, String, Vec};
+
 /// Initialization options for i18n system
 #[derive(Debug, Clone)]
 pub struct InitOptions {

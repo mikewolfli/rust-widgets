@@ -48,7 +48,19 @@ impl UndoStack {
 
         self.redo_stack.clear();
 
-        // Enforce capacity: remove oldest commands if at limit.
+        // Capacity enforcement and the clean-index fixup are shared with `redo`:
+        // both append to the undo stack and both must honour the bound.
+        self.push_undo_entry(command);
+    }
+
+    /// Append to the undo stack, enforcing `max_capacity` and moving `clean_index`.
+    ///
+    /// Shared by [`push`](Self::push) and [`redo`](Self::redo). `redo` used to append with a
+    /// bare `Vec::push`, so it bypassed both: with `set_max_capacity` lowered while commands sat
+    /// on the redo stack, redoing grew the stack past its own bound (unbounded memory in a
+    /// long-lived editor session that re-tunes capacity) and left `clean_index` pointing at the
+    /// wrong entry, so `is_clean()` could no longer identify the saved state.
+    fn push_undo_entry(&mut self, command: Box<dyn UndoCommand>) {
         if self.max_capacity == 0 {
             // Zero-capacity stacks retain nothing; drop the command silently.
             return;
@@ -91,7 +103,11 @@ impl UndoStack {
             )
         })?;
         command.redo()?;
-        self.undo_stack.push(command);
+        // Through `push_undo_entry`, not a bare push: redoing must not be able to grow the
+        // stack past `max_capacity` or desynchronise `clean_index`. `push` already enforced
+        // both; this path did not, so a capacity lowered while the redo stack was populated
+        // was silently violated on the way back.
+        self.push_undo_entry(command);
         Ok(())
     }
 
@@ -550,5 +566,72 @@ mod tests {
         // New pushes are dropped without panicking.
         stack.push(Box::new(TextCommand::new("c", "")));
         assert_eq!(stack.undo_count(), 0);
+    }
+
+    /// `redo` must honour `max_capacity` exactly as `push` does.
+    ///
+    /// It used a bare `Vec::push`, so lowering the capacity while commands sat on the redo
+    /// stack and then redoing grew the undo stack past its own bound. The bound is what caps
+    /// memory in a long-lived editor session, and `is_clean()` keys off `clean_index`, which the
+    /// same code path moved.
+    #[test]
+    fn test_redo_respects_max_capacity() {
+        let mut stack = UndoStack::with_capacity(10);
+        for i in 0..5 {
+            let mut cmd = TextCommand::new(&format!("c{i}"), "");
+            cmd.execute().unwrap();
+            stack.push(Box::new(cmd));
+        }
+        for _ in 0..3 {
+            stack.undo().unwrap();
+        }
+        assert_eq!(stack.undo_count(), 2);
+        assert_eq!(stack.redo_count(), 3);
+
+        // The capacity drops below what the redo path would produce.
+        stack.set_max_capacity(2);
+
+        stack.redo().unwrap();
+        assert!(
+            stack.undo_count() <= 2,
+            "redo grew the stack past max_capacity=2: {}",
+            stack.undo_count()
+        );
+        stack.redo().unwrap();
+        assert!(
+            stack.undo_count() <= 2,
+            "redo grew the stack past max_capacity=2: {}",
+            stack.undo_count()
+        );
+    }
+
+    /// Redoing all the way back to the saved state must report `is_clean`.
+    ///
+    /// The clean index is moved by capacity eviction; a redo that appended without the fixup
+    /// left `is_clean()` unable to identify the state the document was saved at.
+    #[test]
+    fn test_redo_keeps_clean_index_in_step() {
+        let mut stack = UndoStack::with_capacity(8);
+        for text in ["a", "b"] {
+            let mut cmd = TextCommand::new(text, "");
+            cmd.execute().unwrap();
+            stack.push(Box::new(cmd));
+        }
+        stack.mark_clean();
+        assert!(stack.is_clean());
+
+        let mut cmd = TextCommand::new("c", "");
+        cmd.execute().unwrap();
+        stack.push(Box::new(cmd));
+        assert!(!stack.is_clean());
+
+        stack.undo().unwrap();
+        assert!(stack.is_clean(), "undoing back to the saved state must be clean");
+
+        stack.redo().unwrap();
+        assert!(!stack.is_clean(), "redoing away from the saved state must be dirty");
+
+        stack.undo().unwrap();
+        assert!(stack.is_clean(), "undo must return to the saved state again");
     }
 }

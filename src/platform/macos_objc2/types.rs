@@ -6,12 +6,11 @@
 //! This backend provides a state-driven implementation behind the `objc2-macos`
 //! feature flag so migration can proceed incrementally without changing default
 //! runtime behavior.
+use crate::compat::{HashMap, Mutex, String, Vec, VecDeque};
 use crate::platform::state::BackendState;
 use crate::platform::WidgetTriggerEvent;
+use core::sync::atomic::AtomicBool;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::AtomicBool;
-use std::sync::Mutex;
 
 /// Runtime lifecycle markers used by the preview run loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

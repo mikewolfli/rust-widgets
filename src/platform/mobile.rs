@@ -154,7 +154,7 @@ impl Platform for AndroidMobilePlatform {
     /// discarded widget.
     fn destroy_widget(&self, widget_id: ObjectId) -> bool {
         {
-            let mut menus = self.menus.lock().expect("mobile menu lock poisoned");
+            let mut menus = crate::compat::lock(&self.menus);
             menus.attached_menu_bar.remove(&widget_id);
             // The widget may be a container in the menu tree: drop both the
             // children it owned and the child entry under its own parent.

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! i18n manager - core internationalization management
-use crate::compat::HashMap;
+use crate::compat::{HashMap, String, ToString, Vec};
 use crate::i18n::types::{ReloadEvent, TranslationFile};
 use crossbeam_channel::Sender;
 use std::fs::File;
@@ -225,31 +225,69 @@ impl I18nManager {
     pub fn translate(&self, key: &str) -> String {
         self.translate_with_context(key, None, 1)
     }
+
     /// Translate a message with context
+    ///
+    /// # Context matching
+    ///
+    /// A `Some(ctx)` lookup accepts an entry whose own `context` is `None`: an entry without a
+    /// context is documented as "unambiguous on its own" (see [`Translation::context`]), which is
+    /// exactly the case where qualifying the lookup adds nothing. It used to return the raw key
+    /// instead — so a catalogue that did not restate the context on every entry lost all of its
+    /// translations the moment a caller used the `tr!("key", "ctx", n)` spelling, which is the
+    /// only reason the macro variant exists.
+    ///
+    /// A `Some(ctx)` lookup still rejects an entry with a *different* `Some(other)`: that entry
+    /// belongs to another context and would be the wrong message.
     pub fn translate_with_context(&self, key: &str, context: Option<&str>, count: u32) -> String {
-        if let Some(translation_file) = self.translations.get(&self.current_language) {
-            if let Some(translation) = translation_file.translations.get(key) {
-                // Check context
-                if let Some(ctx) = context {
-                    if let Some(trans_ctx) = &translation.context {
-                        if trans_ctx != ctx {
-                            return key.to_string();
-                        }
-                    } else {
-                        return key.to_string();
-                    }
-                }
-                // Check plural
-                if let Some(plural) = &translation.plural {
-                    if let Some(plural_form) = plural.get(&count) {
-                        return plural_form.clone();
-                    }
-                }
-                return translation.message.clone();
+        if let Some(resolved) = self.lookup_in(&self.current_language, key, context, count) {
+            return resolved;
+        }
+        // No entry in the active language. Fall back to `en`, which is embedded at build
+        // time (`language/en.json`), before giving up and echoing the key: a user of a
+        // partially translated locale is better served by the source string than by a
+        // raw identifier. `en` is skipped when it *is* the active language, so this
+        // cannot loop or repeat the same miss.
+        const FALLBACK_LANGUAGE: &str = "en";
+        if self.current_language != FALLBACK_LANGUAGE {
+            if let Some(resolved) = self.lookup_in(FALLBACK_LANGUAGE, key, context, count) {
+                return resolved;
             }
         }
-        // Fallback to key if translation not found
+        // Last resort: the key itself. Documented behaviour, and the caller can see the
+        // miss because the returned text equals the key.
         key.to_string()
+    }
+
+    /// Resolve `key` inside one language, honouring context and plural rules.
+    ///
+    /// Returns `None` when the language has no such key, or when the entry it has belongs to a
+    /// different context.
+    fn lookup_in(
+        &self,
+        language: &str,
+        key: &str,
+        context: Option<&str>,
+        count: u32,
+    ) -> Option<String> {
+        let translation = self.translations.get(language)?.translations.get(key)?;
+        if let Some(ctx) = context {
+            // `None` on the entry means "unambiguous", so it satisfies any context. A
+            // `Some(other)` belongs to another context and must not be served here.
+            if let Some(trans_ctx) = &translation.context {
+                if trans_ctx != ctx {
+                    return None;
+                }
+            }
+        }
+        // A plural entry whose category is absent has no string for this count; fall
+        // through to the singular rather than reporting a miss.
+        if let Some(plural) = &translation.plural {
+            if let Some(plural_form) = plural.get(&count) {
+                return Some(plural_form.clone());
+            }
+        }
+        Some(translation.message.clone())
     }
 }
 crate::impl_default_via_new!(I18nManager);

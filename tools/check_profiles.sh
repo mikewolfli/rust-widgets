@@ -136,4 +136,43 @@ run_test_case "gpu auto-compose cpu fallback" \
   cargo test --lib --features gpu-wgpu render::tests::auto_compose_falls_back_to_cpu_backend_when_gpu_path_is_rejected
 rw_run_bounded "$PROFILE_TIMEOUT" cargo check --features gpu-wgpu --example demo_wgpu_control_parity
 
+# ── `mini` (no_std) × each OS backend ──
+#
+# `mini` is the only profile that turns on `#![no_std]` (see `build.rs`:
+# `alloc_frugal`), so it is the only one that removes the standard prelude. Any
+# module still naming `String`/`Vec` from the prelude — or calling
+# `Mutex::lock().expect(..)`, which `spin::Mutex` does not have — compiles fine on
+# `desktop`/`tablet`/`mobile` and **fails only here**.
+#
+# These cells were entirely uncovered, and three of them were broken at once:
+# `mini,macos` (7 errors), `mini,i18n` (65 errors) and `mini,cocoa-legacy`
+# (17 errors, which also re-derived a missing-`serde` bug that `macos` had already
+# been patched for). Adding the combination to the gate is the root-cause fix:
+# the modules could never regress silently again.
+#
+# The backend list is `--features <backend>` on the **host**, not a `--target`
+# cross build, because the defect is in profile-gated import/lock hygiene rather
+# than in backend-specific code. Cross-target coverage stays where it is above.
+if [ "${RW_SKIP_MINI_MATRIX:-0}" = "1" ]; then
+  echo "[9b/9] SKIPPED: mini x backend matrix (RW_SKIP_MINI_MATRIX=1)"
+else
+  echo "[9b/9] mini x backend compile matrix (no_std prelude hygiene)"
+  # `macos`/`cocoa-legacy` only exist on an Apple host; naming them elsewhere fails
+  # with "package does not have that feature enabled" style errors that are not
+  # defects. Probe the host so the gate states the truth on every machine.
+  MINI_BACKENDS="wasm android harmony ios windows linux-wayland"
+  case "$(uname -s)" in
+    Darwin) MINI_BACKENDS="$MINI_BACKENDS macos cocoa-legacy" ;;
+  esac
+  for backend in $MINI_BACKENDS; do
+    echo "  - mini,$backend"
+    rw_run_bounded "$PROFILE_TIMEOUT" cargo check \
+      --no-default-features --features "mini,$backend"
+  done
+  # `i18n` is a capability, not a backend, but it is the largest module on the
+  # `compat` bridge and `mini,i18n` was the worst of the three failures.
+  echo "  - mini,i18n"
+  rw_run_bounded "$PROFILE_TIMEOUT" cargo check --no-default-features --features "mini,i18n"
+fi
+
 echo "All profile checks passed."

@@ -612,7 +612,7 @@ fn mounted_views() -> &'static Mutex<HashMap<ObjectId, usize>> {
 
 /// Returns the canvas view for a mounted id, if any.
 pub(crate) fn view_for(id: ObjectId) -> Option<id> {
-    let table = mounted_views().lock().expect("canvas view lock poisoned");
+    let table = crate::compat::lock(mounted_views());
     table.get(&id).map(|ptr| *ptr as id)
 }
 
@@ -675,7 +675,7 @@ impl MacOSPlatform {
             let _: () = msg_send![view, setNeedsDisplay: YES];
             pool.drain();
 
-            mounted_views().lock().expect("canvas view lock poisoned").insert(id, view as usize);
+            crate::compat::lock(mounted_views()).insert(id, view as usize);
             view
         };
 
@@ -814,7 +814,7 @@ impl MacOSPlatform {
             log::error!("[macos] unmount_surface: refused off the AppKit main thread");
             return false;
         }
-        let view = mounted_views().lock().expect("canvas view lock poisoned").remove(&id);
+        let view = crate::compat::lock(mounted_views()).remove(&id);
         let Some(view) = view else {
             log::error!("[macos] unmount_surface: id={id} is not mounted");
             return false;
@@ -825,7 +825,7 @@ impl MacOSPlatform {
         unsafe {
             let _: () = msg_send![view as id, removeFromSuperview];
         }
-        self.handles.lock().expect("macos handle lock poisoned").remove(&id);
+        crate::compat::lock(&self.handles).remove(&id);
         self.state.destroy_widget(id);
         true
     }

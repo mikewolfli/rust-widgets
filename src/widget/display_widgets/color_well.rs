@@ -173,13 +173,19 @@ impl Draw for ColorWell {
 }
 
 impl EventHandler for ColorWell {
+    /// Emits `clicked` only for a press that lands on the well.
+    ///
+    /// The position used to be discarded (`pos: _`), so a left press **anywhere**
+    /// emitted this control's `clicked` — a press on a neighbouring control fired the
+    /// well's colour-changed path. 43 other widgets in this crate guard the press with
+    /// [`Rect::contains_point`](crate::core::Rect::contains_point); this one now does too.
     fn handle_event(&mut self, event: &Event) {
         if !self.base.is_enabled() {
             return;
         }
         match event {
-            Event::MousePress { pos: _, button } => {
-                if *button == 1 {
+            Event::MousePress { pos, button } => {
+                if *button == 1 && self.geometry().contains_point(*pos) {
                     self.clicked.emit();
                 }
             }

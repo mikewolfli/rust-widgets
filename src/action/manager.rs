@@ -62,6 +62,12 @@ impl ActionManager {
         true
     }
     /// Binds a keyboard shortcut to an existing action id (string-based).
+    ///
+    /// Rebinding an action **moves** it: any chord previously bound to this action is
+    /// released first. Without that, `bind_shortcut("Ctrl+S", "save")` followed by
+    /// `bind_shortcut("Ctrl+Shift+S", "save")` left both chords live, so the stale
+    /// accelerator kept firing after the rebind. `ShortcutManager::register` already
+    /// releases the previous chord for exactly this reason; this is the same rule.
     pub fn bind_shortcut(
         &mut self,
         shortcut: impl Into<String>,
@@ -71,10 +77,14 @@ impl ActionManager {
         if !self.actions.contains_key(&action_id) {
             return false;
         }
+        self.release_shortcuts_for(&action_id);
         self.shortcut_to_action.insert(normalize_shortcut(&shortcut.into()), action_id);
         true
     }
     /// Binds a `Shortcut` type to an existing action id. Bridges `shortcut` module with `action`.
+    ///
+    /// See [`bind_shortcut`](Self::bind_shortcut) for why the action's previous chord is
+    /// released first.
     pub fn bind_shortcut_type(
         &mut self,
         shortcut: &Shortcut,
@@ -84,8 +94,25 @@ impl ActionManager {
         if !self.actions.contains_key(&action_id) {
             return false;
         }
+        self.release_shortcuts_for(&action_id);
         self.shortcut_to_action.insert(shortcut.to_string().to_lowercase(), action_id);
         true
+    }
+
+    /// Drop every chord currently routed to `action_id`.
+    ///
+    /// Called before a (re)bind so an action holds one chord rather than accumulating
+    /// every chord it has ever been bound to.
+    fn release_shortcuts_for(&mut self, action_id: &str) {
+        let stale: crate::compat::Vec<String> = self
+            .shortcut_to_action
+            .iter()
+            .filter(|(_, bound)| bound.as_str() == action_id)
+            .map(|(chord, _)| chord.clone())
+            .collect();
+        for chord in stale {
+            self.shortcut_to_action.remove(&chord);
+        }
     }
     /// Resolves and triggers an action by shortcut string.
     pub fn trigger_shortcut(&mut self, shortcut: &str) -> bool {

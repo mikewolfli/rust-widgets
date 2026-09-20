@@ -5,6 +5,147 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 2.4.6 (2026-09-20) — Profile Combinations That Never Compiled, and Contracts the Code Did Not Keep
+
+Backward compatible. **No public signature was removed.** Two additions land in existing surfaces
+(`ChartWidget::data_point_unhovered`, `ThemeManager::resolve_style_for`) and one profile-combination
+build is repaired; everything else is a behaviour fix inside existing APIs.
+
+See [`docs/log/log-20260920-2.md`](docs/log/log-20260920-2.md) for per-fix evidence.
+
+### Measured facts
+
+- `5103` tests pass on `desktop`, `0` failed, `31` test binaries.
+- `cargo clippy --all-targets` is **warning-free** on `desktop` (0 warnings, 0 errors).
+- Zero `error`/`warning` from `cargo check` on `desktop`, `tablet`, `mobile`, `embedded`, `mini`,
+  `full`, `desktop,no-declarative-view`, `cocoa-legacy`, `macos-legacy`, `mini,macos`, `mini,i18n`,
+  `mini,cocoa-legacy` and `mini,wasm`.
+- Cross targets all clean: `wasm32-unknown-unknown` (`mini,wasm`), `aarch64-apple-ios` (`mobile,ios`),
+  `x86_64-pc-windows-gnu` (`mini,windows`), `aarch64-unknown-linux-ohos` (`mini,harmony`),
+  `aarch64-apple-darwin` (`desktop`).
+- `bash tools/check_profiles.sh` passes, now including the `mini` × backend matrix below.
+
+### `mini` is the only profile that enables `#![no_std]`, and three combinations never compiled
+
+`build.rs` emits `alloc_frugal` for `mini` alone, and `src/lib.rs` turns that into `#![no_std]` —
+which removes the standard prelude. Any module still naming `String`/`Vec` from the prelude, calling
+`Mutex::lock().expect(..)` (which `spin::Mutex` does not have), or calling `.to_string()` fails **only
+here**:
+
+```text
+cargo check --no-default-features --features "mini,macos"         7 errors
+cargo check --no-default-features --features "mini,i18n"         65 errors
+cargo check --no-default-features --features "mini,cocoa-legacy" 17 errors
+```
+
+`embedded` does **not** enable `no_std` (it emits a different alias), which is why `embedded,macos`
+passed while `mini,macos` did not — the asymmetry is what let the defect survive every earlier sweep.
+
+Fixed by routing the affected platform, clipboard and i18n modules through the documented `crate::compat`
+bridge, and by adding `compat::try_lock` as the profile-agnostic seam for the `std`-poisons / `spin`-does-not
+split (alongside the existing `compat::lock`). The root-cause fix is in the gate: `check_profiles.sh`
+gained a `[9b/9]` matrix that compiles `mini` against every backend plus `i18n`, so the class cannot
+regress silently.
+
+### `cocoa-legacy` re-derived a `serde` bug that `macos` had already been patched for
+
+The comment beside `macos` in `Cargo.toml` records that the objc2 backend's handle types derive
+`Serialize` and its state snapshot returns `serde_json::Error`, so `serde`/`serde_json` are hard
+requirements rather than optional extras. `cocoa-legacy` compiles **the same** `macos_objc2` module
+and carried neither, so `--features cocoa-legacy` alone failed with `unresolved import serde`. That is
+the "fixed the name, not the fact" failure mode: the fix belongs to every Apple backend, not to one
+feature name.
+
+### A property write could abort the process on a legal `i32` range
+
+`Dial::set_value` computed its wrapping span as `maximum - minimum + 1` in `i32`. With
+`wrapping` on and `maximum = i32::MAX`, `minimum = i32::MIN`, that overflows and the check panics in
+debug builds — **killing the host process**, since `set_minimum` is reachable from
+`write_property(w, "minimum", ..)`, which is the JSON declarative layer, the C ABI and every language
+binding. The span is now computed in `i64`, keeping the wrapping contract for every in-range span.
+
+### Schema defaults that contradicted the control they described
+
+`visible` was declared with the opposite default for four kinds, and the value is load-bearing:
+`view::apply`'s `resolve_null_reset` substitutes it for every `CapabilityValue::Null` patch, so
+dropping a `visible` binding in a view manifest would hide a control the manifest never touched.
+A new invariant test — every declared default must equal a freshly-constructed control's read —
+immediately caught a fifth case (`material_snackbar`) that no manual review had found.
+
+### Pointer contracts: six controls acted on presses that were not over them
+
+Handlers that bound `pos: _` and skipped the hit test responded to a left press **anywhere in the
+window** — `ColorWell`, `AudioVisualizer`, `CameraPreview` (a device action), `BarcodeScanner`,
+`WebEngineView` and `InplaceEditor`. `WebEngineView` was worse than missed: it navigated to the
+hard-coded literal `https://example.com/12345` on every press, a URL unrelated to the click. It now
+reports the click through the shared `clicked` signal and lets the host decide.
+
+`Switch` toggled on any mouse release with the position discarded and no press-arm. It now follows the
+same pattern `Button` and `CheckBox` already established (arm on press, commit on release inside the
+geometry, cancel on drag-away, plus touch, tap and the space bar). It also painted a 44px track from a
+narrower geometry, overrunning its own rect by up to 14px.
+
+### Hit-tests that disagreed with the widget's own `draw`
+
+- `ListBox` added `scroll_offset` a **second** time: `draw` maps absolute item `i` to `y = i * item_height`,
+  so the row derived from a click is already the absolute index. Every click on a scrolled list selected
+  an item `scroll_offset` rows from the one under the pointer.
+- `PropertyGrid` compared `click_y > header_height` where `draw` starts the first row at `header_height`,
+  so a click on the first row's top pixel selected nothing; it also cast a negative `click_y` to `u32`
+  before subtracting (wrapping to a huge index) and never bounded by the rows actually painted.
+
+### `Lottie` played at the wrong rate, and `Animation::progress` never saturated
+
+`Lottie` truncated the frame period to whole milliseconds, so 60 fps and 59.94 fps both ran at 62.5 fps
+(4.2% fast), and `advance_frame` then zeroed the accumulator — undoing the remainder the new
+microsecond accumulator exists to preserve. Fixing only the truncation left 30 fps running at 29.4 fps,
+which is how the second defect was found.
+
+`Animation::progress`'s finite arm read `(raw % 1.0).min(1.0)`, where the clamp is applied *after* the
+modulus and therefore can never bind: a completed one-shot read `0.0` instead of the documented `1.0`,
+and the finite arm was indistinguishable from the infinite one. Two duplicated bodies (the second being
+the one `pause()` freezes) carried the same defect; they now share one implementation.
+
+### `view` engine: three silent failures
+
+- A **root type change** emitted `Replace { parent: 0 }`, a parent `apply_one` always rejects. The patch
+  could never succeed, and `ViewEngine::update` discarded the `ApplyReport` — so the diff reported success
+  while the engine kept serving the pre-change root. `DiffReport` gained `root_replaced`, and the
+  unsatisfiable patch is no longer emitted.
+- `update` dropped the `ApplyReport` entirely. Refused patches are now logged.
+- `reserve_ids_for_inserts` called the caller's `create` closure to learn an id, and `apply` then called
+  it **again** for the same node — orphaning one live control per insertion. Measured: appending one row
+  cost two `create` calls for one new node; it now costs one.
+
+### Theme: a node's `class` replaced its kind when resolving a role
+
+`WidgetRole::for_kind_name` classifies **control kinds**, but the JSON loader passed `class.unwrap_or(&kind)`,
+so `<button class="primary">` was classified from the string `primary` — not a kind — and fell through to
+`Surface`. A button marked `primary` was painted as a grey panel. `ThemeManager::resolve_style_for(kind, class, state)`
+keeps the two vocabularies apart: the kind picks the role, the class only selects an override.
+
+### i18n: a context mismatch discarded a good translation, and there was no language fallback
+
+An entry whose `context` is `None` is documented as "unambiguous on its own", so it satisfies any
+context-qualified lookup; it was rejected instead, which made the `tr!("key", "ctx", n)` spelling fail
+for every catalogue that did not restate the context on each entry. Separately, a key missing from the
+active language went straight to echoing the key — the embedded `language/en.json`, documented as a
+compile-time fallback, was never consulted. Lookups now try the active language, then `en`, then the key.
+
+### Other contract fixes
+
+- `UndoStack::redo` bypassed `max_capacity` and the `clean_index` fixup that `push` performs, by appending
+  with a bare `Vec::push`. Lowering the capacity with commands on the redo stack grew the stack past its own
+  bound (unbounded memory in a long-lived session) and desynchronised `is_clean()`.
+- `Binding::set` restored listeners with `entry(key).or_insert(listener)`, which cannot distinguish
+  "re-subscribed" from "just unsubscribed" — a listener that unsubscribed itself from its own callback was
+  put straight back and fired again on the next `set`.
+- `ActionManager::bind_shortcut` never released an action's previous chord, so rebinding left **both** live
+  and the stale accelerator kept firing. `ShortcutManager::register` already did this correctly.
+- `ChartWidget::hovered_index` was written and never read, had no accessor, and had no `MouseLeave` arm, so
+  a hover survived the pointer leaving and a `set_series` that shrank the data. It now matches its five
+  sibling charts: an accessor, `data_point_unhovered`, leave-on-exit, and re-validation on data change.
+
 ## 2.4.5 (2026-09-20) — Probe Truthfulness, Value-Bound Crashes, and a Gate That Could Not Fail
 
 Backward compatible. **No public signature was removed or changed.** One function gained a

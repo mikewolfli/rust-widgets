@@ -16,11 +16,10 @@
 //! string constants for NSAccessibility protocol conformance.
 
 use super::AccessibilityBridge;
+use crate::compat::{HashMap, MiniToString, Mutex, String};
 use crate::core::ObjectId;
 use cocoa::base::{id, nil};
 use cocoa::foundation::NSString;
-use std::collections::HashMap;
-use std::sync::Mutex;
 
 extern "C" {
     /// C function from ApplicationServices framework.
@@ -43,23 +42,23 @@ impl MacOSAccessibilityBridge {
 
     /// Register a native Cocoa handle for the given widget id.
     pub fn register_handle(&self, id: ObjectId, ptr: usize) {
-        if let Ok(mut handles) = self.native_handles.lock() {
+        if let Some(mut handles) = crate::compat::try_lock(&self.native_handles) {
             handles.insert(id, ptr);
         }
     }
 
     /// Remove a native handle registration.
     pub fn unregister_handle(&self, id: ObjectId) {
-        if let Ok(mut handles) = self.native_handles.lock() {
+        if let Some(mut handles) = crate::compat::try_lock(&self.native_handles) {
             handles.remove(&id);
         }
     }
 
     /// Post an NSAccessibility notification on the native element for the given widget.
     fn post_notification(&self, id: ObjectId, notification_name: &str) -> bool {
-        let ptr = match self.native_handles.lock() {
-            Ok(h) => h.get(&id).copied(),
-            Err(_) => return false,
+        let ptr = match crate::compat::try_lock(&self.native_handles) {
+            Some(h) => h.get(&id).copied(),
+            None => return false,
         };
         let Some(ptr) = ptr else { return false };
         // SAFETY: `ptr` is an object pointer this backend stored from a live native
@@ -82,13 +81,13 @@ crate::impl_default_via_new!(MacOSAccessibilityBridge);
 
 impl AccessibilityBridge for MacOSAccessibilityBridge {
     fn set_accessibility_name(&self, id: ObjectId, name: &str) {
-        if let Ok(mut names) = self.names.lock() {
+        if let Some(mut names) = crate::compat::try_lock(&self.names) {
             names.insert(id, name.to_string());
         }
     }
 
     fn accessibility_name(&self, id: ObjectId) -> Option<String> {
-        self.names.lock().ok().and_then(|names| names.get(&id).cloned())
+        crate::compat::try_lock(&self.names).and_then(|names| names.get(&id).cloned())
     }
 
     fn notify_name_changed(&self, id: ObjectId) {

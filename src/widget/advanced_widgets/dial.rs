@@ -10,9 +10,9 @@ use crate::widget::capability::coercion::{expect_bool, expect_f64, expect_i64};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::numeric::ordered_clamp_i32;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
-use crate::widget::numeric::{ordered_clamp_i32};
 /// Dial (rotary knob) widget.
 ///
 /// Holds an integer value in an inclusive `minimum ..= maximum` range and
@@ -142,12 +142,15 @@ impl Dial {
     /// no redraw.
     pub fn set_value(&mut self, value: i32) {
         let clamped = if self.wrapping {
-            let range = self.maximum - self.minimum + 1;
-            if range <= 0 {
-                self.minimum
-            } else {
-                (value - self.minimum).rem_euclid(range) + self.minimum
-            }
+            // The span is computed in `i64`: `maximum - minimum + 1` overflows `i32`
+            // for a legal range such as `i32::MIN ..= i32::MAX`, and the overflow
+            // check panics in debug builds — aborting the host process on a property
+            // write (`write_property(w, "minimum", ..)` reaches this). Widening keeps
+            // the wrapping contract intact for every in-range span while making the
+            // extreme case saturate instead of panic.
+            let span = self.maximum as i64 - self.minimum as i64 + 1;
+            let offset = (value as i64 - self.minimum as i64).rem_euclid(span);
+            (self.minimum as i64 + offset) as i32
         } else {
             ordered_clamp_i32(value, self.minimum, self.maximum)
         };
@@ -495,5 +498,50 @@ mod tests {
         d.handle_event(&Event::KeyPress { key: 39, modifiers: 0 });
         // Should stay unchanged because disabled
         assert_eq!(d.value(), 50);
+    }
+
+    /// A wrapping dial over the full `i32` range must not overflow.
+    ///
+    /// `maximum - minimum + 1` is `i32::MAX - i32::MIN + 1`, which does not fit in
+    /// `i32`; the previous implementation panicked with `attempt to add with
+    /// overflow` — killing the host process, since `set_minimum` is reachable from
+    /// `write_property(w, "minimum", ..)` (the JSON declarative layer, the C ABI and
+    /// every language binding all route through it).
+    #[test]
+    fn dial_wrapping_survives_full_i32_range() {
+        let mut d = Dial::new(Rect::new(0, 0, 64, 64));
+        d.set_wrapping(true);
+        d.set_maximum(i32::MAX);
+        d.set_minimum(i32::MIN);
+        // Every value is in range, so the value is preserved exactly.
+        d.set_value(1234);
+        assert_eq!(d.value(), 1234);
+        d.set_value(i32::MIN);
+        assert_eq!(d.value(), i32::MIN);
+        d.set_value(i32::MAX);
+        assert_eq!(d.value(), i32::MAX);
+    }
+
+    /// Wrapping still maps out-of-range values modulo the span.
+    #[test]
+    fn dial_wrapping_maps_out_of_range_values() {
+        let mut d = Dial::new(Rect::new(0, 0, 64, 64));
+        d.set_range(0, 9);
+        d.set_wrapping(true);
+        d.set_value(13);
+        assert_eq!(d.value(), 3);
+        d.set_value(-1);
+        assert_eq!(d.value(), 9);
+    }
+
+    /// A span wide enough to overflow `i32` when offset by one still wraps rather
+    /// than aborting: the span is computed in `i64` so the modulo is well-defined.
+    #[test]
+    fn dial_wrapping_handles_near_maximal_span() {
+        let mut d = Dial::new(Rect::new(0, 0, 64, 64));
+        d.set_wrapping(true);
+        d.set_range(-1, i32::MAX - 1);
+        d.set_value(0);
+        assert_eq!(d.value(), 0);
     }
 }

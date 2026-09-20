@@ -201,8 +201,19 @@ impl OrderBookWidget {
     }
 
     /// The row index under a screen y, if any.
+    ///
+    /// Bounded by the widget's own rectangle on both edges, matching `TreeTable::row_at`.
+    ///
+    /// The upper bound is defensive rather than a live fix: with today's `row_height`
+    /// (which scales as `height / (depth * 2)`) a pointer below the widget always lands
+    /// beyond the book's combined row count, so the data bound already rejected it. It is
+    /// stated explicitly so the rejection does not depend on that coincidence surviving a
+    /// future change to the row-height formula.
     fn row_at(&self, y: i32) -> Option<(BookSide, usize)> {
         let geometry = self.base.geometry();
+        if y < geometry.y || y >= geometry.y + geometry.height as i32 {
+            return None;
+        }
         let row_height = self.row_height();
         let offset = y - geometry.y;
         if offset < 0 {
@@ -477,7 +488,7 @@ impl WidgetProperties for OrderBookWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::EventHandler;
+    use crate::event::{Event, EventHandler};
     use crate::widget::special_widgets::finance::types::fixtures;
     use alloc::sync::Arc;
     use core::sync::atomic::{AtomicUsize, Ordering};
@@ -635,5 +646,29 @@ mod tests {
             ladder.hovered().is_none_or(|(_, index)| index < 1),
             "a hover must not survive past the book it pointed into"
         );
+    }
+    /// Hover is bounded by the widget's own rectangle, not only by the book's depth.
+    ///
+    /// `row_at` rejected a negative offset but had no upper bound, so whether a pointer below
+    /// the ladder resolved was left to the book's depth. Today the row-height formula makes
+    /// that coincidentally safe (a row below the widget always exceeds the book's row count),
+    /// and this pins the property so it does not depend on that coincidence: the widget is
+    /// short and the book far deeper than it can show.
+    #[test]
+    fn order_book_hover_is_bounded_by_the_geometry() {
+        let geometry = Rect::new(0, 50, 300, 100);
+        let hover_at = |y: i32| {
+            let mut ladder = OrderBookWidget::new(geometry);
+            ladder.set_depth(64);
+            ladder.set_book(fixtures::sample_book(64));
+            ladder.handle_event(&Event::MouseMove { pos: Point::new(150, y) });
+            ladder.hovered()
+        };
+
+        assert_eq!(hover_at(49), None, "above the widget");
+        assert!(hover_at(60).is_some(), "the top rows are inside the widget");
+        assert_eq!(hover_at(150), None, "the bottom edge is outside");
+        assert_eq!(hover_at(200), None, "below the widget");
+        assert_eq!(hover_at(2000), None, "far below the widget");
     }
 }

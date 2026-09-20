@@ -332,7 +332,17 @@ impl QuoteBoard {
     }
 
     /// The index of the row at a screen y, accounting for the header.
+    /// The row index under a screen y, if any.
+    ///
+    /// Bounded by the widget's own rectangle on both edges, matching `TreeTable::row_at`.
+    /// The upper bound is defensive: with today's row-height formula a pointer below the
+    /// board already exceeds `quotes.len()`, so the data bound rejected it. Stating it here
+    /// keeps the rejection from depending on that coincidence.
     fn row_at(&self, y: i32) -> Option<usize> {
+        let geometry = self.base.geometry();
+        if y < geometry.y || y >= geometry.y + geometry.height as i32 {
+            return None;
+        }
         let offset = y - self.first_row_y();
         if offset < 0 {
             return None;
@@ -687,7 +697,7 @@ impl WidgetProperties for QuoteBoard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::EventHandler;
+    use crate::event::{Event, EventHandler};
     use crate::widget::special_widgets::finance::types::{fixtures, Quote};
     use alloc::sync::Arc;
     use core::sync::atomic::{AtomicUsize, Ordering};
@@ -946,5 +956,24 @@ mod tests {
         });
         assert_eq!(count.load(Ordering::SeqCst), 1, "a press on a row emits its symbol");
         assert!(board.selected_index().is_some(), "and selects it");
+    }
+    /// Hover never resolves outside the board's own rectangle.
+    ///
+    /// The sibling `TreeTable::row_at` checks both edges; this one checked neither the top nor
+    /// the bottom. Today the data bound makes a below-the-board pointer resolve to `None`
+    /// anyway, so this pins the property rather than a live misbehaviour.
+    #[test]
+    fn quote_board_hover_is_bounded_by_the_geometry() {
+        let geometry = Rect::new(0, 20, 400, 120);
+        let hover_at = |y: i32| {
+            let mut board = QuoteBoard::new(geometry);
+            board.set_quotes(fixtures::sample_quotes(3));
+            board.handle_event(&Event::MouseMove { pos: Point::new(150, y) });
+            board.hovered_index()
+        };
+
+        assert_eq!(hover_at(19), None, "above the widget");
+        assert_eq!(hover_at(140), None, "the bottom edge is outside");
+        assert_eq!(hover_at(500), None, "far below the widget");
     }
 }

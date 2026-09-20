@@ -22,12 +22,39 @@ pub struct Binding<T: Clone + Send + 'static> {
 struct BindingInner<T: Clone + Send + 'static> {
     value: T,
     listeners: HashMap<String, BoxedListener>,
+    /// `true` while `set` is running its notification pass outside the lock.
+    ///
+    /// `listeners` is empty for the duration of that pass, so [`unsubscribe`] cannot
+    /// tell "not subscribed" from "temporarily taken" — this flag is what lets it
+    /// record the intent instead of guessing.
+    notifying: bool,
+    /// Keys removed by [`unsubscribe`] during the current notification pass.
+    ///
+    /// Cleared when a pass starts and again once its restore step has run, so it only
+    /// ever describes the pass currently in flight.
+    unsubscribed_during_notify: alloc::collections::BTreeSet<String>,
+}
+
+impl<T: Clone + Send + 'static> BindingInner<T> {
+    /// An empty binding state holding `value`.
+    ///
+    /// Used by `Binding::new` and by test fixtures that need an `Arc<Mutex<BindingInner>>`
+    /// without going through a `Binding`. Exists so adding bookkeeping fields to the
+    /// struct does not require touching every construction site.
+    fn new(value: T) -> Self {
+        Self {
+            value,
+            listeners: HashMap::new(),
+            notifying: false,
+            unsubscribed_during_notify: alloc::collections::BTreeSet::new(),
+        }
+    }
 }
 
 impl<T: Clone + Send + 'static> Binding<T> {
     /// Create a new binding with an initial value.
     pub fn new(value: T) -> Self {
-        Self { inner: Arc::new(Mutex::new(BindingInner { value, listeners: HashMap::new() })) }
+        Self { inner: Arc::new(Mutex::new(BindingInner::new(value))) }
     }
 
     /// Get the current value.
@@ -44,31 +71,53 @@ impl<T: Clone + Send + 'static> Binding<T> {
     /// re-entrancy deadlocks (e.g. when a TwoWayListener tries to lock the
     /// same binding's Mutex while propagating a value change).
     ///
-    /// Listeners are temporarily removed from the map, notified, then
-    /// restored (unless a new listener was subscribed under the same key
-    /// during notification, in which case the new one takes precedence).
+    /// # Restoring the listener map
+    ///
+    /// Listeners are temporarily removed from the map, notified, then restored.
+    /// Restoring means "still subscribed afterwards", and the only authoritative
+    /// record of that is the map itself during the notification window: a listener
+    /// that calls [`unsubscribe`](Self::unsubscribe) from its own callback — or is
+    /// unsubscribed by an earlier listener in the same pass — must stay removed.
+    ///
+    /// The restore used to be `entry(key).or_insert(listener)`, which cannot tell
+    /// "re-subscribed" from "just unsubscribed": both leave the key absent, so a
+    /// self-unsubscribing listener was put straight back and fired again on the next
+    /// `set`. The removal set below is what distinguishes them.
     pub fn set(&self, value: T) {
         // ── Phase 1: Lock, update value, take all listeners ──
         let mut listeners: Vec<(String, BoxedListener)>;
         {
             let mut inner = lock(&self.inner);
             inner.value = value;
+            inner.unsubscribed_during_notify.clear();
             listeners = core::mem::take(&mut inner.listeners).into_iter().collect();
         } // Mutex lock released.
 
         // ── Phase 2: Notify outside lock (safe from re-entrancy) ──
+        // `notifying` brackets the pass so `unsubscribe` knows the map is temporarily
+        // empty rather than genuinely missing the key.
+        {
+            lock(&self.inner).notifying = true;
+        }
         for (key, ref mut listener) in &mut listeners {
             listener.on_value_changed(key, "set");
         }
 
-        // ── Phase 3: Restore listeners that weren't re-subscribed ──
+        // ── Phase 3: Restore only the listeners that are still subscribed ──
         {
             let mut inner = lock(&self.inner);
             for (key, listener) in listeners {
-                // If no new listener was subscribed under this key
-                // during notification, put the original one back.
+                if inner.unsubscribed_during_notify.contains(&key) {
+                    // Removed by `unsubscribe` while this pass was notifying; honour it.
+                    continue;
+                }
+                // If no new listener was subscribed under this key during
+                // notification, put the original one back. A *new* listener wins,
+                // which is the pre-existing behaviour and is kept here.
                 inner.listeners.entry(key).or_insert(listener);
             }
+            inner.unsubscribed_during_notify.clear();
+            inner.notifying = false;
         }
     }
 
@@ -81,8 +130,20 @@ impl<T: Clone + Send + 'static> Binding<T> {
     }
 
     /// Remove a listener by its subscription key.
+    ///
+    /// Safe to call from inside a listener callback: the removal is recorded on the
+    /// binding and honoured when [`set`](Self::set) restores its listener map, so the
+    /// listener does not come back. See `set`'s "Restoring the listener map" section.
     pub fn unsubscribe(&self, key: &str) {
-        lock(&self.inner).listeners.remove(key);
+        let mut inner = lock(&self.inner);
+        inner.listeners.remove(key);
+        // The key is also absent from `listeners` while a notification pass is in
+        // flight, so `remove` returning `None` there is not proof of a no-op. Record
+        // the intent unconditionally; the set is cleared at the start of every pass
+        // and after the restore, so a stale entry cannot outlive its notification.
+        if inner.notifying {
+            inner.unsubscribed_during_notify.insert(key.to_string());
+        }
     }
 
     /// Create a two-way binding between this binding and another.
@@ -251,10 +312,8 @@ mod tests {
     #[test]
     fn two_way_listener_propagates_and_rearms() {
         let syncing = Arc::new(AtomicBool::new(false));
-        let source: Arc<Mutex<BindingInner<i32>>> =
-            Arc::new(Mutex::new(BindingInner { value: 7, listeners: HashMap::new() }));
-        let target: Arc<Mutex<BindingInner<i32>>> =
-            Arc::new(Mutex::new(BindingInner { value: 0, listeners: HashMap::new() }));
+        let source: Arc<Mutex<BindingInner<i32>>> = Arc::new(Mutex::new(BindingInner::new(7)));
+        let target: Arc<Mutex<BindingInner<i32>>> = Arc::new(Mutex::new(BindingInner::new(0)));
 
         let mut listener = TwoWayListener::new(
             Arc::clone(&syncing),
@@ -408,5 +467,145 @@ mod tests {
         // Setting b should not panic or cause UB
         b.set(99);
         assert_eq!(b.get(), 99);
+    }
+}
+
+#[cfg(test)]
+mod unsubscribe_during_notify_tests {
+    use super::*;
+    use crate::compat::lock;
+    use alloc::sync::Arc;
+    use core::sync::atomic::AtomicI32;
+
+    /// A listener that unsubscribes itself must stay unsubscribed.
+    ///
+    /// `set` takes every listener out of the map before notifying and puts them back
+    /// afterwards. The restore was `entry(key).or_insert(listener)`, which cannot tell
+    /// "re-subscribed" from "just unsubscribed" — both leave the key absent — so a
+    /// listener calling `unsubscribe(&self.key)` from its own callback was put straight
+    /// back and fired again on the next `set`. For the natural "remove me once I have
+    /// seen what I need" pattern that is unbounded listener accumulation.
+    #[test]
+    fn a_listener_that_unsubscribes_itself_stays_removed() {
+        let binding: Arc<Binding<i32>> = Arc::new(Binding::new(0));
+        let weak = Arc::downgrade(&binding);
+        let calls = Arc::new(AtomicI32::new(0));
+
+        let counter = Arc::clone(&calls);
+        binding.subscribe(
+            "self_removing",
+            Box::new(FnListener::new(move |_key: &str, _value: &str| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                if let Some(b) = weak.upgrade() {
+                    b.unsubscribe("self_removing");
+                }
+            })),
+        );
+
+        binding.set(1);
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "the listener must fire once");
+        assert_eq!(binding.listener_count(), 0, "it must not be restored after unsubscribing");
+
+        binding.set(2);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "a listener that unsubscribed itself must not fire again"
+        );
+    }
+
+    /// A listener removed by an earlier listener in the same pass must not fire later.
+    ///
+    /// The iterate-and-restore loop used to re-insert it, so it survived the very `set`
+    /// that removed it and fired on the next one.
+    #[test]
+    fn a_listener_removed_by_an_earlier_listener_does_not_fire() {
+        let binding: Arc<Binding<i32>> = Arc::new(Binding::new(0));
+        let victim_calls = Arc::new(AtomicI32::new(0));
+
+        let counter = Arc::clone(&victim_calls);
+        binding.subscribe(
+            "victim",
+            Box::new(FnListener::new(move |_key: &str, _value: &str| {
+                counter.fetch_add(1, Ordering::SeqCst);
+            })),
+        );
+
+        let weak = Arc::downgrade(&binding);
+        binding.subscribe(
+            "remover",
+            Box::new(FnListener::new(move |_key: &str, _value: &str| {
+                if let Some(b) = weak.upgrade() {
+                    b.unsubscribe("victim");
+                }
+            })),
+        );
+
+        binding.set(1);
+        assert_eq!(binding.listener_count(), 1, "only the remover must remain");
+        assert_eq!(victim_calls.load(Ordering::SeqCst), 1, "it was notified this pass");
+
+        binding.set(2);
+        assert_eq!(
+            victim_calls.load(Ordering::SeqCst),
+            1,
+            "the removed listener must not be notified again"
+        );
+    }
+
+    /// Re-subscribing during notification still wins over the restore.
+    ///
+    /// This is the pre-existing behaviour the fix had to preserve: a key present in the
+    /// map when the restore runs means a *new* listener took the slot, and that new one
+    /// must be the one that survives.
+    #[test]
+    fn resubscribing_during_notify_keeps_the_new_listener() {
+        let binding: Arc<Binding<i32>> = Arc::new(Binding::new(0));
+        let old_calls = Arc::new(AtomicI32::new(0));
+        let new_calls = Arc::new(AtomicI32::new(0));
+
+        let old_counter = Arc::clone(&old_calls);
+        let weak = Arc::downgrade(&binding);
+        let new_counter = Arc::clone(&new_calls);
+        binding.subscribe(
+            "slot",
+            Box::new(FnListener::new(move |_key: &str, _value: &str| {
+                old_counter.fetch_add(1, Ordering::SeqCst);
+                if let Some(b) = weak.upgrade() {
+                    let counter = Arc::clone(&new_counter);
+                    b.subscribe(
+                        "slot",
+                        Box::new(FnListener::new(move |_key: &str, _value: &str| {
+                            counter.fetch_add(1, Ordering::SeqCst);
+                        })),
+                    );
+                }
+            })),
+        );
+
+        binding.set(1);
+        assert_eq!(old_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(binding.listener_count(), 1, "the slot holds exactly one listener");
+
+        binding.set(2);
+        assert_eq!(new_calls.load(Ordering::SeqCst), 1, "the replacement listener runs");
+        assert_eq!(old_calls.load(Ordering::SeqCst), 1, "the replaced listener does not");
+    }
+
+    /// The bookkeeping must not leak between notification passes.
+    #[test]
+    fn unsubscribing_outside_a_notification_is_not_remembered() {
+        let binding: Arc<Binding<i32>> = Arc::new(Binding::new(0));
+        binding.subscribe("a", Box::new(FnListener::new(|_: &str, _: &str| {})));
+        binding.subscribe("b", Box::new(FnListener::new(|_: &str, _: &str| {})));
+        binding.unsubscribe("a");
+        assert_eq!(binding.listener_count(), 1);
+
+        // The stray removal of "a" must not suppress a later re-subscription.
+        binding.subscribe("a", Box::new(FnListener::new(|_: &str, _: &str| {})));
+        binding.set(1);
+        assert_eq!(binding.listener_count(), 2, "both listeners must survive the pass");
+        let inner = lock(&binding.inner);
+        assert!(inner.unsubscribed_during_notify.is_empty(), "the set must be cleared");
     }
 }

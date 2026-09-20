@@ -1157,10 +1157,16 @@ mod tests {
         assert!(cs.inner().is_checked());
     }
 
+    /// A completed pointer activation on the wrapper toggles the inner switch.
+    ///
+    /// The bare `MouseRelease` this used to dispatch asserted the defect (see
+    /// `Switch::handle_event`); the delegation intent is unchanged.
     #[test]
     fn cupertino_switch_event_delegation() {
         let mut cs = CupertinoSwitch::new(Rect::new(0, 0, 60, 30));
-        cs.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 });
+        let p = Point::new(10, 10);
+        cs.handle_event(&Event::MousePress { pos: p, button: 1 });
+        cs.handle_event(&Event::MouseRelease { pos: p, button: 1 });
         assert!(cs.inner().is_checked());
     }
 

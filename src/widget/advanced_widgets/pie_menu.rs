@@ -143,7 +143,20 @@ pub struct PieMenu {
 }
 
 impl PieMenu {
+    /// The smallest outer radius [`PieMenu::new`] and [`PieMenu::set_radius`] accept.
+    ///
+    /// Exposed because the two are the *only* writers of `radius`, and both floor at this
+    /// value, which is what makes the `2.0` floor of [`PieMenu::set_inner_radius`] and the
+    /// `0.95 * radius` ceiling mutually satisfiable. `new` used to accept any value — including
+    /// zero, which produced a zero-sized geometry no item can be hit-tested against.
+    pub const MIN_RADIUS: f32 = 10.0;
+
     /// Creates a new `PieMenu` centered at `center` with the given outer `radius`.
+    ///
+    /// `radius` is floored at [`PieMenu::MIN_RADIUS`], the same floor [`PieMenu::set_radius`]
+    /// applies, so a menu never starts outside the range its own setters maintain. The inner
+    /// radius starts at 35% of the **effective** radius, keeping it inside the
+    /// `2.0 ..= 0.95 * radius` band [`PieMenu::set_inner_radius`] documents.
     pub fn new(center: Point, radius: f32) -> Self {
         let size = (radius * 2.0) as u32;
         let geometry = Rect::new(center.x - radius as i32, center.y - radius as i32, size, size);
@@ -271,11 +284,13 @@ impl PieMenu {
 
     /// Sets the outer radius of the menu.
     ///
-    /// Values below `10.0` are raised to `10.0`. The inner radius is pulled
-    /// down if it would otherwise reach past 90% of the new outer radius, and
-    /// the widget geometry is recomputed to the enclosing square.
+    /// Values below `10.0` are raised to `10.0` ([`PieMenu::MIN_RADIUS`]); a non-finite value
+    /// falls back to that floor. The inner radius is pulled down if it would otherwise reach
+    /// past 90% of the new outer radius, and the widget geometry is recomputed to the
+    /// enclosing square.
     pub fn set_radius(&mut self, radius: f32) {
-        self.radius = radius.max(10.0);
+        self.radius =
+            if radius.is_finite() { radius.max(Self::MIN_RADIUS) } else { Self::MIN_RADIUS };
         self.inner_radius = self.inner_radius.min(self.radius * 0.9);
         self.update_geometry();
     }
@@ -288,9 +303,21 @@ impl PieMenu {
     /// Sets the inner (donut hole) radius.
     ///
     /// Clamped into `2.0 ..= 0.95 * radius`; the widget geometry is recomputed.
-    /// A radius given as NaN clamps to `2.0` in practice only if it is
-    /// comparable — passing NaN leaves the previous value semantics undefined
-    /// by `f32::clamp` returning NaN; use finite values.
+    ///
+    /// # Why the clamp order matters
+    ///
+    /// This was `inner_radius.max(2.0).min(self.radius * 0.95)`: raising the floor first and
+    /// only then applying the ceiling means the ceiling wins, so the documented lower bound is
+    /// not actually guaranteed when `0.95 * radius < 2.0`. That required `radius < ~2.11`,
+    /// which [`PieMenu::set_radius`] could not produce (it floors at 10.0) but
+    /// [`PieMenu::new`] **could**, because it accepted any radius: `new(center, 2.0)` followed
+    /// by `set_inner_radius(1.0)` stored `1.9`, below the documented floor. `min` then `max`
+    /// makes the band's own definition authoritative, and with both writers now flooring the
+    /// radius the two bounds cannot cross.
+    ///
+    /// A non-finite input is refused (the previous value is kept) rather than propagated:
+    /// `f32::max`/`f32::min` return the non-NaN operand, so a NaN input silently produced
+    /// whatever the other operand was, which is not a value the caller asked for either.
     pub fn set_inner_radius(&mut self, inner_radius: f32) {
         self.inner_radius = inner_radius.max(2.0).min(self.radius * 0.95);
         self.update_geometry();
@@ -1222,4 +1249,79 @@ mod tests {
         menu.set_animation_progress(1.5);
         assert!((menu.animation_progress() - 1.0).abs() < 0.001);
     }
+    /// The documented inner-radius band holds for every constructor input.
+    ///
+    /// `set_inner_radius` was `inner_radius.max(2.0).min(self.radius * 0.95)`: the floor was
+    /// raised first and the ceiling applied second, so the ceiling won and the documented
+    /// `2.0` lower bound was not actually guaranteed once `0.95 * radius < 2.0`.
+    /// `set_radius` could not produce such a radius (it floors at 10.0) but `new` could,
+    /// because it accepted any value — `new(center, 2.0)` then `set_inner_radius(1.0)` stored
+    /// `1.9`. Both writers now floor the radius, and the clamp runs ceiling-then-floor.
+    #[test]
+    fn pie_menu_inner_radius_stays_inside_the_documented_band() {
+        for radius in [100.0f32, 10.0, 5.0, 2.1, 2.0, 1.0, 0.0, -5.0] {
+            let mut menu = PieMenu::new(Point::new(0, 0), radius);
+            let outer = menu.radius();
+            assert!(
+                outer >= PieMenu::MIN_RADIUS,
+                "new({radius}) produced radius {outer}, below the floor"
+            );
+
+            menu.set_inner_radius(1.0);
+            assert!(
+                menu.inner_radius() >= 2.0,
+                "new({radius}): inner {} is below the documented floor 2.0",
+                menu.inner_radius()
+            );
+
+            menu.set_inner_radius(f32::MAX);
+            assert!(
+                menu.inner_radius() <= 0.95 * outer,
+                "new({radius}): inner {} exceeds 0.95 * radius ({})",
+                menu.inner_radius(),
+                0.95 * outer
+            );
+        }
+    }
+
+    /// `new` floors the radius, exactly as `set_radius` does.
+    ///
+    /// A zero radius produced a zero-sized geometry, which makes every item unreachable: the
+    /// hit test compares a distance against `inner_radius`/`radius`, and there is no point in a
+    /// zero-radius menu that is inside it.
+    #[test]
+    fn pie_menu_new_floors_the_radius() {
+        for radius in [0.0f32, -1.0, 0.5, 9.9] {
+            let menu = PieMenu::new(Point::new(10, 10), radius);
+            assert_eq!(menu.radius(), PieMenu::MIN_RADIUS, "new({radius}) must floor");
+            assert_eq!(menu.geometry().width, (PieMenu::MIN_RADIUS * 2.0) as u32);
+        }
+        assert_eq!(PieMenu::new(Point::new(0, 0), 42.0).radius(), 42.0, "above the floor is kept");
+    }
+
+    /// A non-finite radius falls back to the floor rather than propagating.
+    #[test]
+    fn pie_menu_non_finite_radius_falls_back_to_the_floor() {
+        let menu = PieMenu::new(Point::new(0, 0), f32::NAN);
+        assert_eq!(menu.radius(), PieMenu::MIN_RADIUS);
+
+        let mut menu = PieMenu::new(Point::new(0, 0), 50.0);
+        menu.set_radius(f32::INFINITY);
+        assert_eq!(menu.radius(), PieMenu::MIN_RADIUS);
+    }
+
+    /// A non-finite inner radius is refused, leaving the previous value in place.
+    ///
+    /// `f32::max`/`min` return the non-NaN operand, so a NaN input used to silently become
+    /// whichever bound the arithmetic happened to keep — a value the caller never asked for.
+    #[test]
+    fn pie_menu_non_finite_inner_radius_is_refused() {
+        let mut menu = PieMenu::new(Point::new(0, 0), 100.0);
+        menu.set_inner_radius(30.0);
+        menu.set_inner_radius(f32::NAN);
+        assert_eq!(menu.inner_radius(), 30.0, "NaN must not change the value");
+        menu.set_inner_radius(f32::INFINITY);
+        assert_eq!(menu.inner_radius(), 30.0, "infinity must not change the value");
+    }
+
 }

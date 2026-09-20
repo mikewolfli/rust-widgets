@@ -203,6 +203,27 @@ pub fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     }
 }
 
+/// Try to acquire a [`Mutex`], propagating poisoning instead of recovering.
+///
+/// The fallible counterpart of [`lock`], for call sites that already return
+/// `Option`/`Result` and want a poisoned lock to short-circuit rather than hand
+/// back a guard over data a panicking thread may have left inconsistent.
+///
+/// Semantics on the two profiles: under `std` a poisoned lock yields `None`;
+/// under `spin` a lock cannot be poisoned, so it always yields `Some`. That
+/// asymmetry is inherent to the profile, not a behaviour difference callers can
+/// observe through this API — which is the point of routing both through one name.
+pub fn try_lock<T>(mutex: &Mutex<T>) -> Option<MutexGuard<'_, T>> {
+    #[cfg(not(alloc_frugal))]
+    {
+        mutex.lock().ok()
+    }
+    #[cfg(alloc_frugal)]
+    {
+        Some(mutex.lock())
+    }
+}
+
 /// Acquire a [`RwLock`] for reading, recovering from poisoning if there is any.
 ///
 /// The counterpart of [`lock`] for the reader side: same profile split (`std`

@@ -227,9 +227,15 @@ fn i18n_manager_set_language() {
     assert_eq!(manager.translate("hello"), "Bonjour");
     assert_eq!(manager.current_language(), "fr");
 
-    // Language without loaded translations falls back to key
+    // A language with no file of its own falls back to the embedded `en` catalogue
+    // rather than echoing the key. `hello` is present there (the shipped
+    // `language/en.json` is compiled in), so the English string is served — which is the
+    // documented purpose of that embedded file. A key absent from `en` too still echoes
+    // itself; `i18n_missing_language_falls_back_to_english` covers both halves against a
+    // controlled catalogue.
     manager.set_language("de");
-    assert_eq!(manager.translate("hello"), "hello");
+    assert_eq!(manager.translate("hello"), "Hello");
+    assert_eq!(manager.translate("no_such_key_anywhere"), "no_such_key_anywhere");
 }
 
 #[test]
@@ -264,8 +270,54 @@ fn i18n_manager_context_matching() {
     assert_eq!(manager.translate_with_context("greeting", Some("casual"), 1), "greeting");
     // Key without context, no context requested returns message
     assert_eq!(manager.translate_with_context("plain", None, 1), "No context");
-    // Key without context, context requested returns key
-    assert_eq!(manager.translate_with_context("plain", Some("anything"), 1), "plain");
+    // A key whose entry carries no context is "unambiguous on its own" (per
+    // `Translation::context`), so a context-qualified lookup must still resolve it.
+    // This used to return the raw key, which discarded a perfectly good translation
+    // for every entry a catalogue did not restate the context on — and
+    // `tr!("key", "ctx", n)` is exactly that lookup.
+    assert_eq!(
+        manager.translate_with_context("plain", Some("anything"), 1),
+        "No context",
+        "an entry without a context satisfies any context"
+    );
+    // A `Some(other)` entry still belongs to another context and must not be served.
+    assert_eq!(manager.translate_with_context("greeting", Some("casual"), 1), "greeting");
+}
+
+/// A missing key in the active language falls back to `en` before echoing the key.
+///
+/// `language/en.json` is embedded at build time and documented as "a compile-time
+/// fallback", but nothing consulted it: `translate_with_context` went straight from
+/// "no entry in the current language" to returning the key, so a partially translated
+/// locale showed raw identifiers where a source string was available.
+#[test]
+fn i18n_missing_language_falls_back_to_english() {
+    let mut manager = I18nManager::new();
+    let temp_dir = TempDir::new().unwrap();
+    let en_path = temp_dir.path().join("en.json");
+    let fr_path = temp_dir.path().join("fr.json");
+    // `en` covers both keys; `fr` covers only one of them.
+    fs::write(
+        &en_path,
+        r#"{"language":"en","translations":{
+             "greeting":{"message":"Hello"},
+             "farewell":{"message":"Goodbye"}}}"#,
+    )
+    .unwrap();
+    fs::write(&fr_path, r#"{"language":"fr","translations":{"greeting":{"message":"Bonjour"}}}"#)
+        .unwrap();
+    manager.load_translations(en_path.to_str().unwrap()).unwrap();
+    manager.load_translations(fr_path.to_str().unwrap()).unwrap();
+    manager.set_language("fr");
+
+    assert_eq!(manager.translate("greeting"), "Bonjour", "the active language wins");
+    assert_eq!(
+        manager.translate("farewell"),
+        "Goodbye",
+        "a gap in the active language must fall back to `en`, not echo the key"
+    );
+    // A key missing from `en` too has nothing to fall back to.
+    assert_eq!(manager.translate("nowhere"), "nowhere");
 }
 
 #[test]

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! i18n global - global functions and static instances
-use crate::compat::{Mutex, MutexGuard};
+use crate::compat::{MiniToString, Mutex, MutexGuard, String, Vec};
 use crate::i18n::manager::I18nManager;
 use crate::i18n::options::{InitOptions, InitReport};
 use crate::i18n::types::TranslationFile;
@@ -12,7 +12,7 @@ const EMBEDDED_EN_JSON: &str = include_str!("../../language/en.json");
 pub(crate) static GLOBAL_I18N: Mutex<Option<I18nManager>> = Mutex::new(None);
 /// Initialize the i18n system, loading the embedded English translations.
 pub fn init() {
-    let mut guard = GLOBAL_I18N.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = crate::compat::lock(&GLOBAL_I18N);
     let mut manager = I18nManager::new();
     // Load embedded en.json as the default locale
     match serde_json::from_str::<TranslationFile>(EMBEDDED_EN_JSON) {
@@ -66,13 +66,13 @@ pub fn init_with_options(options: InitOptions) -> InitReport {
         }
     }
     report.translations_count = manager.translation_count();
-    let mut guard = GLOBAL_I18N.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = crate::compat::lock(&GLOBAL_I18N);
     *guard = Some(manager);
     report
 }
 /// Translate a key to the current language
 pub fn translate(key: &str) -> String {
-    let mut guard = GLOBAL_I18N.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = crate::compat::lock(&GLOBAL_I18N);
     if let Some(ref mut manager) = *guard {
         manager.translate(key)
     } else {
@@ -81,7 +81,7 @@ pub fn translate(key: &str) -> String {
 }
 /// Translate a key with optional context and plural count
 pub fn translate_with_context(key: &str, context: Option<&str>, count: u32) -> String {
-    let mut guard = GLOBAL_I18N.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = crate::compat::lock(&GLOBAL_I18N);
     if let Some(ref mut manager) = *guard {
         manager.translate_with_context(key, context, count)
     } else {
@@ -90,7 +90,7 @@ pub fn translate_with_context(key: &str, context: Option<&str>, count: u32) -> S
 }
 /// Get the global i18n manager
 pub fn get_manager() -> MutexGuard<'static, Option<I18nManager>> {
-    GLOBAL_I18N.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    crate::compat::lock(&GLOBAL_I18N)
 }
 /// Check and reload all modified translation files
 pub fn check_and_reload_all() -> Vec<crate::i18n::types::ReloadEvent> {
@@ -127,6 +127,6 @@ mod tests {
         assert!(count > 0, "init should load English translations");
         // Reset global state so other tests don't see loaded translations
         // (drop the manager guard first, then acquire the lock again for reset)
-        *GLOBAL_I18N.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        *crate::compat::lock(&GLOBAL_I18N) = None;
     }
 }

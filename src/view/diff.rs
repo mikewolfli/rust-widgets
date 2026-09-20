@@ -155,6 +155,20 @@ pub struct DiffReport {
     ///
     /// [`crate::view::Node::duplicate_sibling_keys`] names the offending keys.
     pub duplicate_keys: usize,
+    /// The root's widget type changed, which a patch batch cannot express.
+    ///
+    /// A document has exactly one root and it has no parent, so there is no
+    /// `Replace { parent }` to emit: the batch would have to name a parent that does not
+    /// exist. This used to be papered over with `parent: 0`, a sentinel that
+    /// `apply_one` rejects (`is_mounted` is false for id `0`), so the resulting
+    /// `ViewError::UnknownParent` was the *only* sign anything had happened — and
+    /// `ViewEngine::update` discards the `ApplyReport`. The diff reported one patch, the
+    /// apply did nothing, and the engine kept serving the pre-change root.
+    ///
+    /// The condition is therefore surfaced here instead, and **no patch is emitted** for
+    /// it: a caller that sees this flag must remount the tree (`ViewEngine::mount`) rather
+    /// than expect the root to have changed.
+    pub root_replaced: bool,
 }
 
 impl DiffReport {
@@ -278,12 +292,17 @@ fn diff_node(
                 });
                 report.replaced_subtrees += 1;
             }
-            // The root has no parent to insert into; a root type change is a wholesale
-            // replacement that the caller must handle by remounting.
+            // The root has no parent to insert into, and no `Replace` parent to name:
+            // a document has one root, so a root type change is a wholesale remount that
+            // only the caller can perform. It used to be emitted as
+            // `Replace { parent: 0 }`, a parent id that `apply_one` always rejects — so
+            // the patch could never succeed and the only trace was an
+            // `UnknownParent` error that `ViewEngine::update` throws away. Recording it
+            // and emitting nothing makes the condition visible instead of inert.
             (None, None) => {}
             (Some(id), None) => {
-                report.patches.push(Patch::Replace { id, parent: 0, index: 0, node: new.clone() });
-                report.replaced_subtrees += 1;
+                let _ = id;
+                report.root_replaced = true;
             }
         }
         return;
@@ -734,12 +753,44 @@ mod tests {
 
     #[test]
     fn b4_7_a_type_change_is_a_replace_not_an_update() {
+        // The root has no parent, so this is the *unexpressible* case: see
+        // `b4_7c_a_root_type_change_is_reported_rather_than_patched`. A child is where a
+        // `Replace` is actually applicable, and it is covered by
+        // `b4_7b_a_type_change_on_a_child_is_replaced_in_place`.
+        //
+        // This test used to assert `replaced_subtrees == 1` and one `Replace` patch for a
+        // **parentless** node. That patch carried `parent: 0`, which `apply_one` always rejects
+        // (`is_mounted` is false for id `0`), so the assertion was pinning an unsatisfiable
+        // patch as correct behaviour.
         let old = Node::new("label").key("a").prop("text", s("A"));
         let new = Node::new("button").key("a").prop("text", s("A"));
         let report = run(&old, &new);
-        assert_eq!(report.replaced_subtrees, 1);
-        assert_eq!(report.patches_of_kind("Replace").len(), 1);
-        assert_eq!(report.patches_of_kind("SetProperty").len(), 0, "nothing to update");
+        assert!(report.root_replaced, "a root type change must be reported");
+        assert!(
+            report.patches_of_kind("Replace").is_empty(),
+            "no patch can replace a root; emitting one would be unsatisfiable: {:?}",
+            report.patches
+        );
+        assert_eq!(report.replaced_subtrees, 0, "nothing was replaced — the caller must remount");
+    }
+
+    /// A root type change is reported, and no patch pretends to carry it out.
+    ///
+    /// The old behaviour emitted `Replace { id, parent: 0, .. }`. Applying it produced
+    /// `ViewError::UnknownParent { parent: 0 }` and changed nothing, while `ViewEngine::update`
+    /// discarded that error — so `DiffReport` looked successful and the engine kept serving the
+    /// pre-change root. `root_replaced` is the honest channel.
+    #[test]
+    fn b4_7c_a_root_type_change_is_reported_rather_than_patched() {
+        let old = Node::new("panel").key("root");
+        let new = Node::new("vbox").key("root");
+        let report = run(&old, &new);
+        assert!(report.root_replaced);
+        assert!(report.patches.is_empty(), "{:?}", report.patches);
+
+        // The converse: an unchanged root is not reported.
+        let same = Node::new("panel").key("root");
+        assert!(!run(&old, &same).root_replaced);
     }
 
     #[test]
@@ -1004,13 +1055,17 @@ mod tests {
     }
 
     /// The converse: a genuinely different kind **must** still be replaced.
+    ///
+    /// A child, not a root — a `Replace` names a parent, and a root has none.
     #[test]
     fn a_different_control_under_another_name_is_still_replaced() {
-        let old = Node::new("label").key("a").prop("text", s("A"));
-        let new = Node::new("button").key("a");
+        let old =
+            Node::new("panel").key("root").child(Node::new("label").key("a").prop("text", s("A")));
+        let new = Node::new("panel").key("root").child(Node::new("button").key("a"));
         let report = run(&old, &new);
         assert_eq!(report.patches_of_kind("Replace").len(), 1, "{:?}", report.patches);
         assert_eq!(report.replaced_subtrees, 1);
+        assert!(!report.root_replaced);
     }
 
     #[test]

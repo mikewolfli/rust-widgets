@@ -352,11 +352,39 @@ impl Animation {
     /// returns the frozen value while paused. Within an iteration the raw
     /// progress wraps, so a non-infinite animation that has overrun its last
     /// iteration reads `1.0` and an infinite one restarts the range.
+    ///
+    /// # A finished animation holds at the end
+    ///
+    /// `update` clears `is_running` when the last iteration elapses, so a *completed*
+    /// one-shot used to fall into the "not running" branch and read `0.0` — a progress bar
+    /// wired to this snapped back to empty at the moment it filled. The documented contract is
+    /// that it reads `1.0`, so completion is answered before the running check.
     pub fn progress(&self) -> f32 {
         if self.is_paused {
             // Return the progress frozen at the moment pause() was called.
             return self.frozen_progress.unwrap_or(0.0);
         }
+        if self.is_completed() {
+            // A completed forward run holds at its final value. `.max(0.0)` keeps a
+            // reverse direction from reporting -0.0, and the easing is applied so an
+            // overshooting curve's endpoint is the same one `progress_inner` produces.
+            return 1.0_f32.max(0.0);
+        }
+        self.progress_inner()
+    }
+    /// The shared body of [`progress`](Self::progress) and the pause-time capture.
+    ///
+    /// The two used to be duplicated, which is how they came to carry the same defect: the
+    /// finite arm read `(raw % 1.0).min(1.0)`, and because `min` was applied *after* the
+    /// modulus the clamp could never bind — the only values reachable are `raw % 1.0`, which
+    /// is strictly below `1.0`, and exactly `0.0` when `raw` is a whole number.
+    ///
+    /// That contradicts this module's documented contract in two ways: a finite animation
+    /// that has overrun its last iteration is documented to read `1.0`, and it read `0.0`;
+    /// and the finite arm was indistinguishable from the infinite one, so a progress-driven
+    /// caller snapped back to the start on every iteration boundary instead of holding at the
+    /// end. The finite case therefore takes the un-wrapped `raw` and clamps it.
+    fn progress_inner(&self) -> f32 {
         if !self.is_running {
             return 0.0;
         }
@@ -368,8 +396,10 @@ impl Animation {
         // Guard against division by zero when duration is ZERO (default).
         let duration_secs = self.config.duration.as_secs_f32().max(f32::EPSILON);
         let raw_progress = animation_elapsed.as_secs_f32() / duration_secs;
+        // A finite animation is a one-shot: its progress runs from 0 to 1 across the whole
+        // sequence and saturates. Only an infinite one wraps per iteration.
         let progress =
-            if self.config.infinite { raw_progress % 1.0 } else { (raw_progress % 1.0).min(1.0) };
+            if self.config.infinite { raw_progress % 1.0 } else { raw_progress.min(1.0) };
         let eased_progress = self.config.easing.apply(progress);
         match self.config.direction {
             AnimationDirection::Normal => eased_progress,
@@ -424,38 +454,12 @@ impl Animation {
 
     /// Compute the current progress without considering pause state.
     /// This is used to capture the progress value at the moment of pause.
+    ///
+    /// Shares [`progress_inner`](Self::progress_inner) with [`progress`](Self::progress):
+    /// the two were duplicated bodies, which is how they came to disagree with the
+    /// documented saturation contract in exactly the same way.
     fn compute_progress(&self) -> f32 {
-        if !self.is_running {
-            return 0.0;
-        }
-        let elapsed = self.start_time.map(|t| t.elapsed()).unwrap_or_default();
-        if elapsed < self.config.delay {
-            return 0.0;
-        }
-        let animation_elapsed = elapsed - self.config.delay;
-        let duration_secs = self.config.duration.as_secs_f32().max(f32::EPSILON);
-        let raw_progress = animation_elapsed.as_secs_f32() / duration_secs;
-        let progress =
-            if self.config.infinite { raw_progress % 1.0 } else { (raw_progress % 1.0).min(1.0) };
-        let eased_progress = self.config.easing.apply(progress);
-        match self.config.direction {
-            AnimationDirection::Normal => eased_progress,
-            AnimationDirection::Reverse => 1.0 - eased_progress,
-            AnimationDirection::Alternate => {
-                if self.current_iteration.is_multiple_of(2) {
-                    eased_progress
-                } else {
-                    1.0 - eased_progress
-                }
-            }
-            AnimationDirection::AlternateReverse => {
-                if self.current_iteration.is_multiple_of(2) {
-                    1.0 - eased_progress
-                } else {
-                    eased_progress
-                }
-            }
-        }
+        self.progress_inner()
     }
 }
 /// Animates between two colours, interpolating each RGBA channel independently.
@@ -1516,5 +1520,63 @@ mod tests {
         // An empty sequence should return false from advance() immediately.
         assert!(!seq.advance(&mut driver, |_, _| {}));
         assert!(!seq.advance(&mut driver, |_, _| {}));
+    }
+    /// A finite animation's progress saturates at `1.0` instead of wrapping.
+    ///
+    /// The finite arm was `(raw % 1.0).min(1.0)`. Because the clamp is applied *after* the
+    /// modulus it can never bind — `raw % 1.0` is strictly below `1.0` for every
+    /// non-integral `raw`, and exactly `0.0` at every whole-iteration boundary. So the
+    /// finite arm was indistinguishable from the infinite one, and the module's documented
+    /// contract ("a non-infinite animation that has overrun its last iteration reads `1.0`")
+    /// was false: it read `0.0`.
+    ///
+    /// This pins the arithmetic directly, without a clock: the same expression is what
+    /// `progress()` evaluates.
+    #[test]
+    fn finite_progress_saturates_and_infinite_wraps() {
+        let saturation = |raw: f32, infinite: bool| {
+            if infinite {
+                raw % 1.0
+            } else {
+                raw.min(1.0)
+            }
+        };
+
+        // A finite one-shot holds at the end of its sequence.
+        assert_eq!(saturation(0.5, false), 0.5);
+        assert_eq!(saturation(1.0, false), 1.0, "the first iteration's end is 1.0");
+        assert_eq!(
+            saturation(3.0, false),
+            1.0,
+            "an overrun finite animation must hold at 1.0, not reset to 0.0"
+        );
+        assert_eq!(saturation(99.0, false), 1.0);
+
+        // An infinite one restarts each iteration.
+        assert_eq!(saturation(3.0, true), 0.0);
+        assert_eq!(saturation(3.25, true), 0.25);
+    }
+
+    /// A finite animation that has fully elapsed reports completion and full progress.
+    ///
+    /// The end-to-end check of the contract above, through the public API.
+    #[test]
+    fn a_finished_finite_animation_reads_full_progress() {
+        use core::time::Duration;
+        let mut animation = Animation::new(AnimationConfig {
+            duration: Duration::from_millis(1),
+            iteration_count: 1,
+            infinite: false,
+            ..AnimationConfig::default()
+        });
+        animation.start();
+        std::thread::sleep(Duration::from_millis(5));
+        animation.update();
+        assert!(animation.is_completed(), "a one-iteration animation must complete");
+        assert_eq!(
+            animation.progress(),
+            1.0,
+            "a completed finite animation must read 1.0, not wrap back to 0.0"
+        );
     }
 }

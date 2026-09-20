@@ -191,9 +191,24 @@ pub fn apply(
     patches: &[Patch],
     create: &dyn Fn(&Node) -> Option<ObjectId>,
 ) -> ApplyReport {
+    apply_with_reservations(layout, patches, create, &mut crate::compat::HashMap::new())
+}
+
+/// [`apply`], but adopting ids the caller already allocated for the batch's own insertions.
+///
+/// `reserved` is keyed by the inserted node's declared key (the empty string for a keyless
+/// node) and is consumed as the nodes are created. See [`insert_subtree`] for why this exists:
+/// without it, every inserted node would be constructed twice, leaving one orphaned control
+/// per insertion.
+pub fn apply_with_reservations(
+    layout: &mut crate::json::BoundJsonLayout,
+    patches: &[Patch],
+    create: &dyn Fn(&Node) -> Option<ObjectId>,
+    reserved: &mut crate::compat::HashMap<String, ObjectId>,
+) -> ApplyReport {
     let mut report = ApplyReport::default();
     for patch in patches {
-        apply_one(layout, patch, create, &mut report);
+        apply_one(layout, patch, create, reserved, &mut report);
     }
     report
 }
@@ -203,6 +218,7 @@ fn apply_one(
     layout: &mut crate::json::BoundJsonLayout,
     patch: &Patch,
     create: &dyn Fn(&Node) -> Option<ObjectId>,
+    reserved: &mut crate::compat::HashMap<String, ObjectId>,
     report: &mut ApplyReport,
 ) {
     match patch {
@@ -225,7 +241,7 @@ fn apply_one(
                 report.errors.push(ViewError::UnknownParent { parent: *parent });
                 return;
             }
-            let created = insert_subtree(layout, *parent, *index, node, create, report);
+            let created = insert_subtree(layout, *parent, *index, node, create, reserved, report);
             report.widgets_created += created;
         }
         Patch::Remove { id } => {
@@ -257,7 +273,7 @@ fn apply_one(
                 return;
             }
             report.widgets_removed += remove_subtree(layout, *id);
-            let created = insert_subtree(layout, *parent, *index, node, create, report);
+            let created = insert_subtree(layout, *parent, *index, node, create, reserved, report);
             report.widgets_created += created;
         }
     }
@@ -277,15 +293,26 @@ fn is_mounted(layout: &crate::json::BoundJsonLayout, id: ObjectId) -> bool {
 }
 
 /// Create `node` and its declared subtree under `parent`, returning how many nodes were made.
+///
+/// `reserved` maps a node's declared key (or its empty key for a keyless node) to an id the
+/// caller has **already allocated** for that node. When an entry exists, the id is adopted
+/// rather than `create` being called again: `ViewEngine::reserve_ids_for_inserts` has to know
+/// the ids of a batch's newly inserted nodes before `apply` runs, and the only way to learn an
+/// id is to call `create`. Calling it twice for one node produced a second live control and
+/// orphaned the first — one leaked widget per inserted node, forever.
 fn insert_subtree(
     layout: &mut crate::json::BoundJsonLayout,
     parent: ObjectId,
     index: usize,
     node: &Node,
     create: &dyn Fn(&Node) -> Option<ObjectId>,
+    reserved: &mut crate::compat::HashMap<String, ObjectId>,
     report: &mut ApplyReport,
 ) -> usize {
-    let id = match create(node) {
+    let reservation_key = node.key.clone().unwrap_or_default();
+    let reserved_id = reserved.remove(&reservation_key);
+
+    let id = match reserved_id.or_else(|| create(node)) {
         Some(id) if id != 0 => id,
         _ => {
             report.errors.push(ViewError::UnknownWidgetType { widget: node.widget.clone() });
@@ -301,7 +328,7 @@ fn insert_subtree(
 
     let mut count = 1usize;
     for (i, child) in node.children.iter().enumerate() {
-        count += insert_subtree(layout, id, i, child, create, report);
+        count += insert_subtree(layout, id, i, child, create, reserved, report);
     }
     // The subtree's declared properties go through the same property contract as a patch,
     // so a control that refuses one reports it here rather than at the next diff.

@@ -5,15 +5,18 @@
 
 #![allow(deprecated)] // Cocoa 0.24 fallback; remove when objc2 backend fully replaces cocoa
 
+use crate::compat::{HashMap, Mutex, OnceLock, String, Vec};
 use crate::core::ObjectId;
 use crate::platform::accessibility::macos::MacOSAccessibilityBridge;
 use crate::platform::state::BackendState;
 use cocoa::appkit::NSWindowStyleMask;
-use cocoa::base::{id, nil};
+use cocoa::base::id;
+// `nil` is referenced only by `translate_key_event` below, which is gated
+// `widgets_unstripped`; importing it unconditionally warns on `mini`.
+#[cfg(widgets_unstripped)]
+use cocoa::base::nil;
 use cocoa::foundation::{NSPoint, NSRect, NSSize};
 use objc::{class, msg_send, sel, sel_impl};
-use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum HandleKind {
@@ -170,7 +173,7 @@ impl MacOSPlatform {
     }
 
     pub(crate) fn get_handle(&self, widget_id: ObjectId) -> Option<CocoaHandle> {
-        let guard = self.handles.lock().expect("macos handle lock poisoned");
+        let guard = crate::compat::lock(&self.handles);
         let handle = guard.get(&widget_id).copied();
         if handle.is_none() {
             log::error!(
@@ -194,7 +197,7 @@ impl MacOSPlatform {
     ) -> ObjectId {
         let id = self.state.create_widget(kind, text, x, y, width, height);
         {
-            let mut guard = self.handles.lock().expect("macos handle lock poisoned");
+            let mut guard = crate::compat::lock(&self.handles);
             if guard.contains_key(&id) {
                 log::warn!(
                     "[macos] register_handle: overwriting existing handle for widget_id={}",

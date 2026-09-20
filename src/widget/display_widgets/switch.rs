@@ -22,6 +22,10 @@ use crate::{impl_widget_property_hooks, property_names_of};
 pub struct Switch {
     base: BaseWidget,
     checked: bool,
+    /// `true` between a pointer press that hit this control and the release that ends
+    /// it. The release is what commits the toggle, so a press that began elsewhere and
+    /// merely *ends* over the switch must not flip it — see `handle_event`.
+    pressed: bool,
     /// Emitted when the checked state changes.
     pub toggled: Signal1<bool>,
 }
@@ -33,6 +37,7 @@ impl Switch {
         Self {
             base: BaseWidget::new(WidgetKind::Switch, geometry, "Switch"),
             checked: false,
+            pressed: false,
             toggled: Signal1::new(),
         }
     }
@@ -54,6 +59,11 @@ impl Switch {
     /// Toggles the checked state.
     pub fn toggle(&mut self) {
         self.set_checked(!self.checked);
+    }
+
+    /// `true` while a pointer press that hit this control is still held.
+    pub fn is_pressed(&self) -> bool {
+        self.pressed
     }
 }
 
@@ -122,8 +132,19 @@ impl Draw for Switch {
         let style = self.style();
 
         // Track dimensions
-        let track_width = rect.width.max(44);
-        let track_height = (rect.height.max(24)).min(track_width / 2);
+        //
+        // These are clamped *down* from the geometry, never up. The previous
+        // `rect.width.max(44)` painted a 44px track starting at `rect.x` whatever the
+        // geometry said, so a switch laid out 30px wide (well under the 50px
+        // `size_hint`, and reachable through the layout engine) overran its own rect by
+        // 14px and overlapped its neighbour. Nothing clips a widget to its geometry at
+        // this layer, so the overflow was visible. Deriving the track from the geometry
+        // keeps the control inside the rectangle it was given; `size_hint` is what asks
+        // the layout engine for a comfortable one.
+        let track_width = rect.width.max(1);
+        let track_height = rect.height.max(1).min(track_width / 2);
+        // A knob needs at least 1px of track to slide in; below that the track is
+        // drawn without a knob rather than as a negative-sized rect.
         let knob_size = track_height.saturating_sub(4);
 
         let track_x = rect.x;
@@ -141,6 +162,9 @@ impl Draw for Switch {
         context.fill_rounded_rect(track_rect, track_height / 2, track_color);
 
         // Draw knob
+        if knob_size == 0 {
+            return;
+        }
         let knob_x = if self.checked {
             track_x + track_width as i32 - knob_size as i32 - 2
         } else {
@@ -159,19 +183,66 @@ impl Draw for Switch {
 }
 
 impl EventHandler for Switch {
+    /// Toggles on a completed activation, not on a bare release.
+    ///
+    /// # Why the press arm is load-bearing
+    ///
+    /// This handler used to be `Event::MouseRelease => self.toggle()` with the position
+    /// discarded and no press tracking. Any release the host routed here flipped the
+    /// switch — including a drag that began outside it and merely ended on top, and
+    /// (since the control never takes pointer capture) any release a host delivered
+    /// without a preceding press inside the control.
+    ///
+    /// [`Button`](crate::widget::base_widgets::button) and
+    /// [`CheckBox`](crate::widget::base_widgets::checkbox) both arm on
+    /// `MousePress`, which is the pattern the rest of the crate's binary controls
+    /// follow; a switch is the same interaction and now behaves identically. Touch,
+    /// `Tap` and the space bar are accepted for the same reason they are there:
+    /// the control is otherwise unreachable from a touch host or a keyboard.
     fn handle_event(&mut self, event: &Event) {
-        if !self.base.is_enabled() {
-            return;
-        }
+        self.base.handle_event(event);
+        let enabled = self.base.is_enabled();
         match event {
-            Event::MouseRelease { pos: _, button } => {
-                if *button == 1 {
+            Event::MousePress { pos, button: 1 } if enabled => {
+                // Arm only for a press that actually lands on the control; a press
+                // outside must not leave the latch armed for a later release.
+                self.pressed = self.geometry().contains_point(*pos);
+            }
+            Event::MouseRelease { pos, button: 1 } if self.pressed => {
+                self.pressed = false;
+                // A release off the control cancels, matching the platform convention
+                // that dragging away from a toggle abandons the interaction.
+                if self.geometry().contains_point(*pos) {
                     self.toggle();
                 }
             }
-            _ => {
-                self.base.handle_event(event);
+            Event::MouseRelease { button: 1, .. } => {
+                self.pressed = false;
             }
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { pos, .. } if enabled => {
+                self.pressed = self.geometry().contains_point(*pos);
+            }
+            #[cfg(feature = "touch")]
+            Event::TouchEnd { pos, .. } if self.pressed => {
+                self.pressed = false;
+                if self.geometry().contains_point(*pos) {
+                    self.toggle();
+                }
+            }
+            #[cfg(feature = "touch")]
+            Event::Tap { .. } if enabled => {
+                self.toggle();
+            }
+            Event::KeyPress { key, .. } if *key == 32 && enabled => {
+                self.toggle();
+            }
+            // Focus loss abandons a held press, so the latch cannot survive a
+            // window switch and fire on an unrelated later release.
+            Event::FocusLost => {
+                self.pressed = false;
+            }
+            _ => {}
         }
     }
 }
@@ -215,10 +286,77 @@ mod tests {
         assert!(!sw.is_checked());
     }
 
+    /// A completed pointer activation toggles the switch.
+    ///
+    /// The test used to dispatch a bare `MouseRelease`, which meant it asserted the
+    /// *defect*: the release position was discarded and no press was required, so any
+    /// release the host routed here flipped the control. The intent — "a pointer
+    /// activation toggles" — is unchanged; only the interaction it performs is now
+    /// the real one. The negative cases live in
+    /// `switch_release_without_press_does_not_toggle` and
+    /// `switch_press_outside_then_release_inside_does_not_toggle`.
     #[test]
     fn switch_mouse_press_toggles() {
         let mut sw = Switch::new(Rect::new(0, 0, 60, 30));
+        let p = Point::new(10, 10);
+        sw.handle_event(&Event::MousePress { pos: p, button: 1 });
+        sw.handle_event(&Event::MouseRelease { pos: p, button: 1 });
+        assert!(sw.is_checked());
+    }
+
+    /// A release with no qualifying press must not toggle.
+    ///
+    /// Reproduces the reported defect: the old handler toggled on *any* release, so a
+    /// bare `MouseRelease` — including one at a position far outside the geometry —
+    /// flipped the switch.
+    #[test]
+    fn switch_release_without_press_does_not_toggle() {
+        let mut sw = Switch::new(Rect::new(0, 0, 60, 30));
         sw.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 });
+        assert!(!sw.is_checked(), "a release with no press must not toggle");
+        // The original reproduction: a release nowhere near the control.
+        sw.handle_event(&Event::MouseRelease { pos: Point::new(5000, 5000), button: 1 });
+        assert!(!sw.is_checked(), "a release far outside the geometry must not toggle");
+    }
+
+    /// A press outside the control must not arm the latch for a later release.
+    #[test]
+    fn switch_press_outside_then_release_inside_does_not_toggle() {
+        let mut sw = Switch::new(Rect::new(0, 0, 60, 30));
+        sw.handle_event(&Event::MousePress { pos: Point::new(5000, 5000), button: 1 });
+        sw.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 });
+        assert!(!sw.is_checked(), "a drag that began outside must not commit");
+    }
+
+    /// Pressing inside and releasing outside cancels, as it does for `Button`.
+    #[test]
+    fn switch_press_inside_then_release_outside_cancels() {
+        let mut sw = Switch::new(Rect::new(0, 0, 60, 30));
+        sw.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        sw.handle_event(&Event::MouseRelease { pos: Point::new(500, 500), button: 1 });
+        assert!(!sw.is_checked());
+        // The latch must also be clear, so the *next* stray release does not fire.
+        sw.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 });
+        assert!(!sw.is_checked(), "the cancelled press must not stay armed");
+    }
+
+    /// Losing focus abandons a held press.
+    #[test]
+    fn switch_focus_loss_cancels_a_held_press() {
+        let mut sw = Switch::new(Rect::new(0, 0, 60, 30));
+        sw.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        assert!(sw.is_pressed());
+        sw.handle_event(&Event::FocusLost);
+        assert!(!sw.is_pressed());
+        sw.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 });
+        assert!(!sw.is_checked());
+    }
+
+    /// The space bar toggles, matching `CheckBox`.
+    #[test]
+    fn switch_space_bar_toggles() {
+        let mut sw = Switch::new(Rect::new(0, 0, 60, 30));
+        sw.handle_event(&Event::KeyPress { key: 32, modifiers: 0 });
         assert!(sw.is_checked());
     }
 

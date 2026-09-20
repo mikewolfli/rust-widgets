@@ -10,6 +10,10 @@ pub mod macos {
     //! Reference: NSPasteboard, NSPasteboardItem, NSPasteboardItemDataProvider
 
     use super::super::clipboard::{ClipboardContent, RichClipboardBackend};
+    // `compat` rather than the prelude: `#![no_std]` removes the prelude on the
+    // `mini` profile, and this module is reachable from `mini,cocoa-legacy`.
+    // Only `String` is needed; `CStr::to_string_lossy` resolves inherently.
+    use crate::compat::String;
     use cocoa::base::{id, nil, BOOL, YES};
     use cocoa::foundation::NSString;
     use objc::{class, msg_send, sel, sel_impl};
@@ -422,6 +426,11 @@ pub mod objc2_macos {
     // Uses objc2 runtime messaging with NSPasteboard, NSPasteboardItem, and NSArray.
 
     use super::super::clipboard::{ClipboardContent, RichClipboardBackend};
+    // `read_plain_text` returns `compat::String`, which under `mini` is
+    // `alloc::string::String` — not the prelude's, because `#![no_std]` removes
+    // that prelude. `CStr::to_string_lossy` resolves inherently, so only the
+    // `String` name needs importing.
+    use crate::compat::String;
     use objc2::class;
     use objc2::msg_send;
     use objc2::runtime::AnyObject;

@@ -419,8 +419,12 @@ pub struct LottieWidget {
     loop_count: i32,
     /// Frame rate in frames per second.
     frame_rate: f32,
-    /// Internal timer accumulator in milliseconds.
-    frame_timer: u64,
+    /// Internal timer accumulator in **microseconds**.
+    ///
+    /// Microseconds rather than milliseconds so a frame period that is not a whole
+    /// number of milliseconds (60 fps -> 16.667 ms) does not lose its remainder on
+    /// every tick; see `tick`.
+    frame_timer_us: u64,
     /// Emitted when the animation finishes (all loops completed).
     pub animation_finished: GenericSignal,
     /// Parsed layers with shapes for rendering.
@@ -444,7 +448,7 @@ impl LottieWidget {
             playing: false,
             loop_count: 0,
             frame_rate: 30.0,
-            frame_timer: 0,
+            frame_timer_us: 0,
             animation_finished: GenericSignal::new(),
             layers: Vec::new(),
             comp_width: 100.0,
@@ -542,7 +546,7 @@ impl LottieWidget {
         self.json_data = Some(data.to_string());
         self.total_frames = total;
         self.current_frame = 0;
-        self.frame_timer = 0;
+        self.frame_timer_us = 0;
         self.playing = false;
         Ok(())
     }
@@ -566,7 +570,7 @@ impl LottieWidget {
     pub fn stop(&mut self) {
         self.playing = false;
         self.current_frame = 0;
-        self.frame_timer = 0;
+        self.frame_timer_us = 0;
         self.base.request_redraw();
     }
 
@@ -586,9 +590,15 @@ impl LottieWidget {
     }
 
     /// Sets the frame rate in frames per second.
+    ///
+    /// Clamped to the same `MIN_LOTTIE_FPS ..= MAX_LOTTIE_FPS` window the document
+    /// loader applies (`parse_frame_rate`), so the two entry points cannot leave the
+    /// control in a state the other would reject. A non-positive or non-finite rate is
+    /// refused rather than stored, because `tick` derives its period from this value
+    /// and a zero period would advance the animation once per millisecond.
     pub fn set_frame_rate(&mut self, fps: f32) {
-        if fps > 0.0 {
-            self.frame_rate = fps;
+        if fps.is_finite() && fps > 0.0 {
+            self.frame_rate = fps.clamp(MIN_LOTTIE_FPS, MAX_LOTTIE_FPS);
         }
     }
 
@@ -613,7 +623,7 @@ impl LottieWidget {
             return;
         }
         self.current_frame = frame.min(self.total_frames - 1);
-        self.frame_timer = 0;
+        self.frame_timer_us = 0;
         self.base.request_redraw();
     }
 
@@ -648,23 +658,48 @@ impl LottieWidget {
             self.current_frame = next;
         }
 
-        self.frame_timer = 0;
+        // The accumulator is *not* reset here. `tick` subtracts exactly one period
+        // before calling this, so a surplus is already left for the next frame; zeroing
+        // it would throw that surplus away on every frame and reintroduce the drift the
+        // microsecond accumulator exists to remove (measured: 30 fps ran at 29.4 fps).
+        // A caller that drives `advance_frame` directly holds no phase to preserve.
         self.base.request_redraw();
         true
     }
 
     /// Advances the animation timer by the given number of milliseconds.
     /// Returns true if the frame changed as a result.
+    ///
+    /// # Why the remainder is carried
+    ///
+    /// The period is computed in **microseconds** and the accumulator counts
+    /// microseconds, because the millisecond granularity the timer is fed in is
+    /// coarser than most frame periods. Rounding `1000 / fps` to whole milliseconds
+    /// made the animation run at the wrong speed with an unbounded error: 60 fps
+    /// truncated 16.667 ms to 16 ms (62.5 fps, 4.2% fast), and 59.94 fps — the NTSC
+    /// rate — truncated to the same 16 ms. Accumulating in microseconds keeps the
+    /// long-run rate equal to the requested one, since the sub-millisecond part is no
+    /// longer discarded on each tick.
     pub fn tick(&mut self, delta_ms: u64) -> bool {
         if !self.playing || self.total_frames == 0 {
             return false;
         }
 
-        let frame_delay =
-            if self.frame_rate > 0.0 { (1000.0 / self.frame_rate as f64) as u64 } else { 33 };
+        // Microseconds per frame. `frame_rate` is validated non-zero and finite by
+        // `set_frame_rate` and by the loader, so this cannot divide by zero or produce
+        // a non-finite period; the guard keeps a hand-built struct safe regardless.
+        let period_us = if self.frame_rate > 0.0 {
+            (1_000_000.0 / self.frame_rate as f64).round().max(1.0) as u64
+        } else {
+            33_000
+        };
 
-        self.frame_timer += delta_ms;
-        if self.frame_timer >= frame_delay {
+        self.frame_timer_us = self.frame_timer_us.saturating_add(delta_ms.saturating_mul(1000));
+        if self.frame_timer_us >= period_us {
+            // Consume one period rather than resetting to zero: a long `delta_ms` (a
+            // stalled event loop) advances exactly one frame and keeps the surplus as
+            // the phase of the next one, so the animation does not lose time.
+            self.frame_timer_us -= period_us;
             self.advance_frame();
             true
         } else {
@@ -1388,6 +1423,108 @@ mod tests {
         assert_eq!(lottie.frame_rate(), 60.0);
         lottie.set_frame_rate(0.0); // should not change
         assert_eq!(lottie.frame_rate(), 60.0);
+        // Non-finite input must be refused too, not stored: `tick` divides by this.
+        lottie.set_frame_rate(f32::NAN);
+        assert_eq!(lottie.frame_rate(), 60.0);
+        lottie.set_frame_rate(f32::INFINITY);
+        assert_eq!(lottie.frame_rate(), 60.0);
+        // Clamped to the same window the document loader applies.
+        lottie.set_frame_rate(1.0e9);
+        assert!(lottie.frame_rate() <= MAX_LOTTIE_FPS);
+        lottie.set_frame_rate(1.0e-9);
+        assert!(lottie.frame_rate() >= MIN_LOTTIE_FPS);
+    }
+
+    /// The animation must actually play at the rate it was asked for.
+    ///
+    /// The old implementation chopped the frame period to whole milliseconds
+    /// (`(1000.0 / fps) as u64`), discarding the remainder on every frame, so 60 fps
+    /// and 59.94 fps both played at 62.5 fps — 4.2% fast, compounding without bound.
+    /// This drives a long run of 1 ms ticks and compares the achieved rate, which is
+    /// the property that was wrong. A one-second window is deliberately *not* used:
+    /// `frames = floor(elapsed / period)` puts every rate up to one frame below its
+    /// nominal count at an exact window boundary, which would make a correct
+    /// implementation look like it drifts.
+    #[test]
+    fn lottie_widget_plays_at_the_requested_frame_rate() {
+        const WINDOW_MS: u64 = 60_000;
+        for fps in [30.0f32, 59.94, 60.0, 24.0] {
+            let mut lottie = LottieWidget::new(Rect::new(0, 0, 200, 200));
+            // A sequence long enough that wrapping never interferes with the count.
+            // `(op, ip, fr)`: a frame count long enough that the sequence never
+            // wraps during the measurement, and inside the loader's
+            // `MAX_LOTTIE_FRAMES` cap.
+            let json = make_lottie_json(50_000.0, 0.0, fps as f64);
+            lottie.load_json(&json).unwrap();
+            lottie.set_frame_rate(fps);
+            lottie.play();
+
+            let mut frames = 0u64;
+            for _ in 0..WINDOW_MS {
+                if lottie.tick(1) {
+                    frames += 1;
+                }
+            }
+
+            // The achieved rate, in fps. Truncation would give ~62.5 for 60 and 59.94.
+            let achieved = frames as f64 * 1000.0 / WINDOW_MS as f64;
+            let error_pct = (achieved - fps as f64).abs() / fps as f64 * 100.0;
+            assert!(
+                error_pct < 0.5,
+                "at {fps} fps the achieved rate was {achieved:.3} fps \
+                 ({error_pct:.2}% off) over {WINDOW_MS} ms; {frames} frames"
+            );
+        }
+    }
+
+    /// Truncating the period made the *slow* rates drift too, not just the fast ones.
+    ///
+    /// 30 fps truncated 33.333 ms to 33 ms (30.3 fps) and 24 fps truncated 41.667 ms to
+    /// 41 ms (24.4 fps) — the second case is what this pins, since a 10 ms-per-frame
+    /// error accumulates 24 extra frames per minute. An exact 10 s window is not used:
+    /// `10000 / 41.667 = 239.998` frames, so a *correct* implementation also reports
+    /// 239 there, and asserting 240 would be asserting the old bug's answer.
+    #[test]
+    fn lottie_widget_truncation_would_have_shown_here() {
+        let mut lottie = LottieWidget::new(Rect::new(0, 0, 200, 200));
+        let json = make_lottie_json(50_000.0, 0.0, 24.0);
+        lottie.load_json(&json).unwrap();
+        lottie.set_frame_rate(24.0);
+        lottie.play();
+
+        // Exactly 120 s of 1 ms ticks: 120000 / 41.667 = 2879.98, so 2879 frames is the
+        // correct answer. The truncated 41 ms period would deliver 2926.
+        let mut frames = 0u64;
+        for _ in 0..120_000 {
+            if lottie.tick(1) {
+                frames += 1;
+            }
+        }
+        assert_eq!(
+            frames, 2879,
+            "24 fps over 120 s must advance 2879 frames; the truncated 41 ms period \
+             would give 2926"
+        );
+    }
+
+    /// A stalled event loop must not lose animation time.
+    ///
+    /// `tick` consumes one period and keeps the surplus rather than resetting the
+    /// accumulator, so the next short tick still fires on schedule.
+    #[test]
+    fn lottie_widget_tick_keeps_the_remainder_after_a_long_stall() {
+        let mut lottie = LottieWidget::new(Rect::new(0, 0, 200, 200));
+        let json = make_lottie_json(1000.0, 0.0, 10.0);
+        lottie.load_json(&json).unwrap();
+        lottie.set_frame_rate(10.0);
+        lottie.play();
+
+        // One 100 ms stall = exactly one frame at 10 fps, with no surplus.
+        assert!(lottie.tick(100), "a full period must advance a frame");
+        // A 50 ms tick is half a period: not yet due.
+        assert!(!lottie.tick(50), "half a period must not advance");
+        // The next 50 ms completes the period exactly.
+        assert!(lottie.tick(50), "the completed period must advance");
     }
 
     #[test]

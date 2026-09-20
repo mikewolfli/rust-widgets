@@ -31,6 +31,66 @@ mod tests {
         assert!(mgr.trigger_shortcut("ctrl+s"));
         assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
+    /// Rebinding an action releases the chord it was bound to before.
+    ///
+    /// `bind_shortcut` only inserted into `shortcut_to_action`, so an action kept every
+    /// chord it had ever been given: binding `Ctrl+S` and then `Ctrl+Shift+S` left **both**
+    /// live, and the stale accelerator kept firing after the rebind. `ShortcutManager::register`
+    /// already released the previous chord; the action-side registry did not.
+    #[test]
+    fn rebinding_a_shortcut_releases_the_previous_chord() {
+        let mut mgr = ActionManager::new();
+        assert!(mgr.register_action("save", "Save"));
+        let counter = Arc::new(AtomicUsize::new(0));
+        let c = Arc::clone(&counter);
+        mgr.action("save").expect("action exists").connect_triggered(move || {
+            c.fetch_add(1, Ordering::SeqCst);
+        });
+
+        assert!(mgr.bind_shortcut("Ctrl+S", "save"));
+        assert!(mgr.trigger_shortcut("Ctrl+S"));
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+
+        assert!(mgr.bind_shortcut("Ctrl+Shift+S", "save"));
+        assert!(!mgr.trigger_shortcut("Ctrl+S"), "the old chord must be released by the rebind");
+        assert_eq!(counter.load(Ordering::SeqCst), 1, "the stale chord must not fire");
+
+        assert!(mgr.trigger_shortcut("Ctrl+Shift+S"), "the new chord must work");
+        assert_eq!(counter.load(Ordering::SeqCst), 2);
+    }
+
+    /// The type-based binder follows the same rule as the string-based one.
+    #[test]
+    fn rebinding_a_shortcut_type_releases_the_previous_chord() {
+        use crate::shortcut::{Key, Shortcut};
+        let mut mgr = ActionManager::new();
+        assert!(mgr.register_action("save", "Save"));
+
+        assert!(mgr.bind_shortcut_type(&Shortcut::ctrl(Key::S), "save"));
+        assert!(mgr.bind_shortcut_type(&Shortcut::ctrl_shift(Key::S), "save"));
+
+        assert!(!mgr.trigger_shortcut("Ctrl+S"), "the old chord must be released by the rebind");
+        assert!(mgr.trigger_shortcut("Ctrl+Shift+S"));
+    }
+
+    /// Two different actions keep their own chords.
+    ///
+    /// The release is scoped to the action being rebound, not global.
+    #[test]
+    fn rebinding_one_action_does_not_disturb_another() {
+        let mut mgr = ActionManager::new();
+        assert!(mgr.register_action("save", "Save"));
+        assert!(mgr.register_action("open", "Open"));
+
+        assert!(mgr.bind_shortcut("Ctrl+S", "save"));
+        assert!(mgr.bind_shortcut("Ctrl+O", "open"));
+        assert!(mgr.bind_shortcut("Ctrl+Shift+S", "save"));
+
+        assert!(mgr.trigger_shortcut("Ctrl+O"), "the other action's chord must survive");
+        assert!(!mgr.trigger_shortcut("Ctrl+S"));
+        assert!(mgr.trigger_shortcut("Ctrl+Shift+S"));
+    }
+
     #[test]
     fn disabled_action_does_not_trigger() {
         let mut mgr = ActionManager::new();

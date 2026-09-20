@@ -252,23 +252,42 @@ pub fn default_widget_property_default_value(
         "geometry" => {
             return Some(CapabilityValue::String("0,0,0,0".to_string()));
         }
-        // `visible` is shared by every control and declared by every schema, but
-        // four kinds give the name their own meaning: `Tooltip`, `Popover` and
-        // `ModalBottomSheet` read it as "the popup is shown", `StatusBar` as "the
-        // status text is shown". Those must fall through to their own arm below,
-        // so they are excluded here; every other kind means the base widget's
-        // visibility, which defaults to shown.
+        // `visible` is shared by every control and declared by every schema. It
+        // always means the base widget's visibility, which defaults to shown —
+        // including for the popup kinds. Those publish their own popup state under a
+        // *different* name (`shown` for `Tooltip`/`Popover`, `active` for
+        // `ModalBottomSheet`, `message` plus this flag for `StatusBar`), precisely so
+        // that bare `visible` keeps one meaning across the whole surface. The
+        // widgets' own property tables say so explicitly (see `tooltip.rs`: "bare
+        // `visible` keeps meaning what it means for every other control"), and the
+        // live controls agree — a freshly constructed `Tooltip` reports
+        // `visible == true` while `shown == false`.
+        //
+        // Those four kinds were excluded here and given a `false` arm further down,
+        // which made the schema *disagree with the control it describes*. The value
+        // is load-bearing: `view::apply::resolve_null_reset` substitutes this default
+        // on every `CapabilityValue::Null` patch, so dropping a `visible` binding in a
+        // view manifest would have hidden a `Tooltip` that the manifest never touched.
+        // (`ModalBottomSheet` was the one genuine exception and is handled below,
+        // together with `Menu`, whose constructor calls `hide()`.)
+        // `Menu` is the one kind whose *base* visibility genuinely starts hidden:
+        // its constructor ends with `base.hide()`, because a menu is opened rather
+        // than displayed. `MaterialSnackbar` does the same, for the same reason and
+        // with the same doc (see `cupertino/core.rs`: "The snackbar starts hidden.").
+        //
+        // `ModalBottomSheet` is excluded for the opposite reason: it overrides
+        // `visible` in its own `WidgetProperties` (see `modal_bottom_sheet.rs`:
+        // `"visible" => self.is_sheet_visible()`), so its arm below is the authority
+        // for that name and this shared entry must not shadow it.
         "visible"
-            if !matches!(
+            if matches!(
                 kind,
-                WidgetKind::Tooltip
-                    | WidgetKind::Popover
-                    | WidgetKind::ModalBottomSheet
-                    | WidgetKind::StatusBar
+                WidgetKind::Menu | WidgetKind::MaterialSnackbar | WidgetKind::ModalBottomSheet
             ) =>
         {
-            return Some(CapabilityValue::Bool(true));
+            return Some(CapabilityValue::Bool(false));
         }
+        "visible" => return Some(CapabilityValue::Bool(true)),
         _ => {}
     }
 
@@ -1234,8 +1253,9 @@ pub fn default_widget_property_default_value(
         },
         WidgetKind::Tooltip => match property_name {
             "text" => CapabilityValue::String(String::new()),
+            // The popup state, published under its own name so bare `visible` can keep
+            // meaning the base widget's visibility (served by the shared entry above).
             "shown" => CapabilityValue::Bool(false),
-            "visible" => CapabilityValue::Bool(false),
             _ => return None,
         },
         WidgetKind::SegmentedButton => match property_name {
@@ -1282,7 +1302,6 @@ pub fn default_widget_property_default_value(
         },
         WidgetKind::Popover => match property_name {
             "shown" => CapabilityValue::Bool(false),
-            "visible" => CapabilityValue::Bool(false),
             "text" => CapabilityValue::String(String::new()),
             _ => return None,
         },
@@ -1370,7 +1389,6 @@ pub fn default_widget_property_default_value(
         },
         WidgetKind::StatusBar => match property_name {
             "message" => CapabilityValue::String(String::new()),
-            "visible" => CapabilityValue::Bool(false),
             "action_label" => CapabilityValue::Null,
             _ => return None,
         },

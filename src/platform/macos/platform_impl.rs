@@ -65,6 +65,14 @@ impl Platform for MacOSPlatform {
     fn invalidate_surface(&self, id: ObjectId) -> bool {
         self.invalidate_surface_impl(id)
     }
+
+    /// Mark one rectangle of the canvas view as needing display.
+    ///
+    /// Gated with `invalidate_surface` above: both are `canvas.rs` facilities, and
+    /// `canvas.rs` is compiled out on the stripped profiles. Without the gate this
+    /// method referenced a type that does not exist there, so `mini,cocoa-legacy`
+    /// did not compile — the same drift the sibling gate above already prevents.
+    #[cfg(widgets_unstripped)]
     fn invalidate_surface_rect(&self, id: ObjectId, rect: crate::core::Rect) -> bool {
         self.invalidate_surface_rect_impl(id, rect)
     }
@@ -172,7 +180,7 @@ impl Platform for MacOSPlatform {
         //
         // Each lock guard is released at the end of its own statement so that no
         // two of the backend's mutexes are ever held at the same time.
-        self.handles.lock().expect("macos handle lock poisoned").remove(&widget_id);
+        crate::compat::lock(&self.handles).remove(&widget_id);
         // Drop the per-widget accessibility registration that `register_handle` added.
         self.a11y_bridge.unregister_handle(widget_id);
         // The state record is the authority for whether the widget existed.
@@ -304,7 +312,7 @@ impl Platform for MacOSPlatform {
     }
 
     fn menu_item_shortcut(&self, menu_item: ObjectId) -> Option<String> {
-        let shortcuts = self.menu_item_shortcuts.lock().ok()?;
+        let shortcuts = crate::compat::try_lock(&self.menu_item_shortcuts)?;
         shortcuts.get(&menu_item).cloned().filter(|text| !text.is_empty())
     }
     fn get_native_handle(&self, widget: ObjectId) -> Option<usize> {
@@ -317,7 +325,7 @@ impl Platform for MacOSPlatform {
         Some(handle.ptr)
     }
     fn poll_menu_triggered(&self) -> Option<u64> {
-        let mut events = menu_events().lock().expect("menu event lock poisoned");
+        let mut events = crate::compat::lock(menu_events());
         if events.is_empty() {
             None
         } else {

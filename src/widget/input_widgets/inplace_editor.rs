@@ -356,8 +356,13 @@ impl EventHandler for InplaceEditor {
             return;
         }
         match event {
-            Event::MouseDoubleClick { pos: _, button } if *button == 1 => {
-                self.start_edit();
+            Event::MouseDoubleClick { pos, button } if *button == 1 => {
+                // Entering edit mode needs the double-click to land on the editor.
+                // Discarding the position meant a double-click anywhere in the window
+                // put this control into edit mode with no way for the user to cancel it.
+                if self.geometry().contains_point(*pos) {
+                    self.start_edit();
+                }
             }
             Event::KeyPress { key, modifiers } => {
                 if !self.is_editing {

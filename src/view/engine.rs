@@ -5,7 +5,7 @@
 
 use crate::core::ObjectId;
 
-use super::apply::{apply, ApplyReport};
+use super::apply::{apply_with_reservations, ApplyReport};
 use super::diff::{diff, DiffReport};
 use super::node::Node;
 
@@ -166,13 +166,36 @@ impl ViewEngine {
         // same batch can address them. Done before `apply` so a batched insert-then-write
         // resolves; the ids are allocated here because only the engine knows which paths the
         // new tree will occupy.
-        self.reserve_ids_for_inserts(&next, &report.patches, create);
+        //
+        // The reservations are handed to `apply` so it *adopts* these ids instead of calling
+        // `create` a second time for the same node. Discarding them made one orphaned live
+        // control per inserted node, permanently — see `insert_subtree`.
+        let mut reserved = self.reserve_ids_for_inserts(&next, &report.patches, create);
 
-        let applied = apply(&mut self.layout, &report.patches, create);
+        let applied =
+            apply_with_reservations(&mut self.layout, &report.patches, create, &mut reserved);
         // Sync the path map to the new tree's shape for the surviving nodes; a node the diff
         // did not mention keeps its path only if its ancestor chain is unchanged.
         self.reindex_paths(&next);
-        let _ = applied;
+
+        // A refused patch is not a no-op the caller can ignore: a property the view declared,
+        // a parent that raced a destroy, or a widget type with no constructor all mean the
+        // mounted tree does not match what the view asked for. That used to be dropped here, so
+        // `DiffReport` looked clean while the layout kept serving the pre-change tree. It is
+        // logged now so the condition is at least observable; callers that need to react should
+        // use `apply` directly.
+        if !applied.errors.is_empty() {
+            for error in &applied.errors {
+                log::warn!("[view] update patch was not applied: {error}");
+            }
+        }
+        if report.root_replaced {
+            log::warn!(
+                "[view] the root's widget type changed; a patch batch cannot replace a root, \
+                 so the mounted tree is unchanged — remount the view"
+            );
+        }
+
         self.current = Some(next);
         report
     }
@@ -247,28 +270,37 @@ impl ViewEngine {
         }
     }
 
-    /// Allocate ids for nodes the diff is about to insert, keyed by their path in the new tree.
+    /// Allocate ids for nodes the diff is about to insert, keyed by the node's declared key.
     ///
     /// Without this, a batch containing an `Insert` and a later patch addressing the inserted
     /// subtree would be reported as unknown — the ids only become addressable once something
     /// knows which path they occupy.
+    ///
+    /// The returned map is passed on to
+    /// [`apply_with_reservations`](super::apply::apply_with_reservations) so those ids are
+    /// **adopted** rather than allocated twice. `create` is the only way to learn an id, so
+    /// calling it here and again inside `apply` produced two live controls per node and
+    /// orphaned the first.
     fn reserve_ids_for_inserts(
         &mut self,
         next: &Node,
         patches: &[super::Patch],
         create: &dyn Fn(&Node) -> Option<ObjectId>,
-    ) {
+    ) -> crate::compat::HashMap<String, ObjectId> {
+        let mut reserved = crate::compat::HashMap::new();
         for patch in patches {
             if let super::Patch::Insert { node, .. } = patch {
                 if let Some(path) = find_path_of(next, node) {
                     let mut pending = Vec::new();
                     collect_new_ids(node, &path, create, &mut pending);
-                    for (p, id) in pending {
+                    for (key, p, id) in pending {
                         self.id_of_path.insert(p, id);
+                        reserved.insert(key, id);
                     }
                 }
             }
         }
+        reserved
     }
 
     /// Rebuild the path map from the mounted layout, keyed by **identity** rather than by the
@@ -340,16 +372,19 @@ fn find_path_of(root: &Node, target: &Node) -> Option<Vec<usize>> {
 }
 
 /// Allocate ids for a freshly declared subtree, in the same order the mount path would.
+///
+/// Each entry carries the node's declared key alongside its id, because the reservation map
+/// `apply` consults is keyed by key (see [`insert_subtree`](super::apply::insert_subtree)).
 fn collect_new_ids(
     node: &Node,
     path: &[usize],
     create: &dyn Fn(&Node) -> Option<ObjectId>,
-    out: &mut Vec<(Vec<usize>, ObjectId)>,
+    out: &mut Vec<(String, Vec<usize>, ObjectId)>,
 ) {
     let Some(id) = create(node).filter(|&id| id != 0) else {
         return;
     };
-    out.push((path.to_vec(), id));
+    out.push((node.key.clone().unwrap_or_default(), path.to_vec(), id));
     for (index, child) in node.children.iter().enumerate() {
         let mut child_path = path.to_vec();
         child_path.push(index);

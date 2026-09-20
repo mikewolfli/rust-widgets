@@ -136,6 +136,14 @@ pub struct ChartWidget {
     pub data_point_clicked: Signal1<usize>,
     /// Emitted when pointer hover enters a data point bucket.
     pub data_point_hovered: Signal1<usize>,
+    /// Emitted with the index hover is *leaving*.
+    ///
+    /// Carries the index that stopped being hovered rather than the one entered, so a
+    /// subscriber can keep its own highlight in step without remembering the previous index
+    /// itself. The sibling charts carry the same signal under their own naming
+    /// (`bar_unhovered` on `candlestick_chart`); `ChartWidget` published only the enter half,
+    /// so a hover highlight could be turned on and never off.
+    pub data_point_unhovered: Signal1<usize>,
 }
 impl ChartWidget {
     /// Creates a new chart widget.
@@ -148,6 +156,7 @@ impl ChartWidget {
             hovered_index: None,
             data_point_clicked: Signal1::new(),
             data_point_hovered: Signal1::new(),
+            data_point_unhovered: Signal1::new(),
         }
     }
 
@@ -175,6 +184,23 @@ impl ChartWidget {
         &self.labels
     }
 
+    /// Returns the index of the hovered data point, if any.
+    ///
+    /// This is the accessor the module doc promises when it says every variant "shares the
+    /// same interaction (`hovered_index`, ...)": the field was written by `handle_event` and
+    /// read by nothing, so the hover state existed only as a local comparison and a caller had
+    /// no way to observe it. The sibling charts (`candlestick_chart`, `volume_chart`,
+    /// `indicator_chart`, `quote_board`, `order_book`) all expose this.
+    pub fn hovered_index(&self) -> Option<usize> {
+        self.hovered_index
+    }
+
+    /// The data value at the hovered index, if the index still names a point.
+    pub fn hovered_value(&self) -> Option<f64> {
+        let index = self.hovered_index?;
+        self.data().get(index).copied()
+    }
+
     /// Sets the chart type.
     pub fn set_chart_type(&mut self, chart_type: ChartType) {
         self.chart_type = chart_type;
@@ -184,6 +210,7 @@ impl ChartWidget {
     /// Sets the chart data as a single series.
     pub fn set_data(&mut self, data: Vec<f64>) {
         self.series = if data.is_empty() { Vec::new() } else { vec![data] };
+        self.revalidate_hover();
         self.base.request_redraw();
     }
 
@@ -194,6 +221,7 @@ impl ChartWidget {
     /// `set_data`.
     pub fn set_series(&mut self, series: Vec<Vec<f64>>) {
         self.series = series;
+        self.revalidate_hover();
         self.base.request_redraw();
     }
 
@@ -201,6 +229,19 @@ impl ChartWidget {
     pub fn set_labels(&mut self, labels: Vec<String>) {
         self.labels = labels;
         self.base.request_redraw();
+    }
+
+    /// Drops a hover index that the new data no longer has a point for.
+    ///
+    /// Replacing a 40-point series with a 5-point one left `hovered_index` naming index 30 —
+    /// an index the chart cannot render and `data_point_hovered` will never emit again. The
+    /// sibling charts re-validate on `set_series` for the same reason; `ChartWidget` did not.
+    fn revalidate_hover(&mut self) {
+        let points = self.data().len();
+        if self.hovered_index.is_some_and(|index| index >= points) {
+            self.hovered_index = None;
+            self.data_point_unhovered.emit(0);
+        }
     }
 
     /// Maps a pointer position to the index of the point under it.
@@ -986,11 +1027,31 @@ impl EventHandler for ChartWidget {
         }
         match event {
             Event::MouseMove { pos } => {
-                if let Some(index) = self.data_index_at(*pos) {
-                    if self.hovered_index != Some(index) {
+                // Entering a *different* bucket must also leave the previous one, or a
+                // subscriber that highlights on `data_point_hovered` accumulates highlights.
+                let next = self.data_index_at(*pos);
+                if next != self.hovered_index {
+                    if let Some(previous) = self.hovered_index {
+                        self.data_point_unhovered.emit(previous);
+                    }
+                    if let Some(index) = next {
                         self.hovered_index = Some(index);
                         self.data_point_hovered.emit(index);
+                    } else {
+                        // Moved off the plot area: no bucket is under the pointer.
+                        self.hovered_index = None;
                     }
+                    self.base.request_redraw();
+                }
+            }
+            Event::MouseLeave { .. } => {
+                // Without this arm `hovered_index` was only ever set, never cleared — the
+                // chart kept reporting a hover after the pointer left, and the stale index
+                // survived a `set_series` that shrank the data. Every sibling chart clears
+                // on leave; this one now does too.
+                if let Some(previous) = self.hovered_index.take() {
+                    self.data_point_unhovered.emit(previous);
+                    self.base.request_redraw();
                 }
             }
             Event::MousePress { pos, button } if *button == 1 => {
@@ -1250,4 +1311,111 @@ mod tests {
         assert!(painted_pixels(&rgba) > 0);
         assert_eq!(chart.chart_type(), ChartType::Bar);
     }
+    /// Hover is observable through the accessor the module doc promises.
+    ///
+    /// `hovered_index` was written by `handle_event` and read by nothing, and had no
+    /// accessor at all — so the "shared interaction (`hovered_index`, ...)" the module doc
+    /// describes was not reachable by a caller.
+    #[test]
+    fn chart_hovered_index_is_observable() {
+        let mut chart = ChartWidget::new(Rect::new(0, 0, 200, 120));
+        chart.set_data(vec![10.0, 20.0, 30.0, 40.0]);
+        assert_eq!(chart.hovered_index(), None, "nothing is hovered initially");
+
+        chart.handle_event(&Event::mouse_move(120, 50));
+        assert_eq!(chart.hovered_index(), Some(2));
+        assert_eq!(chart.hovered_value(), Some(30.0));
+    }
+
+    /// Leaving the chart clears the hover, and says which point was left.
+    ///
+    /// There was no `MouseLeave` arm, so `hovered_index` was only ever set: the chart kept
+    /// reporting a hover after the pointer left, and a highlight driven by
+    /// `data_point_hovered` could be turned on but never off. The accessor reports the index
+    /// that stopped being hovered, matching the sibling charts' `*_unhovered` signals.
+    #[test]
+    fn chart_mouse_leave_clears_hover_and_reports_it() {
+        let mut chart = ChartWidget::new(Rect::new(0, 0, 200, 120));
+        chart.set_data(vec![10.0, 20.0, 30.0, 40.0]);
+
+        let unhovered = Arc::new(Mutex::new(Vec::<usize>::new()));
+        let sink = unhovered.clone();
+        chart.data_point_unhovered.connect(move |index| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*index);
+            }
+        });
+
+        chart.handle_event(&Event::mouse_move(120, 50));
+        assert_eq!(chart.hovered_index(), Some(2));
+
+        chart.handle_event(&Event::mouse_leave(120, 50));
+        assert_eq!(chart.hovered_index(), None, "leave must clear the hover");
+        assert_eq!(
+            unhovered.lock().expect("lock poisoned").clone(),
+            vec![2],
+            "leave must report the point it left"
+        );
+
+        // A second leave with nothing hovered must not emit again.
+        chart.handle_event(&Event::mouse_leave(120, 50));
+        assert_eq!(unhovered.lock().expect("lock poisoned").len(), 1);
+    }
+
+    /// Moving between buckets leaves the previous one before entering the next.
+    #[test]
+    fn chart_moving_between_buckets_unhovers_the_previous() {
+        let mut chart = ChartWidget::new(Rect::new(0, 0, 200, 120));
+        chart.set_data(vec![10.0, 20.0, 30.0, 40.0]);
+
+        let events = Arc::new(Mutex::new(Vec::<String>::new()));
+        let hover_sink = events.clone();
+        chart.data_point_hovered.connect(move |index| {
+            if let Ok(mut guard) = hover_sink.lock() {
+                guard.push(format!("enter {index}"));
+            }
+        });
+        let unhover_sink = events.clone();
+        chart.data_point_unhovered.connect(move |index| {
+            if let Ok(mut guard) = unhover_sink.lock() {
+                guard.push(format!("leave {index}"));
+            }
+        });
+
+        chart.handle_event(&Event::mouse_move(30, 50));
+        chart.handle_event(&Event::mouse_move(120, 50));
+
+        assert_eq!(
+            events.lock().expect("lock poisoned").clone(),
+            vec!["enter 0".to_string(), "leave 0".to_string(), "enter 2".to_string()],
+            "a bucket change must leave the old bucket before entering the new one"
+        );
+    }
+
+    /// Replacing the data drops a hover that no longer names a point.
+    ///
+    /// The sibling charts re-validate on `set_series`. `ChartWidget` kept a stale index, so
+    /// `hovered_index()` reported a point the chart cannot draw and `data_point_hovered`
+    /// would never fire for again.
+    #[test]
+    fn chart_replacing_data_drops_a_stale_hover() {
+        let mut chart = ChartWidget::new(Rect::new(0, 0, 200, 120));
+        chart.set_data(vec![1.0; 40]);
+        chart.handle_event(&Event::mouse_move(150, 50));
+        let index = chart.hovered_index().expect("the pointer is over a point");
+        assert!(index >= 5, "expected a high index for a 40-point series, got {index}");
+
+        // Shrink the series below the hovered index.
+        chart.set_data(vec![1.0; 5]);
+        assert_eq!(chart.hovered_index(), None, "the stale index must be dropped");
+        assert_eq!(chart.hovered_value(), None);
+
+        // A hover that *is* still in range survives the replacement.
+        chart.handle_event(&Event::mouse_move(30, 50));
+        let in_range = chart.hovered_index().expect("pointer over a point");
+        assert!(in_range < 5);
+        chart.set_data(vec![1.0; 8]);
+        assert_eq!(chart.hovered_index(), Some(in_range), "an in-range hover is kept");
+    }
+
 }

@@ -347,9 +347,11 @@ impl EventHandler for CameraPreview {
             return;
         }
         match event {
-            Event::MousePress { pos: _, button } => {
-                if *button == 1 {
-                    // Left-click toggles preview
+            Event::MousePress { pos, button } => {
+                // The press must land on the preview. Discarding the position meant a
+                // click anywhere in the window started or stopped the camera — a
+                // side-effecting device action taken on an unrelated click.
+                if *button == 1 && self.geometry().contains_point(*pos) {
                     self.toggle_preview();
                 }
             }

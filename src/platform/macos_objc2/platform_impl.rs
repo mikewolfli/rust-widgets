@@ -13,6 +13,7 @@
 
 use super::types::{MacOSObjc2Platform, MacObjc2HandleKind};
 use crate::compat::atomic::Ordering;
+use crate::compat::String;
 use crate::core::ObjectId;
 use crate::core::PlatformFamily;
 use crate::platform::{DropEvent, Platform};
@@ -158,7 +159,7 @@ impl Platform for MacOSObjc2Platform {
         // Drop every bookkeeping entry that names this widget, including any queued
         // trigger events that would otherwise fire for a widget that no longer
         // exists.
-        let mut menus = self.menus.lock().expect("mac objc2 menu lock poisoned");
+        let mut menus = crate::compat::lock(&self.menus);
         menus.attached_menu_bar.retain(|_window, menu_bar| *menu_bar != widget_id);
         menus.menu_children.remove(&widget_id);
         menus.menu_item_shortcuts.remove(&widget_id);

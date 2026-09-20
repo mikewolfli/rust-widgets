@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! i18n types - data structures for internationalization
-use crate::compat::HashMap;
+use crate::compat::{HashMap, String};
 use serde::{Deserialize, Serialize};
 /// Translation entry
 ///

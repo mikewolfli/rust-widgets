@@ -207,6 +207,85 @@ impl ThemeManager {
         self.resolve_style_for_state(class_name, None)
     }
 
+    /// Resolves a style from a **kind** name and an optional **class** name.
+    ///
+    /// # Why the two names are separate
+    ///
+    /// [`resolve_style`](Self::resolve_style) takes one name that serves two purposes: it is
+    /// classified by [`WidgetRole::for_kind_name`] and it is looked up as an override key. The
+    /// role table is keyed on *widget kinds* (`button`, `label`, `line_edit`, ...), so passing a
+    /// CSS class there is a category error — `class: "primary"` classified as
+    /// [`WidgetRole::Surface`] because `primary` is not a control kind, and the node was painted
+    /// as a grey panel instead of a filled brand-coloured button.
+    ///
+    /// Here the role always comes from `kind_name`, and `class_name` is consulted only for the
+    /// per-class override, which is the vocabulary it belongs to. A class that names a role
+    /// (`primary`, `danger`) therefore still selects an override written for that class, without
+    /// being asked to act as a control kind.
+    pub fn resolve_style_for(
+        &self,
+        kind_name: &str,
+        class_name: Option<&str>,
+        state: Option<WidgetState>,
+    ) -> WidgetStyle {
+        let mut style = self.resolve_base_style_for(kind_name, class_name);
+        if let Some(state) = state {
+            // The state key is tried for the class first, then the kind, so a theme can
+            // describe either `Button.primary:hover` or a kind-wide `button:hover`.
+            let suffixes = match class_name {
+                Some(class) => [
+                    Some(format!("{class}:{}", state_suffix(state))),
+                    Some(format!("{kind_name}:{}", state_suffix(state))),
+                    None,
+                ],
+                None => [None, Some(format!("{kind_name}:{}", state_suffix(state))), None],
+            };
+            for key in suffixes.into_iter().flatten() {
+                if let Some(token) = self.current_theme().and_then(|t| t.overrides.styles.get(&key))
+                {
+                    apply_token(&mut style, token, None);
+                    break;
+                }
+            }
+        }
+        self.apply_high_contrast(&mut style);
+        style
+    }
+
+    /// The role-default appearance for a kind plus an optional class override.
+    fn resolve_base_style_for(&self, kind_name: &str, class_name: Option<&str>) -> WidgetStyle {
+        let Some(theme) = self.current_theme() else {
+            return WidgetStyle::default();
+        };
+        let mut style = self.role_base_style(theme, kind_name);
+
+        // A class-level override wins over the role default. The class is looked up
+        // verbatim first, then by the role it stands for, so a theme may override either a
+        // specific class or a whole role.
+        if let Some(class_name) = class_name {
+            let token = theme.overrides.styles.get(class_name).or_else(|| {
+                theme.overrides.styles.get(role_key(WidgetRole::for_kind_name(class_name)))
+            });
+            if let Some(token) = token {
+                apply_token(&mut style, token, Some(&theme.fonts));
+            }
+        }
+        style
+    }
+
+    /// Forces the high-contrast palette onto `style` when one is set.
+    ///
+    /// Applied **last** everywhere, so neither a theme override nor a state variant can
+    /// reintroduce a low-contrast colour.
+    fn apply_high_contrast(&self, style: &mut WidgetStyle) {
+        if let Some((background, foreground)) = self.high_contrast.forced_pair() {
+            style.background_color = Some(background);
+            style.text_color = Some(foreground);
+            // A gradient or a texture would defeat the point of a flat forced pair.
+            style.background_gradient = None;
+        }
+    }
+
     /// Resolves a widget style for a class in a specific interaction state.
     ///
     /// The base appearance comes from [`Self::resolve_style`]; then a state
@@ -233,13 +312,38 @@ impl ThemeManager {
                 apply_token(&mut style, token, None);
             }
         }
-        if let Some((background, foreground)) = self.high_contrast.forced_pair() {
-            style.background_color = Some(background);
-            style.text_color = Some(foreground);
-            // A gradient or a texture would defeat the point of a flat forced pair.
-            style.background_gradient = None;
-        }
+        self.apply_high_contrast(&mut style);
         style
+    }
+
+    /// The role-default appearance for a widget kind, before any class or state overlay.
+    ///
+    /// The name is classified through [`WidgetRole::for_kind_name`], so it must be a *kind*
+    /// name; a caller holding a CSS class should use
+    /// [`resolve_style_for`](Self::resolve_style_for), which keeps the two vocabularies apart.
+    fn role_base_style(&self, theme: &Theme, kind_name: &str) -> WidgetStyle {
+        let shadow = if theme.borders.shadow {
+            Some(Shadow { x: 0, y: 2, blur: 6, color: Color::rgba(0, 0, 0, 60) })
+        } else {
+            None
+        };
+        let (background_color, text_color, border_color) = role_colors(theme, kind_name);
+
+        WidgetStyle {
+            background_color,
+            text_color,
+            border_color,
+            border_width: Some(theme.borders.width),
+            border_radius: Some(theme.borders.radius),
+            padding: Padding::all(theme.spacing.medium),
+            margin: Margin::all(theme.spacing.small),
+            shadow,
+            // The theme's own base font token. A control that needs a different
+            // token (a monospace editor) overrides it through its own style or a
+            // `ThemeStyleToken`; the theme no longer leaves every font unset.
+            font: Some(theme.fonts.body.clone()),
+            ..Default::default()
+        }
     }
 
     /// The role-default appearance for a widget name, before any state overlay.
@@ -264,16 +368,10 @@ impl ThemeManager {
             padding: Padding::all(theme.spacing.medium),
             margin: Margin::all(theme.spacing.small),
             shadow,
-            // The theme's own base font token. A control that needs a different
-            // token (a monospace editor) overrides it through its own style or a
-            // `ThemeStyleToken`; the theme no longer leaves every font unset.
             font: Some(theme.fonts.body.clone()),
             ..Default::default()
         };
 
-        // A class-level override wins over the role default. `class_name` is
-        // looked up verbatim first, then by role, so a theme may override either
-        // a specific class or a whole role.
         let token = theme.overrides.styles.get(class_name).or_else(|| {
             theme.overrides.styles.get(role_key(WidgetRole::for_kind_name(class_name)))
         });
@@ -485,6 +583,19 @@ pub fn resolved_theme_style(widget_name: &str) -> Option<WidgetStyle> {
     let manager = global_theme_manager();
     manager.current_theme()?;
     Some(manager.resolve_style(widget_name))
+}
+
+/// Resolves a theme style from a widget **kind** name plus an optional CSS **class**.
+///
+/// The counterpart of [`resolved_theme_style`] for callers that hold both names, such as the
+/// JSON loader reading a node's `"class"` key. Keep the roles of the two arguments apart: the
+/// kind determines the visual role, the class selects an override. See
+/// [`ThemeManager::resolve_style_for`] for why passing a class as the role name misclassifies
+/// the widget.
+pub fn resolved_theme_style_for(kind_name: &str, class_name: Option<&str>) -> Option<WidgetStyle> {
+    let manager = global_theme_manager();
+    manager.current_theme()?;
+    Some(manager.resolve_style_for(kind_name, class_name, None))
 }
 
 /// Sets the process-wide high-contrast override.

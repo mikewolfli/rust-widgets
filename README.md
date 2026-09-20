@@ -57,16 +57,17 @@ capability matrix
 is generated from source and gated for drift in CI.
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.4.5-blue)]()
+[![version](https://img.shields.io/badge/version-2.4.6-blue)]()
 [![tests](https://img.shields.io/badge/tests-5300%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
-**Verified in 2.4.5:** `5309` tests pass on `desktop`, and `cargo test` reports 0
-failures across all 31 test binaries and on all five device profiles (`tablet` 5008,
-`mobile` 5039, `mini` 1558, `embedded` 1645). `cargo clippy --all-targets` is warning-free on all
-five profiles, all five build clean on the host and on `x86_64-pc-windows-msvc`,
+**Verified in 2.4.6:** `5103` lib tests plus the integration targets give `5347` tests on
+`desktop`, with 0 failures across all 31 test binaries and on all five device profiles
+(`tablet` 5046, `mobile` 5077, `mini` 1575, `embedded` 1662). `cargo clippy --all-targets` is
+warning-free on `desktop`, every profile builds clean on the host — including the `mini` ×
+backend matrix that `tools/check_profiles.sh` now covers — and on `wasm32-unknown-unknown`,
 `aarch64-apple-ios`, `x86_64-pc-windows-gnu`, `aarch64-unknown-linux-ohos` and
-`wasm32-unknown-unknown`. See
+`aarch64-apple-darwin`. See
 [`CHANGELOG.md`](CHANGELOG.md) and
 [`docs/log/log-20260920-1.md`](docs/log/log-20260920-1.md) for per-fix evidence.
 

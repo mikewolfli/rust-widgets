@@ -1052,10 +1052,12 @@ fn apply_declared_styles(widget: &mut dyn Widget, obj: &serde_json::Map<String, 
     let class = obj.get("class").and_then(|v| v.as_str());
     let id = obj.get("id").and_then(|v| v.as_str());
 
-    // 1. Active theme. The class is preferred over the kind name when present, so
-    //    a node can opt into a named role while every other node falls back to
-    //    kind-based role resolution.
-    if let Some(theme_style) = crate::theme::resolved_theme_style(class.unwrap_or(&kind)) {
+    // 1. Active theme. The widget's **kind** determines its visual role; a node's
+    //    `class` is only an override key, never a role name. Passing the class here used to
+    //    replace the kind, so `<button class="primary">` was classified as `Surface` (because
+    //    "primary" is not a control kind) and painted as a grey panel instead of a filled
+    //    brand-coloured button — the class silently discarded the role it was meant to select.
+    if let Some(theme_style) = crate::theme::resolved_theme_style_for(&kind, class) {
         let mut style = widget.style().clone();
         style.merge(&theme_style);
         widget.set_style(style);

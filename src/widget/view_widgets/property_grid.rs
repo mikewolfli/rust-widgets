@@ -37,6 +37,18 @@ impl PropertyItem {
     }
 }
 
+/// Height of one property row, in pixels.
+///
+/// Shared between `draw` and `handle_event`: the two must agree on where a row
+/// starts, or a click selects a different row than the one under the pointer.
+const ROW_HEIGHT: u32 = 24;
+
+/// Distance from the top of the widget to the first property row.
+///
+/// The header occupies `[0, ROW_HEIGHT)` and a one-pixel separator line sits just
+/// below it, so the first row begins at `ROW_HEIGHT + 1`.
+const FIRST_ROW_TOP: u32 = ROW_HEIGHT + 1;
+
 /// PropertyGrid widget — a two-column property editor table.
 pub struct PropertyGrid {
     base: BaseWidget,
@@ -48,6 +60,16 @@ pub struct PropertyGrid {
 }
 
 impl PropertyGrid {
+    /// Number of property rows that fit in the current geometry.
+    ///
+    /// Mirrors the arithmetic in `draw` so a hit-test can reject a click below the
+    /// last painted row. Without this, a click in the empty area under the rows produced
+    /// an index that `selected_index < properties.len()` accepted, selecting a row the
+    /// user cannot see.
+    fn visible_row_count(&self) -> u32 {
+        let height = self.geometry().height;
+        height.saturating_sub(FIRST_ROW_TOP) / ROW_HEIGHT
+    }
     /// Creates a new PropertyGrid with the given geometry.
     pub fn new(geometry: Rect) -> Self {
         Self {
@@ -204,7 +226,7 @@ impl WidgetProperties for PropertyGrid {
 impl Draw for PropertyGrid {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        let row_height = 24u32;
+        let row_height = ROW_HEIGHT;
         let name_col_width = rect.width / 3;
         let is_enabled = self.base.is_enabled();
 
@@ -244,7 +266,7 @@ impl Draw for PropertyGrid {
 
         #[allow(clippy::manual_checked_ops)]
         let visible_count = if row_height > 0 {
-            (rect.height.saturating_sub(row_height + 1)) / row_height
+            (rect.height.saturating_sub(FIRST_ROW_TOP)) / row_height
         } else {
             0
         };
@@ -317,18 +339,30 @@ impl EventHandler for PropertyGrid {
             Event::MousePress { pos, button } | Event::MouseRelease { pos, button } => {
                 if *button == 1 {
                     let rect = self.geometry();
-                    let row_height = 24u32;
-                    let header_height = row_height + 1;
 
-                    // Check if click is below header
+                    // The click is measured from the widget's own top edge, so a press
+                    // above the widget (`click_y < 0`) is a click outside it and must
+                    // deselect rather than index a row. The previous arithmetic cast
+                    // `click_y` to `u32` before subtracting, which turned a negative
+                    // offset into a huge row index.
                     let click_y = pos.y - rect.y;
-                    if click_y > header_height as i32 {
-                        let row_index =
-                            (click_y as u32 - header_height) / row_height + self.scroll_offset;
-                        let row_index = row_index as usize;
-                        if row_index < self.properties.len() {
-                            self.selected_index = Some(row_index);
-                            self.selected.emit(row_index);
+
+                    if click_y >= FIRST_ROW_TOP as i32 {
+                        // `draw` paints row `scroll_offset + i` at
+                        // `y = rect.y + FIRST_ROW_TOP + i * ROW_HEIGHT`, so this is the
+                        // inverse of that mapping. `>=` (not `>`) matters: a click on the
+                        // first row's top edge is a click on that row, and `>` skipped it.
+                        let row_in_view = (click_y as u32 - FIRST_ROW_TOP) / ROW_HEIGHT;
+                        let row_index = row_in_view + self.scroll_offset;
+
+                        // Bound above by the rows actually painted. Without this, a click
+                        // in the blank area below the last row selected an invisible row
+                        // that merely happened to exist in `properties`.
+                        if row_in_view < self.visible_row_count()
+                            && (row_index as usize) < self.properties.len()
+                        {
+                            self.selected_index = Some(row_index as usize);
+                            self.selected.emit(row_index as usize);
                             self.base.clicked.emit();
                             self.base.request_redraw();
                             return;
@@ -519,6 +553,76 @@ mod tests {
         // Click in header area (y < row_height + 1 = 25)
         pg.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
         assert_eq!(pg.selected_index(), None);
+    }
+
+    /// Row 0 occupies `[25, 49)`; its top edge is part of it.
+    ///
+    /// The hit-test compared `click_y > header_height` (25), so a click exactly on the
+    /// first row's top edge fell into the header branch and selected nothing, while
+    /// `y = 26` selected row 0. `draw` paints that row starting at 25, so the boundary
+    /// case is the row's own first pixel.
+    #[test]
+    fn property_grid_first_row_top_edge_selects_row_zero() {
+        let mut pg = PropertyGrid::new(Rect::new(0, 0, 300, 200));
+        pg.add_property("A", "1", true);
+        pg.add_property("B", "2", true);
+
+        pg.handle_event(&Event::MousePress {
+            pos: Point::new(10, FIRST_ROW_TOP as i32),
+            button: 1,
+        });
+        assert_eq!(pg.selected_index(), Some(0), "the first row's top edge is part of it");
+
+        // The last pixel of the previous row is not.
+        let mut pg = PropertyGrid::new(Rect::new(0, 0, 300, 200));
+        pg.add_property("A", "1", true);
+        pg.handle_event(&Event::MousePress {
+            pos: Point::new(10, FIRST_ROW_TOP as i32 - 1),
+            button: 1,
+        });
+        assert_eq!(pg.selected_index(), None, "the separator line is not a row");
+    }
+
+    /// Rows are addressed relative to the widget's own origin.
+    ///
+    /// The arithmetic cast `click_y as u32` *before* subtracting the header, so a click
+    /// above the widget wrapped to a near-`u32::MAX` row index instead of being treated
+    /// as a click outside.
+    #[test]
+    fn property_grid_click_above_the_widget_deselects() {
+        let mut pg = PropertyGrid::new(Rect::new(0, 50, 300, 200));
+        pg.add_property("A", "1", true);
+        pg.add_property("B", "2", true);
+
+        // Select row 1 first, so "deselect" is observable.
+        pg.handle_event(&Event::MousePress { pos: Point::new(10, 50 + 30), button: 1 });
+        assert_eq!(pg.selected_index(), Some(0));
+
+        // A click above the widget's top edge is outside it.
+        pg.handle_event(&Event::MousePress { pos: Point::new(10, 5), button: 1 });
+        assert_eq!(pg.selected_index(), None, "a click above the widget must deselect");
+    }
+
+    /// A click below the last painted row must not select an unpainted row.
+    ///
+    /// The hit-test only bounded the index by `properties.len()`, so clicking the blank
+    /// area under seven visible rows selected a tenth property the user cannot see.
+    #[test]
+    fn property_grid_click_below_the_last_row_does_not_select() {
+        let mut pg = PropertyGrid::new(Rect::new(0, 0, 300, 200));
+        for i in 0..10 {
+            pg.add_property(format!("p{i}"), format!("v{i}"), true);
+        }
+
+        // (200 - 25) / 24 = 7 rows are painted, occupying [25, 193).
+        assert_eq!(pg.visible_row_count(), 7);
+
+        pg.handle_event(&Event::MousePress { pos: Point::new(10, 196), button: 1 });
+        assert_eq!(pg.selected_index(), None, "row 7 of 10 is not painted here");
+
+        // The last painted row is still reachable.
+        pg.handle_event(&Event::MousePress { pos: Point::new(10, 190), button: 1 });
+        assert_eq!(pg.selected_index(), Some(6));
     }
 
     #[test]

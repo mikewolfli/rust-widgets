@@ -1,6 +1,6 @@
 [package]
 name = "rust_widgets"
-version = "2.4.5"
+version = "2.4.6"
 edition = "2021"
 description = "Pure Rust cross-platform native GUI library with hardware-adaptive rendering, 179 widgets, touch/gesture support, i18n, and SVG-pipeline-accurate output"
 license = "MIT"
@@ -296,7 +296,14 @@ objc2-macos = ["macos"]
 # the backend modules are written against: the backend was never compiled, and the
 # build failed on a missing type instead of using the legacy backend it had asked
 # for. Direction matters, because a Cargo feature alias is not symmetric.
-cocoa-legacy = ["dep:cocoa", "dep:objc"]
+#
+# `serde`/`serde_json` are hard requirements here for the same reason documented on
+# `macos` above: enabling `cocoa-legacy` also compiles `src/platform/macos_objc2/`
+# (both backends ship behind the Apple gate), whose handle types derive
+# Serialize/Deserialize and whose state snapshot returns `serde_json::Error`.
+# Only `macos` used to carry them, so `--features cocoa-legacy` alone failed with
+# `unresolved import serde` — the identical defect the `macos` line was patched for.
+cocoa-legacy = ["dep:cocoa", "dep:objc", "serde", "serde_json"]
 ios-uikit-ffi = ["ios"]
 gtk-native = ["linux-gtk"]
 wayland-native = ["linux-wayland"]
@@ -650,3 +657,4 @@ required-features = ["desktop", "serde_json"]
 [[example]]
 name = "embedded_host"
 path = "examples/embedded_host.rs"
+

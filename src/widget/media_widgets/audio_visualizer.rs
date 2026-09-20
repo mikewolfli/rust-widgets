@@ -318,16 +318,22 @@ impl Draw for AudioVisualizer {
 }
 
 impl EventHandler for AudioVisualizer {
+    /// Toggles peak-hold on a press that lands on the visualizer.
+    ///
+    /// The position used to be discarded, so a press on any other control in the same
+    /// window flipped this one's peak-hold. The duplicate `MousePress` arm below it —
+    /// an empty body for any non-left button — was dead weight and is gone with it.
     fn handle_event(&mut self, event: &Event) {
         if !self.base.is_enabled() {
             return;
         }
         match event {
-            Event::MousePress { pos: _, button } if *button == 1 => {
+            Event::MousePress { pos, button }
+                if *button == 1 && self.geometry().contains_point(*pos) =>
+            {
                 self.peak_hold = !self.peak_hold;
                 self.base.request_redraw();
             }
-            Event::MousePress { pos: _, button: _ } => {}
             _ => {
                 self.base.handle_event(event);
             }

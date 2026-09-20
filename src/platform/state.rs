@@ -8,6 +8,12 @@ use crate::compat::HashMap;
 use crate::compat::Mutex;
 use crate::compat::String;
 use crate::compat::ToString;
+// `Vec` is used only by `serialize_widget_snapshot`, which is itself behind
+// `feature = "serde_json"`. Importing it through the `compat` bridge (rather than
+// relying on the prelude) is what keeps this file compiling under `mini`, where
+// `#![no_std]` removes the prelude entirely.
+#[cfg(feature = "serde_json")]
+use crate::compat::Vec;
 use crate::core::ObjectId;
 use crate::core::Orientation;
 use crate::core::Rect;
