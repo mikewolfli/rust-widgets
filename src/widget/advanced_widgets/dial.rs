@@ -345,17 +345,73 @@ impl Draw for Dial {
             y: rect.y + rect.height as f32 as i32 / 2,
         };
         let radius = (rect.width.min(rect.height) / 2).saturating_sub(4);
-        context.fill_circle(center, radius, Color::rgb(230, 230, 230));
-        context.draw_circle(center, radius, Color::rgb(150, 150, 150));
-        // Draw a simple value needle.
+
+        // Chrome colours resolve explicit style first, then the theme's resolved style
+        // for this control, and only then fall back to a literal. Without the theme step a
+        // light/dark switch changed nothing on screen: the face, its rim, the needle and
+        // the hub were all fixed greys, which the rendering census reported as theme-blind.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global manager's
+        // mutex is not re-entrant.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("dial");
+        // Read as its own lock acquisition and copied out as values, so the guard is
+        // dropped before anything else touches the theme. The accent is the dial's value
+        // colour: the needle is a value indicator, the same role a progress bar's fill
+        // plays, and reading the token is what makes the indicator move with the theme.
+        let (window_fill, foreground, accent, muted) = {
+            let manager = crate::theme::global_theme_manager();
+            match manager.current_theme() {
+                Some(active) => (
+                    active.colors.background,
+                    active.colors.foreground,
+                    active.colors.accent,
+                    active.colors.secondary,
+                ),
+                None => (
+                    Color::rgb(240, 240, 240),
+                    Color::BLACK,
+                    Color::rgb(33, 150, 243),
+                    Color::rgb(158, 158, 158),
+                ),
+            }
+        };
+
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(foreground);
+        // The face is one step from the window fill toward the text colour, so the dial reads
+        // as a raised disc in either appearance and is never byte-identical to the window
+        // behind it. The filter is on the **resolved** value, not only on the theme's: the
+        // active theme is applied to every control before it is drawn, so
+        // `style.background_color` already holds the resolved fill. A caller's own colour
+        // still wins.
+        let face_from_theme = window_fill.blend(&ink, 0.10);
+        let face = match style.background_color {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => face_from_theme,
+        };
+        // A dial is a `Surface`-role control: the resolver knows its background and text but
+        // has no border colour for it, so the rim is derived one visible step from the face.
+        let rim = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .filter(|resolved| *resolved != face)
+            .unwrap_or_else(|| face.blend(&muted, 0.55));
+
+        context.fill_circle(center, radius, face);
+        context.draw_circle(center, radius, rim);
+        // Draw the value needle: an accent-coloured indicator, black hub beneath it.
         let angle = self.value_angle();
         let needle_len = (radius as f32 * 0.7) as i32;
         let to = Point {
             x: center.x + (needle_len as f32 * angle.cos() as f32) as i32,
             y: center.y + (needle_len as f32 * angle.sin() as f32) as i32,
         };
-        context.draw_line(center, to, Color::rgb(0, 0, 0));
-        context.fill_circle(center, 3, Color::rgb(80, 80, 80));
+        context.draw_line(center, to, accent);
+        context.fill_circle(center, 3, ink);
     }
 }
 

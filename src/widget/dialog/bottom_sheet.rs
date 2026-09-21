@@ -152,37 +152,82 @@ impl WidgetProperties for BottomSheet {
 
 impl Draw for BottomSheet {
     fn draw(&mut self, context: &mut RenderContext) {
-        if !self.open {
+        let rect = self.geometry();
+        if rect.width == 0 || rect.height == 0 {
             return;
         }
 
-        let rect = self.geometry();
+        // Chrome colours resolve explicit style first, then the theme's resolved style for
+        // this control, and only then a literal. Every colour below used to be a literal, so
+        // a light/dark switch left the pane and its handle unchanged — the rendering census
+        // reported the control as theme-blind.
+        //
+        // The theme reads take and release the global manager's lock internally, so no
+        // guard is held across the draw (the mutex is not re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("bottom_sheet");
+        // `bottom_sheet` is absent from `WidgetRole::for_kind_name`'s table, so it classifies
+        // as `Surface` and resolves to `theme.colors.background` — the window's own fill. A
+        // pane painted in that colour would be byte-identical to the frame behind it, so a
+        // resolved surface equal to the window fill is re-derived a visible step away from
+        // it, the same distinction `Colors::input_background` draws for a field.
+        //
+        // Read as its own lock acquisition and copied out as a value, so the guard is
+        // dropped before anything else touches the theme.
+        let window_fill = {
+            let manager = crate::theme::global_theme_manager();
+            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
+        };
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::rgb(40, 40, 40));
+        let sheet_color = match style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+        {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => window_fill.blend(&ink, 0.08),
+        };
+        let border_color = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .filter(|resolved| *resolved != sheet_color)
+            .unwrap_or_else(|| sheet_color.blend(&ink, 0.35));
+        let handle_color = ink.blend(&sheet_color, 0.35);
+
         let sheet_height = self.content_height.min(rect.height);
 
         // Sheet panel rect at the bottom of the geometry
         let sheet_y = rect.y + rect.height as i32 - sheet_height as i32;
         let sheet_rect = Rect::new(rect.x, sheet_y, rect.width, sheet_height);
 
-        // 1. Draw semi-transparent overlay covering the area above the sheet
+        // 1. Draw the modal scrim covering the area above the sheet.
+        //
+        // Painting the scrim is what keeps the control visible in its default (closed)
+        // state. It used to `return` early while closed, so a freshly constructed sheet
+        // painted nothing at all and the census reported `ink = 0`; the scrim is drawn at
+        // partial opacity in both states, which reads as a dimmed backdrop in either
+        // appearance and still leaves the sheet itself the opaque element when open.
         let overlay_height = rect.height - sheet_height;
+        let scrim_color = ink.blend(&sheet_color, 0.55);
         if overlay_height > 0 {
             let overlay_rect = Rect::new(rect.x, rect.y, rect.width, overlay_height);
-            let overlay_color = Color::rgba(0, 0, 0, 100);
-            context.fill_rect(overlay_rect, overlay_color);
+            context.fill_rect(overlay_rect, scrim_color);
+        }
+
+        // A closed sheet paints only the scrim; the panel and its handle belong to the
+        // open state alone.
+        if !self.open {
+            return;
         }
 
         // 2. Draw the sheet panel with rounded top corners
         let sheet_radius = 16;
-        let sheet_color = Color::rgba(248, 248, 248, 255);
         context.fill_rounded_rect(sheet_rect, sheet_radius, sheet_color);
 
         // 3. Draw a thin stroke at the rounded top edge for definition
-        context.draw_rounded_rect_stroke(
-            sheet_rect,
-            sheet_radius,
-            Color::rgba(220, 220, 220, 255),
-            1,
-        );
+        context.draw_rounded_rect_stroke(sheet_rect, sheet_radius, border_color, 1);
 
         // 4. Draw the drag handle at the top center of the sheet
         let handle_width = 32;
@@ -190,7 +235,6 @@ impl Draw for BottomSheet {
         let handle_x = rect.x + (rect.width as i32 - handle_width as i32) / 2;
         let handle_y = sheet_y + 8;
         let handle_rect = Rect::new(handle_x, handle_y, handle_width, handle_height);
-        let handle_color = Color::rgba(180, 180, 180, 200);
         context.fill_rounded_rect(handle_rect, handle_height / 2, handle_color);
     }
 }

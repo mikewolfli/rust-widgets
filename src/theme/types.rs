@@ -138,6 +138,18 @@ impl WidgetRole {
             "checkbox" | "radiobutton" | "switch" | "checklistbox" | "rating" | "stepper" => {
                 Self::Choice
             }
+            // Scrolling, selectable fields whose whole rectangle is the control.
+            //
+            // # Why these are `Input` rather than falling through to `Surface`
+            //
+            // They used to reach the `_` arm, which resolves to `theme.colors.background` —
+            // the very colour a window paints. A list box, a combo box's list and a text area
+            // were therefore filled with the window's own background, so their extents were
+            // invisible: the frame rendered correctly and showed nothing where the control
+            // was. The distinction a reader needs is "this rectangle is a field I can put the
+            // cursor in" versus "this rectangle is bare surface", and only `Input` carries it.
+            "listbox" | "listview" | "tableview" | "treeview" | "scrollarea" | "textbrowser"
+            | "plaintextedit" => Self::Input,
             // Destructive or error presentation.
             "errordialog" | "trash" | "deletebutton" => Self::Danger,
             _ => Self::Surface,

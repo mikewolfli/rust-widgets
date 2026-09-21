@@ -170,12 +170,17 @@ impl EventHandler for StatusBar {
 impl Draw for StatusBar {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
+        let style = self.style();
         // Background
-        context.fill_rect(rect, Color::rgb(240, 240, 240));
+        //
+        // From the style, not a literal. This painted `Color::rgb(240, 240, 240)` and so
+        // stayed light in a dark theme — a light band across the bottom of a dark window.
+        // The literal survives only as the fallback for a style with no colour set.
+        context.fill_rect(rect, style.background_color.unwrap_or(Color::rgb(240, 240, 240)));
         context.draw_line(
             Point::new(rect.x, rect.y),
             Point::new(rect.x + rect.width as i32, rect.y),
-            Color::rgb(200, 200, 200),
+            style.border_color.unwrap_or(Color::rgb(200, 200, 200)),
         );
         // Temporary message (left side)
         if !self.message.is_empty() {
@@ -183,7 +188,7 @@ impl Draw for StatusBar {
                 Point::new(rect.x + 6, rect.y + rect.height as i32 / 2),
                 &self.message,
                 &Font::default(),
-                Color::rgb(0, 0, 0),
+                style.text_color.unwrap_or(Color::rgb(0, 0, 0)),
                 HorizontalAlignment::Left,
             );
         }
@@ -198,7 +203,14 @@ impl Draw for StatusBar {
                 Point::new(right_x, rect.y + rect.height as i32 / 2),
                 &self.permanent_message,
                 &Font::default(),
-                Color::rgb(80, 80, 80),
+                // Dimmed relative to the main message, but still derived from the style so
+                // it stays legible on a dark status bar rather than a fixed near-black.
+                style
+                    .text_color
+                    .map(|c| {
+                        c.blend(&style.background_color.unwrap_or(Color::rgb(240, 240, 240)), 0.4)
+                    })
+                    .unwrap_or(Color::rgb(80, 80, 80)),
                 HorizontalAlignment::Left,
             );
         }

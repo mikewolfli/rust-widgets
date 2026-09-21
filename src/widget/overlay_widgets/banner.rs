@@ -72,6 +72,21 @@ impl BannerSeverity {
         }
     }
 
+    /// The theme token this severity reads.
+    ///
+    /// This is the link that makes `Theme::colors.{info,success,warning,error}`
+    /// *consumed* rather than merely declared. Before it existed the four tokens
+    /// had zero readers in the control layer, so a theme author could change
+    /// `error` and no banner moved — an empty declaration (BLUE20 §1.4, rule #109).
+    pub fn semantic(self) -> crate::theme::SemanticColor {
+        match self {
+            BannerSeverity::Info => crate::theme::SemanticColor::Info,
+            BannerSeverity::Success => crate::theme::SemanticColor::Success,
+            BannerSeverity::Warning => crate::theme::SemanticColor::Warning,
+            BannerSeverity::Error => crate::theme::SemanticColor::Error,
+        }
+    }
+
     /// Parses a token produced by [`BannerSeverity::token`].
     ///
     /// An unknown token is rejected rather than defaulted, because silently
@@ -87,36 +102,55 @@ impl BannerSeverity {
         }
     }
 
+    /// The token colour, or `None` when no theme is active.
+    fn token_color(self) -> Option<Color> {
+        crate::theme::semantic_color(self.semantic())
+    }
+
     /// The background the bar is filled with.
+    ///
+    /// Derived from the severity's **theme token**, tinted toward the theme's
+    /// surface rather than mixed from a literal. That makes the fill move with the
+    /// appearance: in dark the surface is dark, so the tint is dark, and the banner
+    /// no longer stays pale against a dark window (rule #104).
+    ///
+    /// Both reads are separate manager locks, taken and released in turn — never
+    /// held across each other or across the draw — so a `Draw` that resolves a
+    /// token cannot deadlock the non-reentrant global manager.
     fn background(self) -> Color {
-        match self {
-            BannerSeverity::Info => Color::rgb(219, 229, 249),
-            BannerSeverity::Success => Color::rgb(214, 239, 221),
-            BannerSeverity::Warning => Color::rgb(252, 234, 205),
-            BannerSeverity::Error => Color::rgb(250, 219, 219),
+        let surface = crate::theme::resolved_theme_style("banner")
+            .and_then(|style| style.background_color)
+            .unwrap_or(Color::WHITE);
+        match self.token_color() {
+            // 15% token over the surface: enough to read as the severity, light
+            // enough that foreground text stays legible on top of it.
+            Some(token) => token.blend(&surface, 0.85),
+            // No active theme is the only way to reach here, and the global manager
+            // always has one; report it rather than inventing a colour.
+            None => Color::rgb(219, 229, 249),
         }
     }
 
     /// The colour of the bar's border, a darker shade of the background so the
     /// bar separates from the surface behind it.
     fn border(self) -> Color {
-        match self {
-            BannerSeverity::Info => Color::rgb(157, 184, 230),
-            BannerSeverity::Success => Color::rgb(155, 210, 170),
-            BannerSeverity::Warning => Color::rgb(226, 183, 106),
-            BannerSeverity::Error => Color::rgb(226, 158, 158),
+        match self.token_color() {
+            Some(token) => token.blend(&Color::rgb(0, 0, 0), 0.35),
+            None => Color::rgb(157, 184, 230),
         }
     }
 
     /// The default text colour on top of [`BannerSeverity::background`]. Used
     /// only when the theme does not supply one.
+    ///
+    /// Reads the theme's foreground rather than a literal, so the text stays
+    /// legible when the appearance flips. The severity token would be wrong here:
+    /// it is the *accent*, and text drawn in the accent on an accent-tinted fill
+    /// would be nearly invisible.
     fn default_text(self) -> Color {
-        match self {
-            BannerSeverity::Info => Color::rgb(31, 51, 88),
-            BannerSeverity::Success => Color::rgb(24, 69, 39),
-            BannerSeverity::Warning => Color::rgb(94, 63, 12),
-            BannerSeverity::Error => Color::rgb(104, 29, 29),
-        }
+        crate::theme::resolved_theme_style("banner")
+            .and_then(|style| style.text_color)
+            .unwrap_or(Color::BLACK)
     }
 }
 
@@ -471,7 +505,21 @@ impl Draw for Banner {
         }
 
         let style = self.base.style().clone();
-        let background = self.severity.background();
+        // The fill layers two facts, in this order:
+        //
+        // 1. **a caller's explicit `background_color`** — if the caller styled the
+        //    banner, that wins, full stop;
+        // 2. otherwise the **severity tinted from its theme token** over the
+        //    surface the role resolved to.
+        //
+        // The tint is applied even when a theme resolved a `background_color`,
+        // because that colour is the *role's* surface, not the *severity's* state:
+        // taking it verbatim would make every severity look identical and would
+        // hide the theme's `error`/`warning`/`success`/`info` tokens. Only a colour
+        // the caller authored takes precedence — the theme's own contribution is
+        // the surface the tint is mixed over.
+        let caller_background = if style.theme_derived { None } else { style.background_color };
+        let background = caller_background.unwrap_or_else(|| self.severity.background());
         let text_color = style.text_color.unwrap_or_else(|| self.severity.default_text());
         let border_color = style.border_color.unwrap_or_else(|| self.severity.border());
 

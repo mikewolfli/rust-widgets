@@ -407,8 +407,55 @@ impl WidgetProperties for TreeTable {
 impl Draw for TreeTable {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.base.geometry();
-        context.fill_rect(rect, Color::rgb(255, 255, 255));
-        context.draw_rect(rect, Color::rgb(200, 200, 200));
+
+        // Chrome colours resolve explicit style first, then the theme's resolved style for
+        // this control, and only then a literal. The theme step is what makes an appearance
+        // switch visible; the surface, the border, the selected-row highlight, the cell
+        // outlines and the text colour used to be hardcoded literals, so light and dark
+        // rendered identically.
+        //
+        // The theme reads take and release the global manager's lock internally, so no guard
+        // is held across the draw (the mutex is not re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("tree_table");
+        let mut surface = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        // `tree_table` is absent from `WidgetRole::for_kind_name`'s table, so it classifies as
+        // `Surface` and resolves to `theme.colors.background` — the window's own fill. A panel
+        // painted in that colour would be byte-identical to the frame behind it, so a resolved
+        // surface equal to the window fill is re-derived a visible step away from it, the same
+        // distinction `Colors::input_background` draws for a field.
+        let window_fill = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.background)
+            .unwrap_or(Color::WHITE);
+        if surface == window_fill {
+            surface = window_fill.blend(&ink, 0.08);
+        }
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .filter(|resolved| *resolved != surface)
+            .unwrap_or_else(|| surface.blend(&ink, 0.20));
+        // A cell outline is one step into the surface, so the grid stays a subdivision of the
+        // table rather than a second literal grey.
+        let cell_border = surface.blend(&ink, 0.10);
+        // The selected row is a selection state, so it reads the theme's accent token and is
+        // laid over the surface, which keeps it legible in either appearance.
+        let accent = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.primary)
+            .unwrap_or(Color::PRIMARY);
+        let selected_bg = surface.blend(&accent, 0.30);
+
+        context.fill_rect(rect, surface);
+        context.draw_rect(rect, border);
 
         if self.visible_rows.is_empty() {
             return;
@@ -429,10 +476,7 @@ impl Draw for TreeTable {
             }
 
             if self.selected_row == Some(row) {
-                context.fill_rect(
-                    Rect::new(rect.x, y, rect.width, self.row_height),
-                    Color::rgb(210, 230, 255),
-                );
+                context.fill_rect(Rect::new(rect.x, y, rect.width, self.row_height), selected_bg);
             }
 
             for col in 0..columns {
@@ -441,10 +485,7 @@ impl Draw for TreeTable {
                     break;
                 }
 
-                context.draw_rect(
-                    Rect::new(x, y, self.column_width, self.row_height),
-                    Color::rgb(230, 230, 230),
-                );
+                context.draw_rect(Rect::new(x, y, self.column_width, self.row_height), cell_border);
 
                 if let Some(text) = self.item(row, col) {
                     let indent =
@@ -453,7 +494,7 @@ impl Draw for TreeTable {
                         Point::new(x + 4 + indent, y + row_h / 2),
                         &text,
                         &Font::default(),
-                        Color::rgb(0, 0, 0),
+                        ink,
                         HorizontalAlignment::Left,
                     );
                 }

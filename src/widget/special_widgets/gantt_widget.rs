@@ -296,8 +296,48 @@ impl EventHandler for GanttWidget {
 impl Draw for GanttWidget {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::rgb(251, 252, 254));
-        context.draw_rect(rect, Color::rgb(189, 197, 210));
+
+        // Chrome colours resolve explicit style first, then the theme's resolved
+        // style for this control, and only then a literal. The theme step is what
+        // makes an appearance switch visible; previously every colour below was a
+        // hardcoded literal, so light and dark rendered identically.
+        //
+        // `resolved_theme_style` takes and releases the global manager's lock
+        // internally, so no guard is held across the draw (the mutex is not
+        // re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("gantt_widget");
+        // `gantt_widget` is not a control kind in the role table, so it classifies as
+        // `Surface`, whose background is `theme.colors.background` — byte-identical
+        // to the window behind it. The chart's own fill is therefore a step toward
+        // the foreground, so it reads as a surface of its own.
+        let resolved = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::rgb(251, 252, 254));
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| resolved.blend(&Color::BLACK, 0.15));
+        let text_color = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::rgb(0, 0, 0));
+        let background = resolved.blend(&text_color, 0.08);
+        // A selected lane is a chrome state of the chart, so it is derived from the
+        // resolved pair rather than a literal tint.
+        let selected_lane = background.blend(&text_color, 0.14);
+        // Task bars are data marks drawn in the accent colour, which is what makes
+        // them a chart rather than chrome.
+        let bar_color = crate::theme::resolved_theme_style("slider")
+            .and_then(|accent| accent.background_color)
+            .unwrap_or_else(|| background.blend(&text_color, 0.55));
+        let progress_color = bar_color.blend(&text_color, 0.18);
+        // The row separator is secondary chrome, derived from the same pair.
+        let separator = background.blend(&text_color, 0.12);
+
+        context.fill_rect(rect, background);
+        context.draw_rect(rect, border);
 
         let track_x = rect.x + 150;
         let track_w = rect.width.saturating_sub(160);
@@ -305,17 +345,14 @@ impl Draw for GanttWidget {
         for (index, task) in self.tasks.iter().take(12).enumerate() {
             let y = rect.y + index as i32 * self.row_height as i32;
             if self.selected_index == Some(index) {
-                context.fill_rect(
-                    Rect::new(rect.x, y, rect.width, self.row_height),
-                    Color::rgb(225, 236, 252),
-                );
+                context.fill_rect(Rect::new(rect.x, y, rect.width, self.row_height), selected_lane);
             }
 
             context.draw_text(
                 Point::new(rect.x + 8, y + self.row_height as i32 / 2),
                 &task.label,
                 &Font::default(),
-                Color::rgb(36, 49, 68),
+                text_color,
                 HorizontalAlignment::Left,
             );
 
@@ -323,21 +360,21 @@ impl Draw for GanttWidget {
             let x1 = self.project_x(task.end, track_x, track_w).max(x0 + 2);
             let bar_h = self.row_height.saturating_sub(10);
             let bar_rect = Rect::new(x0, y + 5, (x1 - x0) as u32, bar_h);
-            context.fill_rect(bar_rect, Color::rgb(104, 163, 232));
+            context.fill_rect(bar_rect, bar_color);
 
             let progress_w =
                 ((bar_rect.width as f32) * (task.progress as f32 / 100.0)).round() as u32;
             if progress_w > 0 {
                 context.fill_rect(
                     Rect::new(bar_rect.x, bar_rect.y, progress_w, bar_rect.height),
-                    Color::rgb(74, 140, 215),
+                    progress_color,
                 );
             }
 
             context.draw_line(
                 Point::new(rect.x, y + self.row_height as i32),
                 Point::new(rect.x + rect.width as i32, y + self.row_height as i32),
-                Color::rgb(229, 234, 242),
+                separator,
             );
         }
     }

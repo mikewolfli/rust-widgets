@@ -180,9 +180,51 @@ impl Draw for MiniCanvas {
             return;
         }
 
-        // Fill background from style.
-        let bg = self.style().background_color.unwrap_or(Color::rgb(255, 255, 255));
-        context.fill_rect(rect, bg);
+        // The canvas surface resolves the explicit style first, then the theme's resolved style for
+        // this control, and only then a literal. It used to fall back to a fixed white, so a
+        // light/dark switch left the sheet unchanged — the rendering census reported the control as
+        // theme-blind.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
+        // is not re-entrant.
+        let style = self.style().clone();
+        let theme = crate::theme::resolved_theme_style("mini_canvas");
+        // Read as its own lock acquisition and copied out as values, so the guard is dropped
+        // before anything else touches the theme.
+        let (window_fill, foreground, secondary) = {
+            let manager = crate::theme::global_theme_manager();
+            match manager.current_theme() {
+                Some(active) => {
+                    (active.colors.background, active.colors.foreground, active.colors.secondary)
+                }
+                None => (Color::rgb(240, 240, 240), Color::BLACK, Color::rgb(158, 158, 158)),
+            }
+        };
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(foreground);
+        // `mini_canvas` is absent from `WidgetRole::for_kind_name`'s table, so it classifies as
+        // `Surface` and the active theme writes the window fill into `style.background_color`. A
+        // sheet painted in that colour would be byte-identical to the frame behind it, which is
+        // exactly the "painted, but invisible" defect the census reports as `ink = 0`. A resolved
+        // surface equal to the window fill is therefore re-derived a visible step away from it,
+        // while a colour the caller set still wins.
+        let sheet = match style.background_color {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => window_fill.blend(&ink, 0.08),
+        };
+        context.fill_rect(rect, sheet);
+
+        // A page edge, so an empty canvas still reads as a bounded sheet rather than as bare
+        // surface. Drawn before the commands, which are the caller's own shapes and paint over it.
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .filter(|resolved| *resolved != sheet)
+            .unwrap_or_else(|| sheet.blend(&secondary, 0.45));
+        context.draw_rect(rect, border);
 
         // Replay all stored commands.
         for cmd in &self.commands {

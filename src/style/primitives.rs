@@ -183,22 +183,84 @@ pub struct WidgetStyle {
     pub touch_target: Option<Size>,
     /// Optional opacity (0.0 = transparent, 1.0 = opaque). Set via CSS `opacity`.
     pub opacity: Option<f32>,
+    /// Records that this style is currently **the active theme's rendering of this
+    /// control**, so re-applying a theme may replace its colours.
+    ///
+    /// # Why provenance has to be recorded
+    ///
+    /// [`merge`](Self::merge) fills only fields that are `None`, which is what makes a
+    /// caller-set colour survive the theme. That rule alone cannot express "replace what
+    /// the *previous* theme put here", so re-applying a theme after a switch left every
+    /// already-styled control on the old palette: the fields were no longer `None`, so
+    /// the new theme had nowhere to write. Switching light → dark kept light windows,
+    /// which is a visible defect, not a subtlety.
+    ///
+    /// The flag says "the theme is the author of this style". A caller that sets any
+    /// style property clears it (see [`with_background`](Self::with_background) and
+    /// friends), because at that point the caller is an author too and the theme must
+    /// fall back to fill-only-`None` to avoid overwriting them.
+    ///
+    /// Not part of the visual contract: it is never rendered.
+    pub theme_derived: bool,
 }
 
 impl WidgetStyle {
+    /// Merges `other` as a **theme** would.
+    ///
+    /// Two cases, and the flag is what separates them:
+    ///
+    /// * **`theme_derived`** — the theme authored this style, so its values are replaced
+    ///   wholesale. This is the case a second theme application needs, and the case
+    ///   [`merge`](Self::merge) cannot express.
+    /// * **otherwise** — the caller has set something, so fall back to `merge`'s
+    ///   fill-only-`None` rule and never overwrite them. Caller precedence wins.
+    ///
+    /// Either way the result is marked theme-derived *only* if nothing but the theme is
+    /// in it; a style that also carries caller values keeps the flag clear so the next
+    /// application cannot silently replace them.
+    pub fn merge_theme(&mut self, other: &WidgetStyle) {
+        if self.theme_derived {
+            // The theme is the sole author: replace its previous rendering, keeping only
+            // the geometry-adjacent fields it does not speak to.
+            self.background_color = other.background_color;
+            self.background_gradient = other.background_gradient.clone();
+            self.text_color = other.text_color;
+            self.font = other.font.clone();
+            self.border_color = other.border_color;
+            self.border_width = other.border_width;
+            self.border_radius = other.border_radius;
+            self.shadow = other.shadow.clone();
+            self.touch_target = other.touch_target;
+            self.opacity = other.opacity;
+            self.theme_derived = true;
+        } else {
+            self.merge(other);
+            // `merge` fills only `None`, so anything it actually wrote is the theme's,
+            // while anything already set belongs to the caller. Marking the style as
+            // theme-derived here would let the next application overwrite caller values,
+            // so the flag stays clear.
+        }
+    }
     /// Sets the background color.
+    ///
+    /// Setting any style property makes the caller a co-author, so the theme-derived
+    /// mark is cleared: from here on the theme may only fill fields that are `None`, and
+    /// must not replace this colour on a later theme application.
     pub fn with_background(mut self, c: Color) -> Self {
         self.background_color = Some(c);
+        self.theme_derived = false;
         self
     }
     /// Sets the text color.
     pub fn with_text_color(mut self, c: Color) -> Self {
         self.text_color = Some(c);
+        self.theme_derived = false;
         self
     }
     /// Sets the font.
     pub fn with_font(mut self, f: Font) -> Self {
         self.font = Some(f);
+        self.theme_derived = false;
         self
     }
     /// Sets the border.
@@ -206,6 +268,7 @@ impl WidgetStyle {
         self.border_color = Some(color);
         self.border_width = Some(width);
         self.border_radius = Some(radius);
+        self.theme_derived = false;
         self
     }
     /// Sets the padding.
@@ -258,6 +321,9 @@ impl WidgetStyle {
             shadow: self.shadow.clone().or(parent.shadow.clone()),
             touch_target: self.touch_target.or(parent.touch_target),
             opacity: self.opacity.or(parent.opacity),
+            // Inheriting from a parent does not make a style the theme's: the child's
+            // authorship is decided by the theme application that runs next.
+            theme_derived: false,
         }
     }
 

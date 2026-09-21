@@ -16,9 +16,9 @@ use crate::widget::capability::coercion::expect_i64;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::numeric::ordered_clamp_i32;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
-use crate::widget::numeric::{ordered_clamp_i32};
 
 /// Stepper widget for numeric increment/decrement with +/- buttons.
 pub struct Stepper {
@@ -174,25 +174,45 @@ impl Draw for Stepper {
         let font = crate::core::Font::default_ui();
         let text_metrics = context.measure_text(&value_text, &font);
 
+        // Chrome colours resolve explicit style first, then the theme's resolved
+        // style for this control, and only then a literal. The theme step is what
+        // makes an appearance switch visible; previously every colour below was a
+        // hardcoded literal, so light and dark rendered identically.
+        //
+        // `resolved_theme_style` takes and releases the global manager's lock
+        // internally, so no guard is held across the draw (the mutex is not
+        // re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("stepper");
+        let background = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| background.blend(&Color::BLACK, 0.15));
+        let text_color = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        // A disabled control is a chrome state, so it reads a dimmed pair derived
+        // from the resolved colours rather than a second literal grey.
+        let bg_color = if !is_enabled { background.blend(&text_color, 0.06) } else { background };
+        let button_color = background.blend(&text_color, 0.08);
+        let disabled_button = button_color.blend(&background, 0.6);
+        let disabled_text = text_color.blend(&background, 0.5);
+
         // Background
-        let bg_color = if !is_enabled {
-            Color::rgba(230, 230, 230, 200)
-        } else {
-            Color::rgba(240, 240, 240, 255)
-        };
         context.fill_rounded_rect(rect, 4, bg_color);
-        context.draw_rounded_rect_stroke(rect, 4, Color::rgba(180, 180, 180, 200), 1);
+        context.draw_rounded_rect_stroke(rect, 4, border, 1);
 
         // --- Minus button (left) ---
         let inner_height = rect.height.saturating_sub(2);
         let minus_rect = Rect::new(rect.x + 1, rect.y + 1, btn_width, inner_height);
-        let minus_color = if !is_enabled {
-            Color::rgba(200, 200, 200, 200)
-        } else {
-            Color::rgba(220, 220, 220, 255)
-        };
+        let minus_color = if !is_enabled { disabled_button } else { button_color };
         context.fill_rounded_rect(minus_rect, 3, minus_color);
-        context.draw_rounded_rect_stroke(minus_rect, 3, Color::rgba(160, 160, 160, 200), 1);
+        context.draw_rounded_rect_stroke(minus_rect, 3, border, 1);
         // Draw "-" symbol centered in the minus button
         let minus_label = "\u{2212}";
         let minus_font = crate::core::Font::bold("Arial", 16.0);
@@ -204,11 +224,7 @@ impl Draw for Stepper {
             Point::new(minus_x, minus_y),
             minus_label,
             &minus_font,
-            if !is_enabled {
-                Color::rgba(150, 150, 150, 200)
-            } else {
-                Color::rgba(60, 60, 60, 255)
-            },
+            if !is_enabled { disabled_text } else { text_color },
             HorizontalAlignment::Left,
         );
 
@@ -219,13 +235,9 @@ impl Draw for Stepper {
             btn_width,
             inner_height,
         );
-        let plus_color = if !is_enabled {
-            Color::rgba(200, 200, 200, 200)
-        } else {
-            Color::rgba(220, 220, 220, 255)
-        };
+        let plus_color = if !is_enabled { disabled_button } else { button_color };
         context.fill_rounded_rect(plus_rect, 3, plus_color);
-        context.draw_rounded_rect_stroke(plus_rect, 3, Color::rgba(160, 160, 160, 200), 1);
+        context.draw_rounded_rect_stroke(plus_rect, 3, border, 1);
         // Draw "+" symbol centered in the plus button
         let plus_label = "+";
         let plus_font = crate::core::Font::bold("Arial", 16.0);
@@ -237,11 +249,7 @@ impl Draw for Stepper {
             Point::new(plus_x, plus_y),
             plus_label,
             &plus_font,
-            if !is_enabled {
-                Color::rgba(150, 150, 150, 200)
-            } else {
-                Color::rgba(60, 60, 60, 255)
-            },
+            if !is_enabled { disabled_text } else { text_color },
             HorizontalAlignment::Left,
         );
 
@@ -249,16 +257,12 @@ impl Draw for Stepper {
         let text_x = rect.x + (rect.width as i32 - text_metrics.width as i32) / 2;
         let text_y = rect.y + (rect.height as i32 + text_metrics.height as i32) / 2
             - text_metrics.descent as i32;
-        let text_color = if !is_enabled {
-            Color::rgba(150, 150, 150, 200)
-        } else {
-            Color::rgba(30, 30, 30, 255)
-        };
+        let value_color = if !is_enabled { disabled_text } else { text_color };
         context.draw_text(
             Point::new(text_x, text_y),
             &value_text,
             &font,
-            text_color,
+            value_color,
             HorizontalAlignment::Left,
         );
     }

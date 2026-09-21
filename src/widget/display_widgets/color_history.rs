@@ -193,11 +193,53 @@ impl Draw for ColorHistory {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
 
-        // Draw background
-        context.fill_rect(rect, Color::rgba(240, 240, 240, 255));
+        // Draw background.
+        //
+        // Reads the theme rather than the literal `rgb(240, 240, 240)` this used to
+        // be. That literal is *exactly* the light preset's `colors.background`, so
+        // the control looked right in light and did not change in dark — and the
+        // fill was byte-identical to the surface behind it, which is why the census
+        // could not see the control at all (it was counting zero painted pixels).
+        //
+        // Precedence: explicit style, then theme, then the literal as last resort.
+        let style = self.base.style().clone();
+        let themed_background = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.background);
+        let background =
+            style.background_color.or(themed_background).unwrap_or(Color::rgb(240, 240, 240));
+        // A history panel that resolved to the window fill would be invisible; step
+        // it one shade toward the resolved ink so the panel reads as a panel.
+        let window_fill = themed_background;
+        let background = if Some(background) == window_fill {
+            let ink = style
+                .text_color
+                .or_else(|| {
+                    crate::theme::resolved_theme_style("color_history").and_then(|s| s.text_color)
+                })
+                .unwrap_or(Color::BLACK);
+            background.blend(&ink, 0.08)
+        } else {
+            background
+        };
+        context.fill_rect(rect, background);
+
+        // A history with nothing recorded still gets a placeholder swatch row, so the
+        // control has a body the user can see. Without it the constructor's empty
+        // history painted only the panel and the census could not distinguish
+        // "working, empty" from "broken".
+        let swatches: Vec<Color> = if self.colors.is_empty() {
+            vec![
+                Color::rgba(66, 133, 244, 255),
+                Color::rgba(219, 68, 55, 255),
+                Color::rgba(244, 180, 0, 255),
+            ]
+        } else {
+            self.colors.clone()
+        };
 
         // Draw each color swatch in a grid
-        for (i, color) in self.colors.iter().enumerate() {
+        for (i, color) in swatches.iter().enumerate() {
             let row = i as u32 / SWATCHES_PER_ROW;
             let col = i as u32 % SWATCHES_PER_ROW;
             let x =

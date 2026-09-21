@@ -46,6 +46,19 @@ macro_rules! impl_dialog_widgets {
                     crate::widget::capability::CapabilityValue::String(text.to_string()),
                 )
                 .ok();
+
+                // A message box starts **hidden**: it is a modal dialog, so creating it
+                // is not the same as showing it.
+                //
+                // A `BaseWidget` starts visible, which is right for a control placed on
+                // a form — it should appear with the window. It is wrong for a dialog:
+                // the caller's next step is `show_modal()`, and between the two calls the
+                // box would be sitting on top of the window, blocking nothing and looking
+                // like a stray panel. Measured on the control demo, the freshly created
+                // box was painted over the form before any button was pressed.
+                crate::widget::runtime::with_widget_mut(id, |widget| {
+                    widget.set_visible(false);
+                });
             }
             id
         }

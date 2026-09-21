@@ -244,27 +244,69 @@ impl Draw for Dialog {
         if rect.width == 0 || rect.height == 0 {
             return;
         }
-        context.fill_rect(rect, Color::rgb(255, 255, 255));
-        context.draw_rect(rect, Color::rgb(110, 110, 110));
+
+        // Chrome colours resolve explicit style first, then the theme's resolved style
+        // for this control, and only then fall back to a literal. Without the theme step
+        // a light/dark switch changed nothing on screen, because the frame, the title bar
+        // and the title text were all hardcoded.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global
+        // manager's mutex is not re-entrant.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("dialog");
+        // The dialog is a `Surface`-role control, and `Surface` resolves to
+        // `theme.colors.background` — the colour the window behind it is already filled
+        // with. Painting the frame in it would make the dialog indistinguishable from the
+        // window, so the surface is tinted one step toward the foreground: the same
+        // distinction `Colors::input_background` makes for a field, applied to a panel.
+        // The window fill is read as its own lock acquisition and copied out as a value, so
+        // the guard is dropped before anything else touches the theme — the global
+        // manager's mutex is not re-entrant.
+        let window_fill = {
+            let manager = crate::theme::global_theme_manager();
+            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
+        };
+        let themed_surface = theme.as_ref().and_then(|t| t.background_color);
+        let themed_ink = theme.as_ref().and_then(|t| t.text_color);
+        let themed_border = theme.as_ref().and_then(|t| t.border_color);
+
+        let ink = style.text_color.or(themed_ink).unwrap_or(Color::rgb(40, 40, 40));
+        // The filter is on the **resolved** value, not only on the theme's: the active
+        // theme is applied to every control before it is drawn, so `style.background_color`
+        // already holds `Surface`'s window-fill colour and letting it through unfiltered
+        // is exactly the invisible-panel defect this guards against.
+        let surface = match style.background_color.or(themed_surface) {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => window_fill.blend(&ink, 0.06),
+        };
+        let border = style
+            .border_color
+            .or(themed_border)
+            .filter(|resolved| *resolved != surface)
+            .unwrap_or_else(|| surface.blend(&ink, 0.45));
+        // The title bar is a distinct band on the frame, derived from it so the two stay
+        // one visible step apart in either appearance.
+        let title_bar = surface.blend(&ink, 0.08);
+
+        context.fill_rect(rect, surface);
+        context.draw_rect(rect, border);
 
         if self.title.is_empty() {
             return;
         }
         let bar_height = DIALOG_TITLE_BAR_HEIGHT.min(rect.height);
-        context.fill_rect(
-            Rect::new(rect.x, rect.y, rect.width, bar_height),
-            Color::rgb(240, 240, 240),
-        );
+        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, bar_height), title_bar);
         context.draw_line(
             Point::new(rect.x, rect.y + bar_height as i32),
             Point::new(rect.x + rect.width as i32, rect.y + bar_height as i32),
-            Color::rgb(110, 110, 110),
+            border,
         );
         context.draw_text(
             Point::new(rect.x + 8, rect.y + (bar_height / 2) as i32),
             &self.title,
             &Font::default(),
-            Color::rgb(40, 40, 40),
+            ink,
             HorizontalAlignment::Left,
         );
     }

@@ -2826,7 +2826,7 @@ dependencies = [
 
 [[package]]
 name = "rust_widgets"
-version = "2.4.4"
+version = "2.5.0"
 dependencies = [
  "aes",
  "boa_engine",
@@ -2841,6 +2841,7 @@ dependencies = [
  "gtk",
  "image",
  "jpeg-decoder",
+ "libc",
  "log",
  "minimp3_fixed",
  "miniz_oxide 0.8.9",

@@ -489,25 +489,59 @@ impl TabBar {
         let is_hovered = self.hovered_index == Some(index);
         let is_enabled = tab.enabled;
 
+        // Chrome colours resolve explicit style first, then the theme's resolved
+        // style for this control, and only then a literal. The theme step is what
+        // makes an appearance switch visible; previously every colour below was a
+        // hardcoded literal, so light and dark rendered identically.
+        //
+        // `resolved_theme_style` takes and releases the global manager's lock
+        // internally, so no guard is held across the draw (the mutex is not
+        // re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("tab_bar");
+        // `tab_bar` is not a control kind in the role table, so it classifies as
+        // `Surface`, whose background is `theme.colors.background` — byte-identical
+        // to the window behind it. The current tab's fill is therefore a step toward
+        // the foreground, so the strip reads as a surface of its own.
+        let resolved = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::rgb(255, 255, 255));
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or(Color::rgb(180, 180, 180));
+        let text_color = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::rgb(0, 0, 0));
+        let current_tab = resolved.blend(&text_color, 0.08);
+        // Tab chrome is derived from that pair: a disabled tab is pressed toward the
+        // foreground, an inactive one less so, and a hovered tab reads as a light
+        // tint of the selection colour.
+        let disabled_tab = current_tab.blend(&text_color, 0.14);
+        let inactive_tab = current_tab.blend(&text_color, 0.06);
+        let hovered_tab = current_tab.blend(
+            &crate::theme::resolved_theme_style("button")
+                .and_then(|button| button.background_color)
+                .unwrap_or(text_color),
+            0.08,
+        );
+
         // Background color.
         let bg = if !is_enabled {
-            Color::rgb(240, 240, 240)
+            disabled_tab
         } else if is_current {
-            Color::rgb(255, 255, 255)
+            current_tab
         } else if is_hovered {
-            Color::rgb(235, 235, 250)
+            hovered_tab
         } else {
-            Color::rgb(230, 230, 230)
+            inactive_tab
         };
 
         // Border color.
-        let border = if !is_enabled {
-            Color::rgb(200, 200, 200)
-        } else if is_current {
-            Color::rgb(180, 180, 200)
-        } else {
-            Color::rgb(180, 180, 180)
-        };
+        let border =
+            if !is_enabled || is_current { border } else { border.blend(&inactive_tab, 0.5) };
 
         // Draw tab shape.
         match self.tab_shape {
@@ -538,8 +572,10 @@ impl TabBar {
             }
         }
 
-        // Text color.
-        let text_color = if !is_enabled { Color::rgb(150, 150, 150) } else { Color::rgb(0, 0, 0) };
+        // Text color. A disabled tab's label is muted toward its own fill rather than
+        // the previous literal grey.
+        let text_color =
+            if !is_enabled { text_color.blend(&disabled_tab, 0.5) } else { text_color };
 
         // Draw tab title.
         let text_x = tab_rect.x + 6;
@@ -554,8 +590,13 @@ impl TabBar {
 
         // Draw close button if closable.
         if let Some(close_rect) = self.close_rect(index) {
-            let close_color =
-                if !is_enabled { Color::rgb(180, 180, 180) } else { Color::rgb(100, 100, 100) };
+            // Secondary chrome: a tint of the resolved foreground, muted further when
+            // the tab is disabled.
+            let close_color = if !is_enabled {
+                text_color.blend(&disabled_tab, 0.4)
+            } else {
+                text_color.blend(&current_tab, 0.4)
+            };
             context.draw_line(
                 Point::new(close_rect.x, close_rect.y),
                 Point::new(

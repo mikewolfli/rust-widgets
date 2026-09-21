@@ -681,6 +681,17 @@ required-features = ["desktop"]
 name = "widget_reachability"
 required-features = ["desktop", "serde_json"]
 
+# Prints what the active theme resolves to for each control kind the control demo
+# places. Answers "why is every control the same grey?" with values rather than a
+# reading of the theme merger, so it needs a device profile and the `app` module.
+[[example]]
+name = "theme_resolve_dump"
+required-features = ["desktop"]
+
+# Reads back the style a **created** control carries, to decide whether a control that
+# renders grey is missing the theme or ignoring it. Needs a device profile and the
+# `app` module, like the other probes.
+
 # The executable companion to the cookbook's embedded chapter. Declared with **no**
 # `required-features` on purpose: it is supposed to compile on every profile
 # (`desktop`, `tablet`, `mobile`, `mini`, `embedded`), which is what keeps the
@@ -700,3 +711,24 @@ required-features = ["designer"]
 [[example]]
 name = "embedded_host"
 path = "examples/embedded_host.rs"
+
+# Diagnostic probes kept as regression evidence for the "controls render invisibly"
+# defect (log-20260921-1.md §3): `style_probe4` prints the pixel colours a window's
+# tree produces, `style_probe3` does the same for a single control. Both are how the
+# coordinate-space mismatch was located, and both are re-runnable on any host.
+[[example]]
+name = "style_probe3"
+required-features = ["desktop"]
+
+[[example]]
+name = "style_probe4"
+required-features = ["desktop"]
+
+[[example]]
+name = "style_probe6"
+required-features = ["desktop"]
+
+[[example]]
+name = "style_probe7"
+required-features = ["desktop"]
+

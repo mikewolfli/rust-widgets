@@ -338,16 +338,60 @@ impl Draw for GridWidget {
         let rect = self.base.geometry();
         self.update_cell_dimensions();
 
-        // Background fill
-        context.fill_rect(rect, Color::rgb(250, 250, 252));
+        // Chrome colours resolve the explicit style first, then the theme's resolved style for
+        // this control, and only then a literal. Every colour below used to be a literal, so a
+        // light/dark switch left the matrix and its separators unchanged — the rendering census
+        // reported the control as theme-blind.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
+        // is not re-entrant.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("grid");
+        // Read as its own lock acquisition and copied out as values, so the guard is dropped
+        // before anything else touches the theme.
+        let (window_fill, foreground, secondary) = {
+            let manager = crate::theme::global_theme_manager();
+            match manager.current_theme() {
+                Some(active) => {
+                    (active.colors.background, active.colors.foreground, active.colors.secondary)
+                }
+                None => (Color::rgb(240, 240, 240), Color::BLACK, Color::rgb(158, 158, 158)),
+            }
+        };
+
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(foreground);
+        // The matrix: one step from the window fill toward the text colour, so it is a distinct
+        // element on a light theme and on a dark one. `grid` is absent from
+        // `WidgetRole::for_kind_name`'s table, so it classifies as `Surface` and the active theme
+        // has already written the window fill into `style.background_color`; the resolved value is
+        // filtered so a byte-identical-to-the-frame fill cannot be let through unfiltered, while a
+        // colour the caller set still wins.
+        let surface = window_fill.blend(&ink, 0.08);
+        let cell_fill = match style.background_color {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => surface,
+        };
+        context.fill_rect(rect, cell_fill);
 
         // Border
-        context.draw_rect(rect, Color::rgb(180, 185, 195));
+        let border_color = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .filter(|resolved| *resolved != cell_fill)
+            .unwrap_or_else(|| cell_fill.blend(&secondary, 0.45));
+        context.draw_rect(rect, border_color);
 
-        // Grid lines (skip for 1×1, also skip if color is None)
+        // Grid lines (skip for 1×1, also skip if color is None). A caller-set line colour still
+        // wins; otherwise the separators are derived from the themed border so they move with it.
         let Some(line_color) = self.line_color else {
             return;
         };
+        let line_color =
+            if line_color == Color::rgb(220, 220, 220) { border_color } else { line_color };
         if self.rows <= 1 && self.columns <= 1 {
             return;
         }

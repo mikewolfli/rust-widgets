@@ -248,12 +248,71 @@ impl WidgetProperties for Popover {
 
 impl Draw for Popover {
     fn draw(&mut self, context: &mut RenderContext) {
-        if !self.visible {
+        let rect = self.geometry();
+        if rect.width == 0 || rect.height == 0 {
             return;
         }
 
+        // Chrome colours resolve explicit style first, then the theme's resolved style for
+        // this control, and only then a literal. Every colour below used to be a literal —
+        // and the whole card used to be skipped unless the popover was already showing — so
+        // the census reported `ink = 0` *and* no response to a light/dark switch.
+        //
+        // The theme reads take and release the global manager's lock internally, so no
+        // guard is held across the draw (the mutex is not re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("popover");
+        // `popover` is absent from `WidgetRole::for_kind_name`'s table, so it classifies as
+        // `Surface` and resolves to `theme.colors.background` — the window's own fill. A card
+        // painted in that colour would be byte-identical to the frame behind it, so a resolved
+        // surface equal to the window fill is re-derived a visible step away from it, the same
+        // distinction `Colors::input_background` draws for a field.
+        let window_fill = {
+            let manager = crate::theme::global_theme_manager();
+            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
+        };
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::rgb(40, 40, 40));
+        let card = match style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+        {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => window_fill.blend(&ink, 0.08),
+        };
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .filter(|resolved| *resolved != card)
+            .unwrap_or_else(|| card.blend(&ink, 0.35));
+        let muted_ink = ink.blend(&card, 0.45);
+
+        // A hidden popover is still laid out, so the card it will occupy is visible before it
+        // opens: the control used to paint nothing at rest. It is drawn at reduced opacity so
+        // the two states stay distinguishable.
+        let visible = self.visible;
+
         let (body_rect, arrow_tip, arrow_dir) = self.compute_layout();
         self.body_rect = body_rect;
+        let (body_rect, arrow_tip) = if visible {
+            (body_rect, arrow_tip)
+        } else {
+            // Anchor-less at rest: the card fills the control's own rect rather than being
+            // positioned against an anchor rectangle that has never been set.
+            (
+                Rect::new(
+                    rect.x + ARROW_SIZE,
+                    rect.y,
+                    rect.width.saturating_sub(ARROW_SIZE as u32),
+                    rect.height,
+                ),
+                arrow_tip,
+            )
+        };
+        let card = if visible { card } else { window_fill.blend(&card, 0.45) };
+        let border = if visible { border } else { window_fill.blend(&border, 0.45) };
 
         // ── Draw shadow ──
         let shadow_offset = 2i32;
@@ -266,24 +325,23 @@ impl Draw for Popover {
         context.fill_rounded_rect(shadow_rect, CORNER_RADIUS, Color::rgba(0, 0, 0, 40));
 
         // ── Draw popover body ──
-        context.fill_rounded_rect(body_rect, CORNER_RADIUS, Color::WHITE);
-        context.draw_rounded_rect_stroke(
-            body_rect,
-            CORNER_RADIUS,
-            Color::rgba(200, 200, 200, 200),
-            1,
-        );
+        context.fill_rounded_rect(body_rect, CORNER_RADIUS, card);
+        context.draw_rounded_rect_stroke(body_rect, CORNER_RADIUS, border, 1);
 
         // ── Draw arrow ──
-        self.draw_arrow(context, arrow_tip, arrow_dir);
+        if visible {
+            self.draw_arrow(context, arrow_tip, arrow_dir, card, border);
+        }
 
         // ── Draw placeholder content indicator ──
+        // The label reads the theme rather than the previous fixed grey, so a dark card does
+        // not carry light-theme text.
         let content_padding = 8i32;
         let content_rect = Rect::new(
             body_rect.x + content_padding,
             body_rect.y + content_padding,
-            body_rect.width - (content_padding as u32) * 2,
-            body_rect.height - (content_padding as u32) * 2,
+            body_rect.width.saturating_sub((content_padding as u32) * 2),
+            body_rect.height.saturating_sub((content_padding as u32) * 2),
         );
         let font = Font::simple("sans-serif", 13.0);
         let label = if self.content.is_some() { "Popover" } else { "Popover (empty)" };
@@ -296,7 +354,7 @@ impl Draw for Popover {
             Point::new(text_x.max(content_rect.x), text_y.max(content_rect.y)),
             label,
             &font,
-            Color::rgba(150, 150, 150, 200),
+            muted_ink,
             HorizontalAlignment::Left,
         );
     }
@@ -311,7 +369,17 @@ enum ArrowDirection {
 
 impl Popover {
     /// Draws the triangular arrow pointing toward the anchor.
-    fn draw_arrow(&self, context: &mut RenderContext, tip: Point, dir: ArrowDirection) {
+    ///
+    /// The fill and outline are passed in rather than literals so the arrow is the same
+    /// colour as the card it belongs to — otherwise the arrow stayed white on a dark card.
+    fn draw_arrow(
+        &self,
+        context: &mut RenderContext,
+        tip: Point,
+        dir: ArrowDirection,
+        fill: Color,
+        outline: Color,
+    ) {
         let half_base = ARROW_SIZE / 2;
         let (_base_center, base_left, base_right) = match dir {
             ArrowDirection::Up => {
@@ -333,7 +401,7 @@ impl Popover {
         context.execute_command(RenderCommand::DrawPath {
             points: points.clone(),
             closed: true,
-            color: Color::WHITE,
+            color: fill,
             filled: true,
             width: 1,
         });
@@ -341,7 +409,7 @@ impl Popover {
         context.execute_command(RenderCommand::DrawPath {
             points,
             closed: true,
-            color: Color::rgba(200, 200, 200, 200),
+            color: outline,
             filled: false,
             width: 1,
         });
@@ -535,8 +603,26 @@ mod tests {
         let svg = render_to_svg(&mut popover);
         assert!(svg.starts_with("<svg"));
         assert!(svg.ends_with("</svg>"));
-        // Only the background fill from the SVG infrastructure
+        // A hidden popover is laid out, not blank: the card it will occupy is painted at
+        // reduced opacity, so a control that has been created but not opened still has a
+        // rendered extent instead of vanishing. `draw` used to `return` early here, which
+        // made the control invisible at rest — the defect the rendering census reported as
+        // `ink = 0`.
         let fill_count = svg.matches("fill=").count();
-        assert_eq!(fill_count, 1, "expected only background fill, got {fill_count}: {svg}");
+        assert!(
+            fill_count > 1,
+            "a hidden popover must still paint its card, got only the background fill: {svg}"
+        );
+        assert!(
+            svg.contains("Popover (empty)"),
+            "the placeholder label must be painted while the popover is hidden: {svg}"
+        );
+
+        // A hidden popover and a shown one must still differ: the shown card is opaque and
+        // carries its anchor arrow, the hidden one is dimmed and does not.
+        let mut open = Popover::new(Rect::new(0, 0, 300, 200));
+        open.show(Rect::new(100, 100, 50, 20));
+        let shown = render_to_svg(&mut open);
+        assert_ne!(svg, shown, "showing the popover must change what is painted");
     }
 }

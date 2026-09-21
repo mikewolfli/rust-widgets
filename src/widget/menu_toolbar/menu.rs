@@ -378,6 +378,10 @@ impl Menu {
     fn item_height() -> f32 {
         22.0
     }
+    /// The height of the title heading the menu draws above its popup body.
+    fn heading_height() -> f32 {
+        20.0
+    }
     fn separator_height() -> f32 {
         6.0
     }
@@ -604,27 +608,100 @@ impl EventHandler for Menu {
 }
 impl Draw for Menu {
     fn draw(&mut self, context: &mut RenderContext) {
+        let rect = self.geometry();
+
+        // Chrome colours resolve the explicit style first, then the theme's resolved style for
+        // this control, and only then a literal. Every colour below used to be a literal, so a
+        // light/dark switch left the popup unchanged — the rendering census reported the control
+        // as theme-blind.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
+        // is not re-entrant.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("menu");
+        // Read as its own lock acquisition and copied out as values, so the guard is dropped
+        // before anything else touches the theme.
+        let (window_fill, foreground, secondary, primary) = {
+            let manager = crate::theme::global_theme_manager();
+            match manager.current_theme() {
+                Some(active) => (
+                    active.colors.background,
+                    active.colors.foreground,
+                    active.colors.secondary,
+                    active.colors.primary,
+                ),
+                None => (
+                    Color::rgb(240, 240, 240),
+                    Color::BLACK,
+                    Color::rgb(158, 158, 158),
+                    Color::rgb(33, 150, 243),
+                ),
+            }
+        };
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(foreground);
+        // `menu` is absent from `WidgetRole::for_kind_name`'s table, so it classifies as `Surface`
+        // and the active theme writes the window fill into `style.background_color`. A popup
+        // painted in that colour would be byte-identical to the frame behind it, so a resolved
+        // surface equal to the window fill is re-derived a visible step away from it, while a
+        // colour the caller set still wins.
+        let face = match style.background_color {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => window_fill.blend(&ink, 0.08),
+        };
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .filter(|resolved| *resolved != face)
+            .unwrap_or_else(|| face.blend(&secondary, 0.45));
+
+        // The heading is what makes a closed menu visible.
+        //
+        // A menu is born hidden, and `draw` used to `return` immediately in that state, so a
+        // freshly constructed menu painted nothing and the census reported `ink = 0`. The title
+        // strip is drawn in both states, which reads as the popup's heading when open and as the
+        // control's own idle label when closed — and makes `title()`'s documented "drawn as its
+        // heading" contract true, which it previously was not: nothing on this type drew it.
+        let heading_h = Self::heading_height();
+        context.fill_rect(
+            Rect::new(rect.x, rect.y, rect.width, heading_h as u32),
+            face.blend(&ink, 0.10),
+        );
+        context.draw_text(
+            Point::new(rect.x + 8, rect.y + heading_h as i32 / 2),
+            &self.title,
+            &Font::default(),
+            ink,
+            HorizontalAlignment::Left,
+        );
+        context.draw_line(
+            Point::new(rect.x, rect.y + heading_h as i32),
+            Point::new(rect.x + rect.width as i32, rect.y + heading_h as i32),
+            border,
+        );
+
         if !self.is_visible() {
             return;
         }
-        let rect = self.geometry();
+
+        let popup_y = rect.y + heading_h as i32;
         let popup_h = self.popup_height();
         context.fill_rect(
-            Rect::new(rect.x, rect.y, rect.width, popup_h as u32),
-            Color::rgb(250, 250, 250),
+            Rect::new(rect.x, popup_y, rect.width, popup_h as u32),
+            face.blend(&ink, 0.22),
         );
-        context.draw_rect(
-            Rect::new(rect.x, rect.y, rect.width, popup_h as u32),
-            Color::rgb(160, 160, 160),
-        );
-        let mut y = rect.y as f32 + 2.0;
+        context.draw_rect(Rect::new(rect.x, popup_y, rect.width, popup_h as u32), border);
+        let mut y = popup_y as f32 + 2.0;
         for (i, item) in self.items.iter().enumerate() {
             if item.is_separator() {
                 let sep_y = y + Self::separator_height() / 2.0;
                 context.draw_line(
                     Point::new(rect.x + 4, sep_y as i32),
                     Point::new(rect.x + rect.width as i32 - 4, sep_y as i32),
-                    Color::rgb(200, 200, 200),
+                    border,
                 );
                 y += Self::separator_height();
                 continue;
@@ -638,15 +715,18 @@ impl Draw for Menu {
                         rect.width.saturating_sub(4),
                         Self::item_height() as u32,
                     ),
-                    Color::rgb(0, 120, 215),
+                    primary,
                 );
             }
+            // A disabled entry is dimmed, and a highlighted one takes the contrast colour of the
+            // primary it sits on, so neither is a fixed grey or a fixed white that only read on a
+            // light popup.
             let fg = if !item.is_enabled() {
-                Color::rgb(150, 150, 150)
+                ink.blend(&face, 0.55)
             } else if is_hovered {
-                Color::rgb(255, 255, 255)
+                primary.contrast_color()
             } else {
-                Color::rgb(0, 0, 0)
+                ink
             };
             if item.is_checkable() {
                 let check_sym = if item.is_checked() { "✓" } else { " " };

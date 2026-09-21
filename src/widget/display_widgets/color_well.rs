@@ -146,10 +146,45 @@ impl Draw for ColorWell {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
 
-        // Draw checkerboard for transparency indication
+        // The well's chrome — the checkerboard that marks transparency and the
+        // framing border — resolves explicit style first, then the theme's resolved
+        // style for this control, and only then a literal. The theme step is what
+        // makes an appearance switch visible; previously both were hardcoded, so
+        // light and dark rendered identically.
+        //
+        // `resolved_theme_style` takes and releases the global manager's lock
+        // internally, so no guard is held across the draw (the mutex is not
+        // re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("color_well");
+        // The swatch itself (`self.color`) is the datum the control exists to show,
+        // so it is painted verbatim; only the surface behind a translucent swatch
+        // and the border around it follow the appearance.
+        //
+        // `color_well` is not a control kind in the role table, so it classifies as
+        // `Surface`, whose background is `theme.colors.background` — the window's own
+        // colour. The well's frame is therefore a step toward the foreground, or it
+        // would be indistinguishable from the window behind it.
+        let resolved = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| resolved.blend(&Color::BLACK, 0.35));
+        let text_color = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        let background = resolved.blend(&text_color, 0.08);
+
+        // Draw checkerboard for transparency indication: two steps of the resolved
+        // surface, so a translucent swatch composites over a pattern that follows the
+        // appearance rather than a fixed grey-and-white pair.
         let checker_size = 4u32;
-        let even = Color::rgba(200, 200, 200, 255);
-        let odd = Color::rgba(255, 255, 255, 255);
+        let even = background;
+        let odd = background.blend(&border, 0.25);
 
         for y in (rect.y..(rect.y + rect.height as i32)).step_by(checker_size as usize) {
             for x in (rect.x..(rect.x + rect.width as i32)).step_by(checker_size as usize) {
@@ -162,12 +197,40 @@ impl Draw for ColorWell {
             }
         }
 
-        // Draw the actual color (with alpha blending onto the checkerboard)
-        context.fill_rect(rect, self.color);
+        // The swatch is inset inside the well rather than flooding it. The swatch is
+        // the datum the control exists to show, so it is painted verbatim — but a
+        // control whose *entire* area is caller data has no chrome left to follow an
+        // appearance switch, and the well reads as a bare colour rather than as a
+        // colour *control*. The housing around the swatch is what makes the well a
+        // control: it is the resolved surface, so it follows the appearance, and it
+        // is large enough to be the colour the eye reads first.
+        let inset = (rect.width.min(rect.height) / 3).clamp(3, 32);
+        let swatch = Rect::new(
+            rect.x + inset as i32,
+            rect.y + inset as i32,
+            rect.width.saturating_sub(inset * 2),
+            rect.height.saturating_sub(inset * 2),
+        );
+        // A translucent swatch composites over the checkerboard; an opaque one
+        // covers it. Either way the surrounding housing stays the resolved surface.
+        context.fill_rect(swatch, self.color);
+
+        // The housing between the well's edge and the swatch is the resolved surface,
+        // drawn last so it reads as the control's chrome rather than as a hole.
+        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, inset), background);
+        context.fill_rect(
+            Rect::new(rect.x, swatch.y + swatch.height as i32, rect.width, inset),
+            background,
+        );
+        context.fill_rect(Rect::new(rect.x, swatch.y, inset, swatch.height), background);
+        context.fill_rect(
+            Rect::new(rect.x + rect.width as i32 - inset as i32, swatch.y, inset, swatch.height),
+            background,
+        );
 
         // Draw border if enabled
         if self.show_border {
-            context.draw_rect_stroke(rect, Color::rgba(0, 0, 0, 80), 1);
+            context.draw_rect_stroke(rect, border, 1);
         }
     }
 }

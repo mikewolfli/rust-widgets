@@ -252,16 +252,39 @@ impl Draw for Roller {
             return;
         }
 
-        // Resolve style colors with sensible fallbacks.
-        let bg_color = self.style().background_color.unwrap_or(Color::rgb(240, 240, 240));
-        let selected_bg = self
-            .style()
+        // Chrome colours resolve explicit style first, then the theme's resolved
+        // style for this control, and only then a literal. The theme step is what
+        // makes an appearance switch visible; previously every colour below was a
+        // hardcoded literal, so light and dark rendered identically.
+        //
+        // `resolved_theme_style` takes and releases the global manager's lock
+        // internally, so no guard is held across the draw (the mutex is not
+        // re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("roller")
+            .or_else(|| crate::theme::resolved_theme_style("list_box"));
+        // `roller` is not a control kind in the role table, so it classifies as
+        // `Surface`, whose background is `theme.colors.background` — byte-identical
+        // to the window behind it. The wheel's own fill is therefore a step toward the
+        // foreground, so it reads as a recessed surface of its own.
+        let resolved = style
             .background_color
-            .map(|c| Color::rgba(c.r, c.g, c.b, 200))
-            .unwrap_or(Color::rgb(0, 120, 215));
-        let text_color = self.style().text_color.unwrap_or(Color::rgb(50, 50, 50));
-        let selected_text_color = Color::WHITE;
-        let muted_color = Color::rgba(text_color.r, text_color.g, text_color.b, 120);
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::rgb(240, 240, 240));
+        let text_color = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::rgb(50, 50, 50));
+        let bg_color = resolved.blend(&text_color, 0.08);
+        // The centre item is a *selection*, which is chrome rather than data, so it
+        // reads the theme's primary token instead of the previous literal blue.
+        let selected_bg = crate::theme::resolved_theme_style("button")
+            .and_then(|button| button.background_color)
+            .unwrap_or_else(|| bg_color.blend(&text_color, 0.6));
+        // Its label stays a tint of the surface rather than a fixed white, so it
+        // keeps contrast against whatever the selection resolves to.
+        let selected_text_color = selected_bg.blend(&bg_color, 0.92);
+        let muted_color = text_color.blend(&bg_color, 0.47);
 
         let font =
             self.style().font.clone().unwrap_or_else(|| Font::simple("sans-serif", self.font_size));

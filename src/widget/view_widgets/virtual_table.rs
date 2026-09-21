@@ -389,8 +389,47 @@ impl EventHandler for VirtualTable {
 impl Draw for VirtualTable {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::rgb(251, 252, 254));
-        context.draw_rect(rect, Color::rgb(190, 198, 210));
+
+        // Chrome colours resolve explicit style first, then the theme's resolved style for
+        // this control, and only then a literal. The theme step is what makes an appearance
+        // switch visible; the surface, the border, the cell fills and the cell text colour
+        // used to be hardcoded literals, so light and dark rendered identically.
+        //
+        // The theme reads take and release the global manager's lock internally, so no guard
+        // is held across the draw (the mutex is not re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("virtual_table");
+        let mut surface = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        // `virtual_table` is absent from `WidgetRole::for_kind_name`'s table, so it classifies
+        // as `Surface` and resolves to `theme.colors.background` — the window's own fill. A
+        // panel painted in that colour would be byte-identical to the frame behind it, so a
+        // resolved surface equal to the window fill is re-derived a visible step away from it,
+        // the same distinction `Colors::input_background` draws for a field.
+        let window_fill = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.background)
+            .unwrap_or(Color::WHITE);
+        if surface == window_fill {
+            surface = window_fill.blend(&ink, 0.08);
+        }
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .filter(|resolved| *resolved != surface)
+            .unwrap_or_else(|| surface.blend(&ink, 0.20));
+        // A cell outline is one step into the surface, so the grid stays a subdivision of the
+        // table rather than a second literal blue-grey.
+        let cell_border = surface.blend(&ink, 0.10);
+
+        context.fill_rect(rect, surface);
+        context.draw_rect(rect, border);
 
         let data = self.fetch_visible_window();
         if data.is_empty() {
@@ -407,13 +446,13 @@ impl Draw for VirtualTable {
                     self.column_width.saturating_sub(2),
                     self.row_height.saturating_sub(2),
                 );
-                context.draw_rect(cell_rect, Color::rgb(220, 225, 233));
+                context.draw_rect(cell_rect, cell_border);
                 if let Some(value) = cell {
                     context.draw_text(
                         Point::new(x + 4, y + self.row_height as i32 / 2),
                         value,
                         &Font::default(),
-                        Color::rgb(49, 60, 78),
+                        ink,
                         HorizontalAlignment::Left,
                     );
                 }

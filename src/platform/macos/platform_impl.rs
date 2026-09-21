@@ -150,9 +150,15 @@ impl Platform for MacOSPlatform {
             log::debug!("[macos] run skipped: not on the AppKit main thread (state-only loop)");
             return;
         }
-        // SAFETY: NSApp() returns the shared application instance initialized in init().
-        // run() must be called on the main thread, which is guaranteed by the platform
-        // contract (init is called before run on the same thread).
+        // The trigger queue is drained by a repeating `NSTimer` installed with each
+        // window's resize delegate (see `canvas::install_resize_delegate`), so the
+        // queue is read while AppKit runs. It cannot happen here: `-[NSApplication run]`
+        // does not return until the app stops, so there is no point *after* it to drain,
+        // and the tick has to be scheduled on the run loop beforehand.
+        //
+        // SAFETY: `NSApp()` returns the shared application instance initialized in
+        // `init()`. `run()` must be called on the main thread, which the guard above
+        // has established.
         unsafe {
             NSApp().run();
         }

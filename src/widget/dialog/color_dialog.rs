@@ -277,35 +277,72 @@ impl EventHandler for ColorDialog {
 impl Draw for ColorDialog {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(
-            Rect::new(rect.x, rect.y, rect.width, rect.height),
-            Color::rgb(245, 245, 245),
-        );
-        context.draw_rect(
-            Rect::new(rect.x, rect.y, rect.width, rect.height),
-            Color::rgb(160, 160, 160),
-        );
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, 28), Color::rgb(0, 120, 215));
+        // Chrome colours resolve explicit style first, then the theme's resolved style for
+        // this control, and only then a literal. Every colour below used to be a literal,
+        // so a light/dark switch left the panel, its title bar and its buttons unchanged —
+        // the rendering census reported the control as theme-blind.
+        //
+        // The theme reads take and release the global manager's lock internally, so no
+        // guard is held across the draw (the mutex is not re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("color_dialog");
+        // `color_dialog` is absent from `WidgetRole::for_kind_name`'s table, so it classifies
+        // as `Surface` and resolves to `theme.colors.background` — the window's own fill. A
+        // panel painted in that colour would be byte-identical to the frame behind it, so a
+        // resolved surface equal to the window fill is re-derived a visible step away from
+        // it, the same distinction `Colors::input_background` draws for a field.
+        let window_fill = {
+            let manager = crate::theme::global_theme_manager();
+            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
+        };
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::rgb(40, 40, 40));
+        let surface = match style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+        {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => window_fill.blend(&ink, 0.06),
+        };
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .filter(|resolved| *resolved != surface)
+            .unwrap_or_else(|| surface.blend(&ink, 0.45));
+        // The title bar and the buttons are distinct bands on the panel, derived from it so
+        // the three stay one visible step apart in either appearance.
+        let title_bar = surface.blend(&ink, 0.08);
+        let button_fill = surface.blend(&ink, 0.12);
+
+        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), surface);
+        context.draw_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), border);
+        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, 28), title_bar);
         context.draw_text(
             Point::new(rect.x + 8, rect.y + 14),
             &tr!("color_dialog.title"),
             &Font::default(),
-            Color::rgb(255, 255, 255),
+            ink,
             HorizontalAlignment::Left,
         );
         // Color picker area (simplified)
+        //
+        // Both fills are left as literals: the swatch is the colour being edited and the
+        // field behind it is the neutral backdrop that makes it readable. Neither is theme
+        // chrome, and recolouring either from `style` would misrepresent the picked colour.
         let picker_rect = self.picker_rect();
         context.fill_rect(picker_rect, Color::rgb(200, 200, 200));
-        context.draw_rect(picker_rect, Color::rgb(100, 100, 100));
+        context.draw_rect(picker_rect, border);
         // Color preview
         let preview_y = rect.y as f32 + rect.height as f32 - 80.0;
         context.fill_rect(Rect::new(rect.x + 10, preview_y as i32, 60, 30), self.current_color);
-        context.draw_rect(Rect::new(rect.x + 10, preview_y as i32, 60, 30), Color::rgb(0, 0, 0));
+        context.draw_rect(Rect::new(rect.x + 10, preview_y as i32, 60, 30), border);
         context.draw_text(
             Point::new(rect.x + 80, (preview_y + 15.0) as i32),
             &format!("{} {}", tr!("color_dialog.current_color"), self.current_color.to_hex_rgba()),
             &Font::default(),
-            Color::rgb(0, 0, 0),
+            ink,
             HorizontalAlignment::Left,
         );
         // OK/Cancel buttons
@@ -313,28 +350,26 @@ impl Draw for ColorDialog {
         let btn_w = 80;
         context.fill_rect(
             Rect::new(rect.x + rect.width as i32 - 176, btn_y as i32, btn_w, 28),
-            Color::rgb(0, 120, 215),
+            theme.as_ref().and_then(|t| t.background_color).unwrap_or(button_fill),
         );
         context.draw_text(
             Point::new(rect.x + rect.width as i32 - 136, (btn_y + 14.0) as i32),
             &tr!("common.button.ok"),
             &Font::default(),
-            Color::rgb(255, 255, 255),
+            theme.as_ref().and_then(|t| t.background_color).unwrap_or(button_fill).contrast_color(),
             HorizontalAlignment::Left,
         );
         context.fill_rect(
             Rect::new(rect.x + rect.width as i32 - 88, btn_y as i32, btn_w, 28),
-            Color::rgb(225, 225, 225),
+            theme.as_ref().and_then(|t| t.background_color).unwrap_or(button_fill),
         );
-        context.draw_rect(
-            Rect::new(rect.x + rect.width as i32 - 88, btn_y as i32, btn_w, 28),
-            Color::rgb(100, 100, 100),
-        );
+        context
+            .draw_rect(Rect::new(rect.x + rect.width as i32 - 88, btn_y as i32, btn_w, 28), border);
         context.draw_text(
             Point::new(rect.x + rect.width as i32 - 48, (btn_y + 14.0) as i32),
             &tr!("common.button.cancel"),
             &Font::default(),
-            Color::rgb(0, 0, 0),
+            ink,
             HorizontalAlignment::Left,
         );
     }

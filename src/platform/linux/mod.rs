@@ -16,6 +16,14 @@ pub mod platform_impl;
 pub mod tests;
 pub mod types;
 
+/// Absolute child placement for the Linux/GTK backend, on a `gtk::Overlay`.
+///
+/// Split out because the placement rule (position, size, no size-request propagation) is
+/// shared by window creation, mounting and resizing, and having one implementation is what
+/// keeps those three from disagreeing.
+#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+pub(crate) mod overlay_place;
+
 /// Native surface for self-drawn widgets (Linux/GTK).
 ///
 /// Compiled out for `mini`/`embedded`: those profiles have no `widget::runtime`,

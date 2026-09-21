@@ -312,13 +312,52 @@ impl Draw for RichEdit {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.base.geometry();
         use crate::core::Color;
+
+        // Chrome colours resolve the explicit style first, then the theme's resolved style for
+        // this control, and only then fall back to a literal. Every colour below used to be a
+        // literal, so a light/dark switch left the page, its border, its text and its cursor
+        // unchanged — the rendering census reported the control as theme-blind.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
+        // is not re-entrant.
+        let style = self.base.style().clone();
+        // The fallback name matters: the role table is keyed on **role** names, so `rich_edit`
+        // (the factory name) is not in it and would classify as `Surface`, i.e. the window fill.
+        // `richedit` is, and resolves to the editable interior plus the theme's foreground.
+        let theme = crate::theme::resolved_theme_style("rich_edit")
+            .or_else(|| crate::theme::resolved_theme_style("richedit"));
+        // The window fill, read as its own lock acquisition and copied out as a value, so the
+        // guard is dropped before anything else touches the theme.
+        let window_fill = {
+            let manager = crate::theme::global_theme_manager();
+            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
+        };
+        let paper_from_theme =
+            theme.as_ref().and_then(|t| t.background_color).unwrap_or(Color::rgb(255, 255, 255));
+        // The filter is on the **resolved** value, not only on the theme's: a control absent from
+        // the role table resolves its background to the window fill, and `text_edit`/`rich_edit`
+        // are exactly those controls, so letting that value through would paint the document in
+        // the window's own colour — invisible on screen. A caller's own colour still wins.
+        let paper = match style.background_color {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => paper_from_theme,
+        };
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        // The border is one step from the page toward the ink, and a read-only document is
+        // recessed a further step so the two states stay distinguishable on either appearance.
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| paper.blend(&ink, 0.28));
+
         // Draw background
-        context.fill_rect(rect, Color::rgb(255, 255, 255));
+        context.fill_rect(rect, paper);
         // Draw border
-        context.draw_rect(
-            rect,
-            if self.read_only { Color::rgb(220, 220, 220) } else { Color::rgb(180, 180, 180) },
-        );
+        context.draw_rect(rect, if self.read_only { border.blend(&paper, 0.50) } else { border });
         // Draw text content — all lines
         let font = crate::core::Font::default();
         let line_height = 16i32;
@@ -336,7 +375,7 @@ impl Draw for RichEdit {
                 crate::core::Point::new(rect.x + padding, line_y),
                 line,
                 &font,
-                Color::rgb(0, 0, 0),
+                ink,
                 HorizontalAlignment::Left,
             );
             // Draw cursor on this line if not read-only
@@ -344,10 +383,14 @@ impl Draw for RichEdit {
                 if let Some((_, col)) = cursor_coord {
                     // Estimate cursor x position (rough char width)
                     let cursor_x = rect.x + padding + (col as i32) * 7;
+                    // The caret is the selection indicator, so it carries the accent rather than
+                    // a fixed black the user could not find on a dark page.
+                    let caret = crate::theme::semantic_color(crate::theme::SemanticColor::Info)
+                        .unwrap_or(ink);
                     context.draw_line(
                         crate::core::Point::new(cursor_x, line_y - line_height + 2),
                         crate::core::Point::new(cursor_x, line_y + 2),
-                        Color::rgb(0, 0, 0),
+                        caret,
                     );
                 }
             }

@@ -150,16 +150,71 @@ impl WidgetProperties for CupertinoNavigationBar {
 impl Draw for CupertinoNavigationBar {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
+        if rect.width == 0 || rect.height == 0 {
+            return;
+        }
 
-        // ── Translucent background (frosted glass effect via semi-transparent white) ──
-        context.fill_rect(rect, Color::rgba(255, 255, 255, 230));
+        // Chrome colours resolve explicit style first, then the theme's resolved style for
+        // this control, and only then fall back to a literal. Every colour below used to be
+        // a literal, so a light/dark switch left the bar, its rule, its title and its back
+        // affordance unchanged — the rendering census reported the control as theme-blind.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global manager's
+        // mutex is not re-entrant.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("cupertino_navigation_bar");
+        // Read as its own lock acquisition and copied out as values, so the guard is dropped
+        // before anything else touches the theme. The bar is not in the role table, so it
+        // classifies as `Surface` and its resolved background is the window fill itself; the
+        // bar below therefore derives its own distinct surface rather than painting the
+        // window's. The back affordance is iOS blue only because it used to be hardcoded — it
+        // is the bar's action colour, so it reads the theme's primary token.
+        let (window_fill, foreground, primary) = {
+            let manager = crate::theme::global_theme_manager();
+            match manager.current_theme() {
+                Some(active) => {
+                    (active.colors.background, active.colors.foreground, active.colors.primary)
+                }
+                None => (Color::rgb(240, 240, 240), Color::BLACK, Color::rgb(0, 122, 255)),
+            }
+        };
+
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(foreground);
+        // A translucent fill cannot tint anything on this surface: `fill_rect` writes raw
+        // pixels, so `rgba(255, 255, 255, 230)` *replaced* the page with white at alpha 230
+        // instead of frosting it, and the bar kept that colour through a theme switch. Mixing
+        // the bar's own surface with the page it covers produces the same translucent
+        // appearance with an opaque result that follows the appearance.
+        //
+        // The filter is on the **resolved** value, not only on the theme's: the active theme
+        // is applied to every control before it is drawn, so `style.background_color` already
+        // holds `Surface`'s window fill and letting it through unfiltered is exactly the
+        // invisible-bar defect this guards against. A caller's own colour still wins.
+        let bar_from_theme = window_fill.blend(&ink, 0.06);
+        let bar_surface = match style.background_color {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => bar_from_theme,
+        };
+        let bar = bar_surface.blend(&window_fill, 0.10);
+        context.fill_rect(rect, bar);
 
         // ── Bottom border line ──
+        // A `Surface` role resolves no border colour, so the rule is derived one visible
+        // step from the bar and a caller's explicit border still wins.
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .filter(|resolved| *resolved != bar)
+            .unwrap_or_else(|| bar.blend(&ink, 0.20));
         let border_y = rect.y + rect.height as i32 - 1;
         context.draw_line(
             Point::new(rect.x, border_y),
             Point::new(rect.x + rect.width as i32, border_y),
-            Color::rgba(200, 200, 200, 200),
+            border,
         );
 
         if self.large_title {
@@ -173,7 +228,7 @@ impl Draw for CupertinoNavigationBar {
                     Point::new(title_x, title_y),
                     &self.title,
                     &title_font,
-                    Color::BLACK,
+                    ink,
                     HorizontalAlignment::Left,
                 );
             }
@@ -189,7 +244,7 @@ impl Draw for CupertinoNavigationBar {
                     Point::new(title_x, title_y),
                     &self.title,
                     &title_font,
-                    Color::BLACK,
+                    ink,
                     HorizontalAlignment::Left,
                 );
             }
@@ -200,6 +255,9 @@ impl Draw for CupertinoNavigationBar {
             let arrow_font = Font::new("sans-serif", 20.0, false, false);
             let label_font = Font::new("sans-serif", 17.0, false, false);
             let arrow_symbol = "\u{2190}"; // ←
+                                           // The affordance sits on the bar, so the theme's primary is contrast-checked
+                                           // against it rather than assumed legible.
+            let action = primary.contrast_color().blend(&primary, 0.85);
 
             let arrow_metrics = context.measure_text(arrow_symbol, &arrow_font);
             let arrow_x = rect.x + 8;
@@ -210,7 +268,7 @@ impl Draw for CupertinoNavigationBar {
                 Point::new(arrow_x, arrow_y),
                 arrow_symbol,
                 &arrow_font,
-                Color::rgba(0, 122, 255, 255), // iOS blue
+                action,
                 HorizontalAlignment::Left,
             );
 
@@ -223,7 +281,7 @@ impl Draw for CupertinoNavigationBar {
                     Point::new(label_x, label_y),
                     &self.back_button_text,
                     &label_font,
-                    Color::rgba(0, 122, 255, 255),
+                    action,
                     HorizontalAlignment::Left,
                 );
             }

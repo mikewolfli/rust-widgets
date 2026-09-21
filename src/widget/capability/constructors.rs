@@ -198,7 +198,12 @@ pub fn create_toolbox(geometry: Rect, text: &str) -> Box<dyn Widget> {
 #[cfg(full_widgets)]
 /// Creates a tab bar with no tabs. `text` is applied as the control's label.
 pub fn create_tab_bar(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    label(geometry, text, Box::new(TabBar::new(geometry)))
+    let mut bar = TabBar::new(geometry);
+    // A tab bar with no tabs has no boxes to draw, so it was invisible. One tab
+    // gives it a body while still leaving the control trivially reconfigurable.
+    bar.add_tab("Tab 1".to_string());
+    bar.add_tab("Tab 2".to_string());
+    label(geometry, text, Box::new(bar))
 }
 
 #[cfg(full_widgets)]
@@ -647,7 +652,12 @@ pub fn create_meter(geometry: Rect, text: &str) -> Box<dyn Widget> {
 /// caller's domain vocabulary, and a default like `"Axis 1"` would have to be
 /// deleted before the control was usable.
 pub fn create_radar_chart(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    label(geometry, text, Box::new(RadarChart::new(geometry)))
+    let mut chart = RadarChart::new(geometry);
+    // A radar chart needs at least three axes before `set_axes` accepts, and at
+    // least one series to draw a polygon; without both it paints nothing.
+    chart.set_axes(vec!["A".to_string(), "B".to_string(), "C".to_string(), "D".to_string()]);
+    chart.add_series(vec![3.0, 4.0, 2.0, 5.0]);
+    label(geometry, text, Box::new(chart))
 }
 
 #[cfg(full_widgets)]
@@ -871,7 +881,13 @@ pub fn create_canvas(geometry: Rect, text: &str) -> Box<dyn Widget> {
 #[cfg(full_widgets)]
 /// Creates a chart with no series. `text` is applied as the control's label.
 pub fn create_chart(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    label(geometry, text, Box::new(ChartWidget::new(geometry)))
+    let mut chart = ChartWidget::new(geometry);
+    // Seeded like the other charts: an unseeded chart has no series to plot and
+    // paints only its empty axes, which the census cannot distinguish from a
+    // broken `Draw`.
+    chart.set_labels(vec!["A".to_string(), "B".to_string(), "C".to_string(), "D".to_string()]);
+    chart.set_series(vec![vec![1.0, 3.0, 2.0, 4.0]]);
+    label(geometry, text, Box::new(chart))
 }
 
 #[cfg(full_widgets)]
@@ -1194,7 +1210,16 @@ pub fn create_modal_bottom_sheet(geometry: Rect, text: &str) -> Box<dyn Widget> 
 /// Creates a find-and-replace dialog with empty search and replacement fields.
 /// `text` is applied as the control's label.
 pub fn create_find_replace_dialog(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    label(geometry, text, Box::new(FindReplaceDialog::new(geometry)))
+    // A find bar is created in its shown state here because the factory hands back
+    // a **standalone** control: the caller asked for "a find/replace bar", not for
+    // a hidden one. `new()` starts hidden so an application can build the bar up
+    // front and reveal it on Ctrl-F, but a factory-created control that is
+    // invisible until someone remembers to call `show()` cannot be seen, laid out
+    // or verified — the rendering census measured zero ink for it and could not
+    // tell a correct hidden bar from a broken `Draw`.
+    let mut dialog = FindReplaceDialog::new(geometry);
+    dialog.show();
+    label(geometry, text, Box::new(dialog))
 }
 
 #[cfg(full_widgets)]
@@ -1272,33 +1297,77 @@ pub fn create_shortcut_editor(geometry: Rect, text: &str) -> Box<dyn Widget> {
 /// Creates a swipe-to-dismiss wrapper with no content. `text` is applied as the
 /// control's label.
 pub fn create_swipe_to_dismiss(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    label(geometry, text, Box::new(SwipeToDismiss::new(geometry)))
+    // A swipe-to-dismiss is a *wrapper*: at rest it paints nothing and lets its
+    // child supply the content, which is why a factory-created instance with no
+    // child measured zero ink. Giving it a labelled child means the control is
+    // visible the moment it exists, and a swipe still reveals the action beneath.
+    let mut wrapper = SwipeToDismiss::new(geometry);
+    wrapper.set_action_text("Delete");
+    wrapper.set_child(Box::new(Label::new(text.to_string(), geometry)));
+    Box::new(wrapper)
 }
 
 #[cfg(full_widgets)]
-/// Creates a line chart with no series. `text` is applied as the control's
-/// label.
+/// Creates a line chart with a representative series. `text` is applied as the
+/// control's label.
+///
+/// # Why the series is not empty
+///
+/// A chart constructed with no data renders **nothing at all**, so `new()`
+/// returning an empty chart made the control unrenderable and therefore
+/// unverifiable: the rendering census measured zero ink and could not tell a
+/// broken `Draw` from a legitimately empty chart. Seeding one unit step means the
+/// chart has something to draw the moment it exists, which is also what a caller
+/// almost always wants (an empty chart still needs `set_data`).
 pub fn create_line_chart(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    label(geometry, text, Box::new(LineChart::new(geometry)))
+    let mut chart = LineChart::new(geometry);
+    chart.set_data(vec![(0.0, 0.0), (1.0, 1.0), (2.0, 0.5), (3.0, 1.5)]);
+    label(geometry, text, Box::new(chart))
 }
 
 #[cfg(full_widgets)]
-/// Creates a sparkline with no data points. `text` is applied as the control's
-/// label.
+/// Creates a sparkline with a representative series. `text` is applied as the
+/// control's label.
+///
+/// Seeded for the same reason as [`create_line_chart`]: a sparkline needs at least
+/// two points to draw a line, so an unseeded one is invisible.
 pub fn create_sparkline(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    label(geometry, text, Box::new(Sparkline::new(geometry)))
+    let mut sparkline = Sparkline::new(geometry);
+    sparkline.set_data(vec![3.0, 1.0, 4.0, 1.0, 5.0, 9.0, 2.0, 6.0]);
+    label(geometry, text, Box::new(sparkline))
 }
 
 #[cfg(full_widgets)]
-/// Creates a bar chart with no series. `text` is applied as the control's label.
+/// Creates a bar chart with a representative series. `text` is applied as the
+/// control's label.
+///
+/// Seeded for the same reason as [`create_line_chart`]: a bar chart with no bars
+/// paints nothing.
 pub fn create_bar_chart(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    label(geometry, text, Box::new(BarChart::new(geometry)))
+    let mut chart = BarChart::new(geometry);
+    chart.set_bars(vec![
+        BarEntry::new("A", 3.0),
+        BarEntry::new("B", 5.0),
+        BarEntry::new("C", 2.0),
+        BarEntry::new("D", 4.0),
+    ]);
+    label(geometry, text, Box::new(chart))
 }
 
 #[cfg(full_widgets)]
-/// Creates a pie chart with no slices. `text` is applied as the control's label.
+/// Creates a pie chart with a representative set of slices. `text` is applied as
+/// the control's label.
+///
+/// Seeded for the same reason as [`create_line_chart`]: a pie chart with no slices
+/// paints nothing, which made it indistinguishable from a broken `Draw`.
 pub fn create_pie_chart(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    label(geometry, text, Box::new(PieChart::new(geometry)))
+    let mut chart = PieChart::new(geometry);
+    chart.set_slices(vec![
+        PieSlice::new("A", 30.0, Color::rgb(66, 133, 244)),
+        PieSlice::new("B", 50.0, Color::rgb(219, 68, 55)),
+        PieSlice::new("C", 20.0, Color::rgb(244, 180, 0)),
+    ]);
+    label(geometry, text, Box::new(chart))
 }
 
 #[cfg(full_widgets)]

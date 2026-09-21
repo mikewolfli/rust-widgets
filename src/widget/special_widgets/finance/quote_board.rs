@@ -522,10 +522,55 @@ impl Draw for QuoteBoard {
         if geometry.width == 0 || geometry.height == 0 {
             return;
         }
-        context.fill_rect(geometry, Color::rgb(18, 22, 28));
+
+        // The pane, the header band and the row states are chrome and resolve the explicit style
+        // first, then the theme's resolved style for this control, and only then a literal. Every
+        // one of them used to be a fixed dark slate, so a light/dark switch left the board's
+        // dominant colour unchanged and the rendering census reported it as theme-blind. The
+        // rising/falling colours stay the caller's data colours: red and green encode price
+        // direction, so remapping them by theme would erase which way the market moved.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
+        // is not re-entrant.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("quote_board");
+        // Read as its own lock acquisition and copied out as values, so the guard is dropped
+        // before anything else touches the theme.
+        let (window_fill, foreground, secondary) = {
+            let manager = crate::theme::global_theme_manager();
+            match manager.current_theme() {
+                Some(active) => {
+                    (active.colors.background, active.colors.foreground, active.colors.secondary)
+                }
+                None => (Color::rgb(240, 240, 240), Color::BLACK, Color::rgb(158, 158, 158)),
+            }
+        };
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(foreground);
+        // `quote_board` is absent from `WidgetRole::for_kind_name`'s table, so it classifies as
+        // `Surface` and the active theme writes the window fill into `style.background_color`.
+        // A pane painted in that colour would be byte-identical to the frame behind it, so a
+        // resolved surface equal to the window fill is re-derived a visible step away from it,
+        // while a colour the caller set still wins.
+        let panel = match style.background_color {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => window_fill.blend(&ink, 0.08),
+        };
+        context.fill_rect(geometry, panel);
         if self.columns.is_empty() {
             return;
         }
+
+        // Chrome raised from the panel: the header band, the selected/hovered rows and the
+        // ordinary column text all read on a light backdrop and on a dark one.
+        let header_fill = panel.blend(&ink, 0.10);
+        let selected_fill = panel.blend(&foreground, 0.24);
+        let hovered_fill = panel.blend(&ink, 0.10);
+        let header_text = ink.blend(&secondary, 0.45);
+        let body_text = secondary;
 
         let ranges = self.column_ranges();
         let row_height = self.row_height();
@@ -535,7 +580,7 @@ impl Draw for QuoteBoard {
         // a first data row.
         context.fill_rect(
             Rect::new(geometry.x, geometry.y, geometry.width, row_height as u32),
-            Color::rgb(30, 36, 46),
+            header_fill,
         );
         for (column, (start, width)) in self.columns.iter().zip(ranges.iter()) {
             let text_x = if column.is_numeric() { start + width - 8 } else { start + 8 };
@@ -549,7 +594,7 @@ impl Draw for QuoteBoard {
                 Point { x: text_x - estimate_width(column.title()), y: geometry.y + 5 },
                 column.title(),
                 &Font::simple("Sans", 11.0),
-                Color::rgb(150, 160, 172),
+                header_text,
                 HorizontalAlignment::Left,
             );
         }
@@ -562,12 +607,12 @@ impl Draw for QuoteBoard {
             if self.selected == Some(index) {
                 context.fill_rect(
                     Rect::new(geometry.x, y, geometry.width, row_height as u32),
-                    Color::rgb(44, 56, 74),
+                    selected_fill,
                 );
             } else if self.hovered == Some(index) {
                 context.fill_rect(
                     Rect::new(geometry.x, y, geometry.width, row_height as u32),
-                    Color::rgb(32, 40, 52),
+                    hovered_fill,
                 );
             }
 
@@ -584,7 +629,7 @@ impl Draw for QuoteBoard {
                 } else if *column == QuoteColumn::Symbol {
                     self.text_color
                 } else {
-                    Color::rgb(170, 178, 190)
+                    body_text
                 };
                 let text_width = estimate_width(&text);
                 let text_x =

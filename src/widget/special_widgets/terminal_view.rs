@@ -196,8 +196,49 @@ impl EventHandler for TerminalView {
 impl Draw for TerminalView {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::rgb(22, 27, 34));
-        context.draw_rect(rect, Color::rgb(68, 78, 92));
+
+        // Chrome colours resolve explicit style first, then the theme's resolved
+        // style for this control, and only then a literal. The theme step is what
+        // makes an appearance switch visible; previously every colour below was a
+        // hardcoded literal, so light and dark rendered identically.
+        //
+        // `resolved_theme_style` takes and releases the global manager's lock
+        // internally, so no guard is held across the draw (the mutex is not
+        // re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("terminal_view")
+            .or_else(|| crate::theme::resolved_theme_style("text_edit"));
+        // `terminal_view` is not a control kind in the role table, so it classifies
+        // as `Surface`, whose background is `theme.colors.background` — byte-identical
+        // to the window behind it. `TerminalView` is built on `WidgetKind::TextEdit`,
+        // so its prominent surface is the *editor* treatment the rest of the crate's
+        // text controls use: a step toward the foreground, which is lighter on a light
+        // theme and darker on a dark one, so the terminal reads as a field in both
+        // rather than as a hardcoded dark slab.
+        let resolved = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::rgb(22, 27, 34));
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| resolved.blend(&Color::BLACK, 0.2));
+        let text_color = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::rgb(217, 224, 236));
+        let background = resolved.blend(&text_color, 0.08);
+        // Output text is the resolved foreground itself, so it keeps the contrast the
+        // theme pair was chosen for instead of the literal near-white it used to be.
+        let output_color = text_color;
+        // The prompt line is a *success* state — the shell is ready for input — so it
+        // reads the theme's success token rather than a literal green.
+        let prompt_color = crate::theme::semantic_color(crate::theme::SemanticColor::Success)
+            .map(|token| token.blend(&background, 0.15))
+            .unwrap_or_else(|| background.blend(&text_color, 0.6));
+
+        context.fill_rect(rect, background);
+        context.draw_rect(rect, border);
 
         let max_lines = ((rect.height.saturating_sub(28)) / 14) as usize;
         let start = self.lines.len().saturating_sub(max_lines);
@@ -207,7 +248,7 @@ impl Draw for TerminalView {
                 Point::new(rect.x + 8, y),
                 line,
                 &Font::default(),
-                Color::rgb(217, 224, 236),
+                output_color,
                 HorizontalAlignment::Left,
             );
         }
@@ -217,7 +258,7 @@ impl Draw for TerminalView {
             Point::new(rect.x + 8, prompt_y),
             &format!("> {}", self.input_line),
             &Font::default(),
-            Color::rgb(140, 218, 160),
+            prompt_color,
             HorizontalAlignment::Left,
         );
     }

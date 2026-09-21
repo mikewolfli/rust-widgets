@@ -237,20 +237,76 @@ impl WidgetProperties for SegmentedButton {
 impl Draw for SegmentedButton {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        if rect.width == 0 || rect.height == 0 || self.segments.is_empty() {
+        if rect.width == 0 || rect.height == 0 {
             return;
         }
 
+        // Chrome colours resolve the explicit style first, then the theme's resolved style for
+        // this control, and only then a literal. Every colour below used to be a literal, so a
+        // light/dark switch left the control unchanged — the rendering census reported it as
+        // theme-blind.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
+        // is not re-entrant.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("segmented_button");
+        // Read as its own lock acquisition and copied out as values, so the guard is dropped
+        // before anything else touches the theme.
+        let (window_fill, foreground, secondary, primary) = {
+            let manager = crate::theme::global_theme_manager();
+            match manager.current_theme() {
+                Some(active) => (
+                    active.colors.background,
+                    active.colors.foreground,
+                    active.colors.secondary,
+                    active.colors.primary,
+                ),
+                None => (
+                    Color::rgb(240, 240, 240),
+                    Color::BLACK,
+                    Color::rgb(158, 158, 158),
+                    Color::rgb(33, 150, 243),
+                ),
+            }
+        };
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(foreground);
+        // `segmented_button` is absent from `WidgetRole::for_kind_name`'s table, so it classifies
+        // as `Surface` and the active theme writes the window fill into `style.background_color`.
+        // An empty track painted in that colour would be byte-identical to the frame behind it, so
+        // a resolved surface equal to the window fill is re-derived a visible step away from it,
+        // while a colour the caller set still wins.
+        let track = match style.background_color {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => window_fill.blend(&ink, 0.10),
+        };
+        let border_color = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .filter(|resolved| *resolved != track)
+            .unwrap_or_else(|| track.blend(&secondary, 0.55));
+
         let is_enabled = self.base.is_enabled();
         let seg_count = self.segments.len();
-        let seg_width = rect.width / seg_count as u32;
         let corner_radius = (rect.height.min(32) / 2).max(4);
         let font = Font::simple("sans-serif", 13.0);
 
+        // The track is painted before the early return on an empty segment list, so a freshly
+        // constructed control is visible rather than reporting `ink = 0`. An empty track reads as
+        // a disabled group, which is exactly what a segmented button with nothing to choose is.
+        context.fill_rounded_rect(rect, corner_radius, track);
         // Draw outer container border
-        let border_color =
-            if is_enabled { Color::rgb(180, 180, 180) } else { Color::rgba(180, 180, 180, 100) };
+        let border_color = if is_enabled { border_color } else { border_color.with_alpha(100) };
         context.draw_rounded_rect_stroke(rect, corner_radius, border_color, 1);
+
+        if seg_count == 0 {
+            return;
+        }
+
+        let seg_width = rect.width / seg_count as u32;
 
         for (i, segment) in self.segments.iter().enumerate() {
             let seg_rect =
@@ -259,13 +315,14 @@ impl Draw for SegmentedButton {
             let is_selected = self.selected_index == Some(i);
             let seg_enabled = is_enabled && segment.enabled;
 
-            // Determine colors
+            // Determine colors. A selected segment carries the theme's primary so the selection is
+            // visible on either appearance rather than a fixed Material blue.
             let bg_color = if !seg_enabled {
-                Color::TRANSPARENT
+                track
             } else if is_selected {
-                Color::rgb(25, 118, 210) // Material blue fill
+                primary
             } else {
-                Color::TRANSPARENT
+                track
             };
 
             // Draw segment background
@@ -299,11 +356,8 @@ impl Draw for SegmentedButton {
             // Draw vertical divider between segments
             if i > 0 {
                 let divider_x = seg_rect.x;
-                let divider_color = if is_enabled {
-                    Color::rgba(180, 180, 180, 180)
-                } else {
-                    Color::rgba(180, 180, 180, 80)
-                };
+                let divider_color =
+                    if is_enabled { border_color } else { border_color.with_alpha(80) };
                 context.draw_line(
                     Point::new(divider_x, seg_rect.y + 4),
                     Point::new(divider_x, seg_rect.y + rect.height as i32 - 4),
@@ -311,13 +365,14 @@ impl Draw for SegmentedButton {
                 );
             }
 
-            // Draw text centered in segment
+            // Draw text centered in segment. A disabled label is dimmed, and a selected one takes
+            // the contrast colour of the primary it sits on.
             let text_color = if !seg_enabled {
-                Color::rgba(160, 160, 160, 150)
+                ink.blend(&track, 0.60)
             } else if is_selected {
-                Color::WHITE
+                primary.contrast_color()
             } else {
-                Color::rgb(33, 33, 33)
+                ink
             };
 
             let metrics = context.measure_text(&segment.text, &font);

@@ -93,7 +93,12 @@ impl Platform for WasmPlatform {
         self.runtime.running.store(true, Ordering::SeqCst);
         #[cfg(not(target_arch = "wasm32"))]
         {
+            // The loop has no native message pump of its own — a browser host drives the
+            // events — so this is where the library's trigger queue is drained. Without
+            // it, a `Resized` event queued by the host never reached a window layout. See
+            // `crate::drain_triggers`.
             while self.runtime.running.load(Ordering::SeqCst) {
+                crate::drain_triggers();
                 thread::sleep(Duration::from_millis(10));
             }
         }

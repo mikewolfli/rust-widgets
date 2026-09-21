@@ -36,14 +36,25 @@ pub struct FAB {
 }
 
 impl FAB {
+    /// The fill a FAB is constructed with, before any caller override.
+    ///
+    /// Held as a named constant because [`FAB::draw`] has to tell "the caller chose this
+    /// colour" apart from "nobody has chosen yet, so read the theme". Those two cases are
+    /// otherwise indistinguishable from the field alone, and treating the default as an
+    /// override is what kept the control theme-blind.
+    pub const DEFAULT_ACCENT_COLOR: Color = Color::PRIMARY;
+
     /// Creates a new FAB widget with the given geometry.
     ///
     /// Defaults: icon text "+", accent color `Color::PRIMARY`, normal size.
+    ///
+    /// The default is resolved against the active theme at draw time: this value is used
+    /// only when no theme is active.
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::FAB, geometry, "FAB"),
             icon_text: String::from("+"),
-            accent_color: Color::PRIMARY,
+            accent_color: Self::DEFAULT_ACCENT_COLOR,
             mini: false,
             pressed: false,
         }
@@ -165,12 +176,41 @@ impl Draw for FAB {
         let shadow_color = Color::rgba(0, 0, 0, 60);
         context.fill_circle_aa(shadow_center, radius, shadow_color);
 
-        // Determine button fill color
-        let fill_color = if !is_enabled {
-            Color::rgba(self.accent_color.r, self.accent_color.g, self.accent_color.b, 120)
-        } else {
+        // Determine button fill color. The constructor's default is a literal, so a FAB that
+        // has never been re-coloured by its caller reads the theme instead: explicit style
+        // first, then the theme's resolved style for this control, and only then the literal.
+        // Without that step a theme switch left the FAB the same blue in both appearances.
+        //
+        // The theme reads take and release the global manager's lock internally, so no guard
+        // is held across the draw (the mutex is not re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("fab");
+        // `fab` is absent from `WidgetRole::for_kind_name`'s table, so it classifies as
+        // `Surface` and resolves to `theme.colors.background` — the window's own fill, not an
+        // action colour. The circle is a filled call to action, so the theme's `primary` is
+        // read directly rather than the mis-classified role's surface.
+        let themed_ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or_else(|| self.accent_color.contrast_color());
+        let accent = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.primary)
+            .unwrap_or(self.accent_color);
+        let caller_set_accent = self.accent_color != Self::DEFAULT_ACCENT_COLOR;
+        let base_fill = if caller_set_accent {
             self.accent_color
+        } else {
+            style.background_color.unwrap_or(accent)
         };
+        let fill_color = if !is_enabled {
+            Color::rgba(base_fill.r, base_fill.g, base_fill.b, 120)
+        } else {
+            base_fill
+        };
+        // The icon is drawn on the fill, so it takes the same contrast decision the theme
+        // uses for a filled action rather than a fixed white that can vanish on a light accent.
+        let icon_color = if !is_enabled { themed_ink.with_alpha_f32(0.5) } else { themed_ink };
 
         // Draw filled circle
         context.fill_circle_aa(center, radius, fill_color);
@@ -190,13 +230,11 @@ impl Draw for FAB {
             let text_x = cx - (metrics.width as i32) / 2;
             let text_y = cy - (metrics.height as i32) / 2 + (metrics.ascent as i32);
 
-            let text_color =
-                if !is_enabled { Color::rgba(255, 255, 255, 120) } else { Color::WHITE };
             context.draw_text(
                 Point::new(text_x, text_y),
                 &self.icon_text,
                 &font,
-                text_color,
+                icon_color,
                 HorizontalAlignment::Left,
             );
         }

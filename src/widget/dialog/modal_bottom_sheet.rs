@@ -279,30 +279,71 @@ impl WidgetProperties for ModalBottomSheet {
 
 impl Draw for ModalBottomSheet {
     fn draw(&mut self, context: &mut RenderContext) {
-        if !self.is_visible {
+        let rect = self.geometry();
+        if rect.width == 0 || rect.height == 0 {
             return;
         }
 
-        let rect = self.geometry();
+        // Chrome colours resolve explicit style first, then the theme's resolved style for
+        // this control, and only then a literal. Every colour below used to be a literal —
+        // and the whole sheet used to be skipped unless it was already showing — so the
+        // census reported `ink = 0` *and* no response to a light/dark switch.
+        //
+        // The theme reads take and release the global manager's lock internally, so no
+        // guard is held across the draw (the mutex is not re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("modal_bottom_sheet");
+        // `modal_bottom_sheet` is absent from `WidgetRole::for_kind_name`'s table, so it
+        // classifies as `Surface` and resolves to `theme.colors.background` — the window's
+        // own fill. A pane painted in that colour would be byte-identical to the dark scrim
+        // over the frame behind it, so a resolved surface equal to the window fill is
+        // re-derived a visible step away from it, the same distinction
+        // `Colors::input_background` draws for a field.
+        let window_fill = {
+            let manager = crate::theme::global_theme_manager();
+            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
+        };
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::rgb(40, 40, 40));
+        let sheet_fill = match style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+        {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => window_fill.blend(&ink, 0.08),
+        };
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .filter(|resolved| *resolved != sheet_fill)
+            .unwrap_or_else(|| sheet_fill.blend(&ink, 0.35));
+
         let sheet_height = self.compute_sheet_height();
         let drag_offset_px = self.drag_offset as i32;
 
-        // 1. Semi-transparent overlay
+        // The scrim is drawn in both states. It used to be part of the visible-only body, so
+        // a freshly constructed sheet painted nothing at all; keeping it unconditional gives
+        // the control a rendered extent at rest while leaving the sheet itself the opaque
+        // element of the open state.
+        let scrim = ink.blend(&sheet_fill, 0.55);
         let overlay_rect = Rect::new(rect.x, rect.y, rect.width, rect.height);
-        context.fill_rect(overlay_rect, Color::rgba(0, 0, 0, 80));
+        context.fill_rect(overlay_rect, scrim);
+
+        // A hidden sheet paints only the scrim; the panel, its handle and its title belong to
+        // the open state alone.
+        if !self.is_visible {
+            return;
+        }
 
         // 2. Sheet panel at the bottom, shifted by drag offset
         let sheet_y = rect.y + rect.height as i32 - sheet_height as i32 + drag_offset_px;
         let sheet_rect_panel = Rect::new(rect.x, sheet_y, rect.width, sheet_height);
         let corner_radius: u32 = 16;
 
-        context.fill_rounded_rect(sheet_rect_panel, corner_radius, Color::rgba(248, 248, 248, 255));
-        context.draw_rounded_rect_stroke(
-            sheet_rect_panel,
-            corner_radius,
-            Color::rgba(220, 220, 220, 255),
-            1,
-        );
+        context.fill_rounded_rect(sheet_rect_panel, corner_radius, sheet_fill);
+        context.draw_rounded_rect_stroke(sheet_rect_panel, corner_radius, border, 1);
 
         // 3. Drag handle
         let handle_width: u32 = 36;
@@ -310,7 +351,7 @@ impl Draw for ModalBottomSheet {
         let handle_x = rect.x + (rect.width as i32 - handle_width as i32) / 2;
         let handle_y = sheet_y + 10;
         let handle_rect = Rect::new(handle_x, handle_y, handle_width, handle_height);
-        context.fill_rounded_rect(handle_rect, handle_height / 2, Color::rgba(180, 180, 180, 200));
+        context.fill_rounded_rect(handle_rect, handle_height / 2, ink.blend(&sheet_fill, 0.35));
 
         // 4. Title
         let title_y = handle_y + handle_height as i32 + 12;
@@ -322,7 +363,7 @@ impl Draw for ModalBottomSheet {
                 Point::new(title_x.max(rect.x), title_y + title_metrics.ascent as i32),
                 &self.title,
                 &title_font,
-                Color::rgba(30, 30, 30, 255),
+                ink,
                 HorizontalAlignment::Left,
             );
         }
@@ -339,7 +380,9 @@ impl Draw for ModalBottomSheet {
                 rect.width.saturating_sub(16),
                 content_available,
             );
-            context.fill_rect(content_rect, Color::WHITE);
+            // The content well is one step away from the sheet it sits in, so the two read as
+            // separate regions in either appearance.
+            context.fill_rect(content_rect, sheet_fill.blend(&ink, 0.04));
         }
     }
 }

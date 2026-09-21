@@ -70,6 +70,11 @@ pub struct GridTableWidget {
     row_number_width: u32,
 
     // Appearance
+    //
+    // These are the *last-resort* literals for the grid's chrome. `Draw` resolves explicit
+    // style first, then the theme's resolved style, and treats a colour that still equals one
+    // of these as "nothing was configured", so they stay published for callers of the
+    // setters without pinning the rendering to a light-only palette.
     grid_color: Color,
     _grid_thickness: u32,
     header_bg: Color,
@@ -107,6 +112,18 @@ pub struct GridTableWidget {
 }
 
 impl GridTableWidget {
+    /// The neutral-literal grid colour the constructor seeds [`Self::grid_color`] with.
+    ///
+    /// `Draw` compares the current value against this to tell "the caller left the
+    /// appearance alone" from "the caller asked for this exact colour".
+    const DEFAULT_GRID_COLOR: Color = Color::rgb(210, 215, 225);
+    /// See [`Self::DEFAULT_GRID_COLOR`].
+    const DEFAULT_HEADER_BG: Color = Color::rgb(240, 242, 245);
+    /// See [`Self::DEFAULT_GRID_COLOR`].
+    const DEFAULT_HEADER_TEXT_COLOR: Color = Color::rgb(40, 50, 70);
+    /// See [`Self::DEFAULT_GRID_COLOR`].
+    const DEFAULT_SELECTED_BG: Color = Color::rgb(200, 220, 250);
+
     /// Creates a new empty grid table with default appearance and the given geometry.
     pub fn new(geometry: Rect) -> Self {
         Self {
@@ -118,11 +135,11 @@ impl GridTableWidget {
             min_column_width: 30,
             header_height: 28,
             row_number_width: 48,
-            grid_color: Color::rgb(210, 215, 225),
+            grid_color: Self::DEFAULT_GRID_COLOR,
             _grid_thickness: 1,
-            header_bg: Color::rgb(240, 242, 245),
-            header_text_color: Color::rgb(40, 50, 70),
-            selected_bg: Color::rgb(200, 220, 250),
+            header_bg: Self::DEFAULT_HEADER_BG,
+            header_text_color: Self::DEFAULT_HEADER_TEXT_COLOR,
+            selected_bg: Self::DEFAULT_SELECTED_BG,
             selected_cell: None,
             selection_mode: GridTableSelectionMode::Cell,
             column_widths: Vec::new(),
@@ -645,8 +662,72 @@ impl Draw for GridTableWidget {
             return;
         }
 
+        // Chrome colours resolve explicit style first, then the theme's resolved style for
+        // this control, and only then a literal. The theme step is what makes an appearance
+        // switch visible; the surface, the header, the row numbers, the grid lines and all
+        // four text colours used to be hardcoded literals, so light and dark rendered
+        // identically.
+        //
+        // The theme reads take and release the global manager's lock internally, so no guard
+        // is held across the draw (the mutex is not re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("grid_table");
+        let mut surface = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        // `grid_table` is absent from `WidgetRole::for_kind_name`'s table, so it classifies as
+        // `Surface` and resolves to `theme.colors.background` — the window's own fill. A panel
+        // painted in that colour would be byte-identical to the frame behind it, so a resolved
+        // surface equal to the window fill is re-derived a visible step away from it, the same
+        // distinction `Colors::input_background` draws for a field.
+        let window_fill = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.background)
+            .unwrap_or(Color::WHITE);
+        if surface == window_fill {
+            surface = window_fill.blend(&ink, 0.08);
+        }
+        // The accent is the theme's `primary`, used both for the selection fill and for the
+        // resting header text; the surface and the ink supply everything else.
+        let accent = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.primary)
+            .unwrap_or(Color::PRIMARY);
+        // Each cached appearance field is used only while it still holds its constructor
+        // literal, i.e. while no caller set it explicitly. The explicit setters keep their
+        // meaning; only the untouched default now follows the appearance.
+        let grid_color = if self.grid_color == Self::DEFAULT_GRID_COLOR {
+            surface.blend(&ink, 0.15)
+        } else {
+            self.grid_color
+        };
+        let header_bg = if self.header_bg == Self::DEFAULT_HEADER_BG {
+            surface.blend(&ink, 0.06)
+        } else {
+            self.header_bg
+        };
+        let header_text_color = if self.header_text_color == Self::DEFAULT_HEADER_TEXT_COLOR {
+            ink.blend(&accent, 0.60)
+        } else {
+            self.header_text_color
+        };
+        let selected_bg = if self.selected_bg == Self::DEFAULT_SELECTED_BG {
+            surface.blend(&accent, 0.30)
+        } else {
+            self.selected_bg
+        };
+        // A cell's own text is the ink, not a second literal: it used to be a fixed
+        // blue-black that vanished on a dark surface.
+        let cell_text_color = ink;
+        let outer_border = surface.blend(&ink, 0.35);
+
         // Background
-        context.fill_rect(rect, Color::rgb(255, 255, 255));
+        context.fill_rect(rect, surface);
 
         let rnw = self.row_number_width as i32;
         let header_h = self.header_height as i32;
@@ -659,7 +740,7 @@ impl Draw for GridTableWidget {
 
         if rows == 0 || cols == 0 {
             // Draw at least the header / row-number area frame
-            context.draw_rect(rect, Color::rgb(190, 198, 210));
+            context.draw_rect(rect, grid_color);
             return;
         }
 
@@ -669,8 +750,8 @@ impl Draw for GridTableWidget {
         // ── Draw column headers ──
         {
             let header_rect = Rect::new(rect.x, rect.y, rect.width, self.header_height);
-            context.fill_rect(header_rect, self.header_bg);
-            context.draw_rect(header_rect, self.grid_color);
+            context.fill_rect(header_rect, header_bg);
+            context.draw_rect(header_rect, grid_color);
 
             let mut hx = data_left;
             for ci in self.scroll_column..cols {
@@ -680,7 +761,7 @@ impl Draw for GridTableWidget {
                 }
 
                 let cell_rect = Rect::new(hx, rect.y, cw as u32, self.header_height);
-                context.draw_rect(cell_rect, self.grid_color);
+                context.draw_rect(cell_rect, grid_color);
 
                 // Sort indicator
                 let sort_desc =
@@ -700,7 +781,7 @@ impl Draw for GridTableWidget {
                     Point::new(hx + 4, rect.y + header_h / 2),
                     &header_text,
                     &Font::default(),
-                    self.header_text_color,
+                    header_text_color,
                     HorizontalAlignment::Left,
                 );
 
@@ -718,14 +799,14 @@ impl Draw for GridTableWidget {
                 }
 
                 let cell_rect = Rect::new(rect.x, y, self.row_number_width, self.row_height);
-                context.fill_rect(cell_rect, self.header_bg);
-                context.draw_rect(cell_rect, self.grid_color);
+                context.fill_rect(cell_rect, header_bg);
+                context.draw_rect(cell_rect, grid_color);
 
                 context.draw_text(
                     Point::new(rect.x + rnw - 6, y + rh / 2),
                     &abs_row.to_string(),
                     &Font::default(),
-                    self.header_text_color,
+                    header_text_color,
                     HorizontalAlignment::Right,
                 );
             }
@@ -767,11 +848,11 @@ impl Draw for GridTableWidget {
                 };
 
                 if is_selected {
-                    context.fill_rect(cell_rect, self.selected_bg);
+                    context.fill_rect(cell_rect, selected_bg);
                 }
 
                 // Grid lines
-                context.draw_rect(cell_rect, self.grid_color);
+                context.draw_rect(cell_rect, grid_color);
 
                 // Cell text
                 if let Some(text) = source.data(abs_row, ci) {
@@ -782,7 +863,7 @@ impl Draw for GridTableWidget {
                         Point::new(text_x, text_y),
                         &text,
                         &Font::default(),
-                        Color::rgb(30, 40, 55),
+                        cell_text_color,
                         HorizontalAlignment::Left,
                     );
                 }
@@ -793,7 +874,7 @@ impl Draw for GridTableWidget {
         }
 
         // ── Outer border ──
-        context.draw_rect(rect, Color::rgb(170, 180, 195));
+        context.draw_rect(rect, outer_border);
     }
 }
 

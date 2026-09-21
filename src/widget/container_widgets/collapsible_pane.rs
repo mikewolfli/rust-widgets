@@ -281,16 +281,51 @@ impl Draw for CollapsiblePane {
     fn draw(&mut self, context: &mut RenderContext) {
         let hdr = self.header_rect();
 
-        // --- Draw header background ---
-        let header_bg = if self.base.is_enabled() {
-            Color::rgb(220, 220, 220)
-        } else {
-            Color::rgb(240, 240, 240)
+        // Chrome colours resolve explicit style first, then the theme's resolved style for
+        // this control, and only then a literal. The theme step is what makes an appearance
+        // switch visible; the header, the content area, the border and both text colours used
+        // to be hardcoded literals, so light and dark rendered identically.
+        //
+        // The theme reads take and release the global manager's lock internally, so no guard
+        // is held across the draw (the mutex is not re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("collapsible_pane");
+        // `collapsible_pane` is absent from `WidgetRole::for_kind_name`'s table, so it
+        // classifies as `Surface` and resolves to `theme.colors.background` — the window's
+        // own fill. A header painted in that colour would be byte-identical to the frame
+        // behind it, so a resolved surface equal to the window fill is re-derived a visible
+        // step away from it, the same distinction `Colors::input_background` draws for a field.
+        let window_fill = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.background)
+            .unwrap_or(Color::WHITE);
+        let text_color = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::rgb(0, 0, 0));
+        let border_color = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| window_fill.blend(&text_color, 0.25));
+        let header_bg = match style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+        {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => window_fill.blend(&text_color, 0.08),
         };
+        // The content area is one step more inset than the header, so the two read as
+        // separate regions in either appearance.
+        let content_bg = header_bg.blend(&text_color, 0.03);
+
+        // --- Draw header background ---
+        // A disabled pane dims toward its own ink rather than to a fixed light grey, which
+        // is what previously made the disabled state ignore the appearance entirely.
+        let header_bg =
+            if self.base.is_enabled() { header_bg } else { header_bg.blend(&text_color, 0.5) };
         context.fill_rect(hdr, header_bg);
 
         // --- Draw header bottom border ---
-        let border_color = Color::rgb(180, 180, 180);
         context.draw_line(
             Point::from_f32(hdr.x as f32, (hdr.y + hdr.height as i32) as f32),
             Point::from_f32((hdr.x + hdr.width as i32) as f32, (hdr.y + hdr.height as i32) as f32),
@@ -301,7 +336,7 @@ impl Draw for CollapsiblePane {
         let arrow_x = hdr.x + 6;
         let arrow_y = hdr.y + (hdr.height as i32 / 2) - 4;
         let arrow_color =
-            if self.base.is_enabled() { Color::rgb(80, 80, 80) } else { Color::rgb(180, 180, 180) };
+            if self.base.is_enabled() { text_color } else { text_color.blend(&header_bg, 0.5) };
         let arrow_char = if self.collapsed { "▶" } else { "▼" };
         context.draw_text(
             Point::from_f32(arrow_x as f32, arrow_y as f32),
@@ -315,16 +350,13 @@ impl Draw for CollapsiblePane {
         if !self.title.is_empty() {
             let text_x = hdr.x + 20;
             let text_y = hdr.y + (hdr.height as i32 / 2) - 6;
-            let text_color = if self.base.is_enabled() {
-                Color::rgb(0, 0, 0)
-            } else {
-                Color::rgb(150, 150, 150)
-            };
+            let title_color =
+                if self.base.is_enabled() { text_color } else { text_color.blend(&header_bg, 0.5) };
             context.draw_text(
                 Point::from_f32(text_x as f32, text_y as f32),
                 &self.title,
                 &Font::default(),
-                text_color,
+                title_color,
                 HorizontalAlignment::Left,
             );
         }
@@ -333,7 +365,7 @@ impl Draw for CollapsiblePane {
         if !self.collapsed {
             let content_rect = self.content_rect();
             self.sync_content_geometry();
-            context.fill_rect(content_rect, Color::rgb(248, 248, 248));
+            context.fill_rect(content_rect, content_bg);
             context.draw_line(
                 Point::from_f32(content_rect.x as f32, content_rect.y as f32),
                 Point::from_f32(
@@ -569,9 +601,25 @@ mod tests {
 
     // ── 10. SVG draw output ─────────────────────────────────────────────
 
+    /// The pane paints a header region and, when expanded, a distinct content region.
+    ///
+    /// The assertions are about that *structure*, not about literal RGB triples: the two
+    /// fills come from the active theme now, so a colour literal here would pin the light
+    /// preset and fail the moment the appearance changed — which is exactly the
+    /// theme-blindness the resolved colours exist to remove.
     #[test]
     fn collapsible_pane_draw_produces_svg() {
         let mut cp = make_pane();
+
+        // The colour each region resolves to under the active theme, computed from the same
+        // inputs the draw uses rather than read back out of the SVG.
+        let window_fill = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.background)
+            .unwrap_or(Color::WHITE);
+        let header_expected = window_fill.blend(&Color::BLACK, 0.08);
+        let content_expected = header_expected.blend(&Color::BLACK, 0.03);
+        let rgb = |c: Color| format!("{},{},{}", c.r, c.g, c.b);
 
         let mut svg_backend = SvgPaintBackend::new(Size::new(200, 100));
         svg_backend.begin_frame(Color::rgb(255, 255, 255));
@@ -587,9 +635,12 @@ mod tests {
         assert!(svg_output.ends_with("</svg>"), "output must end with </svg>");
 
         // Expanded state should draw the content area.
-        assert!(svg_output.contains("248,248,248"), "should contain content area background");
+        assert!(
+            svg_output.contains(&rgb(content_expected)),
+            "should contain content area background"
+        );
         // Header background should be present.
-        assert!(svg_output.contains("220,220,220"), "should contain header background");
+        assert!(svg_output.contains(&rgb(header_expected)), "should contain header background");
 
         // Now collapsed.
         let mut cp2 = CollapsiblePane::new(Rect::new(0, 0, 200, 100), "Collapsed".to_string());
@@ -606,11 +657,14 @@ mod tests {
 
         // Collapsed state should NOT contain content area background.
         assert!(
-            !svg_collapsed.contains("248,248,248"),
+            !svg_collapsed.contains(&rgb(content_expected)),
             "collapsed pane must not draw content area"
         );
         // But the header should still be visible.
-        assert!(svg_collapsed.contains("220,220,220"), "collapsed pane must still draw header");
+        assert!(
+            svg_collapsed.contains(&rgb(header_expected)),
+            "collapsed pane must still draw header"
+        );
     }
 
     // ── 11. Mouse click toggles ─────────────────────────────────────────

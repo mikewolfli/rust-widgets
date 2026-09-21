@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! List view widget.
+use crate::core::Color;
 use crate::core::HorizontalAlignment;
 use crate::core::Rect;
 use crate::render::RenderContext;
@@ -433,11 +434,39 @@ impl WidgetProperties for ListView {
 impl Draw for ListView {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.base.geometry();
-        use crate::core::Color;
-        // Draw background
-        context.fill_rect(rect, Color::rgb(255, 255, 255));
-        // Draw border
-        context.draw_rect(rect, Color::rgb(200, 200, 200));
+
+        // Chrome colours resolve explicit style first, then the theme's resolved style for
+        // this control, and only then a literal. The theme step is what makes an appearance
+        // switch visible; the surface, the border, the focused-row highlight and the text
+        // colour used to be hardcoded literals, so light and dark rendered identically.
+        //
+        // The theme reads take and release the global manager's lock internally, so no guard
+        // is held across the draw (the mutex is not re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("list_view");
+        let surface = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .filter(|resolved| *resolved != surface)
+            .unwrap_or_else(|| surface.blend(&ink, 0.20));
+        // The focused row is a selection state, so it reads the theme's accent token rather
+        // than a second literal blue, and is laid over the surface so it stays legible.
+        let accent = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.primary)
+            .unwrap_or(Color::PRIMARY);
+        let focused_bg = surface.blend(&accent, 0.30);
+
+        context.fill_rect(rect, surface);
+        context.draw_rect(rect, border);
         // Draw items from model
         if let Some(ref model) = self.model {
             let item_height = 20;
@@ -451,7 +480,7 @@ impl Draw for ListView {
                 if Some(i) == current_row {
                     context.fill_rect(
                         crate::core::Rect::new(rect.x, y, rect.width, item_height as u32),
-                        Color::rgb(200, 220, 255),
+                        focused_bg,
                     );
                 }
                 if let Some(text) = model.data(i) {
@@ -459,7 +488,7 @@ impl Draw for ListView {
                         crate::core::Point::new(rect.x + 2, y + item_height / 2),
                         &text,
                         &crate::core::Font::default(),
-                        Color::rgb(0, 0, 0),
+                        ink,
                         HorizontalAlignment::Left,
                     );
                 }

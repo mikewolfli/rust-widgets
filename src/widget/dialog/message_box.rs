@@ -8,6 +8,7 @@ use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::theme::SemanticColor;
 use crate::tr;
 use crate::widget::capability::coercion::{
     expect_message_box_icon, expect_string, message_box_icon_to_str,
@@ -311,10 +312,28 @@ impl MessageBox {
             MessageBoxIcon::NoIcon => "",
         }
     }
-    /// The colour used to draw [`Self::icon_symbol`]: blue for information and
-    /// questions, orange for warnings, red for critical, and black (unused) for
-    /// [`MessageBoxIcon::NoIcon`].
+    /// The colour used to draw [`Self::icon_symbol`]: the theme's semantic token for
+    /// the icon's severity, so the indicator moves with the appearance instead of
+    /// being pinned to a literal. The literals that used to be here were the *light*
+    /// palette's values, so a severity indicator stayed light-blue on a dark dialog.
+    ///
+    /// [`MessageBoxIcon::NoIcon`] draws no glyph at all, so its arm never reaches the
+    /// pixels; it still resolves a token rather than a literal so the match stays total.
     fn icon_color(&self) -> Color {
+        let token = match self.icon {
+            MessageBoxIcon::Information | MessageBoxIcon::Question => SemanticColor::Info,
+            MessageBoxIcon::Warning => SemanticColor::Warning,
+            MessageBoxIcon::Critical => SemanticColor::Error,
+            MessageBoxIcon::NoIcon => SemanticColor::Info,
+        };
+        // `semantic_color` takes and releases the manager's lock and returns an owned
+        // colour, so no guard outlives the call.
+        crate::theme::semantic_color(token).unwrap_or_else(|| self.icon_color_fallback())
+    }
+
+    /// The literal last resort behind [`Self::icon_color`], used only when no theme is
+    /// active and therefore no token can be resolved.
+    fn icon_color_fallback(&self) -> Color {
         match self.icon {
             MessageBoxIcon::Information => Color::rgb(0, 120, 215),
             MessageBoxIcon::Question => Color::rgb(0, 120, 215),
@@ -452,22 +471,60 @@ impl EventHandler for MessageBox {
 impl Draw for MessageBox {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        // Dialog background
-        context.fill_rect(
-            Rect::new(rect.x, rect.y, rect.width, rect.height),
-            Color::rgb(245, 245, 245),
-        );
-        context.draw_rect(
-            Rect::new(rect.x, rect.y, rect.width, rect.height),
-            Color::rgb(160, 160, 160),
-        );
-        // Title bar
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, 28u32), Color::rgb(0, 120, 215));
+        // Chrome colours resolve explicit style first, then the theme's resolved style for
+        // this control, and only then a literal. The surface already read the style, but the
+        // title bar and the buttons were literals, so a light/dark switch left them
+        // unchanged and the census reported the control as theme-blind.
+        //
+        // The theme reads take and release the global manager's lock internally, so no
+        // guard is held across the draw (the mutex is not re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("message_box");
+        // `message_box` is absent from `WidgetRole::for_kind_name`'s table — the variant
+        // spells as `message_box`, but only `errordialog` is classified — so it resolves to
+        // `theme.colors.background`: the colour the window behind it is already filled with.
+        // A frame painted in that colour would be indistinguishable from the window, so a
+        // resolved surface equal to the window fill is re-derived a visible step away from
+        // it, the same distinction `Colors::input_background` draws for a field.
+        let window_fill = {
+            let manager = crate::theme::global_theme_manager();
+            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
+        };
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::rgb(40, 40, 40));
+        let surface = match style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+        {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => window_fill.blend(&ink, 0.06),
+        };
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .filter(|resolved| *resolved != surface)
+            .unwrap_or_else(|| surface.blend(&ink, 0.45));
+        // The title bar is a distinct band on the frame, derived from it so the two stay one
+        // visible step apart in either appearance. It used to be the literal brand blue.
+        let title_bar = surface.blend(&ink, 0.08);
+        // An ordinary button is a raised step on the frame; the default button is the
+        // theme's action colour with text chosen for contrast against it.
+        let button_fill = surface.blend(&ink, 0.12);
+        let primary = theme.as_ref().and_then(|t| t.background_color).unwrap_or(button_fill);
+        let primary_ink = primary.contrast_color();
+
+        // Dialog background.
+        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), surface);
+        context.draw_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), border);
+        // Title bar.
+        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, 28u32), title_bar);
         context.draw_text(
             Point::new(rect.x + 8, rect.y + 14),
             &self.title,
             &Font::default(),
-            Color::rgb(255, 255, 255),
+            ink,
             HorizontalAlignment::Left,
         );
         // Icon
@@ -487,7 +544,7 @@ impl Draw for MessageBox {
             Point::new(text_x, rect.y + 60),
             &self.text,
             &Font::default(),
-            Color::rgb(0, 0, 0),
+            ink,
             HorizontalAlignment::Left,
         );
         // Buttons
@@ -498,11 +555,10 @@ impl Draw for MessageBox {
         let mut btn_x = rect.x as f32 + rect.width as f32 - total_btn_w;
         for btn in &self.buttons {
             let is_default = self.default_button == Some(*btn);
-            let bg = if is_default { Color::rgb(0, 120, 215) } else { Color::rgb(225, 225, 225) };
-            let fg = if is_default { Color::rgb(255, 255, 255) } else { Color::rgb(0, 0, 0) };
+            let bg = if is_default { primary } else { button_fill };
+            let fg = if is_default { primary_ink } else { ink };
             context.fill_rect(Rect::from_f32(btn_x, btn_y, btn_w, btn_h), bg);
-            context
-                .draw_rect(Rect::from_f32(btn_x, btn_y, btn_w, btn_h), Color::rgb(100, 100, 100));
+            context.draw_rect(Rect::from_f32(btn_x, btn_y, btn_w, btn_h), border);
             context.draw_text(
                 Point::from_f32(btn_x + btn_w / 2.0, btn_y + btn_h / 2.0),
                 &btn.translated_label(),

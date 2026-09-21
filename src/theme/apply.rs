@@ -46,6 +46,8 @@
 //! growing its own `cfg` that then drifts out of step with the module's gate.
 
 #[cfg(all(not(alloc_frugal), widgets_unstripped))]
+use crate::style::WidgetStyle;
+#[cfg(all(not(alloc_frugal), widgets_unstripped))]
 use crate::widget::Widget;
 
 /// Applies the active theme to a widget that is about to be registered.
@@ -79,12 +81,21 @@ pub(crate) fn apply_active_theme(widget: &mut dyn Widget) {
         return;
     };
 
-    // Merge under the widget's existing style so an explicit value wins. The merge
-    // is field-wise, so this does not need to distinguish "constructor default"
-    // from "caller set it": either way an already-set field is preserved, which is
-    // the documented precedence.
+    // `merge_theme`, not `merge`: a control that already carries the *previous* theme's
+    // colours must be re-rendered in the new one. A plain `merge` fills only `None`
+    // fields, so after light → dark every already-styled control kept the light palette
+    // — the switch appeared to do nothing. A field the caller set is still preserved;
+    // see `WidgetStyle::merge_theme` for how the two cases are told apart.
+    //
+    // A style the theme authored is marked as such, which is what lets the *next*
+    // application replace these values. A style the caller has also touched stays
+    // unmarked, so its caller-set fields survive every later switch.
     let mut style = widget.style().clone();
-    style.merge(&theme_style);
+    let caller_authored = !style.theme_derived && style != WidgetStyle::default();
+    style.merge_theme(&theme_style);
+    if !caller_authored {
+        style.theme_derived = true;
+    }
     widget.set_style(style);
 }
 
@@ -180,6 +191,71 @@ mod tests {
             light.style().background_color,
             dark.style().background_color,
             "a light and a dark theme must fill a button differently"
+        );
+
+        global_theme_manager().set_appearance(AppearanceMode::Light);
+    }
+
+    /// Re-applying a theme after a switch really changes an already-styled control.
+    ///
+    /// # The defect this pins
+    ///
+    /// [`WidgetStyle::merge`] fills only fields that are `None`, which is what makes a
+    /// caller-set colour survive the theme. That rule alone cannot express "replace what
+    /// the **previous** theme put here": once a control had been styled, its fields were no
+    /// longer `None`, so switching light → dark had nowhere to write and every control on
+    /// screen kept the light palette. The switch appeared to do nothing.
+    ///
+    /// This applies a theme, switches, and applies again — the sequence
+    /// `crate::reapply_active_theme` performs — and asserts the control actually changed.
+    #[test]
+    fn reapplying_after_a_switch_replaces_the_previous_themes_colours() {
+        let _guard = guard();
+
+        global_theme_manager().set_appearance(AppearanceMode::Light);
+        let mut button = crate::widget::Button::new("ok".to_string(), Rect::new(0, 0, 10, 10));
+        apply_active_theme(&mut button);
+        let light_fill = button.style().background_color;
+        assert!(light_fill.is_some(), "the first application must style the button");
+
+        global_theme_manager().set_appearance(AppearanceMode::Dark);
+        apply_active_theme(&mut button);
+        let dark_fill = button.style().background_color;
+
+        assert_ne!(
+            light_fill, dark_fill,
+            "re-applying after a switch must replace the previous theme's colour, not be
+             silently refused because the field is already set"
+        );
+
+        global_theme_manager().set_appearance(AppearanceMode::Light);
+    }
+
+    /// A caller's explicit colour survives every later theme application.
+    ///
+    /// The counterpart of the test above: making the theme able to replace *its own*
+    /// previous values must not let it start overwriting a caller's. Both directions
+    /// matter, and a fix that satisfied only one would trade a stale palette for a lost
+    /// override.
+    #[test]
+    fn a_callers_colour_survives_repeated_theme_applications() {
+        let _guard = guard();
+        let explicit = Color::rgb(1, 2, 3);
+
+        global_theme_manager().set_appearance(AppearanceMode::Light);
+        let mut button = crate::widget::Button::new("ok".to_string(), Rect::new(0, 0, 10, 10));
+        button.set_background_color(Some(explicit));
+
+        // Two applications through a switch: the case that would overwrite if the theme
+        // treated every set field as its own.
+        apply_active_theme(&mut button);
+        global_theme_manager().set_appearance(AppearanceMode::Dark);
+        apply_active_theme(&mut button);
+
+        assert_eq!(
+            button.style().background_color,
+            Some(explicit),
+            "a colour the caller set must survive a theme switch"
         );
 
         global_theme_manager().set_appearance(AppearanceMode::Light);

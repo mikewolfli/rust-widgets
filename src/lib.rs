@@ -1523,6 +1523,67 @@ pub fn poll_widget_triggered() -> Option<crate::core::ObjectId> {
 pub fn poll_widget_trigger_event() -> Option<WidgetTriggerEvent> {
     control_backend::get_control_backend().poll_widget_trigger_event()
 }
+
+/// Delivers every queued widget trigger, in order, until the queue is empty.
+///
+/// Returns the number of events consumed.
+///
+/// # Why this lives at the crate root rather than in `crate::app`
+///
+/// Every platform backend's event loop needs to call it — GTK's timeout, the Win32
+/// message pass, Wayland's idle step, Android's polling loop — and `crate::app` is gated
+/// `full_widgets` while the trigger queue is available to every profile. A backend that
+/// called `crate::app::drain_triggers` therefore compiled on `desktop` and failed on
+/// `mini` with `cannot find 'app' in 'crate'`, which is the same class of defect as a call
+/// into a gated `create_*`: one unpicked profile hides it completely
+/// (`tools/check_profiles.sh` runs the profile matrix; a `desktop` build never sees it).
+///
+/// The trigger queue is not a widget-set feature — it is how a backend reports "the user
+/// resized the window" — so the drain sits beside the queue it drains, at the widest gate
+/// its dependency has.
+///
+/// # Why it is defined in every profile, not gated
+///
+/// The queue exists in every profile except `alloc_frugal` (`mini`). Gating the function
+/// would mean gating each of the **eleven** backend call sites, and a gate that has to be
+/// repeated eleven times is a gate that will be forgotten in one of them — which is
+/// exactly how this function came to be missing from the crate root in the first place.
+/// Defining it unconditionally moves the condition to one place, and `alloc_frugal`
+/// answers `0` because there is genuinely nothing to drain there.
+///
+/// # Termination
+///
+/// Drains until the queue reports empty, so a tick's cost is bounded by the number of
+/// events that arrived since the last tick. A backend that produced events faster than it
+/// consumed them would starve its own loop, which is why the queue is drained to empty
+/// rather than to a fixed count: "drained" is the only state from which the next tick's
+/// backlog is knowable.
+pub fn drain_triggers() -> usize {
+    #[cfg(alloc_frugal)]
+    {
+        // This profile has no trigger queue, so there is nothing queued and nothing to
+        // deliver. `0` is the truthful count, not a failure.
+        0
+    }
+    #[cfg(not(alloc_frugal))]
+    {
+        let mut dispatched = 0usize;
+        while let Some(event) = poll_widget_trigger_event() {
+            #[cfg(full_widgets)]
+            {
+                app::dispatch_trigger(event.widget_id, event.kind);
+            }
+            #[cfg(not(full_widgets))]
+            {
+                // No router in this profile. Reading the event above is what removes it
+                // from the queue; naming it keeps the binding exercised in every build.
+                let _ = (event.widget_id, event.kind);
+            }
+            dispatched += 1;
+        }
+        dispatched
+    }
+}
 /// Queues an activation of `widget_id` as if the user had performed it, for
 /// tests and for driving the UI from outside the event loop.
 ///

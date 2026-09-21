@@ -882,6 +882,21 @@ fn window_delegate_class() -> *const Class {
                 window_did_resize_impl as extern "C" fn(&Object, Sel, id),
             );
         }
+        // The tick the trigger queue is drained on.
+        //
+        // `windowDidResize:` *queues* a `Resized` event for the library, and nothing in
+        // `-[NSApplication run]` reads that queue back — so without a tick, no window
+        // layout ever re-ran for a window the user resized. See
+        // `crate::drain_triggers`.
+        //
+        // The method lives on this delegate rather than on a new class because the
+        // delegate is already allocated per window and already on the main thread,
+        // which is what the widgets require.
+        // SAFETY: `tick:` takes no argument beyond the selector's implicit ones, so the
+        // ABI is `(self, _cmd)` and needs no third parameter.
+        unsafe {
+            decl.add_method(sel!(tick:), drain_triggers_impl as extern "C" fn(&Object, Sel, id));
+        }
         (decl.register() as *const Class) as usize
     })) as *const Class
 }
@@ -929,6 +944,14 @@ unsafe fn window_did_resize(this: &Object, _cmd: Sel, notification: id) {
     crate::queue_resize_trigger(widget_id, width, height);
 }
 
+/// Safe-ABI trampoline for the `tick:` timer implementation.
+///
+/// Same reason as [`window_did_resize_impl`]: `add_method` accepts only the safe
+/// `extern "C"` form.
+extern "C" fn drain_triggers_impl(_this: &Object, _cmd: Sel, _timer: id) {
+    crate::drain_triggers();
+}
+
 /// Installs the resize delegate on `window` and tags it with `widget_id`.
 ///
 /// # Safety
@@ -945,6 +968,23 @@ pub(crate) unsafe fn install_resize_delegate(window: id, widget_id: ObjectId) {
         OBJC_ASSOCIATION_ASSIGN,
     );
     let _: () = msg_send![window, setDelegate: delegate];
+
+    // Start the drain tick, targeting this delegate.
+    //
+    // Scheduled on the current run loop and repeating, so it fires for as long as
+    // AppKit runs. `retain` is not used: the timer is added to the run loop, which owns
+    // it, and the delegate is owned by the window.
+    //
+    // SAFETY: `delegate` is a live object on the main thread, and `tick:` is a method
+    // this module registered on its class above.
+    let _timer: id = msg_send![
+        class!(NSTimer),
+        scheduledTimerWithTimeInterval: 1.0f64 / 60.0f64
+        target: delegate
+        selector: sel!(tick:)
+        userInfo: nil
+        repeats: YES
+    ];
 }
 
 /// Reads the logical widget id associated with `object`, or 0 when absent.

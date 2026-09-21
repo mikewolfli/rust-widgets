@@ -524,13 +524,31 @@ impl Draw for Calendar {
         let rect = self.geometry();
         let enabled = self.base.is_enabled();
         let today = chrono::Local::now().date_naive();
-        let dim_color = if enabled { Color::rgb(160, 160, 160) } else { Color::rgb(210, 210, 210) };
-        let text_color = if enabled { Color::rgb(30, 30, 30) } else { Color::rgb(170, 170, 170) };
-        let header_bg = Color::rgb(235, 235, 235);
-        let border_color = Color::rgb(190, 190, 190);
+        // Read the style once. The chrome — the calendar's own surface, its ink, its
+        // outlines — follows it; the literals stay as fallbacks so an unstyled
+        // calendar looks exactly as before. What does *not* follow it is the set of
+        // colours that state what a cell *means*: today's amber, the selection's
+        // blue, the weekend's red, and the dimmed/out-of-range greys. Those are
+        // information, and recolouring them from a theme would erase the meaning
+        // rather than theme its appearance.
+        let style = self.style();
+        let dim_color = style.text_color.unwrap_or(if enabled {
+            Color::rgb(160, 160, 160)
+        } else {
+            Color::rgb(210, 210, 210)
+        });
+        let text_color = style.text_color.unwrap_or(if enabled {
+            Color::rgb(30, 30, 30)
+        } else {
+            Color::rgb(170, 170, 170)
+        });
+        let header_bg = style.background_color.unwrap_or(Color::rgb(235, 235, 235));
+        let border_color = style.border_color.unwrap_or(Color::rgb(190, 190, 190));
+        let calendar_bg = style.background_color.unwrap_or(Color::rgb(255, 255, 255));
+        let weekend_color = Color::rgb(180, 60, 60);
 
         // ── Outer background & border ──
-        context.fill_rect(rect, Color::rgb(255, 255, 255));
+        context.fill_rect(rect, calendar_bg);
         context.draw_rect(rect, border_color);
 
         // ── 1. Navigation bar ──
@@ -545,7 +563,11 @@ impl Draw for Calendar {
             );
             // ◄ button
             let btn_w = 30i32;
-            let arrow_color = if enabled { Color::rgb(60, 60, 60) } else { dim_color };
+            let arrow_color = style.text_color.unwrap_or(if enabled {
+                Color::rgb(60, 60, 60)
+            } else {
+                dim_color
+            });
             context.draw_text(
                 Point::new(nav.x + 8, nav.y + 7),
                 "◀",
@@ -576,7 +598,9 @@ impl Draw for Calendar {
         // ── 2. Weekday headers ──
         if self.horizontal_header_visible {
             let hdr = self.day_header_rect();
-            context.fill_rect(hdr, Color::rgb(245, 245, 245));
+            // A brighter tint of the header fill, so the two bands stay distinguishable
+            // on any background rather than only on the light default.
+            context.fill_rect(hdr, header_bg.blend(&Color::rgb(255, 255, 255), 0.5));
             context.draw_line(
                 Point::new(hdr.x, hdr.y + hdr.height as i32 - 1),
                 Point::new(hdr.x + hdr.width as i32, hdr.y + hdr.height as i32 - 1),
@@ -594,7 +618,7 @@ impl Draw for Calendar {
                 let c = if !enabled {
                     dim_color
                 } else if is_weekend {
-                    Color::rgb(180, 60, 60)
+                    weekend_color
                 } else {
                     text_color
                 };
@@ -619,7 +643,15 @@ impl Draw for Calendar {
             let selected_bg = Color::rgba(51, 153, 255, 120);
             let today_bg = Color::rgba(255, 200, 50, 100);
             let today_border = Color::rgb(200, 120, 20);
-            let grid_line = Color::rgb(220, 220, 220);
+            // The cell separators are the calendar's own outline, so they follow
+            // `border_color`; a fixed near-white grid vanished entirely on a dark
+            // surface. Derived rather than literal so a zero-width border means the
+            // same thing here as it does everywhere else: no visible rule.
+            let grid_line = if style.border_width.unwrap_or(1) == 0 {
+                Color::rgba(0, 0, 0, 0)
+            } else {
+                border_color
+            };
 
             for row in 0..6 {
                 for col in 0..7 {
@@ -658,8 +690,10 @@ impl Draw for Calendar {
                     } else if date == self.selected_date {
                         context.fill_rect(cell_rect, selected_bg);
                     } else if !in_range {
-                        // Outside range — dimmed
-                        context.fill_rect(cell_rect, Color::rgb(248, 248, 248));
+                        // Outside range — dimmed. A dimmed *surface*, so a theme's
+                        // background stays visible under the veil instead of a fixed
+                        // near-white rectangle appearing in a dark calendar.
+                        context.fill_rect(cell_rect, calendar_bg.blend(&text_color, 0.9));
                     }
 
                     // Grid lines (right + bottom edges)

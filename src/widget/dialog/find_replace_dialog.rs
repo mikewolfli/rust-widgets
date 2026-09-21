@@ -352,9 +352,58 @@ impl Draw for FindReplaceDialog {
 
         let geom = self.geometry();
 
+        // Chrome colours resolve explicit style first, then the theme's resolved style
+        // for this control, and only then fall back to a literal. Every colour below used
+        // to be one of the `Color::BACKGROUND` / `FOREGROUND` / `PRIMARY` constants, which
+        // do not move when the appearance switches — the rendering census reported the
+        // control as theme-blind.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global
+        // manager's mutex is not re-entrant.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("find_replace_dialog");
+        let themed_ink = theme.as_ref().and_then(|t| t.text_color);
+        let themed_border = theme.as_ref().and_then(|t| t.border_color);
+
+        let ink = style.text_color.or(themed_ink).unwrap_or(Color::FOREGROUND);
+        let surface = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::BACKGROUND);
+        let border = style
+            .border_color
+            .or(themed_border)
+            .filter(|resolved| *resolved != surface)
+            .unwrap_or_else(|| surface.blend(&ink, 0.25));
+        // The entry fields and the accent are read as their own lock acquisition and copied
+        // out as values, so the guard is dropped before anything else touches the theme.
+        let (window_fill, accent, muted) = {
+            let manager = crate::theme::global_theme_manager();
+            match manager.current_theme() {
+                Some(active) => {
+                    (active.colors.background, active.colors.primary, active.colors.secondary)
+                }
+                None => (Color::BACKGROUND, Color::PRIMARY, Color::SECONDARY),
+            }
+        };
+        // The two entry fields are editable interiors: one step *away* from the bar's own
+        // surface, so on a light bar they are lighter and on a dark one darker, rather
+        // than the forced white they used to be.
+        let field = if surface.is_dark() {
+            surface.blend(&Color::WHITE, 0.06)
+        } else {
+            surface.blend(&Color::BLACK, 0.04)
+        };
+        let accent_ink = accent.contrast_color();
+        let muted_ink = muted.contrast_color();
+
         // ── Background ──
-        context.fill_rect(geom, Color::BACKGROUND);
-        context.draw_rect_stroke(geom, Color::BORDER, 1);
+        // The bar floats over the surface it searches, so its fill is derived from its own
+        // resolved surface and nudged away from the window fill.
+        let bar = if surface == window_fill { surface.blend(&ink, 0.06) } else { surface };
+        context.fill_rect(geom, bar);
+        context.draw_rect_stroke(geom, border, 1);
 
         let (find_row, replace_row) = self.compute_layout();
         self.find_row_rect = find_row;
@@ -371,7 +420,7 @@ impl Draw for FindReplaceDialog {
             Point::new(label_rect.x + 2, label_rect.y + label_rect.height as i32 / 2 + 4),
             "Find:",
             &font,
-            Color::FOREGROUND,
+            ink,
             HorizontalAlignment::Left,
         );
         x += label_width as i32 + GAP;
@@ -382,90 +431,90 @@ impl Draw for FindReplaceDialog {
                 as u32)
                 .max(60);
         let input_rect = Rect::new(x, find_row.y, input_width, find_row.height);
-        context.fill_rect(input_rect, Color::WHITE);
-        context.draw_rect_stroke(input_rect, Color::BORDER, 1);
+        context.fill_rect(input_rect, field);
+        context.draw_rect_stroke(input_rect, border, 1);
         let display_text = if self.find_text.is_empty() { "" } else { &self.find_text };
         context.draw_text(
             Point::new(input_rect.x + 2, input_rect.y + input_rect.height as i32 / 2 + 4),
             display_text,
             &font,
-            Color::BLACK,
+            ink,
             HorizontalAlignment::Left,
         );
         x = input_rect.x + input_rect.width as i32 + GAP;
 
         // Match Case toggle
         let mc_rect = Rect::new(x, find_row.y, BTN_SIZE, find_row.height);
-        let mc_color = if self.match_case { Color::PRIMARY } else { Color::LIGHT_GRAY };
+        let mc_color = if self.match_case { accent } else { field.blend(&ink, 0.15) };
         context.fill_rect(mc_rect, mc_color);
         context.draw_text(
             Point::new(mc_rect.x + 2, mc_rect.y + mc_rect.height as i32 / 2 + 4),
             "Aa",
             &font,
-            if self.match_case { Color::WHITE } else { Color::DARK_GRAY },
+            if self.match_case { accent_ink } else { ink },
             HorizontalAlignment::Left,
         );
         x += BTN_SIZE as i32 + GAP;
 
         // Whole Word toggle
         let ww_rect = Rect::new(x, find_row.y, BTN_SIZE, find_row.height);
-        let ww_color = if self.whole_word { Color::PRIMARY } else { Color::LIGHT_GRAY };
+        let ww_color = if self.whole_word { accent } else { field.blend(&ink, 0.15) };
         context.fill_rect(ww_rect, ww_color);
         context.draw_text(
             Point::new(ww_rect.x + 1, ww_rect.y + ww_rect.height as i32 / 2 + 4),
             "W",
             &font,
-            if self.whole_word { Color::WHITE } else { Color::DARK_GRAY },
+            if self.whole_word { accent_ink } else { ink },
             HorizontalAlignment::Left,
         );
         x += BTN_SIZE as i32 + GAP;
 
         // Regex toggle
         let rx_rect = Rect::new(x, find_row.y, BTN_SIZE, find_row.height);
-        let rx_color = if self.use_regex { Color::PRIMARY } else { Color::LIGHT_GRAY };
+        let rx_color = if self.use_regex { accent } else { field.blend(&ink, 0.15) };
         context.fill_rect(rx_rect, rx_color);
         context.draw_text(
             Point::new(rx_rect.x + 1, rx_rect.y + rx_rect.height as i32 / 2 + 4),
             ".*",
             &font,
-            if self.use_regex { Color::WHITE } else { Color::DARK_GRAY },
+            if self.use_regex { accent_ink } else { ink },
             HorizontalAlignment::Left,
         );
         x += BTN_SIZE as i32 + GAP;
 
         // Highlight All toggle
         let ha_rect = Rect::new(x, find_row.y, BTN_SIZE, find_row.height);
-        let ha_color = if self.highlight_all { Color::PRIMARY } else { Color::LIGHT_GRAY };
+        let ha_color = if self.highlight_all { accent } else { field.blend(&ink, 0.15) };
         context.fill_rect(ha_rect, ha_color);
         context.draw_text(
             Point::new(ha_rect.x + 1, ha_rect.y + ha_rect.height as i32 / 2 + 4),
             "H",
             &font,
-            if self.highlight_all { Color::WHITE } else { Color::DARK_GRAY },
+            if self.highlight_all { accent_ink } else { ink },
             HorizontalAlignment::Left,
         );
         x += BTN_SIZE as i32 + GAP;
 
         // Find Previous button
         let fp_rect = Rect::new(x, find_row.y, 24, find_row.height);
-        context.fill_rect(fp_rect, Color::SECONDARY);
+        context.fill_rect(fp_rect, muted);
         context.draw_text(
             Point::new(fp_rect.x + 2, fp_rect.y + fp_rect.height as i32 / 2 + 4),
             "\u{25B2}",
             &font,
-            Color::WHITE,
+            muted_ink,
             HorizontalAlignment::Left,
         );
         x += 24 + GAP;
 
         // Find Next button
         let fn_rect = Rect::new(x, find_row.y, 24, find_row.height);
-        context.fill_rect(fn_rect, Color::PRIMARY);
+        context.fill_rect(fn_rect, accent);
         context.draw_text(
             Point::new(fn_rect.x + 2, fn_rect.y + fn_rect.height as i32 / 2 + 4),
             "\u{25BC}",
             &font,
-            Color::WHITE,
+            accent_ink,
             HorizontalAlignment::Left,
         );
 
@@ -478,7 +527,7 @@ impl Draw for FindReplaceDialog {
             Point::new(rl_rect.x + 2, rl_rect.y + rl_rect.height as i32 / 2 + 4),
             "Rpl:",
             &font,
-            Color::FOREGROUND,
+            ink,
             HorizontalAlignment::Left,
         );
         x2 += label_width as i32 + GAP;
@@ -487,38 +536,38 @@ impl Draw for FindReplaceDialog {
         let r_input_width =
             ((replace_row.width as i32 - label_width as i32 - GAP * 3 - 48) as u32).max(60);
         let r_input_rect = Rect::new(x2, replace_row.y, r_input_width, replace_row.height);
-        context.fill_rect(r_input_rect, Color::WHITE);
-        context.draw_rect_stroke(r_input_rect, Color::BORDER, 1);
+        context.fill_rect(r_input_rect, field);
+        context.draw_rect_stroke(r_input_rect, border, 1);
         let r_text = if self.replace_text.is_empty() { "" } else { &self.replace_text };
         context.draw_text(
             Point::new(r_input_rect.x + 2, r_input_rect.y + r_input_rect.height as i32 / 2 + 4),
             r_text,
             &font,
-            Color::BLACK,
+            ink,
             HorizontalAlignment::Left,
         );
         x2 = r_input_rect.x + r_input_rect.width as i32 + GAP;
 
         // Replace button
         let rep_rect = Rect::new(x2, replace_row.y, 24, replace_row.height);
-        context.fill_rect(rep_rect, Color::SECONDARY);
+        context.fill_rect(rep_rect, muted);
         context.draw_text(
             Point::new(rep_rect.x + 1, rep_rect.y + rep_rect.height as i32 / 2 + 4),
             "R",
             &font,
-            Color::WHITE,
+            muted_ink,
             HorizontalAlignment::Left,
         );
         x2 += 28;
 
         // Replace All button
         let ra_rect = Rect::new(x2, replace_row.y, 24, replace_row.height);
-        context.fill_rect(ra_rect, Color::SECONDARY);
+        context.fill_rect(ra_rect, muted);
         context.draw_text(
             Point::new(ra_rect.x + 1, ra_rect.y + ra_rect.height as i32 / 2 + 4),
             "RA",
             &font,
-            Color::WHITE,
+            muted_ink,
             HorizontalAlignment::Left,
         );
     }
@@ -808,6 +857,41 @@ mod tests {
         );
     }
 
+    /// A **shown** find bar paints differently in the two appearances.
+    ///
+    /// The rendering census measures this control hidden, which is correct — a find bar
+    /// is opened on demand, so `visible: false` is its designed initial state and the
+    /// census therefore counts zero ink. That makes the census silent about whether the
+    /// bar responds to a theme switch, so the property is asserted here, through the real
+    /// `Draw` path, by rendering a shown instance in each appearance and comparing the
+    /// output.
+    #[test]
+    fn a_shown_find_bar_renders_differently_in_light_and_dark() {
+        fn frame(appearance: crate::theme::AppearanceMode) -> String {
+            let _guard = crate::theme::theme_test_guard();
+            {
+                let mut manager = crate::theme::global_theme_manager();
+                manager.register_theme(crate::theme::Theme::default());
+                manager.register_theme(crate::theme::Theme::dark());
+                manager.set_appearance(appearance);
+            }
+            let mut dialog = FindReplaceDialog::new(Rect::new(0, 0, 240, 120));
+            dialog.set_find_text("Sample");
+            dialog.show();
+            crate::theme::apply_active_theme(&mut dialog);
+            crate::widget::svg::render_to_svg(&mut dialog)
+        }
+
+        let light = frame(crate::theme::AppearanceMode::Light);
+        let dark = frame(crate::theme::AppearanceMode::Dark);
+        assert_ne!(
+            light, dark,
+            "a theme switch must change what a shown find bar paints; identical output \
+             means the chrome is hardcoded"
+        );
+        crate::theme::global_theme_manager().set_appearance(crate::theme::AppearanceMode::Light);
+    }
+
     #[test]
     fn find_replace_dialog_close_on_escape() {
         let mut dialog = FindReplaceDialog::new(Rect::new(0, 0, 400, 80));
@@ -844,10 +928,7 @@ mod tests {
 
         dialog.handle_event(&Event::KeyPress { key: 27, modifiers: 0 });
         assert!(dialog.is_visible(), "a disabled dialog must not close on Escape");
-        assert!(
-            !fired.load(Ordering::SeqCst),
-            "a disabled dialog must not emit close_signal"
-        );
+        assert!(!fired.load(Ordering::SeqCst), "a disabled dialog must not emit close_signal");
 
         // The find action must not run either.
         let find_fired = Arc::new(AtomicBool::new(false));

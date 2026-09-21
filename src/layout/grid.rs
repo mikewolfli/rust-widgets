@@ -5,6 +5,28 @@
 use super::Layout;
 use crate::compat::{vec, Any, Vec};
 use crate::core::{ObjectId, Rect};
+/// How a grid decides each row's height.
+///
+/// The distinction exists because the two are both correct for different callers,
+/// and the grid previously offered only the first:
+///
+/// * [`Self::Fill`] divides the whole available height across the rows by stretch
+///   factor. Right for a grid whose cells should occupy the container eventually.
+/// * [`Self::Fixed`] gives every row the same explicit height, and leaves the rest of
+///   the container unused. Right for a grid of **controls**, which have a natural size:
+///   a button stretched to a third of a page is not a taller button, it is a layout
+///   mistake that reads as a blank panel.
+///
+/// The uniform-stretch default is [`Self::Fill`], so no existing caller changes
+/// behaviour by this type's introduction.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RowSizing {
+    /// Rows share the container height in proportion to their stretch factors.
+    Fill,
+    /// Every row is exactly this many pixels tall.
+    Fixed(u32),
+}
+
 /// Fixed-grid layout manager with row/column cell placement.
 pub struct GridLayout {
     rows: u32,
@@ -13,6 +35,7 @@ pub struct GridLayout {
     margin: u32,
     column_stretches: Vec<u32>,
     row_stretches: Vec<u32>,
+    row_sizing: RowSizing,
     cells: Vec<Option<ObjectId>>,
 }
 impl GridLayout {
@@ -31,9 +54,30 @@ impl GridLayout {
             margin,
             column_stretches: vec![1; safe_cols as usize],
             row_stretches: vec![1; safe_rows as usize],
+            row_sizing: RowSizing::Fill,
             cells: vec![None; cell_count],
         }
     }
+
+    /// Sets how rows are sized; see [`RowSizing`].
+    ///
+    /// Returns the grid so a caller can chain it onto [`Self::new`], matching the
+    /// builder style of the rest of this module's callers.
+    pub fn with_row_sizing(mut self, sizing: RowSizing) -> Self {
+        self.row_sizing = sizing;
+        self
+    }
+
+    /// Sets how rows are sized, in place.
+    pub fn set_row_sizing(&mut self, sizing: RowSizing) {
+        self.row_sizing = sizing;
+    }
+
+    /// Returns the current row-sizing rule.
+    pub fn row_sizing(&self) -> RowSizing {
+        self.row_sizing
+    }
+
     /// Assign widget to explicit cell.
     pub fn set_widget(&mut self, row: u32, col: u32, widget_id: ObjectId) {
         if row < self.rows && col < self.cols {
@@ -196,11 +240,30 @@ impl Layout for GridLayout {
         let mut row_y_offsets: Vec<i32> = Vec::with_capacity(self.rows as usize);
         let mut current_y: i32 = 0;
         for row in 0..self.rows {
-            let cell_height = if total_row_stretch > 0 {
-                (available_height as u64 * self.row_stretches[row as usize] as u64
-                    / total_row_stretch as u64) as u32
-            } else {
-                available_height / self.rows
+            // A fixed row height is taken as given: the caller has said what a row is,
+            // so the grid does not divide the container among the rows. It is clamped to
+            // the height **still available**, not to the container's total: clamping each
+            // row independently let every row claim the full height, so the later rows
+            // were placed past the bottom edge (a 60px container with two 500px rows
+            // put the second row at y=60 with a height of 60).
+            let cell_height = match self.row_sizing {
+                RowSizing::Fixed(height) => {
+                    // Clamp to the height **still available**, not to the container's total:
+                    // clamping each row independently let every row claim the full height,
+                    // so the later rows were placed past the bottom edge (a 60px container
+                    // with two 500px rows put the second row at y=60 with a height of 60).
+                    let remaining =
+                        (available_height as i32 - current_y).max(0).min(height as i32) as u32;
+                    remaining
+                }
+                RowSizing::Fill => {
+                    if total_row_stretch > 0 {
+                        (available_height as u64 * self.row_stretches[row as usize] as u64
+                            / total_row_stretch as u64) as u32
+                    } else {
+                        available_height / self.rows
+                    }
+                }
             };
             row_heights.push(cell_height);
             row_y_offsets.push(current_y);
@@ -229,7 +292,11 @@ impl Layout for GridLayout {
 
         let total_height: u32 = row_heights.iter().sum::<u32>() + spacing_y * (self.rows - 1);
         let remainder_h = available_height.saturating_sub(total_height);
-        if remainder_h > 0 && !row_heights.is_empty() {
+        // The remainder is only shared out in `Fill` mode. In `Fixed` mode the leftover
+        // height is deliberately left unused: distributing it is exactly the stretch
+        // that mode exists to avoid, and doing it here would silently undo the caller's
+        // choice on every frame the container grew.
+        if remainder_h > 0 && !row_heights.is_empty() && self.row_sizing == RowSizing::Fill {
             let mut indices: Vec<usize> = (0..self.rows as usize).collect();
             indices.sort_by(|&a, &b| self.row_stretches[b].cmp(&self.row_stretches[a]));
             let mut remaining = remainder_h;
@@ -270,5 +337,120 @@ impl Layout for GridLayout {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compat::Vec;
+
+    /// Collects the rects a layout produces, keyed by widget id.
+    fn placed(layout: &GridLayout, rect: Rect) -> Vec<(ObjectId, Rect)> {
+        let mut out = Vec::new();
+        layout.update(rect, &mut |id, r| out.push((id, r)));
+        out
+    }
+
+    fn rect_of(out: &[(ObjectId, Rect)], id: ObjectId) -> Rect {
+        out.iter().find(|(i, _)| *i == id).map(|(_, r)| *r).expect("the id was placed")
+    }
+
+    /// **The defect this pins.** A grid of controls in a tall container.
+    ///
+    /// `Fill` (the default) divides the container height across the rows, so a
+    /// two-row grid in a 582px page gives every control a 291px cell and stretches it
+    /// to fill — a button becomes a tall blank panel. `Fixed` preserves the row height
+    /// the caller asked for and leaves the surplus unused.
+    #[test]
+    fn fixed_row_sizing_does_not_stretch_controls_to_fill_the_container() {
+        let mut fill = GridLayout::new(2, 3, 6, 0);
+        for col in 0..3 {
+            fill.set_widget(0, col, 10 + col as ObjectId);
+            fill.set_widget(1, col, 20 + col as ObjectId);
+        }
+        let mut fixed = GridLayout::new(2, 3, 6, 0).with_row_sizing(RowSizing::Fixed(30));
+        for col in 0..3 {
+            fixed.set_widget(0, col, 10 + col as ObjectId);
+            fixed.set_widget(1, col, 20 + col as ObjectId);
+        }
+
+        // A page-sized rect: the case the control demo hits.
+        let page = Rect::new(8, 82, 1144, 582);
+        let fill_out = placed(&fill, page);
+        let fixed_out = placed(&fixed, page);
+
+        // `Fill` gives a row half the page, which is what stretches a control.
+        assert!(
+            rect_of(&fill_out, 10).height > 200,
+            "the default must still fill, or this test would not be pinning the defect: {:?}",
+            rect_of(&fill_out, 10)
+        );
+
+        // `Fixed` keeps the requested height on every row.
+        for id in [10, 11, 12, 20, 21, 22] {
+            assert_eq!(
+                rect_of(&fixed_out, id).height,
+                30,
+                "a fixed row must be exactly the requested height for id {id}"
+            );
+        }
+
+        // The rows stay inside the container: the surplus is left unused, not pushed
+        // past the bottom edge.
+        for id in [10, 20] {
+            let r = rect_of(&fixed_out, id);
+            assert!(
+                r.y + r.height as i32 <= page.y + page.height as i32,
+                "a fixed row must stay inside the rect: {r:?}"
+            );
+        }
+    }
+
+    /// The rows must not drift apart as the container grows: a fixed row's height is
+    /// a property of the row, not of how much room happens to be available.
+    #[test]
+    fn fixed_rows_keep_their_height_across_container_sizes() {
+        let mut grid = GridLayout::new(3, 1, 6, 0).with_row_sizing(RowSizing::Fixed(24));
+        grid.set_widget(0, 0, 1);
+        grid.set_widget(1, 0, 2);
+        grid.set_widget(2, 0, 3);
+
+        for height in [200u32, 400, 900] {
+            let out = placed(&grid, Rect::new(0, 0, 300, height));
+            for id in [1, 2, 3] {
+                assert_eq!(
+                    rect_of(&out, id).height,
+                    24,
+                    "row height must not follow the container at height {height}"
+                );
+            }
+        }
+    }
+
+    /// A fixed row taller than the container is clamped, so it cannot place later rows
+    /// outside the rect.
+    #[test]
+    fn a_fixed_row_taller_than_the_container_is_clamped() {
+        let mut grid = GridLayout::new(2, 1, 0, 0).with_row_sizing(RowSizing::Fixed(500));
+        grid.set_widget(0, 0, 1);
+        grid.set_widget(1, 0, 2);
+
+        let rect = Rect::new(0, 0, 100, 60);
+        let out = placed(&grid, rect);
+        for id in [1, 2] {
+            let r = rect_of(&out, id);
+            assert!(
+                r.y + r.height as i32 <= rect.y + rect.height as i32,
+                "a clamped row must stay inside the rect: {r:?}"
+            );
+        }
+    }
+
+    /// The default is unchanged, so introducing the mode did not alter existing
+    /// callers.
+    #[test]
+    fn the_default_row_sizing_is_fill() {
+        assert_eq!(GridLayout::new(2, 2, 0, 0).row_sizing(), RowSizing::Fill);
     }
 }

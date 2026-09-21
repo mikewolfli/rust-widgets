@@ -139,7 +139,10 @@ impl Platform for MacOSObjc2Platform {
         }
         // Preview backend uses a deterministic polling loop to preserve trait-level parity.
         self.runtime.running.store(true, Ordering::SeqCst);
+        // The same loop drains the trigger queue, so a backend that reports a resize
+        // behaves the same here as on a native one. See `crate::drain_triggers`.
         while self.runtime.running.load(Ordering::SeqCst) {
+            crate::drain_triggers();
             thread::sleep(Duration::from_millis(16));
         }
     }

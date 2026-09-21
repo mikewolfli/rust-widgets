@@ -282,11 +282,37 @@ impl Draw for DateRangePicker {
         }
 
         let is_enabled = self.base.is_enabled();
-        let bg_color = if is_enabled {
-            Color::rgba(255, 255, 255, 255)
-        } else {
-            Color::rgba(240, 240, 240, 255)
-        };
+
+        // Chrome colours resolve explicit style first, then the theme's resolved
+        // style for this control, and only then a literal. The theme step is what
+        // makes an appearance switch visible; previously the calendar surface, its
+        // text, and the range highlight were all hardcoded, so light and dark
+        // rendered identically.
+        //
+        // `resolved_theme_style` takes and releases the global manager's lock
+        // internally, so no guard is held across the draw (the mutex is not
+        // re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("date_range_picker");
+        let surface = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let text_color = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        // A disabled calendar is the same surface, faded: derived from the resolved
+        // colour rather than a second literal so it still follows the appearance.
+        let bg_color =
+            if is_enabled { surface.with_alpha(255) } else { surface.blend(&text_color, 0.1) };
+        // The selected range is a state, so it reads the theme's selection accent
+        // rather than a fixed blue. `primary` is the theme's brand/action colour.
+        let accent = theme
+            .as_ref()
+            .and_then(|_| crate::theme::semantic_color(crate::theme::SemanticColor::Info))
+            .unwrap_or(Color::BLUE);
+
         context.fill_rect(rect, bg_color);
 
         // Layout parameters
@@ -308,7 +334,7 @@ impl Draw for DateRangePicker {
             Point::new(header_x, header_y),
             &header_text,
             &header_font,
-            Color::DARK_GRAY,
+            text_color,
             HorizontalAlignment::Left,
         );
 
@@ -318,19 +344,22 @@ impl Draw for DateRangePicker {
             Point::new(rect.x + 8, rect.y + 16),
             "<",
             &nav_font,
-            Color::DARK_GRAY,
+            text_color,
             HorizontalAlignment::Left,
         );
         context.draw_text(
             Point::new(rect.x + rect.width as i32 - 16, rect.y + 16),
             ">",
             &nav_font,
-            Color::DARK_GRAY,
+            text_color,
             HorizontalAlignment::Left,
         );
 
         // ── Day-of-week header ──
         let dow_font = Font::new("sans-serif", 9.0, false, false);
+        // The weekday row is secondary chrome: derived from the resolved text colour
+        // so it stays legible against either surface.
+        let dow_color = surface.blend(&text_color, 0.55);
         for (i, day_name) in DAY_NAMES.iter().enumerate() {
             let cell_x = grid_left + (i as u32 * total_cell) as i32;
             let cell_y = grid_top - day_header_height as i32;
@@ -338,7 +367,7 @@ impl Draw for DateRangePicker {
                 Point::new(cell_x + 6, cell_y + 14),
                 day_name,
                 &dow_font,
-                Color::rgba(120, 120, 120, 255),
+                dow_color,
                 HorizontalAlignment::Left,
             );
         }
@@ -371,19 +400,16 @@ impl Draw for DateRangePicker {
 
             // Background
             if in_range && is_enabled {
-                let range_color = if is_start || is_end {
-                    Color::rgba(52, 120, 246, 200)
-                } else {
-                    Color::rgba(52, 120, 246, 60)
-                };
+                let range_color =
+                    if is_start || is_end { accent.with_alpha(200) } else { accent.with_alpha(60) };
                 context.fill_rounded_rect(cell_rect, 4, range_color);
             } else if is_hover && is_enabled {
-                context.fill_rounded_rect(cell_rect, 4, Color::rgba(200, 200, 200, 100));
+                context.fill_rounded_rect(cell_rect, 4, surface.blend(&text_color, 0.16));
             } else if is_today && is_enabled {
                 let today_color = if is_start || is_end {
-                    Color::rgba(52, 120, 246, 200)
+                    accent.with_alpha(200)
                 } else {
-                    Color::rgba(220, 220, 220, 180)
+                    surface.blend(&text_color, 0.14)
                 };
                 context.fill_rounded_rect(cell_rect, 4, today_color);
             }
@@ -397,13 +423,15 @@ impl Draw for DateRangePicker {
                 + day_metrics.ascent as i32;
 
             let day_color = if !is_enabled {
-                Color::rgba(180, 180, 180, 255)
+                surface.blend(&text_color, 0.35)
             } else if is_start || is_end {
-                Color::WHITE
+                // A date on the accent fill: the resolved surface colour is the
+                // legible counterpart of the accent in either appearance.
+                surface
             } else if in_range {
-                Color::rgba(30, 80, 200, 255)
+                accent
             } else {
-                Color::DARK_GRAY
+                text_color
             };
             context.draw_text(
                 Point::new(day_x, day_y),

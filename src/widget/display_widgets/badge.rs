@@ -232,7 +232,23 @@ impl Draw for Badge {
         }
 
         let rect = self.geometry();
-        let bg_color = self.level.color();
+        // The pill fill is chrome: it resolves explicit style first, then the theme's
+        // resolved style for this control, and only then falls back to the severity's
+        // own literal. Without the theme step a light/dark switch would change nothing
+        // on screen, because the fill was previously hardcoded per level.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global
+        // manager's mutex is not re-entrant.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("badge");
+        let bg_color = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or_else(|| self.level.color());
+        // The count reads against the pill, so it is the pill's own contrast colour
+        // rather than a literal white.
+        let text_color = bg_color.contrast_color();
         let text_str = self.display_text();
 
         if self.dot_mode {
@@ -280,7 +296,7 @@ impl Draw for Badge {
             Point::new(text_x, text_y),
             &text_str,
             &font,
-            Color::WHITE,
+            text_color,
             HorizontalAlignment::Left,
         );
     }

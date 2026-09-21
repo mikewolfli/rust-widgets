@@ -317,8 +317,48 @@ impl Draw for PropertiesPanel {
     fn draw(&mut self, context: &mut RenderContext) {
         let geom = self.geometry();
 
+        // Chrome colours resolve explicit style first, then the theme's resolved
+        // style for this control, and only then a literal. The theme step is what
+        // makes an appearance switch visible; previously every colour below was a
+        // hardcoded literal, so light and dark rendered identically.
+        //
+        // `resolved_theme_style` takes and releases the global manager's lock
+        // internally, so no guard is held across the draw (the mutex is not
+        // re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("properties_panel");
+        // `properties_panel` is not a control kind in the role table, so it classifies
+        // as `Surface`, whose background is `theme.colors.background` — byte-identical
+        // to the window behind it. The panel's own fill is therefore a step toward the
+        // foreground, so it reads as a surface of its own.
+        let resolved = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::BACKGROUND);
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or(Color::BORDER);
+        let text_color = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::FOREGROUND);
+        let background = resolved.blend(&text_color, 0.08);
+        // The category header is a second step away from the panel body.
+        let header_background = background.blend(&text_color, 0.16);
+        // A row is raised off the panel, the value cell deeper still, so the two
+        // columns stay legible as separate regions.
+        let row_background = background.blend(&text_color, 0.04);
+        let value_background = background.blend(&text_color, 0.12);
+        // Row dividers are secondary chrome, derived from the same pair.
+        let divider = background.blend(&text_color, 0.14);
+        // An editable value reads as normal text; a read-only one is muted rather
+        // than the previous literal grey.
+        let value_color = text_color;
+        let readonly_value_color = text_color.blend(&value_background, 0.5);
+
         // ── Background ──
-        context.fill_rect(geom, Color::BACKGROUND);
+        context.fill_rect(geom, background);
 
         let font = crate::core::Font::simple("sans-serif", 12.0);
         let categories = self.properties_by_category();
@@ -327,7 +367,7 @@ impl Draw for PropertiesPanel {
         for (category, entries) in &categories {
             // ── Category header ──
             let header_rect = Rect::new(geom.x, y, geom.width, ROW_HEIGHT);
-            context.fill_rect(header_rect, Color::LIGHT_GRAY);
+            context.fill_rect(header_rect, header_background);
             context.draw_text(
                 Point::new(
                     header_rect.x + CATEGORY_PADDING,
@@ -335,7 +375,7 @@ impl Draw for PropertiesPanel {
                 ),
                 category,
                 &font,
-                Color::DARK_GRAY,
+                text_color,
                 HorizontalAlignment::Left,
             );
             y += ROW_HEIGHT as i32;
@@ -351,14 +391,14 @@ impl Draw for PropertiesPanel {
 
                 // Alternate row background
                 let row_rect = Rect::new(geom.x, y, geom.width, ROW_HEIGHT);
-                context.fill_rect(row_rect, Color::WHITE);
+                context.fill_rect(row_rect, row_background);
 
                 // Property name
                 context.draw_text(
                     Point::new(geom.x + NAME_COL_LEFT, y + ROW_HEIGHT as i32 / 2 + 4),
                     &entry.name,
                     &font,
-                    Color::FOREGROUND,
+                    text_color,
                     HorizontalAlignment::Left,
                 );
 
@@ -370,19 +410,19 @@ impl Draw for PropertiesPanel {
                     ROW_HEIGHT,
                 );
                 let display = Self::value_display_text(&entry.value);
-                context.fill_rect(value_rect, Color::EXTRA_LIGHT_GRAY);
+                context.fill_rect(value_rect, value_background);
                 context.draw_text(
                     Point::new(value_rect.x + 2, y + ROW_HEIGHT as i32 / 2 + 4),
                     &display,
                     &font,
-                    if entry.editable { Color::BLACK } else { Color::GRAY },
+                    if entry.editable { value_color } else { readonly_value_color },
                     HorizontalAlignment::Left,
                 );
 
                 // Draw bottom border line
                 context.draw_rect_stroke(
                     Rect::new(geom.x, y + ROW_HEIGHT as i32 - 1, geom.width, 1),
-                    Color::DIVIDER,
+                    divider,
                     1,
                 );
 
@@ -391,7 +431,7 @@ impl Draw for PropertiesPanel {
         }
 
         // Draw border around the entire panel
-        context.draw_rect_stroke(geom, Color::BORDER, 1);
+        context.draw_rect_stroke(geom, border, 1);
     }
 }
 

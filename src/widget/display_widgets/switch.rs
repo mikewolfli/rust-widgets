@@ -152,12 +152,36 @@ impl Draw for Switch {
         let track_rect = Rect::new(track_x, track_y, track_width, track_height);
 
         // Draw track
+        //
+        // The track colour resolves **theme first, literal last**. Before this the
+        // only source was `style.background_color`, which the theme does not set
+        // for the `Choice` role — so every switch fell through to the literals
+        // below and rendered identically in light and dark. `cupertino_switch` was
+        // the visible symptom: it delegates to this method, and because its factory
+        // name is not in the role table it also had no style background at all.
+        //
+        // Precedence: an explicit style wins, then the theme's resolved style, then
+        // the accent for the on state, then the literal.
+        let theme = crate::theme::resolved_theme_style("switch");
+        let themed_background = theme.as_ref().and_then(|resolved| resolved.background_color);
+        let themed_accent = crate::theme::semantic_color(crate::theme::SemanticColor::Success);
+        // A switch that resolved to the window's own background would be invisible
+        // against the surface it sits on, so the track steps one shade from the
+        // resolved ink when the two would collide.
+        let themed_track = themed_background.filter(|background| {
+            let window = crate::theme::global_theme_manager()
+                .current_theme()
+                .map(|active| active.colors.background);
+            window != Some(*background)
+        });
+
         let track_color = if !is_enabled {
-            style.background_color.unwrap_or(Color::rgba(200, 200, 200, 128))
+            style.background_color.or(themed_track).unwrap_or(Color::rgba(200, 200, 200, 128))
         } else if self.checked {
-            style.background_color.unwrap_or(Color::rgba(52, 199, 89, 200)) // iOS green
+            style.background_color.or(themed_accent).unwrap_or(Color::rgba(52, 199, 89, 200))
+        // iOS green
         } else {
-            style.background_color.unwrap_or(Color::rgba(180, 180, 180, 200))
+            style.background_color.or(themed_track).unwrap_or(Color::rgba(180, 180, 180, 200))
         };
         context.fill_rounded_rect(track_rect, track_height / 2, track_color);
 
@@ -173,7 +197,22 @@ impl Draw for Switch {
         let knob_y = track_y + 2;
         let knob_rect = Rect::new(knob_x, knob_y, knob_size, knob_size);
 
-        let knob_color = if !is_enabled { Color::rgba(240, 240, 240, 200) } else { Color::WHITE };
+        let knob_color = if !is_enabled {
+            Color::rgba(240, 240, 240, 200)
+        } else {
+            // The knob reads the theme's foreground (a light knob on a dark
+            // surface, a dark-ish knob never — the knob is always the lighter of
+            // the pair), falling back to white only when no theme is active.
+            theme
+                .as_ref()
+                .and_then(|resolved| resolved.text_color)
+                .map(|text| {
+                    // Keep the knob light: mix most of the way to white so it stays
+                    // the highlight against the coloured track.
+                    text.blend(&Color::WHITE, 0.85)
+                })
+                .unwrap_or(Color::WHITE)
+        };
         context.fill_rounded_rect(knob_rect, knob_size / 2, knob_color);
 
         // Draw knob shadow/border

@@ -202,6 +202,101 @@ pub struct RibbonBar {
     pub item_triggered: Signal1<(usize, usize, usize)>,
 }
 
+/// The chrome colours one ribbon draw pass uses.
+///
+/// Resolved once per `Draw` from the explicit style, then the theme's resolved style for the
+/// control, then a literal, and carried into the three drawing helpers. Before this the ribbon's
+/// four chrome families — the strip, the tabs, the minimize button and the panel — were every one
+/// a literal, so a light/dark switch left the whole bar unchanged and the rendering census reported
+/// it as theme-blind. The item colours derive from the panel so they read against a light backdrop
+/// and a dark one without a second table of literals.
+struct RibbonPalette {
+    /// The strip behind the tabs.
+    strip: Color,
+    /// An inactive tab's fill, and the minimize button's resting fill.
+    tab: Color,
+    /// The active tab and the panel body, which is one step off the strip.
+    surface: Color,
+    /// A hovered tab, and the panel's top rule.
+    hover: Color,
+    /// Borders and separator rules.
+    border: Color,
+    /// Label text.
+    ink: Color,
+    /// Secondary text: the group titles.
+    muted: Color,
+    /// An item's resting fill.
+    item: Color,
+    /// A hovered item's fill.
+    item_hover: Color,
+    /// A checked item's fill.
+    item_checked: Color,
+    /// The accent an item's border and icon carry.
+    accent: Color,
+}
+
+impl RibbonPalette {
+    /// Derives the palette from the resolved style and the active theme.
+    ///
+    /// The theme read is a separate manager lock, taken and released inside
+    /// `resolved_theme_style`, so it is not held across the draw — the global manager's mutex is
+    /// not re-entrant. The window fill is read as its own scoped acquisition and copied out, so
+    /// no guard is held while the rest of the palette is computed.
+    fn resolve(style: &crate::style::WidgetStyle) -> Self {
+        let theme = crate::theme::resolved_theme_style("ribbon_bar");
+        let (window_fill, foreground, secondary, primary) = {
+            let manager = crate::theme::global_theme_manager();
+            match manager.current_theme() {
+                Some(active) => (
+                    active.colors.background,
+                    active.colors.foreground,
+                    active.colors.secondary,
+                    active.colors.primary,
+                ),
+                None => (
+                    Color::rgb(240, 240, 240),
+                    Color::BLACK,
+                    Color::rgb(158, 158, 158),
+                    Color::rgb(33, 150, 243),
+                ),
+            }
+        };
+
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(foreground);
+        // `ribbon_bar` is absent from `WidgetRole::for_kind_name`'s table, so it classifies as
+        // `Surface` and the active theme writes the window fill into `style.background_color`.
+        // A strip painted in that colour would be byte-identical to the frame behind it, so a
+        // resolved surface equal to the window fill is re-derived a visible step away from it,
+        // while a colour the caller set still wins.
+        let strip = match style.background_color {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => window_fill.blend(&ink, 0.08),
+        };
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .filter(|resolved| *resolved != strip)
+            .unwrap_or_else(|| strip.blend(&secondary, 0.45));
+
+        Self {
+            strip,
+            tab: strip.blend(&ink, 0.10),
+            surface: strip.blend(&ink, 0.22),
+            hover: strip.blend(&ink, 0.16),
+            border,
+            ink,
+            muted: ink.blend(&strip, 0.55),
+            item: strip.blend(&ink, 0.22),
+            item_hover: strip.blend(&primary, 0.35),
+            item_checked: strip.blend(&primary, 0.55),
+            accent: primary,
+        }
+    }
+}
+
 impl RibbonBar {
     /// Creates a new `RibbonBar` with the given geometry.
     pub fn new(geometry: Rect) -> Self {
@@ -650,20 +745,16 @@ impl RibbonBar {
     }
 
     /// Draws the minimize/expand button.
-    fn draw_minimize_button(&self, context: &mut RenderContext) {
+    fn draw_minimize_button(&self, context: &mut RenderContext, palette: &RibbonPalette) {
         let btn_rect = self.minimize_button_rect();
-        let bg = if self.minimize_hovered {
-            Color::rgb(200, 200, 210)
-        } else {
-            Color::rgb(230, 230, 235)
-        };
+        let bg = if self.minimize_hovered { palette.hover } else { palette.tab };
         context.fill_rect(btn_rect, bg);
-        context.draw_rect(btn_rect, Color::rgb(180, 180, 190));
+        context.draw_rect(btn_rect, palette.border);
 
         // Draw arrow: ^ when expanded, v when minimized
         let mid_x = btn_rect.x + btn_rect.width as i32 / 2;
         let mid_y = btn_rect.y + btn_rect.height as i32 / 2;
-        let arrow_color = Color::rgb(60, 60, 60);
+        let arrow_color = palette.ink;
         if self.minimized {
             // Downward arrow (v)
             context.draw_line(
@@ -692,18 +783,24 @@ impl RibbonBar {
     }
 
     /// Draws a single tab header.
-    fn draw_tab(&self, context: &mut RenderContext, index: usize, tab_rect: Rect) {
+    fn draw_tab(
+        &self,
+        context: &mut RenderContext,
+        index: usize,
+        tab_rect: Rect,
+        palette: &RibbonPalette,
+    ) {
         let is_current = index == self.current_tab_index;
         let is_hovered = self.hovered_tab == Some(index);
 
         let bg = if is_current {
-            Color::rgb(255, 255, 255)
+            palette.surface
         } else if is_hovered {
-            Color::rgb(235, 235, 250)
+            palette.hover
         } else {
-            Color::rgb(230, 230, 235)
+            palette.tab
         };
-        let border = if is_current { Color::rgb(180, 180, 200) } else { Color::rgb(200, 200, 200) };
+        let border = palette.border;
 
         context.fill_rect(tab_rect, bg);
         // Bottom edge of current tab blends into panel
@@ -718,8 +815,9 @@ impl RibbonBar {
 
         // Draw tab title (centered)
         let text = &self.tabs[index];
-        let text_color =
-            if self.base.is_enabled() { Color::rgb(0, 0, 0) } else { Color::rgb(150, 150, 150) };
+        // A disabled tab's label is dimmed rather than turned into a fixed grey that only read on
+        // the light appearance.
+        let text_color = if self.base.is_enabled() { palette.ink } else { palette.muted };
         context.draw_text(
             Point::new(
                 tab_rect.x + tab_rect.width as i32 / 2,
@@ -733,7 +831,7 @@ impl RibbonBar {
     }
 
     /// Draws the content panel for the current tab (groups + items).
-    fn draw_panel(&self, context: &mut RenderContext) {
+    fn draw_panel(&self, context: &mut RenderContext, palette: &RibbonPalette) {
         if self.minimized || !self.expanded {
             return;
         }
@@ -742,17 +840,14 @@ impl RibbonBar {
             return;
         }
 
-        // ── Panel background (gradient-like: light gray top, white body) ──
+        // ── Panel background (gradient-like: a rule, then the body) ──
         let top_strip = Rect::new(panel.x, panel.y, panel.width, 3);
-        context.fill_rect(top_strip, Color::rgb(235, 235, 240));
+        context.fill_rect(top_strip, palette.hover);
         let body = Rect::new(panel.x, panel.y + 3, panel.width, panel.height.saturating_sub(3));
-        context.fill_rect(body, Color::rgb(252, 252, 252));
+        context.fill_rect(body, palette.surface);
 
         // Panel border
-        context.draw_rect(
-            Rect::new(panel.x, panel.y, panel.width, panel.height),
-            Color::rgb(200, 200, 200),
-        );
+        context.draw_rect(Rect::new(panel.x, panel.y, panel.width, panel.height), palette.border);
 
         // Get current tab groups
         let groups = match self.groups.get(self.current_tab_index) {
@@ -772,24 +867,20 @@ impl RibbonBar {
 
                     // Background
                     let item_bg = if item.is_checked() {
-                        Color::rgb(180, 210, 255)
+                        palette.item_checked
                     } else if is_hovered && item.is_enabled() {
-                        Color::rgb(210, 230, 255)
+                        palette.item_hover
                     } else {
-                        Color::rgb(252, 252, 252)
+                        palette.item
                     };
                     context.fill_rect(*ir, item_bg);
 
                     // Border on hover/checked
                     if is_hovered || item.is_checked() {
-                        context.draw_rect(*ir, Color::rgb(0, 120, 215));
+                        context.draw_rect(*ir, palette.accent);
                     }
 
-                    let fg = if !item.is_enabled() {
-                        Color::rgb(180, 180, 180)
-                    } else {
-                        Color::rgb(0, 0, 0)
-                    };
+                    let fg = if !item.is_enabled() { palette.muted } else { palette.ink };
 
                     if item.is_large() {
                         // Large: icon text centered, label below
@@ -801,7 +892,7 @@ impl RibbonBar {
                             icon_center,
                             &icon_char.to_string(),
                             &Font::default(),
-                            Color::rgb(50, 50, 150),
+                            palette.accent,
                             HorizontalAlignment::Left,
                         );
                         // Label below
@@ -820,7 +911,7 @@ impl RibbonBar {
                             Point::new(ir.x + 2, ir.y + ir.height as i32 / 2),
                             &icon_char.to_string(),
                             &Font::default(),
-                            Color::rgb(50, 50, 150),
+                            palette.accent,
                             HorizontalAlignment::Left,
                         );
                         context.draw_text(
@@ -840,19 +931,19 @@ impl RibbonBar {
                 context.draw_line(
                     Point::new(sep_x, gr.y),
                     Point::new(sep_x, gr.y + gr.height as i32 - GROUP_TITLE_HEIGHT),
-                    Color::rgb(200, 200, 200),
+                    palette.border,
                 );
             }
 
             // ── Group title at bottom ──
             let title_y = gr.y + gr.height as i32 - GROUP_TITLE_HEIGHT;
             let title_rect = Rect::new(gr.x, title_y, gr.width, GROUP_TITLE_HEIGHT as u32);
-            context.fill_rect(title_rect, Color::rgb(245, 245, 248));
+            context.fill_rect(title_rect, palette.strip);
             context.draw_text(
                 Point::new(gr.x + 2, title_y + GROUP_TITLE_HEIGHT / 2),
                 group.title(),
                 &Font::default(),
-                Color::rgb(80, 80, 80),
+                palette.muted,
                 HorizontalAlignment::Left,
             );
         }
@@ -1014,22 +1105,27 @@ impl EventHandler for RibbonBar {
 
 impl Draw for RibbonBar {
     fn draw(&mut self, context: &mut RenderContext) {
+        // Every chrome colour below was a literal, so a light/dark switch left the whole bar
+        // unchanged and the rendering census reported the control as theme-blind. The palette
+        // resolves the explicit style first, then the theme's resolved style, then a literal.
+        let palette = RibbonPalette::resolve(&self.base.style().clone());
+
         // ── Overall background ──
         let g = self.geometry();
-        context.fill_rect(g, Color::rgb(240, 240, 245));
+        context.fill_rect(g, palette.strip);
 
         // ── Draw tab headers ──
         for i in 0..self.tabs.len() {
             if let Some(tr) = self.tab_rect(i) {
-                self.draw_tab(context, i, tr);
+                self.draw_tab(context, i, tr, &palette);
             }
         }
 
         // ── Draw minimize button ──
-        self.draw_minimize_button(context);
+        self.draw_minimize_button(context, &palette);
 
         // ── Draw content panel (if expanded) ──
-        self.draw_panel(context);
+        self.draw_panel(context, &palette);
     }
 }
 

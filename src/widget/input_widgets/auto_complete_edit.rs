@@ -330,16 +330,42 @@ impl Draw for AutoCompleteEdit {
         let rect = self.geometry();
         let is_enabled = self.base.is_enabled();
 
-        // Background
-        let bg_color = if is_enabled {
-            Color::rgba(255, 255, 255, 255)
+        // Chrome colours resolve explicit style first, then the theme's resolved style
+        // for this control, and only then fall back to a literal. Without the theme step
+        // a light/dark switch would change nothing on screen, because the field fill and
+        // its outline were previously hardcoded.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global
+        // manager's mutex is not re-entrant.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("auto_complete_edit");
+        let field_background = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::rgba(255, 255, 255, 255));
+        let border_color = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or(Color::rgba(180, 180, 180, 255));
+        let text_color = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        // The list is chrome of the same family as the field it drops from: its fill
+        // and its ink are the resolved field colours, so both move with the appearance.
+        let dropdown_background = if style.background_color.is_some() || theme.is_some() {
+            field_background
         } else {
-            Color::rgba(240, 240, 240, 255)
+            Color::rgba(255, 255, 255, 255)
         };
+        let dropdown_text = text_color;
+
+        // Background
+        let bg_color = if is_enabled { field_background } else { Color::rgba(240, 240, 240, 255) };
         context.fill_rounded_rect(rect, 4, bg_color);
 
         // Border
-        let border_color = Color::rgba(180, 180, 180, 255);
         context.draw_rounded_rect_stroke(rect, 4, border_color, 1);
 
         // Draw text
@@ -349,16 +375,20 @@ impl Draw for AutoCompleteEdit {
         let text_y = rect.y + padding + 13;
 
         let display_text = if self.text.is_empty() { "Type to search..." } else { &self.text };
-        let text_color = if self.text.is_empty() {
-            Color::rgba(160, 160, 160, 255)
+        // Empty field = placeholder: the resolved ink damped toward the fill, so the
+        // hint stays legible on either appearance.
+        let input_text_color = if self.text.is_empty() {
+            text_color.blend(&field_background, 0.4)
+        } else if is_enabled {
+            text_color
         } else {
-            Color::rgba(0, 0, 0, 255)
+            Color::rgba(160, 160, 160, 255)
         };
         context.draw_text(
             Point::new(text_x, text_y),
             display_text,
             &font,
-            text_color,
+            input_text_color,
             HorizontalAlignment::Left,
         );
 
@@ -374,8 +404,13 @@ impl Draw for AutoCompleteEdit {
         let drop_rect = Rect::new(rect.x, drop_down_y, rect.width, drop_down_height);
 
         // Dropdown background
-        context.fill_rounded_rect(drop_rect, 2, Color::rgba(255, 255, 255, 255));
-        context.draw_rounded_rect_stroke(drop_rect, 2, Color::rgba(200, 200, 200, 255), 1);
+        context.fill_rounded_rect(drop_rect, 2, dropdown_background);
+        context.draw_rounded_rect_stroke(
+            drop_rect,
+            2,
+            border_color.blend(&dropdown_background, 0.3),
+            1,
+        );
 
         for i in 0..visible_count {
             let item_rect = Rect::new(
@@ -386,7 +421,11 @@ impl Draw for AutoCompleteEdit {
             );
 
             if Some(i) == self.selected_suggestion {
-                context.fill_rounded_rect(item_rect, 2, Color::rgba(52, 120, 246, 40));
+                context.fill_rounded_rect(
+                    item_rect,
+                    2,
+                    dropdown_text.blend(&dropdown_background, 0.85),
+                );
             }
 
             if let Some(suggestion) = self.filtered_suggestions.get(i) {
@@ -396,7 +435,7 @@ impl Draw for AutoCompleteEdit {
                     Point::new(item_text_x, item_text_y),
                     suggestion,
                     &font,
-                    Color::rgba(0, 0, 0, 255),
+                    dropdown_text,
                     HorizontalAlignment::Left,
                 );
             }

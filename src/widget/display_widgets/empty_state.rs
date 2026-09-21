@@ -206,9 +206,31 @@ impl Draw for EmptyState {
         let rect = self.geometry();
         let is_enabled = self.base.is_enabled();
 
+        // Chrome colours resolve explicit style first, then the theme's resolved style
+        // for this control, and only then fall back to a literal. Without the theme step
+        // a light/dark switch would change nothing on screen, because the surface and
+        // every piece of text on it were previously hardcoded.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global
+        // manager's mutex is not re-entrant.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("empty_state");
+        let surface = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::rgba(245, 245, 250, 200));
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        // The call to action is an accented affordance on this surface: derived by
+        // tinting the resolved ink back toward the surface, so it stays a distinct
+        // button in either appearance.
+        let action_fill = ink.blend(&surface, 0.35);
+
         // ── Background ──
-        let bg_color = Color::rgba(245, 245, 250, 200);
-        context.fill_rect(rect, bg_color);
+        context.fill_rect(rect, surface);
 
         let center_x = rect.x + rect.width as i32 / 2;
 
@@ -223,19 +245,16 @@ impl Draw for EmptyState {
         // ── Icon ──
         let icon_size = 48;
         let icon_y = rect.y + SECTION_GAP;
-        let icon_color = if is_enabled {
-            Color::rgba(120, 120, 140, 220)
-        } else {
-            Color::rgba(180, 180, 180, 120)
-        };
+        // The icon is the palest ink on the surface; disabled fades it further.
+        let icon_color =
+            if is_enabled { ink.blend(&surface, 0.35) } else { ink.blend(&surface, 0.75) };
         let icon_font = Font::with_weight("Sans", icon_size as f32, 400, false);
         draw_centered(context, icon_y + icon_size, &self.icon, &icon_font, icon_color);
 
         // ── Title ──
         let title_font_size = 20;
         let title_y = icon_y + icon_size + SECTION_GAP;
-        let title_color =
-            if is_enabled { Color::rgb(50, 50, 60) } else { Color::rgba(160, 160, 160, 180) };
+        let title_color = if is_enabled { ink } else { ink.blend(&surface, 0.65) };
         let title_font = Font::with_weight("Sans", title_font_size as f32, 600, false);
         let title_metrics = context.measure_text(&self.title, &title_font);
         let title_origin = Point::new(center_x - (title_metrics.width as i32 / 2), title_y);
@@ -250,11 +269,9 @@ impl Draw for EmptyState {
         // ── Message ──
         let message_font_size = 14;
         let message_y = title_y + title_font_size + 6;
-        let message_color = if is_enabled {
-            Color::rgba(110, 110, 120, 220)
-        } else {
-            Color::rgba(170, 170, 170, 150)
-        };
+        // The message is the title's ink, one step closer to the surface.
+        let message_color =
+            if is_enabled { ink.blend(&surface, 0.25) } else { ink.blend(&surface, 0.7) };
         let message_font = Font::with_weight("Sans", message_font_size as f32, 400, false);
 
         // Wrap message text if it's wider than the available width
@@ -279,16 +296,12 @@ impl Draw for EmptyState {
             let corner_radius = btn_rect.height / 2;
 
             // Button background
-            let btn_bg = if !is_enabled {
-                Color::rgba(200, 200, 200, 120)
-            } else {
-                Color::rgb(59, 130, 246) // Blue action color
-            };
+            let btn_bg = if !is_enabled { ink.blend(&surface, 0.8) } else { action_fill };
             context.fill_rounded_rect(btn_rect, corner_radius, btn_bg);
 
             // Button text
             let btn_text_color =
-                if !is_enabled { Color::rgba(160, 160, 160, 180) } else { Color::WHITE };
+                if !is_enabled { ink.blend(&surface, 0.6) } else { btn_bg.contrast_color() };
             let btn_font = Font::with_weight("Sans", 14.0, 600, false);
             let btn_metrics = context.measure_text(&self.action_text, &btn_font);
             let btn_origin = Point::new(

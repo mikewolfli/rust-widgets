@@ -174,18 +174,38 @@ impl Draw for QRCode {
         let total_modules = MATRIX_SIZE + self.quiet_zone * 2;
         let total_pixels = total_modules * module;
 
+        // The symbol is a contrasting module/surface pair, and *both* members come
+        // from the theme: modules are the resolved text colour, the quiet zone is the
+        // resolved background. That keeps the symbol scannable in either appearance
+        // while making it respond to a theme switch; hardcoding white/black meant the
+        // quiet zone stayed white on a dark window.
+        //
+        // `resolved_theme_style` takes and releases the global manager's lock
+        // internally, so no guard is held across the draw (the mutex is not
+        // re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("qr_code");
+        let surface = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let module_color = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+
         // Center the QR code in the available geometry.
         let offset_x = rect.x + (rect.width.saturating_sub(total_pixels) / 2) as i32;
         let offset_y = rect.y + (rect.height.saturating_sub(total_pixels) / 2) as i32;
 
-        // Draw white background for the entire QR code area.
+        // Draw the quiet-zone surface for the entire QR code area.
         let bg_rect = Rect::new(
             offset_x.max(rect.x),
             offset_y.max(rect.y),
             total_pixels.min(rect.width),
             total_pixels.min(rect.height),
         );
-        context.fill_rect(bg_rect, Color::WHITE);
+        context.fill_rect(bg_rect, surface);
 
         let matrix = self.generate_matrix();
 
@@ -212,7 +232,7 @@ impl Draw for QRCode {
 
                 if matrix[row as usize][col as usize] {
                     let cell_rect = Rect::new(x, y, cell_w, cell_h);
-                    context.fill_rect(cell_rect, Color::BLACK);
+                    context.fill_rect(cell_rect, module_color);
                 }
             }
         }

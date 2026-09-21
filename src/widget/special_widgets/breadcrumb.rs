@@ -264,8 +264,47 @@ impl EventHandler for Breadcrumb {
 impl Draw for Breadcrumb {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::rgb(249, 250, 252));
-        context.draw_rect(rect, Color::rgb(206, 211, 220));
+
+        // Chrome colours resolve explicit style first, then the theme's resolved
+        // style for this control, and only then fall back to a literal. Without the
+        // theme step a light/dark switch would change nothing on screen because
+        // every colour below was previously hardcoded.
+        //
+        // The theme reads are separate manager locks, each taken and released inside
+        // `resolved_theme_style` (or the scoped block below), so none is held across
+        // the draw or across another accessor — the global manager's mutex is not
+        // re-entrant.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("breadcrumb");
+        // `breadcrumb` resolves to the `Text` role, which carries a foreground but no
+        // surface — a text control sits on whatever it was placed on. So the surface
+        // comes from the theme's own background, which is what
+        // `apply_active_theme` could not supply and what a light/dark switch changes
+        // most. The guard is scoped to this expression and released before any other
+        // theme accessor runs.
+        let theme_surface = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|theme| theme.colors.background);
+        let background = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .or(theme_surface)
+            .unwrap_or(Color::WHITE);
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| background.blend(&Color::BLACK, 0.15));
+        let text_color = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        // The selected segment and the separators are secondary chrome: derived from
+        // the resolved colours so they move with the appearance too.
+        let selected_background = background.blend(&text_color, 0.12);
+        let separator_color = text_color.blend(&background, 0.45);
+
+        context.fill_rect(rect, background);
+        context.draw_rect(rect, border);
 
         let mut x = rect.x;
         for (index, segment) in self.segments.iter().enumerate() {
@@ -273,14 +312,14 @@ impl Draw for Breadcrumb {
             let segment_rect = Rect::new(x, rect.y, width as u32, rect.height);
 
             if self.selected_index == Some(index) {
-                context.fill_rect(segment_rect, Color::rgb(220, 231, 247));
+                context.fill_rect(segment_rect, selected_background);
             }
 
             context.draw_text(
                 Point::new(x + self.segment_padding, rect.y + rect.height as i32 / 2),
                 &segment.label,
                 &Font::default(),
-                Color::rgb(34, 45, 64),
+                text_color,
                 HorizontalAlignment::Left,
             );
 
@@ -290,7 +329,7 @@ impl Draw for Breadcrumb {
                     Point::new(x + 3, rect.y + rect.height as i32 / 2),
                     ">",
                     &Font::default(),
-                    Color::rgb(120, 128, 142),
+                    separator_color,
                     HorizontalAlignment::Left,
                 );
                 x += self.separator_width;

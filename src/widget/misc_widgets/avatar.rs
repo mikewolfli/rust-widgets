@@ -34,6 +34,13 @@ pub struct Avatar {
     image_source: String,
     /// Background fill color of the avatar.
     bg_color: Color,
+    /// Whether the fill was chosen by the caller through [`Avatar::set_bg_color`].
+    ///
+    /// The caller's choice must win over the active theme, but the colour the
+    /// constructor seeds must not: without this flag a theme switch could never
+    /// reach an avatar that was never explicitly coloured, which is exactly the
+    /// hardcoded-chrome defect the rendering census reports.
+    bg_color_is_explicit: bool,
     /// When `true`, renders as a rounded square instead of a circle.
     square: bool,
     /// Diameter (circle) or side length (square) in logical pixels.
@@ -60,6 +67,7 @@ impl Avatar {
             text: String::new(),
             image_source: String::new(),
             bg_color: Color::PRIMARY,
+            bg_color_is_explicit: false,
             square: false,
             size: sz,
         }
@@ -102,14 +110,27 @@ impl Avatar {
     }
 
     /// Sets the background fill color of the avatar.
+    ///
+    /// An explicit colour wins over the active theme, so this overrides the
+    /// theme-resolved fill until it is set again.
     pub fn set_bg_color(&mut self, color: Color) {
         self.bg_color = color;
+        self.bg_color_is_explicit = true;
         self.base.request_redraw();
     }
 
     /// Returns the current background fill color.
     pub fn bg_color(&self) -> Color {
         self.bg_color
+    }
+
+    /// The colour the constructor seeds when the caller sets none.
+    ///
+    /// Named rather than inlined so [`Draw`] can tell "the caller chose this colour"
+    /// (keep it, even across a theme switch) from "nothing chose it yet" (let the
+    /// theme decide).
+    fn default_bg() -> Color {
+        Color::PRIMARY
     }
 
     /// Sets the diameter (circle) or side length (square) of the avatar.
@@ -182,12 +203,43 @@ impl Draw for Avatar {
         let size = rect.width.min(rect.height);
         let center = Point::new(rect.x + (size as i32) / 2, rect.y + (size as i32) / 2);
 
+        // The disc is chrome: it resolves explicit style first, then the theme's resolved
+        // style for this control, and only then falls back to the constructor's brand
+        // colour. Without the theme step a light/dark switch would change nothing on
+        // screen, because the fill was previously hardcoded.
+        //
+        // The theme reads are separate manager locks, each taken and released inside
+        // `resolved_theme_style`, so none is held across the draw or across another
+        // accessor — the global manager's mutex is not re-entrant.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("avatar");
+        let window_background = theme.as_ref().and_then(|t| t.background_color);
+        // An avatar classifies as a generic surface, so the theme resolves it to the
+        // window's own colour. A disc painted in that colour is *invisible* against the
+        // window it sits on — the census reports it as "painted in the background's
+        // colour", which is the same defect as painting nothing. The visible choice is
+        // the raised interactive surface, which the theme derives from its background and
+        // foreground and which therefore differs between appearances.
+        let raised =
+            crate::theme::resolved_theme_style("button").and_then(|button| button.background_color);
+        let disc_background = style
+            .background_color
+            .filter(|colour| Some(*colour) != window_background)
+            .or(raised)
+            .or(window_background)
+            .unwrap_or_else(Self::default_bg);
+        // Precedence: a colour the caller set with `set_bg_color` wins, then the
+        // caller's explicit style, then the theme's raised surface. So an avatar the
+        // caller coloured keeps it across a theme switch, while one that was never
+        // coloured follows the appearance.
+        let disc_color = if self.bg_color_is_explicit { self.bg_color } else { disc_background };
+
         // Draw the avatar shape (circle or rounded square)
         if self.square {
             let corner_radius = size / 4;
-            context.fill_rounded_rect(rect, corner_radius, self.bg_color);
+            context.fill_rounded_rect(rect, corner_radius, disc_color);
         } else {
-            context.fill_circle(center, size / 2, self.bg_color);
+            context.fill_circle(center, size / 2, disc_color);
         }
 
         // Draw centered initials text
@@ -207,7 +259,7 @@ impl Draw for Avatar {
                 Point::new(text_x.max(rect.x), text_y.max(rect.y)),
                 &self.text,
                 &font,
-                Color::WHITE,
+                disc_color.contrast_color(),
                 HorizontalAlignment::Left,
             );
         }

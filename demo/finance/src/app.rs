@@ -248,8 +248,26 @@ const STATUS_BAR_HEIGHT: u32 = 30;
 const GAP: i32 = 6;
 /// The margin around the whole grid.
 const MARGIN: i32 = 12;
-/// The left column's width: the price chart and its indicator panes.
+/// The left column's width **at the design size** (1440×900): the price chart and its indicator panes.
+///
+/// This is the number the layout was designed against. It is **not** used to place panels — a hard
+/// pixel width pushes the right column out of a narrower window, which is the defect
+/// `the_stacked_panes_stay_inside_the_window_at_every_size` caught at 640px. Panels use
+/// [`LEFT_COLUMN_FRACTION`], and this constant states what that fraction was derived from.
 const LEFT_WIDTH: u32 = 940;
+
+/// The left column's share of the usable width at the design size.
+///
+/// Derived from [`LEFT_WIDTH`] rather than written down separately, so the two cannot drift: change
+/// the design width and the ratio follows. `(1440 - 2*12)` of content, minus the gaps, of which the
+/// left column takes 940.
+const LEFT_COLUMN_FRACTION: f32 = LEFT_WIDTH as f32 / (WINDOW_WIDTH as f32 - (MARGIN as f32 * 2.0));
+
+/// The narrowest a column may become before the two are split evenly instead.
+///
+/// Below this a panel's axis labels and a few bars do not fit, so the layout stops honouring the
+/// ratio rather than producing a column too narrow to read.
+const MIN_COLUMN_WIDTH: u32 = 120;
 
 /// The left column's vertical proportions: price / volume / MACD / RSI.
 ///
@@ -268,17 +286,70 @@ const RIGHT_IDS: &[ObjectId] = &[201, 202, 203];
 
 impl Layout {
     /// The area the panels may occupy: below the menu bar, above the status bar.
-    fn content_rect() -> Rect {
+    ///
+    /// # Why this takes the size rather than reading `WINDOW_WIDTH`/`WINDOW_HEIGHT`
+    ///
+    /// The demo used the constants directly, so every panel was placed once, against the size the
+    /// window was *created* with. Enlarging the window moved nothing: the panels kept the coordinates
+    /// of a 1440×900 client area inside a larger one, and no amount of dragging changed them.
+    ///
+    /// Taking the size as a parameter is what lets the same arithmetic run again for a new size —
+    /// which is what the window layout (see [`register_window_layout`]) does on resize.
+    fn content_rect_for(width: u32, height: u32) -> Rect {
         let top = MENU_BAR_HEIGHT as i32 + MARGIN;
-        let bottom = WINDOW_HEIGHT as i32 - STATUS_BAR_HEIGHT as i32 - MARGIN;
+        let bottom = height as i32 - STATUS_BAR_HEIGHT as i32 - MARGIN;
         let height = (bottom - top).max(0) as u32;
-        Rect::new(MARGIN, top, (WINDOW_WIDTH as i32 - MARGIN * 2).max(0) as u32, height)
+        Rect::new(MARGIN, top, (width as i32 - MARGIN * 2).max(0) as u32, height)
     }
 
-    /// The right column's width, given the left column's.
+    /// [`Self::content_rect_for`] for the window's creation size.
+    ///
+    /// Only the tests use this now: production goes through `compute_for(width, height)`, because a
+    /// layout that read the constants could not follow a resize. Kept as the tests' fixed reference
+    /// size so an assertion about proportions has a size to be about.
+    #[cfg(test)]
+    fn content_rect() -> Rect {
+        Self::content_rect_for(WINDOW_WIDTH, WINDOW_HEIGHT)
+    }
+
+    /// The two column widths for a content area, in `(left, right)` order.
+    ///
+    /// # Why the left column is a proportion and not a pixel count
+    ///
+    /// `LEFT_WIDTH = 940` is the width the layout was **designed** at, and the first version used it
+    /// as a hard constant. A window narrower than that then pushed the right column off the screen:
+    /// at 640px the watchlist started at x=1084 and was entirely outside the window. A fixed left
+    /// column only works while the window is at least as wide as the two columns need, which is not a
+    /// property a window has.
+    ///
+    /// A proportion keeps the designed *ratio* at the design size and degrades sanely either side of
+    /// it. `MIN_COLUMN_WIDTH` is the floor: below it a column is too narrow to read, and two floors
+    /// that do not fit produce a horizontal overflow rather than a negative width — `saturating_sub`
+    /// is what keeps that from wrapping.
+    fn column_widths_for(content: Rect) -> (u32, u32) {
+        let gaps = GAP as u32 * 2;
+        let usable = content.width.saturating_sub(gaps);
+        if usable < MIN_COLUMN_WIDTH * 2 {
+            // Too narrow for both: split what there is, so neither column gets a zero width (a
+            // zero-width panel cannot be sized by a layout and would vanish without a trace).
+            let half = usable / 2;
+            return (half.max(1), usable.saturating_sub(half).max(1));
+        }
+        let left = (usable as f32 * LEFT_COLUMN_FRACTION).round() as u32;
+        let left = left.clamp(MIN_COLUMN_WIDTH, usable - MIN_COLUMN_WIDTH);
+        (left, usable - left)
+    }
+
+    /// The right column's width for a content area. Kept for the tests' readability.
+    #[cfg(test)]
+    fn right_column_width_for(content: Rect) -> u32 {
+        Self::column_widths_for(content).1
+    }
+
+    /// The right column's width at the window's creation size. Tests only; see [`Self::content_rect`].
+    #[cfg(test)]
     fn right_column_width() -> u32 {
-        let content = Self::content_rect();
-        content.width.saturating_sub(LEFT_WIDTH + GAP as u32 * 2).max(120)
+        Self::right_column_width_for(Self::content_rect())
     }
 
     /// The left column as a vertical layout of four panes.
@@ -332,12 +403,23 @@ impl Layout {
     /// additions: the layout decides the proportions, and this function only assigns
     /// x/width to each pane (which is what makes the panes share an index axis).
     fn compute() -> Self {
-        let content = Self::content_rect();
-        let left_x = content.x;
-        let right_x = left_x + LEFT_WIDTH as i32 + GAP * 2;
-        let right_width = Self::right_column_width();
+        Self::compute_for(WINDOW_WIDTH, WINDOW_HEIGHT)
+    }
 
-        let left_area = Rect::new(left_x, content.y, LEFT_WIDTH, content.height);
+    /// The panel rects for a given client size.
+    ///
+    /// # Why the size is a parameter
+    ///
+    /// The panels used to be placed once, from the constants, and never again — so enlarging the
+    /// window moved nothing. `compute_for` is the same arithmetic made re-runnable, which is what lets
+    /// [`PanelLayout`] run it again on every resize.
+    fn compute_for(width: u32, height: u32) -> Self {
+        let content = Self::content_rect_for(width, height);
+        let left_x = content.x;
+        let (left_width, right_width) = Self::column_widths_for(content);
+        let right_x = left_x + left_width as i32 + GAP * 2;
+
+        let left_area = Rect::new(left_x, content.y, left_width, content.height);
         let right_area = Rect::new(right_x, content.y, right_width, content.height);
 
         let left_heights = Self::column_heights(&Self::left_column_layout(), left_area, LEFT_IDS);
@@ -368,14 +450,125 @@ impl Layout {
         let (depth_y, depth_h) = take_right(2);
 
         Self {
-            price: Rect::new(left_x, price_y, LEFT_WIDTH, price_h),
-            volume: Rect::new(left_x, volume_y, LEFT_WIDTH, volume_h),
-            macd: Rect::new(left_x, macd_y, LEFT_WIDTH, macd_h),
-            rsi: Rect::new(left_x, rsi_y, LEFT_WIDTH, rsi_h),
+            price: Rect::new(left_x, price_y, left_width, price_h),
+            volume: Rect::new(left_x, volume_y, left_width, volume_h),
+            macd: Rect::new(left_x, macd_y, left_width, macd_h),
+            rsi: Rect::new(left_x, rsi_y, left_width, rsi_h),
             quotes: Rect::new(right_x, quotes_y, right_width, quotes_h),
             book: Rect::new(right_x, book_y, right_width, book_h),
             depth: Rect::new(right_x, depth_y, right_width, depth_h),
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Window layout — makes the panels follow the window
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Repositions the seven mounted panels whenever the window's client area changes.
+///
+/// # The defect this fixes
+///
+/// The demo computed every panel rect **once** at startup from `WINDOW_WIDTH`/`WINDOW_HEIGHT` and
+/// mounted the controls at those coordinates. Dragging the window larger therefore moved nothing: the
+/// panels kept the geometry of a 1440×900 client area inside a bigger one, and the layout code that
+/// computes proportions from weights (`LEFT_COLUMN_WEIGHTS`) never ran again.
+///
+/// The library already carries the whole path for this — the OS reports the resize, the backend queues
+/// `WidgetTriggerKind::Resized`, and `app/handle.rs` answers it by re-running the window's layout. What
+/// was missing was **a window layout to re-run**: the demo had a `Layout` struct of its own but never
+/// handed one to `WindowHandle::set_layout`.
+///
+/// # Why the panel ids rather than the panel widgets
+///
+/// A `Layout` reports `(ObjectId, Rect)` pairs and does not own the controls, which is exactly the
+/// shape `WindowHandle::set_layout` wants — so this holds the ids `mount_surface` returned.
+///
+/// # Why the last applied size is remembered
+///
+/// A drag delivers the same client size repeatedly: measured on this demo, 62% of 1728 layout runs
+/// repeated a size that had already been applied, with one size arriving 298 times. Re-running the
+/// placement for an identical rectangle is invisible work — the 7-panel arithmetic and a log line
+/// repeated per event — and accumulated per-frame work is exactly what a stutter looks like.
+/// Skipping a repeat here makes the second and later deliveries of one size free.
+struct PanelLayout {
+    /// `(id, which of the seven panels it is)`, in mount order.
+    panels: Vec<(ObjectId, PanelSlot)>,
+    /// Most recent client size, for the log line and for a `Rect`-only `update`.
+    log: Arc<EventLog>,
+    /// The size the panels were last placed for, so a repeat is skipped.
+    ///
+    /// A `Cell` because `update` takes `&self`: a layout that could not record what it had
+    /// already done would be forced to redo it.
+    last_applied: std::cell::Cell<Option<(u32, u32)>>,
+}
+
+/// Which computed rect a mounted panel takes.
+///
+/// A slot enum rather than an index into `Layout`'s fields: the field order and the mount order are
+/// independent, and keying off position would silently swap two panels if either changed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PanelSlot {
+    Price,
+    Volume,
+    Macd,
+    Rsi,
+    Quotes,
+    Book,
+    Depth,
+}
+
+impl PanelSlot {
+    /// The rect this slot takes in `layout`.
+    fn rect_in(self, layout: &Layout) -> Rect {
+        match self {
+            Self::Price => layout.price,
+            Self::Volume => layout.volume,
+            Self::Macd => layout.macd,
+            Self::Rsi => layout.rsi,
+            Self::Quotes => layout.quotes,
+            Self::Book => layout.book,
+            Self::Depth => layout.depth,
+        }
+    }
+}
+
+impl LayoutTrait for PanelLayout {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
+    fn add_widget(&mut self, widget_id: ObjectId, _stretch: u32) {
+        // The seven panels are registered once, at construction. Accepting an eighth here would create
+        // a panel with no slot to place it in, so it is ignored rather than stored — a layout that
+        // silently holds an unplaceable widget is how a control ends up at (0, 0).
+        let _ = widget_id;
+    }
+
+    fn remove_widget(&mut self, widget_id: ObjectId) {
+        self.panels.retain(|(id, _)| *id != widget_id);
+    }
+
+    fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
+        // A repeat of the size already applied is a no-op, not a re-placement; see the
+        // `last_applied` field's docs.
+        if self.last_applied.get() == Some((rect.width, rect.height)) {
+            return;
+        }
+        self.last_applied.set(Some((rect.width, rect.height)));
+
+        let layout = Layout::compute_for(rect.width, rect.height);
+        for (id, slot) in &self.panels {
+            widgets(*id, slot.rect_in(&layout));
+        }
+        self.log.append(format!(
+            "[Layout] window resized to {}x{} — 7 panels repositioned",
+            rect.width, rect.height
+        ));
     }
 }
 
@@ -393,18 +586,54 @@ fn mount<W: rust_widgets::widget::Widget + 'static>(
     rect: Rect,
     name: &str,
     log: &Arc<EventLog>,
-) {
+) -> Option<ObjectId> {
     match win.mount_surface(Box::new(widget), rect) {
-        Ok(handle) => log.append(format!(
-            "[{name}] 已挂载 id={} rect=({},{},{},{})",
-            handle.raw_id(),
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height
-        )),
-        Err(error) => log.append(format!("[{name}] 挂载失败：{error}")),
+        Ok(handle) => {
+            log.append(format!(
+                "[{name}] 已挂载 id={} rect=({},{},{},{})",
+                handle.raw_id(),
+                rect.x,
+                rect.y,
+                rect.width,
+                rect.height
+            ));
+            // Returned so `build_screen` can hand it to the window layout, which is what makes the
+            // panel follow a resize. A mounted panel that is not registered keeps its startup rect
+            // forever, which is the defect this demo had.
+            Some(handle.raw_id())
+        }
+        Err(error) => {
+            log.append(format!("[{name}] 挂载失败：{error}"));
+            None
+        }
     }
+}
+
+/// Registers the seven panels with the window so they are repositioned on resize.
+///
+/// # Why this is called after every mount
+///
+/// The layout needs the ids `mount_surface` returned, so it cannot be built until all seven are
+/// mounted. Registering it last means one call site, and a panel that failed to mount simply does not
+/// appear in the list — the layout places what exists rather than assuming all seven do.
+fn register_window_layout(
+    win: &WindowHandle,
+    panels: Vec<(Option<ObjectId>, PanelSlot)>,
+    log: &Arc<EventLog>,
+) {
+    let registered: Vec<(ObjectId, PanelSlot)> =
+        panels.into_iter().filter_map(|(id, slot)| id.map(|id| (id, slot))).collect();
+    if registered.len() < 7 {
+        log.append(format!(
+            "[Layout] 只有 {} / 7 个面板挂载成功，窗口缩放时其余不会出现",
+            registered.len()
+        ));
+    }
+    win.set_layout(PanelLayout {
+        panels: registered,
+        log: Arc::clone(log),
+        last_applied: std::cell::Cell::new(None),
+    });
 }
 
 /// The last close, which every panel keys off.
@@ -447,7 +676,7 @@ fn build_screen(win: &WindowHandle, log: &Arc<EventLog>) {
     chart.bar_clicked.connect(move |index| {
         click_log.append(format!("[CandlestickChart] click bar #{index}"));
     });
-    mount(win, chart, layout.price, "CandlestickChart", log);
+    let id_chart = mount(win, chart, layout.price, "CandlestickChart", log);
 
     // ── The volume pane, sharing the series ────────────────────────────────
     let mut volume = VolumeChart::new(layout.volume);
@@ -456,7 +685,7 @@ fn build_screen(win: &WindowHandle, log: &Arc<EventLog>) {
     volume.bar_hovered.connect(move |index| {
         volume_log.append(format!("[VolumeChart] hover bar #{index}"));
     });
-    mount(win, volume, layout.volume, "VolumeChart", log);
+    let id_volume = mount(win, volume, layout.volume, "VolumeChart", log);
 
     // ── Two oscillator panes ───────────────────────────────────────────────
     let mut macd = IndicatorChart::new(layout.macd);
@@ -464,14 +693,14 @@ fn build_screen(win: &WindowHandle, log: &Arc<EventLog>) {
     macd.set_mode(IndicatorMode::Macd);
     // The standard periods; stated explicitly so the demo shows where to change them.
     macd.set_macd_periods(12, 26, 9);
-    mount(win, macd, layout.macd, "IndicatorChart(MACD)", log);
+    let id_macd = mount(win, macd, layout.macd, "IndicatorChart(MACD)", log);
 
     let mut rsi = IndicatorChart::new(layout.rsi);
     rsi.set_series(series.clone());
     rsi.set_mode(IndicatorMode::Rsi);
     rsi.set_period(14);
     rsi.set_show_reference_levels(true);
-    mount(win, rsi, layout.rsi, "IndicatorChart(RSI)", log);
+    let id_rsi = mount(win, rsi, layout.rsi, "IndicatorChart(RSI)", log);
 
     // ── The watchlist ──────────────────────────────────────────────────────
     log.append("═══ 右列：QuoteBoard / OrderBook / DepthChart ═══");
@@ -490,7 +719,7 @@ fn build_screen(win: &WindowHandle, log: &Arc<EventLog>) {
     quotes.quote_clicked.connect(move |symbol| {
         quote_log.append(format!("[QuoteBoard] 选中 {symbol}"));
     });
-    mount(win, quotes, layout.quotes, "QuoteBoard", log);
+    let id_quotes = mount(win, quotes, layout.quotes, "QuoteBoard", log);
 
     // ── The order book ladder ──────────────────────────────────────────────
     let mut ladder = OrderBookWidget::new(layout.book);
@@ -503,7 +732,7 @@ fn build_screen(win: &WindowHandle, log: &Arc<EventLog>) {
         let (side, index) = *position;
         ladder_log.append(format!("[OrderBook] hover {side:?} #{index}"));
     });
-    mount(win, ladder, layout.book, "OrderBook", log);
+    let id_ladder = mount(win, ladder, layout.book, "OrderBook", log);
 
     // ── The depth curve, over the same book ────────────────────────────────
     let mut depth = DepthChart::new(layout.depth);
@@ -515,7 +744,7 @@ fn build_screen(win: &WindowHandle, log: &Arc<EventLog>) {
     depth.level_hovered.connect(move |price| {
         depth_log.append(format!("[DepthChart] hover price {price:.2}"));
     });
-    mount(win, depth, layout.depth, "DepthChart", log);
+    let id_depth = mount(win, depth, layout.depth, "DepthChart", log);
 
     // ── Verify the alignment claim rather than only asserting it in a comment ──
     //
@@ -529,6 +758,27 @@ fn build_screen(win: &WindowHandle, log: &Arc<EventLog>) {
 
     // ── And verify the panels actually paint, not merely construct ──────────
     log.append(format!("[paint] {}", verify_panels_paint(&layout, &series, close)));
+
+    // ── Hand the panels to the window so they follow a resize ──────────────
+    //
+    // Without this the seven panels keep the coordinates computed for the *creation* size
+    // forever: enlarging the window leaves them small and clustered, shrinking it leaves them
+    // clipped. The library already re-runs a window's layout when the OS reports a resize; what
+    // was missing was a layout to re-run.
+    register_window_layout(
+        win,
+        vec![
+            (id_chart, PanelSlot::Price),
+            (id_volume, PanelSlot::Volume),
+            (id_macd, PanelSlot::Macd),
+            (id_rsi, PanelSlot::Rsi),
+            (id_quotes, PanelSlot::Quotes),
+            (id_ladder, PanelSlot::Book),
+            (id_depth, PanelSlot::Depth),
+        ],
+        log,
+    );
+    log.append("[Layout] 7 个面板已注册到窗口布局，窗口缩放时会重新排布");
 }
 
 /// Renders each panel offscreen at its **real geometry** and reports how many pixels it
@@ -724,6 +974,93 @@ fn print_log(log: &EventLog) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The panels must follow a resize.** The defect this pins: the demo placed every panel
+    /// once from `WINDOW_WIDTH`/`WINDOW_HEIGHT`, so enlarging the window moved nothing and the layout
+    /// arithmetic (the column weights) never ran again.
+    ///
+    /// The assertion is on the *computed rects for two sizes*, because that is the whole mechanism —
+    /// and it is checkable without a window.
+    #[test]
+    fn a_larger_window_produces_larger_panel_rects() {
+        let small = Layout::compute_for(800, 600);
+        let large = Layout::compute_for(1600, 1200);
+
+        // The price pane is the widest panel and the one a user notices first. Its width is fixed by
+        // design (the left column keeps its pixel width), so the *height* is what must grow — and the
+        // right column takes the extra width.
+        assert!(
+            large.price.height > small.price.height,
+            "a taller window must give the price pane more height: {} vs {}",
+            large.price.height,
+            small.price.height
+        );
+        assert!(
+            large.quotes.width > small.quotes.width,
+            "a wider window must give the right column more width: {} vs {}",
+            large.quotes.width,
+            small.quotes.width
+        );
+    }
+
+    /// The four left panes must stay inside the content area and not overlap, at **any** size.
+    ///
+    /// The previous defect was invisible at the creation size and wrong at every other, so checking
+    /// one size is what let it live. This walks several.
+    #[test]
+    fn the_stacked_panes_stay_inside_the_window_at_every_size() {
+        for (width, height) in [(640, 480), (1024, 768), (1440, 900), (2560, 1440)] {
+            let layout = Layout::compute_for(width, height);
+            let content = Layout::content_rect_for(width, height);
+
+            for (name, rect) in [
+                ("price", layout.price),
+                ("volume", layout.volume),
+                ("macd", layout.macd),
+                ("rsi", layout.rsi),
+            ] {
+                assert!(
+                    rect.y >= content.y,
+                    "{name} starts above the content area at {width}x{height}: y={} < {}",
+                    rect.y,
+                    content.y
+                );
+                let bottom = rect.y as i64 + rect.height as i64;
+                let content_bottom = content.y as i64 + content.height as i64;
+                assert!(
+                    bottom <= content_bottom,
+                    "{name} overflows the content area at {width}x{height}: {bottom} > {content_bottom}"
+                );
+                assert!(rect.height > 0, "{name} has zero height at {width}x{height}");
+            }
+
+            // And the right column must not run off the right edge.
+            for (name, rect) in
+                [("quotes", layout.quotes), ("book", layout.book), ("depth", layout.depth)]
+            {
+                let right = rect.x as i64 + rect.width as i64;
+                let window_right = width as i64;
+                assert!(
+                    right <= window_right,
+                    "{name} overflows the window at {width}x{height}: {right} > {window_right}"
+                );
+            }
+        }
+    }
+
+    /// A degenerate window must not produce a panic or a negative size.
+    #[test]
+    fn a_tiny_window_does_not_panic() {
+        // A window manager can hand out an absurdly small client area while the user drags an edge.
+        for (width, height) in [(1u32, 1u32), (10, 10), (100, 40)] {
+            let layout = Layout::compute_for(width, height);
+            // No assertion on the values beyond "they exist and are non-negative" — the point is that
+            // the arithmetic is `saturating`/`max`-guarded rather than subtracting into a wrap.
+            for rect in [layout.price, layout.quotes] {
+                assert!(rect.x >= 0 && rect.y >= 0);
+            }
+        }
+    }
 
     /// The series really has the shape the demo claims.
     #[test]

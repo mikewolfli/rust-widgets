@@ -194,15 +194,44 @@ impl Frame {
     }
     /// Draws box frame.
     fn draw_box_frame(&self, context: &mut RenderContext, rect: Rect) {
+        // A frame's whole appearance is its outline, so every literal below is the
+        // fallback for `border_color`. Two of them are *derived* rather than dropped:
+        //
+        //  * The raised/sunken bevel needs two tones that read as "lit" and "shaded".
+        //    They are made by lightening/darkening the border colour, which is what
+        //    keeps the 3D effect readable on a dark surface instead of hardcoding a
+        //    white highlight that would glow.
+        //  * Explicit black/white border colours are recognised and the bevel is
+        //    suppressed, because that is the only nonzero `border_width` a theme can
+        //    express today; inventing a white highlight on top of a theme that asked
+        //    for a plain black rule would be inventing chrome the caller did not ask
+        //    for. An unset or grey border keeps the historical light/dark bevel.
+        let style = self.style();
+        let border = style.border_color.unwrap_or(Color::rgb(0, 0, 0));
+        let themed = style.border_color.is_some();
+        let plain =
+            themed && (border == Color::rgb(0, 0, 0) || border == Color::rgb(255, 255, 255));
         match self.frame_shadow {
             FrameShadow::Plain => {
                 // Draw single border
-                context.draw_rect(rect, Color::rgb(0, 0, 0));
+                context.draw_rect(rect, border);
             }
             FrameShadow::Raised => {
                 // Draw raised border
-                let light_color = Color::rgb(255, 255, 255);
-                let dark_color = Color::rgb(128, 128, 128);
+                let light_color = if plain {
+                    border
+                } else if themed {
+                    border.blend(&Color::rgb(255, 255, 255), 0.5)
+                } else {
+                    Color::rgb(255, 255, 255)
+                };
+                let dark_color = if plain {
+                    border
+                } else if themed {
+                    border.blend(&Color::rgb(0, 0, 0), 0.5)
+                } else {
+                    Color::rgb(128, 128, 128)
+                };
                 // Top and left (light)
                 context.draw_line(
                     Point::from_f32(rect.x as f32, rect.y as f32),
@@ -232,14 +261,34 @@ impl Frame {
                     dark_color,
                 );
                 // Draw mid line if needed
-                let mid_light = Color::rgb(192, 192, 192);
-                let mid_dark = Color::rgb(64, 64, 64);
+                let mid_light = if themed {
+                    border.blend(&Color::rgb(255, 255, 255), 0.25)
+                } else {
+                    Color::rgb(192, 192, 192)
+                };
+                let mid_dark = if themed {
+                    border.blend(&Color::rgb(0, 0, 0), 0.75)
+                } else {
+                    Color::rgb(64, 64, 64)
+                };
                 self.draw_mid_lines(context, rect, mid_light, mid_dark);
             }
             FrameShadow::Sunken => {
                 // Draw sunken border
-                let light_color = Color::rgb(128, 128, 128);
-                let dark_color = Color::rgb(255, 255, 255);
+                let light_color = if plain {
+                    border
+                } else if themed {
+                    border.blend(&Color::rgb(0, 0, 0), 0.5)
+                } else {
+                    Color::rgb(128, 128, 128)
+                };
+                let dark_color = if plain {
+                    border
+                } else if themed {
+                    border.blend(&Color::rgb(255, 255, 255), 0.5)
+                } else {
+                    Color::rgb(255, 255, 255)
+                };
                 // Top and left (dark)
                 context.draw_line(
                     Point::from_f32(rect.x as f32, rect.y as f32),
@@ -269,8 +318,16 @@ impl Frame {
                     dark_color,
                 );
                 // Draw mid line if needed
-                let mid_light = Color::rgb(64, 64, 64);
-                let mid_dark = Color::rgb(192, 192, 192);
+                let mid_light = if themed {
+                    border.blend(&Color::rgb(0, 0, 0), 0.75)
+                } else {
+                    Color::rgb(64, 64, 64)
+                };
+                let mid_dark = if themed {
+                    border.blend(&Color::rgb(255, 255, 255), 0.25)
+                } else {
+                    Color::rgb(192, 192, 192)
+                };
                 self.draw_mid_lines(context, rect, mid_light, mid_dark);
             }
         }
@@ -329,14 +386,15 @@ impl Frame {
     }
     /// Draws panel frame with a subtle background fill and simple border.
     fn draw_panel_frame(&self, context: &mut RenderContext, rect: Rect) {
-        let bg_color = Color::rgb(236, 233, 216);
+        let style = self.style();
+        let bg_color = style.background_color.unwrap_or(Color::rgb(236, 233, 216));
         context.fill_rect(rect, bg_color);
-        context.draw_rect(rect, Color::rgb(64, 64, 64));
+        context.draw_rect(rect, style.border_color.unwrap_or(Color::rgb(64, 64, 64)));
     }
     /// Draws styled panel frame.
     fn draw_styled_panel_frame(&self, context: &mut RenderContext, rect: Rect) {
         // More sophisticated panel with gradient
-        let bg_color = Color::rgb(240, 240, 240);
+        let bg_color = self.style().background_color.unwrap_or(Color::rgb(240, 240, 240));
         context.fill_rect(rect, bg_color);
         self.draw_box_frame(context, rect);
     }
@@ -346,7 +404,7 @@ impl Frame {
         context.draw_line_stroke(
             Point::new(rect.x, y),
             Point::new(rect.x + rect.width as i32, y),
-            Color::rgb(0, 0, 0),
+            self.style().border_color.unwrap_or(Color::rgb(0, 0, 0)),
             self.line_width as u32,
         );
     }
@@ -356,14 +414,20 @@ impl Frame {
         context.draw_line_stroke(
             Point::new(x, rect.y),
             Point::new(x, rect.y + rect.height as i32),
-            Color::rgb(0, 0, 0),
+            self.style().border_color.unwrap_or(Color::rgb(0, 0, 0)),
             self.line_width as u32,
         );
     }
     /// Draws Windows panel frame.
     fn draw_win_panel_frame(&self, context: &mut RenderContext, rect: Rect) {
         // Windows-style panel
-        let bg_color = Color::rgb(240, 240, 240);
+        //
+        // The fill is themed, but the white/grey bevel is not: it is the illusion of
+        // a raised edge, so unlike `draw_box_frame` it is left alone rather than
+        // derived from the border colour. A panel that has asked for a dark background
+        // still wants its highlight to read as a highlight.
+        let style = self.style();
+        let bg_color = style.background_color.unwrap_or(Color::rgb(240, 240, 240));
         context.fill_rect(rect, bg_color);
         // Draw 3D border
         let light_color = Color::rgb(255, 255, 255);

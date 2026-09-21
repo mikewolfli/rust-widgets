@@ -162,13 +162,37 @@ impl Draw for DropZone {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
 
-        // Base fill: a highlighted tint when hovering, otherwise a subtle neutral.
-        let fill = if self.hovered { Color::rgb(226, 238, 252) } else { Color::rgb(248, 250, 252) };
+        // Chrome colours resolve explicit style first, then the theme's resolved style
+        // for this control, and only then fall back to a literal. Without the theme step
+        // a light/dark switch would change nothing on screen, because the fills below
+        // were previously hardcoded.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global
+        // manager's mutex is not re-entrant.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("drop_zone");
+        let surface = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::rgb(248, 250, 252));
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::rgb(36, 107, 201));
+        let outline = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or(Color::rgb(170, 180, 195));
+
+        // Base fill: the theme's surface, lifted toward its ink while hovering so the
+        // drop target reads as active.
+        let fill = if self.hovered { surface.blend(&ink, 0.12) } else { surface };
         context.fill_rect(rect, fill);
 
-        // A dashed border drawn as a series of short strokes.
-        let border =
-            if self.hovered { Color::rgb(36, 107, 201) } else { Color::rgb(170, 180, 195) };
+        // A dashed border drawn as a series of short strokes. Hovering draws it in the
+        // control's own ink; at rest it is the resolved outline colour.
+        let border = if self.hovered { ink } else { outline };
         let dash = 8u32;
         let mut x = rect.x;
         while x + dash as i32 <= rect.x + rect.width as i32 {

@@ -242,15 +242,50 @@ impl EventHandler for Toast {
 impl Draw for Toast {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        let (accent, background) = match self.level {
-            ToastLevel::Info => (Color::rgb(76, 124, 201), Color::rgb(240, 245, 253)),
-            ToastLevel::Success => (Color::rgb(58, 161, 103), Color::rgb(240, 250, 244)),
-            ToastLevel::Warning => (Color::rgb(220, 158, 54), Color::rgb(253, 249, 240)),
-            ToastLevel::Error => (Color::rgb(209, 85, 74), Color::rgb(253, 242, 241)),
-        };
+
+        // Chrome colours resolve explicit style first, then the theme's resolved
+        // style for this control, and only then a literal. The theme step is what
+        // makes an appearance switch visible; previously every colour below was a
+        // hardcoded literal, so light and dark rendered identically.
+        //
+        // `resolved_theme_style` takes and releases the global manager's lock
+        // internally, so no guard is held across the draw (the mutex is not
+        // re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("toast");
+        // `toast` is not a control kind in the role table, so it classifies as
+        // `Surface`, whose background is `theme.colors.background` — byte-identical
+        // to the window behind it. The toast's own fill is therefore a step toward
+        // the foreground, so it reads as a raised surface of its own.
+        let resolved = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::rgb(240, 245, 253));
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| resolved.blend(&Color::BLACK, 0.15));
+        let text_color = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::rgb(0, 0, 0));
+        let background = resolved.blend(&text_color, 0.08);
+        // The severity stripe is a *state* indicator, so it reads the theme's
+        // semantic tokens rather than a literal colour per level.
+        let accent = crate::theme::semantic_color(match self.level {
+            ToastLevel::Info => crate::theme::SemanticColor::Info,
+            ToastLevel::Success => crate::theme::SemanticColor::Success,
+            ToastLevel::Warning => crate::theme::SemanticColor::Warning,
+            ToastLevel::Error => crate::theme::SemanticColor::Error,
+        })
+        .map(|token| token.blend(&background, 0.15))
+        .unwrap_or_else(|| background.blend(&text_color, 0.6));
+        // The close affordance is secondary chrome, so it is a tint of the resolved
+        // foreground rather than a second literal.
+        let close_color = text_color.blend(&background, 0.4);
 
         context.fill_rect(rect, background);
-        context.draw_rect(rect, Color::rgb(208, 214, 223));
+        context.draw_rect(rect, border);
         // A severity stripe rather than a badge: at toast height there is no room
         // for a square, and a stripe reads at any width.
         context.fill_rect(Rect::new(rect.x, rect.y, 4, rect.height), accent);
@@ -260,7 +295,7 @@ impl Draw for Toast {
             Point::new(text_x, rect.y + (rect.height as i32 + 12) / 2),
             &self.message,
             &Font::default(),
-            Color::rgb(44, 55, 72),
+            text_color,
             HorizontalAlignment::Left,
         );
 
@@ -268,12 +303,12 @@ impl Draw for Toast {
             context.draw_line(
                 Point::new(close.x + 3, close.y + 3),
                 Point::new(close.x + close.width as i32 - 3, close.y + close.height as i32 - 3),
-                Color::rgb(120, 131, 148),
+                close_color,
             );
             context.draw_line(
                 Point::new(close.x + close.width as i32 - 3, close.y + 3),
                 Point::new(close.x + 3, close.y + close.height as i32 - 3),
-                Color::rgb(120, 131, 148),
+                close_color,
             );
         }
     }

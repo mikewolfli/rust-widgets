@@ -1,0 +1,11 @@
+# BLUE20 layer 1 — semantic colour census (rule #109)
+# Regenerate: python3 tools/semantic_color_census.py
+#
+token     consumers
+--------  ------------------------------------------------
+info      src/widget/overlay_widgets/banner.rs
+success   src/widget/overlay_widgets/banner.rs
+warning   src/widget/overlay_widgets/banner.rs
+error     src/widget/overlay_widgets/banner.rs
+
+checked=4 skipped=0 failed=0

@@ -155,13 +155,73 @@ impl Draw for MobileDatePicker {
         let rect = self.geometry();
         let is_enabled = self.base.is_enabled();
 
-        // Background
-        let bg_color = if is_enabled {
-            Color::rgba(245, 245, 250, 255)
-        } else {
-            Color::rgba(230, 230, 235, 200)
+        // Chrome colours resolve the explicit style first, then the theme's resolved style for
+        // this control, and only then fall back to a literal. Every colour below used to be a
+        // literal, so a light/dark switch left the drum, its dividers, its highlight bar and its
+        // numbers unchanged — the rendering census reported the control as theme-blind.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
+        // is not re-entrant.
+        let style = self.base.style().clone();
+        // `mobile_date_picker` is not in the role table, so it classifies as `Surface` and its
+        // resolved background is the window fill itself; the drum below therefore derives its own
+        // distinct surface rather than painting the window's.
+        let theme = crate::theme::resolved_theme_style("mobile_date_picker");
+        // Read as its own lock acquisition and copied out as values, so the guard is dropped
+        // before anything else touches the theme.
+        let (window_fill, foreground, primary, secondary, disabled) = {
+            let manager = crate::theme::global_theme_manager();
+            match manager.current_theme() {
+                Some(active) => (
+                    active.colors.background,
+                    active.colors.foreground,
+                    active.colors.primary,
+                    active.colors.secondary,
+                    active.colors.disabled,
+                ),
+                None => (
+                    Color::rgb(240, 240, 240),
+                    Color::BLACK,
+                    Color::rgb(33, 150, 243),
+                    Color::rgb(158, 158, 158),
+                    Color::rgb(200, 200, 200),
+                ),
+            }
         };
-        context.fill_rect(rect, bg_color);
+
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(foreground);
+        // The drum: one step from the window fill toward the text colour, so it is a distinct
+        // element on a light theme and on a dark one. The filter is on the **resolved** value, not
+        // only on the theme's: a control classified as `Surface` already carries the window fill,
+        // so letting it through unfiltered is exactly the invisible-drum defect this guards
+        // against. A caller's own colour still wins.
+        let drum_from_theme = window_fill.blend(&ink, 0.06);
+        let drum_surface = match style.background_color {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => drum_from_theme,
+        };
+        let drum = if is_enabled { drum_surface } else { drum_surface.blend(&disabled, 0.35) };
+        // The column dividers are a fixed step out of the drum, and the highlight bar behind the
+        // selected row is the theme's primary so the selection is distinguishable rather than a
+        // translucent fixed blue.
+        let divider = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| drum.blend(&secondary, 0.40));
+        let highlight = primary.blend(&drum, 0.72);
+        // The numbers: the selected row carries the theme's primary ink, the other rows are
+        // de-emphasised steps of the separator colour, and a disabled picker recedes from the drum
+        // — none of them a fixed grey a dark theme would swallow.
+        let selected_ink = if is_enabled { primary } else { drum.blend(&disabled, 0.55) };
+        let row_ink = if is_enabled { ink.blend(&drum, 0.45) } else { drum.blend(&disabled, 0.50) };
+        let arrow_color = if is_enabled { ink.blend(&drum, 0.20) } else { row_ink };
+
+        // Background
+        context.fill_rect(rect, drum);
 
         // Column layout
         let col_width = rect.width / 3;
@@ -193,18 +253,14 @@ impl Draw for MobileDatePicker {
 
             // Vertical divider between columns
             if col_idx > 0 {
-                context.draw_rect_stroke(
-                    Rect::new(col_x, rect.y, 1, rect.height),
-                    Color::rgba(200, 200, 210, 255),
-                    1,
-                );
+                context.draw_rect_stroke(Rect::new(col_x, rect.y, 1, rect.height), divider, 1);
             }
 
             // Highlight bar for the center (selected) row
             let highlight_y = rect.y + 2 * row_height as i32;
             let highlight_rect =
                 Rect::new(col_x + 4, highlight_y, col_width.saturating_sub(8), row_height);
-            context.fill_rounded_rect(highlight_rect, 6, Color::rgba(60, 120, 240, 50));
+            context.fill_rounded_rect(highlight_rect, 6, highlight);
 
             // Draw the five visible rows
             for row in 0..5 {
@@ -223,13 +279,7 @@ impl Draw for MobileDatePicker {
                     + (row_height as i32 - metrics.height as i32) / 2
                     + metrics.ascent as i32;
 
-                let text_color = if !is_enabled {
-                    Color::rgba(160, 160, 170, 200)
-                } else if is_selected {
-                    Color::rgba(40, 70, 190, 255)
-                } else {
-                    Color::rgba(130, 130, 150, 210)
-                };
+                let text_color = if is_selected { selected_ink } else { row_ink };
 
                 context.draw_text(
                     Point::new(text_x, text_y),
@@ -241,11 +291,6 @@ impl Draw for MobileDatePicker {
             }
 
             // Up arrow indicator (top of column)
-            let arrow_color = if is_enabled {
-                Color::rgba(80, 80, 100, 220)
-            } else {
-                Color::rgba(160, 160, 170, 150)
-            };
             let up_y = rect.y + 2;
             context.draw_text(
                 Point::new(col_x + (col_width as i32 - 8) / 2, up_y),

@@ -510,6 +510,55 @@ impl EventHandler for MdiArea {
 }
 impl Draw for MdiArea {
     fn draw(&mut self, context: &mut RenderContext) {
+        // Chrome colours resolve the explicit style first, then the theme's resolved style for
+        // this control, and only then a literal. Every colour below used to be a literal, and the
+        // plain background in particular was `rgb(240,240,240)` — byte-identical to the light
+        // frame fill, so the area painted plenty of pixels and showed none of them. The census
+        // reported it as both `ink = 0` and theme-blind.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
+        // is not re-entrant.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("mdi_area");
+        // Read as its own lock acquisition and copied out as values, so the guard is dropped
+        // before anything else touches the theme.
+        let (window_fill, foreground, secondary, primary) = {
+            let manager = crate::theme::global_theme_manager();
+            match manager.current_theme() {
+                Some(active) => (
+                    active.colors.background,
+                    active.colors.foreground,
+                    active.colors.secondary,
+                    active.colors.primary,
+                ),
+                None => (
+                    Color::rgb(240, 240, 240),
+                    Color::BLACK,
+                    Color::rgb(158, 158, 158),
+                    Color::rgb(33, 150, 243),
+                ),
+            }
+        };
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(foreground);
+        // `mdi_area` is absent from `WidgetRole::for_kind_name`'s table, so it classifies as
+        // `Surface` and the active theme writes the window fill into `style.background_color`. A
+        // work area painted in that colour would be byte-identical to the frame behind it, so a
+        // resolved surface equal to the window fill is re-derived a visible step away from it,
+        // while a colour the caller set still wins.
+        let area = match style.background_color {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => window_fill.blend(&ink, 0.08),
+        };
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .filter(|resolved| *resolved != area)
+            .unwrap_or_else(|| area.blend(&secondary, 0.45));
+
         // Draw base widget
         let rect = self.geometry();
         // Draw background
@@ -518,17 +567,16 @@ impl Draw for MdiArea {
                 // No background
             }
             Background::Plain => {
-                context.fill_rect(rect, Color::rgb(240, 240, 240));
+                context.fill_rect(rect, area);
             }
             Background::Gradient => {
-                // Draw gradient background
+                // Draw gradient background: the work area eased into its own border, so the ramp
+                // is a shade of the themed surface rather than a fixed light grey.
+                let top = area;
+                let bottom = area.blend(&border, 0.55);
                 for y in 0..rect.height as i32 {
-                    let ratio = y as f32 / rect.height as f32;
-                    let color = Color::rgb(
-                        (240.0 * (1.0 - ratio) + 200.0 * ratio) as u8,
-                        (240.0 * (1.0 - ratio) + 200.0 * ratio) as u8,
-                        (240.0 * (1.0 - ratio) + 200.0 * ratio) as u8,
-                    );
+                    let ratio = y as f32 / rect.height.max(1) as f32;
+                    let color = top.blend(&bottom, ratio);
                     context.draw_line(
                         Point::new(rect.x, rect.y + y),
                         Point::new(rect.x + rect.width as i32, rect.y + y),
@@ -537,15 +585,13 @@ impl Draw for MdiArea {
                 }
             }
             Background::Pattern => {
-                // Draw pattern background
+                // Draw pattern background: the checker alternates between the surface and one step
+                // off it, so the weave reads on either appearance.
                 let pattern_size = 20;
+                let alt = area.blend(&ink, 0.06);
                 for y in 0..(rect.height / pattern_size) as i32 {
                     for x in 0..(rect.width / pattern_size) as i32 {
-                        let color = if (x + y) % 2 == 0 {
-                            Color::rgb(245, 245, 245)
-                        } else {
-                            Color::rgb(235, 235, 235)
-                        };
+                        let color = if (x + y) % 2 == 0 { area } else { alt };
                         context.fill_rect(
                             Rect::new(
                                 (rect.x as f32 + x as f32 * pattern_size as f32) as i32,
@@ -569,24 +615,20 @@ impl Draw for MdiArea {
             // Draw sub-window frame
             let frame_rect = subwindow.geometry;
             // Draw frame background
-            let bg_color =
-                if is_active { Color::rgb(255, 255, 255) } else { Color::rgb(250, 250, 250) };
+            let bg_color = if is_active { area.blend(&ink, 0.22) } else { area.blend(&ink, 0.14) };
             context.fill_rect(frame_rect, bg_color);
             // Draw frame border
-            let border_color =
-                if is_active { Color::rgb(0, 120, 215) } else { Color::rgb(200, 200, 200) };
+            let border_color = if is_active { primary } else { border };
             context.draw_rect(frame_rect, border_color);
             // Draw title bar
             let title_bar_height = 24;
-            let title_bar_color =
-                if is_active { Color::rgb(0, 120, 215) } else { Color::rgb(180, 180, 180) };
+            let title_bar_color = if is_active { primary } else { area.blend(&secondary, 0.55) };
             context.fill_rect(
                 Rect::new(frame_rect.x, frame_rect.y, frame_rect.width, title_bar_height as u32),
                 title_bar_color,
             );
             // Draw title text
-            let text_color =
-                if is_active { Color::rgb(255, 255, 255) } else { Color::rgb(0, 0, 0) };
+            let text_color = if is_active { primary.contrast_color() } else { ink };
             context.draw_text(
                 Point::new(frame_rect.x + 5, frame_rect.y + title_bar_height / 2),
                 &subwindow.title,
@@ -599,8 +641,11 @@ impl Draw for MdiArea {
                 let close_size = 12;
                 let close_x = frame_rect.x + frame_rect.width as i32 - close_size - 5;
                 let close_y = frame_rect.y + (title_bar_height - close_size) / 2;
-                let close_color =
-                    if is_active { Color::rgb(255, 255, 255) } else { Color::rgb(100, 100, 100) };
+                let close_color = if is_active {
+                    primary.contrast_color()
+                } else {
+                    ink.blend(&title_bar_color, 0.35)
+                };
                 context.draw_line(
                     Point::new(close_x, close_y),
                     Point::new(close_x + close_size, close_y + close_size),

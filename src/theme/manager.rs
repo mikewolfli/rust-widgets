@@ -598,6 +598,71 @@ pub fn resolved_theme_style_for(kind_name: &str, class_name: Option<&str>) -> Op
     Some(manager.resolve_style_for(kind_name, class_name, None))
 }
 
+/// A semantic state a control can be in, mapped 1:1 onto `theme.colors`.
+///
+/// # Why this exists
+///
+/// `Theme::colors` declares `error` / `warning` / `success` / `info` as named
+/// tokens, but before this there was no *accessor*: a control that wanted "the
+/// theme's error colour" had no way to ask, so it wrote a literal. A census found
+/// the four tokens had **zero** consumers in the control layer — the theme author
+/// could change `error` and nothing on screen moved. That is the same defect class
+/// as "an event is published but never emitted": a declaration with no consumer,
+/// which is undetectable because nothing is broken in isolation.
+///
+/// This enum is the missing consumer-side handle. It is deliberately a closed set
+/// — adding a token to `Colors` without adding it here is caught by the
+/// `every_semantic_token_is_reachable` test, so the two cannot drift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SemanticColor {
+    /// The information indicator: neutral, neither good nor bad.
+    Info,
+    /// A completed, successful outcome.
+    Success,
+    /// Something that needs attention but is not a failure.
+    Warning,
+    /// A failure.
+    Error,
+}
+
+impl SemanticColor {
+    /// Every semantic token, in a fixed order.
+    ///
+    /// Enumerated so a gate can walk *all* of them rather than sample the ones
+    /// someone remembered — the failure mode that let the tokens go unread.
+    pub const ALL: [SemanticColor; 4] =
+        [SemanticColor::Info, SemanticColor::Success, SemanticColor::Warning, SemanticColor::Error];
+
+    /// The token name as it appears in `theme.colors`.
+    pub fn token(self) -> &'static str {
+        match self {
+            SemanticColor::Info => "info",
+            SemanticColor::Success => "success",
+            SemanticColor::Warning => "warning",
+            SemanticColor::Error => "error",
+        }
+    }
+
+    /// Reads this token out of a theme's palette.
+    pub fn of(self, theme: &Theme) -> Color {
+        match self {
+            SemanticColor::Info => theme.colors.info,
+            SemanticColor::Success => theme.colors.success,
+            SemanticColor::Warning => theme.colors.warning,
+            SemanticColor::Error => theme.colors.error,
+        }
+    }
+}
+
+/// The active theme's colour for `token`.
+///
+/// This is what a control that paints a *state* (a banner severity, a validation
+/// message, a completed progress run) should read — instead of a literal. Returns
+/// `None` only when no theme is active, which the global manager never produces.
+pub fn semantic_color(token: SemanticColor) -> Option<Color> {
+    global_theme_manager().current_theme().map(|theme| token.of(theme))
+}
+
 /// Sets the process-wide high-contrast override.
 ///
 /// A convenience for the common case of switching accessibility mode without
@@ -666,7 +731,12 @@ impl Theme {
                 warning: Color { r: 255, g: 213, b: 79, a: 255 },
                 success: Color { r: 129, g: 199, b: 132, a: 255 },
                 disabled: Color { r: 80, g: 80, b: 80, a: 255 },
-                info: Color::INFO,
+                // Lightened for the dark surface, like the three tokens above it.
+                // It used to be `Color::INFO`, the *light* preset's value, which
+                // made it the one semantic token that did not move with the
+                // appearance — a control reading it could never respond to a theme
+                // switch, and the census caught exactly that.
+                info: Color { r: 138, g: 180, b: 248, a: 255 },
             },
             fonts: Fonts {
                 regular: Font::simple("Arial", 14.0),

@@ -327,19 +327,56 @@ impl Draw for DropdownMenu {
         let is_enabled = self.base.is_enabled();
         let font = Font::simple("sans-serif", 13.0);
 
+        // Chrome colours resolve explicit style first, then the theme's resolved
+        // style for this control, and only then a literal. The theme step is what
+        // makes an appearance switch visible; previously every colour below was a
+        // hardcoded literal, so light and dark rendered identically.
+        //
+        // `resolved_theme_style` takes and releases the global manager's lock
+        // internally, so no guard is held across the draw (the mutex is not
+        // re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("dropdown_menu");
+        // `dropdown_menu` is not a control kind in the role table, so it classifies as
+        // `Surface`, whose background is `theme.colors.background` — the colour the
+        // window paints. The field is therefore a step toward the foreground, so it
+        // reads as a field rather than as a hole in the window.
+        let resolved = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| resolved.blend(&Color::BLACK, 0.15));
+        let text_color = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        let background = resolved.blend(&text_color, 0.08);
+        // A disabled field is a chrome state, so it is derived from the resolved
+        // colours rather than from a second literal grey.
+        let disabled_background = background.blend(&border, 0.25);
+        let placeholder_color = text_color.blend(&background, 0.45);
+        let disabled_text_color = text_color.blend(&background, 0.6);
+        // The selected row and the separators are secondary chrome, derived from the
+        // resolved pair so they follow the appearance.
+        let item_highlight = background.blend(&text_color, 0.14);
+        let separator = background.blend(&text_color, 0.1);
+
         // ── Draw text field background ──
-        let bg_color = if !is_enabled { Color::rgba(240, 240, 240, 180) } else { Color::WHITE };
+        let bg_color = if !is_enabled { disabled_background } else { background };
         context.fill_rounded_rect(geom, 4, bg_color);
-        context.draw_rounded_rect_stroke(geom, 4, Color::rgba(190, 190, 200, 200), 1);
+        context.draw_rounded_rect_stroke(geom, 4, border, 1);
 
         // ── Draw selected label or placeholder ──
         let display_text = self.selected_label().unwrap_or_else(|| "Select...".to_string());
         let text_color = if !is_enabled {
-            Color::rgba(150, 150, 150, 200)
+            disabled_text_color
         } else if self.selected_value.is_some() {
-            Color::rgb(33, 33, 33)
+            text_color
         } else {
-            Color::rgba(180, 180, 180, 200)
+            placeholder_color
         };
         context.draw_text(
             Point::new(geom.x + PADDING, geom.y + geom.height as i32 / 2),
@@ -352,11 +389,8 @@ impl Draw for DropdownMenu {
         // ── Draw dropdown arrow ──
         let arrow_x = geom.x + geom.width as i32 - PADDING - 10;
         let arrow_y = geom.y + geom.height as i32 / 2 - 2;
-        let arrow_color = if !is_enabled {
-            Color::rgba(150, 150, 150, 180)
-        } else {
-            Color::rgba(100, 100, 100, 220)
-        };
+        let arrow_color =
+            if !is_enabled { disabled_text_color } else { text_color.blend(&background, 0.25) };
         if self.expanded {
             // Upward-pointing triangle when expanded
             context.execute_command(RenderCommand::DrawPath {
@@ -389,8 +423,8 @@ impl Draw for DropdownMenu {
         if self.expanded && !self.items.is_empty() {
             let drop = self.dropdown_rect();
             // Dropdown background with shadow
-            context.fill_rounded_rect(drop, 4, Color::WHITE);
-            context.draw_rounded_rect_stroke(drop, 4, Color::rgba(180, 180, 190, 200), 2);
+            context.fill_rounded_rect(drop, 4, background);
+            context.draw_rounded_rect_stroke(drop, 4, border, 2);
 
             // Draw visible items
             let end = (self.scroll_offset + MAX_VISIBLE_ITEMS).min(self.items.len());
@@ -401,14 +435,10 @@ impl Draw for DropdownMenu {
                 // Highlight selected item
                 let is_selected = self.selected_value.as_deref() == Some(&item.value);
                 if is_selected {
-                    context.fill_rounded_rect(ir, 2, Color::rgba(220, 235, 255, 200));
+                    context.fill_rounded_rect(ir, 2, item_highlight);
                 }
 
-                let item_text_color = if !item.enabled {
-                    Color::rgba(180, 180, 180, 200)
-                } else {
-                    Color::rgb(33, 33, 33)
-                };
+                let item_text_color = if !item.enabled { disabled_text_color } else { text_color };
                 let item_font = Font::simple("sans-serif", 12.0);
                 let mut item_x = ir.x + PADDING;
 
@@ -445,7 +475,7 @@ impl Draw for DropdownMenu {
                             Point::new(sub_x + 5, sub_y + 4),
                         ],
                         closed: true,
-                        color: Color::rgba(120, 120, 120, 200),
+                        color: disabled_text_color,
                         filled: true,
                         width: 1,
                     });
@@ -456,7 +486,7 @@ impl Draw for DropdownMenu {
                     context.draw_line(
                         Point::new(ir.x + 4, ir.y + ir.height as i32),
                         Point::new(ir.x + ir.width as i32 - 4, ir.y + ir.height as i32),
-                        Color::rgba(230, 230, 235, 200),
+                        separator,
                     );
                 }
             }
@@ -468,7 +498,7 @@ impl Draw for DropdownMenu {
                     Point::new(drop.x + drop.width as i32 / 2, drop.y + 2),
                     "▲",
                     &scroll_font,
-                    Color::rgba(150, 150, 150, 180),
+                    disabled_text_color,
                     HorizontalAlignment::Left,
                 );
             }
@@ -478,7 +508,7 @@ impl Draw for DropdownMenu {
                     Point::new(drop.x + drop.width as i32 / 2, drop.y + drop.height as i32 - 12),
                     "▼",
                     &scroll_font,
-                    Color::rgba(150, 150, 150, 180),
+                    disabled_text_color,
                     HorizontalAlignment::Left,
                 );
             }

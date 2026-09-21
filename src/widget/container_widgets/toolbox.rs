@@ -398,15 +398,20 @@ impl Draw for ToolBox {
         // Draw base widget
         let _rect = self.geometry();
         let content_rect = self.content_rect();
+        // Every colour below used to be a literal, so a themed toolbox kept a white
+        // page and light tabs inside a dark window. The style is read once and each
+        // literal becomes that field's fallback, so nothing that was visible before
+        // becomes invisible now.
+        let style = self.base.style();
         // Draw content background
         context.fill_rect(
             Rect::new(content_rect.x, content_rect.y, content_rect.width, content_rect.height),
-            Color::rgb(255, 255, 255),
+            style.background_color.unwrap_or(Color::rgb(255, 255, 255)),
         );
         // Draw content border
         context.draw_rect(
             Rect::new(content_rect.x, content_rect.y, content_rect.width, content_rect.height),
-            Color::rgb(200, 200, 200),
+            style.border_color.unwrap_or(Color::rgb(200, 200, 200)),
         );
         // Draw items
         for i in 0..self.items.len() {
@@ -415,12 +420,17 @@ impl Draw for ToolBox {
                 let is_current = i == self.current_index;
                 let is_enabled = item.enabled;
                 // Draw item background
+                //
+                // The tab strip is this widget's own surface, so it uses the style;
+                // the *selected* tab is a state highlight, not a colour, and is kept
+                // as the literal it always was (swapping it for `border_color` would
+                // have turned the selection into a plain border-coloured box).
                 let bg_color = if !is_enabled {
-                    Color::rgb(240, 240, 240)
+                    style.background_color.unwrap_or(Color::rgb(240, 240, 240))
                 } else if is_current {
                     Color::rgb(220, 220, 255)
                 } else {
-                    Color::rgb(240, 240, 240)
+                    style.background_color.unwrap_or(Color::rgb(240, 240, 240))
                 };
                 context.fill_rect(
                     Rect::new(item_rect.x, item_rect.y, item_rect.width, item_rect.height),
@@ -428,11 +438,11 @@ impl Draw for ToolBox {
                 );
                 // Draw item border
                 let border_color = if !is_enabled {
-                    Color::rgb(200, 200, 200)
+                    style.border_color.unwrap_or(Color::rgb(200, 200, 200))
                 } else if is_current {
                     Color::rgb(100, 100, 200)
                 } else {
-                    Color::rgb(200, 200, 200)
+                    style.border_color.unwrap_or(Color::rgb(200, 200, 200))
                 };
                 context.draw_rect(
                     Rect::new(item_rect.x, item_rect.y, item_rect.width, item_rect.height),
@@ -473,12 +483,19 @@ impl Draw for ToolBox {
                             inner_r * 2,
                         ),
                         inner_r,
-                        Color::rgb(255, 255, 255),
+                        // The glyph is drawn *on* the tinted icon square, so it reads
+                        // `text_color` like every other piece of ink in the item.
+                        style.text_color.unwrap_or(Color::rgb(255, 255, 255)),
                     );
                 }
                 // Draw item text
+                //
+                // A disabled item keeps its dimmed literal: that muted grey *is* how
+                // the state is communicated, and `text_color` would repaint it at
+                // full strength and erase the distinction.
+                let item_text_color = style.text_color.unwrap_or(Color::rgb(0, 0, 0));
                 let text_color =
-                    if !is_enabled { Color::rgb(150, 150, 150) } else { Color::rgb(0, 0, 0) };
+                    if !is_enabled { Color::rgb(150, 150, 150) } else { item_text_color };
                 context.draw_text(
                     Point::new(text_x, item_rect.y + item_rect.height as i32 / 2),
                     &item.text,

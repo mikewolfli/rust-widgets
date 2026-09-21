@@ -225,8 +225,57 @@ impl EventHandler for Snackbar {
 impl Draw for Snackbar {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::rgb(248, 250, 253));
-        context.draw_rect(rect, Color::rgb(204, 210, 220));
+
+        // Chrome colours resolve explicit style first, then the theme's resolved
+        // style for this control, and only then a literal. The theme step is what
+        // makes an appearance switch visible; previously every colour below was a
+        // hardcoded literal, so light and dark rendered identically.
+        //
+        // `resolved_theme_style` takes and releases the global manager's lock
+        // internally, so no guard is held across the draw (the mutex is not
+        // re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("snackbar");
+        // `Snackbar` is built on `WidgetKind::StatusBar` and classifies as
+        // `Surface`, whose background is `theme.colors.background` — byte-identical
+        // to the window behind it. The panel's own fill is therefore a step toward
+        // the foreground, so it reads as a surface of its own rather than as bare
+        // window.
+        let resolved = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::rgb(248, 250, 253));
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| resolved.blend(&Color::BLACK, 0.15));
+        let text_color = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::rgb(0, 0, 0));
+        let background = resolved.blend(&text_color, 0.08);
+        // The floating bar is the control's own emphasis surface: a first step away
+        // from the panel, so it stays distinct in either appearance.
+        let bar_background = background.blend(&text_color, 0.85);
+        let bar_border = bar_background.blend(&text_color, 0.18);
+        // Text on the bar is pushed back toward the panel, which is the reading the
+        // literal pair encoded (dark bar, near-white text) without hardcoding it.
+        let bar_text = bar_background.blend(&background, 0.92);
+        // The action is a brand action, so it reads the theme's primary token rather
+        // than a literal blue.
+        let action_background = crate::theme::resolved_theme_style("button")
+            .and_then(|button| button.background_color)
+            .unwrap_or_else(|| background.blend(&text_color, 0.55));
+        let action_border = action_background.blend(&text_color, 0.18);
+        let action_text = action_background.blend(&background, 0.92);
+        // Progress is a completion *state*, so it reads the theme's success token.
+        let track = bar_background.blend(&text_color, 0.12);
+        let progress_fill = crate::theme::semantic_color(crate::theme::SemanticColor::Success)
+            .map(|token| token.blend(&bar_background, 0.2))
+            .unwrap_or_else(|| bar_background.blend(&background, 0.5));
+
+        context.fill_rect(rect, background);
+        context.draw_rect(rect, border);
 
         if !self.visible {
             return;
@@ -238,26 +287,26 @@ impl Draw for Snackbar {
             rect.width.saturating_sub(16),
             26,
         );
-        context.fill_rect(bar, Color::rgb(43, 51, 64));
-        context.draw_rect(bar, Color::rgb(75, 87, 105));
+        context.fill_rect(bar, bar_background);
+        context.draw_rect(bar, bar_border);
 
         context.draw_text(
             Point::new(bar.x + 10, bar.y + 16),
             &self.message,
             &Font::default(),
-            Color::rgb(236, 240, 246),
+            bar_text,
             HorizontalAlignment::Left,
         );
 
         if let Some(action_rect) = self.action_rect() {
-            context.fill_rect(action_rect, Color::rgb(69, 108, 171));
-            context.draw_rect(action_rect, Color::rgb(105, 143, 204));
+            context.fill_rect(action_rect, action_background);
+            context.draw_rect(action_rect, action_border);
             if let Some(label) = &self.action_label {
                 context.draw_text(
                     Point::new(action_rect.x + 10, action_rect.y + 13),
                     label,
                     &Font::default(),
-                    Color::rgb(238, 244, 252),
+                    action_text,
                     HorizontalAlignment::Left,
                 );
             }
@@ -265,12 +314,12 @@ impl Draw for Snackbar {
 
         if let Some(progress) = self.progress {
             let progress_bar = Rect::new(bar.x, bar.y + bar.height as i32 - 3, bar.width, 3);
-            context.fill_rect(progress_bar, Color::rgb(77, 88, 103));
+            context.fill_rect(progress_bar, track);
             let fill = (progress_bar.width as f32 * progress).round() as u32;
             if fill > 0 {
                 context.fill_rect(
                     Rect::new(progress_bar.x, progress_bar.y, fill, progress_bar.height),
-                    Color::rgb(93, 179, 125),
+                    progress_fill,
                 );
             }
         }

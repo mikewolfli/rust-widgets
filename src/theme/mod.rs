@@ -56,7 +56,7 @@ pub use crate::style::HighContrastMode;
 pub use manager::theme_test_guard;
 pub use manager::{
     global_high_contrast, global_theme_manager, resolved_theme_style, resolved_theme_style_for,
-    set_global_high_contrast, ThemeManager,
+    semantic_color, set_global_high_contrast, SemanticColor, ThemeManager,
 };
 pub use types::{
     AppearanceMode, Borders, Colors, Fonts, ShadowOverride, ShadowToken, Spacing, Theme,
@@ -138,6 +138,42 @@ mod tests {
     fn unknown_kind_names_fall_back_to_surface() {
         assert_eq!(WidgetRole::for_kind_name("SomeThirdPartyWidget"), WidgetRole::Surface);
         assert_eq!(WidgetRole::for_kind_name(""), WidgetRole::Surface);
+    }
+
+    /// A selectable field is an `Input`, not a bare `Surface`.
+    ///
+    /// # The defect this pins
+    ///
+    /// `list_box`, `list_view`, `table_view`, `tree_view`, `scroll_area`,
+    /// `text_browser` and `plaintext_edit` all fell through to the `_` arm, which maps to
+    /// [`WidgetRole::Surface`]. `Surface` resolves to `theme.colors.background` — the very
+    /// colour a window paints — so each of those controls was filled with the window's own
+    /// background and had **no visible extent**: geometrically correct, styled "correctly",
+    /// and invisible on screen.
+    ///
+    /// The assertion is stated as "differs from the window" rather than as a literal
+    /// colour, because the property that has to hold is contrast against what is beneath,
+    /// and the literal is the theme's business.
+    #[test]
+    fn selectable_fields_are_inputs_not_bare_surfaces() {
+        let manager = ThemeManager::new();
+        let window_fill = manager.resolve_style("window").background_color;
+
+        for kind in
+            ["list_box", "list_view", "table_view", "tree_view", "scroll_area", "text_browser"]
+        {
+            assert_eq!(
+                WidgetRole::for_kind_name(kind),
+                WidgetRole::Input,
+                "{kind} is a field a cursor can enter; classifying it as a plain surface
+                 makes it the window's colour and therefore invisible"
+            );
+            let fill = manager.resolve_style(kind).background_color;
+            assert_ne!(
+                fill, window_fill,
+                "{kind} must not be filled with the window's own background {window_fill:?}"
+            );
+        }
     }
 
     // ── Resolution ────────────────────────────────────────────────────────
@@ -562,5 +598,4 @@ mod tests {
             "a theme override keyed by the class must still win over the role default"
         );
     }
-
 }

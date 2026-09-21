@@ -324,8 +324,40 @@ impl EventHandler for MarkdownEditor {
 impl Draw for MarkdownEditor {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::rgb(252, 252, 253));
-        context.draw_rect(rect, Color::rgb(194, 201, 213));
+
+        // Chrome colours resolve explicit style first, then the theme's resolved style
+        // for this control, and only then fall back to a literal. Without the theme step
+        // a light/dark switch changed nothing on screen, because the surface, the border
+        // and every piece of text were hardcoded.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global
+        // manager's mutex is not re-entrant.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("markdown_editor");
+        let surface = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::rgb(252, 252, 253));
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or(Color::rgb(194, 201, 213));
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::rgb(59, 72, 92));
+        // The header is the dimmest ink that still reads, and the caret line is the
+        // accent: both derived from the resolved ink and surface, so they move with
+        // the appearance instead of being fixed literals.
+        let header_ink = ink.blend(&surface, 0.35);
+        let cursor_ink = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.primary)
+            .unwrap_or_else(|| ink.contrast_color());
+
+        context.fill_rect(rect, surface);
+        context.draw_rect(rect, border);
 
         let header = if self.preview_mode {
             format!(
@@ -346,7 +378,7 @@ impl Draw for MarkdownEditor {
             Point::new(rect.x + 8, rect.y + 16),
             &header,
             &Font::default(),
-            Color::rgb(41, 54, 73),
+            header_ink,
             HorizontalAlignment::Left,
         );
 
@@ -355,11 +387,7 @@ impl Draw for MarkdownEditor {
             if y > rect.y + rect.height as i32 - 8 {
                 break;
             }
-            let color = if idx == self.cursor_line {
-                Color::rgb(23, 110, 203)
-            } else {
-                Color::rgb(59, 72, 92)
-            };
+            let color = if idx == self.cursor_line { cursor_ink } else { ink };
             let rendered =
                 if self.preview_mode { line.trim_start_matches('#').trim_start() } else { line };
             context.draw_text(

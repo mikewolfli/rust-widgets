@@ -329,8 +329,39 @@ impl EventHandler for SignaturePad {
 impl Draw for SignaturePad {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::rgb(255, 255, 255));
-        context.draw_rect(rect, Color::rgb(214, 218, 224));
+
+        // The pad surface, its frame, and the empty-state baseline are chrome, so
+        // they resolve explicit style first, then the theme's resolved style for
+        // this control, and only then a literal. Without the theme step the pad
+        // stayed white in both appearances and a switch changed nothing.
+        //
+        // `self.stroke_color` is deliberately *not* themed: it is the caller's
+        // configured ink, which the `stroke_color` property writes, so the caller's
+        // value must win over anything the theme says.
+        //
+        // `resolved_theme_style` takes and releases the global manager's lock
+        // internally, so no guard is held across the draw (the mutex is not
+        // re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("signature_pad");
+        let background = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| background.blend(&Color::BLACK, 0.18));
+        let text_color = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        // The hint line is secondary chrome: derived from the resolved colours so it
+        // stays visible against either surface.
+        let hint = background.blend(&text_color, 0.4);
+
+        context.fill_rect(rect, background);
+        context.draw_rect(rect, border);
 
         // Draw committed strokes.
         for stroke in &self.strokes {
@@ -348,7 +379,7 @@ impl Draw for SignaturePad {
             context.draw_line_stroke(
                 Point::new(rect.x + inset, mid_y),
                 Point::new(rect.x + rect.width as i32 - inset, mid_y),
-                Color::rgb(160, 168, 180),
+                hint,
                 1,
             );
         }

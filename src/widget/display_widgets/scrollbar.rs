@@ -11,9 +11,9 @@ use crate::widget::capability::coercion::{expect_i64, expect_orientation, orient
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::numeric::ordered_clamp_i32;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
-use crate::widget::numeric::{ordered_clamp_i32};
 /// Scroll bar widget.
 pub struct ScrollBar {
     base: BaseWidget,
@@ -433,6 +433,16 @@ impl Draw for ScrollBar {
         let slider_pos = self.value_to_pixel_pos(self.value);
         let slider_size = self.slider_size();
         let style = self.style();
+        // The slider is the control's *surface*; the arrows are its *foreground*.
+        //
+        // Both used to be literals, so a themed scrollbar kept a light trough and
+        // dark glyphs in a dark theme: the theme resolved the colours, handed them
+        // to the widget, and the widget painted its own grey anyway. The slider is a
+        // background, and the arrows are ink over it, so they read `text_color` —
+        // the colour the theme resolves for exactly that.
+        let slider_color = style.background_color.unwrap_or(Color::rgb(180, 180, 180));
+        let slider_border_color = style.border_color.unwrap_or(Color::rgb(150, 150, 150));
+        let arrow_color = style.text_color.unwrap_or(Color::rgb(100, 100, 100));
         // Draw background
         context.fill_rect(
             Rect::new(rect.x, rect.y, rect.width, rect.height),
@@ -454,7 +464,7 @@ impl Draw for ScrollBar {
                         slider_width as f32,
                         rect.height as f32,
                     ),
-                    Color::rgb(180, 180, 180),
+                    slider_color,
                 );
                 // Draw slider border
                 context.draw_rect(
@@ -464,7 +474,7 @@ impl Draw for ScrollBar {
                         slider_width as f32,
                         rect.height as f32,
                     ),
-                    Color::rgb(150, 150, 150),
+                    slider_border_color,
                 );
                 // Draw arrows using draw_line (triangles approximated)
                 let arrow_size = (rect.height as f32).min(rect.width as f32 * 0.2) as u32;
@@ -478,7 +488,7 @@ impl Draw for ScrollBar {
                         rect.x as f32 + arrow_size as f32,
                         rect.y as f32 + rect.height as f32 / 4.0,
                     ),
-                    Color::rgb(100, 100, 100),
+                    arrow_color,
                 );
                 context.draw_line(
                     Point::from_f32(
@@ -489,7 +499,7 @@ impl Draw for ScrollBar {
                         rect.x as f32 + arrow_size as f32,
                         rect.y as f32 + rect.height as f32 * 3.0 / 4.0,
                     ),
-                    Color::rgb(100, 100, 100),
+                    arrow_color,
                 );
                 // Right arrow head
                 context.draw_line(
@@ -501,7 +511,7 @@ impl Draw for ScrollBar {
                         rect.x as f32 + rect.width as f32 - arrow_size as f32,
                         rect.y as f32 + rect.height as f32 / 4.0,
                     ),
-                    Color::rgb(100, 100, 100),
+                    arrow_color,
                 );
                 context.draw_line(
                     Point::from_f32(
@@ -512,7 +522,7 @@ impl Draw for ScrollBar {
                         rect.x as f32 + rect.width as f32 - arrow_size as f32,
                         rect.y as f32 + rect.height as f32 * 3.0 / 4.0,
                     ),
-                    Color::rgb(100, 100, 100),
+                    arrow_color,
                 );
             }
             Orientation::Vertical => {
@@ -524,7 +534,7 @@ impl Draw for ScrollBar {
                         rect.width as f32,
                         slider_height as f32,
                     ),
-                    Color::rgb(180, 180, 180),
+                    slider_color,
                 );
                 // Draw slider border
                 context.draw_rect(
@@ -534,7 +544,7 @@ impl Draw for ScrollBar {
                         rect.width as f32,
                         slider_height as f32,
                     ),
-                    Color::rgb(150, 150, 150),
+                    slider_border_color,
                 );
                 // Draw arrows using draw_line (triangles approximated)
                 let arrow_size = (rect.width as f32).min(rect.height as f32 * 0.2) as u32;
@@ -548,7 +558,7 @@ impl Draw for ScrollBar {
                         rect.x as f32 + rect.width as f32 / 4.0,
                         rect.y as f32 + arrow_size as f32,
                     ),
-                    Color::rgb(100, 100, 100),
+                    arrow_color,
                 );
                 context.draw_line(
                     Point::from_f32(
@@ -559,7 +569,7 @@ impl Draw for ScrollBar {
                         rect.x as f32 + rect.width as f32 * 3.0 / 4.0,
                         rect.y as f32 + arrow_size as f32,
                     ),
-                    Color::rgb(100, 100, 100),
+                    arrow_color,
                 );
                 // Down arrow head
                 context.draw_line(
@@ -571,7 +581,7 @@ impl Draw for ScrollBar {
                         rect.x as f32 + rect.width as f32 / 4.0,
                         rect.y as f32 + rect.height as f32 - arrow_size as f32,
                     ),
-                    Color::rgb(100, 100, 100),
+                    arrow_color,
                 );
                 context.draw_line(
                     Point::from_f32(
@@ -582,7 +592,7 @@ impl Draw for ScrollBar {
                         rect.x as f32 + rect.width as f32 * 3.0 / 4.0,
                         rect.y as f32 + rect.height as f32 - arrow_size as f32,
                     ),
-                    Color::rgb(100, 100, 100),
+                    arrow_color,
                 );
             }
         }

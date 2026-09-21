@@ -288,17 +288,46 @@ impl Draw for MultiSelectComboBox {
         let rect = self.geometry();
         let is_enabled = self.base.is_enabled();
 
-        // Background
-        let bg_color = if is_enabled {
-            Color::rgba(255, 255, 255, 255)
-        } else {
-            Color::rgba(240, 240, 240, 255)
-        };
+        // Chrome colours resolve explicit style first, then the theme's resolved style
+        // for this control, and only then fall back to a literal. Every colour here used
+        // to be a literal, so the control rendered identically in a light and a dark
+        // theme — the rendering census reported it as theme-blind.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global
+        // manager's mutex is not re-entrant.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("multi_select_combo_box");
+        let themed_ink = theme.as_ref().and_then(|t| t.text_color);
+        let themed_border = theme.as_ref().and_then(|t| t.border_color);
+
+        let ink = style.text_color.or(themed_ink).unwrap_or(Color::BLACK);
+        let field = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let border = style
+            .border_color
+            .or(themed_border)
+            .filter(|resolved| *resolved != field)
+            .unwrap_or_else(|| field.blend(&ink, 0.3));
+
+        // A disabled field is the resolved palette, one step toward the surface, rather
+        // than a separate literal pair that could only ever suit a light theme.
+        let bg_color = if is_enabled { field } else { field.blend(&ink, 0.08) };
         context.fill_rounded_rect(rect, 4, bg_color);
 
         // Border
-        let border_color = Color::rgba(180, 180, 180, 255);
+        let border_color = border;
         context.draw_rounded_rect_stroke(rect, 4, border_color, 1);
+
+        // The accent is the theme's `primary`: the hue a theme is expected to vary most,
+        // which is what makes the ticks and the arrow follow the appearance. It is read as
+        // its own lock acquisition, released before the draw's other theme reads.
+        let accent = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.primary)
+            .unwrap_or_else(|| ink.blend(&field, 0.4));
 
         // Draw summary text
         let font = Font::simple("sans-serif", 13.0);
@@ -310,7 +339,7 @@ impl Draw for MultiSelectComboBox {
             Point::new(text_x, text_y),
             &summary,
             &font,
-            Color::rgba(0, 0, 0, 255),
+            ink,
             HorizontalAlignment::Left,
         );
 
@@ -321,7 +350,7 @@ impl Draw for MultiSelectComboBox {
             Point::new(arrow_x, arrow_y),
             if self.expanded { "▲" } else { "▼" },
             &font,
-            Color::rgba(100, 100, 100, 255),
+            ink.blend(&bg_color, 0.45),
             HorizontalAlignment::Left,
         );
 
@@ -335,9 +364,10 @@ impl Draw for MultiSelectComboBox {
         let drop_down_height = item_height * self.items.len() as u32;
         let drop_rect = Rect::new(rect.x, drop_down_y, rect.width, drop_down_height);
 
-        // Dropdown background
-        context.fill_rounded_rect(drop_rect, 2, Color::rgba(255, 255, 255, 255));
-        context.draw_rounded_rect_stroke(drop_rect, 2, Color::rgba(200, 200, 200, 255), 1);
+        // Dropdown background. The list floats over whatever is beneath it, so it is the
+        // field's own colour rather than the window's.
+        context.fill_rounded_rect(drop_rect, 2, field);
+        context.draw_rounded_rect_stroke(drop_rect, 2, border, 1);
 
         for (i, item) in self.items.iter().enumerate() {
             let item_rect = Rect::new(
@@ -347,19 +377,18 @@ impl Draw for MultiSelectComboBox {
                 item_height,
             );
 
-            // Hover highlight
-            context.fill_rounded_rect(item_rect, 2, Color::rgba(255, 255, 255, 255));
+            // Row highlight. A row cannot be a different colour from the list it sits in,
+            // so this is the list fill nudged toward the ink: on a light list that is
+            // slightly darker, on a dark one slightly lighter.
+            context.fill_rounded_rect(item_rect, 2, field.blend(&ink, 0.04));
 
             // Checkbox
             let checkbox_size = 14u32;
             let checkbox_x = item_rect.x + 4;
             let checkbox_y = item_rect.y + (item_height - checkbox_size) as i32 / 2;
             let checkbox_rect = Rect::new(checkbox_x, checkbox_y, checkbox_size, checkbox_size);
-            let checkbox_color = if self.selected.contains(&i) {
-                Color::rgba(52, 120, 246, 255)
-            } else {
-                Color::rgba(200, 200, 200, 255)
-            };
+            // A selected box carries the accent; an unselected one the muted border.
+            let checkbox_color = if self.selected.contains(&i) { accent } else { border };
             context.draw_rounded_rect_stroke(checkbox_rect, 2, checkbox_color, 1);
 
             if self.selected.contains(&i) {
@@ -377,11 +406,7 @@ impl Draw for MultiSelectComboBox {
             // Item text
             let item_text_x = checkbox_x + checkbox_size as i32 + 6;
             let item_text_y = item_rect.y + 18;
-            let item_color = if item.enabled {
-                Color::rgba(0, 0, 0, 255)
-            } else {
-                Color::rgba(180, 180, 180, 255)
-            };
+            let item_color = if item.enabled { ink } else { ink.blend(&field, 0.6) };
             context.draw_text(
                 Point::new(item_text_x, item_text_y),
                 &item.text,

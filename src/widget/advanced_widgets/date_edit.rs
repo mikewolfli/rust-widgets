@@ -544,14 +544,61 @@ impl EventHandler for DateEdit {
 impl Draw for DateEdit {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::rgb(255, 255, 255));
-        context.draw_rect(rect, Color::rgb(150, 150, 150));
+
+        // Chrome colours resolve explicit style first, then the theme's resolved style
+        // for this control, and only then fall back to a literal. Without the theme step
+        // a light/dark switch changed nothing on screen: the field, its border and its
+        // text were all hardcoded, which the rendering census reported as theme-blind.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global
+        // manager's mutex is not re-entrant. `date_edit` classifies as `Input`, whose
+        // resolved style supplies `text_color` and `border_color` but no
+        // `background_color` (ThemeRole::Input resolves that to `None`), so the interior
+        // is derived below from the theme's own background rather than left unset.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("date_edit");
+        // Read as its own lock acquisition and copied out as values, so the guard is
+        // dropped before anything else touches the theme.
+        let (window_fill, foreground) = {
+            let manager = crate::theme::global_theme_manager();
+            match manager.current_theme() {
+                Some(active) => (active.colors.background, active.colors.foreground),
+                None => (Color::rgb(240, 240, 240), Color::BLACK),
+            }
+        };
+
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(foreground);
+        // An editable field's interior: one step from the window fill toward the text
+        // colour, so it reads as a field on a light theme and on a dark one, and is never
+        // byte-identical to the window behind it. That identity is the defect the census
+        // reports as "painted in the background's own colour".
+        let field = window_fill.blend(&ink, 0.08);
+        // The filter is on the **resolved** value, not only on the theme's: the active
+        // theme is applied to every control before it is drawn, so `style.background_color`
+        // already holds the resolved fill and letting it through unfiltered is exactly the
+        // invisible-field defect this guards against. A caller's own colour still wins.
+        let surface = match style.background_color {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => field,
+        };
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .filter(|resolved| *resolved != surface)
+            .unwrap_or_else(|| surface.blend(&ink, 0.35));
+
+        context.fill_rect(rect, surface);
+        context.draw_rect(rect, border);
         let text = self.date.to_string();
         context.draw_text(
             Point { x: rect.x + 6, y: rect.y + (rect.height as i32 / 2) },
             &text,
             &Font::default(),
-            Color::rgb(0, 0, 0),
+            ink,
             HorizontalAlignment::Left,
         );
     }

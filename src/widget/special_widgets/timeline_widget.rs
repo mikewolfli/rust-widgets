@@ -327,8 +327,45 @@ impl EventHandler for TimelineWidget {
 impl Draw for TimelineWidget {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::rgb(251, 252, 254));
-        context.draw_rect(rect, Color::rgb(189, 196, 209));
+
+        // Chrome colours resolve explicit style first, then the theme's resolved
+        // style for this control, and only then a literal. The theme step is what
+        // makes an appearance switch visible; previously every colour below was a
+        // hardcoded literal, so light and dark rendered identically.
+        //
+        // `resolved_theme_style` takes and releases the global manager's lock
+        // internally, so no guard is held across the draw (the mutex is not
+        // re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("timeline_widget");
+        // `timeline_widget` is not a control kind in the role table, so it classifies
+        // as `Surface`, whose background is `theme.colors.background` — the window's
+        // own colour. The panel is therefore a step toward the foreground, so it is
+        // distinguishable from what is behind it.
+        let resolved = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| resolved.blend(&Color::BLACK, 0.15));
+        let text_color = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        let background = resolved.blend(&text_color, 0.08);
+        // Selection and hover are chrome states, derived from the resolved colours
+        // so they follow the appearance.
+        let selected_background = background.blend(&text_color, 0.14);
+        let hovered_background = background.blend(&text_color, 0.07);
+        let separator = background.blend(&text_color, 0.12);
+        // A bar is the control's *value* indicator, so it reads the theme's accent
+        // slot through the resolved border colour rather than a literal blue.
+        let bar = border.blend(&text_color, 0.25);
+
+        context.fill_rect(rect, background);
+        context.draw_rect(rect, border);
 
         if self.items.is_empty() {
             return;
@@ -343,9 +380,9 @@ impl Draw for TimelineWidget {
             let row_rect = Rect::new(rect.x, y, rect.width, self.row_height);
 
             if self.selected_index == Some(index) {
-                context.fill_rect(row_rect, Color::rgb(220, 233, 251));
+                context.fill_rect(row_rect, selected_background);
             } else if self.hovered_index == Some(index) {
-                context.fill_rect(row_rect, Color::rgb(237, 244, 253));
+                context.fill_rect(row_rect, hovered_background);
             }
 
             if let Some(item) = self.items.get(index) {
@@ -353,7 +390,7 @@ impl Draw for TimelineWidget {
                     Point::new(rect.x + 8, y + self.row_height as i32 / 2),
                     &item.label,
                     &Font::default(),
-                    Color::rgb(34, 47, 67),
+                    text_color,
                     HorizontalAlignment::Left,
                 );
 
@@ -362,14 +399,14 @@ impl Draw for TimelineWidget {
                 let bar_w = (x1 - x0) as u32;
                 context.fill_rect(
                     Rect::new(x0, y + 6, bar_w, self.row_height.saturating_sub(12)),
-                    Color::rgb(116, 167, 230),
+                    bar,
                 );
             }
 
             context.draw_line(
                 Point::new(rect.x, y + self.row_height as i32),
                 Point::new(rect.x + rect.width as i32, y + self.row_height as i32),
-                Color::rgb(228, 232, 239),
+                separator,
             );
         }
     }

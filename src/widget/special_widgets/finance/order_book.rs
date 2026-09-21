@@ -316,7 +316,49 @@ impl Draw for OrderBookWidget {
         if geometry.width == 0 || geometry.height == 0 || self.depth == 0 {
             return;
         }
-        context.fill_rect(geometry, Color::rgb(18, 22, 28));
+
+        // The panel is chrome and resolves the explicit style first, then the theme's resolved
+        // style for this control, and only then a literal. It used to be a fixed near-black, so a
+        // light/dark switch left the ladder's backdrop — its dominant colour — identical and the
+        // rendering census reported the control as theme-blind. The bid/ask row colours and the
+        // price text remain the caller's data colours; only the surface, the hover row and the
+        // secondary chrome move with the theme.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
+        // is not re-entrant.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("order_book");
+        // Read as its own lock acquisition and copied out as values, so the guard is dropped
+        // before anything else touches the theme.
+        let (window_fill, foreground, secondary) = {
+            let manager = crate::theme::global_theme_manager();
+            match manager.current_theme() {
+                Some(active) => {
+                    (active.colors.background, active.colors.foreground, active.colors.secondary)
+                }
+                None => (Color::rgb(240, 240, 240), Color::BLACK, Color::rgb(158, 158, 158)),
+            }
+        };
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(foreground);
+        // `order_book` is absent from `WidgetRole::for_kind_name`'s table, so it classifies as
+        // `Surface` and the active theme writes the window fill into `style.background_color`.
+        // A panel painted in that colour would be byte-identical to the frame behind it, so a
+        // resolved surface equal to the window fill is re-derived a visible step away from it,
+        // while a colour the caller set still wins.
+        let panel = match style.background_color {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => window_fill.blend(&ink, 0.08),
+        };
+        context.fill_rect(geometry, panel);
+
+        // A hovered row and the spread rule are raised from the panel, so they read on either
+        // appearance rather than being a fixed slate that only worked on a dark backdrop.
+        let hover_fill = panel.blend(&ink, 0.12);
+        let rule_color = panel.blend(&secondary, 0.45);
 
         let max_quantity = self.book.max_level_quantity();
         let row_height = self.row_height();
@@ -337,7 +379,7 @@ impl Draw for OrderBookWidget {
                 if is_hovered {
                     context.fill_rect(
                         Rect::new(geometry.x, y, geometry.width, row_height as u32),
-                        Color::rgb(38, 46, 58),
+                        hover_fill,
                     );
                 }
 
@@ -397,7 +439,7 @@ impl Draw for OrderBookWidget {
             context.draw_line_stroke(
                 Point { x: geometry.x, y },
                 Point { x: geometry.x + geometry.width as i32, y },
-                Color::rgb(120, 120, 120),
+                rule_color,
                 1,
             );
             let text = alloc::format!("spread {}", format_price(spread, decimals));
@@ -405,7 +447,7 @@ impl Draw for OrderBookWidget {
                 Point { x: geometry.x + 6, y: y - 13 },
                 &text,
                 &Font::simple("Sans", 10.0),
-                Color::rgb(158, 158, 158),
+                ink.blend(&panel, 0.45),
                 HorizontalAlignment::Left,
             );
         }

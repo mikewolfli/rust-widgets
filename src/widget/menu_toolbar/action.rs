@@ -8,7 +8,7 @@
 //! the inner `action::Action`, while this struct adds widget-only fields
 //! (`icon_text`, `shortcut`, `separator`) and `BaseWidget` integration.
 use crate::action::Action as CmdAction;
-use crate::core::Rect;
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionHandle, GenericSignal, Signal1};
@@ -48,6 +48,12 @@ pub struct Action {
     /// Emitted when the pointer enters the action's bounds (`Event::MouseEnter`).
     /// Carries no payload; a listener is expected to know the action it attached to.
     pub hovered: GenericSignal,
+    /// Whether the pointer is currently over the action.
+    ///
+    /// Tracked so drawing can highlight the row it is about to be clicked on. The
+    /// public `hovered` signal reports the transition; this records the state, which
+    /// is what a `draw` needs.
+    is_hovered: bool,
     /// Emitted whenever any presentation or command state changes — text, icon,
     /// shortcut, checkable, checked, enabled, or a command sync. Carries no
     /// payload, so a listener must re-read whatever it needs; it is a
@@ -78,6 +84,7 @@ impl Action {
             triggered: Signal1::new(),
             toggled: Signal1::new(),
             hovered: GenericSignal::new(),
+            is_hovered: false,
             changed: GenericSignal::new(),
             _toggled_handle: None,
             _enabled_handle: None,
@@ -123,6 +130,10 @@ impl Action {
     /// Returns `true` for a visual separator. See [`Action::separator`].
     pub fn is_separator(&self) -> bool {
         self.separator
+    }
+    /// Returns whether the pointer is currently over the action.
+    pub fn is_pointer_hovered(&self) -> bool {
+        self.is_hovered
     }
     /// Returns the inner [`CmdAction`]'s id, if non-empty.
     pub fn command_id(&self) -> Option<&str> {
@@ -358,14 +369,126 @@ impl EventHandler for Action {
         }
         match event {
             Event::MousePress { button, .. } if *button == 1 => self.trigger(),
-            Event::MouseEnter { .. } => self.hovered.emit(),
+            Event::MouseEnter { .. } => {
+                self.is_hovered = true;
+                self.base.request_redraw();
+                self.hovered.emit();
+            }
+            Event::MouseLeave { .. } => {
+                if self.is_hovered {
+                    self.is_hovered = false;
+                    self.base.request_redraw();
+                }
+            }
             _ => { /* Other events are not relevant */ }
         }
     }
 }
 impl Draw for Action {
-    fn draw(&mut self, _context: &mut RenderContext) {
-        // Actions are drawn by their parent menu/toolbar, not directly.
+    /// Draws the action when it is rendered directly rather than by a host.
+    ///
+    /// # Why this is not simply a no-op
+    ///
+    /// A menu or toolbar normally draws its own items, so in that arrangement the
+    /// action contributes nothing here and the host's row is what the user sees.
+    /// That is the resting case: with no text, no icon and no hover the action
+    /// paints nothing, which is unchanged behaviour.
+    ///
+    /// What must *not* stay unchanged is the case where an action is placed on a
+    /// surface of its own — a standalone action, a hover highlight, or a separator.
+    /// Those used to be drawn from literals, so a light/dark switch did nothing for
+    /// them. They now resolve their chrome from the caller's explicit style first,
+    /// then the theme's resolved style for this control, and only then a literal.
+    ///
+    /// The theme reads are separate manager locks, each taken and released inside
+    /// `resolved_theme_style`, so none is held across the draw or across another
+    /// accessor — the global manager's mutex is not re-entrant.
+    fn draw(&mut self, context: &mut RenderContext) {
+        let rect = self.geometry();
+        if rect.width == 0 || rect.height == 0 {
+            return;
+        }
+        // A bare, unhovered action is still owned by its host menu/toolbar: painting
+        // its own surface here would fight the host's row background.
+        if !self.is_hovered && self.text.is_empty() && self.icon_text.is_empty() {
+            return;
+        }
+
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("action");
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        // A hover highlight is the resolved ink damped to a faint wash; with no theme
+        // resolve at all the fallback is a neutral tint rather than a literal that
+        // could never move with the appearance.
+        let highlight = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .map(|base| ink.blend(&base, 0.85))
+            .unwrap_or(Color::rgba(0, 0, 0, 20));
+
+        // A separator is a rule: the same resolved ink, drawn as a divider.
+        if self.separator {
+            let y = rect.y + rect.height as i32 / 2;
+            context.draw_line(
+                Point::new(rect.x + 4, y),
+                Point::new(rect.x + rect.width as i32 - 4, y),
+                ink.blend(&highlight, 0.6),
+            );
+            return;
+        }
+
+        if self.is_hovered {
+            context.fill_rect(rect, highlight);
+        }
+
+        let font = Font::simple("sans-serif", 13.0);
+        let baseline = rect.y + rect.height as i32 / 2;
+        let mut x = rect.x + 8;
+        if !self.icon_text.is_empty() {
+            context.draw_text(
+                Point::new(x, baseline),
+                &self.icon_text,
+                &font,
+                ink,
+                HorizontalAlignment::Left,
+            );
+            x += 20;
+        }
+        if !self.text.is_empty() {
+            context.draw_text(
+                Point::new(x, baseline),
+                &self.text,
+                &font,
+                ink,
+                HorizontalAlignment::Left,
+            );
+        }
+        // An action that is not enabled reads as damped ink, so the disabled state
+        // follows the appearance instead of a literal grey.
+        let ink = if self.base.is_enabled() { ink } else { ink.blend(&highlight, 0.5) };
+        if self.is_checked() && self.is_checkable() {
+            let check_x = rect.x + rect.width as i32 - 16;
+            context.draw_text(
+                Point::new(check_x, baseline),
+                "\u{2713}",
+                &font,
+                ink,
+                HorizontalAlignment::Left,
+            );
+        }
+        if !self.shortcut.is_empty() {
+            let metrics = context.measure_text(&self.shortcut, &font);
+            context.draw_text(
+                Point::new(rect.x + rect.width as i32 - metrics.width as i32 - 12, baseline),
+                &self.shortcut,
+                &font,
+                ink.blend(&highlight, 0.4),
+                HorizontalAlignment::Left,
+            );
+        }
     }
 }
 

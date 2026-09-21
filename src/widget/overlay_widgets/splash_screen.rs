@@ -292,7 +292,58 @@ impl EventHandler for SplashScreen {
 impl Draw for SplashScreen {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::rgb(28, 34, 45));
+
+        // Chrome colours resolve explicit style first, then the theme's resolved style for
+        // this control, and only then a literal. The theme step is what makes an appearance
+        // switch visible; the panel, the progress bar and the skip affordance used to be
+        // hardcoded literals, so light and dark rendered identically.
+        //
+        // The theme reads take and release the global manager's lock internally, so no
+        // guard is held across the draw (the mutex is not re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("splash_screen");
+        let surface = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::rgb(28, 34, 45));
+        // The splash panel is a `Surface`-role control, and `Surface` resolves to the
+        // window's own fill — which would leave the panel indistinguishable from the frame
+        // behind it. A resolved surface equal to the theme's background is therefore
+        // re-derived one step toward the ink, the same distinction `Colors::input_background`
+        // draws for a field.
+        let themed_background = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.background);
+        let surface = match themed_background {
+            Some(window_fill) if surface == window_fill => {
+                let ink = style
+                    .text_color
+                    .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+                    .unwrap_or(Color::rgb(238, 242, 248));
+                window_fill.blend(&ink, 0.08)
+            }
+            _ => surface,
+        };
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::rgb(238, 242, 248));
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| surface.blend(&ink, 0.3));
+        // The accent is the theme's `primary`: the hue a theme is expected to vary most, so
+        // the logo block and the completed portion of the bar follow the appearance.
+        let accent = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.primary)
+            .unwrap_or(Color::rgb(66, 133, 214));
+        // The subtitle and the unfilled track are dimmer than the ink but still readable on
+        // the surface, so they are derived from it rather than being two more literals.
+        let muted_ink = ink.blend(&surface, 0.4);
+        let track = surface.blend(&ink, 0.16);
+
+        context.fill_rect(rect, surface);
 
         let centre_x = rect.x + (rect.width / 2) as i32;
         let mut text_y = rect.y + (rect.height as i32 / 2) - 24;
@@ -305,7 +356,7 @@ impl Draw for SplashScreen {
         if logo >= 16 {
             context.fill_rect(
                 Rect::new(centre_x - logo as i32 / 2, text_y - logo as i32 - 16, logo, logo),
-                Color::rgb(66, 133, 214),
+                accent,
             );
             text_y += 8;
         }
@@ -314,7 +365,7 @@ impl Draw for SplashScreen {
             Point::new(centre_x, text_y),
             &self.title,
             &Font::default(),
-            Color::rgb(238, 242, 248),
+            ink,
             HorizontalAlignment::Center,
         );
 
@@ -323,29 +374,27 @@ impl Draw for SplashScreen {
                 Point::new(centre_x, text_y + TITLE_GAP as i32 - 2),
                 &self.subtitle,
                 &Font::default(),
-                Color::rgb(148, 160, 178),
+                muted_ink,
                 HorizontalAlignment::Center,
             );
         }
 
         if let (Some(bar), Some(progress)) = (self.bar_rect(), self.progress) {
-            context.fill_rect(bar, Color::rgb(52, 60, 74));
+            context.fill_rect(bar, track);
             let filled = (bar.width as f32 * progress).round() as u32;
             if filled > 0 {
-                context.fill_rect(
-                    Rect::new(bar.x, bar.y, filled.min(bar.width), bar.height),
-                    Color::rgb(66, 133, 214),
-                );
+                context
+                    .fill_rect(Rect::new(bar.x, bar.y, filled.min(bar.width), bar.height), accent);
             }
         }
 
         if let Some(skip) = self.skip_rect() {
-            context.draw_rect(skip, Color::rgb(92, 103, 120));
+            context.draw_rect(skip, border);
             context.draw_text(
                 Point::new(skip.x + skip.width as i32 / 2, skip.y + (skip.height as i32 + 12) / 2),
                 "Skip",
                 &Font::default(),
-                Color::rgb(180, 190, 205),
+                muted_ink,
                 HorizontalAlignment::Center,
             );
         }

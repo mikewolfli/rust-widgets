@@ -20,45 +20,195 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Chrome colours
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Every chrome colour the editor paints, resolved for the active appearance.
+///
+/// # Why this exists
+///
+/// The paint code below used to spell every surface, border and label colour as a
+/// literal. A literal cannot move when the appearance switches, so the editor looked
+/// identical in a light and a dark theme — the rendering census reported it as
+/// `P3=NO`, i.e. theme-blind chrome.
+///
+/// # Precedence
+///
+/// Each field resolves **explicit style → active theme → the light-preset literal**, the
+/// same order [`crate::theme::apply_active_theme`] documents: a colour the caller set on
+/// the widget wins, otherwise the theme supplies one, and the literal is only the last
+/// resort for a process with no theme at all.
+///
+/// The theme read inside [`EditorChrome::resolve`] happens through
+/// [`crate::theme::resolved_theme_style`], which takes and releases the manager lock
+/// internally. No lock is held across the call, so the non-re-entrant global mutex is
+/// never re-entered.
+struct EditorChrome {
+    /// The document surface: the editor's dominant painted colour.
+    surface: Color,
+    /// The frame and tab outline.
+    border: Color,
+    /// Tab strip, find bar and status bar fill.
+    chrome_background: Color,
+    /// Gutter fill, one step away from the surface.
+    gutter_background: Color,
+    /// Minimap fill, one step away from the surface.
+    minimap_background: Color,
+    /// Scrollbar track fill.
+    scrollbar_track: Color,
+    /// Scrollbar thumb fill.
+    scrollbar_thumb: Color,
+    /// A hairline between two chrome bands.
+    separator: Color,
+    /// Primary chrome label colour.
+    ink: Color,
+    /// Secondary chrome label colour, for inactive tabs and hints.
+    dim_ink: Color,
+    /// The selection / caret accent.
+    accent: Color,
+    /// The fill behind the caret's line.
+    active_line: Color,
+    /// Vertical indent-guide hairlines.
+    indent_guide: Color,
+    /// The dot / dash that marks a space or a tab.
+    whitespace_mark: Color,
+    /// Selection highlight behind selected text.
+    selection: Color,
+    /// Search-hit highlight.
+    search_hit: Color,
+    /// Highlight for the search hit the caret is on.
+    search_current: Color,
+    /// Outline marking other occurrences of the selected word.
+    occurrence: Color,
+    /// Popup (completion, context menu) fill.
+    popup_background: Color,
+    /// Popup outline.
+    popup_border: Color,
+    /// The fill behind the selected popup row.
+    popup_selected: Color,
+}
+
+impl EditorChrome {
+    /// Resolves every chrome colour for the current appearance.
+    fn resolve(editor: &CodeEditor) -> Self {
+        let style = editor.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("code_editor");
+
+        // Explicit style first, then the theme's resolved style for this control, then
+        // the light preset's literal. That field order is the documented precedence, so a
+        // caller's single override does not have to restate the palette.
+        let pick = |explicit: Option<Color>, themed: Option<Color>, literal: Color| -> Color {
+            explicit.or(themed).unwrap_or(literal)
+        };
+        let themed_bg = theme.as_ref().and_then(|t| t.background_color);
+        let themed_ink = theme.as_ref().and_then(|t| t.text_color);
+        let themed_border = theme.as_ref().and_then(|t| t.border_color);
+
+        let surface = pick(style.background_color, themed_bg, editor.palette.background);
+        let ink = pick(style.text_color, themed_ink, editor.palette.color_for(TokenKind::Plain));
+        let border = pick(style.border_color, themed_border, editor.palette.border_color);
+
+        // The accent is the theme's `primary`: the hue a theme is expected to vary most,
+        // which is what makes the caret and the selection follow the appearance. It is
+        // read here as its own lock acquisition, released before the semantic reads
+        // below — the global manager's mutex is not re-entrant.
+        let accent = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.primary)
+            .unwrap_or(editor.palette.bracket_color);
+
+        // Search highlights and the error-tinted frame are semantic: they mean "this is
+        // the hit you are on" and "this is an error", so they read the theme's semantic
+        // tokens rather than a literal that only happens to be amber today.
+        let warning = crate::theme::semantic_color(crate::theme::SemanticColor::Warning)
+            .unwrap_or(editor.palette.search_color);
+        let error = crate::theme::semantic_color(crate::theme::SemanticColor::Error)
+            .unwrap_or(editor.palette.border_color);
+
+        // Bands beside the surface are derived from it, so each stays one visible step
+        // away from the surface in either appearance rather than being two independent
+        // literals that happened to look related in the light preset.
+        let chrome_background = surface.blend(&ink, 0.06);
+
+        Self {
+            surface,
+            // A frame in the surface's own colour would leave the editor to bleed into the
+            // window, so a border that resolves equal to the surface is re-derived from
+            // the error token, which is never the surface in a real theme.
+            border: if border == surface { error } else { border },
+            chrome_background,
+            gutter_background: surface.blend(&ink, 0.03),
+            minimap_background: surface.blend(&ink, 0.015),
+            scrollbar_track: surface.blend(&ink, 0.05),
+            scrollbar_thumb: surface.blend(&ink, 0.22),
+            separator: surface.blend(&ink, 0.12),
+            ink,
+            dim_ink: ink.blend(&surface, 0.45),
+            accent,
+            active_line: surface.blend(&ink, 0.04),
+            indent_guide: surface.blend(&ink, 0.1),
+            whitespace_mark: surface.blend(&ink, 0.25),
+            selection: accent.blend(&surface, 0.7),
+            search_hit: warning.blend(&surface, 0.55),
+            search_current: warning.blend(&surface, 0.15),
+            occurrence: accent.blend(&surface, 0.6),
+            popup_background: surface.blend(&ink, 0.02),
+            popup_border: if border == surface { error } else { border },
+            popup_selected: accent.blend(&surface, 0.8),
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Drawing
 // ─────────────────────────────────────────────────────────────────────────────
 
 impl Draw for CodeEditor {
     fn draw(&mut self, context: &mut RenderContext) {
+        // Measure the character cell **first**: every coordinate below — token origins, caret x, the
+        // column ruler, hit-testing margins — is `column * cell_width()`, and reading the configured
+        // constant instead of the font's real advance is what produced overlapping text.
+        self.measure_cell_width(context);
         self.refresh_visible_rows();
         let rect = self.geometry();
-        let row_height = self.config.line_advance.max(1.0);
+        let row_height = self.line_height();
+
+        // Chrome colours come from the active theme, so a light/dark switch is visible on
+        // the editor rather than only in the window behind it. The theme read inside
+        // `resolve` is a separate manager lock, taken and released there — the global
+        // manager's mutex is not re-entrant, so no guard is alive in this scope.
+        let chrome = EditorChrome::resolve(self);
 
         // Background and border.
-        context.fill_rect(rect, Color::rgb(252, 253, 255));
-        context.draw_rect(rect, Color::rgb(188, 197, 211));
+        context.fill_rect(rect, chrome.surface);
+        context.draw_rect(rect, chrome.border);
 
-        self.draw_tab_strip(context, rect);
-        self.draw_find_bar(context, rect);
-        self.draw_gutter(context, rect);
-        let mut visible = self.draw_source_rows(context, rect, row_height);
-        self.draw_column_ruler(context, rect);
+        self.draw_tab_strip(context, rect, &chrome);
+        self.draw_find_bar(context, rect, &chrome);
+        self.draw_gutter(context, rect, &chrome);
+        let mut visible = self.draw_source_rows(context, rect, row_height, &chrome);
+        self.draw_column_ruler(context, rect, &chrome);
         self.draw_diagnostics(context, rect, &visible);
         visible.clear();
-        self.draw_scrollbar(context, rect);
-        self.draw_minimap(context, rect);
-        self.draw_status_bar(context, rect);
-        self.draw_completion(context);
-        self.draw_context_menu(context);
+        self.draw_scrollbar(context, rect, &chrome);
+        self.draw_minimap(context, rect, &chrome);
+        self.draw_status_bar(context, rect, &chrome);
+        self.draw_completion(context, &chrome);
+        self.draw_context_menu(context, &chrome);
     }
 }
 
 impl CodeEditor {
-    fn draw_tab_strip(&mut self, context: &mut RenderContext, rect: Rect) {
+    fn draw_tab_strip(&mut self, context: &mut RenderContext, rect: Rect, chrome: &EditorChrome) {
         let buffers = self.model.borrow().all_buffers.clone();
         let active = self.active_buffer();
         let strip_height = row_height_of(self.config.line_advance);
         context.fill_rect(
             Rect::new(rect.x, rect.y, rect.width, strip_height as u32),
-            Color::rgb(238, 242, 248),
+            chrome.chrome_background,
         );
         let mut x = rect.x + 6;
-        let advance = self.config.space_advance.max(1.0);
+        let advance = self.cell_width();
         for (index, buffer) in buffers.iter().enumerate() {
             let model = self.model.borrow();
             let dirty = index == active && model.saved != *model.text.borrow();
@@ -74,14 +224,14 @@ impl CodeEditor {
             }
             let tab_rect = Rect::new(x, rect.y + 2, width, strip_height.saturating_sub(4) as u32);
             if index == active {
-                context.fill_rect(tab_rect, Color::rgb(252, 253, 255));
-                context.draw_rect(tab_rect, Color::rgb(188, 197, 211));
+                context.fill_rect(tab_rect, chrome.surface);
+                context.draw_rect(tab_rect, chrome.border);
             }
             context.draw_text(
                 Point::new(tab_rect.x + 6, tab_rect.y + strip_height - 6),
                 &label,
                 &Font::default(),
-                if index == active { Color::rgb(24, 40, 66) } else { Color::rgb(96, 110, 132) },
+                if index == active { chrome.ink } else { chrome.dim_ink },
                 HorizontalAlignment::Left,
             );
             x += width as i32 + 2;
@@ -89,24 +239,22 @@ impl CodeEditor {
         context.draw_line(
             Point::new(rect.x, rect.y + strip_height),
             Point::new(rect.x + rect.width as i32, rect.y + strip_height),
-            Color::rgb(208, 217, 230),
+            chrome.separator,
         );
     }
 
-    fn draw_find_bar(&mut self, context: &mut RenderContext, rect: Rect) {
+    fn draw_find_bar(&mut self, context: &mut RenderContext, rect: Rect, chrome: &EditorChrome) {
         if !self.find.visible {
             return;
         }
         let top = rect.y + row_height_of(self.config.line_advance);
         let height = self.find_bar_height();
-        context.fill_rect(
-            Rect::new(rect.x, top, rect.width, height as u32),
-            Color::rgb(244, 247, 252),
-        );
+        context
+            .fill_rect(Rect::new(rect.x, top, rect.width, height as u32), chrome.chrome_background);
         context.draw_line(
             Point::new(rect.x, top + height),
             Point::new(rect.x + rect.width as i32, top + height),
-            Color::rgb(208, 217, 230),
+            chrome.separator,
         );
 
         let query_summary = if self.find.query.is_empty() {
@@ -118,15 +266,21 @@ impl CodeEditor {
             Point::new(rect.x + 8, top + 20),
             &query_summary,
             &Font::default(),
-            Color::rgb(70, 84, 106),
+            chrome.dim_ink,
             HorizontalAlignment::Left,
         );
-        let query_x = rect.x + (self.config.space_advance * 8.0) as i32;
+        // Positioned from the **measured** advance of the summary text in the font it is drawn in.
+        // The previous version used `space_advance * 8.0` — a hand-written constant multiplied by a
+        // made-up column count — which put the query field at a fixed x that had no relation to where
+        // the summary actually ended. Measuring both makes the gap between them what it claims to be.
+        let summary_font = Font::default();
+        let summary_advance = context.backend().measure_text(&query_summary, &summary_font).width;
+        let query_x = rect.x + 8 + summary_advance as i32 + self.cell_width() as i32;
         context.draw_text(
             Point::new(query_x, top + 20),
             if self.find.query.is_empty() { "(type to search)" } else { &self.find.query },
             &Font::default(),
-            Color::rgb(30, 44, 66),
+            chrome.ink,
             HorizontalAlignment::Left,
         );
 
@@ -136,7 +290,7 @@ impl CodeEditor {
                 Point::new(rect.x + 8, row_two + 18),
                 "Replace",
                 &Font::default(),
-                Color::rgb(70, 84, 106),
+                chrome.dim_ink,
                 HorizontalAlignment::Left,
             );
             context.draw_text(
@@ -147,7 +301,7 @@ impl CodeEditor {
                     &self.find.replacement
                 },
                 &Font::default(),
-                Color::rgb(30, 44, 66),
+                chrome.ink,
                 HorizontalAlignment::Left,
             );
         }
@@ -158,17 +312,22 @@ impl CodeEditor {
             MIN_TOUCH_TARGET as u32,
             MIN_TOUCH_TARGET as u32,
         );
-        context.draw_rect(close, Color::rgb(206, 82, 73));
+        // The close affordance is a dismissal, so it carries the theme's error colour
+        // rather than the literal red it used to: the same token means "this removes
+        // something" everywhere else in the library.
+        let close_color = crate::theme::semantic_color(crate::theme::SemanticColor::Error)
+            .unwrap_or(chrome.accent);
+        context.draw_rect(close, close_color);
         context.draw_text(
             Point::new(close.x + 9, close.y + 19),
             "x",
             &Font::default(),
-            Color::rgb(150, 60, 54),
+            close_color,
             HorizontalAlignment::Left,
         );
     }
 
-    fn draw_gutter(&mut self, context: &mut RenderContext, rect: Rect) {
+    fn draw_gutter(&mut self, context: &mut RenderContext, rect: Rect, chrome: &EditorChrome) {
         let width = self.gutter_width();
         let top = rect.y + self.text_origin_y();
         let bottom = rect.y + rect.height as i32 - self.status_bar_height();
@@ -176,11 +335,11 @@ impl CodeEditor {
         if height == 0 {
             return;
         }
-        context.fill_rect(Rect::new(rect.x, top, width as u32, height), Color::rgb(244, 247, 252));
+        context.fill_rect(Rect::new(rect.x, top, width as u32, height), chrome.gutter_background);
         context.draw_line(
             Point::new(rect.x + width, top),
             Point::new(rect.x + width, top + height as i32),
-            Color::rgb(214, 222, 234),
+            chrome.separator,
         );
 
         let row_height = self.config.line_advance.max(1.0);
@@ -199,11 +358,7 @@ impl CodeEditor {
                         Point::new(rect.x + fold_width, y + (row_height * 0.78) as i32),
                         &format!("{}", line + 1),
                         &Font::default(),
-                        if line == self.cursor.head.line {
-                            Color::rgb(38, 62, 96)
-                        } else {
-                            Color::rgb(140, 152, 170)
-                        },
+                        if line == self.cursor.head.line { chrome.ink } else { chrome.dim_ink },
                         HorizontalAlignment::Left,
                     );
                 }
@@ -220,7 +375,7 @@ impl CodeEditor {
                     Point::new(rect.x + 2, y + (row_height * 0.78) as i32),
                     marker,
                     &Font::default(),
-                    if foldable { Color::rgb(96, 110, 132) } else { Color::rgb(206, 214, 226) },
+                    if foldable { chrome.dim_ink } else { chrome.separator },
                     HorizontalAlignment::Left,
                 );
                 // Severity dot; the top-most severity wins.
@@ -241,6 +396,7 @@ impl CodeEditor {
         context: &mut RenderContext,
         rect: Rect,
         row_height: f32,
+        chrome: &EditorChrome,
     ) -> Vec<usize> {
         let left = rect.x + self.text_origin_x();
         let right = rect.x + rect.width as i32 - self.scrollbar_width() - self.minimap_width();
@@ -294,7 +450,7 @@ impl CodeEditor {
                 if self.config.highlight_active_line && line == active_line {
                     context.fill_rect(
                         Rect::new(rect.x, y, rect.width, row_height.ceil() as u32),
-                        self.palette.active_line_color,
+                        chrome.active_line,
                     );
                 }
 
@@ -308,10 +464,19 @@ impl CodeEditor {
                     segment_end,
                     current_match.as_ref(),
                     &occurrences,
+                    chrome,
                 );
 
                 if self.config.show_indent_guides {
-                    self.draw_indent_guides(context, left, y, segment_start, segment_end, &chars);
+                    self.draw_indent_guides(
+                        context,
+                        left,
+                        y,
+                        segment_start,
+                        segment_end,
+                        &chars,
+                        chrome,
+                    );
                 }
 
                 self.draw_row_text(
@@ -328,6 +493,7 @@ impl CodeEditor {
                     selection_start,
                     selection_end,
                     row_height,
+                    chrome,
                 );
                 if self.config.show_whitespace {
                     self.draw_whitespace_marks(
@@ -338,6 +504,7 @@ impl CodeEditor {
                         segment_start,
                         segment_end,
                         row_height,
+                        chrome,
                     );
                 }
                 painted.push(line);
@@ -345,7 +512,7 @@ impl CodeEditor {
             row += segments;
         }
 
-        self.draw_caret(context, left, top, row_height);
+        self.draw_caret(context, left, top, row_height, chrome);
         context.pop_clip();
         painted
     }
@@ -362,8 +529,9 @@ impl CodeEditor {
         segment_end: usize,
         current_match: Option<&SearchMatch>,
         occurrences: &[SearchMatch],
+        chrome: &EditorChrome,
     ) {
-        let cell = self.config.space_advance.max(1.0);
+        let cell = self.cell_width();
         // Search hits.
         for hit in self.find.matches.iter().filter(|hit| hit.line == line) {
             if let (Some(from), Some(to)) =
@@ -371,10 +539,8 @@ impl CodeEditor {
             {
                 let x = left + ((from as f32 - self.scroll_column as f32) * cell).round() as i32;
                 let width = (((to - from) as f32) * cell).round().max(1.0) as u32;
-                context.fill_rect(
-                    Rect::new(x, y, width, row_height.ceil() as u32),
-                    Color::rgb(255, 232, 158),
-                );
+                context
+                    .fill_rect(Rect::new(x, y, width, row_height.ceil() as u32), chrome.search_hit);
             }
         }
         if let Some(hit) = current_match.filter(|hit| hit.line == line) {
@@ -385,7 +551,7 @@ impl CodeEditor {
                 let width = (((to - from) as f32) * cell).round().max(1.0) as u32;
                 context.fill_rect(
                     Rect::new(x, y, width, row_height.ceil() as u32),
-                    Color::rgb(255, 198, 92),
+                    chrome.search_current,
                 );
             }
         }
@@ -396,10 +562,8 @@ impl CodeEditor {
             {
                 let x = left + ((from as f32 - self.scroll_column as f32) * cell).round() as i32;
                 let width = (((to - from) as f32) * cell).round().max(1.0) as u32;
-                context.draw_rect(
-                    Rect::new(x, y, width, row_height.ceil() as u32),
-                    Color::rgb(150, 176, 214),
-                );
+                context
+                    .draw_rect(Rect::new(x, y, width, row_height.ceil() as u32), chrome.occurrence);
             }
         }
     }
@@ -428,8 +592,9 @@ impl CodeEditor {
         segment_start: usize,
         segment_end: usize,
         chars: &[char],
+        chrome: &EditorChrome,
     ) {
-        let cell = self.config.space_advance.max(1.0);
+        let cell = self.cell_width();
         let width = self.config.tab_width.max(1);
         let mut column = 0usize;
         while column < chars.len() {
@@ -445,7 +610,7 @@ impl CodeEditor {
                 context.draw_line(
                     Point::new(x, y),
                     Point::new(x, y + self.config.line_advance.round() as i32),
-                    self.palette.indent_guide_color,
+                    chrome.indent_guide,
                 );
             }
             column = indent_end;
@@ -468,8 +633,9 @@ impl CodeEditor {
         selection_start: TextPosition,
         selection_end: TextPosition,
         row_height: f32,
+        chrome: &EditorChrome,
     ) {
-        let cell = self.config.space_advance.max(1.0);
+        let cell = self.cell_width();
         let text: String =
             chars[segment_start.min(chars.len())..segment_end.min(chars.len())].iter().collect();
         if text.is_empty() {
@@ -496,7 +662,7 @@ impl CodeEditor {
                     let width = (((to - from) as f32) * cell).round().max(1.0) as u32;
                     context.fill_rect(
                         Rect::new(x, y, width, row_height.ceil() as u32),
-                        self.palette.selection_color,
+                        chrome.selection,
                     );
                 }
             }
@@ -530,7 +696,11 @@ impl CodeEditor {
                         ),
                         &plain,
                         font,
-                        palette.color_for(TokenKind::Plain),
+                        // Body text is the resolved ink, not the palette's light-preset
+                        // literal: the palette carries the *syntax hues*, which a caller may
+                        // replace, but plain running text has to stay legible against the
+                        // resolved surface.
+                        chrome.ink,
                         HorizontalAlignment::Left,
                     );
                 }
@@ -549,7 +719,7 @@ impl CodeEditor {
                 if (open.line == line && open.column == from)
                     || (close.line == line && close.column == from)
                 {
-                    color = self.palette.bracket_color;
+                    color = chrome.accent;
                 }
             }
             context.draw_text(
@@ -575,7 +745,7 @@ impl CodeEditor {
                 let x = left + ((column as f32 - self.scroll_column as f32) * cell).round() as i32;
                 context.draw_rect(
                     Rect::new(x - 1, y, (cell).round() as u32 + 2, row_height.ceil() as u32),
-                    self.palette.bracket_color,
+                    chrome.accent,
                 );
             }
         }
@@ -592,8 +762,9 @@ impl CodeEditor {
         segment_start: usize,
         segment_end: usize,
         row_height: f32,
+        chrome: &EditorChrome,
     ) {
-        let cell = self.config.space_advance.max(1.0);
+        let cell = self.cell_width();
         let dot_y = y + (row_height * 0.5).round() as i32;
         let from = segment_start.min(chars.len());
         let to = segment_end.min(chars.len());
@@ -603,24 +774,24 @@ impl CodeEditor {
             match ch {
                 ' ' => context.fill_rect(
                     Rect::new(x + (cell * 0.5) as i32, dot_y, 1, 1),
-                    Color::rgb(186, 196, 210),
+                    chrome.whitespace_mark,
                 ),
                 '\t' => context.draw_line(
                     Point::new(x + 2, dot_y),
                     Point::new(x + cell as i32 - 2, dot_y),
-                    Color::rgb(186, 196, 210),
+                    chrome.whitespace_mark,
                 ),
                 _ => {}
             }
         }
     }
 
-    fn draw_column_ruler(&self, context: &mut RenderContext, rect: Rect) {
+    fn draw_column_ruler(&self, context: &mut RenderContext, rect: Rect, chrome: &EditorChrome) {
         let column = self.config.column_ruler;
         if column == 0 || column < self.scroll_column {
             return;
         }
-        let cell = self.config.space_advance.max(1.0);
+        let cell = self.cell_width();
         let x = rect.x
             + self.text_origin_x()
             + ((column as f32 - self.scroll_column as f32) * cell).round() as i32;
@@ -630,10 +801,17 @@ impl CodeEditor {
         }
         let top = rect.y + self.text_origin_y();
         let bottom = rect.y + rect.height as i32 - self.status_bar_height();
-        context.draw_line(Point::new(x, top), Point::new(x, bottom), Color::rgb(226, 232, 240));
+        context.draw_line(Point::new(x, top), Point::new(x, bottom), chrome.separator);
     }
 
-    fn draw_caret(&self, context: &mut RenderContext, left: i32, top: i32, row_height: f32) {
+    fn draw_caret(
+        &self,
+        context: &mut RenderContext,
+        left: i32,
+        top: i32,
+        row_height: f32,
+        chrome: &EditorChrome,
+    ) {
         // Secondary carets first so the primary caret paints on top.
         let all_carets = self.cursors();
         for caret in all_carets.carets().iter().copied() {
@@ -646,14 +824,11 @@ impl CodeEditor {
                     + ((row as f32 - self.scroll_visual_row as f32) * row_height).round() as i32;
                 let x = left
                     + (((caret.head.column.saturating_sub(self.scroll_column)) as f32)
-                        * self.config.space_advance.max(1.0))
+                        * self.cell_width())
                     .round() as i32;
-                context.fill_rect(
-                    Rect::new(x, y, 2, row_height.ceil() as u32),
-                    Color::rgb(24, 99, 190),
-                );
+                context.fill_rect(Rect::new(x, y, 2, row_height.ceil() as u32), chrome.accent);
             } else if let Some(rect) = self.rect_for_range(caret.bounds().0, caret.bounds().1) {
-                context.fill_rect(rect, Color::rgb(196, 216, 244));
+                context.fill_rect(rect, chrome.selection);
             }
         }
         // Primary caret.
@@ -663,14 +838,13 @@ impl CodeEditor {
                 top + ((row as f32 - self.scroll_visual_row as f32) * row_height).round() as i32;
             let x = left
                 + (((self.cursor.head.column.saturating_sub(self.scroll_column)) as f32)
-                    * self.config.space_advance.max(1.0))
+                    * self.cell_width())
                 .round() as i32;
-            context
-                .fill_rect(Rect::new(x, y, 2, row_height.ceil() as u32), Color::rgb(24, 99, 190));
+            context.fill_rect(Rect::new(x, y, 2, row_height.ceil() as u32), chrome.accent);
         } else {
             let (start, end) = self.cursor.bounds();
             if let Some(rect) = self.rect_for_range(start, end) {
-                context.draw_rect(rect, Color::rgb(120, 158, 212));
+                context.draw_rect(rect, chrome.accent);
             }
         }
     }
@@ -682,7 +856,7 @@ impl CodeEditor {
         }
         let row_height = self.config.line_advance.max(1.0);
         let top = rect.y + self.text_origin_y();
-        let cell = self.config.space_advance.max(1.0);
+        let cell = self.cell_width();
         for (row, marker) in inline {
             if row < self.scroll_visual_row {
                 continue;
@@ -712,7 +886,7 @@ impl CodeEditor {
         }
     }
 
-    fn draw_scrollbar(&self, context: &mut RenderContext, rect: Rect) {
+    fn draw_scrollbar(&self, context: &mut RenderContext, rect: Rect, chrome: &EditorChrome) {
         let total = self.total_visual_rows().max(1);
         let rows = self.visible_rows().max(1);
         if total <= rows {
@@ -728,7 +902,7 @@ impl CodeEditor {
             width as u32,
             track_height,
         );
-        context.fill_rect(track, Color::rgb(240, 244, 250));
+        context.fill_rect(track, chrome.scrollbar_track);
         let thumb_height = ((rows as f32 / total as f32) * track_height as f32).max(12.0) as u32;
         let max_offset = total.saturating_sub(rows) as f32;
         let ratio = if max_offset <= 0.0 {
@@ -740,11 +914,11 @@ impl CodeEditor {
             top + ((track_height.saturating_sub(thumb_height)) as f32 * ratio).round() as i32;
         context.fill_rect(
             Rect::new(track.x + 2, thumb_y, (width - 4).max(2) as u32, thumb_height),
-            Color::rgb(188, 200, 216),
+            chrome.scrollbar_thumb,
         );
     }
 
-    fn draw_minimap(&self, context: &mut RenderContext, rect: Rect) {
+    fn draw_minimap(&self, context: &mut RenderContext, rect: Rect, chrome: &EditorChrome) {
         let width = self.minimap_width();
         if width == 0 {
             return;
@@ -753,7 +927,7 @@ impl CodeEditor {
         let bottom = rect.y + rect.height as i32 - self.status_bar_height();
         let height = (bottom - top).max(1) as u32;
         let x = rect.x + rect.width as i32 - width;
-        context.fill_rect(Rect::new(x, top, width as u32, height), Color::rgb(248, 250, 253));
+        context.fill_rect(Rect::new(x, top, width as u32, height), chrome.minimap_background);
 
         let line_count = self.line_count().max(1);
         let scale = height as f32 / line_count as f32;
@@ -776,7 +950,7 @@ impl CodeEditor {
                     bar_width as u32,
                     dot.ceil().max(1.0) as u32,
                 ),
-                Color::rgb(198, 208, 222),
+                chrome.scrollbar_thumb,
             );
         }
         // Viewport indicator.
@@ -785,21 +959,19 @@ impl CodeEditor {
         let viewport_height = ((rows as f32 * scale).max(6.0)) as u32;
         context.draw_rect(
             Rect::new(x, viewport_top, width as u32, viewport_height.min(height)),
-            Color::rgb(150, 170, 200),
+            chrome.accent,
         );
     }
 
-    fn draw_status_bar(&self, context: &mut RenderContext, rect: Rect) {
+    fn draw_status_bar(&self, context: &mut RenderContext, rect: Rect, chrome: &EditorChrome) {
         let height = self.status_bar_height();
         let top = rect.y + rect.height as i32 - height;
-        context.fill_rect(
-            Rect::new(rect.x, top, rect.width, height as u32),
-            Color::rgb(238, 242, 248),
-        );
+        context
+            .fill_rect(Rect::new(rect.x, top, rect.width, height as u32), chrome.chrome_background);
         context.draw_line(
             Point::new(rect.x, top),
             Point::new(rect.x + rect.width as i32, top),
-            Color::rgb(208, 217, 230),
+            chrome.separator,
         );
 
         let selected = self.selected_text().map(|text| text.chars().count()).unwrap_or(0);
@@ -824,7 +996,7 @@ impl CodeEditor {
             Point::new(rect.x + 8, top + 18),
             &left_label,
             &Font::default(),
-            Color::rgb(96, 110, 132),
+            chrome.dim_ink,
             HorizontalAlignment::Left,
         );
 
@@ -842,10 +1014,12 @@ impl CodeEditor {
             Point::new(rect.x + rect.width as i32 - 12, top + 18),
             &right_label,
             &Font::default(),
-            Color::rgb(96, 110, 132),
+            chrome.dim_ink,
             HorizontalAlignment::Right,
         );
 
+        // The diagnostic tally is a summary of severity counts, so it reads the dimmest
+        // chrome ink rather than a literal that reads on only one appearance.
         let diagnostics = format!(
             "E{} W{} I{}",
             self.marker_count(MarkerSeverity::Error),
@@ -856,24 +1030,24 @@ impl CodeEditor {
             Point::new(rect.x + rect.width as i32 - 12, top + 5),
             &diagnostics,
             &Font::default(),
-            Color::rgb(130, 142, 160),
+            chrome.dim_ink,
             HorizontalAlignment::Right,
         );
     }
 
-    fn draw_completion(&self, context: &mut RenderContext) {
+    fn draw_completion(&self, context: &mut RenderContext, chrome: &EditorChrome) {
         if !self.completion.visible {
             return;
         }
         let rect = self.completion_rect();
-        context.fill_rect(rect, Color::rgb(255, 255, 255));
-        context.draw_rect(rect, Color::rgb(176, 188, 206));
+        context.fill_rect(rect, chrome.popup_background);
+        context.draw_rect(rect, chrome.popup_border);
         for (index, item) in self.completion.items.iter().enumerate() {
             let row_y = rect.y + index as i32 * MIN_TOUCH_TARGET;
             if index == self.completion.selected {
                 context.fill_rect(
                     Rect::new(rect.x + 1, row_y, rect.width - 2, MIN_TOUCH_TARGET as u32),
-                    Color::rgb(226, 236, 250),
+                    chrome.popup_selected,
                 );
             }
             let sigil = item.kind.map(|kind| format!("{} ", kind)).unwrap_or_default();
@@ -885,29 +1059,29 @@ impl CodeEditor {
                 Point::new(rect.x + 8, row_y + 19),
                 &label,
                 &Font::default(),
-                Color::rgb(38, 52, 74),
+                chrome.ink,
                 HorizontalAlignment::Left,
             );
         }
     }
 
-    fn draw_context_menu(&self, context: &mut RenderContext) {
+    fn draw_context_menu(&self, context: &mut RenderContext, chrome: &EditorChrome) {
         if !self.context_menu.visible {
             return;
         }
         let Some(rect) = self.context_menu_rect() else { return };
-        context.fill_rect(rect, Color::rgb(255, 255, 255));
-        context.draw_rect(rect, Color::rgb(176, 188, 206));
+        context.fill_rect(rect, chrome.popup_background);
+        context.draw_rect(rect, chrome.popup_border);
         for (index, item) in self.context_menu.items.iter().enumerate() {
             let row_y = rect.y + index as i32 * MIN_TOUCH_TARGET;
             if index == self.context_menu.selected && !item.disabled {
                 context.fill_rect(
                     Rect::new(rect.x + 1, row_y, rect.width - 2, MIN_TOUCH_TARGET as u32),
-                    Color::rgb(226, 236, 250),
+                    chrome.popup_selected,
                 );
             }
-            let color =
-                if item.disabled { Color::rgb(176, 184, 196) } else { Color::rgb(38, 52, 74) };
+            // A disabled row is the dim ink; an enabled one is the resolved body ink.
+            let color = if item.disabled { chrome.dim_ink } else { chrome.ink };
             context.draw_text(
                 Point::new(rect.x + 8, row_y + 19),
                 &item.label,
@@ -920,7 +1094,7 @@ impl CodeEditor {
                     Point::new(rect.x + rect.width as i32 - 8, row_y + 19),
                     shortcut,
                     &Font::default(),
-                    Color::rgb(140, 152, 170),
+                    chrome.dim_ink,
                     HorizontalAlignment::Right,
                 );
             }
@@ -957,8 +1131,71 @@ impl CodeEditor {
         self.config.line_advance.max(1.0)
     }
 
+    /// The horizontal advance of one character cell.
+    ///
+    /// Returns the **measured** advance once [`Self::measure_cell_width`] has run, and the
+    /// configured `space_advance` before the first frame — there is no measuring before a backend
+    /// is open, and the first frame's layout needs a number.
     pub(crate) fn cell_width(&self) -> f32 {
-        self.config.space_advance.max(1.0)
+        self.measured_cell_width.get().unwrap_or_else(|| self.config.space_advance.max(1.0))
+    }
+
+    /// The font the body text is drawn in.
+    ///
+    /// One accessor so the measurement uses the same `Font` the drawing does — the draw sites built
+    /// the font inline, which is exactly how a measurement and a draw come to disagree.
+    pub(crate) fn editor_font(&self) -> crate::core::Font {
+        crate::core::Font::new(self.config.font_family.clone(), self.config.font_size, false, false)
+    }
+
+    /// Re-measures the character cell with the backend's own font metrics.
+    ///
+    /// # Why this is measured rather than read from the config
+    ///
+    /// `config.space_advance` is hand-written (`7.0` by default) while the renderer draws text with
+    /// the *real* font, and the two disagreed:
+    ///
+    /// ```text
+    /// measured:  " " = 4    "M" = 8    "0123456789" = 78 (7.8 each)    "中文" = 26 (13 each)
+    /// config:    everything = 7.0
+    /// ```
+    ///
+    /// Every column past the first therefore drifted by 0.8px — a whole character by column ten — and
+    /// CJK by 6px *per character*. Because the editor positions each syntax token at `column * cell`
+    /// and then draws that token's text at that origin, the drift landed the pieces on top of one
+    /// another: overlapping, unreadable text.
+    ///
+    /// # Why a digit, and why inside `draw`
+    ///
+    /// A digit rather than a space: the space measured **4** against a real advance of **7.8**, so it
+    /// is not a reliable sample of the grid. Inside `draw` because the font metrics belong to the
+    /// **backend**, which is only reachable while a context is open.
+    ///
+    /// # Why one cell and not per-character widths
+    ///
+    /// The editor is a fixed-pitch grid by construction: `text_columns`, caret hit-testing and the
+    /// column ruler all compute a column as an integer multiple of one cell. Per-character shaping
+    /// would be a different editor, not a fix for this one.
+    pub(crate) fn measure_cell_width(&mut self, context: &mut RenderContext) {
+        if self.measured_geometry == Some(self.geometry()) {
+            return;
+        }
+        let font = self.editor_font();
+        // `TextMetrics::width` is a `u32` in **logical** pixels, already rounded by the backend, so it
+        // is directly comparable with the configured `space_advance` (also logical pixels).
+        //
+        // A digit is one cell wide in a monospace face, and this is the number the renderer will
+        // actually advance by — which is the whole point: the placement and the drawing now read the
+        // same measurement instead of one reading a hand-written constant.
+        let advance = context.backend().measure_text("0", &font).width;
+        // `> 0` guards a backend that cannot measure and returns 0: accepting that would collapse every
+        // column onto x=0, which is worse than the drift being fixed.
+        self.measured_cell_width.set(Some(if advance > 0 {
+            advance as f32
+        } else {
+            self.config.space_advance.max(1.0)
+        }));
+        self.measured_geometry = Some(self.geometry());
     }
 
     pub(crate) fn text_columns(&self) -> usize {

@@ -97,7 +97,12 @@ impl Platform for HarmonyPlatform {
             self.init();
         }
         self.runtime.running.store(true, Ordering::SeqCst);
+        // No native message pump: the host owns the window and reports changes through
+        // `queue_resize_trigger`, so this loop is what drains them. Without the drain a
+        // `Resized` event sat in the queue and no window layout re-ran. See
+        // `crate::drain_triggers`.
         while self.runtime.running.load(Ordering::SeqCst) {
+            crate::drain_triggers();
             thread::sleep(Duration::from_millis(16));
         }
     }

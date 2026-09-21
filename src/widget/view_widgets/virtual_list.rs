@@ -379,8 +379,51 @@ impl Draw for VirtualList {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.base.geometry();
 
-        context.fill_rect(rect, Color::rgb(255, 255, 255));
-        context.draw_rect(rect, Color::rgb(200, 200, 200));
+        // Chrome colours resolve explicit style first, then the theme's resolved style for
+        // this control, and only then a literal. The theme step is what makes an appearance
+        // switch visible; the surface, the border, the selected-row highlight and the text
+        // colour used to be hardcoded literals, so light and dark rendered identically.
+        //
+        // The theme reads take and release the global manager's lock internally, so no guard
+        // is held across the draw (the mutex is not re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("virtual_list");
+        let mut surface = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        // `virtual_list` is absent from `WidgetRole::for_kind_name`'s table, so it classifies as
+        // `Surface` and resolves to `theme.colors.background` — the window's own fill. A panel
+        // painted in that colour would be byte-identical to the frame behind it, so a resolved
+        // surface equal to the window fill is re-derived a visible step away from it, the same
+        // distinction `Colors::input_background` draws for a field. `data_view` is the same
+        // control under its other spelling, so the derivation covers both names.
+        let window_fill = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.background)
+            .unwrap_or(Color::WHITE);
+        if surface == window_fill {
+            surface = window_fill.blend(&ink, 0.08);
+        }
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .filter(|resolved| *resolved != surface)
+            .unwrap_or_else(|| surface.blend(&ink, 0.20));
+        // The selected row is a selection state, so it reads the theme's accent token and is
+        // laid over the surface, which keeps it legible in either appearance.
+        let accent = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.primary)
+            .unwrap_or(Color::PRIMARY);
+        let selected_bg = surface.blend(&accent, 0.30);
+
+        context.fill_rect(rect, surface);
+        context.draw_rect(rect, border);
 
         let rows = self.fetch_visible_rows();
         if rows.is_empty() {
@@ -395,17 +438,14 @@ impl Draw for VirtualList {
             }
 
             if self.selected_row == Some(row_index) {
-                context.fill_rect(
-                    Rect::new(rect.x, y, rect.width, self.row_height),
-                    Color::rgb(210, 230, 255),
-                );
+                context.fill_rect(Rect::new(rect.x, y, rect.width, self.row_height), selected_bg);
             }
 
             context.draw_text(
                 Point::new(rect.x + 4, y + rh / 2),
                 &text,
                 &Font::default(),
-                Color::rgb(0, 0, 0),
+                ink,
                 HorizontalAlignment::Left,
             );
         }

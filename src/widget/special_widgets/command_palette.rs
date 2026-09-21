@@ -380,16 +380,44 @@ impl EventHandler for CommandPalette {
 impl Draw for CommandPalette {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::rgb(250, 250, 252));
-        context.draw_rect(rect, Color::rgb(200, 205, 214));
+
+        // Chrome colours resolve explicit style first, then the theme's resolved
+        // style for this control, and only then a literal. The theme step is what
+        // makes an appearance switch visible; previously every colour below was a
+        // hardcoded literal, so light and dark rendered identically.
+        //
+        // `resolved_theme_style` takes and releases the global manager's lock
+        // internally, so no guard is held across the draw (the mutex is not
+        // re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("command_palette");
+        let background = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| background.blend(&Color::BLACK, 0.15));
+        let text_color = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        // The query header and the highlighted row are chrome states, derived from
+        // the resolved colours so they follow the appearance.
+        let header_background = background.blend(&text_color, 0.06);
+        let highlight = background.blend(&text_color, 0.18);
+
+        context.fill_rect(rect, background);
+        context.draw_rect(rect, border);
 
         let header = Rect::new(rect.x, rect.y, rect.width, self.row_height);
-        context.fill_rect(header, Color::rgb(239, 243, 249));
+        context.fill_rect(header, header_background);
         context.draw_text(
             Point::new(rect.x + 8, rect.y + self.row_height as i32 / 2),
             &format!("> {}", self.query),
             &Font::default(),
-            Color::rgb(24, 36, 52),
+            text_color,
             HorizontalAlignment::Left,
         );
 
@@ -403,7 +431,7 @@ impl Draw for CommandPalette {
             if self.highlighted_index == Some(filtered_index) {
                 context.fill_rect(
                     Rect::new(rect.x + 1, y, rect.width.saturating_sub(2), self.row_height),
-                    Color::rgb(214, 228, 248),
+                    highlight,
                 );
             }
 
@@ -417,7 +445,7 @@ impl Draw for CommandPalette {
                     Point::new(rect.x + 8, y + self.row_height as i32 / 2),
                     &line,
                     &Font::default(),
-                    Color::rgb(35, 45, 60),
+                    text_color,
                     HorizontalAlignment::Left,
                 );
             }

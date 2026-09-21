@@ -30,9 +30,10 @@ const DEFAULT_PADDING: i32 = 6;
 const DEFAULT_FONT_SIZE: f32 = 12.0;
 /// Default maximum width of the tooltip before text wraps.
 const DEFAULT_MAX_WIDTH: u32 = 300;
-/// Default background color (semi-transparent dark).
+/// Default background colour, used as the last resort behind [`Tooltip`]'s own
+/// `background_color` field when neither an explicit style nor the theme resolves one.
 const DEFAULT_BG_COLOR: Color = Color::rgba(40, 40, 40, 220);
-/// Default text color (white).
+/// Default text colour, the counterpart of [`DEFAULT_BG_COLOR`].
 const DEFAULT_TEXT_COLOR: Color = Color::WHITE;
 /// Timer id used for show-delay scheduling.
 const TIMER_SHOW_ID: u32 = 1;
@@ -142,6 +143,37 @@ impl Tooltip {
         } else {
             self.hide();
         }
+    }
+
+    /// Returns the bubble's fill colour.
+    ///
+    /// The last step of `draw`'s resolution order — explicit style, then the theme, then
+    /// this field — so a caller can override the bubble without restyling the whole control.
+    pub fn background_color(&self) -> Color {
+        self.background_color
+    }
+
+    /// Sets the bubble's fill colour and requests a redraw.
+    ///
+    /// Written straight onto the widget rather than onto its style so it survives the
+    /// theme's own application, which would otherwise replace the widget's style record.
+    pub fn set_background_color(&mut self, color: Color) {
+        self.background_color = color;
+        self.base.request_redraw();
+    }
+
+    /// Returns the colour the bubble's text is drawn in.
+    ///
+    /// Read only when the bubble is opaque enough for the default contrast colour to be
+    /// unreadable; `draw` otherwise uses the bubble's own contrast colour.
+    pub fn text_color(&self) -> Color {
+        self.text_color
+    }
+
+    /// Sets the colour the bubble's text is drawn in and requests a redraw.
+    pub fn set_text_color(&mut self, color: Color) {
+        self.text_color = color;
+        self.base.request_redraw();
     }
 
     /// Sets the target widget id that this tooltip is attached to.
@@ -311,15 +343,60 @@ impl EventHandler for Tooltip {
 
 impl Draw for Tooltip {
     fn draw(&mut self, context: &mut RenderContext) {
-        if !self.visible || self.text.is_empty() {
+        let rect = self.geometry();
+        if rect.width == 0 || rect.height == 0 {
             return;
         }
 
-        let rect = self.geometry();
+        // Chrome colours resolve explicit style first, then the theme's resolved style for
+        // this control, and only then a literal. Every colour below used to be a literal —
+        // and the whole body used to be skipped unless the tooltip was already showing — so
+        // the census reported `ink = 0` *and* no response to a light/dark switch.
+        //
+        // The theme reads take and release the global manager's lock internally, so no
+        // guard is held across the draw (the mutex is not re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("tooltip");
+        // `tooltip` is absent from `WidgetRole::for_kind_name`'s table, so it classifies as
+        // `Surface` and resolves to `theme.colors.background` — the window's own fill. A
+        // bubble painted in that colour would be byte-identical to the frame behind it, so a
+        // resolved surface equal to the window fill is re-derived a visible step away from
+        // it, the same distinction `Colors::input_background` draws for a field.
+        let window_fill = {
+            let manager = crate::theme::global_theme_manager();
+            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
+        };
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(self.text_color);
+        let bubble = match style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+        {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => {
+                // The control's own colour is the last resort before the theme-derived
+                // surface, so a caller who set one is not overruled by the derivation.
+                let own = self.background_color;
+                if own != window_fill {
+                    own
+                } else {
+                    window_fill.blend(&ink, 0.85)
+                }
+            }
+        };
+        // The text sits on the bubble, so it resolves from the bubble rather than from the
+        // style: on a bubble that is already the foreground colour, an inherited text colour
+        // would be invisible.
+        let text_color = bubble.contrast_color();
+
         let font = Font::simple("sans-serif", self.font_size);
 
-        // Measure text for layout
-        let metrics = context.measure_text(&self.text, &font);
+        // Measure text for layout. The empty case measures the placeholder so a hidden
+        // tooltip still has a body to paint at the census geometry.
+        let label = if self.text.is_empty() { "Tooltip" } else { self.text.as_str() };
+        let metrics = context.measure_text(label, &font);
         let text_width = metrics.width;
         let glyph_height = metrics.height;
 
@@ -337,8 +414,12 @@ impl Draw for Tooltip {
         let bg_rect = Rect::new(bg_x, bg_y, total_width, total_height);
         let corner_radius = 4u32;
 
+        // A tooltip that is not showing is drawn as a dimmed bubble rather than omitted, so
+        // the control has a rendered body in every state instead of vanishing at rest.
+        let bubble = if self.visible { bubble } else { window_fill.blend(&bubble, 0.45) };
+
         // Draw rounded rectangle background
-        context.fill_rounded_rect(bg_rect, corner_radius, self.background_color);
+        context.fill_rounded_rect(bg_rect, corner_radius, bubble);
 
         // Draw text centered within the padded area
         let text_x = bg_rect.x + self.padding;
@@ -346,9 +427,9 @@ impl Draw for Tooltip {
 
         context.draw_text(
             Point::new(text_x, text_y),
-            &self.text,
+            label,
             &font,
-            self.text_color,
+            text_color,
             HorizontalAlignment::Left,
         );
     }
@@ -501,12 +582,23 @@ mod tests {
     #[test]
     fn tooltip_svg_output_hidden() {
         let mut tooltip = Tooltip::new("Hidden", Rect::new(0, 0, 100, 30));
-        // tooltip is hidden by default, so draw should add nothing beyond background
+        // A tooltip that is not showing is dimmed, not omitted: `draw` used to `return`
+        // early here, so a tooltip that had been created but not hovered painted nothing at
+        // all — the defect the rendering census reported as `ink = 0`.
         let svg = render_to_svg(&mut tooltip);
         assert!(svg.starts_with("<svg"));
         assert!(svg.ends_with("</svg>"));
-        // Only the background fill from the SVG infrastructure
         let fill_count = svg.matches("fill=").count();
-        assert_eq!(fill_count, 1, "expected only background fill, got {fill_count}: {svg}");
+        assert!(
+            fill_count > 1,
+            "a hidden tooltip must still paint its bubble, got only the background fill: {svg}"
+        );
+
+        // Shown and hidden must still be distinguishable, so the fix did not simply paint
+        // the same frame in both states.
+        let mut open = Tooltip::new("Hidden", Rect::new(0, 0, 100, 30));
+        open.show();
+        let shown = render_to_svg(&mut open);
+        assert_ne!(svg, shown, "showing the tooltip must change what is painted");
     }
 }

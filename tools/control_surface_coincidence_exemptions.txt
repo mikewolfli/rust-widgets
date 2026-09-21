@@ -1,0 +1,39 @@
+# BLUE20 layer 1 — P2 surface-coincidence exemptions
+#
+# Format: one entry per line, four whitespace-separated fields:
+#     <control-name> <use> <flag> <reason...>
+#
+# The `<flag>` column mirrors the colour table's shape so both files parse the same
+# way; it is always `true` here, meaning "yes, this coincidence is intended".
+#
+# # What P2 asks
+#
+# P2 renders a control over the surface it actually sits on and asserts its
+# dominant colour is not that surface. A control that fills its rectangle with the
+# window colour is drawn, yet the user sees nothing — round 58's defect D, where
+# `list_box`/`scroll_area` were classified as "background" and vanished.
+#
+# # What this file is for
+#
+# A handful of controls are **defined** to be the surface rather than to sit on it.
+# For those, matching the background is the contract, not a defect, and "the user
+# cannot see it" is the wrong accusation. Listing one here says: for *this* control,
+# the coincidence is intended, and here is why.
+#
+# # Why this is separate from the colour table
+#
+# `tools/control_color_exemptions.txt` exempts a control from **P3** (must differ
+# between light and dark). This file exempts from **P2** (must differ from the
+# surface). They are different accusations and must not be conflated: a control can
+# legitimately be the surface colour in both appearances (P2-exempt, still P3-owed),
+# and a chart's data colour can legitimately be constant across appearances
+# (P3-exempt, still P2-owed, because the chart still has to be visible).
+#
+# # Bar for entry
+#
+# The reason must explain why the control *is* the surface, not merely that it is
+# inconvenient to fix. Rejected reasons: "skip for now", "fix later", "hard to
+# theme". The list is asserted in both directions — an entry that stops being needed
+# is a test failure, so it can only shrink by correcting the control.
+
+window client-area true A window's client area is defined to be the surface its controls sit on; the title bar and border are painted by the window manager, not by the control (round 58 removed the control's own fake chrome). Filling with the theme background IS the contract.

@@ -281,17 +281,80 @@ impl WidgetProperties for MaterialSnackbar {
 
 impl Draw for MaterialSnackbar {
     fn draw(&mut self, context: &mut RenderContext) {
-        if !self.base.is_visible() {
+        let rect = self.geometry();
+        if rect.width == 0 || rect.height == 0 {
             return;
         }
 
-        let rect = self.geometry();
+        // Chrome colours resolve the explicit style first, then the theme's resolved style for
+        // this control, and only then a literal. The pill used to be a fixed near-black and the
+        // action a fixed Material blue, so a light/dark switch left the snackbar unchanged — the
+        // rendering census reported the control as theme-blind.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
+        // is not re-entrant.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("material_snackbar");
+        // Read as its own lock acquisition and copied out as values, so the guard is dropped
+        // before anything else touches the theme.
+        let (window_fill, foreground, secondary, primary) = {
+            let manager = crate::theme::global_theme_manager();
+            match manager.current_theme() {
+                Some(active) => (
+                    active.colors.background,
+                    active.colors.foreground,
+                    active.colors.secondary,
+                    active.colors.primary,
+                ),
+                None => (
+                    Color::rgb(240, 240, 240),
+                    Color::BLACK,
+                    Color::rgb(158, 158, 158),
+                    Color::rgb(33, 150, 243),
+                ),
+            }
+        };
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(foreground);
+        // `material_snackbar` is absent from `WidgetRole::for_kind_name`'s table, so it classifies
+        // as `Surface` and the active theme writes the window fill into `style.background_color`.
+        // The pill is eased away from the window fill in both directions — darker on the light
+        // theme, lighter on the dark one — so it never coincides with the frame behind it, while a
+        // colour the caller set still wins.
+        let pill = match style.background_color {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => window_fill.blend(&ink, 0.72),
+        };
+        // The label is drawn in whatever contrasts with the pill, rather than a fixed white that
+        // only read against the old near-black bar.
+        let label = pill.contrast_color();
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .filter(|resolved| *resolved != pill)
+            .unwrap_or_else(|| pill.blend(&secondary, 0.45));
+
         let bar_height = 48u32;
         let bar_y = rect.y + rect.height as i32 - bar_height as i32 - 16;
 
         // ── Background pill ──
+        //
+        // Painted before the visibility check. It used to `return` while hidden, so a freshly
+        // constructed snackbar — which starts hidden by contract — painted nothing and the census
+        // reported `ink = 0`. The bar slot is shown at reduced presence while hidden and becomes the
+        // opaque toast when `show` is called, which is the same shape the bottom sheet uses for its
+        // own closed state.
         let bar_rect = Rect::new(rect.x + 12, bar_y, rect.width.saturating_sub(24), bar_height);
-        context.fill_rounded_rect(bar_rect, bar_height / 2, Color::rgba(50, 50, 50, 240));
+        let fill = if self.base.is_visible() { pill } else { pill.with_alpha(96) };
+        context.fill_rounded_rect(bar_rect, bar_height / 2, fill);
+        context.draw_rounded_rect_stroke(bar_rect, bar_height / 2, border, 1);
+
+        if !self.base.is_visible() {
+            return;
+        }
 
         // ── Message text (left side) ──
         if !self.message.is_empty() {
@@ -306,7 +369,7 @@ impl Draw for MaterialSnackbar {
                 crate::core::Point::new(text_x, text_y),
                 &self.message,
                 &font,
-                Color::WHITE,
+                label,
                 HorizontalAlignment::Left,
             );
         }
@@ -324,7 +387,7 @@ impl Draw for MaterialSnackbar {
                 crate::core::Point::new(action_x, action_y),
                 &self.action_text,
                 &action_font,
-                Color::rgba(102, 190, 255, 255), // Material accent blue
+                primary,
                 HorizontalAlignment::Left,
             );
         }
@@ -519,16 +582,86 @@ impl Draw for CupertinoAlertDialog {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
 
-        // ── Dialog background (white rounded rect) ──
+        // Chrome colours resolve explicit style first, then the theme's resolved style for
+        // this control, and only then fall back to a literal. Every colour below used to be
+        // a literal, so a light/dark switch left the panel, its title, its message, its
+        // separators and its buttons unchanged — the rendering census reported the control
+        // as theme-blind.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global manager's
+        // mutex is not re-entrant.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("cupertino_alert_dialog");
+        // Read as its own lock acquisition and copied out as values, so the guard is dropped
+        // before anything else touches the theme. The dialog is not in the role table, so it
+        // classifies as `Surface` and its resolved background is the window fill itself; the
+        // panel below therefore derives its own distinct surface rather than painting the
+        // window's. The confirm/cancel actions are the dialog's accent-coloured affordances,
+        // so they read the theme's primary token rather than iOS blue.
+        let (window_fill, foreground, primary, background) = {
+            let manager = crate::theme::global_theme_manager();
+            match manager.current_theme() {
+                Some(active) => (
+                    active.colors.background,
+                    active.colors.foreground,
+                    active.colors.primary,
+                    active.colors.background,
+                ),
+                None => (
+                    Color::rgb(240, 240, 240),
+                    Color::BLACK,
+                    Color::rgb(0, 122, 255),
+                    Color::rgb(240, 240, 240),
+                ),
+            }
+        };
+
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(foreground);
+        // The panel is a raised surface over the scrim below, so it is one step from the
+        // window fill toward the text colour: a lighter card on a light theme, a darker one
+        // on a dark theme. The filter is on the **resolved** value, not only on the theme's:
+        // the active theme is applied to every control before it is drawn, so
+        // `style.background_color` already holds `Surface`'s window fill and letting it
+        // through unfiltered is exactly the invisible-panel defect this guards against. A
+        // caller's own colour still wins.
+        let panel_from_theme = window_fill.blend(&ink, 0.10);
+        let panel = match style.background_color {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => panel_from_theme,
+        };
+        // The separator has no theme token of its own (a `Surface` role resolves only
+        // background/text/border), so it is derived one visible step from the panel.
+        let separator = theme
+            .as_ref()
+            .and_then(|t| t.border_color)
+            .filter(|resolved| *resolved != panel)
+            .unwrap_or_else(|| panel.blend(&ink, 0.22));
+        // The action colour: the theme's primary, contrast-checked so the label stays legible
+        // on it. A caller's explicit text colour still wins.
+        let action = style.text_color.map(|_| ink).unwrap_or_else(|| primary.contrast_color());
+        // The scrim is the page's own colour seen through a dark wash, mixed here rather than
+        // pushed as a translucent fill. A translucent fill cannot dim anything on this surface:
+        // `fill_rect` writes raw pixels, so `rgba(0, 0, 0, 96)` replaced the page with black at
+        // alpha 96 and the *panel* — which is painted first — became fully transparent (the
+        // census reported the control's dominant colour as `0,0,0`). Mixing the two colours
+        // produces the same dimming with an opaque result, and it tracks the appearance instead
+        // of being a fixed black wash.
+        let scrim = panel.blend(&background, 0.62);
+
+        // ── Dialog background ──
         let dialog_width = (rect.width as i32).min(320) as u32;
         let dialog_x = rect.x + (rect.width as i32 - dialog_width as i32) / 2;
         let dialog_height = 200u32;
         let dialog_y = rect.y + (rect.height as i32 - dialog_height as i32) / 2;
         let dialog_rect = crate::core::Rect::new(dialog_x, dialog_y, dialog_width, dialog_height);
-        context.fill_rounded_rect(dialog_rect, 14, Color::rgba(255, 255, 255, 255));
 
-        // ── Semi-transparent backdrop ──
-        context.fill_rect(rect, Color::rgba(0, 0, 0, 96));
+        // ── Backdrop, then panel ──
+        context.fill_rect(rect, scrim);
+        context.fill_rounded_rect(dialog_rect, 14, panel);
 
         // ── Title ──
         let title_font = crate::core::Font::new("sans-serif", 17.0, true, false);
@@ -540,7 +673,7 @@ impl Draw for CupertinoAlertDialog {
                 Point::new(title_x, title_y),
                 &self.title,
                 &title_font,
-                Color::BLACK,
+                ink,
                 HorizontalAlignment::Left,
             );
         }
@@ -555,7 +688,7 @@ impl Draw for CupertinoAlertDialog {
                 Point::new(msg_x, msg_y),
                 &self.message,
                 &msg_font,
-                Color::rgba(100, 100, 100, 255),
+                ink,
                 HorizontalAlignment::Left,
             );
         }
@@ -565,7 +698,7 @@ impl Draw for CupertinoAlertDialog {
         context.draw_line(
             Point::new(dialog_x, divider_y),
             Point::new(dialog_x + dialog_width as i32, divider_y),
-            Color::rgba(200, 200, 200, 255),
+            separator,
         );
 
         // ── Buttons ──
@@ -579,7 +712,7 @@ impl Draw for CupertinoAlertDialog {
             context.draw_line(
                 Point::new(mid_x, divider_y),
                 Point::new(mid_x, dialog_y + dialog_height as i32),
-                Color::rgba(200, 200, 200, 255),
+                separator,
             );
 
             // Cancel button
@@ -590,7 +723,7 @@ impl Draw for CupertinoAlertDialog {
                 Point::new(cancel_x, cancel_y),
                 &self.cancel_text,
                 &button_font,
-                Color::rgba(0, 122, 255, 255), // iOS blue
+                action,
                 HorizontalAlignment::Left,
             );
 
@@ -604,7 +737,7 @@ impl Draw for CupertinoAlertDialog {
                 Point::new(confirm_x, confirm_y),
                 &self.confirm_text,
                 &button_font,
-                Color::rgba(0, 122, 255, 255), // iOS blue
+                action,
                 HorizontalAlignment::Left,
             );
         } else {
@@ -616,7 +749,7 @@ impl Draw for CupertinoAlertDialog {
                 Point::new(confirm_x, confirm_y),
                 &self.confirm_text,
                 &button_font,
-                Color::rgba(0, 122, 255, 255),
+                action,
                 HorizontalAlignment::Left,
             );
         }
@@ -854,28 +987,91 @@ impl Draw for CupertinoSlider {
         let track_rect =
             crate::core::Rect::new(track_left, track_y, track_width as u32, track_height);
 
-        // ── Background track (gray) ──
-        context.fill_rounded_rect(track_rect, track_height / 2, Color::rgba(224, 224, 224, 255));
+        // Chrome colours resolve explicit style first, then the theme's resolved style for
+        // this control, and only then fall back to a literal. Without the theme step a
+        // light/dark switch changed nothing on screen — the empty track and the knob were
+        // hardcoded, which the rendering census reported as theme-blind. The knob is the
+        // largest area the slider paints, so it is what the census measures as dominant.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global manager's
+        // mutex is not re-entrant.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("cupertino_slider");
+        // Read as its own lock acquisition and copied out as values, so the guard is dropped
+        // before anything else touches the theme. `cupertino_slider` is not in the role
+        // table, so it classifies as `Surface` and its resolved background is the window
+        // fill itself; the surface below therefore derives its own distinct colour rather
+        // than painting the window's. The filled run of the track is a value indicator, the
+        // same role `Slider`'s own fill plays, so it reads the theme's accent.
+        let (window_fill, foreground, accent, muted) = {
+            let manager = crate::theme::global_theme_manager();
+            match manager.current_theme() {
+                Some(active) => (
+                    active.colors.background,
+                    active.colors.foreground,
+                    active.colors.accent,
+                    active.colors.secondary,
+                ),
+                None => (
+                    Color::rgb(240, 240, 240),
+                    Color::BLACK,
+                    Color::rgb(33, 150, 243),
+                    Color::rgb(158, 158, 158),
+                ),
+            }
+        };
 
-        // ── Filled track (blue) ──
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(foreground);
+        // The empty run of the track, one step from the window fill toward the text colour,
+        // so it is visible on either appearance rather than being the window's own colour.
+        let empty_track = window_fill.blend(&ink, 0.14);
+        // The filter is on the **resolved** value, not only on the theme's: the active theme
+        // is applied to every control before it is drawn, so `style.background_color` already
+        // holds `Surface`'s window fill and letting it through unfiltered is exactly the
+        // invisible-control defect this guards against. A caller's own colour still wins.
+        let track_color = match style.background_color {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => empty_track,
+        };
+
+        // ── Background track ──
+        context.fill_rounded_rect(track_rect, track_height / 2, track_color);
+
+        // ── Filled track ──
         let knob_center_x = self.knob_x(track_left, track_width);
         let fill_width = (knob_center_x - track_left) as u32;
         if fill_width > 0 {
             let fill_rect = crate::core::Rect::new(track_left, track_y, fill_width, track_height);
-            context.fill_rounded_rect(fill_rect, track_height / 2, Color::rgba(0, 122, 255, 255));
+            context.fill_rounded_rect(fill_rect, track_height / 2, accent);
         }
 
-        // ── Knob (white circle with thin border) ──
+        // ── Knob (circle with a thin border) ──
+        // The two-step surface `Input` uses: a light knob on a light theme, a dark one on a
+        // dark theme, with the luminance inverted from the surface so the disc stays visible.
+        let knob_fill = if track_color.is_dark() {
+            track_color.blend(&Color::WHITE, 0.30)
+        } else {
+            track_color.blend(&Color::WHITE, 0.85)
+        };
         context.fill_circle_aa(
             Point::new(knob_center_x, rect.y + (rect.height as i32 / 2)),
             knob_radius,
-            Color::WHITE,
+            knob_fill,
         );
-        // Knob border (light gray)
+        // Knob border, one visible step from the knob itself.
+        let knob_border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .filter(|resolved| *resolved != knob_fill)
+            .unwrap_or_else(|| knob_fill.blend(&muted, 0.40));
         context.draw_circle_stroke(
             Point::new(knob_center_x, rect.y + (rect.height as i32 / 2)),
             knob_radius,
-            Color::rgba(200, 200, 200, 255),
+            knob_border,
             1,
         );
     }
@@ -1055,15 +1251,76 @@ impl WidgetProperties for MaterialNavigationRail {
 
 impl Draw for MaterialNavigationRail {
     fn draw(&mut self, context: &mut RenderContext) {
-        if self.items.is_empty() {
+        let rect = self.geometry();
+        if rect.width == 0 || rect.height == 0 {
             return;
         }
 
-        let rect = self.geometry();
+        // Chrome colours resolve the explicit style first, then the theme's resolved style for
+        // this control, and only then a literal. The rail was a fixed white, its indicator and
+        // labels a fixed Material blue and grey, so a light/dark switch left it unchanged — the
+        // rendering census reported the control as theme-blind. It also `return`ed while empty, so
+        // a freshly constructed rail reported `ink = 0`.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
+        // is not re-entrant.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("material_navigation_rail");
+        // Read as its own lock acquisition and copied out as values, so the guard is dropped
+        // before anything else touches the theme.
+        let (window_fill, foreground, secondary, primary) = {
+            let manager = crate::theme::global_theme_manager();
+            match manager.current_theme() {
+                Some(active) => (
+                    active.colors.background,
+                    active.colors.foreground,
+                    active.colors.secondary,
+                    active.colors.primary,
+                ),
+                None => (
+                    Color::rgb(240, 240, 240),
+                    Color::BLACK,
+                    Color::rgb(158, 158, 158),
+                    Color::rgb(33, 150, 243),
+                ),
+            }
+        };
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(foreground);
+        // `material_navigation_rail` is absent from `WidgetRole::for_kind_name`'s table, so it
+        // classifies as `Surface` and the active theme writes the window fill into
+        // `style.background_color`. A rail painted in that colour would be byte-identical to the
+        // frame behind it, so a resolved surface equal to the window fill is re-derived a visible
+        // step away from it, while a colour the caller set still wins.
+        let rail = match style.background_color {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => window_fill.blend(&ink, 0.08),
+        };
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .filter(|resolved| *resolved != rail)
+            .unwrap_or_else(|| rail.blend(&secondary, 0.45));
+
         let rail_width = rect.width;
 
         // ── Rail background ──
-        context.fill_rect(rect, Color::rgba(255, 255, 255, 255));
+        //
+        // Painted before the empty check: a rail with nothing in it is still a rail, and hiding it
+        // made the control invisible rather than empty.
+        context.fill_rect(rect, rail);
+        context.draw_line(
+            Point::new(rect.x + rail_width as i32 - 1, rect.y),
+            Point::new(rect.x + rail_width as i32 - 1, rect.y + rect.height as i32),
+            border,
+        );
+
+        if self.items.is_empty() {
+            return;
+        }
 
         let item_height = 72u32;
         let icon_font = crate::core::Font::new("sans-serif", 14.0, false, false);
@@ -1077,7 +1334,7 @@ impl Draw for MaterialNavigationRail {
             if is_selected {
                 context.fill_rect(
                     crate::core::Rect::new(rect.x, item_y + 8, 4, item_height.saturating_sub(16)),
-                    Color::rgba(25, 118, 210, 255), // Material blue
+                    primary,
                 );
             }
 
@@ -1091,16 +1348,12 @@ impl Draw for MaterialNavigationRail {
                         item_height.saturating_sub(16),
                     ),
                     8,
-                    Color::rgba(25, 118, 210, 25), // Very light blue tint
+                    primary.with_alpha(25),
                 );
             }
 
             // ── Icon (rendered as text placeholder) ──
-            let icon_color = if is_selected {
-                Color::rgba(25, 118, 210, 255) // Material blue
-            } else {
-                Color::rgba(98, 98, 98, 255) // Gray
-            };
+            let icon_color = if is_selected { primary } else { secondary };
             let icon_metrics = context.measure_text(&item.icon, &icon_font);
             let icon_x = rect.x + (rail_width as i32 - icon_metrics.width as i32) / 2;
             let icon_y = item_y + 20 + icon_metrics.height as i32 / 2;
@@ -1113,11 +1366,7 @@ impl Draw for MaterialNavigationRail {
             );
 
             // ── Label ──
-            let label_color = if is_selected {
-                Color::rgba(25, 118, 210, 255) // Material blue
-            } else {
-                Color::rgba(98, 98, 98, 255) // Gray
-            };
+            let label_color = if is_selected { primary } else { secondary };
             let label_metrics = context.measure_text(&item.label, &label_font);
             let label_x = rect.x + (rail_width as i32 - label_metrics.width as i32) / 2;
             let label_y = item_y + 44 + label_metrics.height as i32 / 2;

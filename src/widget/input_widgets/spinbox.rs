@@ -12,9 +12,9 @@ use crate::widget::capability::coercion::{expect_bool, expect_i64, expect_string
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::numeric::ordered_clamp_i32;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
-use crate::widget::numeric::{ordered_clamp_i32};
 /// Spin box widget for integer input.
 pub struct SpinBox {
     base: BaseWidget,
@@ -381,6 +381,14 @@ impl Draw for SpinBox {
         let style = self.style();
         let bg = style.background_color.unwrap_or(Color::rgb(255, 255, 255));
         let text_color = style.text_color.unwrap_or(Color::rgb(0, 0, 0));
+        // The stepper buttons are part of this control's own chrome, so they follow
+        // the widget's style instead of a fixed grey: the theme resolved a colour for
+        // the spin box, and a literal made the two button wells ignore it (and stay
+        // light in a dark theme). The arrows are ink drawn on those wells, so they
+        // read `text_color` — the same colour the value's text uses.
+        let button_bg = style.background_color.unwrap_or(Color::rgb(240, 240, 240));
+        let button_border = style.border_color.unwrap_or(Color::rgb(200, 200, 200));
+        let arrow_color = style.text_color.unwrap_or(Color::rgb(100, 100, 100));
         let default_font = Font::default();
         let font = style.font.as_ref().unwrap_or(&default_font);
         // Draw background
@@ -398,11 +406,11 @@ impl Draw for SpinBox {
         // Down button
         context.fill_rect(
             Rect::from_f32(down_button_x_f, rect_y_f, button_width_f, rect_height_f),
-            Color::rgb(240, 240, 240),
+            button_bg,
         );
         context.draw_rect(
             Rect::from_f32(down_button_x_f, rect_y_f, button_width_f, rect_height_f),
-            Color::rgb(200, 200, 200),
+            button_border,
         );
         // Down arrow
         let down_arrow_x_f = down_button_x_f + button_width_f / 2.0;
@@ -412,26 +420,26 @@ impl Draw for SpinBox {
         context.draw_line(
             Point::from_f32(down_arrow_x_f - arrow_size_f, down_arrow_y_f - arrow_size_f / 2.0),
             Point::from_f32(down_arrow_x_f + arrow_size_f, down_arrow_y_f - arrow_size_f / 2.0),
-            Color::rgb(100, 100, 100),
+            arrow_color,
         );
         context.draw_line(
-            Point::from_f32(down_arrow_x_f + arrow_size_f, down_arrow_y_f - arrow_size_f / 2.0),
+            Point::from_f32(down_arrow_x_f + arrow_size_f, down_arrow_y_f + arrow_size_f / 2.0),
             Point::from_f32(down_arrow_x_f, down_arrow_y_f + arrow_size_f / 2.0),
-            Color::rgb(100, 100, 100),
+            arrow_color,
         );
         context.draw_line(
             Point::from_f32(down_arrow_x_f, down_arrow_y_f + arrow_size_f / 2.0),
             Point::from_f32(down_arrow_x_f - arrow_size_f, down_arrow_y_f - arrow_size_f / 2.0),
-            Color::rgb(100, 100, 100),
+            arrow_color,
         );
         // Up button
         context.fill_rect(
             Rect::from_f32(up_button_x_f, rect_y_f, button_width_f, rect_height_f),
-            Color::rgb(240, 240, 240),
+            button_bg,
         );
         context.draw_rect(
             Rect::from_f32(up_button_x_f, rect_y_f, button_width_f, rect_height_f),
-            Color::rgb(200, 200, 200),
+            button_border,
         );
         // Up arrow
         let up_arrow_x_f = up_button_x_f + button_width_f / 2.0;
@@ -439,17 +447,17 @@ impl Draw for SpinBox {
         context.draw_line(
             Point::from_f32(up_arrow_x_f - arrow_size_f, up_arrow_y_f + arrow_size_f / 2.0),
             Point::from_f32(up_arrow_x_f + arrow_size_f, up_arrow_y_f + arrow_size_f / 2.0),
-            Color::rgb(100, 100, 100),
+            arrow_color,
         );
         context.draw_line(
             Point::from_f32(up_arrow_x_f + arrow_size_f, up_arrow_y_f + arrow_size_f / 2.0),
             Point::from_f32(up_arrow_x_f, up_arrow_y_f - arrow_size_f / 2.0),
-            Color::rgb(100, 100, 100),
+            arrow_color,
         );
         context.draw_line(
             Point::from_f32(up_arrow_x_f, up_arrow_y_f - arrow_size_f / 2.0),
             Point::from_f32(up_arrow_x_f - arrow_size_f, up_arrow_y_f + arrow_size_f / 2.0),
-            Color::rgb(100, 100, 100),
+            arrow_color,
         );
         // Draw text
         let display_text = self.display_text();

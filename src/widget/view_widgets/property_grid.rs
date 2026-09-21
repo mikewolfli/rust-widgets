@@ -257,25 +257,79 @@ impl Draw for PropertyGrid {
         let name_col_width = rect.width / 3;
         let is_enabled = self.base.is_enabled();
 
+        // Chrome colours resolve explicit style first, then the theme's resolved style for
+        // this control, and only then a literal. The theme step is what makes an appearance
+        // switch visible; the surface, the header bar, the zebra rows, the name column and
+        // all three text colours used to be hardcoded literals, so light and dark rendered
+        // identically.
+        //
+        // The theme reads take and release the global manager's lock internally, so no guard
+        // is held across the draw (the mutex is not re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("property_grid");
+        let mut surface = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        // `property_grid` is absent from `WidgetRole::for_kind_name`'s table, so it classifies
+        // as `Surface` and resolves to `theme.colors.background` — the window's own fill. A
+        // panel painted in that colour would be byte-identical to the frame behind it (which
+        // is what the census measured: the whole rect in the window fill), so a resolved
+        // surface equal to the window fill is re-derived a visible step away from it, the
+        // same distinction `Colors::input_background` draws for a field.
+        let window_fill = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.background)
+            .unwrap_or(Color::WHITE);
+        if surface == window_fill {
+            surface = window_fill.blend(&ink, 0.08);
+        }
+        // The accent is the theme's `primary`: the hue a theme is expected to vary most, so
+        // the header bar and the editable-value ink follow the appearance rather than a
+        // literal grey and a literal navy.
+        let accent = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.primary)
+            .unwrap_or(Color::PRIMARY);
+        // The header is the panel's own surface driven toward the accent, so it stays legible
+        // against whatever the theme resolves rather than being a fixed dark grey.
+        let header_bg = surface.blend(&accent, 0.75);
+        let header_ink = header_bg.contrast_color();
+        let separator = surface.blend(&ink, 0.25);
+        // The zebra bands are one step into the surface, so the rows still alternate in either
+        // appearance instead of being forced to two fixed light greys.
+        let striped_row = surface.blend(&ink, 0.04);
+        // Selection and the name column are distinct regions of the same surface, so both are
+        // derived from it rather than picked as further literals.
+        let selected_row = surface.blend(&accent, 0.30);
+        let name_column = surface.blend(&ink, 0.10);
+        // Row separators are a subdivision of the surface, not a second literal grey.
+        let row_separator = surface.blend(&ink, 0.12);
+        let disabled_ink = ink.blend(&surface, 0.55);
+
         // Background
-        context.fill_rect(rect, Color::WHITE);
+        context.fill_rect(rect, surface);
 
         // Header row
         let header_font = Font::bold("Arial", 12.0);
         let header_rect = Rect::new(rect.x, rect.y, rect.width, row_height);
-        context.fill_rect(header_rect, Color::rgba(60, 60, 60, 200));
+        context.fill_rect(header_rect, header_bg);
         context.draw_text(
             Point::new(rect.x + 4, rect.y + 6),
             "Property",
             &header_font,
-            Color::WHITE,
+            header_ink,
             HorizontalAlignment::Left,
         );
         context.draw_text(
             Point::new(rect.x + name_col_width as i32 + 4, rect.y + 6),
             "Value",
             &header_font,
-            Color::WHITE,
+            header_ink,
             HorizontalAlignment::Left,
         );
 
@@ -284,7 +338,7 @@ impl Draw for PropertyGrid {
         context.draw_line(
             Point::new(rect.x, separator_y),
             Point::new(rect.x + rect.width as i32, separator_y),
-            Color::rgba(100, 100, 100, 200),
+            separator,
         );
 
         // Property rows
@@ -307,20 +361,19 @@ impl Draw for PropertyGrid {
 
             // Alternating row background
             if is_selected {
-                context.fill_rect(row_rect, Color::rgba(51, 153, 255, 80));
+                context.fill_rect(row_rect, selected_row);
             } else if i % 2 == 0 {
-                context.fill_rect(row_rect, Color::rgba(240, 240, 240, 200));
+                context.fill_rect(row_rect, striped_row);
             } else {
-                context.fill_rect(row_rect, Color::WHITE);
+                context.fill_rect(row_rect, surface);
             }
 
             // Name column background
             let name_rect = Rect::new(rect.x, y, name_col_width, row_height);
-            context.fill_rect(name_rect, Color::rgba(220, 220, 220, 200));
+            context.fill_rect(name_rect, name_column);
 
             // Name text (bold)
-            let name_text_color =
-                if !is_enabled { Color::GRAY } else { Color::rgba(30, 30, 30, 255) };
+            let name_text_color = if !is_enabled { disabled_ink } else { ink };
             context.draw_text(
                 Point::new(rect.x + 4, y + 6),
                 &self.properties[i].name,
@@ -330,12 +383,14 @@ impl Draw for PropertyGrid {
             );
 
             // Value text
+            // An editable value is a link-like affordance, so it reads the theme's accent
+            // instead of a literal navy that disappears on a dark surface.
             let value_color = if !is_enabled {
-                Color::GRAY
+                disabled_ink
             } else if self.properties[i].editable {
-                Color::rgba(0, 0, 139, 255) // dark blue for editable
+                accent
             } else {
-                Color::rgba(30, 30, 30, 255)
+                ink
             };
             context.draw_text(
                 Point::new(rect.x + name_col_width as i32 + 4, y + 6),
@@ -349,7 +404,7 @@ impl Draw for PropertyGrid {
             context.draw_line(
                 Point::new(rect.x, y + row_height as i32 - 1),
                 Point::new(rect.x + rect.width as i32, y + row_height as i32 - 1),
-                Color::rgba(200, 200, 200, 150),
+                row_separator,
             );
 
             y += row_height as i32;
@@ -834,11 +889,7 @@ mod tests {
 
         pg.properties_mut().truncate(2);
         assert_eq!(pg.property_count(), 2);
-        assert_eq!(
-            pg.selected_index(),
-            None,
-            "an index past the end must read as no selection"
-        );
+        assert_eq!(pg.selected_index(), None, "an index past the end must read as no selection");
 
         // Re-growing the list must not resurrect the stale index.
         pg.add_property("new", "v", true);
@@ -874,5 +925,4 @@ mod tests {
         assert!(long.scroll_offset <= long.max_scroll());
         assert_eq!(long.selected_index(), Some(49));
     }
-
 }

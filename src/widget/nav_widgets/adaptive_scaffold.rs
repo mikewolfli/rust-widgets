@@ -243,8 +243,23 @@ impl Draw for AdaptiveScaffold {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
 
+        // Chrome colours resolve explicit style first, then the theme's resolved style
+        // for this control, and only then fall back to a literal. Without the theme step
+        // a light/dark switch would change nothing on screen, because the scaffold fill
+        // was previously hardcoded.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global
+        // manager's mutex is not re-entrant.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("adaptive_scaffold");
+        let background = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::rgba(245, 246, 248, 255));
+
         // ── Background ──
-        context.fill_rect(rect, Color::rgba(245, 246, 248, 255));
+        context.fill_rect(rect, background);
 
         // ── AppBar ──
         self.app_bar.draw(context);
@@ -252,7 +267,7 @@ impl Draw for AdaptiveScaffold {
         // ── Body content area (body widget drawing is delegated to the
         //     widget's own render path since Box<dyn Widget> doesn't expose Draw)
         let content_rect = self.content_rect();
-        context.fill_rect(content_rect, Color::rgba(245, 246, 248, 255));
+        context.fill_rect(content_rect, background);
 
         // ── Bottom navigation bar ──
         if self.show_bottom_nav && !self.nav_items.is_empty() {
@@ -272,14 +287,32 @@ impl AdaptiveScaffold {
 
         let tab_width = nav_rect.width / item_count as u32;
 
+        // The bar draws with the scaffold's own resolved chrome, so the whole control
+        // moves together on a theme switch rather than the bar keeping a literal white.
+        // These are further manager locks, each taken and released inside the accessor.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("adaptive_scaffold");
+        let bar_background = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let bar_ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        let bar_border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or(Color::DIVIDER);
+
         // Background
-        context.fill_rect(nav_rect, Color::WHITE);
+        context.fill_rect(nav_rect, bar_background);
 
         // Top border
         context.draw_line(
             Point::new(nav_rect.x, nav_rect.y),
             Point::new(nav_rect.x + nav_rect.width as i32, nav_rect.y),
-            Color::DIVIDER,
+            bar_border,
         );
 
         let icon_font_size = (nav_rect.height as f32 * 0.32).clamp(14.0, 28.0);
@@ -293,7 +326,10 @@ impl AdaptiveScaffold {
             let tab_rect = Rect::new(tab_x, nav_rect.y, tab_width, nav_rect.height);
 
             let is_selected = i == self.selected_nav_index;
-            let icon_color = if is_selected { Color::PRIMARY } else { Color::MEDIUM_GRAY };
+            // Selected tab is the bar's ink; the unselected tabs are the same ink
+            // damped toward the bar, so both move with the appearance.
+            let icon_color =
+                if is_selected { bar_ink } else { bar_ink.blend(&bar_background, 0.45) };
             let label_color = icon_color;
 
             let icon_metrics = context.measure_text(&item.icon, &icon_font);
@@ -331,7 +367,7 @@ impl AdaptiveScaffold {
                 let indicator_x = tab_rect.x + (tab_rect.width as i32 - indicator_width as i32) / 2;
                 let indicator_rect =
                     Rect::new(indicator_x, nav_rect.y, indicator_width, indicator_height);
-                context.fill_rounded_rect(indicator_rect, 1, Color::PRIMARY);
+                context.fill_rounded_rect(indicator_rect, 1, bar_ink);
             }
         }
     }
@@ -529,11 +565,7 @@ mod tests {
         scaffold.set_enabled(false);
 
         scaffold.handle_event(&Event::MousePress { pos: Point::new(300, 780), button: 1 });
-        assert_eq!(
-            scaffold.selected_nav_index(),
-            0,
-            "a disabled scaffold must keep its selection"
-        );
+        assert_eq!(scaffold.selected_nav_index(), 0, "a disabled scaffold must keep its selection");
 
         // Re-enabling restores navigation, so the gate suspends rather than locks.
         scaffold.set_enabled(true);

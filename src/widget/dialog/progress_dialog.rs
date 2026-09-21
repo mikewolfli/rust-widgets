@@ -13,8 +13,8 @@ use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::numeric::ordered_clamp_i32;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
-use crate::widget::numeric::{ordered_clamp_i32};
 /// Progress dialog widget.
 /// Progress dialog widget.
 ///
@@ -310,20 +310,62 @@ impl EventHandler for ProgressDialog {
 impl Draw for ProgressDialog {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(
-            Rect::new(rect.x, rect.y, rect.width, rect.height),
-            Color::rgb(245, 245, 245),
-        );
-        context.draw_rect(
-            Rect::new(rect.x, rect.y, rect.width, rect.height),
-            Color::rgb(160, 160, 160),
-        );
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, 28), Color::rgb(0, 120, 215));
+        // Chrome colours resolve explicit style first, then the theme's resolved style for
+        // this control, and only then a literal. The dialog surface already read the style,
+        // but the title bar, the progress track and the button were literals, so a light/dark
+        // switch left them unchanged and the census reported the control as theme-blind.
+        //
+        // The theme reads take and release the global manager's lock internally, so no guard
+        // is held across the draw (the mutex is not re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("progress_dialog");
+        // `progress_dialog` is absent from `WidgetRole::for_kind_name`'s table, so it
+        // classifies as `Surface` and resolves to `theme.colors.background` — the window's
+        // own fill. A panel painted in that colour would be byte-identical to the frame
+        // behind it, so a resolved surface equal to the window fill is re-derived a visible
+        // step away from it, the same distinction `Colors::input_background` draws for a
+        // field.
+        let window_fill = {
+            let manager = crate::theme::global_theme_manager();
+            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
+        };
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::rgb(40, 40, 40));
+        let surface = match style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+        {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => window_fill.blend(&ink, 0.06),
+        };
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .filter(|resolved| *resolved != surface)
+            .unwrap_or_else(|| surface.blend(&ink, 0.45));
+        // The title bar, the progress track and the button are distinct bands on the panel,
+        // derived from it so they stay one visible step apart in either appearance.
+        let title_bar = surface.blend(&ink, 0.08);
+        let track = surface.blend(&ink, 0.12);
+        let button_fill = surface.blend(&ink, 0.12);
+
+        // The filled portion of the bar encodes "complete" rather than a surface
+        // appearance, so it reads the theme's semantic `success` token instead of the
+        // literal green it used to carry. `semantic_color` takes its own lock and returns an
+        // owned `Color`, so no guard outlives the call.
+        let progress_fill = crate::theme::semantic_color(crate::theme::SemanticColor::Success)
+            .unwrap_or(Color::rgb(6, 176, 37));
+
+        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), surface);
+        context.draw_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), border);
+        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, 28), title_bar);
         context.draw_text(
             Point::new(rect.x + 8, rect.y + 14),
             &self.title,
             &Font::default(),
-            Color::rgb(255, 255, 255),
+            ink,
             HorizontalAlignment::Left,
         );
         // Label
@@ -331,20 +373,21 @@ impl Draw for ProgressDialog {
             Point::new(rect.x + 10, rect.y + 48),
             &self.label_text,
             &Font::default(),
-            Color::rgb(0, 0, 0),
+            ink,
             HorizontalAlignment::Left,
         );
-        // Progress bar
+        // Progress bar: the track is chrome and follows the theme; the filled portion is the
+        // semantic `success` colour resolved above.
         let bar_y = rect.y + 62;
         let bar_w = rect.width.saturating_sub(20);
         let bar_h: u32 = 20;
-        context.fill_rect(Rect::new(rect.x + 10, bar_y, bar_w, bar_h), Color::rgb(220, 220, 220));
-        context.draw_rect(Rect::new(rect.x + 10, bar_y, bar_w, bar_h), Color::rgb(150, 150, 150));
+        context.fill_rect(Rect::new(rect.x + 10, bar_y, bar_w, bar_h), track);
+        context.draw_rect(Rect::new(rect.x + 10, bar_y, bar_w, bar_h), border);
         let fill_w = (bar_w as f32 * self.progress_fraction()) as i32;
         if fill_w > 0 {
             context.fill_rect(
                 Rect::new(rect.x + 10, bar_y, fill_w.max(0) as u32, bar_h),
-                Color::rgb(6, 176, 37),
+                progress_fill,
             );
         }
         // Percentage text
@@ -353,7 +396,7 @@ impl Draw for ProgressDialog {
             Point::new(rect.x + 10 + (bar_w as i32 / 2), bar_y + (bar_h as i32 / 2)),
             &format!("{pct}%"),
             &Font::default(),
-            Color::rgb(0, 0, 0),
+            ink,
             HorizontalAlignment::Left,
         );
         // Cancel button
@@ -366,7 +409,7 @@ impl Draw for ProgressDialog {
                 btn_w as u32,
                 28u32,
             ),
-            Color::rgb(225, 225, 225),
+            button_fill,
         );
         context.draw_rect(
             Rect::new(
@@ -375,13 +418,13 @@ impl Draw for ProgressDialog {
                 btn_w as u32,
                 28u32,
             ),
-            Color::rgb(100, 100, 100),
+            border,
         );
         context.draw_text(
             Point::new(rect.x + rect.width as i32 / 2, (btn_y + 14.0) as i32),
             &self.cancel_button_text,
             &Font::default(),
-            Color::rgb(0, 0, 0),
+            ink,
             HorizontalAlignment::Left,
         );
     }

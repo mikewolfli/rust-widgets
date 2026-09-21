@@ -580,8 +580,55 @@ impl WidgetProperties for DataGrid {
 impl Draw for DataGrid {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.base.geometry();
-        context.fill_rect(rect, Color::rgb(255, 255, 255));
-        context.draw_rect(rect, Color::rgb(200, 200, 200));
+
+        // Chrome colours resolve explicit style first, then the theme's resolved style for
+        // this control, and only then a literal. The theme step is what makes an appearance
+        // switch visible; the surface, the cell fills, the borders and the text colour used
+        // to be hardcoded literals, so light and dark rendered identically.
+        //
+        // The theme reads take and release the global manager's lock internally, so no guard
+        // is held across the draw (the mutex is not re-entrant). `data_grid` reaches the
+        // theme through its `table` classification, which is `Input` — an interior that
+        // moves with the appearance.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("data_grid");
+        let mut surface = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        // `data_grid` is absent from `WidgetRole::for_kind_name`'s table, so it classifies as
+        // `Surface` and resolves to `theme.colors.background` — the window's own fill. A panel
+        // painted in that colour would be byte-identical to the frame behind it, so a resolved
+        // surface equal to the window fill is re-derived a visible step away from it, the same
+        // distinction `Colors::input_background` draws for a field.
+        let window_fill = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.background)
+            .unwrap_or(Color::WHITE);
+        if surface == window_fill {
+            surface = window_fill.blend(&ink, 0.08);
+        }
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .filter(|resolved| *resolved != surface)
+            .unwrap_or_else(|| surface.blend(&ink, 0.20));
+        // Cell chrome is derived from the surface rather than picked as a second literal, so
+        // the grid reads as inset in either appearance.
+        let cell_border = surface.blend(&ink, 0.10);
+        // The accent is the theme's `primary`: the hue a theme is expected to vary most, so
+        // the frozen-column indicator follows the appearance rather than staying a literal blue.
+        let accent = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.primary)
+            .unwrap_or(Color::PRIMARY);
+
+        context.fill_rect(rect, surface);
+        context.draw_rect(rect, border);
 
         let rows = self.fetch_visible_cells();
         if rows.is_empty() {
@@ -602,16 +649,13 @@ impl Draw for DataGrid {
                 if x >= rect.x + rect.width as i32 {
                     break;
                 }
-                context.draw_rect(
-                    Rect::new(x, y, self.column_width, self.row_height),
-                    Color::rgb(230, 230, 230),
-                );
+                context.draw_rect(Rect::new(x, y, self.column_width, self.row_height), cell_border);
                 if let Some(text) = cell {
                     context.draw_text(
                         Point::new(x + 4, y + row_h / 2),
                         text,
                         &Font::default(),
-                        Color::rgb(0, 0, 0),
+                        ink,
                         HorizontalAlignment::Left,
                     );
                 }
@@ -625,7 +669,7 @@ impl Draw for DataGrid {
                 context.draw_line(
                     Point::new(split_x, rect.y),
                     Point::new(split_x, rect.y + rect.height as i32),
-                    Color::rgb(0, 120, 215),
+                    accent,
                 );
             }
         }

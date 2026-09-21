@@ -365,8 +365,44 @@ impl EventHandler for NotificationCenter {
 impl Draw for NotificationCenter {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::rgb(250, 251, 253));
-        context.draw_rect(rect, Color::rgb(194, 201, 214));
+
+        // Chrome colours resolve explicit style first, then the theme's resolved
+        // style for this control, and only then a literal. The theme step is what
+        // makes an appearance switch visible; previously every colour below was a
+        // hardcoded literal, so light and dark rendered identically.
+        //
+        // `resolved_theme_style` takes and releases the global manager's lock
+        // internally, so no guard is held across the draw (the mutex is not
+        // re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("notification_center");
+        // `notification_center` is not a control kind in the role table, so it
+        // classifies as `Surface`, whose background is `theme.colors.background` —
+        // byte-identical to the window behind it. The panel is therefore a step
+        // toward the foreground, so it reads as a surface of its own.
+        let resolved = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| resolved.blend(&Color::BLACK, 0.15));
+        let text_color = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        let background = resolved.blend(&text_color, 0.08);
+        // Selection and unread row tints are chrome states, so they are derived from
+        // the resolved colours rather than from literals: the selected row reads as
+        // tinted toward the text colour, the unread one more faintly.
+        let selected_background = background.blend(&text_color, 0.14);
+        let unread_background = background.blend(&text_color, 0.05);
+        // The row separator is secondary chrome, derived from the same pair.
+        let separator = background.blend(&text_color, 0.12);
+
+        context.fill_rect(rect, background);
+        context.draw_rect(rect, border);
 
         for (index, item) in self.items.iter().enumerate() {
             let y = rect.y + index as i32 * self.row_height as i32;
@@ -376,40 +412,46 @@ impl Draw for NotificationCenter {
             let row_rect = Rect::new(rect.x, y, rect.width, self.row_height);
 
             let bg = if self.selected_index == Some(index) {
-                Color::rgb(220, 232, 249)
+                selected_background
             } else if !item.read {
-                Color::rgb(240, 246, 255)
+                unread_background
             } else {
-                Color::rgb(250, 251, 253)
+                background
             };
             context.fill_rect(row_rect, bg);
 
-            let badge_color = match item.level {
-                NotificationLevel::Info => Color::rgb(74, 122, 199),
-                NotificationLevel::Warning => Color::rgb(222, 153, 42),
-                NotificationLevel::Error => Color::rgb(208, 82, 72),
-            };
+            // The badge is a *state* indicator, so it reads the theme's semantic
+            // tokens rather than a literal pair of its own.
+            let badge_color = crate::theme::semantic_color(match item.level {
+                NotificationLevel::Info => crate::theme::SemanticColor::Info,
+                NotificationLevel::Warning => crate::theme::SemanticColor::Warning,
+                NotificationLevel::Error => crate::theme::SemanticColor::Error,
+            })
+            .map(|token| token.blend(&background, 0.25))
+            .unwrap_or_else(|| background.blend(&text_color, 0.5));
 
             context.fill_rect(Rect::new(rect.x + 8, y + 14, 8, 8), badge_color);
             context.draw_text(
                 Point::new(rect.x + 22, y + 14),
                 &item.title,
                 &Font::default(),
-                Color::rgb(40, 51, 68),
+                text_color,
                 HorizontalAlignment::Left,
             );
             context.draw_text(
                 Point::new(rect.x + 22, y + 28),
                 &item.message,
                 &Font::default(),
-                Color::rgb(91, 103, 121),
+                // The message is secondary text, so it is a tint of the resolved
+                // foreground rather than a second literal.
+                text_color.blend(&background, 0.25),
                 HorizontalAlignment::Left,
             );
 
             context.draw_line(
                 Point::new(rect.x, y + self.row_height as i32),
                 Point::new(rect.x + rect.width as i32, y + self.row_height as i32),
-                Color::rgb(229, 233, 240),
+                separator,
             );
         }
     }

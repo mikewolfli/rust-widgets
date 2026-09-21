@@ -301,8 +301,58 @@ impl Draw for WizardDialog {
         let rect = self.geometry();
         let is_enabled = self.base.is_enabled();
 
+        // Chrome colours resolve explicit style first, then the theme's resolved style for
+        // this control, and only then a literal. Every colour below used to be a literal, so
+        // a light/dark switch left the frame, the step circles, the buttons and every text
+        // run unchanged — the rendering census reported the control as theme-blind.
+        //
+        // The theme reads take and release the global manager's lock internally, so no
+        // guard is held across the draw (the mutex is not re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("wizard_dialog");
+        // `wizard_dialog` is absent from `WidgetRole::for_kind_name`'s table, so it
+        // classifies as `Surface` and resolves to `theme.colors.background` — the window's
+        // own fill. A frame painted in that colour would be byte-identical to the window
+        // behind it, so a resolved surface equal to the window fill is re-derived a visible
+        // step away from it, the same distinction `Colors::input_background` draws for a
+        // field.
+        let window_fill = {
+            let manager = crate::theme::global_theme_manager();
+            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
+        };
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::rgb(40, 40, 40));
+        let surface = match style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+        {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => window_fill.blend(&ink, 0.06),
+        };
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .filter(|resolved| *resolved != surface)
+            .unwrap_or_else(|| surface.blend(&ink, 0.45));
+        // The content well and the secondary buttons are one visible step apart from the
+        // frame in either appearance.
+        let content_fill = surface.blend(&ink, 0.04);
+        let button_fill = surface.blend(&ink, 0.12);
+        let button_ink = button_fill.contrast_color();
+        // The accent drives the wizard's progress affordances; the button fill is the
+        // fallback when the theme declines to resolve one.
+        let primary = theme.as_ref().and_then(|t| t.background_color).unwrap_or(button_fill);
+        let primary_ink = primary.contrast_color();
+        // "Completed" is a *state*, so its green comes from the theme's semantic token
+        // instead of the literal it used to carry. `semantic_color` takes and releases the
+        // lock and returns an owned colour, so no guard outlives the call.
+        let complete = crate::theme::semantic_color(crate::theme::SemanticColor::Success)
+            .unwrap_or(Color::rgb(52, 199, 89));
+
         // Background
-        context.fill_rect(rect, Color::WHITE);
+        context.fill_rect(rect, surface);
 
         let step_indicator_height = 50u32;
         let nav_button_height = 36u32;
@@ -327,13 +377,13 @@ impl Draw for WizardDialog {
                 let is_completed = self.steps[i].completed;
 
                 let (circle_color, text_color) = if !is_enabled {
-                    (Color::rgba(180, 180, 180, 200), Color::GRAY)
+                    (ink.blend(&surface, 0.25), ink.blend(&surface, 0.35))
                 } else if is_active {
-                    (Color::rgba(0, 122, 255, 200), Color::WHITE)
+                    (primary, primary_ink)
                 } else if is_completed {
-                    (Color::rgba(52, 199, 89, 200), Color::WHITE)
+                    (complete, complete.contrast_color())
                 } else {
-                    (Color::rgba(200, 200, 200, 200), Color::rgba(80, 80, 80, 255))
+                    (surface.blend(&ink, 0.15), ink)
                 };
 
                 // Draw circle
@@ -359,11 +409,11 @@ impl Draw for WizardDialog {
                     Font::new("Arial", 9.0, false, false)
                 };
                 let title_color = if !is_enabled {
-                    Color::GRAY
+                    ink.blend(&surface, 0.45)
                 } else if is_active {
-                    Color::rgba(0, 122, 255, 255)
+                    primary
                 } else {
-                    Color::rgba(60, 60, 60, 255)
+                    ink
                 };
                 let title_x = cx - (spacing as i32 / 2) + 2;
                 let title_y = cy + circle_radius as i32 + 2;
@@ -385,11 +435,8 @@ impl Draw for WizardDialog {
                 // Connect steps with lines
                 if i < total_steps - 1 {
                     let next_cx = start_x + ((i + 1) as u32 * spacing + spacing / 2) as i32;
-                    let line_color = if self.steps[i].completed {
-                        Color::rgba(52, 199, 89, 200)
-                    } else {
-                        Color::rgba(200, 200, 200, 200)
-                    };
+                    let line_color =
+                        if self.steps[i].completed { complete } else { surface.blend(&ink, 0.15) };
                     context.draw_line(
                         Point::new(cx + circle_radius as i32 + 2, cy),
                         Point::new(next_cx - circle_radius as i32 - 2, cy),
@@ -404,7 +451,7 @@ impl Draw for WizardDialog {
                 Point::new(rect.x + 10, rect.y + step_indicator_height as i32 / 2 - 6),
                 "No steps configured",
                 &empty_font,
-                Color::GRAY,
+                ink.blend(&surface, 0.45),
                 HorizontalAlignment::Left,
             );
         }
@@ -414,14 +461,14 @@ impl Draw for WizardDialog {
         context.draw_line(
             Point::new(rect.x, sep_y),
             Point::new(rect.x + rect.width as i32, sep_y),
-            Color::rgba(200, 200, 200, 200),
+            border,
         );
 
         // ── Content Area ────────────────────────────────────────────────
         if !self.steps.is_empty() {
             // Content background
             let content_rect = Rect::new(rect.x, content_y, rect.width, content_height);
-            context.fill_rect(content_rect, Color::rgba(248, 248, 248, 255));
+            context.fill_rect(content_rect, content_fill);
 
             // Step title in content area
             let title_font = Font::bold("Arial", 16.0);
@@ -429,7 +476,7 @@ impl Draw for WizardDialog {
                 Point::new(rect.x + 12, content_y + 8),
                 &self.steps[self.current_step].title,
                 &title_font,
-                Color::rgba(30, 30, 30, 255),
+                ink,
                 HorizontalAlignment::Left,
             );
 
@@ -440,7 +487,7 @@ impl Draw for WizardDialog {
                     Point::new(rect.x + 12, content_y + 30),
                     "(Optional step)",
                     &opt_font,
-                    Color::GRAY,
+                    ink.blend(&surface, 0.45),
                     HorizontalAlignment::Left,
                 );
             }
@@ -452,19 +499,19 @@ impl Draw for WizardDialog {
                 Point::new(rect.x + 12, content_y + content_height as i32 - 16),
                 &info_text,
                 &info_font,
-                Color::GRAY,
+                ink.blend(&surface, 0.45),
                 HorizontalAlignment::Left,
             );
         } else {
             // Empty content area
             let content_rect = Rect::new(rect.x, content_y, rect.width, content_height);
-            context.fill_rect(content_rect, Color::rgba(248, 248, 248, 255));
+            context.fill_rect(content_rect, content_fill);
             let empty_font = Font::new("Arial", 14.0, false, false);
             context.draw_text(
                 Point::new(rect.x + 12, content_y + 8),
                 "Add steps to begin",
                 &empty_font,
-                Color::GRAY,
+                ink.blend(&surface, 0.45),
                 HorizontalAlignment::Left,
             );
         }
@@ -474,7 +521,7 @@ impl Draw for WizardDialog {
         context.draw_line(
             Point::new(rect.x, nav_sep_y),
             Point::new(rect.x + rect.width as i32, nav_sep_y),
-            Color::rgba(200, 200, 200, 200),
+            border,
         );
 
         // ── Navigation Buttons ──────────────────────────────────────────
@@ -485,13 +532,13 @@ impl Draw for WizardDialog {
 
         // Cancel button (left side)
         let cancel_btn = Rect::new(rect.x + 8, btn_y, btn_w, btn_h);
-        context.fill_rounded_rect(cancel_btn, 4, Color::rgba(220, 220, 220, 200));
-        context.draw_rounded_rect_stroke(cancel_btn, 4, Color::rgba(180, 180, 180, 200), 1);
+        context.fill_rounded_rect(cancel_btn, 4, button_fill);
+        context.draw_rounded_rect_stroke(cancel_btn, 4, border, 1);
         context.draw_text(
             Point::new(cancel_btn.x + 14, cancel_btn.y + 10),
             "Cancel",
             &Font::new("Arial", 12.0, false, false),
-            Color::rgba(60, 60, 60, 255),
+            button_ink,
             HorizontalAlignment::Left,
         );
 
@@ -499,18 +546,16 @@ impl Draw for WizardDialog {
         let back_enabled = !self.is_first() && !self.steps.is_empty();
         let back_btn =
             Rect::new(rect.x + rect.width as i32 - 2 * btn_w as i32 - 20, btn_y, btn_w, btn_h);
-        let back_color = if !back_enabled {
-            Color::rgba(220, 220, 220, 100)
-        } else {
-            Color::rgba(220, 220, 220, 200)
-        };
+        // A disabled control dims toward its own ink rather than to a fixed light grey, which
+        // is what previously made the disabled state ignore the appearance entirely.
+        let back_color = if !back_enabled { button_fill.blend(&ink, 0.5) } else { button_fill };
         context.fill_rounded_rect(back_btn, 4, back_color);
-        context.draw_rounded_rect_stroke(back_btn, 4, Color::rgba(180, 180, 180, 200), 1);
+        context.draw_rounded_rect_stroke(back_btn, 4, border, 1);
         context.draw_text(
             Point::new(back_btn.x + 18, back_btn.y + 10),
             "Back",
             &Font::new("Arial", 12.0, false, false),
-            if !back_enabled { Color::GRAY } else { Color::rgba(60, 60, 60, 255) },
+            if !back_enabled { ink.blend(&surface, 0.45) } else { button_ink },
             HorizontalAlignment::Left,
         );
 
@@ -520,14 +565,15 @@ impl Draw for WizardDialog {
         let is_last_step = self.is_last();
         let btn_text = if is_last_step { "Finish" } else { "Next" };
         let btn_color = if !is_enabled {
-            Color::rgba(160, 160, 160, 150)
+            primary.blend(&ink, 0.5)
         } else if is_last_step {
-            Color::rgba(52, 199, 89, 200)
+            complete
         } else {
-            Color::rgba(0, 122, 255, 200)
+            primary
         };
         context.fill_rounded_rect(next_btn, 4, btn_color);
-        let btn_text_color = if !is_enabled { Color::GRAY } else { Color::WHITE };
+        let btn_text_color =
+            if !is_enabled { ink.blend(&surface, 0.45) } else { btn_color.contrast_color() };
         let text_x = if is_last_step { next_btn.x + 14 } else { next_btn.x + 20 };
         context.draw_text(
             Point::new(text_x, next_btn.y + 10),

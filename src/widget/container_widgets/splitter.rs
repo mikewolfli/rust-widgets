@@ -216,6 +216,60 @@ impl WidgetProperties for Splitter {
 impl Draw for Splitter {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.base.geometry();
+        if rect.width == 0 || rect.height == 0 {
+            return;
+        }
+
+        // The splitter's own surface and its handles resolve the explicit style first, then the
+        // theme's resolved style for this control, and only then a literal. Both were literals, so
+        // a light/dark switch left the divider unchanged — the rendering census reported the control
+        // as theme-blind. It also painted nothing at all until it had a second pane, so a freshly
+        // constructed splitter reported `ink = 0`; the track below is drawn in every state.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
+        // is not re-entrant.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("splitter");
+        // Read as its own lock acquisition and copied out as values, so the guard is dropped
+        // before anything else touches the theme.
+        let (window_fill, foreground, secondary) = {
+            let manager = crate::theme::global_theme_manager();
+            match manager.current_theme() {
+                Some(active) => {
+                    (active.colors.background, active.colors.foreground, active.colors.secondary)
+                }
+                None => (
+                    crate::core::Color::rgb(240, 240, 240),
+                    crate::core::Color::BLACK,
+                    crate::core::Color::rgb(158, 158, 158),
+                ),
+            }
+        };
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(foreground);
+        // `splitter` is absent from `WidgetRole::for_kind_name`'s table, so it classifies as
+        // `Surface` and the active theme writes the window fill into `style.background_color`. A
+        // track painted in that colour would be byte-identical to the frame behind it, so a
+        // resolved surface equal to the window fill is re-derived a visible step away from it,
+        // while a colour the caller set still wins.
+        let track = match style.background_color {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => window_fill.blend(&ink, 0.08),
+        };
+        let handle_fill = track.blend(&ink, 0.14);
+        let handle_border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .filter(|resolved| *resolved != handle_fill)
+            .unwrap_or_else(|| track.blend(&secondary, 0.45));
+
+        // The track is the surface the panes sit on, drawn before the panes so a splitter with no
+        // panes yet — or one whose registry is empty — still shows where it is.
+        context.fill_rect(rect, track);
+
         if let Some(ref registry) = self.registry {
             for (pane_id, pane_rect) in self.pane_rects() {
                 context.push_clip(pane_rect.x, pane_rect.y, pane_rect.width, pane_rect.height);
@@ -241,8 +295,8 @@ impl Draw for Splitter {
                             rect.height,
                         );
                         // Draw splitter handle
-                        context.fill_rect(handle_rect, crate::core::Color::rgb(200, 200, 200));
-                        context.draw_rect(handle_rect, crate::core::Color::rgb(150, 150, 150));
+                        context.fill_rect(handle_rect, handle_fill);
+                        context.draw_rect(handle_rect, handle_border);
                     }
                 }
             }
@@ -261,8 +315,8 @@ impl Draw for Splitter {
                             handle_width as u32,
                         );
                         // Draw splitter handle
-                        context.fill_rect(handle_rect, crate::core::Color::rgb(200, 200, 200));
-                        context.draw_rect(handle_rect, crate::core::Color::rgb(150, 150, 150));
+                        context.fill_rect(handle_rect, handle_fill);
+                        context.draw_rect(handle_rect, handle_border);
                     }
                 }
             }

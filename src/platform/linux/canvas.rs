@@ -61,7 +61,14 @@ pub(crate) fn mount_canvas(
     }
 
     let area = gtk::DrawingArea::new();
-    area.set_size_request(rect.width as i32, rect.height as i32);
+    // Position and size are assigned by the container, not claimed as a minimum.
+    //
+    // A size request is a *minimum*, and a container that aggregates its children's bounds
+    // passes it up to the toplevel — which is what made a window refuse to shrink past its
+    // right-most control. The request is therefore the smallest positive value, and
+    // `overlay_place::place` positions and sizes the child through the overlay's own
+    // properties, which are not part of the window's minimum.
+    area.set_size_request(1, 1);
     // The area paints every pixel itself, so suppress GTK's own background fill
     // and the one-frame flash that comes with it.
     area.set_has_tooltip(false);
@@ -250,8 +257,8 @@ pub(crate) fn mount_canvas(
 
     // ── Registration ───────────────────────────────────────────────────────
     let mut native = platform.native.lock_guard();
-    let placed = if let Some(container) = native.content_fixed.get(&parent) {
-        container.put(&area, rect.x, rect.y);
+    let placed = if let Some(overlay) = native.content_overlay.get(&parent) {
+        super::overlay_place::place(overlay, &area, rect.x, rect.y, rect.width, rect.height);
         true
     } else {
         log::error!("[linux] mount_surface: window {parent} has no content container");
@@ -260,9 +267,14 @@ pub(crate) fn mount_canvas(
     if placed {
         native.widgets.insert(id, area.clone().upcast::<gtk::Widget>());
         native.canvases.insert(id, area.clone());
-        if let Some(window) = native.windows.get(&parent) {
-            window.show_all();
-        }
+        // Reveal the child just added, but **not** as a side effect of showing the window.
+        //
+        // This used to be `window.show_all()`, which made a window visible only because a
+        // surface had been mounted onto it — so a window with no mounted surface never
+        // appeared, and the reason a window *did* appear was an unrelated call. Showing a
+        // window is `LinuxPlatform::set_widget_visible`'s job; this call only reveals the
+        // child it just added.
+        area.show();
     }
     drop(native);
 
@@ -327,15 +339,12 @@ pub(crate) fn resize_canvas(platform: &LinuxPlatform, id: ObjectId, rect: Rect) 
         log::error!("[linux] resize_surface: id={id} is not mounted");
         return false;
     };
-    // `gtk::Fixed` positions children through `move_`; a size change needs the
-    // size request updated as well or GTK keeps the original allocation.
-    area.set_size_request(rect.width as i32, rect.height as i32);
-    if let Some(parent) = area.parent() {
-        if let Ok(fixed) = parent.downcast::<gtk::Fixed>() {
-            fixed.move_(area, rect.x, rect.y);
-        }
-    }
-    area.queue_resize();
+    // Position and size through the shared placement rule, so a resize cannot disagree with
+    // how the canvas was mounted. The rule lives in one place because an absolute placement
+    // that also raises the window's minimum is the defect `overlay_place` documents:
+    // `place` and `reposition` must stay in step, or a control would sit at one rectangle
+    // when mounted and another after the first resize.
+    super::overlay_place::reposition(area, rect.x, rect.y, rect.width, rect.height);
     drop(native);
     crate::widget::runtime::set_geometry(id, rect);
     true
@@ -363,7 +372,11 @@ pub(crate) fn unmount_canvas(platform: &LinuxPlatform, id: ObjectId) -> bool {
 }
 
 /// Blits a top-down RGBA frame through a cairo context.
-fn blit_rgba(context: &cairo::Context, width: u32, height: u32, frame: &[u8]) {
+///
+/// `pub(crate)` because the window's tree painter in `platform_impl.rs` presents its frame
+/// the same way a mounted surface does, and one blit implementation is what keeps the two
+/// from disagreeing about channel order or stride.
+pub(crate) fn blit_rgba(context: &cairo::Context, width: u32, height: u32, frame: &[u8]) {
     let stride = cairo::Format::Rgb24.stride_for_width(width);
     let Ok(stride) = stride else {
         log::error!("[linux] canvas: cairo rejected a {width}-pixel stride");

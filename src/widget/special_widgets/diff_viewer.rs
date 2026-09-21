@@ -258,28 +258,66 @@ impl EventHandler for DiffViewer {
 impl Draw for DiffViewer {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::rgb(252, 252, 253));
-        context.draw_rect(rect, Color::rgb(195, 202, 214));
+
+        // Chrome colours resolve explicit style first, then the theme's resolved
+        // style for this control, and only then a literal. The theme step is what
+        // makes the appearance switch visible; previously every colour below was a
+        // hardcoded literal, so light and dark rendered identically.
+        //
+        // `resolved_theme_style` takes and releases the global manager's lock
+        // internally, so no guard is held across the draw (the mutex is not
+        // re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("diff_viewer");
+        let background = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| background.blend(&Color::BLACK, 0.15));
+        let text_color = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        // The split divider and the selection outline are secondary chrome, derived
+        // from the resolved colours so they follow the appearance too.
+        let divider = background.blend(&text_color, 0.15);
+        let selection = crate::theme::semantic_color(crate::theme::SemanticColor::Info)
+            .unwrap_or_else(|| background.blend(&text_color, 0.5));
+        // Added / Removed / Changed are *states*, so they read the theme's semantic
+        // tokens and are tinted over the resolved surface to stay legible in both
+        // appearances.
+        let added = crate::theme::semantic_color(crate::theme::SemanticColor::Success)
+            .map(|token| token.blend(&background, 0.85));
+        let removed = crate::theme::semantic_color(crate::theme::SemanticColor::Error)
+            .map(|token| token.blend(&background, 0.85));
+        let changed = crate::theme::semantic_color(crate::theme::SemanticColor::Warning)
+            .map(|token| token.blend(&background, 0.85));
+
+        context.fill_rect(rect, background);
+        context.draw_rect(rect, border);
 
         let mid_x = rect.x + (rect.width as i32 / 2);
         context.draw_line(
             Point::new(mid_x, rect.y),
             Point::new(mid_x, rect.y + rect.height as i32),
-            Color::rgb(216, 222, 232),
+            divider,
         );
 
         context.draw_text(
             Point::new(rect.x + 8, rect.y + 16),
             "LEFT",
             &Font::default(),
-            Color::rgb(54, 66, 85),
+            text_color,
             HorizontalAlignment::Left,
         );
         context.draw_text(
             Point::new(mid_x + 8, rect.y + 16),
             "RIGHT",
             &Font::default(),
-            Color::rgb(54, 66, 85),
+            text_color,
             HorizontalAlignment::Left,
         );
 
@@ -287,9 +325,11 @@ impl Draw for DiffViewer {
             let y = rect.y + 34 + (idx as i32) * 16;
             let bg = match line.kind {
                 DiffKind::Equal => None,
-                DiffKind::Added => Some(Color::rgb(229, 246, 235)),
-                DiffKind::Removed => Some(Color::rgb(251, 233, 232)),
-                DiffKind::Changed => Some(Color::rgb(253, 244, 225)),
+                DiffKind::Added => added.or_else(|| Some(background.blend(&Color::GREEN, 0.12))),
+                DiffKind::Removed => removed.or_else(|| Some(background.blend(&Color::RED, 0.12))),
+                DiffKind::Changed => {
+                    changed.or_else(|| Some(background.blend(&Color::YELLOW, 0.12)))
+                }
             };
             if let Some(color) = bg {
                 context.fill_rect(
@@ -300,7 +340,7 @@ impl Draw for DiffViewer {
             if self.selected_index == Some(idx) {
                 context.draw_rect(
                     Rect::new(rect.x + 2, y - 11, rect.width.saturating_sub(4), 16),
-                    Color::rgb(114, 157, 220),
+                    selection,
                 );
             }
 
@@ -309,7 +349,7 @@ impl Draw for DiffViewer {
                     Point::new(rect.x + 8, y),
                     text,
                     &Font::default(),
-                    Color::rgb(44, 57, 77),
+                    text_color,
                     HorizontalAlignment::Left,
                 );
             }
@@ -318,7 +358,7 @@ impl Draw for DiffViewer {
                     Point::new(mid_x + 8, y),
                     text,
                     &Font::default(),
-                    Color::rgb(44, 57, 77),
+                    text_color,
                     HorizontalAlignment::Left,
                 );
             }

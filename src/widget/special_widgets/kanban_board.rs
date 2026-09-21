@@ -747,20 +747,134 @@ impl Draw for KanbanBoard {
         if rect.width == 0 || rect.height == 0 {
             return;
         }
-        context.fill_rect(rect, Color::rgb(245, 246, 248));
+
+        // Chrome colours resolve explicit style first, then the theme's resolved
+        // style for this control, and only then a literal. The theme step is what
+        // makes an appearance switch visible; previously every colour below was a
+        // hardcoded literal, so light and dark rendered identically.
+        //
+        // `resolved_theme_style` takes and releases the global manager's lock
+        // internally, so no guard is held across the draw (the mutex is not
+        // re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("kanban_board");
+        // `kanban_board` is not a control kind in the role table, so it classifies as
+        // `Surface` — whose background is `theme.colors.background`, the very colour a
+        // window paints. Filling the whole rect with it would make the board
+        // indistinguishable from the window behind it (the census reports that as
+        // "painted nothing"), so the board's own fill is a step toward the foreground
+        // and the window keeps its colour.
+        let resolved = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| resolved.blend(&Color::BLACK, 0.15));
+        let text_color = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        let background = resolved.blend(&text_color, 0.08);
+
+        context.fill_rect(rect, background);
+
+        // Every colour the board paints below is derived from this one resolved
+        // triple, so a theme switch moves the whole board rather than the frame
+        // only. The column, its header strip, its cards and the drag feedback are
+        // all chrome states of the same surface.
+        let chrome = BoardChrome { background, border, text_color };
 
         for index in 0..self.columns.len() {
-            self.draw_column(context, index);
+            self.draw_column(context, index, &chrome);
         }
         // The drag overlay is painted last so the card follows the pointer over
         // every column rather than being clipped to the one it started in.
-        self.draw_drag_overlay(context);
+        self.draw_drag_overlay(context, &chrome);
+    }
+}
+
+/// The board's resolved chrome colours, threaded through the drawing helpers.
+///
+/// Gathered into one value so every column, card and drag indicator reads the
+/// same appearance-resolved colours instead of re-resolving the theme per row,
+/// and so no helper can drift back to a literal.
+#[derive(Debug, Clone, Copy)]
+struct BoardChrome {
+    /// The board's own fill, and the base every other colour is derived from.
+    background: Color,
+    /// The resolved border colour, used for card outlines.
+    border: Color,
+    /// The resolved foreground, used for text and as the tint direction.
+    text_color: Color,
+}
+
+impl BoardChrome {
+    /// A column's fill: a step away from the board so the columns read as lanes.
+    ///
+    /// The step is large enough to survive 8-bit rounding: at the default palette a
+    /// 4% step rounds to the board's own bytes, which leaves the columns invisible.
+    fn column(&self) -> Color {
+        self.background.blend(&self.text_color, 0.18)
+    }
+
+    /// The column a dragged card is hovering over, tinted toward the text colour
+    /// so the drop target is visible in either appearance.
+    fn drop_target(&self) -> Color {
+        self.background.blend(&self.text_color, 0.3)
+    }
+
+    /// The column header strip, a second step away from the column body.
+    fn header(&self) -> Color {
+        self.background.blend(&self.text_color, 0.24)
+    }
+
+    /// Header text, and the ordinary card title.
+    fn text(&self) -> Color {
+        self.text_color
+    }
+
+    /// The card count and other secondary labels.
+    fn muted_text(&self) -> Color {
+        self.text_color.blend(&self.background, 0.3)
+    }
+
+    /// The card surface, one step toward the text colour from the board so a card
+    /// reads as raised above its column.
+    fn card(&self) -> Color {
+        self.background.blend(&self.text_color, 0.1)
+    }
+
+    /// A card that has been marked done: title text muted, like the count badge.
+    fn done_text(&self) -> Color {
+        self.text_color.blend(&self.background, 0.45)
+    }
+
+    /// The WIP limit is a *state* the user has to act on, so it reads the theme's
+    /// error token rather than a literal red.
+    fn at_limit(&self) -> Color {
+        crate::theme::semantic_color(crate::theme::SemanticColor::Error)
+            .map(|token| token.blend(&self.background, 0.2))
+            .unwrap_or_else(|| self.text_color.blend(&self.background, 0.3))
+    }
+
+    /// The insertion indicator shown where a dragged card would land. This is the
+    /// theme's primary slot, read from the board's resolved border colour so it
+    /// moves with the appearance instead of staying a fixed blue.
+    fn insertion(&self) -> Color {
+        self.border.blend(&self.text_color, 0.3)
+    }
+
+    /// The colour a card's own drag ghost is filled with.
+    fn ghost(&self) -> Color {
+        self.background.blend(&self.text_color, 0.08)
     }
 }
 
 impl KanbanBoard {
     /// Draws one column: its background, header, cards and the drop preview.
-    fn draw_column(&mut self, context: &mut RenderContext, index: usize) {
+    fn draw_column(&mut self, context: &mut RenderContext, index: usize, chrome: &BoardChrome) {
         let Some(column_rect) = self.column_rect(index) else {
             return;
         };
@@ -774,16 +888,15 @@ impl KanbanBoard {
         // The drop preview is drawn under the cards, so a highlighted column still
         // shows its contents.
         let is_drop_target = self.is_dragging_card() && self.hovered_column == Some(index);
-        let background =
-            if is_drop_target { Color::rgb(226, 238, 255) } else { Color::rgb(235, 236, 240) };
+        let background = if is_drop_target { chrome.drop_target() } else { chrome.column() };
         context.fill_rounded_rect(column_rect, 8, background);
 
         // Header strip.
         let header_rect = Rect::new(column_rect.x, column_rect.y, column_rect.width, HEADER_HEIGHT);
-        context.fill_rounded_rect(header_rect, 8, Color::rgb(220, 222, 228));
+        context.fill_rounded_rect(header_rect, 8, chrome.header());
         // A WIP limit is only worth showing when it is reached, which is the state a
         // user has to act on.
-        let header_color = if at_limit { Color::rgb(200, 60, 50) } else { Color::rgb(50, 55, 65) };
+        let header_color = if at_limit { chrome.at_limit() } else { chrome.text() };
         context.draw_text(
             Point::new(header_rect.x + 10, header_rect.y + 21),
             &title,
@@ -803,7 +916,7 @@ impl KanbanBoard {
             Point::new(header_rect.x + header_rect.width as i32 - 10, header_rect.y + 21),
             &badge,
             &Font::simple("Sans", 11.0),
-            Color::rgb(110, 115, 125),
+            chrome.muted_text(),
             HorizontalAlignment::Left,
         );
 
@@ -819,7 +932,7 @@ impl KanbanBoard {
             // Clipped to the column so a card taller than the remaining space does
             // not paint over the column beside it.
             context.push_clip(column_rect.x, column_rect.y, column_rect.width, column_rect.height);
-            self.draw_card(context, card, card_rect, position);
+            self.draw_card(context, card, card_rect, position, chrome);
             context.pop_clip();
         }
     }
@@ -831,18 +944,19 @@ impl KanbanBoard {
         card: &KanbanCard,
         card_rect: Rect,
         position: CardPosition,
+        chrome: &BoardChrome,
     ) {
         let is_dragged = self.drag_origin == Some(position) && self.is_dragging_card();
         // The dragged card stays drawn in place but faded, so the user can see both
         // where it came from and where it is going.
         let alpha = if is_dragged { 90 } else { 255 };
-        context.fill_rounded_rect(card_rect, 6, Color::rgba(255, 255, 255, alpha));
-        context.draw_rounded_rect_stroke(card_rect, 6, Color::rgba(210, 212, 218, alpha), 1);
+        context.fill_rounded_rect(card_rect, 6, chrome.card().with_alpha(alpha));
+        context.draw_rounded_rect_stroke(card_rect, 6, chrome.border.with_alpha(alpha), 1);
 
         let title_color = if card.done {
-            Color::rgba(140, 145, 155, alpha)
+            chrome.done_text().with_alpha(alpha)
         } else {
-            Color::rgba(35, 40, 50, alpha)
+            chrome.text().with_alpha(alpha)
         };
         let title = if card.done { format!("✓ {}", card.title) } else { card.title.clone() };
         context.draw_text(
@@ -857,7 +971,7 @@ impl KanbanBoard {
                 Point::new(card_rect.x + 10, card_rect.y + 38),
                 &card.description,
                 &Font::simple("Sans", 10.0),
-                Color::rgba(120, 125, 135, alpha),
+                chrome.muted_text().with_alpha(alpha),
                 HorizontalAlignment::Left,
             );
         }
@@ -867,7 +981,7 @@ impl KanbanBoard {
     ///
     /// Uses [`DropTarget::preview_rect`] on this board to find the landing column,
     /// so the preview and the commit read one answer rather than two rules.
-    fn draw_drag_overlay(&mut self, context: &mut RenderContext) {
+    fn draw_drag_overlay(&mut self, context: &mut RenderContext, chrome: &BoardChrome) {
         let Some(session) = self.drag.as_ref() else {
             return;
         };
@@ -888,7 +1002,7 @@ impl KanbanBoard {
             context.draw_line_stroke(
                 Point::new(column_rect.x + 6, line_y),
                 Point::new(column_rect.x + column_rect.width as i32 - 6, line_y),
-                Color::rgb(66, 133, 244),
+                chrome.insertion(),
                 3,
             );
         }
@@ -902,13 +1016,13 @@ impl KanbanBoard {
             COLUMN_WIDTH,
             CARD_HEIGHT,
         );
-        context.fill_rounded_rect(ghost, 6, Color::rgba(255, 255, 255, 230));
-        context.draw_rounded_rect_stroke(ghost, 6, Color::rgb(66, 133, 244), 2);
+        context.fill_rounded_rect(ghost, 6, chrome.ghost().with_alpha(230));
+        context.draw_rounded_rect_stroke(ghost, 6, chrome.insertion(), 2);
         context.draw_text(
             Point::new(ghost.x + 10, ghost.y + 20),
             &label,
             &Font::simple("Sans", 12.0),
-            Color::rgb(35, 40, 50),
+            chrome.text(),
             HorizontalAlignment::Left,
         );
     }

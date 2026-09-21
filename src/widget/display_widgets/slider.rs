@@ -603,8 +603,65 @@ impl Draw for Slider {
         let rect = self.geometry();
         let slider_pos = self.value_to_pixel_pos(self.value);
         let slider_size = 16;
+
+        // Chrome colours resolve the explicit style first, then the theme's resolved style for
+        // this control, and only then fall back to a literal. The groove read `style` already,
+        // but the handle and the ticks were literals, so a light/dark switch left them unchanged
+        // — the rendering census reported the control as theme-blind.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
+        // is not re-entrant.
         let style = self.style();
-        let groove_color = style.background_color.unwrap_or(Color::rgb(200, 200, 200));
+        // `slider` classifies as `WidgetRole::Accent`, whose resolved colours are the theme's
+        // accent token and its contrasting ink. `primary` is read alongside it as the crate's
+        // conventional value-indicator token, so the handle matches the rest of the library.
+        let theme = crate::theme::resolved_theme_style("slider");
+        let (window_fill, foreground, primary, accent, muted) = {
+            let manager = crate::theme::global_theme_manager();
+            match manager.current_theme() {
+                Some(active) => (
+                    active.colors.background,
+                    active.colors.foreground,
+                    active.colors.primary,
+                    active.colors.accent,
+                    active.colors.secondary,
+                ),
+                None => (
+                    Color::rgb(240, 240, 240),
+                    Color::BLACK,
+                    Color::rgb(33, 150, 243),
+                    Color::rgb(255, 152, 0),
+                    Color::rgb(158, 158, 158),
+                ),
+            }
+        };
+
+        // The groove: a caller's own colour wins, then the theme's resolved background. A control
+        // classified as `Surface` or `Accent` resolves to something that is not the window fill on
+        // its own, but the filter keeps a window-coloured value from being painted as the track.
+        let groove_color = style
+            .background_color
+            .filter(|resolved| *resolved != window_fill)
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .filter(|resolved| *resolved != window_fill)
+            .unwrap_or_else(|| window_fill.blend(&foreground, 0.14));
+        // The handle is the largest area the slider paints and the census measures it as the
+        // dominant colour, so it is what must move with the appearance: it carries the theme's
+        // primary (the value indicator) rather than a fixed blue. A caller's border colour, which
+        // is what the old code used to outline the handle, is not reused for the fill — it stands
+        // in for the handle's own outline below.
+        let handle_color = primary;
+        // Ticks are de-emphasised from the groove rather than being a fixed grey.
+        let tick_color = groove_color.blend(&muted, 0.55);
+        // The handle's outline, one visible step from the handle itself. `accent` is kept in the
+        // read so the palette tuple stays uniform across the material controls.
+        let handle_border = style
+            .border_color
+            .filter(|resolved| *resolved != handle_color)
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .filter(|resolved| *resolved != handle_color)
+            .unwrap_or_else(|| handle_color.blend(&accent, 0.40));
         // Draw groove (track)
         match self.orientation {
             Orientation::Horizontal => {
@@ -628,10 +685,10 @@ impl Draw for Slider {
                         slider_size as f32,
                         rect.height as f32,
                     ),
-                    Color::rgb(0, 120, 215),
+                    handle_color,
                 );
                 // Draw handle border
-                if let Some(border_color) = style.border_color {
+                if let Some(border_color) = style.border_color.filter(|c| *c != handle_color) {
                     context.draw_rect(
                         Rect::from_f32(
                             slider_pos - slider_size as f32 / 2.0,
@@ -640,6 +697,16 @@ impl Draw for Slider {
                             rect.height as f32,
                         ),
                         border_color,
+                    );
+                } else {
+                    context.draw_rect(
+                        Rect::from_f32(
+                            slider_pos - slider_size as f32 / 2.0,
+                            rect.y as f32,
+                            slider_size as f32,
+                            rect.height as f32,
+                        ),
+                        handle_border,
                     );
                 }
                 // Draw ticks if enabled (capped at 100 ticks max to avoid
@@ -658,7 +725,7 @@ impl Draw for Slider {
                             context.draw_line(
                                 Point::from_f32(tick_x, rect.y as f32),
                                 Point::from_f32(tick_x, rect.y as f32 + tick_height as f32),
-                                Color::rgb(100, 100, 100),
+                                tick_color,
                             );
                         }
                         if self.tick_position == TickPosition::TicksBelow
@@ -670,7 +737,7 @@ impl Draw for Slider {
                                     rect.y as f32 + rect.height as f32 - tick_height as f32,
                                 ),
                                 Point::from_f32(tick_x, rect.y as f32 + rect.height as f32),
-                                Color::rgb(100, 100, 100),
+                                tick_color,
                             );
                         }
                     }
@@ -697,10 +764,10 @@ impl Draw for Slider {
                         rect.width as f32,
                         slider_size as f32,
                     ),
-                    Color::rgb(0, 120, 215),
+                    handle_color,
                 );
                 // Draw handle border
-                if let Some(border_color) = style.border_color {
+                if let Some(border_color) = style.border_color.filter(|c| *c != handle_color) {
                     context.draw_rect(
                         Rect::from_f32(
                             rect.x as f32,
@@ -709,6 +776,16 @@ impl Draw for Slider {
                             slider_size as f32,
                         ),
                         border_color,
+                    );
+                } else {
+                    context.draw_rect(
+                        Rect::from_f32(
+                            rect.x as f32,
+                            slider_pos - slider_size as f32 / 2.0,
+                            rect.width as f32,
+                            slider_size as f32,
+                        ),
+                        handle_border,
                     );
                 }
                 // Draw ticks if enabled (capped at 100 ticks max to avoid
@@ -727,7 +804,7 @@ impl Draw for Slider {
                             context.draw_line(
                                 Point::from_f32(rect.x as f32, tick_y),
                                 Point::from_f32(rect.x as f32 + tick_width as f32, tick_y),
-                                Color::rgb(100, 100, 100),
+                                tick_color,
                             );
                         }
                         if self.tick_position == TickPosition::TicksBelow
@@ -739,7 +816,7 @@ impl Draw for Slider {
                                     tick_y,
                                 ),
                                 Point::from_f32(rect.x as f32 + rect.width as f32, tick_y),
-                                Color::rgb(100, 100, 100),
+                                tick_color,
                             );
                         }
                     }

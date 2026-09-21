@@ -160,19 +160,50 @@ impl Draw for Rating {
         let rect = self.geometry();
         let is_enabled = self.base.is_enabled();
 
+        // Chrome colours resolve explicit style first, then the theme's resolved
+        // style for this control, and only then a literal. The theme step is what
+        // makes an appearance switch visible; previously the plate below and the
+        // empty-star grey were hardcoded literals, so light and dark rendered
+        // identically.
+        //
+        // `resolved_theme_style` takes and releases the global manager's lock
+        // internally, so no guard is held across the draw (the mutex is not
+        // re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("rating");
+        let background = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let text_color = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+
         // Clear background
-        context.fill_rect(rect, Color::rgba(245, 245, 245, 255));
+        context.fill_rect(rect, background);
 
         let gap = 4;
         let total_width = self.max_rating * self.star_size + (self.max_rating - 1) * gap;
         let start_x = rect.x + (rect.width as i32 - total_width as i32).max(0) / 2;
         let center_y = rect.y + rect.height as i32 / 2;
 
-        let filled_color = Color::GOLD;
+        // A filled star is the theme's accent — the slot the palette reserves for a
+        // value indicator — so it moves with the appearance instead of staying a
+        // fixed gold. The warning token is that slot's public accessor. An empty star
+        // is the unselected state of the same control: a tint of the resolved
+        // foreground, muted further when the control is disabled.
+        let accent = crate::theme::semantic_color(crate::theme::SemanticColor::Warning)
+            .map(|token| token.blend(&background, 0.0))
+            .unwrap_or_else(|| text_color.blend(&background, 0.0));
+        // An explicit style wins over the palette, so a host that set a star colour
+        // keeps it; the accent is what an unstyled control uses.
+        let explicit = self.base.style();
+        let filled_color = explicit.border_color.or(explicit.background_color).unwrap_or(accent);
         let empty_color = if is_enabled {
-            Color::rgba(180, 180, 180, 200)
+            text_color.blend(&background, 0.35)
         } else {
-            Color::rgba(200, 200, 200, 100)
+            text_color.blend(&background, 0.6)
         };
 
         let font = Font::default();

@@ -249,22 +249,62 @@ impl Draw for NavigationStack {
         }
         let is_enabled = self.base.is_enabled();
 
+        // Chrome colours resolve explicit style first, then the theme's resolved style for
+        // this control, and only then a literal. The theme step is what makes an appearance
+        // switch visible; the bar fill, the title colour and the content fill used to be
+        // hardcoded literals, so light and dark rendered identically.
+        //
+        // The theme reads take and release the global manager's lock internally, so no guard
+        // is held across the draw (the mutex is not re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("navigation_stack");
+        // `navigation_stack` is absent from `WidgetRole::for_kind_name`'s table, so it
+        // classifies as `Surface` and resolves to `theme.colors.background` — the window's
+        // own fill. A bar painted in that colour would be byte-identical to the frame behind
+        // it, so a resolved surface equal to the window fill is re-derived a visible step
+        // away from it, the same distinction `Colors::input_background` draws for a field.
+        let window_fill = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.background)
+            .unwrap_or(Color::WHITE);
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        // The accent is the theme's `primary`: the hue a theme is expected to vary most, so
+        // the back affordance follows the appearance rather than staying a literal blue.
+        let accent = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.primary)
+            .unwrap_or(Color::PRIMARY);
+        let surface = match style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+        {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => window_fill.blend(&ink, 0.08),
+        };
+        let separator = window_fill.blend(&ink, 0.2);
+        // The content sits on the window's own surface, one step *under* the bar, so the two
+        // regions read as separate in either appearance.
+        let content_surface = window_fill;
+
         // ── Draw Navigation Bar ──
         let nav_rect = self.nav_bar_rect();
         // Nav bar background
-        context.fill_rect(nav_rect, Color::rgb(245, 246, 248));
+        context.fill_rect(nav_rect, surface);
         // Nav bar bottom border
         context.draw_line(
             Point::new(nav_rect.x, nav_rect.y + nav_rect.height as i32 - 1),
             Point::new(nav_rect.x + nav_rect.width as i32, nav_rect.y + nav_rect.height as i32 - 1),
-            Color::rgba(200, 200, 200, 200),
+            separator,
         );
 
         // Back button (if can_pop)
         if self.can_pop() {
             let back_text = "< Back";
             let back_font = Font::simple("sans-serif", 13.0);
-            let back_color = if is_enabled { Color::PRIMARY } else { Color::DISABLED_FOREGROUND };
+            let back_color = if is_enabled { accent } else { accent.blend(&surface, 0.5) };
             context.draw_text(
                 Point::new(nav_rect.x + 8, nav_rect.y + 14),
                 back_text,
@@ -277,7 +317,7 @@ impl Draw for NavigationStack {
         // Title
         let title_font = Font::simple("sans-serif", 15.0);
         let title = self.display_title();
-        let text_color = if is_enabled { Color::BLACK } else { Color::DISABLED_FOREGROUND };
+        let text_color = if is_enabled { ink } else { ink.blend(&surface, 0.5) };
         let metrics = context.measure_text(&title, &title_font);
         let title_x = nav_rect.x + (nav_rect.width as i32 - metrics.width as i32) / 2;
         let title_y = nav_rect.y + 14;
@@ -289,10 +329,10 @@ impl Draw for NavigationStack {
             HorizontalAlignment::Left,
         );
 
-        // ── Draw content area background (light fill) ──
+        // ── Draw content area background ──
         let content = self.content_rect();
         if content.width > 0 && content.height > 0 {
-            context.fill_rect(content, Color::WHITE);
+            context.fill_rect(content, content_surface);
         }
     }
 }

@@ -540,17 +540,23 @@ impl Draw for ToolBar {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
         let _btn_sz = self.button_size();
+        let style = self.style();
         // Background
+        //
+        // From the style, not a literal. This painted `Color::rgb(245, 245, 245)` and so
+        // stayed light in a dark theme: the theme resolved a toolbar's colour, handed it
+        // to the widget, and the widget ignored it — a light band across the top of a
+        // dark window with no way for the caller to change it.
         context.fill_rect(
             Rect::new(rect.x, rect.y, rect.width, rect.height),
-            Color::rgb(245, 245, 245),
+            style.background_color.unwrap_or(Color::rgb(245, 245, 245)),
         );
         // Draw bottom border line
         let y = rect.y + rect.height as f32 as i32 - 1;
         context.draw_line(
             Point::new(rect.x, y),
             Point::new(rect.x + rect.width as i32, y),
-            Color::rgb(200, 200, 200),
+            style.border_color.unwrap_or(Color::rgb(200, 200, 200)),
         );
         for i in 0..self.items.len() {
             let item_r = self.item_rect(i);
@@ -562,7 +568,7 @@ impl Draw for ToolBar {
                         context.draw_line(
                             Point::new(mid_x, rect.y + 4),
                             Point::new(mid_x, rect.y + rect.height as i32 - 4),
-                            Color::rgb(200, 200, 200),
+                            style.border_color.unwrap_or(Color::rgb(200, 200, 200)),
                         );
                     }
                     ToolBarOrientation::Vertical => {

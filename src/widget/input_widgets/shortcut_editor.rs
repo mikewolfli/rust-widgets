@@ -390,8 +390,57 @@ impl Draw for ShortcutEditor {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
 
+        // Chrome colours resolve the explicit style first, then the theme's resolved style for
+        // this control, and only then fall back to a literal. Every colour below used to be a
+        // literal, so a light/dark switch left the panel, its filter bar, its separators and its
+        // rows unchanged — the rendering census reported the control as theme-blind.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
+        // is not re-entrant.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("shortcut_editor");
+        // Read as its own lock acquisition and copied out as values, so the guard is dropped
+        // before anything else touches the theme.
+        let (window_fill, foreground, secondary) = {
+            let manager = crate::theme::global_theme_manager();
+            match manager.current_theme() {
+                Some(active) => {
+                    (active.colors.background, active.colors.foreground, active.colors.secondary)
+                }
+                None => (Color::rgb(240, 240, 240), Color::BLACK, Color::rgb(158, 158, 158)),
+            }
+        };
+
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(foreground);
+        // The panel: one step from the window fill toward the text colour, so it is a distinct
+        // element on a light theme and on a dark one. The filter is on the **resolved** value, not
+        // only on the theme's: a control classified as `Surface` already carries the window fill,
+        // and letting it through unfiltered would make the panel invisible. A caller's own colour
+        // still wins.
+        let panel_from_theme = window_fill.blend(&ink, 0.06);
+        let panel = match style.background_color {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => panel_from_theme,
+        };
+        // The rule under the filter bar, a fixed step out of the panel so it stays visible whatever
+        // the panel is.
+        let rule = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| panel.blend(&secondary, 0.40));
+        // The placeholder grey, the muted key colour and the category header are all de-emphasised
+        // steps of the control's own ink, so each is legible on either appearance rather than being
+        // a fixed grey a dark theme would swallow.
+        let placeholder = ink.blend(&panel, 0.45);
+        let muted_ink = ink.blend(&panel, 0.30);
+        let header_ink = ink.blend(&panel, 0.15);
+
         // Draw background
-        context.fill_rect(rect, Color::WHITE);
+        context.fill_rect(rect, panel);
 
         let margin = 8;
         let mut y = rect.y + margin;
@@ -407,11 +456,7 @@ impl Draw for ShortcutEditor {
             Point::new(rect.x + margin, y),
             &filter_label,
             &filter_font,
-            if self.filter_text.is_empty() {
-                Color::rgba(150, 150, 150, 255)
-            } else {
-                Color::rgba(50, 50, 50, 255)
-            },
+            if self.filter_text.is_empty() { placeholder } else { ink },
             HorizontalAlignment::Left,
         );
         y += 24;
@@ -420,7 +465,7 @@ impl Draw for ShortcutEditor {
         context.draw_line(
             Point::new(rect.x + margin, y),
             Point::new(rect.x + rect.width as i32 - margin, y),
-            Color::rgba(200, 200, 200, 255),
+            rule,
         );
         y += 8;
 
@@ -441,7 +486,7 @@ impl Draw for ShortcutEditor {
                 Point::new(rect.x + margin + 4, y),
                 category,
                 &cat_font,
-                Color::rgba(80, 80, 80, 255),
+                header_ink,
                 HorizontalAlignment::Left,
             );
             y += row_height;
@@ -463,7 +508,7 @@ impl Draw for ShortcutEditor {
                     Point::new(rect.x + margin + 16, y),
                     &name_text,
                     &name_font,
-                    Color::rgba(30, 30, 30, 255),
+                    ink,
                     HorizontalAlignment::Left,
                 );
 
@@ -473,11 +518,9 @@ impl Draw for ShortcutEditor {
                 } else {
                     entry.keys.join(", ")
                 };
-                let key_color = if entry.keys.is_empty() {
-                    Color::rgba(180, 180, 180, 255)
-                } else {
-                    Color::rgba(60, 60, 60, 255)
-                };
+                // Unbound rows are de-emphasised rather than hidden, so "this shortcut has no key"
+                // reads differently from "this shortcut has a key".
+                let key_color = if entry.keys.is_empty() { muted_ink } else { ink };
                 // Measure approximate key text width
                 let key_x =
                     rect.x + rect.width as i32 - margin - (key_text.len() as i32 * 8).min(150);

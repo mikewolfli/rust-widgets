@@ -243,8 +243,45 @@ impl Draw for BarcodeScanner {
         let small_font = Font::new("sans-serif", 11.0, false, false);
         let normal_font = Font::new("sans-serif", 13.0, false, false);
 
+        // Every colour below is chrome, not content: this widget is a *simulated*
+        // viewfinder that connects to no camera (see the type's own docs), so the
+        // dark backdrop, the brackets, the sweep line, the overlay and the status
+        // dot are all the control's own decoration. They resolve explicit style
+        // first, then the theme's resolved style for this control, and only then a
+        // literal. Previously each was hardcoded, so light and dark were identical.
+        //
+        // `resolved_theme_style` and `semantic_color` each take and release the
+        // global manager's lock internally, so no guard is held across the draw (the
+        // mutex is not re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("barcode_scanner");
+        let text_color = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::WHITE);
+        // The viewfinder surface is the control's backdrop. In light it is a light
+        // surface and in dark a dark one, so the whole widget moves with the
+        // appearance instead of being pinned to one hardcoded near-black.
+        let surface = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        // The viewfinder well is a recessed area of the surface: the text colour
+        // nudged toward it, so it reads as inset in either appearance.
+        let viewfinder_fill = surface.blend(&text_color, 0.06);
+        // The letterbox around the viewfinder is the surface dimmed, not a fixed
+        // black at half opacity.
+        let letterbox = surface.blend(&Color::BLACK, 0.45);
+        let vf_border = surface.blend(&text_color, 0.35);
+        // The brackets read as the scanner's "ready" accent, and the sweep line as
+        // the active state, so each reads its own semantic token.
+        let bracket_color = crate::theme::semantic_color(crate::theme::SemanticColor::Success)
+            .unwrap_or(Color::GREEN);
+        let scan_line_color = crate::theme::semantic_color(crate::theme::SemanticColor::Success)
+            .unwrap_or(Color::GREEN);
+
         // Background
-        context.fill_rect(rect, Color::rgba(20, 20, 30, 255));
+        context.fill_rect(rect, surface);
 
         // Viewfinder area (centered, 80% of widget size)
         let vf_margin_x = (w as f32 * 0.1) as i32;
@@ -258,22 +295,19 @@ impl Draw for BarcodeScanner {
 
         // Darken area outside viewfinder
         if vf_margin_y > 0 {
-            context.fill_rect(
-                Rect::new(rect.x, rect.y, w as u32, vf_margin_y as u32),
-                Color::rgba(0, 0, 0, 180),
-            );
+            context.fill_rect(Rect::new(rect.x, rect.y, w as u32, vf_margin_y as u32), letterbox);
         }
         let vf_bottom = rect.y + vf_margin_y + vf_rect.height as i32;
         if vf_bottom < rect.y + h {
             context.fill_rect(
                 Rect::new(rect.x, vf_bottom, w as u32, (rect.y + h - vf_bottom) as u32),
-                Color::rgba(0, 0, 0, 180),
+                letterbox,
             );
         }
         if vf_margin_x > 0 {
             context.fill_rect(
                 Rect::new(rect.x, rect.y + vf_margin_y, vf_margin_x as u32, vf_rect.height),
-                Color::rgba(0, 0, 0, 180),
+                letterbox,
             );
         }
         let vf_right = rect.x + vf_margin_x + vf_rect.width as i32;
@@ -285,18 +319,17 @@ impl Draw for BarcodeScanner {
                     (rect.x + w - vf_right) as u32,
                     vf_rect.height,
                 ),
-                Color::rgba(0, 0, 0, 180),
+                letterbox,
             );
         }
 
         // Viewfinder inner area
-        context.fill_rect(vf_rect, Color::rgba(30, 30, 40, 200));
-        context.draw_rect_stroke(vf_rect, Color::rgba(200, 200, 200, 100), 1);
+        context.fill_rect(vf_rect, viewfinder_fill);
+        context.draw_rect_stroke(vf_rect, vf_border, 1);
 
         // Corner brackets
         if self.show_viewfinder {
             let bracket_len = 20;
-            let bracket_color = Color::rgba(0, 200, 100, 255);
 
             // Top-left corner
             context.draw_line(
@@ -359,6 +392,7 @@ impl Draw for BarcodeScanner {
             // shorter interval = faster sweep, longer interval = slower sweep.
             // Default scan_interval (100) / 5 = 20, matching the previous hardcoded value.
             let speed_divisor = (self.scan_interval / 5).max(1);
+            let sweep_span = (vf_rect.height as u64).saturating_sub(20).max(1);
             let scan_line_y = vf_rect.y
                 + 10
                 + ((std::time::SystemTime::now()
@@ -366,11 +400,11 @@ impl Draw for BarcodeScanner {
                     .unwrap_or_default()
                     .as_millis() as u64
                     / speed_divisor)
-                    % (vf_rect.height as u64 - 20)) as i32;
+                    % sweep_span) as i32;
             context.draw_line_stroke(
                 Point::new(vf_rect.x + 4, scan_line_y),
                 Point::new(vf_rect.x + vf_rect.width as i32 - 4, scan_line_y),
-                Color::rgba(0, 255, 100, 200),
+                scan_line_color.with_alpha(200),
                 2,
             );
         }
@@ -379,14 +413,16 @@ impl Draw for BarcodeScanner {
         if let Some(ref result) = self.last_result {
             let overlay_y = rect.y + h - 50;
             let overlay_rect = Rect::new(rect.x, overlay_y, w as u32, 50);
-            context.fill_rect(overlay_rect, Color::rgba(0, 0, 0, 200));
+            // The overlay is a scrim over whatever is behind it, so it is the
+            // surface dimmed rather than a fixed black.
+            context.fill_rect(overlay_rect, surface.blend(&Color::BLACK, 0.78));
 
             let format_text = format!("[{}]", result.format.name());
             context.draw_text(
                 Point::new(rect.x + 10, overlay_y + 14),
                 &format_text,
                 &small_font,
-                Color::rgba(100, 255, 150, 255),
+                bracket_color,
                 HorizontalAlignment::Left,
             );
 
@@ -399,16 +435,18 @@ impl Draw for BarcodeScanner {
                 Point::new(rect.x + 10, overlay_y + 32),
                 &display_data,
                 &normal_font,
-                Color::rgba(255, 255, 255, 220),
+                text_color,
                 HorizontalAlignment::Left,
             );
         }
 
-        // Status indicator
+        // Status indicator: "scanning" is the success state, "idle" the error one,
+        // so each reads its own semantic token instead of a fixed green/red.
         let status_color = if self.is_scanning {
-            Color::rgba(0, 200, 50, 255)
+            crate::theme::semantic_color(crate::theme::SemanticColor::Success)
+                .unwrap_or(Color::GREEN)
         } else {
-            Color::rgba(200, 50, 50, 255)
+            crate::theme::semantic_color(crate::theme::SemanticColor::Error).unwrap_or(Color::RED)
         };
         let dot_rect = Rect::new(rect.x + 6, rect.y + 6, 8, 8);
         context.fill_rect(dot_rect, status_color);

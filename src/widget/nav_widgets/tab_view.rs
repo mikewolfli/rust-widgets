@@ -176,12 +176,49 @@ impl Draw for TabView {
         let content_rect =
             Rect::new(rect.x, content_y, rect.width, rect.height.saturating_sub(tab_bar_height));
 
+        // Chrome colours resolve explicit style first, then the theme's resolved
+        // style for this control, and only then a literal. The theme step is what
+        // makes an appearance switch visible; previously every colour below was a
+        // hardcoded literal, so light and dark rendered identically.
+        //
+        // `resolved_theme_style` takes and releases the global manager's lock
+        // internally, so no guard is held across the draw (the mutex is not
+        // re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("tab_view");
+        // `tab_view` is not a control kind in the role table, so it classifies as
+        // `Surface`, whose background is `theme.colors.background` — byte-identical
+        // to the window behind it. The content area's fill is therefore a step toward
+        // the foreground, so the page reads as a surface of its own.
+        let resolved = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let text_color = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::rgb(0, 0, 0));
+        let content_background = resolved.blend(&text_color, 0.08);
+        // The strip behind the tabs is a further step away, so selected and
+        // unselected tabs read as different states of the same chrome.
+        let strip_background = content_background.blend(&text_color, 0.08);
+        let inactive_tab = content_background.blend(&text_color, 0.05);
+        // The selected indicator is a *selection* state, so it reads the theme's
+        // primary token rather than a literal blue.
+        let indicator = crate::theme::resolved_theme_style("button")
+            .and_then(|button| button.background_color)
+            .unwrap_or_else(|| content_background.blend(&text_color, 0.6));
+        let selected_text = indicator;
+        let inactive_text = text_color.blend(&content_background, 0.3);
+        // The separator under the strip is secondary chrome, derived from the same pair.
+        let separator = content_background.blend(&text_color, 0.2);
+
         // Draw tab bar background
-        context.fill_rect(tab_bar_rect, Color::rgba(245, 245, 245, 255));
+        context.fill_rect(tab_bar_rect, strip_background);
 
         if self.tabs.is_empty() {
             // Draw empty content area
-            context.fill_rect(content_rect, Color::WHITE);
+            context.fill_rect(content_rect, content_background);
             return;
         }
 
@@ -196,14 +233,14 @@ impl Draw for TabView {
             let is_selected = i == self.selected_index;
 
             // Background
-            let bg_color = if is_selected { Color::WHITE } else { Color::rgba(235, 235, 235, 255) };
+            let bg_color = if is_selected { content_background } else { inactive_tab };
             context.fill_rect(tab_rect, bg_color);
 
             // Selected tab indicator line
             if is_selected {
                 let indicator_rect =
                     Rect::new(tab_x, rect.y + tab_bar_height as i32 - 3, tab_width, 3);
-                context.fill_rect(indicator_rect, Color::rgba(52, 120, 246, 255));
+                context.fill_rect(indicator_rect, indicator);
             }
 
             // Draw tab title (with icon prefix if available)
@@ -214,11 +251,7 @@ impl Draw for TabView {
                 tab.title.clone()
             };
 
-            let text_color = if is_selected {
-                Color::rgba(52, 120, 246, 255)
-            } else {
-                Color::rgba(80, 80, 80, 255)
-            };
+            let text_color = if is_selected { selected_text } else { inactive_text };
 
             let metrics = context.measure_text(&display_text, &font);
             let text_x = tab_x + (tab_width as i32 - metrics.width as i32) / 2;
@@ -236,10 +269,10 @@ impl Draw for TabView {
 
         // Draw separator line below tab bar
         let separator_rect = Rect::new(rect.x, rect.y + tab_bar_height as i32 - 1, rect.width, 1);
-        context.fill_rect(separator_rect, Color::rgba(200, 200, 200, 255));
+        context.fill_rect(separator_rect, separator);
 
         // Draw selected tab content area (child widget rendering is delegated)
-        context.fill_rect(content_rect, Color::WHITE);
+        context.fill_rect(content_rect, content_background);
     }
 }
 

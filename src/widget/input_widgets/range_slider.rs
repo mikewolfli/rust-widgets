@@ -16,9 +16,9 @@ use crate::widget::capability::coercion::expect_f64;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::numeric::ordered_clamp_f64;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
-use crate::widget::numeric::ordered_clamp_f64;
 
 /// Orientation of the RangeSlider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -77,8 +77,7 @@ impl RangeSlider {
     /// Sets the lower value, clamping it to be within bounds and respecting min_range.
     /// Emits `range_changed` if the value changes.
     pub fn set_lower_value(&mut self, value: f64) {
-        let clamped =
-            ordered_clamp_f64(value, self.min_value, self.upper_value - self.min_range);
+        let clamped = ordered_clamp_f64(value, self.min_value, self.upper_value - self.min_range);
         let stepped = (clamped / self.step).round() * self.step;
         let stepped = stepped.max(self.min_value);
         let new_value = stepped.min(self.upper_value - self.min_range);
@@ -97,8 +96,7 @@ impl RangeSlider {
     /// Sets the upper value, clamping it to be within bounds and respecting min_range.
     /// Emits `range_changed` if the value changes.
     pub fn set_upper_value(&mut self, value: f64) {
-        let clamped =
-            ordered_clamp_f64(value, self.lower_value + self.min_range, self.max_value);
+        let clamped = ordered_clamp_f64(value, self.lower_value + self.min_range, self.max_value);
         let stepped = (clamped / self.step).round() * self.step;
         let stepped = stepped.min(self.max_value);
         let new_value = stepped.max(self.lower_value + self.min_range);
@@ -362,9 +360,83 @@ impl Draw for RangeSlider {
         let is_enabled = self.base.is_enabled();
         let handle_radius = 8u32;
 
+        // Chrome colours resolve the explicit style first, then the theme's resolved style for
+        // this control, and only then fall back to a literal. Every colour below used to be a
+        // literal, so a light/dark switch left the track, the selected run and both handles
+        // unchanged — the rendering census reported the control as theme-blind.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
+        // is not re-entrant.
+        let style = self.base.style().clone();
+        // `range_slider` is not in the role table, so it classifies as `Surface` and its resolved
+        // background is the window fill itself; the empty track below therefore derives its own
+        // distinct colour rather than painting the window's.
+        let theme = crate::theme::resolved_theme_style("range_slider");
+        let (window_fill, foreground, primary, muted, disabled) = {
+            let manager = crate::theme::global_theme_manager();
+            match manager.current_theme() {
+                Some(active) => (
+                    active.colors.background,
+                    active.colors.foreground,
+                    active.colors.primary,
+                    active.colors.secondary,
+                    active.colors.disabled,
+                ),
+                None => (
+                    Color::rgb(240, 240, 240),
+                    Color::BLACK,
+                    Color::rgb(33, 150, 243),
+                    Color::rgb(158, 158, 158),
+                    Color::rgb(200, 200, 200),
+                ),
+            }
+        };
+
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(foreground);
+        // The empty run of the track: one step from the window fill toward the text colour, so it
+        // is visible on either appearance rather than being the window's own colour. The filter is
+        // on the **resolved** value, not only on the theme's: a control classified as `Surface`
+        // already carries the window fill, so letting it through unfiltered is exactly the
+        // invisible-track defect this guards against. A caller's own colour still wins.
+        let track_from_theme = window_fill.blend(&ink, 0.14);
+        let track_surface = match style.background_color {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => track_from_theme,
+        };
+        // The empty run recedes when the control is disabled, and the filled run — the control's
+        // value indicator — carries the theme's primary rather than a fixed blue.
+        let track_color =
+            if is_enabled { track_surface } else { track_surface.blend(&disabled, 0.50) };
+        let range_color = if is_enabled { primary } else { disabled };
+        // The handles sit *on* the track, so each is built from it: a light disc on a light track
+        // and a dark one on a dark track, with a border one visible step out.
+        let handle_color = if is_enabled {
+            if track_color.is_dark() {
+                track_color.blend(&Color::WHITE, 0.30)
+            } else {
+                track_color.blend(&Color::WHITE, 0.85)
+            }
+        } else {
+            track_color.blend(&Color::WHITE, 0.55)
+        };
+        let handle_border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .filter(|resolved| *resolved != handle_color)
+            .unwrap_or_else(|| {
+                if is_enabled {
+                    range_color
+                } else {
+                    handle_color.blend(&muted, 0.40)
+                }
+            });
+
         // Track background
         let track_thickness = 6u32;
-        let track_color = Color::rgba(200, 200, 200, 255);
 
         if self.orientation == RangeSliderOrientation::Horizontal {
             let track_y = rect.y + rect.height as i32 / 2 - track_thickness as i32 / 2;
@@ -382,23 +454,11 @@ impl Draw for RangeSlider {
             if upper_x > lower_x {
                 let range_rect =
                     Rect::new(lower_x, track_y, (upper_x - lower_x) as u32, track_thickness);
-                let range_color = if is_enabled {
-                    Color::rgba(52, 120, 246, 255)
-                } else {
-                    Color::rgba(180, 180, 180, 255)
-                };
                 context.fill_rounded_rect(range_rect, track_thickness / 2, range_color);
             }
 
             // Draw handles
             let center_y = rect.y + rect.height as i32 / 2;
-            let handle_color =
-                if is_enabled { Color::WHITE } else { Color::rgba(240, 240, 240, 255) };
-            let handle_border = if is_enabled {
-                Color::rgba(52, 120, 246, 255)
-            } else {
-                Color::rgba(180, 180, 180, 255)
-            };
 
             for &value in &[self.lower_value, self.upper_value] {
                 let cx = self.value_to_pixel(value, &rect);
@@ -423,23 +483,11 @@ impl Draw for RangeSlider {
             if upper_y < lower_y {
                 let range_rect =
                     Rect::new(track_x, upper_y, track_thickness, (lower_y - upper_y) as u32);
-                let range_color = if is_enabled {
-                    Color::rgba(52, 120, 246, 255)
-                } else {
-                    Color::rgba(180, 180, 180, 255)
-                };
                 context.fill_rounded_rect(range_rect, track_thickness / 2, range_color);
             }
 
             // Draw handles
             let center_x = rect.x + rect.width as i32 / 2;
-            let handle_color =
-                if is_enabled { Color::WHITE } else { Color::rgba(240, 240, 240, 255) };
-            let handle_border = if is_enabled {
-                Color::rgba(52, 120, 246, 255)
-            } else {
-                Color::rgba(180, 180, 180, 255)
-            };
 
             for &value in &[self.lower_value, self.upper_value] {
                 let cy = self.value_to_pixel(value, &rect);

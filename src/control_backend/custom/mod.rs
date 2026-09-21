@@ -178,6 +178,28 @@ impl CustomPaintControlBackend {
             return 0;
         }
 
+        // Record the parent/child relation in **both** directions.
+        //
+        // `BaseWidget::set_parent` documents that it "does not update the old or new
+        // parent's child list, so the two directions must be kept in sync by the
+        // caller" — and no caller did. The child knew its parent while the parent
+        // listed no children.
+        //
+        // That was invisible while every visible control had a native widget of its own.
+        // It stopped being invisible when the Linux backend, which creates no native
+        // controls, needed a window-level painter: that paints the window's child list,
+        // and an empty list is why a window rendered as bare background.
+        //
+        // Both writes happen here because this is the one funnel every created control
+        // passes through, so the two lists cannot be updated on one path and forgotten on
+        // another. A window is excluded: it is a root, and it has no parent id to record
+        // (its own parent is `None`, set by the factory).
+        if kind != crate::widget::WidgetKind::Window {
+            crate::widget::runtime::with_widget_mut(parent, |host| {
+                host.add_child(id);
+            });
+        }
+
         // A window is not only a painted widget: it needs a host object for
         // the platform to draw into, and that is what `mount_surface` resolves
         // a parent through. Creating it here — on the one creation path — is

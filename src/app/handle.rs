@@ -196,7 +196,7 @@ impl WidgetHandle for SurfaceHandle {
     /// click callback to. This deliberately does **not** register a callback
     /// that would never fire — read the widget's own signals instead (for the
     /// editor: `text_changed`, `cursor_moved`, `selection_changed`).
-    fn on_click<F: FnMut() + 'static>(&self, _f: F) {
+    fn on_click<F: FnMut() + Send + 'static>(&self, _f: F) {
         log::debug!(
             "SurfaceHandle::on_click ignored for id={}: the widget emits its \
              own signals rather than a platform click callback",
@@ -476,7 +476,7 @@ pub trait WidgetHandle: Sized {
     ///
     /// The closure is invoked whenever the widget receives a
     /// [`WidgetTriggerKind::Clicked`] event.
-    fn on_click<F: FnMut() + 'static>(&self, f: F);
+    fn on_click<F: FnMut() + Send + 'static>(&self, f: F);
 
     /// Register a callback for the "value changed" trigger.
     ///
@@ -488,10 +488,64 @@ pub trait WidgetHandle: Sized {
 // ── Global callback registry ──────────────────────────────────
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 thread_local! {
     static CLICK_CALLBACKS: RefCell<HashMap<ObjectId, ClickCallback>> = RefCell::new(HashMap::new());
     static VALUE_CALLBACKS: RefCell<HashMap<ObjectId, ValueChangedCallback>> = RefCell::new(HashMap::new());
+}
+
+/// Registers `f` as the click callback for `widget_id`.
+///
+/// Shared by every handle that offers `on_click`, so the rule cannot differ between
+/// them.
+///
+/// # The defect this fixes
+///
+/// The callback used to go into a table of its own (`CLICK_CALLBACKS`) that only
+/// `dispatch_trigger(Clicked)` reads. **Nothing calls that on a real click**: a button
+/// emits its own `base.clicked` from `handle_event` when the pointer is released over
+/// it, and the platform never manufactures a `Clicked` trigger. The two halves never met,
+/// so every `on_click` callback in a native window was dead — the control was visible,
+/// its geometry was right, the click was delivered, and the callback simply never ran.
+///
+/// # Why this connects rather than bridging
+///
+/// Connecting to the widget's own signal removes the second table instead of keeping the
+/// two in step. There is then one place a click is announced (`base.clicked`), whichever
+/// emitter produced it — mouse release, touch end, or a tap — and the callback runs from
+/// there. The alternative, having the widget's emission call into `CLICK_CALLBACKS`,
+/// would leave two sources of truth for "what runs when this is clicked".
+fn register_click_callback<F: FnMut() + Send + 'static>(widget_id: ObjectId, f: F) {
+    // The user's callback is held behind `Arc<Mutex<_>>` and the slot that calls it
+    // borrows that.
+    //
+    // # Why the slot is a `&`-capturing closure rather than a `move`
+    //
+    // A `GenericSignal` slot must be `FnMut() + Send + Sync`. `Arc<Mutex<F>>` is all three
+    // when `F: Send`, but a closure that **moves** it in is only `FnOnce`-friendly for
+    // what it owns — so the slot borrows the handle instead, which keeps it `Send + Sync`
+    // and lets it run any number of times.
+    let held: Arc<Mutex<F>> = Arc::new(Mutex::new(f));
+    let connected = crate::widget::runtime::with_widget_mut(widget_id, |widget| {
+        let held = Arc::clone(&held);
+        widget.base().clicked.connect(move || {
+            if let Ok(mut callback) = held.lock() {
+                callback();
+            } else {
+                log::warn!(
+                    "the click callback for widget {widget_id} could not be locked; \
+                     skipping this click rather than panicking"
+                );
+            }
+        })
+    });
+    if connected.is_none() {
+        log::debug!(
+            "on_click ignored for id={widget_id}: it is not a live widget, so there is no \
+             signal for a click to arrive on"
+        );
+    }
 }
 
 /// Removes and returns the click callback for `widget_id`.
@@ -677,6 +731,22 @@ pub fn dispatch_trigger(widget_id: ObjectId, kind: WidgetTriggerKind) -> bool {
     }
 }
 
+/// Delivers every queued trigger, dispatching each one.
+///
+/// Returns the number of events consumed.
+///
+/// # Where the implementation lives
+///
+/// At the **crate root** ([`crate::drain_triggers`]). This profile's `crate::app` is gated
+/// `full_widgets`, but the trigger queue is available to every profile except
+/// `alloc_frugal`, and the platform backends — which are not gated — are the actual
+/// callers. While the only definition lived here, each backend's call compiled on
+/// `desktop` and failed on `mini` with `cannot find 'app' in 'crate'`.
+///
+/// This re-export is kept because it is part of the published surface (`crate::app` is
+/// the documented entry point for applications) and existing callers name it.
+pub use crate::drain_triggers;
+
 /// Updates the window-size mirror used by `apply_window_layout` and the geometry-aware
 /// window helpers, without routing back into the platform.
 fn set_window_size(window_id: ObjectId, width: u32, height: u32) {
@@ -764,10 +834,8 @@ impl WidgetHandle for WindowHandle {
         apply_window_layout(self.id);
     }
 
-    fn on_click<F: FnMut() + 'static>(&self, f: F) {
-        CLICK_CALLBACKS.with(|map| {
-            map.borrow_mut().insert(self.id, Rc::new(RefCell::new(f)));
-        });
+    fn on_click<F: FnMut() + Send + 'static>(&self, f: F) {
+        register_click_callback(self.id, f);
     }
 
     fn on_value_changed<F: FnMut(String) + 'static>(&self, f: F) {
@@ -1256,10 +1324,11 @@ macro_rules! impl_handle {
                 Self { id }
             }
 
-            fn on_click<F: FnMut() + 'static>(&self, f: F) {
-                CLICK_CALLBACKS.with(|map| {
-                    map.borrow_mut().insert(self.id, Rc::new(RefCell::new(f)));
-                });
+            fn on_click<F: FnMut() + Send + 'static>(&self, f: F) {
+                // Shared with `WindowHandle::on_click`: a click callback must be connected
+                // to the widget's own `clicked` signal, or nothing runs it. See
+                // `register_click_callback` for the defect this address.
+                register_click_callback(self.id, f);
             }
 
             fn on_value_changed<F: FnMut(String) + 'static>(&self, f: F) {
@@ -1364,10 +1433,8 @@ impl WidgetHandle for MessageBoxHandle {
         Self { id }
     }
 
-    fn on_click<F: FnMut() + 'static>(&self, f: F) {
-        CLICK_CALLBACKS.with(|map| {
-            map.borrow_mut().insert(self.id, Rc::new(RefCell::new(f)));
-        });
+    fn on_click<F: FnMut() + Send + 'static>(&self, f: F) {
+        register_click_callback(self.id, f);
     }
 
     fn on_value_changed<F: FnMut(String) + 'static>(&self, f: F) {

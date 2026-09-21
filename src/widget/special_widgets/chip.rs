@@ -303,8 +303,32 @@ impl EventHandler for Chip {
 impl Draw for Chip {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::rgb(248, 250, 253));
-        context.draw_rect(rect, Color::rgb(202, 208, 218));
+
+        // Chrome colours resolve explicit style first, then the theme's resolved
+        // style for this control, and only then fall back to a literal. The theme
+        // step is what makes a light/dark switch visible here; without it every
+        // colour below was hardcoded and the switch changed nothing.
+        //
+        // Each `resolved_theme_style` call takes and releases the global manager's
+        // lock internally, so no guard is held across the draw or across another
+        // accessor (the mutex is not re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("chip");
+        let background = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| background.blend(&Color::BLACK, 0.15));
+        let text_color = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+
+        context.fill_rect(rect, background);
+        context.draw_rect(rect, border);
 
         for index in 0..self.items.len() {
             let Some(chip_rect) = self.chip_rect(index) else {
@@ -315,15 +339,18 @@ impl Draw for Chip {
                 continue;
             };
 
+            // Selection and focus are chrome states, so they are derived from the
+            // resolved colours rather than from literals: a selected chip reads as
+            // tinted toward the foreground on whatever background the theme picked.
             let bg = if item.selected {
-                Color::rgb(196, 220, 248)
+                background.blend(&text_color, 0.22)
             } else if self.focused_index == Some(index) {
-                Color::rgb(226, 237, 252)
+                background.blend(&text_color, 0.12)
             } else {
-                Color::rgb(237, 241, 247)
+                background.blend(&text_color, 0.06)
             };
             context.fill_rect(chip_rect, bg);
-            context.draw_rect(chip_rect, Color::rgb(176, 186, 200));
+            context.draw_rect(chip_rect, border);
             context.draw_text(
                 Point::new(
                     chip_rect.x + self.chip_padding,
@@ -331,7 +358,7 @@ impl Draw for Chip {
                 ),
                 &item.label,
                 &Font::default(),
-                Color::rgb(32, 44, 61),
+                text_color,
                 HorizontalAlignment::Left,
             );
         }

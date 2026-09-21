@@ -573,6 +573,11 @@ impl WaylandPlatform {
                 // No native session yet (no window created): stay responsive to
                 // quit without spinning.
                 drop(guard);
+                // The drain still runs: a trigger can be queued before a session exists
+                // (a host reporting a size for a window it manages itself), and leaving it
+                // in the queue until a session appears would delay a layout run for as long
+                // as the window is absent. See `crate::drain_triggers`.
+                crate::drain_triggers();
                 std::thread::sleep(std::time::Duration::from_millis(16));
                 continue;
             };
@@ -608,6 +613,19 @@ impl WaylandPlatform {
                     let _ = session.event_queue.dispatch_pending(&mut session.state);
                 }
             }
+
+            // Drain the widget-trigger queue after the protocol dispatch for this
+            // iteration.
+            //
+            // Deliberately **outside** the `native_session` lock taken above: the queue
+            // drain can re-enter library code that positions widgets, and holding this
+            // backend's session lock across that would let a re-entrant call deadlock on
+            // the same mutex. The lock guard is dropped at the end of the `match` above.
+            //
+            // Without this, a `Resized` event queued by a host never reached a window
+            // layout — the protocol events were dispatched and the library's own queue was
+            // never read. See `crate::drain_triggers`.
+            crate::drain_triggers();
         }
         log::info!("[wayland] Native event loop exited");
     }
@@ -623,6 +641,11 @@ impl WaylandPlatform {
         if let Some(ref mut session) = *guard {
             let _ = session.event_queue.dispatch_pending(&mut session.state);
         }
+        // Released before draining, so a trigger that positions a widget cannot
+        // deadlock on this mutex. This is the pump-callback spelling of the same tick
+        // the `run()` loop performs.
+        drop(guard);
+        crate::drain_triggers();
     }
 
     /// Attempt to create a native Wayland xdg_toplevel for this window.

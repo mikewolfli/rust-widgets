@@ -1,0 +1,64 @@
+# BLUE20 layer 1 — data-colour exemption table (P3 whitelist)
+#
+# Format: one entry per line, four whitespace-separated fields:
+#     <control-name> <use> <appearance-invariant-colour> <reason>
+#
+# Meaning: for this control, the named colour is DATA, not CHROME. It is chosen by
+# the control's subject matter (a series identity, a price direction, a spectrum),
+# so it is correct for it to be identical in light and dark. Without this table,
+# `check_control_rendering` would report "P3 failed" for a chart whose *series*
+# colour is deliberately constant, and the "fix" would be to break the chart.
+#
+# What may NOT go here
+# --------------------
+# A colour that encodes a *theme role* — a background, a text colour, a border, an
+# error/success/warning/info indicator — is CHROME. Those must read `style.*`
+# (chrome) or `theme.colors.<token>` (semantic), and their invariance between
+# appearances is a defect, not a design. In particular:
+#
+#     banner / calendar / progress_dialog / message_box
+#
+# must NOT appear here. They carry semantic colours, and exempting them would
+# permanently legalise "the theme declares four semantic tokens and nobody reads
+# them" — the exact empty declaration this layer exists to end.
+#
+# Rejected reasons (do not use): "skip for now", "fix later", "it was hard".
+
+# ── Charts: series identity ────────────────────────────────────────────────────
+# A multi-series chart distinguishes series 1..N by a palette. Which colour maps
+# to which series carries no theme meaning: it is the data's identity.
+line_chart series-palette true A series colour identifies which line is which, not a semantic role; it is data, not chrome.
+bar_chart series-palette true A series colour identifies which bar group is which; the value it encodes is the data.
+pie_chart series-palette true A pie slice colour identifies the category, and the category is the data.
+radar_chart series-palette true A series colour identifies which axis polygon is which; it is data.
+chart series-palette true A series colour identifies which data series is which; the series identity is the data.
+mini_chart series-palette true A sparkline-scale chart's stroke colour encodes its series; it carries no chrome role.
+
+# ── K-line / market data: direction encoding ──────────────────────────────────
+# Red and green here encode price direction. They are information: swapping them
+# for theme colours would make "rising" and "falling" indistinguishable, which is
+# a loss of data, not a restyling.
+candlestick_chart up-down-red-green true Red/green encode the price direction of the candle; replacing them with theme colours erases which way the market moved.
+volume_chart up-down-red-green true Volume bar colour encodes whether the bar rose or fell; the direction is the data.
+depth_chart bid-ask-colours true Two colours separate bids from asks; which side is which is data, and merging them would destroy the chart.
+indicator_chart indicator-lines true Indicator line colours identify which indicator is which; the identity is the data.
+
+# ── Colour pickers: the spectrum is the subject ───────────────────────────────
+# A colour picker shows a colour space. The colours under the cursor are the value
+# being selected, not the control's chrome, so they must not be remapped by theme.
+color_picker hue-wheel true The hue wheel's colours are the value being picked; remapping them by theme would change the value.
+
+# ── Meters / gauges: thresholds ───────────────────────────────────────────────
+# A meter's colour bands are thresholds the caller sets. They describe the value
+# range, so they are data.
+meter threshold-bands true The meter's bands encode caller-configured thresholds; the thresholds are data, not chrome.
+
+# ── Visualisers: the signal/content is the subject ────────────────────────────
+audio_visualizer signal-gradient true The visualiser's colours encode the signal being played; recolouring by appearance would misrepresent it.
+video_player video-surface true The video surface is the decoded frame, not chrome; it is content.
+camera_preview video-surface true The preview surface is the camera frame, not chrome; it is content.
+image_gallery bitmap-content true The gallery shows images; their colours are the content.
+map_view map-content true The map tiles/layers are geographic content; their palette is the map's, not the theme's.
+media_player video-surface true The player surface shows the media being played; that is content.
+font_preview glyph-samples true The glyph samples show the font's own appearance; that is the datum.
+emoji_picker emoji-glyphs true The emoji glyphs are the content being picked, not chrome.

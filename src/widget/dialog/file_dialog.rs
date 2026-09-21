@@ -361,20 +361,70 @@ impl EventHandler for FileDialog {
 impl Draw for FileDialog {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(
-            Rect::new(rect.x, rect.y, rect.width, rect.height),
-            Color::rgb(245, 245, 245),
-        );
-        context.draw_rect(
-            Rect::new(rect.x, rect.y, rect.width, rect.height),
-            Color::rgb(160, 160, 160),
-        );
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, 28), Color::rgb(0, 120, 215));
+        let style = self.style().clone();
+
+        // Chrome colours resolve explicit style first, then the theme's resolved style
+        // for this control, and only then fall back to a literal. The style step alone
+        // was not enough: `WidgetStyle` carries no title-bar or accent field, so the two
+        // most visible pixels of the dialog — the title band and the accept button —
+        // stayed a hardcoded blue in either appearance, and the render census reported
+        // the whole control as theme-blind.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global
+        // manager's mutex is not re-entrant.
+        let theme = crate::theme::resolved_theme_style("file_dialog");
+        // The window fill and the accent are read as their own lock acquisition and copied
+        // out as values, so the guard is dropped before anything else touches the theme —
+        // the global manager's mutex is not re-entrant.
+        let (window_fill, accent) = {
+            let manager = crate::theme::global_theme_manager();
+            match manager.current_theme() {
+                Some(active) => (active.colors.background, active.colors.primary),
+                None => (Color::WHITE, Color::rgb(0, 120, 215)),
+            }
+        };
+        let accent_ink = accent.contrast_color();
+
+        // A dialog is a `Surface`-role control and `Surface` resolves to the window's own
+        // fill, which would leave the frame invisible against the window. A resolved
+        // surface equal to the window fill is therefore re-derived one step toward the
+        // ink, the same distinction `Colors::input_background` draws for a field.
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        let surface = match style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+        {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => window_fill.blend(&ink, 0.06),
+        };
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or(Color::rgb(160, 160, 160));
+        // The field interiors are one step *away* from the dialog surface, so they read as
+        // editable regions. On a light surface that means darker and on a dark one lighter —
+        // the old code forced white, which on a dark theme was a glaring rectangle.
+        let field = if surface.is_dark() {
+            surface.blend(&Color::WHITE, 0.08)
+        } else {
+            surface.blend(&Color::BLACK, 0.06)
+        };
+
+        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), surface);
+        context.draw_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), border);
+        // Title bar: a separate region from the dialog surface, in the theme's accent
+        // rather than the literal blue it carried before, so the bar follows the palette
+        // the rest of the application is using.
+        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, 28), accent);
         context.draw_text(
             Point::new(rect.x + 8, rect.y + 14),
             &self.title,
             &Font::default(),
-            Color::rgb(255, 255, 255),
+            accent_ink,
             HorizontalAlignment::Left,
         );
         // File list area
@@ -382,17 +432,17 @@ impl Draw for FileDialog {
         let list_h = rect.height.saturating_sub(120);
         context.fill_rect(
             Rect::new(rect.x + 10, list_y, rect.width.saturating_sub(20), list_h),
-            Color::rgb(255, 255, 255),
+            field,
         );
         context.draw_rect(
             Rect::new(rect.x + 10, list_y, rect.width.saturating_sub(20), list_h),
-            Color::rgb(150, 150, 150),
+            border,
         );
         context.draw_text(
             Point::new(rect.x + 16, list_y + 20),
             &tr!("dialog.file_dialog.file_list_placeholder"),
             &Font::default(),
-            Color::rgb(150, 150, 150),
+            ink.blend(&field, 0.5),
             HorizontalAlignment::Left,
         );
         // Selected files display
@@ -401,23 +451,17 @@ impl Draw for FileDialog {
             Point::new(rect.x + 10, sel_y + 10),
             &tr!("dialog.file_dialog.file_name"),
             &Font::default(),
-            Color::rgb(0, 0, 0),
+            ink,
             HorizontalAlignment::Left,
         );
         let fname = self.selected_file().unwrap_or("");
-        context.fill_rect(
-            Rect::new(rect.x + 80, sel_y, rect.width.saturating_sub(90), 22),
-            Color::rgb(255, 255, 255),
-        );
-        context.draw_rect(
-            Rect::new(rect.x + 80, sel_y, rect.width.saturating_sub(90), 22),
-            Color::rgb(150, 150, 150),
-        );
+        context.fill_rect(Rect::new(rect.x + 80, sel_y, rect.width.saturating_sub(90), 22), field);
+        context.draw_rect(Rect::new(rect.x + 80, sel_y, rect.width.saturating_sub(90), 22), border);
         context.draw_text(
             Point::new(rect.x + 84, sel_y + 11),
             fname,
             &Font::default(),
-            Color::rgb(0, 0, 0),
+            ink,
             HorizontalAlignment::Left,
         );
         // OK/Cancel buttons
@@ -428,30 +472,30 @@ impl Draw for FileDialog {
         } else {
             tr!("common.button.open")
         };
+        // The accept button is the dialog's call to action: the theme's accent, with its
+        // contrast colour as the label — the same pairing `WidgetRole::Primary` uses.
         context.fill_rect(
             Rect::new(rect.x + rect.width as i32 - 176, btn_y as i32, btn_w, 28),
-            Color::rgb(0, 120, 215),
+            accent,
         );
         context.draw_text(
             Point::new(rect.x + rect.width as i32 - 136, (btn_y + 14.0) as i32),
             &ok_label,
             &Font::default(),
-            Color::rgb(255, 255, 255),
+            accent_ink,
             HorizontalAlignment::Left,
         );
         context.fill_rect(
             Rect::new(rect.x + rect.width as i32 - 88, btn_y as i32, btn_w, 28),
-            Color::rgb(225, 225, 225),
+            surface.blend(&ink, 0.1),
         );
-        context.draw_rect(
-            Rect::new(rect.x + rect.width as i32 - 88, btn_y as i32, btn_w, 28),
-            Color::rgb(100, 100, 100),
-        );
+        context
+            .draw_rect(Rect::new(rect.x + rect.width as i32 - 88, btn_y as i32, btn_w, 28), border);
         context.draw_text(
             Point::new(rect.x + rect.width as i32 - 48, (btn_y + 14.0) as i32),
             &tr!("common.button.cancel"),
             &Font::default(),
-            Color::rgb(0, 0, 0),
+            ink,
             HorizontalAlignment::Left,
         );
     }

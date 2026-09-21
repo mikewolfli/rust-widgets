@@ -466,20 +466,69 @@ impl EventHandler for InputDialog {
 impl Draw for InputDialog {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(
-            Rect::new(rect.x, rect.y, rect.width, rect.height),
-            Color::rgb(245, 245, 245),
-        );
-        context.draw_rect(
-            Rect::new(rect.x, rect.y, rect.width, rect.height),
-            Color::rgb(160, 160, 160),
-        );
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, 28), Color::rgb(0, 120, 215));
+        let style = self.style().clone();
+
+        // Chrome colours resolve explicit style first, then the theme's resolved style
+        // for this control, and only then fall back to a literal. The style step alone
+        // was not enough: `WidgetStyle` carries no title-bar or accent field, so the two
+        // most visible pixels of the dialog — the title band and the accept button —
+        // stayed a hardcoded blue in either appearance, and the render census reported
+        // the whole control as theme-blind.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global
+        // manager's mutex is not re-entrant.
+        let theme = crate::theme::resolved_theme_style("input_dialog");
+        // The window fill and the accent are read as their own lock acquisition and copied
+        // out as values, so the guard is dropped before anything else touches the theme —
+        // the global manager's mutex is not re-entrant.
+        let (window_fill, accent) = {
+            let manager = crate::theme::global_theme_manager();
+            match manager.current_theme() {
+                Some(active) => (active.colors.background, active.colors.primary),
+                None => (Color::WHITE, Color::rgb(0, 120, 215)),
+            }
+        };
+        let accent_ink = accent.contrast_color();
+
+        // A dialog is a `Surface`-role control and `Surface` resolves to the window's own
+        // fill, which would leave the frame invisible against the window. A resolved
+        // surface equal to the window fill is therefore re-derived one step toward the
+        // ink, the same distinction `Colors::input_background` draws for a field.
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        let surface = match style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+        {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => window_fill.blend(&ink, 0.06),
+        };
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or(Color::rgb(160, 160, 160));
+        // The entry field is the editable interior: one step *away* from the dialog
+        // surface, so on a light theme darker and on a dark one lighter rather than the
+        // forced white it used to be.
+        let field = if surface.is_dark() {
+            surface.blend(&Color::WHITE, 0.08)
+        } else {
+            surface.blend(&Color::BLACK, 0.06)
+        };
+
+        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), surface);
+        context.draw_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), border);
+        // Title bar: a separate region from the dialog surface, in the theme's accent
+        // rather than the literal blue it carried before.
+        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, 28), accent);
         context.draw_text(
             Point::new(rect.x + 8, rect.y + 14),
             &self.title,
             &Font::default(),
-            Color::rgb(255, 255, 255),
+            accent_ink,
             HorizontalAlignment::Left,
         );
         // Label
@@ -487,19 +536,15 @@ impl Draw for InputDialog {
             Point::new(rect.x + 10, rect.y + 48),
             &self.label_text,
             &Font::default(),
-            Color::rgb(0, 0, 0),
+            ink,
             HorizontalAlignment::Left,
         );
         // Input field
         let input_y = rect.y + 60;
-        context.fill_rect(
-            Rect::new(rect.x + 10, input_y, rect.width.saturating_sub(20), 26),
-            Color::rgb(255, 255, 255),
-        );
-        context.draw_rect(
-            Rect::new(rect.x + 10, input_y, rect.width.saturating_sub(20), 26),
-            Color::rgb(150, 150, 150),
-        );
+        context
+            .fill_rect(Rect::new(rect.x + 10, input_y, rect.width.saturating_sub(20), 26), field);
+        context
+            .draw_rect(Rect::new(rect.x + 10, input_y, rect.width.saturating_sub(20), 26), border);
         let display_text = match self.mode {
             InputMode::Text => self.text_value.clone(),
             InputMode::Integer => self.int_value.to_string(),
@@ -512,35 +557,30 @@ impl Draw for InputDialog {
             Point::new(rect.x + 14, input_y + 13),
             &display_text,
             &Font::default(),
-            Color::rgb(0, 0, 0),
+            ink,
             HorizontalAlignment::Left,
         );
         // OK/Cancel
         let btn_y = rect.y as f32 + rect.height as f32 - 40.0;
-        context.fill_rect(
-            Rect::new(rect.x + rect.width as i32 - 176, btn_y as i32, 80, 28),
-            Color::rgb(0, 120, 215),
-        );
+        context
+            .fill_rect(Rect::new(rect.x + rect.width as i32 - 176, btn_y as i32, 80, 28), accent);
         context.draw_text(
             Point::new(rect.x + rect.width as i32 - 136, (btn_y + 14.0) as i32),
             &tr!("common.button.ok"),
             &Font::default(),
-            Color::rgb(255, 255, 255),
+            accent_ink,
             HorizontalAlignment::Left,
         );
         context.fill_rect(
             Rect::new(rect.x + rect.width as i32 - 88, btn_y as i32, 80, 28),
-            Color::rgb(225, 225, 225),
+            surface.blend(&ink, 0.1),
         );
-        context.draw_rect(
-            Rect::new(rect.x + rect.width as i32 - 88, btn_y as i32, 80, 28),
-            Color::rgb(100, 100, 100),
-        );
+        context.draw_rect(Rect::new(rect.x + rect.width as i32 - 88, btn_y as i32, 80, 28), border);
         context.draw_text(
             Point::new(rect.x + rect.width as i32 - 48, (btn_y + 14.0) as i32),
             &tr!("common.button.cancel"),
             &Font::default(),
-            Color::rgb(0, 0, 0),
+            ink,
             HorizontalAlignment::Left,
         );
     }

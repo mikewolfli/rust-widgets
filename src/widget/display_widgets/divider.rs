@@ -27,6 +27,13 @@ pub struct Divider {
     vertical: bool,
     thickness: u32,
     color: Color,
+    /// Whether the colour was chosen by the caller through [`Divider::set_color`].
+    ///
+    /// The caller's choice must win over the active theme, but the constructor's
+    /// own neutral grey must not: without this flag a theme switch could never
+    /// reach a divider that was never explicitly coloured, which is exactly the
+    /// hardcoded-chrome defect the rendering census reports.
+    color_is_explicit: bool,
 }
 
 impl Divider {
@@ -37,6 +44,7 @@ impl Divider {
             vertical: false,
             thickness: 1,
             color: Color::rgba(180, 180, 180, 200),
+            color_is_explicit: false,
         }
     }
 
@@ -63,9 +71,31 @@ impl Divider {
     }
 
     /// Sets the divider line color.
+    ///
+    /// An explicit colour wins over the active theme, so this overrides the
+    /// theme-resolved line colour until it is set again.
     pub fn set_color(&mut self, color: Color) {
         self.color = color;
+        self.color_is_explicit = true;
         self.base.request_redraw();
+    }
+
+    /// The colour the line is drawn in.
+    ///
+    /// Precedence is the caller's explicit colour, then the theme's resolved
+    /// border colour for this control, then the constructor's neutral grey. The
+    /// theme step is what makes a theme switch visible: before it, the line kept
+    /// its literal grey in both appearances.
+    fn line_color(&self) -> Color {
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw or across
+        // another accessor — the global manager's mutex is not re-entrant.
+        if self.color_is_explicit {
+            return self.color;
+        }
+        crate::theme::resolved_theme_style("divider")
+            .and_then(|style| style.border_color.or(style.background_color))
+            .unwrap_or(self.color)
     }
 }
 
@@ -147,7 +177,8 @@ impl WidgetProperties for Divider {
 impl Draw for Divider {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        draw_line(context, rect, self.vertical, self.thickness, self.color);
+        let color = self.line_color();
+        draw_line(context, rect, self.vertical, self.thickness, color);
     }
 }
 

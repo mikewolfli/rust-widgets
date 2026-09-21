@@ -243,14 +243,34 @@ impl WidgetProperties for Canvas {
 impl Draw for Canvas {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.base.geometry();
+
+        // The canvas surface and its frame are chrome, so they resolve explicit
+        // style first, then the theme, and only then a literal. Without the theme
+        // step the surface stayed white in both appearances, which made a light/dark
+        // switch invisible.
+        //
+        // `resolved_theme_style` takes and releases the global manager's lock
+        // internally, so no guard is held across the draw (the mutex is not
+        // re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("canvas");
+        let background = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| background.blend(&Color::BLACK, 0.2));
+
         // Draw canvas background
-        context.fill_rect(rect, Color::WHITE);
+        context.fill_rect(rect, background);
         // Replay all stored commands
         for cmd in &self.commands {
             context.execute_command(cmd.clone());
         }
         // Draw border to make canvas area visible
-        context.draw_rect(rect, Color::rgb(200, 200, 200));
+        context.draw_rect(rect, border);
     }
 
     fn uses_custom_drawing(&self) -> bool {

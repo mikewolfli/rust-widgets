@@ -318,9 +318,39 @@ impl EventHandler for LCDNumber {
 impl Draw for LCDNumber {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        let style = self.style();
-        let bg_color = style.background_color.unwrap_or(Color::BLACK);
-        let fg_color = style.text_color.unwrap_or(Color::rgb(255, 0, 0));
+
+        // The panel and its lit segments resolve explicit style first, then the
+        // theme's resolved style for this control, and only then a literal. The
+        // theme step is what makes an appearance switch visible; previously the
+        // panel fell back to a hardcoded black and the segments to a hardcoded red,
+        // so light and dark rendered identically.
+        //
+        // An LCD kind classifies as `Text` in the role table, and `Text` resolves
+        // with `background_color: None` — a text role has no surface of its own. So
+        // the panel falls back to the *theme's* background rather than to a literal,
+        // which is what makes the panel follow the appearance.
+        //
+        // `resolved_theme_style` and `current_theme` each take and release the global
+        // manager's lock internally, so no guard is held across either call or the
+        // draw (the mutex is not re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("lcd_number");
+        let theme_background = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|theme| theme.colors.background)
+            .unwrap_or(Color::BLACK);
+        let resolved = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(theme_background);
+        let fg_color = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::rgb(255, 0, 0));
+        // The panel is inset from the window's own colour: a bare `Text` role has no
+        // surface, so an untinted fallback to `theme.colors.background` would be
+        // byte-identical to the frame behind it and the panel would be invisible.
+        let bg_color = resolved.blend(&fg_color, 0.08);
         context.fill_rect(rect, bg_color);
         let display_text = self.display_text();
         let digit_width = rect.width / (self.num_digits as f64).max(1.0) as u32;
@@ -344,7 +374,11 @@ impl Draw for LCDNumber {
             );
         }
         if self.check_overflow() {
-            let overflow_color = Color::rgb(255, 255, 0);
+            // Overflow is the state a user has to act on, so it reads the theme's
+            // warning token rather than a literal yellow.
+            let overflow_color = crate::theme::semantic_color(crate::theme::SemanticColor::Warning)
+                .map(|token| token.blend(&bg_color, 0.2))
+                .unwrap_or_else(|| fg_color.blend(&bg_color, 0.3));
             context.fill_circle(Point::new(rect.x + 10, rect.y + 10), 5, overflow_color);
         }
     }

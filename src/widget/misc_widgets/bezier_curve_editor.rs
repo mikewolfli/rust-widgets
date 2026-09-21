@@ -20,8 +20,10 @@ use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Control point handle radius in pixels.
 const HANDLE_RADIUS: u32 = 8;
-/// Grid color alpha value.
-const GRID_ALPHA: u8 = 60;
+/// Weight, in `0.0..=1.0`, the grid is blended toward the text colour over the
+/// surface. Previously an `u8` alpha (60/255 ≈ 0.24) applied to a fixed grey;
+/// expressing it as a blend weight lets the grid follow the resolved surface.
+const GRID_ALPHA: f32 = 0.24;
 
 /// BezierCurveEditor widget for creating custom easing curves.
 pub struct BezierCurveEditor {
@@ -272,17 +274,38 @@ impl Draw for BezierCurveEditor {
         let draw_w = (rect.width as i32 - 2 * margin).max(1) as f32;
         let draw_h = (rect.height as i32 - 2 * margin).max(1) as f32;
 
+        // Chrome colours resolve explicit style first, then the theme's resolved
+        // style for this control, and only then a literal. The theme step is what
+        // makes an appearance switch visible; previously the surface, grid, axes,
+        // polygon and labels were all hardcoded, so light and dark rendered the same.
+        //
+        // `resolved_theme_style` and `semantic_color` each take and release the
+        // global manager's lock internally, so no guard is held across the draw (the
+        // mutex is not re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("bezier_curve_editor");
+        let surface = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| surface.blend(&Color::BLACK, 0.18));
+        let text_color = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+
         // ── Background ──
-        let bg = if !is_enabled {
-            Color::rgba(245, 245, 245, 100)
-        } else {
-            Color::rgba(245, 245, 245, 255)
-        };
+        // A disabled editor is the same surface, faded: derived from the resolved
+        // colour rather than a second literal so it still follows the appearance.
+        let bg = if !is_enabled { surface.with_alpha(100) } else { surface.with_alpha(255) };
         context.fill_rect(rect, bg);
 
         // ── Grid ──
         if self.show_grid && is_enabled {
-            let grid_color = Color::rgba(180, 180, 180, GRID_ALPHA);
+            let grid_color = surface.blend(&text_color, GRID_ALPHA);
             let steps = (1.0 / self.grid_size) as u32;
             for i in 0..=steps {
                 let frac = i as f32 * self.grid_size;
@@ -305,7 +328,7 @@ impl Draw for BezierCurveEditor {
             }
 
             // ── Axis lines ──
-            let axis_color = Color::rgba(100, 100, 100, 150);
+            let axis_color = surface.blend(&text_color, 0.6);
             // X-axis (bottom edge).
             context.draw_line(
                 Point::new(rect.x + margin, rect.y + margin + draw_h as i32),
@@ -330,12 +353,22 @@ impl Draw for BezierCurveEditor {
         let cp1_pixel = self.curve_to_pixel(self.control_point1.0, self.control_point1.1);
         let cp2_pixel = self.curve_to_pixel(self.control_point2.0, self.control_point2.1);
 
-        let poly_color = Color::rgba(150, 150, 150, 180);
+        // CP1 and CP2 are the two draggable identities of the curve, so they keep a
+        // distinct hue each; both are drawn *over* the themed surface and their
+        // handles are outlined in the surface colour so they stay readable in either
+        // appearance. The handles' outline previously hardcoded white, which vanished
+        // on a light surface once the surface stopped being hardcoded too.
+        let cp1_color = surface.blend(&Color::BLUE, 0.75);
+        let cp2_color = surface.blend(&Color::GREEN, 0.75);
+
+        let poly_color = surface.blend(&text_color, 0.5);
         context.draw_line(p0, cp1_pixel, poly_color);
         context.draw_line(p3, cp2_pixel, poly_color);
 
         // ── Bezier curve ──
-        let curve_color = Color::rgb(33, 118, 210); // Material blue
+        let curve_color = crate::theme::semantic_color(crate::theme::SemanticColor::Info)
+            .map(|token| surface.blend(&token, 0.8))
+            .unwrap_or_else(|| surface.blend(&Color::BLUE, 0.8));
         let segments = 50;
         let mut prev = self.curve_to_pixel(0.0, 0.0);
         for i in 1..=segments {
@@ -347,13 +380,15 @@ impl Draw for BezierCurveEditor {
         }
 
         // ── Control point handles ──
+        // The outline is the surface colour, not white: on a light appearance a white
+        // outline would be invisible against the pale surface.
         // CP1 handle.
-        context.fill_circle(cp1_pixel, HANDLE_RADIUS, Color::rgba(33, 118, 210, 200));
-        context.draw_circle_stroke(cp1_pixel, HANDLE_RADIUS, Color::rgb(255, 255, 255), 2);
+        context.fill_circle(cp1_pixel, HANDLE_RADIUS, cp1_color);
+        context.draw_circle_stroke(cp1_pixel, HANDLE_RADIUS, surface, 2);
 
         // CP2 handle.
-        context.fill_circle(cp2_pixel, HANDLE_RADIUS, Color::rgba(76, 175, 80, 200));
-        context.draw_circle_stroke(cp2_pixel, HANDLE_RADIUS, Color::rgb(255, 255, 255), 2);
+        context.fill_circle(cp2_pixel, HANDLE_RADIUS, cp2_color);
+        context.draw_circle_stroke(cp2_pixel, HANDLE_RADIUS, surface, 2);
 
         // ── Labels ──
         let font = crate::core::Font::default();
@@ -366,20 +401,23 @@ impl Draw for BezierCurveEditor {
             Point::new(rect.x + 4, rect.y + 12),
             &cp1_label,
             &font,
-            Color::rgba(33, 118, 210, 200),
+            cp1_color,
             HorizontalAlignment::Left,
         );
         context.draw_text(
             Point::new(rect.x + 4, rect.y + 26),
             &cp2_label,
             &font,
-            Color::rgba(76, 175, 80, 200),
+            cp2_color,
             HorizontalAlignment::Left,
         );
 
         // ── Endpoint markers ──
-        context.fill_circle(p0, 4, Color::rgba(0, 0, 0, 150));
-        context.fill_circle(p3, 4, Color::rgba(0, 0, 0, 150));
+        context.fill_circle(p0, 4, surface.blend(&text_color, 0.6));
+        context.fill_circle(p3, 4, surface.blend(&text_color, 0.6));
+
+        // A frame separates the editor from whatever it is embedded in.
+        context.draw_rect(rect, border);
     }
 }
 

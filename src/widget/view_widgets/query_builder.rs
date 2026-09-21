@@ -581,43 +581,154 @@ impl Draw for QueryBuilder {
         if rect.width == 0 || rect.height == 0 {
             return;
         }
-        context.fill_rect(rect, Color::rgb(250, 250, 252));
-        context.draw_rect(rect, Color::rgb(210, 212, 218));
-        self.draw_header(context, rect);
+
+        // Chrome colours resolve explicit style first, then the theme's resolved
+        // style for this control, and only then a literal. The theme step is what
+        // makes an appearance switch visible; previously every colour below was a
+        // hardcoded literal, so light and dark rendered identically.
+        //
+        // `resolved_theme_style` takes and releases the global manager's lock
+        // internally, so no guard is held across the draw (the mutex is not
+        // re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("query_builder");
+        // `query_builder` is not a control kind in the role table, so it classifies as
+        // `Surface`, whose background is `theme.colors.background` — the window's own
+        // colour. The builder is therefore a step toward the foreground, so it reads
+        // as a panel rather than as bare window.
+        let resolved = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| resolved.blend(&Color::BLACK, 0.15));
+        let text_color = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        let background = resolved.blend(&text_color, 0.08);
+
+        context.fill_rect(rect, background);
+        context.draw_rect(rect, border);
+
+        let chrome = QueryBuilderChrome { background, border, text_color };
+        self.draw_header(context, rect, &chrome);
         for index in 0..self.rows.len() {
-            self.draw_row(context, index);
+            self.draw_row(context, index, &chrome);
         }
         if self.rows.is_empty() {
             context.draw_text(
                 Point::new(rect.x + 10, rect.y + HEADER_HEIGHT as i32 + 20),
                 "No conditions",
                 &Font::simple("Sans", 11.0),
-                Color::rgb(150, 154, 162),
+                chrome.placeholder_text(),
                 HorizontalAlignment::Left,
             );
         }
     }
 }
 
+/// The builder's resolved chrome colours, threaded through the drawing helpers.
+///
+/// Gathered into one value so the header, the rows and the operand field all read
+/// the same appearance-resolved colours instead of re-resolving the theme, and so
+/// no helper can drift back to a literal.
+#[derive(Debug, Clone, Copy)]
+struct QueryBuilderChrome {
+    /// The builder's own fill, and the base every other colour is derived from.
+    background: Color,
+    /// The resolved border colour, reused as the input-box outline.
+    border: Color,
+    /// The resolved foreground, used for text and as the tint direction.
+    text_color: Color,
+}
+
+impl QueryBuilderChrome {
+    /// Ordinary row and header text.
+    fn text(&self) -> Color {
+        self.text_color
+    }
+
+    /// Placeholder and secondary labels.
+    fn placeholder_text(&self) -> Color {
+        self.text_color.blend(&self.background, 0.45)
+    }
+
+    /// The header strip, a step away from the builder body.
+    fn header(&self) -> Color {
+        self.background.blend(&self.text_color, 0.06)
+    }
+
+    /// The row the user is editing.
+    fn active_row(&self) -> Color {
+        self.background.blend(&self.text_color, 0.08)
+    }
+
+    /// The row separator lines.
+    fn separator(&self) -> Color {
+        self.background.blend(&self.text_color, 0.1)
+    }
+
+    /// An operand field's interior: one step toward the text colour from the body,
+    /// so an editable box reads as raised in both appearances.
+    fn field(&self) -> Color {
+        self.background.blend(&self.text_color, 0.04)
+    }
+
+    /// The add button's surface, a stronger step than a field so it reads as an
+    /// affordance rather than an input.
+    fn button(&self) -> Color {
+        self.background.blend(&self.text_color, 0.14)
+    }
+
+    /// The AND conjunction chip. The theme's primary slot, read through the
+    /// resolved border colour so it moves with the appearance instead of staying
+    /// a fixed blue.
+    fn and_chip(&self) -> Color {
+        self.border.blend(&self.text_color, 0.3)
+    }
+
+    /// The OR conjunction chip. A distinct hue from the AND chip, taken from the
+    /// theme's accent slot through the semantic warning token so the two
+    /// conjunctions stay tellable apart in both appearances.
+    fn or_chip(&self) -> Color {
+        crate::theme::semantic_color(crate::theme::SemanticColor::Warning)
+            .map(|token| token.blend(&self.background, 0.15))
+            .unwrap_or_else(|| self.border.blend(&self.background, 0.4))
+    }
+
+    /// The `!` negation marker and the remove cross: states the user acts on, so
+    /// they read the theme's error token rather than a literal red or grey.
+    fn remove(&self) -> Color {
+        crate::theme::semantic_color(crate::theme::SemanticColor::Error)
+            .map(|token| token.blend(&self.background, 0.3))
+            .unwrap_or_else(|| self.text_color.blend(&self.background, 0.3))
+    }
+}
+
 impl QueryBuilder {
     /// Draws the conjunction toggle and the add button.
-    fn draw_header(&self, context: &mut RenderContext, rect: Rect) {
+    fn draw_header(&self, context: &mut RenderContext, rect: Rect, chrome: &QueryBuilderChrome) {
         let header = Rect::new(rect.x, rect.y, rect.width, HEADER_HEIGHT);
-        context.fill_rect(header, Color::rgb(238, 240, 244));
+        context.fill_rect(header, chrome.header());
 
         // The conjunction is a visible chip rather than a menu, because it is the
         // one decision that changes what *every* row means.
         let chip = Rect::new(rect.x + 8, rect.y + 7, 56, 20);
         let chip_color = match self.conjunction {
-            FilterConjunction::And => Color::rgb(66, 133, 244),
-            FilterConjunction::Or => Color::rgb(244, 150, 60),
+            FilterConjunction::And => chrome.and_chip(),
+            FilterConjunction::Or => chrome.or_chip(),
         };
         context.fill_rounded_rect(chip, 10, chip_color);
         context.draw_text(
             Point::new(chip.x + 10, chip.y + 14),
             self.conjunction.as_str().to_uppercase().as_str(),
             &Font::simple("Sans", 11.0),
-            Color::WHITE,
+            // The label sits on the chip, so it takes the chip's own contrast
+            // colour rather than a literal white.
+            chip_color.contrast_color(),
             HorizontalAlignment::Left,
         );
 
@@ -625,24 +736,24 @@ impl QueryBuilder {
             Point::new(chip.x + chip.width as i32 + 10, rect.y + 21),
             &format!("{} condition(s)", self.rows.len()),
             &Font::simple("Sans", 11.0),
-            Color::rgb(90, 94, 102),
+            chrome.placeholder_text(),
             HorizontalAlignment::Left,
         );
 
         // The add button, at the right.
         let add = Rect::new(rect.x + rect.width as i32 - 30, rect.y + 7, 22, 20);
-        context.fill_rounded_rect(add, 4, Color::rgb(220, 224, 232));
+        context.fill_rounded_rect(add, 4, chrome.button());
         context.draw_text(
             Point::new(add.x + 7, add.y + 14),
             "+",
             &Font::simple("Sans", 14.0),
-            Color::rgb(60, 64, 72),
+            chrome.text(),
             HorizontalAlignment::Left,
         );
     }
 
     /// Draws one condition row: negation, field, operator, operand, remove.
-    fn draw_row(&self, context: &mut RenderContext, index: usize) {
+    fn draw_row(&self, context: &mut RenderContext, index: usize, chrome: &QueryBuilderChrome) {
         let Some(row_rect) = self.row_rect(index) else {
             return;
         };
@@ -651,12 +762,12 @@ impl QueryBuilder {
         };
         let active = self.active_row == Some(index);
         if active {
-            context.fill_rect(row_rect, Color::rgb(235, 242, 254));
+            context.fill_rect(row_rect, chrome.active_row());
         }
         context.draw_line_stroke(
             Point::new(row_rect.x, row_rect.y),
             Point::new(row_rect.x + row_rect.width as i32, row_rect.y),
-            Color::rgb(228, 230, 236),
+            chrome.separator(),
             1,
         );
 
@@ -668,7 +779,7 @@ impl QueryBuilder {
                 Point::new(x, row_rect.y + 19),
                 "!",
                 &Font::simple("Sans", 13.0),
-                Color::rgb(219, 68, 55),
+                chrome.remove(),
                 HorizontalAlignment::Left,
             );
         }
@@ -681,7 +792,7 @@ impl QueryBuilder {
             Point::new(x, row_rect.y + 19),
             &field_label,
             &Font::simple("Sans", 11.0),
-            Color::rgb(40, 44, 52),
+            chrome.text(),
             HorizontalAlignment::Left,
         );
         x += 84;
@@ -691,19 +802,19 @@ impl QueryBuilder {
             Point::new(x, row_rect.y + 19),
             row.operator.as_str(),
             &Font::simple("Sans", 10.0),
-            Color::rgb(110, 116, 126),
+            chrome.placeholder_text(),
             HorizontalAlignment::Left,
         );
         x += 96;
 
         // Operand field, drawn as an input box so an empty row reads as "type here".
         let operand_box = Rect::new(x, row_rect.y + 6, row_rect.width.saturating_sub(200), 18);
-        context.fill_rect(operand_box, Color::WHITE);
-        context.draw_rect(operand_box, Color::rgb(200, 204, 212));
+        context.fill_rect(operand_box, chrome.field());
+        context.draw_rect(operand_box, chrome.border);
         let (text, color) = if row.operand.is_empty() {
-            ("type a value".to_string(), Color::rgb(160, 164, 172))
+            ("type a value".to_string(), chrome.placeholder_text())
         } else {
-            (row.operand.clone(), Color::rgb(40, 44, 52))
+            (row.operand.clone(), chrome.text())
         };
         context.draw_text(
             Point::new(operand_box.x + 5, operand_box.y + 13),
@@ -718,13 +829,13 @@ impl QueryBuilder {
         context.draw_line_stroke(
             Point::new(remove.x + 3, remove.y + 3),
             Point::new(remove.x + 13, remove.y + 13),
-            Color::rgb(150, 154, 162),
+            chrome.remove(),
             1,
         );
         context.draw_line_stroke(
             Point::new(remove.x + 13, remove.y + 3),
             Point::new(remove.x + 3, remove.y + 13),
-            Color::rgb(150, 154, 162),
+            chrome.remove(),
             1,
         );
     }

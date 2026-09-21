@@ -29,6 +29,12 @@ pub struct FreeformShapeWidget {
     path: ShapePath,
     fill_color: Color,
     stroke_color: Option<Color>,
+    /// Set once the caller assigns a fill through [`Self::set_fill_color`]. Until
+    /// then the fill is the theme's, so an untouched shape follows an appearance
+    /// switch; after that the colour is the caller's data and is used verbatim.
+    fill_overridden: bool,
+    /// The [`Self::fill_overridden`] counterpart for the outline.
+    stroke_overridden: bool,
     stroke_width: u32,
     hovered: bool,
     pressed: bool,
@@ -48,14 +54,17 @@ pub struct FreeformShapeWidget {
 impl FreeformShapeWidget {
     /// Creates a shape in `geometry` with the given outline.
     ///
-    /// Starts with a light blue fill, a darker blue two-pixel stroke, and neither
-    /// hovered nor pressed.
+    /// The fill and outline start as the theme's colours, so the shape follows an
+    /// appearance switch until a caller sets one of its own; the stroke is two
+    /// pixels wide. It starts neither hovered nor pressed.
     pub fn new(geometry: Rect, path: ShapePath) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::FreeformShape, geometry, "FreeformShapeWidget"),
             path,
             fill_color: Color::rgb(200, 220, 255),
             stroke_color: Some(Color::rgb(80, 120, 200)),
+            fill_overridden: false,
+            stroke_overridden: false,
             stroke_width: 2,
             hovered: false,
             pressed: false,
@@ -77,13 +86,21 @@ impl FreeformShapeWidget {
         self.base.request_redraw();
     }
     /// The colour the shape's interior is painted in.
+    ///
+    /// This is the colour a caller configured, and the two defaults this control
+    /// ships with until one is set. While neither [`Self::set_fill_color`] nor a
+    /// theme has moved it, the *rendered* fill is the theme's resolved foreground
+    /// — the theme's colour is only knowable at draw time, so it is not baked in
+    /// here — and this reports the ship-time default instead.
     pub fn fill_color(&self) -> Color {
         self.fill_color
     }
     /// Sets the fill colour and repaints. The alpha channel is honoured, so a
-    /// translucent colour makes the shape see-through while still clickable.
+    /// translucent colour makes the shape see-through while still clickable. Once
+    /// set, the colour is used verbatim and no longer follows the theme.
     pub fn set_fill_color(&mut self, color: Color) {
         self.fill_color = color;
+        self.fill_overridden = true;
         self.base.request_redraw();
     }
     /// The outline colour, or `None` when the shape is drawn with no outline.
@@ -91,9 +108,11 @@ impl FreeformShapeWidget {
         self.stroke_color
     }
     /// Sets the outline colour, or removes the outline when given `None`, and
-    /// repaints.
+    /// repaints. Once set, the colour is used verbatim and no longer follows the
+    /// theme.
     pub fn set_stroke_color(&mut self, color: Option<Color>) {
         self.stroke_color = color;
+        self.stroke_overridden = true;
         self.base.request_redraw();
     }
     /// The outline width in **pixels**. Meaningless while
@@ -367,6 +386,28 @@ impl FreeformShapeWidget {
         let mid = Point::new(lerp(mid1.x, mid2.x), lerp(mid1.y, mid2.y));
         self.flatten_quad_to(vertices, p0, mid1, mid);
         self.flatten_quad_to(vertices, mid, mid2, p2);
+    }
+
+    /// Draws the shape with an explicit fill/outline pair.
+    ///
+    /// The shape helpers read `self.fill_color` / `self.stroke_color`, so the
+    /// resolved pair is installed on the widget for the duration of the draw. The
+    /// appearance-derived colours therefore never become the widget's stored state —
+    /// [`Self::fill_color`] still reports the caller's colour — and no shape helper
+    /// needs two extra arguments. The previous pair is restored by a guard, so it
+    /// survives an early return as well as the normal path.
+    fn draw_filled_shape(
+        &mut self,
+        context: &mut RenderContext,
+        fill: Color,
+        stroke: Option<Color>,
+    ) {
+        let restore = RestoreShapePalette {
+            fill: std::mem::replace(&mut self.fill_color, fill),
+            stroke: std::mem::replace(&mut self.stroke_color, stroke),
+        };
+        self.draw_shape(context);
+        restore.apply(self);
     }
 
     fn draw_shape(&self, context: &mut RenderContext) {
@@ -743,12 +784,72 @@ impl WidgetProperties for FreeformShapeWidget {
 impl Draw for FreeformShapeWidget {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.base.geometry();
-        context.fill_rect(rect, Color::rgb(255, 255, 255));
-        self.draw_shape(context);
+
+        // Chrome colours resolve explicit style first, then the theme's resolved
+        // style for this control, and only then a literal. The theme step is what
+        // makes an appearance switch visible; previously the plate below was a
+        // hardcoded white and the shape's default fill a hardcoded blue, so light
+        // and dark rendered identically.
+        //
+        // `resolved_theme_style` takes and releases the global manager's lock
+        // internally, so no guard is held across the draw (the mutex is not
+        // re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("freeform_shape");
+        // `freeform_shape` is not a control kind in the role table, so it classifies as
+        // `Surface`, whose background is `theme.colors.background` — the window's own
+        // colour. The plate behind the outline is therefore a step toward the
+        // foreground, so the widget's extent is visible.
+        let resolved = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let text_color = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        let background = resolved.blend(&text_color, 0.08);
+
+        // A caller who set a fill owns it — that colour is the datum, so it is used
+        // verbatim. Only the *default* fill follows the theme, which is what makes
+        // an untouched shape respond to an appearance switch.
+        let fill = if self.fill_overridden { self.fill_color } else { text_color };
+        let stroke = match (self.stroke_overridden, self.stroke_color) {
+            (true, Some(color)) => Some(color),
+            // An explicit `None` from the caller stays `None`; the default derives
+            // an outline from the resolved pair.
+            (true, None) => None,
+            (false, _) => Some(fill.blend(&background, 0.5)),
+        };
+
+        context.fill_rect(rect, background);
+        self.draw_filled_shape(context, fill, stroke);
         if !self.base.is_enabled() {
-            let overlay = Color::rgba(200, 200, 200, 128);
+            // A disabled shape is a chrome state, so the veil is derived from the
+            // resolved pair rather than a fixed grey.
+            let overlay = background.blend(&text_color, 0.25).with_alpha(128);
             context.fill_rect(rect, overlay);
         }
+    }
+}
+
+/// The shape palette that was in place before an appearance-resolved pair replaced
+/// it for one draw.
+///
+/// Held so [`FreeformShapeWidget::draw_filled_shape`] can put the widget's own
+/// colours back after painting, which keeps the theme's colours out of the
+/// widget's persistent state. Restoration is explicit rather than a `Drop`
+/// implementation so the borrow of the widget ends before the guard is applied.
+struct RestoreShapePalette {
+    fill: Color,
+    stroke: Option<Color>,
+}
+
+impl RestoreShapePalette {
+    /// Writes the saved pair back onto `shape`.
+    fn apply(self, shape: &mut FreeformShapeWidget) {
+        shape.fill_color = self.fill;
+        shape.stroke_color = self.stroke;
     }
 }
 

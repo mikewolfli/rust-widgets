@@ -776,16 +776,57 @@ impl EventHandler for WebEngineView {
 impl Draw for WebEngineView {
     fn draw(&mut self, ctx: &mut RenderContext) {
         let g = self.geometry();
-        ctx.fill_rect(g, Color::WHITE);
-        ctx.draw_rect(g, Color::rgb(200, 200, 200));
+
+        // The view's chrome and its blank page surface resolve the explicit style first, then the
+        // theme's resolved style for this control, and only then a literal. The page area used to be
+        // a fixed white and the URL bar a fixed grey, so a light/dark switch left the whole view —
+        // including its dominant colour — unchanged and the rendering census reported the control
+        // as theme-blind. Once a real document is loaded its own pixels replace this surface.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
+        // is not re-entrant.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("web_engine_view");
+        // Read as its own lock acquisition and copied out as values, so the guard is dropped
+        // before anything else touches the theme.
+        let (window_fill, foreground, secondary) = {
+            let manager = crate::theme::global_theme_manager();
+            match manager.current_theme() {
+                Some(active) => {
+                    (active.colors.background, active.colors.foreground, active.colors.secondary)
+                }
+                None => (Color::rgb(240, 240, 240), Color::BLACK, Color::rgb(158, 158, 158)),
+            }
+        };
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(foreground);
+        // `web_engine_view` is absent from `WidgetRole::for_kind_name`'s table, so it classifies as
+        // `Surface` and the active theme writes the window fill into `style.background_color`. The
+        // blank page is the window fill eased toward the text colour, so it reads as a distinct
+        // document on a light theme and on a dark one; a colour the caller set still wins.
+        let page = match style.background_color {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => window_fill.blend(&ink, 0.12),
+        };
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .filter(|resolved| *resolved != page)
+            .unwrap_or_else(|| page.blend(&secondary, 0.45));
+
+        ctx.fill_rect(g, page);
+        ctx.draw_rect(g, border);
         // Draw URL bar
         let bar = Rect::new(g.x, g.y, g.width, 28);
-        ctx.fill_rect(bar, Color::rgb(240, 240, 240));
+        ctx.fill_rect(bar, page.blend(&ink, 0.10));
         ctx.draw_text(
             Point::new(g.x + 4, g.y + 20),
             self.url(),
             &Font::default_ui(),
-            Color::rgb(100, 100, 100),
+            ink.blend(&page, 0.35),
             HorizontalAlignment::Left,
         );
         // Content area hint
@@ -794,7 +835,7 @@ impl Draw for WebEngineView {
                 Point::new(g.x + 4, g.y + g.height as i32 / 2),
                 "Loading...",
                 &Font::default_ui(),
-                Color::rgb(150, 150, 150),
+                secondary,
                 HorizontalAlignment::Left,
             );
         }

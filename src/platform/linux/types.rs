@@ -51,7 +51,33 @@ pub(crate) struct LinuxNativeState {
     /// Root vertical containers hosting menu bar and content area.
     pub(crate) root_boxes: HashMap<u64, gtk::Box>,
     /// Absolute-position container for child controls.
-    pub(crate) content_fixed: HashMap<u64, gtk::Fixed>,
+    ///
+    /// # Why an `Overlay` rather than a `gtk::Fixed`
+    ///
+    /// Children are still placed at absolute coordinates from the window layout, but a
+    /// `Fixed` reports its children's bounding box as its own **minimum size**, and the
+    /// `Box` above passes that to the toplevel. A window whose right-most control sits at
+    /// x=956 with a width of 472 therefore refused to shrink below 1428px: measured, a
+    /// request for 800x600 settled at 1428x858 while 1600x1000 was honoured. An `Overlay`
+    /// positions children by start margins and does not aggregate their bounds, so the
+    /// same controls leave the window free to shrink — measured to 400px at those exact
+    /// coordinates, with each child still allocated its full size and
+    /// `translate_coordinates` reporting (12, 42) and (956, 42), matching the `Fixed`
+    /// placement.
+    ///
+    /// The two options that keep a `Fixed` were measured and rejected: sizing children by
+    /// `size_allocate` lowers the floor to 957 (the right child's `put` origin, not its
+    /// right edge) and so still refuses a smaller window, while leaving the child size
+    /// requests in place pins it at 1428. See
+    /// `tools/fixed_alloc/src/main.rs` for the measurement.
+    pub(crate) content_overlay: HashMap<u64, gtk::Overlay>,
+    /// The `DrawingArea` that paints a window's whole widget tree.
+    ///
+    /// The backend creates no native controls, so a window's ordinary children have no GTK
+    /// widget and need painting; this is what paints them. It sits *below*
+    /// [`Self::content_overlay`] in the stacking order, so a mounted surface draws over the
+    /// tree. Held here to keep the widget alive and reachable for invalidation.
+    pub(crate) window_painters: HashMap<u64, gtk::DrawingArea>,
     /// Generic widget registry for visibility/text/enabled operations.
     pub(crate) widgets: HashMap<u64, gtk::Widget>,
     /// Native `DrawingArea`s hosting self-drawn widgets, indexed by the widget

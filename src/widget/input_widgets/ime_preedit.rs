@@ -28,6 +28,16 @@ pub struct ImePreedit {
     text_color: Color,
     underline_color: Color,
     underline_thickness: u32,
+    /// Whether the caller ever chose a text colour through [`ImePreedit::set_text_color`].
+    ///
+    /// The field is only ever *written* by that setter, so its constructed value cannot be told
+    /// from a caller's write by looking at the field alone. The flag records the difference, which
+    /// is what lets `draw` fall back to the theme's foreground for a colour nobody chose instead of
+    /// keeping the black the constructor happened to install.
+    text_color_set: bool,
+    /// Whether the caller ever chose an underline colour through
+    /// [`ImePreedit::set_underline_color`]. Same reason as [`Self::text_color_set`].
+    underline_color_set: bool,
 }
 
 impl ImePreedit {
@@ -40,6 +50,8 @@ impl ImePreedit {
             text_color: Color::BLACK,
             underline_color: Color::BLACK,
             underline_thickness: 1,
+            text_color_set: false,
+            underline_color_set: false,
         }
     }
 
@@ -63,12 +75,14 @@ impl ImePreedit {
     /// Sets the text color.
     pub fn set_text_color(&mut self, color: Color) {
         self.text_color = color;
+        self.text_color_set = true;
         self.base.request_redraw();
     }
 
     /// Sets the underline color.
     pub fn set_underline_color(&mut self, color: Color) {
         self.underline_color = color;
+        self.underline_color_set = true;
         self.base.request_redraw();
     }
 
@@ -100,6 +114,29 @@ impl ImePreedit {
         if position != self.cursor_position() {
             self.base.request_redraw();
         }
+    }
+
+    /// The text colour `draw` should actually use.
+    ///
+    /// Precedence is the crate-wide one: a colour the caller set wins, otherwise the caller's
+    /// style colour (theme-applied or explicit), otherwise the theme's foreground passed in as
+    /// `fallback`. The field's constructed `Color::BLACK` is deliberately not consulted, because
+    /// it is a constructor default rather than a choice, and treating it as one would keep the
+    /// control black on a dark theme.
+    fn effective_text_color(&self, fallback: Color) -> Color {
+        if self.text_color_set {
+            return self.text_color;
+        }
+        self.base.style().text_color.unwrap_or(fallback)
+    }
+
+    /// The underline colour `draw` should actually use. Same precedence as
+    /// [`Self::effective_text_color`].
+    fn effective_underline_color(&self, fallback: Color) -> Color {
+        if self.underline_color_set {
+            return self.underline_color;
+        }
+        self.base.style().border_color.unwrap_or(fallback)
     }
 }
 
@@ -170,12 +207,48 @@ impl Draw for ImePreedit {
         }
         let rect = self.geometry();
 
+        // Chrome colours resolve the explicit style first, then the theme's resolved style for
+        // this control, and only then fall back to a literal. The widget's own field defaults were
+        // both `Color::BLACK`, so a light/dark switch left the composition text and its underline
+        // unchanged — the rendering census reported the control as theme-blind.
+        //
+        // `ime_preedit` classifies as `WidgetRole::Text`, whose resolved background is `None`;
+        // the theme's own `background` is read instead and tinted, which is the surface the text
+        // would sit on in a real edit host. The theme read is a separate manager lock, taken and
+        // released inside the accessor, so it is not held across the draw — the global manager's
+        // mutex is not re-entrant.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("ime_preedit");
+        // Read as its own lock acquisition and copied out as values, so the guard is dropped
+        // before anything else touches the theme.
+        let (window_fill, foreground) = {
+            let manager = crate::theme::global_theme_manager();
+            match manager.current_theme() {
+                Some(active) => (active.colors.background, active.colors.foreground),
+                None => (Color::rgb(240, 240, 240), Color::BLACK),
+            }
+        };
+
+        // The surface the composition sits on: one step from the window fill toward the text
+        // colour, so the preedit is a distinct element on a light theme and on a dark one rather
+        // than a bare black on black. A caller's own colour still wins.
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(foreground);
+        let surface = window_fill.blend(&ink, 0.08);
+        context.fill_rect(rect, surface);
+
+        // The preedit text: a caller's own colour wins, then the theme's foreground, and the
+        // widget's constructed default is dropped in favour of that foreground rather than a
+        // fixed black the theme cannot override.
+        let text_color = self.effective_text_color(ink);
         // Draw the preedit text
         context.draw_text(
             Point::new(rect.x, rect.y),
             &self.text,
             &self.font,
-            self.text_color,
+            text_color,
             HorizontalAlignment::Left,
         );
 
@@ -187,10 +260,15 @@ impl Draw for ImePreedit {
         let underline_y = rect.y + font_size + 2;
         let underline_x_end = rect.x + text_width.min(rect.width as i32);
 
+        // The underline marks the composition as uncommitted, so it carries the theme's primary
+        // when the caller has not chosen one of its own.
+        let underline_color = self.effective_underline_color(
+            crate::theme::semantic_color(crate::theme::SemanticColor::Info).unwrap_or(ink),
+        );
         context.draw_line_stroke(
             Point::new(rect.x, underline_y),
             Point::new(underline_x_end, underline_y),
-            self.underline_color,
+            underline_color,
             self.underline_thickness,
         );
     }
@@ -306,5 +384,4 @@ mod tests {
         preedit.handle_event(&Event::KeyPress { key: 8, modifiers: 0 }); // backspace
         assert_eq!(preedit.text(), "AC", "a disabled control must not accept backspace either");
     }
-
 }

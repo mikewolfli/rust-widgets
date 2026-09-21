@@ -3,7 +3,7 @@
 
 //! Window widget and platform integration.
 use crate::compat::{String, ToString};
-use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
+use crate::core::{Color, ObjectId, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
@@ -188,101 +188,56 @@ impl Draw for Window {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
         let style = self.style();
-        let bg_color = style.background_color.unwrap_or(Color::rgb(240, 240, 240));
-        let border_color = style.border_color.unwrap_or(Color::GRAY);
-        let title_bar_color = Color::rgb(53, 53, 53);
-        let title_text_color = Color::WHITE;
-        let border_width = style.border_width.unwrap_or(0);
-        // Draw window background
-        context.fill_rect(rect, bg_color);
-        // Draw title bar
-        let title_bar_height = self.title_bar_height;
-        let title_bar_rect = Rect::new(rect.x, rect.y, rect.width, title_bar_height);
-        context.fill_rect(title_bar_rect, title_bar_color);
-        // Draw title text
-        let title_font =
-            self.font().cloned().unwrap_or_else(|| Font::new("Arial", 12.0, false, false));
-        let title_x = rect.x + 10;
-        let title_y = rect.y + title_bar_height as i32 / 2;
-        context.draw_text(
-            Point::new(title_x, title_y),
-            &self.title,
-            &title_font,
-            title_text_color,
-            HorizontalAlignment::Left,
-        );
-        // Draw window border
-        if border_width > 0 {
-            context.draw_rect_stroke(rect, border_color, border_width);
-        }
-        // Draw window controls (close button)
-        let close_button_size = self.close_button_size;
-        let close_button_rect = Rect::new(
-            rect.right() - close_button_size as i32 - 10,
-            rect.y + (title_bar_height as i32 - close_button_size as i32) / 2,
-            close_button_size,
-            close_button_size,
-        );
-        // Draw close button background
-        context.fill_rect(close_button_rect, Color::rgba(232, 17, 35, 255));
-        // Draw close button X
-        let padding = 3;
-        let x1 = Point::new(close_button_rect.x + padding, close_button_rect.y + padding);
-        let x2 = Point::new(
-            close_button_rect.x + close_button_rect.width as i32 - padding,
-            close_button_rect.y + close_button_rect.height as i32 - padding,
-        );
-        let x3 = Point::new(
-            close_button_rect.x + close_button_rect.width as i32 - padding,
-            close_button_rect.y + padding,
-        );
-        let x4 = Point::new(
-            close_button_rect.x + padding,
-            close_button_rect.y + close_button_rect.height as i32 - padding,
-        );
-        context.draw_line(x1, x2, Color::WHITE);
-        context.draw_line(x3, x4, Color::WHITE);
-        // Draw minimize button
-        let minimize_button_rect = Rect::new(
-            rect.right()
-                - close_button_size as i32
-                - (self.button_spacing * 2 + self.close_button_size * 2) as i32
-                - 10,
-            rect.y + (title_bar_height as i32 - close_button_size as i32) / 2,
-            close_button_size,
-            close_button_size,
-        );
-        context.fill_rect(minimize_button_rect, Color::rgba(255, 255, 255, 50));
-        // Draw minimize line
-        let minimize_y = minimize_button_rect.y + minimize_button_rect.height as i32 / 2;
-        context.draw_line(
-            Point::new(minimize_button_rect.x + 2, minimize_y),
-            Point::new(minimize_button_rect.x + minimize_button_rect.width as i32 - 2, minimize_y),
-            Color::WHITE,
-        );
-        // Draw maximize button
-        let maximize_button_rect = Rect::new(
-            rect.right()
-                - close_button_size as i32
-                - (self.button_spacing + self.close_button_size) as i32
-                - 10,
-            rect.y + (title_bar_height as i32 - close_button_size as i32) / 2,
-            close_button_size,
-            close_button_size,
-        );
-        context.fill_rect(maximize_button_rect, Color::rgba(255, 255, 255, 50));
-        // Draw maximize square
-        let max_padding = 3;
-        context.draw_rect_stroke(
-            Rect::new(
-                maximize_button_rect.x + max_padding as i32,
-                maximize_button_rect.y + max_padding as i32,
-                maximize_button_rect.width - max_padding * 2,
-                maximize_button_rect.height - max_padding * 2,
-            ),
-            Color::WHITE,
-            1,
-        );
+        // The client fill reads the **active theme's** background, not a literal.
+        //
+        // The literal here was `rgb(240, 240, 240)`, which is exactly the light
+        // preset's `colors.background` — so the window happened to look right in
+        // light and rendered unchanged in dark. Two things were wrong at once and
+        // both were invisible: the window did not follow a theme switch (rule
+        // #104), and its fill was byte-identical to the census frame background,
+        // so the rendering census could not tell it apart from an empty surface.
+        //
+        // Precedence is unchanged: an explicit style wins, then the theme, then the
+        // literal as a last resort for a manager with no active theme.
+        let themed_background = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.background);
+        let bg_color =
+            style.background_color.or(themed_background).unwrap_or(Color::rgb(240, 240, 240));
+
+        // Only the client area is painted: the background.
+        //
+        // # Why the title bar, window buttons and border were removed
+        //
+        // This used to paint a title bar in the window's top 32px, a red close button
+        // at the right edge, and minimize/maximize buttons beside it. Those are the
+        // **window manager's** chrome: every desktop the library targets already draws
+        // a decorated frame, so the painted copies appeared *inside* a real title bar —
+        // a second, fake one, with a red X that looks like a close button and does
+        // nothing. The library never received clicks for it, because the OS owned those
+        // pixels, so the only thing the drawing achieved was looking broken.
+        //
+        // The border went the same way, for a second reason beyond being chrome: it was
+        // stroked from this widget's **absolute** rectangle, and a stroked rectangle
+        // covers every pixel it crosses. A window created at `(100, 100)` therefore had
+        // its border drawn across the whole client area, over the controls — a corner of
+        // the window read as the border colour rather than the background. The window
+        // manager draws the real border; the client area is the controls'.
+        //
+        // The geometry the rest of the window keys off is unaffected: a layout that
+        // wants to start below the title bar uses `Window::title_bar_height`, which is
+        // still reported. What changed is only that the window no longer *paints* chrome.
+        //
+        // # Why the rectangle is normalised to the client origin
+        //
+        // `geometry()` is in **screen** coordinates (the position the OS was asked for),
+        // while the controls inside are in **client** coordinates. Painting the fill at
+        // the screen position would leave the area the controls actually occupy
+        // uncovered — which, once the children were drawn correctly, is exactly the
+        // top-left strip that would then show through as the clear colour. Normalising to
+        // the client origin makes the fill match the space the children use.
+        let client = Rect::new(0, 0, rect.width, rect.height);
+        context.fill_rect(client, bg_color);
     }
 }
 // NOTE: The show() method is now handled by platform backend.

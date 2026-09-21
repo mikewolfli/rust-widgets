@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Tree view widget.
+use crate::core::Color;
 use crate::core::HorizontalAlignment;
 use crate::core::Rect;
 use crate::render::RenderContext;
@@ -277,11 +278,42 @@ impl WidgetProperties for TreeView {
 impl Draw for TreeView {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.base.geometry();
-        use crate::core::Color;
+        // Chrome colours resolve explicit style first, then the theme's resolved style for
+        // this control, and only then a literal. The theme step is what makes an appearance
+        // switch visible; the surface, the border, the focused-node highlight and the text
+        // colour used to be hardcoded literals, so light and dark rendered identically.
+        //
+        // `tree_view` reaches the theme through the `TreeView` classification, which is
+        // `Input` — a scrolling field whose whole rectangle is the control. The theme reads
+        // take and release the global manager's lock internally, so no guard is held across
+        // the draw (the mutex is not re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("tree_view");
+        let surface = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .filter(|resolved| *resolved != surface)
+            .unwrap_or_else(|| surface.blend(&ink, 0.20));
+        // The focused node is a selection state, so it reads the theme's accent token and is
+        // laid over the surface, which keeps it legible in either appearance.
+        let accent = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.primary)
+            .unwrap_or(Color::PRIMARY);
+        let focused_bg = surface.blend(&accent, 0.30);
+
         // Draw background
-        context.fill_rect(rect, Color::rgb(255, 255, 255));
+        context.fill_rect(rect, surface);
         // Draw border
-        context.draw_rect(rect, Color::rgb(200, 200, 200));
+        context.draw_rect(rect, border);
         // Draw nodes from model
         if let Some(ref model) = self.model {
             let item_height = 20;
@@ -295,7 +327,7 @@ impl Draw for TreeView {
                 if Some(i) == self.focused_node {
                     context.fill_rect(
                         crate::core::Rect::new(rect.x, y, rect.width, item_height as u32),
-                        Color::rgb(200, 220, 255),
+                        focused_bg,
                     );
                 }
                 if let Some(path) = model.node_path(i) {
@@ -303,7 +335,7 @@ impl Draw for TreeView {
                         crate::core::Point::new(rect.x + indent, y + item_height / 2),
                         &path,
                         &crate::core::Font::default(),
-                        Color::rgb(0, 0, 0),
+                        ink,
                         HorizontalAlignment::Left,
                     );
                 }

@@ -461,10 +461,47 @@ impl Draw for TabWidget {
         // Draw base widget
         let _rect = self.geometry();
         let content_rect = self.content_rect();
+
+        // Chrome colours resolve explicit style first, then the theme's resolved
+        // style for this control, and only then a literal. The theme step is what
+        // makes an appearance switch visible; previously every colour below was a
+        // hardcoded literal, so light and dark rendered identically.
+        //
+        // `resolved_theme_style` takes and releases the global manager's lock
+        // internally, so no guard is held across the draw (the mutex is not
+        // re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("tab_widget");
+        // `tab_widget` is not a control kind in the role table, so it classifies as
+        // `Surface`, whose background is `theme.colors.background` — byte-identical
+        // to the window behind it. The content area's fill is therefore a step toward
+        // the foreground, so the page reads as a surface of its own.
+        let resolved = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::rgb(255, 255, 255));
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or(Color::rgb(200, 200, 200));
+        let text_color = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::rgb(0, 0, 0));
+        let content_background = resolved.blend(&text_color, 0.08);
+        // Tab chrome is derived from the resolved pair: an inactive tab is pressed
+        // toward the foreground, a disabled one further still, and the current tab
+        // stays at the content colour so it reads as connected to its page.
+        let inactive_tab = content_background.blend(&text_color, 0.06);
+        let disabled_tab = content_background.blend(&text_color, 0.14);
+        let disabled_text = text_color.blend(&disabled_tab, 0.5);
+        // The close affordance is secondary chrome, not a second literal.
+        let close_color = text_color.blend(&content_background, 0.4);
+
         // Draw content background
-        context.fill_rect(content_rect, Color::rgb(255, 255, 255));
+        context.fill_rect(content_rect, content_background);
         // Draw content border
-        context.draw_rect(content_rect, Color::rgb(200, 200, 200));
+        context.draw_rect(content_rect, border);
         // Draw tabs
         for i in 0..self.tabs.len() {
             if let Some(tab_rect) = self.tab_rect(i) {
@@ -473,20 +510,23 @@ impl Draw for TabWidget {
                 let is_enabled = tab.enabled;
                 // Draw tab background
                 let bg_color = if !is_enabled {
-                    Color::rgb(240, 240, 240)
+                    disabled_tab
                 } else if is_current {
-                    Color::rgb(255, 255, 255)
+                    content_background
                 } else {
-                    Color::rgb(230, 230, 230)
+                    inactive_tab
                 };
                 match self.tab_shape {
                     TabShape::Rounded => {
                         let radius = 4;
                         context.fill_rounded_rect(tab_rect, radius, bg_color);
+                        // A current tab shares its edge with the content area, so its
+                        // outline uses the surface border; a plain tab is outlined more
+                        // faintly.
                         let border_color = if !is_enabled || is_current {
-                            Color::rgb(200, 200, 200)
+                            border
                         } else {
-                            Color::rgb(180, 180, 180)
+                            border.blend(&content_background, 0.5)
                         };
                         context.draw_rounded_rect_stroke(tab_rect, radius, border_color, 1);
                     }
@@ -502,25 +542,24 @@ impl Draw for TabWidget {
                         ];
                         context.draw_path(&points, true, bg_color, true, 0);
                         let border_color = if !is_enabled || is_current {
-                            Color::rgb(200, 200, 200)
+                            border
                         } else {
-                            Color::rgb(180, 180, 180)
+                            border.blend(&content_background, 0.5)
                         };
                         context.draw_path(&points, true, border_color, false, 1);
                     }
                     _ => {
                         context.fill_rect(tab_rect, bg_color);
                         let border_color = if !is_enabled || is_current {
-                            Color::rgb(200, 200, 200)
+                            border
                         } else {
-                            Color::rgb(180, 180, 180)
+                            border.blend(&content_background, 0.5)
                         };
                         context.draw_rect(tab_rect, border_color);
                     }
                 };
                 // Draw tab text
-                let text_color =
-                    if !is_enabled { Color::rgb(150, 150, 150) } else { Color::rgb(0, 0, 0) };
+                let text_color = if !is_enabled { disabled_text } else { text_color };
                 context.draw_text(
                     Point::new(
                         tab_rect.x + tab_rect.width as i32 / 2,
@@ -539,12 +578,12 @@ impl Draw for TabWidget {
                     context.draw_line(
                         Point::new(close_x, close_y),
                         Point::new(close_x + close_size, close_y + close_size),
-                        Color::rgb(100, 100, 100),
+                        close_color,
                     );
                     context.draw_line(
                         Point::new(close_x + close_size, close_y),
                         Point::new(close_x, close_y + close_size),
-                        Color::rgb(100, 100, 100),
+                        close_color,
                     );
                 }
             }

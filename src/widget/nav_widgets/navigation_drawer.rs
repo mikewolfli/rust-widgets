@@ -197,34 +197,85 @@ impl WidgetProperties for NavigationDrawer {
 
 impl Draw for NavigationDrawer {
     fn draw(&mut self, context: &mut RenderContext) {
-        if !self.open {
-            return;
-        }
-
         let rect = self.geometry();
         let is_enabled = self.base.is_enabled();
 
-        // Draw semi-transparent overlay covering the full geometry
-        let overlay_color = Color::rgba(0, 0, 0, 100);
+        // Chrome colours resolve explicit style first, then the theme's resolved style for
+        // this control, and only then a literal. The theme step is what makes an appearance
+        // switch visible; the overlay, panel, header, items and divider used to be hardcoded
+        // literals, so light and dark rendered identically.
+        //
+        // The theme reads take and release the global manager's lock internally, so no guard
+        // is held across the draw (the mutex is not re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("navigation_drawer");
+        // `navigation_drawer` is absent from `WidgetRole::for_kind_name`'s table, so it
+        // classifies as `Surface` and resolves to `theme.colors.background` — the window's
+        // own fill. A panel painted in that colour would be byte-identical to the frame
+        // behind it, so a resolved surface equal to the window fill is re-derived a visible
+        // step away from it, the same distinction `Colors::input_background` draws for a field.
+        let window_fill = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.background)
+            .unwrap_or(Color::WHITE);
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::rgb(30, 30, 30));
+        // The selected item and the scrim are the accent: the hue a theme is expected to vary
+        // most, so selection follows the appearance rather than a literal blue.
+        let accent = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.primary)
+            .unwrap_or(Color::rgb(30, 100, 200));
+        let panel = match style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+        {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => window_fill.blend(&ink, 0.08),
+        };
+        let panel = if is_enabled { panel } else { panel.blend(&ink, 0.5) };
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| panel.blend(&ink, 0.25));
+        // The header band and the selected row are chrome states derived from the panel, and
+        // the item separators are dimmer than the ink, so all three move with the appearance.
+        let header_color = panel.blend(&ink, 0.06);
+        let highlight_color = panel.blend(&accent, 0.2);
+        let divider_color = ink.with_alpha_f32(0.1);
+
+        // Draw the closed-state affordance and stop: a closed drawer has no panel and no
+        // scrim to paint. It used to return before painting anything at all, so a drawer in
+        // its default state was entirely invisible — the host had no way to show that the
+        // control was there or that anything could be opened.
+        if !self.open {
+            let handle_width = self.panel_width.min(rect.width).max(1);
+            let handle_rect = Rect::new(rect.x, rect.y, handle_width, rect.height);
+            context.fill_rect(handle_rect, panel.blend(&ink, 0.04));
+            // Leading edge stripe: the affordance that says "this opens".
+            context.fill_rect(Rect::new(rect.x, rect.y, 4.min(handle_width), rect.height), accent);
+            context.draw_rect_stroke(handle_rect, border, 1);
+            return;
+        }
+
+        // Draw semi-transparent overlay covering the full geometry. The scrim is the accent
+        // at low alpha rather than a fixed black, so it reads as part of the same palette.
+        let overlay_color = Color::rgba(accent.r, accent.g, accent.b, 100);
         context.fill_rect(rect, overlay_color);
 
         // Draw side panel on the left
         let panel_width = self.panel_width.min(rect.width);
         let panel_rect = Rect::new(rect.x, rect.y, panel_width, rect.height);
-        let panel_color = if !is_enabled {
-            Color::rgba(245, 245, 245, 240)
-        } else {
-            Color::rgba(255, 255, 255, 250)
-        };
-        context.fill_rect(panel_rect, panel_color);
+        context.fill_rect(panel_rect, panel);
 
         // Draw a subtle right border on the panel
-        context.draw_rect_stroke(panel_rect, Color::rgba(0, 0, 0, 20), 1);
+        context.draw_rect_stroke(panel_rect, border.with_alpha_f32(0.2), 1);
 
         // Draw header area
         let header_height: u32 = 60;
         let header_rect = Rect::new(rect.x, rect.y, panel_width, header_height);
-        let header_color = Color::rgba(240, 245, 250, 255);
         context.fill_rect(header_rect, header_color);
 
         // Draw header title text
@@ -233,12 +284,11 @@ impl Draw for NavigationDrawer {
         let metrics = context.measure_text(header_text, &font);
         let header_text_x = rect.x + 16;
         let header_text_y = rect.y + (header_height as i32 / 2) + (metrics.ascent as i32 / 2);
-        let header_color_text = Color::rgba(30, 30, 30, 255);
         context.draw_text(
             Point::new(header_text_x, header_text_y),
             header_text,
             &font,
-            header_color_text,
+            ink,
             HorizontalAlignment::Left,
         );
 
@@ -255,12 +305,11 @@ impl Draw for NavigationDrawer {
 
             // Highlight selected item
             if i == self.selected_index {
-                let highlight_color = Color::rgba(220, 230, 245, 255);
                 context.fill_rect(item_rect, highlight_color);
             } else {
-                // Draw hover-like subtle background
-                let item_bg = Color::rgba(255, 255, 255, 255);
-                context.fill_rect(item_rect, item_bg);
+                // Resting rows keep the panel's own surface, so the selected row is the only
+                // one that reads as raised in either appearance.
+                context.fill_rect(item_rect, panel);
             }
 
             // Vertical center position for text
@@ -269,11 +318,7 @@ impl Draw for NavigationDrawer {
 
             // Draw icon
             let icon_x = rect.x + 16;
-            let icon_color = if i == self.selected_index {
-                Color::rgba(30, 100, 200, 255)
-            } else {
-                Color::rgba(80, 80, 80, 255)
-            };
+            let icon_color = if i == self.selected_index { accent } else { ink };
             context.draw_text(
                 Point::new(icon_x, text_center_y),
                 &item.icon,
@@ -285,11 +330,7 @@ impl Draw for NavigationDrawer {
             // Draw label
             let icon_width: u32 = 24;
             let label_x = rect.x + 16 + icon_width as i32 + 8;
-            let label_color = if i == self.selected_index {
-                Color::rgba(30, 100, 200, 255)
-            } else {
-                Color::rgba(50, 50, 50, 255)
-            };
+            let label_color = if i == self.selected_index { accent } else { ink };
             context.draw_text(
                 Point::new(label_x, text_center_y),
                 &item.label,
@@ -301,7 +342,6 @@ impl Draw for NavigationDrawer {
             // Draw divider line between items
             if i > 0 {
                 let divider_y = y_offset;
-                let divider_color = Color::rgba(0, 0, 0, 10);
                 context.fill_rect(
                     Rect::new(rect.x + 16, divider_y, panel_width.saturating_sub(32), 1),
                     divider_color,

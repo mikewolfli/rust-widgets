@@ -229,23 +229,49 @@ impl Draw for FloatingLabel {
         let rect = self.geometry();
         let is_enabled = self.base.is_enabled();
 
+        // Chrome colours resolve explicit style first, then the theme's resolved style
+        // for this control, and only then fall back to a literal. Without the theme step
+        // a light/dark switch would change nothing on screen, because the field fill and
+        // its underline were previously hardcoded.
+        //
+        // The theme reads are separate manager locks, each taken and released inside
+        // `resolved_theme_style`, so none is held across the draw or across another
+        // accessor — the global manager's mutex is not re-entrant.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("floating_label");
+        // The label kind classifies as plain text, so the theme leaves its background
+        // unset; a floating *label* decorates an editable field, so the field interior is
+        // read from the input role, which resolves a colour in every appearance.
+        let field_background = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .or_else(|| {
+                crate::theme::resolved_theme_style("line_edit")
+                    .and_then(|input| input.background_color)
+            })
+            .unwrap_or(Color::rgba(255, 255, 255, 255));
+        // The label is a `Text` role, so its resolved ink is the theme's foreground; the
+        // border colour carries the underline and the focused accent.
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        let border_color = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or_else(|| ink.blend(&field_background, 0.55));
+
         // Draw the text field background
-        let bg_color = if is_enabled {
-            Color::rgba(255, 255, 255, 255)
-        } else {
-            Color::rgba(240, 240, 240, 255)
-        };
+        let bg_color = if is_enabled { field_background } else { Color::rgba(240, 240, 240, 255) };
         context.fill_rounded_rect(rect, 4, bg_color);
 
-        // Draw the underline/border
-        let border_color = if self.is_focused {
-            Color::rgba(52, 120, 246, 255)
-        } else {
-            Color::rgba(180, 180, 180, 255)
-        };
+        // Draw the underline/border. Focused is the resolved ink, undamped so it reads as
+        // active; resting is the same ink damped toward the field it sits on.
+        let underline_color = if self.is_focused { ink } else { border_color };
         let underline_y = rect.y + rect.height as i32 - 2;
         let underline_rect = Rect::new(rect.x + 2, underline_y, rect.width.saturating_sub(4), 2);
-        context.fill_rounded_rect(underline_rect, 1, border_color);
+        context.fill_rounded_rect(underline_rect, 1, underline_color);
 
         // Fonts
         let input_font = Font::simple("sans-serif", 14.0);
@@ -265,9 +291,9 @@ impl Draw for FloatingLabel {
         // position by `animation_progress` so the float transition is smooth.
         if has_label {
             let label_color = if self.is_focused {
-                Color::rgba(52, 120, 246, 255)
+                ink
             } else if is_enabled {
-                Color::rgba(100, 100, 100, 255)
+                ink.blend(&field_background, 0.3)
             } else {
                 Color::rgba(180, 180, 180, 255)
             };
@@ -294,7 +320,7 @@ impl Draw for FloatingLabel {
                     Point::new(label_x, inline_y),
                     &self.label,
                     &input_font,
-                    Color::rgba(160, 160, 160, 255),
+                    ink.blend(&field_background, 0.45),
                     HorizontalAlignment::Left,
                 );
             }
@@ -311,7 +337,7 @@ impl Draw for FloatingLabel {
                 Point::new(placeholder_x, placeholder_y),
                 &self.placeholder,
                 &input_font,
-                Color::rgba(180, 180, 180, 255),
+                ink.blend(&field_background, 0.55),
                 HorizontalAlignment::Left,
             );
         }
@@ -320,11 +346,7 @@ impl Draw for FloatingLabel {
         if !self.text.is_empty() {
             let text_x = rect.x + padding;
             let text_y = rect.y + text_field_top_offset + 14;
-            let text_color = if is_enabled {
-                Color::rgba(0, 0, 0, 255)
-            } else {
-                Color::rgba(160, 160, 160, 255)
-            };
+            let text_color = if is_enabled { ink } else { Color::rgba(160, 160, 160, 255) };
             context.draw_text(
                 Point::new(text_x, text_y),
                 &self.text,

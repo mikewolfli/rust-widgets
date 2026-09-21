@@ -544,53 +544,98 @@ impl Draw for DockWidget {
         let _rect = self.geometry();
         let title_bar = self.title_bar_rect();
         let content = self.content_rect();
+
+        // Chrome colours resolve explicit style first, then the theme's resolved style for
+        // this control, and only then a literal. The theme step is what makes an appearance
+        // switch visible; the title bar, the buttons, the content area and the title text
+        // used to be hardcoded literals, so light and dark rendered identically.
+        //
+        // The theme reads take and release the global manager's lock internally, so no guard
+        // is held across the draw (the mutex is not re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("dock_widget");
+        // `dock_widget` is absent from `WidgetRole::for_kind_name`'s table, so it classifies
+        // as `Surface` and resolves to `theme.colors.background` — the window's own fill. A
+        // panel painted in that colour would be byte-identical to the frame behind it, so a
+        // resolved surface equal to the window fill is re-derived a visible step away from
+        // it, the same distinction `Colors::input_background` draws for a field.
+        let window_fill = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.background)
+            .unwrap_or(Color::WHITE);
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        // The accent is the theme's `primary`: the hue a theme is expected to vary most, so
+        // the floating indicator follows the appearance rather than staying a literal blue.
+        let accent = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.primary)
+            .unwrap_or(Color::PRIMARY);
+        let panel = match style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+        {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => window_fill.blend(&ink, 0.08),
+        };
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| panel.blend(&ink, 0.25));
+        // A floating dock is visually raised off the dock area, so its title bar is tinted
+        // toward the accent; a docked one keeps the panel's own surface.
+        let title_bar_color = if self.floating { panel.blend(&accent, 0.35) } else { panel };
+        let button_color = if self.base.is_enabled() {
+            ink.blend(&title_bar_color, 0.35)
+        } else {
+            ink.blend(&title_bar_color, 0.75)
+        };
+        let float_color = if self.floating {
+            accent
+        } else if self.base.is_enabled() {
+            button_color
+        } else {
+            ink.blend(&title_bar_color, 0.75)
+        };
+        // The content region is inset one step further than the title bar, so the two read
+        // as separate areas in either appearance.
+        let content_fill = panel.blend(&ink, 0.03);
+
         // Draw title bar
-        let title_bar_color =
-            if self.floating { Color::rgb(220, 220, 255) } else { Color::rgb(200, 200, 200) };
         context.fill_rect(title_bar, title_bar_color);
         // Draw title bar border
-        context.draw_rect(title_bar, Color::rgb(150, 150, 150));
+        context.draw_rect(title_bar, border);
         // Draw title text
         context.draw_text(
             Point::new(title_bar.x + 5, title_bar.y + title_bar.height as i32 / 2),
             &self.title,
             &Font::default(),
-            Color::rgb(0, 0, 0),
+            if self.base.is_enabled() { ink } else { ink.blend(&title_bar_color, 0.5) },
             HorizontalAlignment::Left,
         );
         // Draw close button if enabled
         if self.features.dock_widget_closable {
             if let Some(close_rect) = self.close_button_rect() {
-                let close_color = if self.base.is_enabled() {
-                    Color::rgb(100, 100, 100)
-                } else {
-                    Color::rgb(200, 200, 200)
-                };
                 context.draw_line(
                     Point::new(close_rect.x, close_rect.y),
                     Point::new(
                         close_rect.x + close_rect.width as i32,
                         close_rect.y + close_rect.height as i32,
                     ),
-                    close_color,
+                    button_color,
                 );
                 context.draw_line(
                     Point::new(close_rect.x + close_rect.width as i32, close_rect.y),
                     Point::new(close_rect.x, close_rect.y + close_rect.height as i32),
-                    close_color,
+                    button_color,
                 );
             }
         }
         // Draw float button if enabled
         if self.features.dock_widget_floatable {
             if let Some(float_rect) = self.float_button_rect() {
-                let float_color = if self.floating {
-                    Color::rgb(0, 120, 215)
-                } else if self.base.is_enabled() {
-                    Color::rgb(100, 100, 100)
-                } else {
-                    Color::rgb(200, 200, 200)
-                };
                 // Draw float icon (four arrows)
                 let center_x = float_rect.x + float_rect.width as i32 / 2;
                 let center_y = float_rect.y + float_rect.height as i32 / 2;
@@ -647,9 +692,9 @@ impl Draw for DockWidget {
             }
         }
         // Draw content background
-        context.fill_rect(content, Color::rgb(255, 255, 255));
+        context.fill_rect(content, content_fill);
         // Draw content border
-        context.draw_rect(content, Color::rgb(200, 200, 200));
+        context.draw_rect(content, border);
         // Draw widget via registry
         if let Some(widget_id) = self.widget {
             if let Some(ref reg) = self.registry {

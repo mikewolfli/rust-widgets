@@ -224,12 +224,81 @@ impl Draw for CupertinoDatePicker {
         let rect = self.geometry();
         let is_enabled = self.base.is_enabled();
 
-        // Background
-        let bg_color = if is_enabled {
-            Color::rgba(240, 240, 245, 255)
-        } else {
-            Color::rgba(225, 225, 230, 200)
+        // Chrome colours resolve explicit style first, then the theme's resolved style for
+        // this control, and only then fall back to a literal. Every colour below used to be
+        // a literal, so a light/dark switch left the wheel, its columns, its divider, its
+        // selection band and its text unchanged — the rendering census reported the control
+        // as theme-blind.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global manager's
+        // mutex is not re-entrant.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("cupertino_date_picker");
+        // Read as its own lock acquisition and copied out as values, so the guard is dropped
+        // before anything else touches the theme. The picker is not in the role table, so it
+        // classifies as `Surface` and its resolved background is the window fill itself; the
+        // wheel below therefore derives its own distinct surface rather than painting the
+        // window's. The selected row is the wheel's value indicator, so it reads the theme's
+        // accent. `muted` is the theme's own de-emphasised colour, which replaces the two
+        // fixed greys the unselected rows and the arrows used.
+        let (window_fill, foreground, accent, muted, disabled) = {
+            let manager = crate::theme::global_theme_manager();
+            match manager.current_theme() {
+                Some(active) => (
+                    active.colors.background,
+                    active.colors.foreground,
+                    active.colors.accent,
+                    active.colors.secondary,
+                    active.colors.disabled,
+                ),
+                None => (
+                    Color::rgb(240, 240, 240),
+                    Color::BLACK,
+                    Color::rgb(255, 152, 0),
+                    Color::rgb(158, 158, 158),
+                    Color::rgb(200, 200, 200),
+                ),
+            }
         };
+
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(foreground);
+        // The wheel interior: one step from the window fill toward the text colour, so it
+        // reads as a recessed field on a light theme and on a dark one. The filter is on the
+        // **resolved** value, not only on the theme's: the active theme is applied to every
+        // control before it is drawn, so `style.background_color` already holds `Surface`'s
+        // window fill and letting it through unfiltered is exactly the invisible-field defect
+        // this guards against. A caller's own colour still wins.
+        let wheel_from_theme = window_fill.blend(&ink, 0.06);
+        let wheel = match style.background_color {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => wheel_from_theme,
+        };
+        // A `Surface` role resolves no border colour, so the column rule is derived one
+        // visible step from the wheel and a caller's explicit border still wins.
+        let column_rule = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .filter(|resolved| *resolved != wheel)
+            .unwrap_or_else(|| wheel.blend(&muted, 0.45));
+        // The selection band, the selected row's text and the arrows are all accents: opaque
+        // variants for the text and arrows, a low-alpha one for the band. The band is painted
+        // with `fill_rounded_rect`, which alpha-blends, so a translucent accent really does
+        // tint the wheel behind it here (unlike `fill_rect`, which overwrites).
+        let selected_text = accent.contrast_color().blend(&accent, 0.80);
+        let band = Color::rgba(accent.r, accent.g, accent.b, 50);
+        let arrow = accent.blend(&ink, 0.35);
+        // The disabled treatment of each of the three, so the appearance agrees with the
+        // control's refusal to accept a pick.
+        let disabled_text = muted.blend(&wheel, 0.35);
+        let disabled_arrow = muted.blend(&wheel, 0.20);
+        let disabled_surface = disabled.blend(&wheel, 0.55);
+
+        // Background
+        let bg_color = if is_enabled { wheel } else { disabled_surface };
         context.fill_rect(rect, bg_color);
 
         // Column layout
@@ -267,18 +336,14 @@ impl Draw for CupertinoDatePicker {
 
             // Vertical divider between columns
             if col_idx > 0 {
-                context.draw_rect_stroke(
-                    Rect::new(col_x, rect.y, 1, rect.height),
-                    Color::rgba(200, 200, 210, 255),
-                    1,
-                );
+                context.draw_rect_stroke(Rect::new(col_x, rect.y, 1, rect.height), column_rule, 1);
             }
 
             // Highlight bar for the center (selected) row
             let highlight_y = rect.y + 2 * row_height as i32;
             let highlight_rect =
                 Rect::new(col_x + 4, highlight_y, col_width.saturating_sub(8), row_height);
-            context.fill_rounded_rect(highlight_rect, 6, Color::rgba(60, 120, 240, 50));
+            context.fill_rounded_rect(highlight_rect, 6, band);
 
             // Draw the five visible rows
             for row in 0..5 {
@@ -298,11 +363,11 @@ impl Draw for CupertinoDatePicker {
                     + metrics.ascent as i32;
 
                 let text_color = if !is_enabled {
-                    Color::rgba(160, 160, 170, 200)
+                    disabled_text
                 } else if is_selected {
-                    Color::rgba(40, 70, 190, 255)
+                    selected_text
                 } else {
-                    Color::rgba(130, 130, 150, 210)
+                    muted
                 };
 
                 context.draw_text(
@@ -315,11 +380,7 @@ impl Draw for CupertinoDatePicker {
             }
 
             // Up arrow indicator (top of column)
-            let arrow_color = if is_enabled {
-                Color::rgba(80, 80, 100, 220)
-            } else {
-                Color::rgba(160, 160, 170, 150)
-            };
+            let arrow_color = if is_enabled { arrow } else { disabled_arrow };
             let up_y = rect.y + 2;
             context.draw_text(
                 Point::new(col_x + (col_width as i32 - 8) / 2, up_y),

@@ -108,18 +108,56 @@ rw_run_bounded "$PROFILE_TIMEOUT" cargo check \
 # so a missing target is reported rather than silently skipped -- a check that
 # quietly does nothing is worse than no check (the same reasoning as
 # `run_test_case` refusing a filter that matches no test).
+#
+# A pre-flight for the **toolchain**, not just the target.
+#
+# Installing the rustup target is necessary but not sufficient: building for
+# `x86_64-pc-windows-msvc` needs an MSVC **linker** (`lib.exe`, and behind it
+# `link.exe`). `cc-rs` does not fail fast when one is missing -- it walks its whole
+# candidate list, and each candidate it rejects re-enters a full `cargo` dependency
+# resolution. Measured on a host with no MSVC: this single gate consumed its entire
+# 1800s budget, which is what made `tools/run_all_gates.sh` look like it had hung.
+# Because the runner is serial, one gate eating the budget also delays every gate
+# behind it, so the symptom was "the gate script never finishes" rather than "one
+# step is slow".
+#
+# Detecting the toolchain here turns a 30-minute silent stall into an immediate,
+# honest "unsupported host". That is a different claim from "the code is fine" and
+# is reported as such by `run_all_gates.sh`'s SKIP classification (principle #59.4).
+#
+# The check is deliberately two-sided: `lib.exe` OR a mingw `gcc` satisfies
+# cc-rs for this target, so requiring MSVC specifically would skip a gate that
+# would genuinely have run.
+have_windows_linker() {
+  if command -v lib.exe >/dev/null 2>&1 || command -v link.exe >/dev/null 2>&1; then
+    return 0
+  fi
+  if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
 if rustc --print target-list 2>/dev/null | grep -qx 'x86_64-pc-windows-msvc' \
    && rustup target list --installed 2>/dev/null | grep -qx 'x86_64-pc-windows-msvc'; then
-  echo "[6b/9] cargo check --target x86_64-pc-windows-msvc (windows backend, mixed profiles)"
-  for profile in desktop embedded mini; do
-    echo "  - windows target, profile: $profile"
+  if ! have_windows_linker; then
+    echo "[6b/9] SKIPPED: unsupported host -- the x86_64-pc-windows-msvc target"
+    echo "   is installed but no MSVC linker is available (need lib.exe/link.exe,"
+    echo "   or x86_64-w64-mingw32-gcc). Not a defect in the code under test:"
+    echo "   nothing here can link a Windows binary. Install MSVC build tools to"
+    echo "   run this step."
+  else
+    echo "[6b/9] cargo check --target x86_64-pc-windows-msvc (windows backend, mixed profiles)"
+    for profile in desktop embedded mini; do
+      echo "  - windows target, profile: $profile"
+      rw_run_bounded "$PROFILE_TIMEOUT" cargo check \
+        --target x86_64-pc-windows-msvc --no-default-features --features "$profile"
+    done
+    echo "  - windows target, no device profile and no touch capability"
     rw_run_bounded "$PROFILE_TIMEOUT" cargo check \
-      --target x86_64-pc-windows-msvc --no-default-features --features "$profile"
-  done
-  echo "  - windows target, no device profile and no touch capability"
-  rw_run_bounded "$PROFILE_TIMEOUT" cargo check \
-    --target x86_64-pc-windows-msvc --no-default-features \
-    --features "windows desktop-runtime controls-native controls-custom"
+      --target x86_64-pc-windows-msvc --no-default-features \
+      --features "windows desktop-runtime controls-native controls-custom"
+  fi
 else
   echo "[6b/9] SKIPPED: x86_64-pc-windows-msvc target not installed"
   echo "   install it with: rustup target add x86_64-pc-windows-msvc"

@@ -530,6 +530,16 @@ impl Platform for WindowsPlatform {
                     TranslateMessage(&msg);
                     DispatchMessageW(&msg);
                 }
+                // Drain the widget-trigger queue after the message pass.
+                //
+                // A `WM_SIZE` handler queues a `Resized` event for the library (see
+                // `crate::drain_triggers`); the Win32 message loop only delivers
+                // the OS message, so without this the queue would never be read and no
+                // window layout would re-run for a window the user resized.
+                //
+                // Dispatching here is main-thread work: the window procedure ran on
+                // this same thread, which is what the widgets require.
+                crate::drain_triggers();
                 if self.runtime_running.load(Ordering::SeqCst) {
                     thread::sleep(Duration::from_millis(10));
                 }

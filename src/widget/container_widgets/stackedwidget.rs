@@ -236,8 +236,39 @@ impl Draw for StackedWidget {
     fn draw(&mut self, context: &mut RenderContext) {
         // Draw base widget
         let rect = self.geometry();
+        // The page surface resolves explicit style first, then the theme's resolved style
+        // for this control, and only then a derived tint. The theme step is what makes an
+        // appearance switch visible; the fill used to be a hardcoded white, so light and
+        // dark rendered identically.
+        //
+        // The theme reads take and release the global manager's lock internally, so no
+        // guard is held across the draw (the mutex is not re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("stacked_widget");
+        // The stack's interior is a container surface, and neither step above can supply
+        // one: `stacked_widget` is absent from `WidgetRole::for_kind_name`'s table, so it
+        // classifies as `Surface` and resolves to `theme.colors.background` — **the window's
+        // own fill**. Painting that leaves the stack byte-identical to the frame behind it,
+        // which is the exact invisible-surface defect the census exists to catch. A resolved
+        // surface equal to the window fill is therefore re-derived a visible step away from
+        // it, the same distinction `Colors::input_background` draws for a field.
+        let window_fill = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.background)
+            .unwrap_or(Color::WHITE);
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        let themed_surface = match style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+        {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => window_fill.blend(&ink, 0.08),
+        };
         // Draw background
-        context.fill_rect(rect, Color::rgb(255, 255, 255));
+        context.fill_rect(rect, themed_surface);
         if let Some(widget_id) = self.current_widget() {
             if let Some(ref reg) = self.registry {
                 reg.borrow_mut().set_widget_geometry(widget_id, rect);

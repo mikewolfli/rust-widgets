@@ -250,8 +250,66 @@ impl EventHandler for SegmentedControl {
 impl Draw for SegmentedControl {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::rgb(244, 246, 250));
-        context.draw_rect(rect, Color::rgb(186, 193, 206));
+
+        // Chrome colours resolve the explicit style first, then the theme's resolved style for
+        // this control, and only then fall back to a literal. Every colour below used to be a
+        // literal, so a light/dark switch left the bar, its dividers, its selection and its labels
+        // unchanged — the rendering census reported the control as theme-blind.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
+        // is not re-entrant.
+        let style = self.base.style().clone();
+        // `segmented_control` reports `WidgetKind::ToggleButton`, whose role is `Primary`; the
+        // control itself is not a filled call to action, so the role's primary fill is not used.
+        // Its accent serves the selection instead, and the bar derives its own surface below.
+        let theme = crate::theme::resolved_theme_style("segmented_control");
+        // Read as its own lock acquisition and copied out as values, so the guard is dropped
+        // before anything else touches the theme.
+        let (window_fill, foreground, primary, muted) = {
+            let manager = crate::theme::global_theme_manager();
+            match manager.current_theme() {
+                Some(active) => (
+                    active.colors.background,
+                    active.colors.foreground,
+                    active.colors.primary,
+                    active.colors.secondary,
+                ),
+                None => (
+                    Color::rgb(240, 240, 240),
+                    Color::BLACK,
+                    Color::rgb(33, 150, 243),
+                    Color::rgb(158, 158, 158),
+                ),
+            }
+        };
+
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(foreground);
+        // The bar: one step from the window fill toward the text colour, so it is a distinct
+        // element on a light theme and on a dark one. The filter is on the **resolved** value, not
+        // only on the theme's: the active theme is applied to every control before it is drawn, so
+        // a control classified as `Surface` already carries the window fill and letting it through
+        // unfiltered would make the bar invisible. A caller's own colour still wins.
+        let bar_from_theme = window_fill.blend(&ink, 0.08);
+        let bar = match style.background_color {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => bar_from_theme,
+        };
+        // The dividers are a fixed step out of the bar so they stay visible whatever the bar is.
+        let divider = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| bar.blend(&muted, 0.45));
+        // A selected segment is the control's value indicator, so it carries the theme's primary
+        // rather than a fixed blue; a hovered one is a lighter step of the same.
+        let selected_bg = primary.blend(&bar, 0.55);
+        let hovered_bg = primary.blend(&bar, 0.25);
+
+        context.fill_rect(rect, bar);
+        context.draw_rect(rect, divider);
 
         for index in 0..self.items.len() {
             let Some(seg) = self.segment_rect(index) else {
@@ -259,11 +317,11 @@ impl Draw for SegmentedControl {
             };
 
             let bg = if self.selected_index == Some(index) {
-                Color::rgb(203, 223, 250)
+                selected_bg
             } else if self.hovered_index == Some(index) {
-                Color::rgb(225, 236, 251)
+                hovered_bg
             } else {
-                Color::rgb(244, 246, 250)
+                bar
             };
             context.fill_rect(seg, bg);
 
@@ -271,16 +329,24 @@ impl Draw for SegmentedControl {
                 context.draw_line(
                     Point::new(seg.x, seg.y),
                     Point::new(seg.x, seg.y + seg.height as i32),
-                    Color::rgb(186, 193, 206),
+                    divider,
                 );
             }
 
             if let Some(item) = self.items.get(index) {
+                // The label contrasts with the fill it is painted on — the primary for the
+                // selected segment, the bar for the rest — so it stays legible on either
+                // appearance instead of being a fixed dark slate on a dark bar.
+                let label_color = if self.selected_index == Some(index) {
+                    selected_bg.contrast_color()
+                } else {
+                    ink
+                };
                 context.draw_text(
                     Point::new(seg.x + 8, seg.y + seg.height as i32 / 2),
                     &item.label,
                     &Font::default(),
-                    Color::rgb(36, 48, 66),
+                    label_color,
                     HorizontalAlignment::Left,
                 );
             }

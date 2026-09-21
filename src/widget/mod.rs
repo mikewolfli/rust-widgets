@@ -98,6 +98,11 @@ pub mod nav_widgets;
 #[cfg(full_widgets)]
 pub mod overlay_widgets;
 pub mod registry;
+// The rendering census needs both a registry to enumerate and a theme to switch, so
+// it follows `capability`'s gate (`widgets_unstripped`). A build without either has
+// nothing to measure and nothing to measure it against.
+#[cfg(widgets_unstripped)]
+pub mod census;
 #[cfg(full_widgets)]
 pub mod special_widgets;
 #[cfg(full_widgets)]

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Table widget.
+use crate::core::Color;
 use crate::core::HorizontalAlignment;
 use crate::core::Rect;
 use crate::render::RenderContext;
@@ -306,11 +307,56 @@ impl WidgetProperties for TableWidget {
 impl Draw for TableWidget {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.base.geometry();
-        use crate::core::Color;
+        // Chrome colours resolve explicit style first, then the theme's resolved style for
+        // this control, and only then a literal. The theme step is what makes an appearance
+        // switch visible; the surface, the border, the grid lines, the focused-row highlight
+        // and the text colour used to be hardcoded literals, so light and dark rendered
+        // identically.
+        //
+        // The theme reads take and release the global manager's lock internally, so no guard
+        // is held across the draw (the mutex is not re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("table");
+        let mut surface = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        // `table` is absent from `WidgetRole::for_kind_name`'s table, so it classifies as
+        // `Surface` and resolves to `theme.colors.background` — the window's own fill. A panel
+        // painted in that colour would be byte-identical to the frame behind it, so a resolved
+        // surface equal to the window fill is re-derived a visible step away from it, the same
+        // distinction `Colors::input_background` draws for a field.
+        let window_fill = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.background)
+            .unwrap_or(Color::WHITE);
+        if surface == window_fill {
+            surface = window_fill.blend(&ink, 0.08);
+        }
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .filter(|resolved| *resolved != surface)
+            .unwrap_or_else(|| surface.blend(&ink, 0.20));
+        // The row and column separators are one step into the surface, so they stay a
+        // subdivision of the table rather than a second literal grey.
+        let grid_ink = surface.blend(&ink, 0.12);
+        // The focused row is a selection state, so it reads the theme's accent token and is
+        // laid over the surface, which keeps it legible in either appearance.
+        let accent = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.primary)
+            .unwrap_or(Color::PRIMARY);
+        let focused_bg = surface.blend(&accent, 0.30);
+
         // Draw background
-        context.fill_rect(rect, Color::rgb(255, 255, 255));
+        context.fill_rect(rect, surface);
         // Draw border
-        context.draw_rect(rect, Color::rgb(200, 200, 200));
+        context.draw_rect(rect, border);
         // Draw grid from model
         if let Some(ref model) = self.model {
             let row_h = 20;
@@ -330,7 +376,7 @@ impl Draw for TableWidget {
                 if Some(r) == current_row {
                     context.fill_rect(
                         crate::core::Rect::new(rect.x, y, rect.width, row_h as u32),
-                        Color::rgb(200, 220, 255),
+                        focused_bg,
                     );
                 }
                 for c in 0..col_count {
@@ -340,7 +386,7 @@ impl Draw for TableWidget {
                             crate::core::Point::new(x + 2, y + row_h / 2),
                             &text,
                             &crate::core::Font::default(),
-                            Color::rgb(0, 0, 0),
+                            ink,
                             HorizontalAlignment::Left,
                         );
                     }
@@ -349,7 +395,7 @@ impl Draw for TableWidget {
                         context.draw_line(
                             crate::core::Point::new(x + col_w as i32, y),
                             crate::core::Point::new(x + col_w as i32, y + row_h),
-                            Color::rgb(220, 220, 220),
+                            grid_ink,
                         );
                     }
                 }
@@ -358,7 +404,7 @@ impl Draw for TableWidget {
                     context.draw_line(
                         crate::core::Point::new(rect.x, y + row_h),
                         crate::core::Point::new(rect.x + rect.width as i32, y + row_h),
-                        Color::rgb(220, 220, 220),
+                        grid_ink,
                     );
                 }
             }

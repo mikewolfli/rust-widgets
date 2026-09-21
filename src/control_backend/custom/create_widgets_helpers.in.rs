@@ -51,6 +51,24 @@ macro_rules! impl_helpers {
         /// Only an id this backend actually created is accepted: the state map is the
         /// authority on what exists, so a stale id cannot inject a phantom resize that
         /// would then re-run a layout for a window that is gone.
+        ///
+        /// # Why a pending resize is not queued twice
+        ///
+        /// The event carries no size: it names a window, and the reader asks
+        /// [`Self::window_client_size`] for the current one. So when a resize for a window
+        /// is already pending, queuing another adds **no information** — whoever reads the
+        /// first one will read the size the second one would have reported.
+        ///
+        /// This matters because a drag delivers a resize per allocation, and several
+        /// allocations happen per drag step. Measured on the finance demo, a 20-step drag
+        /// produced 263 layout runs; each one re-placed 7 controls and re-painted 7
+        /// surfaces, and all of it ran on the GTK main thread — which is the thread that
+        /// also has to deliver the next mouse event. The drag therefore lagged behind the
+        /// pointer.
+        ///
+        /// Collapsing a run of pending resizes for one window to the one event that will
+        /// report the final size keeps the observed behaviour (the layout runs for the size
+        /// the window actually has) while removing the work that cannot be observed at all.
         fn queue_resize_trigger(&self, window_id: ObjectId, width: u32, height: u32) -> bool {
             // Only an id this backend actually created is accepted, so a stale id
             // cannot inject a phantom resize that would re-run a layout for a window
@@ -62,11 +80,18 @@ macro_rules! impl_helpers {
                 return false;
             }
             let mut state = lock(&self.state);
+            // The size is always recorded: it is what the pending event will be read
+            // against, so the latest value must win even when no new event is queued.
             state.window_client_sizes.insert(window_id, (width, height));
-            state.widget_trigger_queue.push_back(WidgetTriggerEvent {
-                widget_id: window_id,
-                kind: WidgetTriggerKind::Resized,
+            let already_pending = state.widget_trigger_queue.iter().any(|event| {
+                event.widget_id == window_id && event.kind == WidgetTriggerKind::Resized
             });
+            if !already_pending {
+                state.widget_trigger_queue.push_back(WidgetTriggerEvent {
+                    widget_id: window_id,
+                    kind: WidgetTriggerKind::Resized,
+                });
+            }
             true
         }
 
@@ -185,6 +210,21 @@ macro_rules! impl_helpers {
             {
                 self.with_live_widget(widget_id, |widget| widget.set_visible(visible));
                 crate::widget::runtime::request_repaint(widget_id);
+                // Forward to the platform, which is the half that owns a real window.
+                //
+                // The widget's visibility is a model flag, and for an ordinary control
+                // that flag is the whole story — the library paints it, so there is no
+                // platform object to tell. It is **not** the whole story for a **window**:
+                // a toplevel is a real OS object the platform created, and setting a flag
+                // on the model cannot make it appear. Without this forward, `win.show()`
+                // set a flag and the window never showed.
+                //
+                // This is why the defect was easy to miss: the call looked complete, and a
+                // demo that happened to mount a surface onto its window appeared anyway
+                // (the mount used to call `show_all` as a side effect). A demo that mounted
+                // nothing never appeared at all, and its log still said the window was
+                // shown.
+                crate::platform::get_platform().set_widget_visible(widget_id, visible);
             }
             #[cfg(alloc_frugal)]
             let _ = (widget_id, visible);
@@ -391,11 +431,42 @@ macro_rules! impl_helpers {
         ) {
             #[cfg(not(alloc_frugal))]
             {
-                if crate::widget::runtime::set_geometry(
-                    widget_id,
-                    crate::core::Rect::new(x, y, width, height),
-                ) {
+                let rect = crate::core::Rect::new(x, y, width, height);
+                // Only a real change is worth acting on.
+                //
+                // A window that is being dragged delivers the same size many times: a
+                // resize handler runs per allocation, several allocations happen per drag
+                // step, and a layout is re-run for each. Measured on the finance demo, 62% of
+                // its 1728 layout runs repeated a size that had already been applied (one
+                // size arrived 298 times). Acting on every one of those re-painted every
+                // mounted control for an identical rectangle — which is invisible work that
+                // shows up as a stutter, because the paint cost is paid per frame rather than
+                // per change.
+                //
+                // An unchanged rectangle is therefore skipped: the widget is already there,
+                // and a repaint of identical pixels cannot change what is on screen.
+                let unchanged = crate::widget::runtime::geometry_of(widget_id)
+                    .map(|current| current == rect)
+                    .unwrap_or(false);
+                if unchanged {
+                    return;
+                }
+                if crate::widget::runtime::set_geometry(widget_id, rect) {
                     crate::widget::runtime::request_repaint(widget_id);
+                    // Tell the platform the surface moved, not just the model.
+                    //
+                    // A mounted widget lives in two places: the registry (its geometry,
+                    // which the layout writes and the painter reads) and the native surface
+                    // the backend allocated for it. Without this second call a window
+                    // resize changed the geometry the *painter* used — the chart redrew at
+                    // its new size — while the native container kept the allocation it was
+                    // mounted with, so the control's contents changed inside a box that
+                    // stayed the same size.
+                    //
+                    // A backend without mounted surfaces reports `false`, which is not an
+                    // error: the model geometry is authoritative for everything the library
+                    // paints itself.
+                    crate::resize_surface(widget_id, rect);
                 }
             }
             #[cfg(alloc_frugal)]

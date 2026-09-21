@@ -157,24 +157,68 @@ impl WidgetProperties for BottomNavigationBar {
 impl Draw for BottomNavigationBar {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        let item_count = self.items.len();
-        if item_count == 0 {
-            return;
-        }
+
+        // Chrome colours resolve explicit style first, then the theme's resolved style for
+        // this control, and only then a literal. The theme step is what makes an appearance
+        // switch visible; the bar fill and both tab colours used to be hardcoded literals, so
+        // light and dark rendered identically.
+        //
+        // The theme reads take and release the global manager's lock internally, so no guard
+        // is held across the draw (the mutex is not re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("bottom_navigation_bar");
+        // `bottom_navigation_bar` is absent from `WidgetRole::for_kind_name`'s table, so it
+        // classifies as `Surface` and resolves to `theme.colors.background` — the window's
+        // own fill. A bar painted in that colour would be byte-identical to the frame behind
+        // it, so a resolved surface equal to the window fill is re-derived a visible step
+        // away from it, the same distinction `Colors::input_background` draws for a field.
+        let window_fill = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.background)
+            .unwrap_or(Color::WHITE);
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        // The selected tab and its indicator are the accent: the hue a theme is expected to
+        // vary most, so selection follows the appearance rather than a literal blue.
+        let accent = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.primary)
+            .unwrap_or(Color::PRIMARY);
+        let bar_color = match style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+        {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => window_fill.blend(&ink, 0.08),
+        };
+        let border_color = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| bar_color.blend(&ink, 0.25));
 
         let is_enabled = self.base.is_enabled();
-        let tab_width = rect.width / item_count as u32;
         let bar_height = rect.height;
 
-        // Draw background bar
-        context.fill_rect(rect, Color::WHITE);
+        // Draw background bar. This is painted even with no items: the bar is a persistent
+        // chrome surface whose extent the layout reserved, and returning early left a bar
+        // with an empty item list completely invisible.
+        context.fill_rect(rect, bar_color);
 
         // Draw top border line
         context.draw_line(
             Point::new(rect.x, rect.y),
             Point::new(rect.x + rect.width as i32, rect.y),
-            Color::DIVIDER,
+            border_color,
         );
+
+        let item_count = self.items.len();
+        if item_count == 0 {
+            return;
+        }
+
+        let tab_width = rect.width / item_count as u32;
 
         // Determine font sizes proportional to bar height
         let icon_font_size = (bar_height as f32 * 0.32).clamp(14.0, 28.0);
@@ -191,11 +235,11 @@ impl Draw for BottomNavigationBar {
 
             // Determine colors based on selection and enabled state
             let (icon_color, label_color) = if !is_enabled {
-                (Color::DISABLED_FOREGROUND, Color::DISABLED_FOREGROUND)
+                (ink.blend(&bar_color, 0.6), ink.blend(&bar_color, 0.6))
             } else if is_selected {
-                (Color::PRIMARY, Color::PRIMARY)
+                (accent, accent)
             } else {
-                (Color::MEDIUM_GRAY, Color::MEDIUM_GRAY)
+                (ink.blend(&bar_color, 0.4), ink.blend(&bar_color, 0.4))
             };
 
             // Measure icon and label to center them in the tab
@@ -235,7 +279,7 @@ impl Draw for BottomNavigationBar {
                 let indicator_x = tab_rect.x + (tab_rect.width as i32 - indicator_width as i32) / 2;
                 let indicator_rect =
                     Rect::new(indicator_x, rect.y, indicator_width, indicator_height);
-                context.fill_rounded_rect(indicator_rect, 1, Color::PRIMARY);
+                context.fill_rounded_rect(indicator_rect, 1, accent);
             }
         }
     }

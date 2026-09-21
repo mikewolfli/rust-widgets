@@ -30,6 +30,12 @@ use crate::platform::Platform;
 use core::time::Duration;
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]
 use gtk::prelude::*;
+// `glib` is a `gtk` re-export rather than a declared dependency of this crate, so it is
+// named through `gtk` instead of as a bare crate (the same reason `canvas.rs` aliases it).
+// Gated on `gtk-native`: without GTK there is nothing to re-export it from, and this
+// module compiles then too.
+#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+use gtk::glib;
 #[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
 use std::thread;
 
@@ -128,6 +134,50 @@ impl Platform for LinuxPlatform {
         true
     }
 
+    /// Shows or hides a GTK toplevel.
+    ///
+    /// # Why this has to exist
+    ///
+    /// Nothing else showed a window. The only `show_all()` in the backend sat inside
+    /// `mount_canvas`, so a window became visible **as a side effect of mounting a surface
+    /// onto it**: a demo that mounted something appeared, and a demo that mounted nothing
+    /// never appeared at all — while its log still said the window was shown. Showing a
+    /// window is its own operation, so it is implemented here rather than left to fall out
+    /// of an unrelated call.
+    ///
+    /// Both ids are accepted: the **host** window id the platform built (what a
+    /// `WindowHandle` carries) and the **widget** id of the window itself. A caller reaches
+    /// here with one or the other depending on which layer it sits in, and resolving both
+    /// keeps the caller from having to know which it holds.
+    ///
+    /// The trait's signature returns `()`, so an id that names no GTK window is ignored
+    /// rather than reported. That is the common case, not an error: most ids arriving here
+    /// are ordinary controls, for which the model flag is the whole story.
+    #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+    fn set_widget_visible(&self, widget_id: crate::core::ObjectId, visible: bool) {
+        // GTK widgets are main-thread-only; driving them from anywhere else would abort.
+        if !gtk::is_initialized_main_thread() {
+            return;
+        }
+        let native = self.native.lock_guard();
+        let host = if native.windows.contains_key(&widget_id) {
+            Some(widget_id)
+        } else {
+            crate::widget::runtime::host_window_for(widget_id)
+        };
+        let Some(window) = host.and_then(|host| native.windows.get(&host)) else {
+            return;
+        };
+        if visible {
+            // `show_all` rather than `show`: a child created before its parent was realized
+            // is not shown by `show` alone, and a window's controls are created exactly
+            // that way.
+            window.show_all();
+        } else {
+            window.hide();
+        }
+    }
+
     /// Queue a redraw on the canvas's `DrawingArea`.
     #[cfg(all(target_os = "linux", feature = "gtk-native", widgets_unstripped))]
     fn invalidate_surface(&self, id: crate::core::ObjectId) -> bool {
@@ -179,6 +229,22 @@ impl Platform for LinuxPlatform {
     fn run(&self) {
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
+            // Drain the widget-trigger queue on every tick of the GTK loop.
+            //
+            // `gtk::main()` runs the toolkit's loop, and the toolkit's callbacks are what
+            // *fill* the trigger queue: a `connect_size_allocate` handler calls
+            // `queue_resize_trigger`, which pushes a `Resized` event. `gtk::main()` never
+            // reads that queue back, so the event sat there and the layout was never
+            // re-run — the backend reported a resize correctly and the library never acted
+            // on it. See `crate::drain_triggers` for the contract.
+            //
+            // `glib::timeout_add_local` runs its closure on the GTK main thread, which is
+            // the thread GTK requires for widget work, so dispatching from here is
+            // main-thread work rather than a cross-thread call.
+            glib::timeout_add_local(core::time::Duration::from_millis(16), || {
+                crate::drain_triggers();
+                glib::ControlFlow::Continue
+            });
             gtk::main();
         }
         #[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
@@ -216,7 +282,8 @@ impl Platform for LinuxPlatform {
             let mut native = self.native.lock_guard();
             native.windows.remove(&widget_id);
             native.root_boxes.remove(&widget_id);
-            native.content_fixed.remove(&widget_id);
+            native.content_overlay.remove(&widget_id);
+            native.window_painters.remove(&widget_id);
             native.widgets.remove(&widget_id);
         }
 
@@ -258,33 +325,190 @@ impl Platform for LinuxPlatform {
             window.set_default_size(width as i32, height as i32);
             window.move_(x, y);
             let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
-            let fixed = gtk::Fixed::new();
-            root.pack_start(&fixed, true, true, 0);
+
+            // The window-content painter, with the surface container above it.
+            //
+            // The backend creates no native controls, so a window's ordinary children —
+            // buttons, check boxes, labels — have no GTK widget of their own and nothing
+            // painted them: the window showed its chrome over an empty client area. This
+            // `DrawingArea` closes that gap by painting the window's whole widget tree
+            // itself (see `crate::widget::runtime::render_frame_tree`).
+            //
+            // The stacking order matters: the painter goes in first so it is the *bottom*,
+            // and the overlay holding mounted surfaces sits above it, so a self-drawn
+            // control mounted as a surface paints over the tree. That is what lets one
+            // window mix both kinds.
+            let paint_area = gtk::DrawingArea::new();
+            // Expand rather than claim an absolute rectangle: the overlay resizes it with
+            // the window, so a repaint after a resize covers the new extent.
+            paint_area.set_hexpand(true);
+            paint_area.set_vexpand(true);
+            paint_area.set_has_tooltip(false);
+
+            // The container the window layout positions into; see `content_overlay`.
+            let overlay = gtk::Overlay::new();
+            overlay.add(&paint_area);
+            root.pack_start(&overlay, true, true, 0);
             window.add(&root);
+
+            // Paint the window's widget tree on every expose.
+            //
+            // The id GTK reports here is the **platform's**, and the tree lives under the
+            // widget-registry id, so the association recorded at window creation is what
+            // translates between them. Painting the platform id would look up an id that
+            // addresses no widget and draw nothing — a silently empty window, which is the
+            // failure this path exists to remove.
+            paint_area.connect_draw(move |widget, context| {
+                let area_width = widget.allocated_width().max(1) as u32;
+                let area_height = widget.allocated_height().max(1) as u32;
+                let Some(window_widget) = crate::widget::runtime::widget_id_for_host_window(id)
+                else {
+                    // No widget owns this host window yet. Not an error, and nothing to
+                    // paint: the clear colour already fills the area.
+                    return glib::Propagation::Proceed;
+                };
+                match crate::widget::runtime::render_frame_tree(
+                    window_widget,
+                    crate::core::Size::new(area_width, area_height),
+                    crate::core::Color::rgb(240, 240, 240),
+                ) {
+                    Some(frame) => {
+                        super::canvas::blit_rgba(context, area_width, area_height, &frame);
+                    }
+                    None => {
+                        log::debug!(
+                            "[linux] window {id} produced no tree frame \
+                             (no drawable children, or the window is not mounted)"
+                        );
+                    }
+                }
+                glib::Propagation::Proceed
+            });
+
+            // ── Input ─────────────────────────────────────────────────────────
+            //
+            // The window's tree painter also takes pointer input.
+            //
+            // # Why the painter is the input surface
+            //
+            // Painting a window's controls into one area means the area is where the
+            // pointer lands, so it is the only thing that can receive a click. Without
+            // this, a demo whose controls have no mounted surface of their own received
+            // **no events at all**: the controls were visible and their geometry was
+            // correct, so nothing looked wrong — the callbacks simply never ran.
+            //
+            // The router walks the window's child tree and hit-tests each control (see
+            // `widget::runtime::dispatch_pointer_event`), so a click on a button reaches
+            // that button. It needs the child links, which every created control records
+            // (`control_backend::custom::mount_named_widget`).
+            //
+            // Coordinates are already in the window's space: the paint area starts at the
+            // window's content origin, and controls are positioned in that same space.
+            paint_area.add_events(
+                gtk::gdk::EventMask::BUTTON_PRESS_MASK
+                    | gtk::gdk::EventMask::BUTTON_RELEASE_MASK
+                    | gtk::gdk::EventMask::POINTER_MOTION_MASK
+                    | gtk::gdk::EventMask::SCROLL_MASK,
+            );
+            let click_area = paint_area.clone();
+            paint_area.connect_button_press_event(move |widget, event| {
+                let (x, y) = event.position();
+                let point = crate::core::Point::new(x as i32, y as i32);
+                let Some(window_widget) = crate::widget::runtime::widget_id_for_host_window(id)
+                else {
+                    return glib::Propagation::Proceed;
+                };
+                // The area is focusable so a clicked control can take the keyboard
+                // afterwards; without the grab, keys would go to the window and typing
+                // into a `LineEdit` would do nothing.
+                widget.set_can_focus(true);
+                if crate::widget::runtime::dispatch_pointer_event(
+                    window_widget,
+                    &crate::event::Event::MousePress { pos: point, button: 1 },
+                    point,
+                ) {
+                    click_area.queue_draw();
+                }
+                glib::Propagation::Proceed
+            });
+
+            let release_area = paint_area.clone();
+            paint_area.connect_button_release_event(move |widget, event| {
+                let (x, y) = event.position();
+                let point = crate::core::Point::new(x as i32, y as i32);
+                let Some(window_widget) = crate::widget::runtime::widget_id_for_host_window(id)
+                else {
+                    return glib::Propagation::Proceed;
+                };
+                if crate::widget::runtime::dispatch_pointer_event(
+                    window_widget,
+                    &crate::event::Event::MouseRelease { pos: point, button: 1 },
+                    point,
+                ) {
+                    widget.queue_draw();
+                }
+                // A released click is also what a click callback keys off, and the draw
+                // above covers the visual half of it.
+                release_area.queue_draw();
+                glib::Propagation::Proceed
+            });
+
+            // Key events go to whatever the router focused, so typing reaches a field the
+            // user clicked rather than always the window. Tab is forwarded too, which is
+            // how focus moves between controls.
+            paint_area.set_can_focus(true);
+            paint_area.connect_key_press_event(move |widget, event| {
+                let Some(window_widget) = crate::widget::runtime::widget_id_for_host_window(id)
+                else {
+                    return glib::Propagation::Proceed;
+                };
+                // `keyval()` is a `gdk::keys::Key`, which derefs to its numeric GDK
+                // keyval — the value the widget layer's key handling expects.
+                let key = *event.keyval();
+                let key_event = crate::event::Event::KeyPress { key, modifiers: 0 };
+                let target = crate::widget::runtime::focused_widget().unwrap_or(window_widget);
+                if crate::widget::runtime::dispatch_event(target, &key_event) {
+                    widget.queue_draw();
+                }
+                glib::Propagation::Proceed
+            });
 
             // Report every re-allocation of the toplevel as a `Resized` trigger.
             //
             // Without this the library only learns a new window size when someone calls
             // `WindowHandle::set_geometry`, so a user dragging the window edge left every
-            // child control at the geometry it had for the previous size. The signal
-            // fires for programmatic resizes too, which is harmless: the caller is
-            // expected to re-run its layout, and re-running it twice is idempotent.
+            // child control at the geometry it had for the previous size. The signal fires
+            // for programmatic resizes too, which is harmless: the caller is expected to
+            // re-run its layout, and re-running it twice is idempotent.
             //
-            // The handler captures only `id`: the size it reports goes through
-            // `crate::queue_resize_trigger`, which reaches the control backend's own
-            // record, so there is no platform state for the closure to hold.
+            // # Why the id is translated before reporting
+            //
+            // GTK hands this closure the **platform's** window id (a small number such as
+            // `1`), while everything that consumes a resize — `queue_resize_trigger`,
+            // `window_client_size`, `apply_window_layout` — is keyed by the
+            // **widget-registry** id, which is a different and much larger number.
+            // `queue_resize_trigger` validates its argument with `is_mounted` and refuses an
+            // id that addresses no widget, so reporting the platform id made every resize a
+            // silent no-op: measured, a window resized to 944x600 logged
+            // `platform_id=1 size=944x600 widget_owner=<large> accepted=false`, and the
+            // window layout never ran again.
+            //
+            // `widget_id_for_host_window` is the association recorded at window creation.
+            // A window with no owner yet — built before any widget was associated with it —
+            // reports nothing, which is correct: there is no layout that could react.
             window.connect_size_allocate(move |_, allocation| {
-                crate::queue_resize_trigger(
-                    id,
-                    allocation.width().max(0) as u32,
-                    allocation.height().max(0) as u32,
-                );
+                let (width, height) =
+                    (allocation.width().max(0) as u32, allocation.height().max(0) as u32);
+                if let Some(widget_id) = crate::widget::runtime::widget_id_for_host_window(id) {
+                    crate::queue_resize_trigger(widget_id, width, height);
+                }
             });
 
             let mut native = self.native.lock_guard();
             native.windows.insert(id, window.clone());
             native.root_boxes.insert(id, root);
-            native.content_fixed.insert(id, fixed.clone());
+            native.content_overlay.insert(id, overlay.clone());
+            native.window_painters.insert(id, paint_area);
             native.widgets.insert(id, window.clone().upcast::<gtk::Widget>());
         }
         id

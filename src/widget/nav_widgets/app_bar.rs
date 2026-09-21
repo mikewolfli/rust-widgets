@@ -140,17 +140,52 @@ impl Draw for AppBar {
         let is_enabled = self.base.is_enabled();
         let bar_height = rect.height;
 
+        // Chrome colours resolve explicit style first, then the theme's resolved style
+        // for this control, and only then fall back to a literal. Without the theme step
+        // a light/dark switch would change nothing on screen, because every colour below
+        // was previously hardcoded.
+        //
+        // The theme reads are separate manager locks, each taken and released inside
+        // `resolved_theme_style`, so none is held across the draw or across another
+        // accessor — the global manager's mutex is not re-entrant.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("app_bar");
+        let background = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(if is_enabled {
+                Color::rgba(248, 248, 250, 255)
+            } else {
+                Color::DISABLED_BACKGROUND
+            });
+        let border_color = if is_enabled {
+            style
+                .border_color
+                .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+                .unwrap_or(Color::DIVIDER)
+        } else {
+            Color::DISABLED_FOREGROUND
+        };
+        // The bar's ink follows the same resolution: a title, a back arrow and an
+        // action all read the control's resolved text colour rather than a literal.
+        let text_color = if is_enabled {
+            style
+                .text_color
+                .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+                .unwrap_or(Color::FOREGROUND)
+        } else {
+            Color::DISABLED_FOREGROUND
+        };
+
         // Draw background
-        let bg_color =
-            if is_enabled { Color::rgba(248, 248, 250, 255) } else { Color::DISABLED_BACKGROUND };
-        context.fill_rect(rect, bg_color);
+        context.fill_rect(rect, background);
 
         // Draw bottom border line
         let border_y = rect.y + bar_height as i32 - 1;
         context.draw_line_stroke(
             Point::new(rect.x, border_y),
             Point::new(rect.x + rect.width as i32, border_y),
-            Color::DIVIDER,
+            border_color,
             1,
         );
 
@@ -167,13 +202,11 @@ impl Draw for AppBar {
             let back_x = rect.x + 12;
             let back_y = rect.y + (bar_height as i32 / 2) + (metrics.ascent as i32 / 2)
                 - (metrics.descent as i32 / 2);
-            let back_color =
-                if is_enabled { Color::FOREGROUND } else { Color::DISABLED_FOREGROUND };
             context.draw_text(
                 Point::new(back_x, back_y),
                 back_text,
                 &back_font,
-                back_color,
+                text_color,
                 HorizontalAlignment::Left,
             );
         }
@@ -199,13 +232,11 @@ impl Draw for AppBar {
             let title_y = rect.y + (bar_height as i32 / 2) + (metrics.ascent as i32 / 2)
                 - (metrics.descent as i32 / 2);
 
-            let title_color =
-                if is_enabled { Color::FOREGROUND } else { Color::DISABLED_FOREGROUND };
             context.draw_text(
                 Point::new(title_x, title_y),
                 &self.title,
                 &title_font,
-                title_color,
+                text_color,
                 HorizontalAlignment::Left,
             );
         }
@@ -220,7 +251,15 @@ impl Draw for AppBar {
             let action_y = rect.y + (bar_height as i32 / 2) + (metrics.ascent as i32 / 2)
                 - (metrics.descent as i32 / 2);
 
-            let action_color = if is_enabled { Color::PRIMARY } else { Color::DISABLED_FOREGROUND };
+            // The action is the bar's one accented affordance: when the app bar is
+            // enabled it is tinted toward the resolved ink so it reads as an action
+            // against the bar's fill, and it moves with the appearance like the rest
+            // of the chrome.
+            let action_color = if is_enabled {
+                text_color.blend(&background, 0.25)
+            } else {
+                Color::DISABLED_FOREGROUND
+            };
             context.draw_text(
                 Point::new(action_x, action_y),
                 &self.action_text,

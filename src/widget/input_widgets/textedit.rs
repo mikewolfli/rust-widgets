@@ -377,10 +377,55 @@ impl Draw for TextEdit {
         let padding = 4;
         let text_x = rect.x + padding;
         let text_y = rect.y + padding;
+
+        // Chrome colours resolve the explicit style first, then the theme's resolved style for
+        // this control, and only then fall back to a literal. Every colour below used to be a
+        // literal, so a light/dark switch left the field, its border and its text unchanged — the
+        // rendering census reported the control as theme-blind.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
+        // is not re-entrant.
+        let style = self.base.style().clone();
+        // The fallback name matters: the role table is keyed on **role** names, so `text_edit`
+        // (the factory name) is not in it and would classify as `Surface`, i.e. the window fill.
+        // `line_edit` is, and resolves to the field interior plus the theme's foreground.
+        let theme = crate::theme::resolved_theme_style("text_edit")
+            .or_else(|| crate::theme::resolved_theme_style("line_edit"));
+        let field_from_theme = theme
+            .as_ref()
+            .and_then(|t| t.background_color)
+            .unwrap_or_else(|| Color::rgb(255, 255, 255));
+        // The window fill, read as its own lock acquisition and copied out as a value, so the
+        // guard is dropped before anything else touches the theme.
+        let window_fill = {
+            let manager = crate::theme::global_theme_manager();
+            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
+        };
+        // The filter is on the **resolved** value, not only on the theme's: the active theme is
+        // applied to every control before it is drawn, and a control absent from the role table
+        // resolves its background to the window fill itself — so letting that value through
+        // unfiltered would paint the field in the window's own colour, which is invisible on
+        // screen. A caller's own colour still wins.
+        let field = match style.background_color {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => field_from_theme,
+        };
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        // The border is one step from the field toward the ink, so it is visible on either
+        // appearance rather than being a fixed grey a dark theme would render illegible.
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| field.blend(&ink, 0.22));
+
         // Draw background
-        context.fill_rect(rect, Color::rgb(255, 255, 255));
+        context.fill_rect(rect, field);
         // Draw border
-        context.draw_rect(rect, Color::rgb(200, 200, 200));
+        context.draw_rect(rect, border);
         // Draw text or placeholder
         let display_text = if self.text.is_empty() && !self.placeholder_text.is_empty() {
             &self.placeholder_text
@@ -388,12 +433,15 @@ impl Draw for TextEdit {
             &self.text
         };
         if !display_text.is_empty() {
+            // The placeholder is de-emphasised from the control's own ink rather than being a
+            // fixed grey that a dark theme would render illegible.
+            let text_color = if self.text.is_empty() { ink.blend(&field, 0.45) } else { ink };
             // Simple text drawing - in real implementation would handle line wrapping
             context.draw_text(
                 Point::new(text_x, text_y),
                 display_text,
                 &Font::default(),
-                Color::rgb(0, 0, 0),
+                text_color,
                 HorizontalAlignment::Left,
             );
         }

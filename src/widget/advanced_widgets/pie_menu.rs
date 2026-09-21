@@ -451,6 +451,44 @@ impl PieMenu {
         None
     }
 
+    /// Fills the whole donut track — the ring the slices are cut from.
+    ///
+    /// Painted before any slice, so an open menu with no items is still a visible ring rather
+    /// than nothing at all. Built the same way as [`Self::fill_slice`] — dense arcs at a range of
+    /// radii — so the track and the wedges it carries are drawn by one technique.
+    fn fill_ring(
+        &self,
+        context: &mut RenderContext,
+        center: Point,
+        outer_r: f32,
+        inner_r: f32,
+        color: Color,
+    ) {
+        let cx = center.x as f32;
+        let cy = center.y as f32;
+
+        let strips = ((outer_r - inner_r) * 0.5).clamp(4.0, 30.0) as u32;
+        let strip_count = strips.max(4);
+        let full_circle = core::f32::consts::TAU;
+
+        for i in 0..strip_count {
+            let frac = i as f32 / strip_count as f32;
+            let r = inner_r + frac * (outer_r - inner_r);
+            let sub_segments = ((r * full_circle * 0.25) as u32).clamp(8, 96);
+            let step_a = full_circle / sub_segments as f32;
+            for j in 0..sub_segments {
+                let a1 = j as f32 * step_a;
+                let a2 = a1 + step_a;
+                context.draw_line_stroke(
+                    Point::from_f32(cx + r * a1.cos(), cy + r * a1.sin()),
+                    Point::from_f32(cx + r * a2.cos(), cy + r * a2.sin()),
+                    color,
+                    1,
+                );
+            }
+        }
+    }
+
     /// Fills a pie slice wedge by drawing dense radial lines.
     #[allow(clippy::too_many_arguments)]
     fn fill_slice(
@@ -649,9 +687,49 @@ impl EventHandler for PieMenu {
 
 impl Draw for PieMenu {
     fn draw(&mut self, context: &mut RenderContext) {
-        if !self.is_visible() || self.items.is_empty() {
+        if !self.is_visible() {
             return;
         }
+
+        // Chrome colours resolve the explicit style first, then the theme's resolved style for
+        // this control, and only then a literal. The ring, its separators and the hub hole all
+        // used to be literals, so a light/dark switch left the control's chrome unchanged — the
+        // rendering census reported it as theme-blind.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
+        // is not re-entrant.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("pie_menu");
+        // Read as its own lock acquisition and copied out as values, so the guard is dropped
+        // before anything else touches the theme.
+        let (window_fill, foreground, secondary) = {
+            let manager = crate::theme::global_theme_manager();
+            match manager.current_theme() {
+                Some(active) => {
+                    (active.colors.background, active.colors.foreground, active.colors.secondary)
+                }
+                None => (Color::rgb(240, 240, 240), Color::BLACK, Color::rgb(158, 158, 158)),
+            }
+        };
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(foreground);
+        // `pie_menu` is absent from `WidgetRole::for_kind_name`'s table, so it classifies as
+        // `Surface` and the active theme writes the window fill into `style.background_color`.
+        // A ring painted in that colour would be byte-identical to the frame behind it, so a
+        // resolved surface equal to the window fill is re-derived a visible step away from it,
+        // while a colour the caller set still wins.
+        let ring = match style.background_color {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => window_fill.blend(&ink, 0.12),
+        };
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .filter(|resolved| *resolved != ring)
+            .unwrap_or_else(|| ring.blend(&secondary, 0.45));
 
         let center = self.center;
         let outer_r = self.radius;
@@ -659,11 +737,18 @@ impl Draw for PieMenu {
         let cx = center.x as f32;
         let cy = center.y as f32;
 
+        // The ring track and its hub are drawn before the early return on an empty item list, so a
+        // freshly constructed menu is visible rather than reporting `ink = 0`; an empty ring reads
+        // as a menu that has been opened with nothing to offer.
+        self.fill_ring(context, center, outer_r, inner_r, ring);
+
         // Draw each slice
         for (i, item) in self.items.iter().enumerate() {
             let is_hovered = self.hovered_index == Some(i);
+            // A disabled slice takes the themed track rather than a fixed light grey, so it reads
+            // as a muted wedge on either appearance.
             let base_color = if !item.is_enabled() {
-                Color::rgb(220, 220, 220)
+                ring
             } else if is_hovered {
                 self.hover_color
             } else {
@@ -692,17 +777,18 @@ impl Draw for PieMenu {
                     cx + outer_r * item.angle_start().cos(),
                     cy + outer_r * item.angle_start().sin(),
                 ),
-                Color::rgb(160, 160, 160),
+                border,
                 1,
             );
         }
 
         // Draw the outer ring border
-        context.draw_circle_stroke(center, outer_r as u32, Color::rgb(140, 140, 140), 1);
+        context.draw_circle_stroke(center, outer_r as u32, border, 1);
 
         // Draw the inner donut hole circle
-        context.fill_circle(center, inner_r as u32, Color::rgb(250, 250, 250));
-        context.draw_circle_stroke(center, inner_r as u32, Color::rgb(180, 180, 180), 1);
+        let hub = ring.blend(&ink, 0.10);
+        context.fill_circle(center, inner_r as u32, hub);
+        context.draw_circle_stroke(center, inner_r as u32, border, 1);
 
         // Draw text labels centered in each slice
         let font = Font::default();
@@ -718,8 +804,13 @@ impl Draw for PieMenu {
             let label_text =
                 if item.icon_text().is_empty() { item.text() } else { item.icon_text() };
 
-            let text_color =
-                if self.hovered_index == Some(i) { Color::WHITE } else { self.text_color };
+            // A highlighted label takes the contrast colour of the accent it sits on, so it is not
+            // a fixed white that may vanish on a light accent.
+            let text_color = if self.hovered_index == Some(i) {
+                self.hover_color.contrast_color()
+            } else {
+                self.text_color
+            };
             context.draw_text(
                 Point::from_f32(lx, ly),
                 label_text,
@@ -730,7 +821,7 @@ impl Draw for PieMenu {
         }
 
         // Draw a small center dot
-        context.fill_circle(center, 3, Color::rgb(100, 100, 100));
+        context.fill_circle(center, 3, border);
     }
 }
 

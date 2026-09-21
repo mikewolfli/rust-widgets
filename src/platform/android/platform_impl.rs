@@ -94,7 +94,10 @@ impl Platform for AndroidPlatform {
         }
         // Android state backend uses polling loop for deterministic behavior.
         self.runtime.running.store(true, Ordering::SeqCst);
+        // The loop is also the drain tick, so a `Resized` event the host queued reaches
+        // the window layout. See `crate::drain_triggers`.
         while self.runtime.running.load(Ordering::SeqCst) {
+            crate::drain_triggers();
             thread::sleep(Duration::from_millis(16));
         }
     }

@@ -147,23 +147,85 @@ impl WidgetProperties for CupertinoSegmentedControl {
 impl Draw for CupertinoSegmentedControl {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        if self.segments.is_empty() {
+        if rect.width == 0 || rect.height == 0 {
             return;
         }
 
         let seg_count = self.segments.len();
-        let seg_w = rect.width as i32 / seg_count as i32;
+        // A control with no segments is the state `create_cupertino_segmented_control`
+        // produces — that constructor takes no segment text, so the whole `draw` used to
+        // return before painting a pixel and the control was invisible on screen while every
+        // geometry check passed. The pill is the control's own surface, so it is painted
+        // whether or not there is anything in it.
+        let seg_w =
+            if seg_count == 0 { rect.width as i32 } else { rect.width as i32 / seg_count as i32 };
         let corner_radius = (rect.height as f32 / 2.0) as u32;
 
-        // ── Background pill (gray) ──
-        // A disabled control is dimmed on both the track and the selection, so the
-        // appearance agrees with `handle_event`'s refusal to accept the tap.
-        let enabled = self.base.is_enabled();
-        let track_color =
-            if enabled { Color::rgba(220, 220, 223, 255) } else { Color::rgba(238, 238, 240, 255) };
+        // Chrome colours resolve explicit style first, then the theme's resolved style for
+        // this control, and only then fall back to a literal. Every colour below used to be
+        // a literal, so a light/dark switch left the pill, its indicator and its labels
+        // unchanged — the rendering census reported the control as theme-blind.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global manager's
+        // mutex is not re-entrant.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("cupertino_segmented_control");
+        // Read as its own lock acquisition and copied out as values, so the guard is dropped
+        // before anything else touches the theme. The control is not in the role table, so it
+        // classifies as `Surface` and its resolved background is the window fill itself; the
+        // track below therefore derives its own distinct surface rather than painting the
+        // window's. The selected segment is the control's value indicator, so its sliding
+        // highlight reads the theme's primary.
+        let (window_fill, foreground, primary) = {
+            let manager = crate::theme::global_theme_manager();
+            match manager.current_theme() {
+                Some(active) => {
+                    (active.colors.background, active.colors.foreground, active.colors.primary)
+                }
+                None => (Color::rgb(240, 240, 240), Color::BLACK, Color::rgb(0, 122, 255)),
+            }
+        };
+
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(foreground);
+        // The track: one step from the window fill toward the text colour, so the pill is a
+        // distinct element on a light theme and on a dark one. The filter is on the
+        // **resolved** value, not only on the theme's: the active theme is applied to every
+        // control before it is drawn, so `style.background_color` already holds `Surface`'s
+        // window fill and letting it through unfiltered is exactly the invisible-pill defect
+        // this guards against. A caller's own colour still wins.
+        let track_from_theme = window_fill.blend(&ink, 0.08);
+        let track_surface = match style.background_color {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => track_from_theme,
+        };
+        // The slider's knob makes the same distinction between the track it sits on and the
+        // page behind it: raised by default, recessed while disabled.
+        let track_color = if self.base.is_enabled() {
+            track_surface
+        } else {
+            track_surface.blend(&window_fill, 0.50)
+        };
         context.fill_rounded_rect(rect, corner_radius, track_color);
 
-        // ── Sliding highlight (white pill for selected segment) ──
+        if seg_count == 0 {
+            return;
+        }
+
+        // ── Sliding highlight for the selected segment ──
+        // The accent marks the selection and is contrast-checked against the track so the
+        // selected label stays legible on either appearance. A caller's explicit text colour
+        // still wins.
+        let selected_bg = primary.contrast_color().blend(&primary, 0.30);
+        let highlight_color = style.text_color.map(|resolved| resolved).unwrap_or(selected_bg);
+        let indicator_color = if self.base.is_enabled() {
+            highlight_color
+        } else {
+            highlight_color.blend(&track_color, 0.50)
+        };
         let sel_x = rect.x + (self.selected_index as i32) * seg_w;
         let sel_rect = Rect::new(
             sel_x + 2,
@@ -171,23 +233,28 @@ impl Draw for CupertinoSegmentedControl {
             seg_w.saturating_sub(4) as u32,
             rect.height.saturating_sub(4),
         );
-        let highlight_color = if enabled { Color::WHITE } else { Color::rgba(245, 245, 247, 255) };
-        context.fill_rounded_rect(sel_rect, corner_radius, highlight_color);
+        context.fill_rounded_rect(sel_rect, corner_radius, indicator_color);
 
         // ── Segment labels ──
         let font = Font::new("sans-serif", 13.0, false, false);
+        // The unselected label is de-emphasised from the control's own ink rather than being
+        // a fixed grey that a dark theme would render illegible.
+        let unselected = ink.blend(&track_color, 0.45);
         for (i, seg) in self.segments.iter().enumerate() {
             let metrics = context.measure_text(seg, &font);
             let seg_x = rect.x + (i as i32) * seg_w;
             let text_x = seg_x + (seg_w - metrics.width as i32) / 2;
             let text_y = rect.y + (rect.height as i32 / 2) + (metrics.ascent as i32 / 2)
                 - (metrics.descent as i32 / 2);
-            let color = if !enabled {
-                Color::DISABLED_FOREGROUND
+            // The label must contrast with what it is painted on — the accent highlight for
+            // the selected segment, the track for the rest — so the two are chosen against
+            // their own backdrop instead of both assuming a light one.
+            let color = if !self.base.is_enabled() {
+                unselected.blend(&track_color, 0.50)
             } else if i == self.selected_index {
-                Color::BLACK
+                indicator_color.contrast_color()
             } else {
-                Color::rgba(100, 100, 100, 255)
+                unselected
             };
             context.draw_text(
                 Point::new(text_x, text_y),

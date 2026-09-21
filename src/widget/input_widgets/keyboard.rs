@@ -429,9 +429,54 @@ impl Draw for Keyboard {
             return;
         }
 
-        // Draw keyboard background.
-        let bg = self.style().background_color.unwrap_or(Color::rgb(220, 220, 220));
-        context.fill_rect(rect, bg);
+        // Chrome colours resolve the explicit style first, then the theme's resolved style for
+        // this control, and only then fall back to a literal. `keyboard` is not in the role table,
+        // so it classifies as `Surface` and its resolved background is the window fill itself —
+        // which is why the board below derives its own distinct surface rather than painting the
+        // window's. Every key colour used to be a literal too, so a light/dark switch left the
+        // whole board unchanged and the census reported the control as theme-blind.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
+        // is not re-entrant.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("keyboard");
+        // Read as its own lock acquisition and copied out as values, so the guard is dropped
+        // before anything else touches the theme.
+        let (window_fill, foreground, primary, muted) = {
+            let manager = crate::theme::global_theme_manager();
+            match manager.current_theme() {
+                Some(active) => (
+                    active.colors.background,
+                    active.colors.foreground,
+                    active.colors.primary,
+                    active.colors.secondary,
+                ),
+                None => (
+                    Color::rgb(240, 240, 240),
+                    Color::BLACK,
+                    Color::rgb(33, 150, 243),
+                    Color::rgb(158, 158, 158),
+                ),
+            }
+        };
+
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(foreground);
+        // The board: one step from the window fill toward the text colour, so it is a distinct
+        // element on a light theme and on a dark one. The filter is on the **resolved** value, not
+        // only on the theme's: the active theme is applied to every control before it is drawn, so
+        // `style.background_color` already holds `Surface`'s window fill and letting it through
+        // unfiltered is exactly the invisible-board defect this guards against. A caller's own
+        // colour still wins.
+        let board_from_theme = window_fill.blend(&ink, 0.10);
+        let board = match style.background_color {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => board_from_theme,
+        };
+        context.fill_rect(rect, board);
 
         let row_count = self.keys.len();
         if row_count == 0 {
@@ -442,12 +487,16 @@ impl Draw for Keyboard {
         let row_height = total_height / row_count as f32;
         let row_width = rect.width as f32;
 
-        // Default key colors.
-        let key_bg = Color::rgb(245, 245, 245);
-        let key_border = Color::rgb(180, 180, 180);
-        let text_color = self.style().text_color.unwrap_or(Color::rgb(0, 0, 0));
-        let special_bg = Color::rgb(210, 210, 210);
-        let shift_bg = if self.shift { Color::rgb(160, 200, 255) } else { special_bg };
+        // Key colours are raised from the board so the grid reads on either appearance: an
+        // ordinary key is one step out of the board, a modifier a further step, and a latched
+        // shift carries the theme's primary so the state is visible rather than a fixed blue.
+        let key_bg = board.blend(&ink, 0.10);
+        let key_border = board.blend(&muted, 0.45);
+        let special_bg = board.blend(&ink, 0.20);
+        let shift_bg = if self.shift { primary.blend(&board, 0.45) } else { special_bg };
+        // A key's label must contrast with the key it sits on, which is now a theme colour rather
+        // than a fixed light grey.
+        let text_color = ink;
 
         let default_font = Font::default();
 
@@ -488,11 +537,18 @@ impl Draw for Keyboard {
                         - text_w as f32 / 2.0) as i32;
                     let text_y = (key_rect.y as f32 + key_rect.height as f32 / 2.0
                         - text_h as f32 / 2.0) as i32;
+                    // The latched shift key is filled with the primary, so its label is drawn in
+                    // whatever contrasts with that fill rather than in the board's ink.
+                    let key_text = if key.key_code == 16 && self.shift {
+                        shift_bg.contrast_color()
+                    } else {
+                        text_color
+                    };
                     context.draw_text(
                         Point::new(text_x, text_y),
                         &label,
                         &default_font,
-                        text_color,
+                        key_text,
                         HorizontalAlignment::Left,
                     );
                 }

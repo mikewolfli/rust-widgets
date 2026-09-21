@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Popup window widget.
-use crate::core::{Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
@@ -173,13 +173,52 @@ impl Draw for PopupWindow {
         if rect.width == 0 || rect.height == 0 {
             return;
         }
-        use crate::core::Color;
+
+        // Chrome colours resolve explicit style first, then the theme's resolved style for
+        // this control, and only then a literal. Every colour below used to be a literal, so
+        // a light/dark switch left the popup and its title bar unchanged — the rendering
+        // census reported the control as theme-blind.
+        //
+        // The theme reads take and release the global manager's lock internally, so no guard
+        // is held across the draw (the mutex is not re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("popup_window");
+        // `popup_window` is absent from `WidgetRole::for_kind_name`'s table, so it classifies
+        // as `Surface` and resolves to `theme.colors.background` — the window's own fill. A
+        // popup painted in that colour would be byte-identical to the frame behind it, so a
+        // resolved surface equal to the window fill is re-derived a visible step away from
+        // it: the popup is raised *above* the window, so the step is taken toward the
+        // foreground, the same distinction `Colors::input_background` draws for a field.
+        let window_fill = {
+            let manager = crate::theme::global_theme_manager();
+            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
+        };
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::rgb(40, 40, 40));
+        let surface = match style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+        {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => window_fill.blend(&ink, 0.08),
+        };
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .filter(|resolved| *resolved != surface)
+            .unwrap_or_else(|| surface.blend(&ink, 0.35));
+        // The title bar is a distinct band on the popup, derived from it so the two stay one
+        // visible step apart in either appearance.
+        let title_bar = surface.blend(&ink, 0.06);
+
         // Background and border. The fill is opaque on purpose — a popup that wants
         // translucency has to say so through its own background property, and the
         // earlier "semi-transparent effect" comment described something this code
         // never did.
-        context.fill_rect(rect, Color::rgb(255, 255, 255));
-        context.draw_rect(rect, Color::rgb(120, 120, 120));
+        context.fill_rect(rect, surface);
+        context.draw_rect(rect, border);
 
         if self.title.is_empty() {
             return;
@@ -187,20 +226,17 @@ impl Draw for PopupWindow {
         // Title bar height is clamped to the popup so a short popup shows the title
         // rather than painting outside itself.
         let bar_height = TITLE_BAR_HEIGHT.min(rect.height);
-        context.fill_rect(
-            Rect::new(rect.x, rect.y, rect.width, bar_height),
-            Color::rgb(240, 240, 240),
-        );
+        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, bar_height), title_bar);
         context.draw_line(
             Point::new(rect.x, rect.y + bar_height as i32),
             Point::new(rect.x + rect.width as i32, rect.y + bar_height as i32),
-            Color::rgb(120, 120, 120),
+            border,
         );
         context.draw_text(
             Point::new(rect.x + 8, rect.y + (bar_height / 2) as i32),
             &self.title,
             &Font::default(),
-            Color::rgb(40, 40, 40),
+            ink,
             HorizontalAlignment::Left,
         );
     }

@@ -819,6 +819,22 @@ pub fn host_window_for(id: ObjectId) -> Option<ObjectId> {
     HOST_WINDOWS.try_with(|map| map.borrow().get(&id).copied()).unwrap_or(None)
 }
 
+/// The widget id whose host window is `host`.
+///
+/// The inverse of [`host_window_for`], and the translation a platform backend needs
+/// whenever an OS callback hands it *its own* window id: the widget registry keys
+/// everything by the widget id, and `queue_resize_trigger` refuses an id that
+/// addresses no widget. A backend that reported the platform id instead would have
+/// every resize silently dropped.
+///
+/// Returns `None` when no widget names this host, which is correct for a window the
+/// platform built before any widget was associated with it.
+pub fn widget_id_for_host_window(host: ObjectId) -> Option<ObjectId> {
+    HOST_WINDOWS
+        .try_with(|map| map.borrow().iter().find(|(_, h)| **h == host).map(|(w, _)| *w))
+        .unwrap_or(None)
+}
+
 /// Returns whether `id` refers to a mounted self-drawn widget.
 pub fn is_mounted(id: ObjectId) -> bool {
     MOUNTED.try_with(|map| map.borrow().contains_key(&id)).unwrap_or(false)
@@ -874,14 +890,40 @@ pub fn geometry_of(id: ObjectId) -> Option<Rect> {
         .flatten()
 }
 
-/// The absolute origin a control draws from, used to translate its frame.
+/// The origin a control's own coordinates are relative to.
 ///
-/// See [`render_frame`] for why the origin is subtracted rather than assumed to be
-/// `(0, 0)`. An unmounted id has no geometry and therefore no origin to subtract, so
-/// `(0, 0)` is returned: a later `with_widget_mut` then finds nothing and the render
-/// reports failure, which is the same outcome as any other unmounted render.
+/// # Why a window's origin is `(0, 0)`
+///
+/// A window's geometry is recorded in **screen** coordinates — `create_window` mounts it
+/// at the `x`/`y` the caller asked the operating system for — while every control inside
+/// it is placed in **client** coordinates. Those are two different spaces, and using the
+/// window's screen position as the tree's origin mixes them.
+///
+/// The mixture was not harmless. `render_frame_tree` subtracts this origin from every
+/// widget before drawing, so a window created at `(100, 100)` shifted each child by
+/// `(-100, -100)`: a combo box at client `(20, 142)` was drawn at `(-80, 42)`, outside the
+/// canvas and therefore clipped away. The window's own fill used its absolute rect and
+/// came back to `(0, 0)`, so the frame was **a correct background with no controls on
+/// it** — controls whose style was resolved correctly, whose geometry was correct, and
+/// which were still invisible. The window's border stroke additionally landed across the
+/// whole frame, which is why a corner of the window read as the border colour.
+///
+/// So a root contributes no offset: its children's coordinates already start at the
+/// window's top-left. A window created at `(0, 0)` behaved by accident before; every
+/// window behaves now.
+///
+/// # Why a non-window keeps its own position
+///
+/// A control that paints itself is addressed in **its parent's** space, and
+/// [`render_frame`] is called for that control's own surface, so its rectangle must be
+/// translated back to its own origin. That is the case this subtraction exists for.
 fn frame_origin(id: ObjectId) -> (i32, i32) {
-    geometry_of(id).map(|geometry| (geometry.x, geometry.y)).unwrap_or((0, 0))
+    match MOUNTED.try_with(|map| {
+        map.borrow().get(&id).map(|entry| (entry.widget.kind(), entry.widget.geometry()))
+    }) {
+        Ok(Some((crate::widget::WidgetKind::Window, _))) | Ok(None) | Err(_) => (0, 0),
+        Ok(Some((_, geometry))) => (geometry.x, geometry.y),
+    }
 }
 
 /// Updates the geometry of a mounted widget. Returns whether it was found.
@@ -1672,6 +1714,123 @@ pub fn render_frame(id: ObjectId, size: Size, clear: crate::core::Color) -> Opti
 pub fn render_frame_at_geometry(id: ObjectId, clear: crate::core::Color) -> Option<Vec<u8>> {
     let geometry = geometry_of(id)?;
     render_frame(id, Size::new(geometry.width, geometry.height), clear)
+}
+
+/// Renders one frame of a widget **and its descendants**, returning RGBA bytes.
+///
+/// # Why this exists
+///
+/// [`render_frame`] paints exactly one widget into its own box. That is right for a
+/// self-drawn control mounted as a surface, but it means a widget that **contains** other
+/// widgets paints none of them: a window drawn this way shows its own chrome over an empty
+/// client area. A window whose children are ordinary library controls — a button, a check
+/// box, a label — is the case that matters, and those children are never mounted as
+/// surfaces of their own, so nothing painted them.
+///
+/// This walks the child list depth-first and draws each child that implements
+/// [`Draw`][crate::widget::Draw], in tree order, so a later sibling paints over an earlier
+/// one — the same order a container's own `draw` would use.
+///
+/// # Coordinates
+///
+/// Geometry is absolute (see [`render_frame`]), and the frame's origin is `id`'s own
+/// position, so the negated origin is pushed once. Children draw at their own absolute
+/// coordinates, which that single translation maps into this frame.
+///
+/// # What is skipped, and why silently
+///
+/// A child is skipped when it is not visible, when it is not in the registry, or when it
+/// does not implement `Draw`. Skipping is not an error because all three are ordinary: a
+/// hidden page, a child whose id was recycled, and a control that is a pure model for a
+/// host to materialise are each a normal state, and reporting them would make a correct
+/// tree look broken.
+///
+/// Returns `None` when `id` is not mounted or the size is empty.
+pub fn render_frame_tree(id: ObjectId, size: Size, clear: crate::core::Color) -> Option<Vec<u8>> {
+    if size.width == 0 || size.height == 0 {
+        return None;
+    }
+    let origin = frame_origin(id);
+    let mut backend = SoftwarePaintBackend::new(size, 1.0);
+
+    // The root's own painting is part of the frame: a window draws its background and
+    // chrome, which the children then sit on top of.
+    let mut painted = with_widget_mut(id, |widget| {
+        let Some(drawable) = widget.as_draw_mut() else {
+            return false;
+        };
+        backend.begin_frame(clear);
+        {
+            let mut context = RenderContext::new(&mut backend);
+            context.push_offset(-origin.0, -origin.1);
+            drawable.draw(&mut context);
+            context.pop_offset();
+        }
+        true
+    })
+    .unwrap_or(false);
+
+    if painted {
+        // Children are drawn into the same frame, so the traversal only issues draw calls;
+        // the frame was begun above and is ended once below.
+        let mut stack: Vec<ObjectId> = direct_children_of(id);
+        // Reversed so the traversal visits children in declaration order: `pop` takes the
+        // last element, so pushing the children reversed makes the first one first.
+        stack.reverse();
+        while let Some(current) = stack.pop() {
+            if !is_visible(current) {
+                continue;
+            }
+            let drew = with_widget_mut(current, |widget| {
+                let Some(drawable) = widget.as_draw_mut() else {
+                    return false;
+                };
+                let mut context = RenderContext::new(&mut backend);
+                context.push_offset(-origin.0, -origin.1);
+                drawable.draw(&mut context);
+                context.pop_offset();
+                true
+            })
+            .unwrap_or(false);
+            if drew {
+                painted = true;
+            }
+            let mut nested = direct_children_of(current);
+            nested.reverse();
+            stack.extend(nested);
+        }
+    }
+
+    if !painted {
+        return None;
+    }
+    backend.end_frame();
+    Some(backend.frame_rgba().to_vec())
+}
+
+/// The direct children of `id`, or an empty list when it is not mounted.
+///
+/// Read through [`with_widget`] so a caller sees the same widget the traversal will.
+fn direct_children_of(id: ObjectId) -> Vec<ObjectId> {
+    with_widget(id, |widget| widget.base().children().to_vec()).unwrap_or_default()
+}
+
+/// The direct children of `id`, as a public read-only view of the mounted tree.
+///
+/// # Why this is public
+///
+/// The self-drawn backend positions and paints a window by walking this child list, so
+/// "what does this window actually contain?" is a question a host, a test, and a designer
+/// all need to ask. Only the private traversal could answer it before, which meant a
+/// caller diagnosing a control that did not appear had to guess from creation order
+/// instead of reading the tree (principle #100: designer readiness has to be inspectable,
+/// not described).
+///
+/// Returns an empty vector for an unmounted id, matching
+/// [`geometry_of`]: an id that addresses nothing has no children, and `[]` is the honest
+/// answer rather than an error the caller must distinguish from "no children".
+pub fn children_of(id: ObjectId) -> Vec<ObjectId> {
+    direct_children_of(id)
 }
 
 /// Test module for the runtime registry and self-drawn frame rendering.
@@ -2507,6 +2666,68 @@ mod tests {
         assert!(render_frame(id, Size::new(0, 10), Color::WHITE).is_none());
         assert!(render_frame(0x9999, Size::new(10, 10), Color::WHITE).is_none());
         unregister(id);
+    }
+
+    /// **Every control the demo places must actually paint.**
+    ///
+    /// The tree walk skips a child that is not visible or has no `Draw`, and it does so
+    /// silently — which is right for a hidden page but wrong for a control the caller
+    /// placed on purpose. A control that never paints is invisible on screen while every
+    /// geometry check passes, so this checks the *frame* rather than the geometry.
+    ///
+    /// Each widget is rendered on its own, at its own size, and the frame must contain at
+    /// least one pixel that differs from the clear colour. A control whose whole
+    /// appearance happens to equal the clear colour fails this, which is deliberate: from
+    /// the user's side that control is not there either.
+    #[test]
+    fn every_control_kind_the_demo_uses_paints_something() {
+        use crate::widget::WidgetFactory;
+
+        // The kinds the control demo places, by factory name.
+        let kinds = [
+            "button",
+            "checkbox",
+            "radio_button",
+            "spin_box",
+            "combo_box",
+            "line_edit",
+            "slider",
+            "progress_bar",
+            "label",
+        ];
+
+        // A colour no widget's own palette uses, so "did it paint" cannot be confused
+        // with "it painted a colour that happens to match".
+        let clear = Color::rgb(255, 0, 255);
+        let factory = WidgetFactory::new_with_defaults();
+        let mut unpainted = Vec::new();
+
+        for name in kinds {
+            let Some(widget) = factory.create(name, Rect::new(0, 0, 120, 40), "sample") else {
+                unpainted.push(format!("{name} (factory produced nothing)"));
+                continue;
+            };
+            let Some(id) = register(widget) else {
+                unpainted.push(format!("{name} (registration refused)"));
+                continue;
+            };
+            set_geometry(id, Rect::new(0, 0, 120, 40));
+
+            let painted = render_frame(id, Size::new(120, 40), clear)
+                .map(|frame| {
+                    frame.chunks_exact(4).any(|px| px[0] != 255 || px[1] != 0 || px[2] != 255)
+                })
+                .unwrap_or(false);
+            if !painted {
+                unpainted.push(name.to_string());
+            }
+            unregister(id);
+        }
+
+        assert!(
+            unpainted.is_empty(),
+            "these control kinds painted nothing, so they are invisible on screen: {unpainted:?}"
+        );
     }
 
     #[test]

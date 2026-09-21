@@ -441,27 +441,83 @@ impl EventHandler for FontComboBox {
 impl Draw for FontComboBox {
     fn draw(&mut self, ctx: &mut RenderContext) {
         let g = self.geometry();
-        ctx.fill_rect(g, Color::WHITE);
-        ctx.draw_rect(g, Color::rgb(200, 200, 200));
+
+        // Chrome colours resolve the explicit style first, then the theme's resolved style for
+        // this control, and only then fall back to a literal. Every colour below used to be a
+        // literal, so a light/dark switch left the field, its arrow, its text and its popup
+        // unchanged — the rendering census reported the control as theme-blind.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
+        // is not re-entrant.
+        let style = self.base.style().clone();
+        // `font_combo_box` classifies as `WidgetRole::Input` (the role table lists it as
+        // `fontcombobox`), whose resolved background is the field interior — lighter on a light
+        // theme, darker on a dark one — and whose ink is the theme's foreground.
+        let theme = crate::theme::resolved_theme_style("font_combo_box");
+        // Read as its own lock acquisition and copied out as values, so the guard is dropped
+        // before anything else touches the theme.
+        let (window_fill, foreground, primary, secondary) = {
+            let manager = crate::theme::global_theme_manager();
+            match manager.current_theme() {
+                Some(active) => (
+                    active.colors.background,
+                    active.colors.foreground,
+                    active.colors.primary,
+                    active.colors.secondary,
+                ),
+                None => (
+                    Color::rgb(240, 240, 240),
+                    Color::BLACK,
+                    Color::rgb(33, 150, 243),
+                    Color::rgb(158, 158, 158),
+                ),
+            }
+        };
+
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(foreground);
+        // The field: a caller's own colour wins, then the theme's resolved background. The window
+        // fill is filtered out because a control can carry it after a theme application, and
+        // painting it would make the field indistinguishable from the window. A caller's own
+        // colour still wins.
+        let field = style
+            .background_color
+            .filter(|resolved| *resolved != window_fill)
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .filter(|resolved| *resolved != window_fill)
+            .unwrap_or_else(|| window_fill.blend(&ink, 0.10));
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| field.blend(&secondary, 0.45));
+        // The drop-down arrow is an affordance, de-emphasised from the field's own ink so it is
+        // legible on either appearance rather than being a fixed grey.
+        let arrow_color = ink.blend(&field, 0.35);
+
+        ctx.fill_rect(g, field);
+        ctx.draw_rect(g, border);
         // Draw drop-down arrow indicator
         let arrow_right_x = g.x + g.width as i32 - 14;
         let arrow_y = g.y + g.height as i32 / 2;
         ctx.draw_line(
             Point::new(arrow_right_x - 3, arrow_y - 2),
             Point::new(arrow_right_x, arrow_y + 2),
-            Color::rgb(100, 100, 100),
+            arrow_color,
         );
         ctx.draw_line(
             Point::new(arrow_right_x, arrow_y + 2),
             Point::new(arrow_right_x + 3, arrow_y - 2),
-            Color::rgb(100, 100, 100),
+            arrow_color,
         );
         let font_name = self.current_font().family().to_string();
         ctx.draw_text(
             Point::new(g.x + 4, g.y + g.height as i32 / 2 + 5),
             &font_name,
             &Font::default_ui(),
-            Color::BLACK,
+            ink,
             HorizontalAlignment::Left,
         );
         // Draw popup list when expanded
@@ -470,21 +526,29 @@ impl Draw for FontComboBox {
             let visible_count = self.fonts.len().min(self.max_visible_items as usize);
             let popup_height = (visible_count as i32) * popup_item_height;
             let popup_rect = Rect::new(g.x, g.y + g.height as i32, g.width, popup_height as u32);
-            ctx.fill_rect(popup_rect, Color::WHITE);
-            ctx.draw_rect(popup_rect, Color::rgb(180, 180, 180));
+            // The popup is a raised step out of the field, so it reads as a separate surface on
+            // either appearance.
+            let popup_fill = field.blend(&ink, 0.06);
+            ctx.fill_rect(popup_rect, popup_fill);
+            ctx.draw_rect(popup_rect, border);
+            // The highlighted item is the control's selection, so it carries the theme's primary
+            // rather than a fixed blue.
+            let highlight = primary.blend(&field, 0.15);
             let display_font = Font::default_ui();
             for i in 0..visible_count {
                 let item_y = popup_rect.y + (i as i32) * popup_item_height;
                 let item_rect =
                     Rect::new(popup_rect.x, item_y, popup_rect.width, popup_item_height as u32);
                 if i as i32 == self.current_index {
-                    ctx.fill_rect(item_rect, Color::rgb(0, 120, 215));
+                    ctx.fill_rect(item_rect, highlight);
                     if let Some(name) = self.fonts.get(i) {
+                        // The label contrasts with the highlight it sits on, so it stays legible
+                        // whatever the theme's primary is.
                         ctx.draw_text(
                             Point::new(g.x + 4, item_y + popup_item_height / 2 + 3),
                             name,
                             &display_font,
-                            Color::WHITE,
+                            highlight.contrast_color(),
                             HorizontalAlignment::Left,
                         );
                     }
@@ -493,7 +557,7 @@ impl Draw for FontComboBox {
                         Point::new(g.x + 4, item_y + popup_item_height / 2 + 3),
                         name,
                         &display_font,
-                        Color::BLACK,
+                        ink,
                         HorizontalAlignment::Left,
                     );
                 }
@@ -731,5 +795,4 @@ mod tests {
         c.handle_event(&Event::MouseRelease { pos: inside, button: 3 });
         assert_eq!(c.current_index(), -1);
     }
-
 }

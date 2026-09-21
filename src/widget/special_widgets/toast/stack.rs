@@ -273,8 +273,42 @@ impl EventHandler for ToastStack {
 impl Draw for ToastStack {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::rgb(250, 251, 253));
-        context.draw_rect(rect, Color::rgb(208, 214, 223));
+
+        // Chrome colours resolve explicit style first, then the theme's resolved
+        // style for this control, and only then a literal. The theme step is what
+        // makes an appearance switch visible; previously every colour below was a
+        // hardcoded literal, so light and dark rendered identically.
+        //
+        // `resolved_theme_style` takes and releases the global manager's lock
+        // internally, so no guard is held across the draw (the mutex is not
+        // re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("toast_stack");
+        // `toast_stack` is not a control kind in the role table, so it classifies as
+        // `Surface`, whose background is `theme.colors.background` — byte-identical
+        // to the window behind it. The stack's own fill is therefore a step toward
+        // the foreground, so it reads as a surface of its own.
+        let resolved = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::rgb(250, 251, 253));
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| resolved.blend(&Color::BLACK, 0.15));
+        let text_color = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::rgb(0, 0, 0));
+        let background = resolved.blend(&text_color, 0.08);
+        // Row chrome is derived from the resolved pair: the selected row reads as
+        // tinted toward the text colour, an ordinary row more faintly.
+        let selected_background = background.blend(&text_color, 0.14);
+        let row_background = background.blend(&text_color, 0.05);
+        let row_border = background.blend(&text_color, 0.2);
+
+        context.fill_rect(rect, background);
+        context.draw_rect(rect, border);
 
         let bottom = rect.y + rect.height as i32;
         for (index, item) in self.toasts.iter().enumerate() {
@@ -291,25 +325,29 @@ impl Draw for ToastStack {
                 self.row_height.saturating_sub(4),
             );
             let bg = if self.selected_index == Some(index) {
-                Color::rgb(225, 235, 250)
+                selected_background
             } else {
-                Color::rgb(241, 245, 251)
+                row_background
             };
             context.fill_rect(row, bg);
-            context.draw_rect(row, Color::rgb(184, 194, 208));
+            context.draw_rect(row, row_border);
 
-            let badge = match item.level {
-                ToastLevel::Info => Color::rgb(76, 124, 201),
-                ToastLevel::Success => Color::rgb(58, 161, 103),
-                ToastLevel::Warning => Color::rgb(220, 158, 54),
-                ToastLevel::Error => Color::rgb(209, 85, 74),
-            };
+            // The badge is a *state* indicator, so it reads the theme's semantic
+            // tokens rather than a literal colour per level.
+            let badge = crate::theme::semantic_color(match item.level {
+                ToastLevel::Info => crate::theme::SemanticColor::Info,
+                ToastLevel::Success => crate::theme::SemanticColor::Success,
+                ToastLevel::Warning => crate::theme::SemanticColor::Warning,
+                ToastLevel::Error => crate::theme::SemanticColor::Error,
+            })
+            .map(|token| token.blend(&bg, 0.15))
+            .unwrap_or_else(|| bg.blend(&text_color, 0.6));
             context.fill_rect(Rect::new(row.x + 6, row.y + 9, 8, 8), badge);
             context.draw_text(
                 Point::new(row.x + 20, row.y + 17),
                 &item.message,
                 &Font::default(),
-                Color::rgb(44, 55, 72),
+                text_color,
                 HorizontalAlignment::Left,
             );
         }

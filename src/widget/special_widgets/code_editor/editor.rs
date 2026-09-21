@@ -158,6 +158,19 @@ pub struct CodeEditor {
     /// Cached row budget for the current geometry.
     pub(crate) visible_rows: usize,
 
+    /// The horizontal advance of one character cell, **measured from the backend's font**.
+    ///
+    /// `None` until the first [`CodeEditor::measure_cell_width`] call, which has to happen inside
+    /// `draw` because font metrics belong to the backend. Before then `cell_width()` falls back to the
+    /// configured `space_advance`. A `Cell` because the paint path reads this for every glyph on every
+    /// line while holding `&self`.
+    pub(crate) measured_cell_width: core::cell::Cell<Option<f32>>,
+    /// The geometry [`CodeEditor::measured_cell_width`] was measured against.
+    ///
+    /// Re-measured when the geometry changes rather than every frame, so a window drag does not run
+    /// `measure_text` per paint — and so a DPI change (which arrives as a new geometry) does.
+    pub(crate) measured_geometry: Option<Rect>,
+
     pub(crate) find: FindState,
     pub(crate) completion: CompletionState,
     pub(crate) context_menu: ContextMenuState,
@@ -224,6 +237,8 @@ impl CodeEditor {
             scroll_column: 0,
             scroll_visual_row: 0,
             visible_rows: 0,
+            measured_cell_width: core::cell::Cell::new(None),
+            measured_geometry: None,
             find: FindState::default(),
             completion: CompletionState::default(),
             context_menu: ContextMenuState::default(),

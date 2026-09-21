@@ -218,12 +218,53 @@ impl Draw for RefreshControl {
         let indicator_height: u32 =
             if self.is_refreshing || self.pull_distance > 5.0 { 40 } else { 0 };
 
+        // Chrome colours resolve explicit style first, then the theme's resolved
+        // style for this control, and only then a literal. The theme step is what
+        // makes an appearance switch visible; previously every colour below was a
+        // hardcoded literal, so light and dark rendered identically.
+        //
+        // `resolved_theme_style` takes and releases the global manager's lock
+        // internally, so no guard is held across the draw (the mutex is not
+        // re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("refresh_control");
+        // `refresh_control` is not a control kind in the role table, so it classifies
+        // as `Surface`, whose background is `theme.colors.background` — byte-identical
+        // to the window behind it. The content area's fill is therefore a step toward
+        // the foreground, so the control's extent is visible.
+        let resolved = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| resolved.blend(&Color::BLACK, 0.15));
+        let text_color = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::rgb(0, 0, 0));
+        let background = resolved.blend(&text_color, 0.08);
+        // The reveal panel is the indicator's own surface, a further step from the
+        // content area so the two read as separate regions.
+        let indicator_background = background.blend(&text_color, 0.12);
+        // The spinner is an in-progress *state*, so it reads the theme's primary
+        // token rather than a literal blue.
+        let accent = crate::theme::resolved_theme_style("button")
+            .and_then(|button| button.background_color)
+            .unwrap_or_else(|| background.blend(&text_color, 0.55));
+        // Below the threshold the arrow is inactive chrome, so it is muted toward the
+        // resolved surface instead of the literal grey pair.
+        let idle_arrow = text_color.blend(&background, 0.45);
+        let label_color = text_color.blend(&background, 0.35);
+
         // Draw background
-        context.fill_rect(rect, Color::WHITE);
+        context.fill_rect(rect, background);
+        context.draw_rect(rect, border);
 
         if indicator_height > 0 {
             let indicator_area = Rect::new(rect.x, rect.y, rect.width, indicator_height);
-            context.fill_rect(indicator_area, Color::rgba(245, 245, 245, 255));
+            context.fill_rect(indicator_area, indicator_background);
 
             // Indicator center
             let center_x = rect.x + (rect.width as i32) / 2;
@@ -232,28 +273,23 @@ impl Draw for RefreshControl {
             if self.is_refreshing {
                 // Draw spinning indicator (circle with arc)
                 let radius: u32 = 10;
-                context.draw_circle_stroke(
-                    Point::new(center_x, center_y),
-                    radius,
-                    Color::rgba(52, 120, 246, 220),
-                    3,
-                );
+                context.draw_circle_stroke(Point::new(center_x, center_y), radius, accent, 3);
                 // Draw arrow inside
                 let tip_y = center_y - 5;
                 context.draw_line(
                     Point::new(center_x, tip_y - 3),
                     Point::new(center_x, tip_y + 4),
-                    Color::rgba(52, 120, 246, 220),
+                    accent,
                 );
                 context.draw_line(
                     Point::new(center_x - 4, tip_y + 1),
                     Point::new(center_x, tip_y - 3),
-                    Color::rgba(52, 120, 246, 220),
+                    accent,
                 );
                 context.draw_line(
                     Point::new(center_x + 4, tip_y + 1),
                     Point::new(center_x, tip_y - 3),
-                    Color::rgba(52, 120, 246, 220),
+                    accent,
                 );
 
                 // Draw "Loading..." text below
@@ -266,17 +302,15 @@ impl Draw for RefreshControl {
                     Point::new(text_x, text_y),
                     label,
                     &font,
-                    Color::rgba(120, 120, 120, 220),
+                    label_color,
                     HorizontalAlignment::Left,
                 );
             } else {
                 // Draw pull indicator (arrow + progress)
                 let progress = (self.pull_distance / self.threshold).min(1.0);
-                let arrow_color = if progress >= 1.0 {
-                    Color::rgba(52, 120, 246, 220)
-                } else {
-                    Color::rgba(140, 140, 140, 200)
-                };
+                // Past the threshold the release is actionable, so the arrow picks up
+                // the accent colour; below it stays muted chrome.
+                let arrow_color = if progress >= 1.0 { accent } else { idle_arrow };
 
                 // Downward arrow
                 let arrow_size = 12;
@@ -308,7 +342,7 @@ impl Draw for RefreshControl {
                         Point::new(text_x, text_y),
                         label,
                         &font,
-                        Color::rgba(52, 120, 246, 200),
+                        accent,
                         HorizontalAlignment::Left,
                     );
                 }
@@ -320,7 +354,7 @@ impl Draw for RefreshControl {
         let content_height = rect.height.saturating_sub(indicator_height);
         if content_height > 0 {
             let content_rect = Rect::new(rect.x, content_y, rect.width, content_height);
-            context.fill_rect(content_rect, Color::WHITE);
+            context.fill_rect(content_rect, background);
         }
     }
 }

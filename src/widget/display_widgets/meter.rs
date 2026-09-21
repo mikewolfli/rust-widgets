@@ -383,10 +383,19 @@ impl Draw for Meter {
             deg_to_rad(arc_start_deg + arc_sweep_deg * self.normalized_value() + offset);
 
         // Resolve colors from style.
-        let track_color = Color::rgb(230, 230, 230);
-        let value_arc_color = self.style().background_color.unwrap_or(Color::rgb(0, 120, 215));
-        let needle_color = self.style().text_color.unwrap_or(Color::rgb(60, 60, 60));
-        let tick_color = Color::rgb(160, 160, 160);
+        //
+        // `track_color` and `tick_color` used to be literals, so the un-filled part of
+        // the gauge and its tick marks stayed light in a dark theme. The track is the
+        // well the value arc travels in — that is the theme's background — and the
+        // ticks and their labels are marks the control paints over it, so `text_color`
+        // (falling back to `foreground_color`) is what keeps them legible on a dark
+        // surface. The threshold bands are deliberately *not* themed: a caller assigns
+        // each band its own colour to encode a range, so those are data, not chrome.
+        let style = self.style();
+        let track_color = style.background_color.unwrap_or(Color::rgb(230, 230, 230));
+        let value_arc_color = style.background_color.unwrap_or(Color::rgb(0, 120, 215));
+        let needle_color = style.text_color.unwrap_or(Color::rgb(60, 60, 60));
+        let tick_color = style.text_color.unwrap_or(Color::rgb(160, 160, 160));
 
         // Draw the background track arc (270° sweep, light gray).
         if (end_angle - start_angle).abs() > 0.001 {

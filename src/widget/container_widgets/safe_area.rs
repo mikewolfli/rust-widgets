@@ -187,9 +187,56 @@ impl Draw for SafeArea {
     fn draw(&mut self, ctx: &mut RenderContext) {
         let g = self.geometry();
         let cr = self.content_rect();
+
+        // The inset bars and the content outline resolve explicit style first, then the
+        // theme's resolved style for this control, and only then a literal. SafeArea is
+        // not in the role table, so it classifies as `Surface` and `apply_active_theme`
+        // cannot give it a distinct fill on its own — the bars therefore derive their
+        // colour one step away from the theme's foreground, which is what makes an
+        // appearance switch visible.
+        //
+        // The theme reads take and release the global manager's lock internally, so no
+        // guard is held across the draw (the mutex is not re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("safe_area");
+        let window_fill = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.background)
+            .unwrap_or(Color::WHITE);
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        // A caller who set an explicit margin colour keeps it: `set_margin_color` is the
+        // control's own override and wins over the theme, the same precedence
+        // `WidgetStyle` documents. The default white it starts on is not an override, so
+        // it is replaced by the themed surface.
+        let margin_color =
+            if self.margin_color == Color::WHITE {
+                style
+                    .background_color
+                    .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+                    .map(|resolved| {
+                        if resolved == window_fill {
+                            window_fill.blend(&ink, 0.08)
+                        } else {
+                            resolved
+                        }
+                    })
+                    .unwrap_or_else(|| window_fill.blend(&ink, 0.08))
+            } else {
+                self.margin_color
+            };
+        // The content outline is chrome too, and used to be a hardcoded grey that ignored
+        // the appearance entirely.
+        let border_color = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| window_fill.blend(&ink, 0.25));
+
         // Fill margin areas (top/bottom/left/right bars)
         if self.insets.top > 0 {
-            ctx.fill_rect(Rect::new(g.x, g.y, g.width, self.insets.top), self.margin_color);
+            ctx.fill_rect(Rect::new(g.x, g.y, g.width, self.insets.top), margin_color);
         }
         if self.insets.bottom > 0 {
             ctx.fill_rect(
@@ -199,14 +246,14 @@ impl Draw for SafeArea {
                     g.width,
                     self.insets.bottom,
                 ),
-                self.margin_color,
+                margin_color,
             );
         }
         if self.insets.left > 0 {
             let left_bar_height = g.height.saturating_sub(self.insets.top + self.insets.bottom);
             ctx.fill_rect(
                 Rect::new(g.x, g.y + self.insets.top as i32, self.insets.left, left_bar_height),
-                self.margin_color,
+                margin_color,
             );
         }
         if self.insets.right > 0 {
@@ -218,11 +265,11 @@ impl Draw for SafeArea {
                     self.insets.right,
                     right_bar_height,
                 ),
-                self.margin_color,
+                margin_color,
             );
         }
         // Draw content area border (subtle)
-        ctx.draw_rect(cr, Color::rgba(200, 200, 200, 100));
+        ctx.draw_rect(cr, border_color.with_alpha_f32(0.4));
     }
 }
 

@@ -450,41 +450,96 @@ impl EventHandler for SplitButton {
 impl Draw for SplitButton {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::rgb(244, 246, 250));
-        context.draw_rect(rect, Color::rgb(188, 194, 206));
 
-        let primary = self.primary_rect();
+        // Chrome colours resolve the explicit style first, then the theme's resolved style for
+        // this control, and only then a literal. Every colour below used to be a literal, so a
+        // light/dark switch left the button, its splits and its drop-down unchanged — the
+        // rendering census reported the control as theme-blind.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
+        // is not re-entrant.
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("split_button");
+        // Read as its own lock acquisition and copied out as values, so the guard is dropped
+        // before anything else touches the theme.
+        let (window_fill, foreground, secondary, primary) = {
+            let manager = crate::theme::global_theme_manager();
+            match manager.current_theme() {
+                Some(active) => (
+                    active.colors.background,
+                    active.colors.foreground,
+                    active.colors.secondary,
+                    active.colors.primary,
+                ),
+                None => (
+                    Color::rgb(240, 240, 240),
+                    Color::BLACK,
+                    Color::rgb(158, 158, 158),
+                    Color::rgb(33, 150, 243),
+                ),
+            }
+        };
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(foreground);
+        // `split_button` is absent from `WidgetRole::for_kind_name`'s table, so it classifies as
+        // `Surface` and the active theme writes the window fill into `style.background_color`.
+        // A face painted in that colour would be byte-identical to the frame behind it, so a
+        // resolved surface equal to the window fill is re-derived a visible step away from it,
+        // while a colour the caller set still wins.
+        let face = match style.background_color {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => window_fill.blend(&ink, 0.08),
+        };
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .filter(|resolved| *resolved != face)
+            .unwrap_or_else(|| face.blend(&secondary, 0.45));
+
+        // The states are raised from the face toward the theme's primary, so hover and press read
+        // on either appearance rather than being a fixed pale blue that only worked on a light bar.
+        let hover_bg = face.blend(&primary, 0.28);
+        let pressed_bg = face.blend(&primary, 0.45);
+        let arrow_face = face.blend(&ink, 0.06);
+
+        context.fill_rect(rect, face);
+        context.draw_rect(rect, border);
+
+        let primary_rect = self.primary_rect();
         let arrow = self.arrow_rect();
 
         let primary_bg = if self.pressed_primary {
-            Color::rgb(192, 218, 247)
+            pressed_bg
         } else if self.hovered_primary {
-            Color::rgb(216, 232, 250)
+            hover_bg
         } else {
-            Color::rgb(244, 246, 250)
+            face
         };
-        context.fill_rect(primary, primary_bg);
+        context.fill_rect(primary_rect, primary_bg);
 
         let arrow_bg = if self.pressed_arrow || self.menu_open {
-            Color::rgb(192, 218, 247)
+            pressed_bg
         } else if self.hovered_arrow {
-            Color::rgb(216, 232, 250)
+            hover_bg
         } else {
-            Color::rgb(236, 239, 245)
+            arrow_face
         };
         context.fill_rect(arrow, arrow_bg);
 
         context.draw_line(
             Point::new(arrow.x, arrow.y),
             Point::new(arrow.x, arrow.y + arrow.height as i32),
-            Color::rgb(188, 194, 206),
+            border,
         );
 
         context.draw_text(
-            Point::new(primary.x + 8, primary.y + primary.height as i32 / 2),
+            Point::new(primary_rect.x + 8, primary_rect.y + primary_rect.height as i32 / 2),
             &self.text,
             &Font::default(),
-            Color::rgb(34, 45, 64),
+            ink,
             HorizontalAlignment::Left,
         );
 
@@ -492,14 +547,14 @@ impl Draw for SplitButton {
             Point::new(arrow.x + (arrow.width as i32 / 2) - 3, arrow.y + arrow.height as i32 / 2),
             "v",
             &Font::default(),
-            Color::rgb(64, 74, 88),
+            ink.blend(&arrow_bg, 0.35),
             HorizontalAlignment::Left,
         );
 
         if self.menu_open {
             let menu = self.menu_rect();
-            context.fill_rect(menu, Color::rgb(255, 255, 255));
-            context.draw_rect(menu, Color::rgb(188, 194, 206));
+            context.fill_rect(menu, face.blend(&ink, 0.22));
+            context.draw_rect(menu, border);
 
             for index in 0..self.actions.len() {
                 let Some(action_rect) = self.action_rect(index) else {
@@ -507,7 +562,7 @@ impl Draw for SplitButton {
                 };
 
                 if self.highlighted_action_index == Some(index) {
-                    context.fill_rect(action_rect, Color::rgb(218, 232, 250));
+                    context.fill_rect(action_rect, hover_bg);
                 }
 
                 if let Some(action) = self.actions.get(index) {
@@ -518,7 +573,7 @@ impl Draw for SplitButton {
                         ),
                         &action.label,
                         &Font::default(),
-                        Color::rgb(34, 45, 64),
+                        ink,
                         HorizontalAlignment::Left,
                     );
                 }

@@ -309,10 +309,49 @@ impl Draw for InplaceEditor {
         let rect = self.geometry();
         let font = Font::new("sans-serif", self.font_size, false, false);
 
+        // Chrome colours resolve explicit style first, then the theme's resolved style for
+        // this control, and only then a literal. The theme step is what makes an appearance
+        // switch visible; both modes' fill, border, cursor and text used to be hardcoded
+        // literals, so light and dark rendered identically.
+        //
+        // The theme reads take and release the global manager's lock internally, so no guard
+        // is held across the draw (the mutex is not re-entrant).
+        let style = self.base.style().clone();
+        let theme = crate::theme::resolved_theme_style("inplace_editor");
+        // `inplace_editor` classifies as `Input`, which *does* carry a surface
+        // (`Colors::input_background`), so the resolved background is already a visible step
+        // from the window. It falls back to the theme's `background` when a theme supplies
+        // none, which is what reaches this arm at all.
+        let window_fill = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.background)
+            .unwrap_or(Color::WHITE);
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::rgb(50, 50, 50));
+        // The accent is the theme's `primary`: the hue a theme is expected to vary most, so
+        // the edit-mode frame follows the appearance rather than staying a literal blue.
+        let accent = crate::theme::global_theme_manager()
+            .current_theme()
+            .map(|active| active.colors.primary)
+            .unwrap_or(Color::rgb(0, 120, 255));
+        let surface = match style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+        {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => window_fill.blend(&ink, 0.08),
+        };
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| surface.blend(&ink, 0.25));
+
         if self.is_editing {
             // Draw editing mode
-            context.fill_rect(rect, Color::rgba(255, 255, 255, 255));
-            context.draw_rect_stroke(rect, Color::rgba(0, 120, 255, 255), 2);
+            context.fill_rect(rect, surface);
+            context.draw_rect_stroke(rect, accent, 2);
 
             // Draw text
             let text_x = rect.x + self.padding;
@@ -321,7 +360,7 @@ impl Draw for InplaceEditor {
                 Point::new(text_x, text_y),
                 &self.text,
                 &font,
-                Color::BLACK,
+                ink,
                 HorizontalAlignment::Left,
             );
 
@@ -330,12 +369,12 @@ impl Draw for InplaceEditor {
             context.draw_line(
                 Point::new(cursor_x, rect.y + self.padding),
                 Point::new(cursor_x, rect.y + rect.height as i32 - self.padding),
-                Color::rgba(0, 0, 0, 200),
+                ink.with_alpha_f32(0.8),
             );
         } else {
             // Draw display mode
-            context.fill_rect(rect, Color::rgba(245, 245, 245, 255));
-            context.draw_rect_stroke(rect, Color::rgba(200, 200, 200, 255), 1);
+            context.fill_rect(rect, surface);
+            context.draw_rect_stroke(rect, border, 1);
 
             let text_x = rect.x + self.padding;
             let text_y = rect.y + self.padding + self.font_size as i32;
@@ -343,7 +382,7 @@ impl Draw for InplaceEditor {
                 Point::new(text_x, text_y),
                 &self.text,
                 &font,
-                Color::rgba(50, 50, 50, 255),
+                ink,
                 HorizontalAlignment::Left,
             );
         }
