@@ -130,16 +130,18 @@ Arc、Spinner、Roller、Dropdown、TextArea、Keyboard、Switch。
 （`docs/plans/platform_capability_matrix.md`）由源码机械派生，并在 CI 中设有防脱节门禁。
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.5.1-blue)]()
+[![version](https://img.shields.io/badge/version-2.5.0-blue)]()
 [![tests](https://img.shields.io/badge/tests-5300%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
-**2.5.1 实测：** 五个档位全部构建干净——`cargo check --no-default-features --features <desktop|tablet|mobile|mini|embedded>` 在五个档位上均为 0 error、0 warning。
-设计器的第二种输出模式落地：`rust_widgets::designer::generate` 把 JSON 工程稿变成**能在目标档位上编译通过**的 Rust 函数，
-由 `tools/check_generator_output_compiles.sh` 在 `desktop`、`tablet`、`mobile`、`mini`、`embedded` 上实跑验证（约 33s）。
+**2.5.0 实测：** 五个档位全部构建干净——`cargo check --no-default-features --features <desktop|tablet|mobile|mini|embedded>` 在五个档位上均为 0 error、0 warning。
+代码生成器从「永远编进去的代码」变为了**受 feature 门控的能力**：`designer` 是一个**开发期** feature，
+`desktop` 默认启用它，因为 `desktop` 正是设计器**宿主**所运行的档位；其余四个档位默认关闭，因为它们是一次生成的**目标**而非宿主——
+`tools/check_designer_feature_gate.sh` 对两个方向都做了证明。生成物现在**入库提交**（`examples/generated_project/src/generated/`），
+这让生成结果成为可在评审中看到的 diff，而其安全前提正是 `tools/check_generated_sources.sh` 的「重新生成并逐字节比对」，与 C 头文件既有的 `check_abi.sh` 步骤形状一致。
 详见
 [`CHANGELOG.md`](CHANGELOG.md)（中文版见 [`docs/reports/CHANGELOG.md`](docs/reports/CHANGELOG.md)）及
-[`docs/log/log-20260921-1.md`](docs/log/log-20260921-1.md)。
+[`docs/log/log-20260921-2.md`](docs/log/log-20260921-2.md)。
 
 <p align="center">
   <a href="README.md">

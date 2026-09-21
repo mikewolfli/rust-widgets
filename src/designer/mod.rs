@@ -46,18 +46,28 @@
 //! this module emits for `desktop`, `tablet`, `mobile`, `mini` and `embedded`, and
 //! `tools/check_mode_consistency.sh` fails if the emitted tree drifts from mode 1's.
 //!
+//! # Where generated files live (D7-b-3)
+//!
+//! Generated sources are **committed** and written through [`artifact::regenerate_into`];
+//! `tools/check_generated_sources.sh` is the regenerate-and-compare gate that makes committing
+//! safe. See [`artifact`] for the decision and its reasoning.
+//!
 //! # Scope
 //!
-//! This is a pure function library: [`generator::generate`] takes a document and a request and
-//! returns source text plus a [`generator::GenerationReport`]. It writes no files, mounts no
-//! controls, and touches no platform API — which is what lets a test compile its output for real
-//! without a window.
+//! [`generator::generate`] is a pure function: document text in, source text out, no filesystem and no
+//! clock. That is what lets `tests/generator_output_compiles_test.rs` compile its output for real and
+//! what makes two runs over one document byte-identical. Writing files is a separate concern with its
+//! own failure modes, so it lives in [`artifact`] and the core stays pure.
 
+pub mod artifact;
 pub mod generator;
 
+pub use artifact::{
+    artifact_source, is_generated, plan_artifacts, regenerate_into, Artifact, ArtifactOutcome,
+    ArtifactPaths, GENERATED_MARKER,
+};
 pub use generator::{
     availability, constructor_type_name, generate, is_style_only_property, is_wire_key,
-    shared_wire_rule_count,
-    Availability, GeneratedSource, GenerationGap, GenerationReport, GenerationRequest,
-    TargetProfile, DEFAULT_CHILD_CAPACITY, MINI_CHILD_CAPACITY,
+    shared_wire_rule_count, Availability, GeneratedSource, GenerationGap, GenerationReport,
+    GenerationRequest, TargetProfile, DEFAULT_CHILD_CAPACITY, MINI_CHILD_CAPACITY,
 };

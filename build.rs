@@ -69,6 +69,9 @@ fn declare_cfg_aliases() {
     println!("cargo:rustc-check-cfg=cfg(alloc_frugal)");
     println!("cargo:rustc-check-cfg=cfg(embedded_surface)");
     println!("cargo:rustc-check-cfg=cfg(declarative_view)");
+    // The designer gate (BLUE19 D7-b-3). Declared here so a `cfg(designer_tooling)`
+    // typo is a build error rather than a silently-false condition.
+    println!("cargo:rustc-check-cfg=cfg(designer_tooling)");
 
     let has_profile =
         ["desktop", "tablet", "mobile"].iter().any(|feature| feature_enabled(feature));
@@ -102,6 +105,30 @@ fn declare_cfg_aliases() {
         println!("cargo:rustc-cfg=declarative_view");
     }
 
+    // ── `designer_tooling` — the code generator and its artifact writer ──
+    //
+    // A separate alias rather than a bare `feature = "designer"` at every `cfg`,
+    // because the condition is a **conjunction** and rule #47 forbids hand-writing
+    // one at more than a couple of call sites. The conjunction is:
+    //
+    //   * a real device profile with an unstripped widget set (`full_widgets`),
+    //     because generating needs `serde_json` to parse a project; and
+    //   * the caller asked for it (`designer`, which `desktop` turns on by
+    //     default — see the feature's own note in `Cargo.toml`).
+    //
+    // # Why this is not folded into `full_widgets`
+    //
+    // `full_widgets` answers "does this build have the widget tree and the
+    // capability table?", which a shipping application needs. This answers "is this
+    // build **also** a design tool?", which it does not: linking the generator and
+    // `std::fs::write` into every `tablet`/`mobile` build would put a
+    // development-time facility in a delivery artifact, and mode 2 exists partly to
+    // keep delivery artifacts free of exactly that kind of weight.
+    let designer_opted_in = feature_enabled("designer");
+    if has_profile && !is_stripped && designer_opted_in {
+        println!("cargo:rustc-cfg=designer_tooling");
+    }
+
     // Re-run when any of the inputs change; Cargo tracks feature changes itself,
     // but the explicit list documents the dependency and keeps `cargo build`
     // correct for out-of-tree invocations that set the env vars directly.
@@ -109,9 +136,19 @@ fn declare_cfg_aliases() {
     // `NO_DECLARATIVE_VIEW` must be here: this script turns it into an `rustc-cfg`,
     // so without the rerun directive toggling the feature on an already-built tree
     // would reuse the cached aliases and appear to have no effect.
-    for feature in
-        ["desktop", "tablet", "mobile", "mini", "embedded", "portable", "no-declarative-view"]
-    {
+    for feature in [
+        "desktop",
+        "tablet",
+        "mobile",
+        "mini",
+        "embedded",
+        "portable",
+        "no-declarative-view",
+        // `designer` is in this list for the same reason as `no-declarative-view`: it
+        // becomes an `rustc-cfg`, so without the directive, toggling it on an
+        // already-built tree would reuse the cached aliases and appear to do nothing.
+        "designer",
+    ] {
         println!(
             "cargo:rerun-if-env-changed=CARGO_FEATURE_{}",
             feature.to_uppercase().replace('-', "_")

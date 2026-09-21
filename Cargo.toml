@@ -1,6 +1,6 @@
 [package]
 name = "rust_widgets"
-version = "2.5.1"
+version = "2.5.0"
 edition = "2021"
 description = "Pure Rust cross-platform native GUI library with hardware-adaptive rendering, 179 widgets, touch/gesture support, i18n, and SVG-pipeline-accurate output"
 license = "MIT"
@@ -28,6 +28,11 @@ include = [
     # build surface and stays excluded.
     "tools/widget_gallery.rs",
     "tools/view_platform_gate_probe.rs",
+    # The designer's generation entry point (D7-b-3). Declared as an example below, so
+    # it must ship for the same reason: without it, a consumer who takes the crate from
+    # the tarball has the `designer` feature and the `designer_generate` binary it
+    # documents, but not the target that writes a project's committed sources.
+    "tools/designer_generate.rs",
     "LICENSE",
     "README.md",
     "README.zh-CN.md",
@@ -87,6 +92,15 @@ desktop = [
     "audio",
     "pdf-encryption",
     "js-engine",
+    # The designer's code generator (mode 2). On by default for `desktop` only,
+    # because `desktop` is the profile a designer **host** runs on: it is the
+    # profile that has a window, a filesystem and an editor beside it.
+    #
+    # `tablet`/`mobile` deliberately do not enable it. They are **targets** of a
+    # generation, not hosts (BLUE19 §5.3.4), and linking a code generator and its
+    # artifact writer into a shipping application is the weight mode 2 exists to
+    # remove. A caller who wants it there can ask: `--features tablet,designer`.
+    "designer",
     "dep:chrono",
     "serde",
     "serde_json",
@@ -231,6 +245,24 @@ chart = []
 print = []
 pdf = []
 a11y = []
+
+## The designer's code generator and artifact writer (BLUE19 D7-b-3).
+##
+## Turns a project document into Rust source and writes it into `src/generated/`.
+## It is a **development-time** tool: a shipping application has no use for it, and
+## leaving it on would link a generator plus file writing into every build.
+##
+## `desktop` enables it (the designer runs on a desktop host); every other profile
+## leaves it off and opts in explicitly when needed:
+##   cargo build --features "tablet,designer"
+##
+## It needs `serde_json`, because generating requires *parsing* the project, and the
+## `designer_tooling` alias in `build.rs` requires a device profile on top of this.
+## Declaring the dependency here rather than in each profile keeps the alias honest:
+## `--features tablet,designer` fails with a clear missing-dependency error instead
+## of compiling a module that cannot read its input.
+designer = ["serde_json"]
+
 image = ["dep:miniz_oxide", "image-codecs", "svg-rasterizer"]
 image-codecs = ["dep:image-codecs"]
 svg-rasterizer = ["dep:resvg"]
@@ -654,7 +686,17 @@ required-features = ["desktop", "serde_json"]
 # (`desktop`, `tablet`, `mobile`, `mini`, `embedded`), which is what keeps the
 # chapter's code honest. `tests/cookbook_embedded_paths_test.rs` asserts this file
 # still exists so the chapter cannot point at a deleted example.
+# The designer's generation entry point (BLUE19 D7-b-3): writes the committed
+# generated sources that `tools/check_generated_sources.sh` regenerates and compares.
+#
+# Gated on `desktop` for the same reason `crate::designer` is `full_widgets`:
+# generating requires *parsing* the project, and the parser needs `serde_json`.
+# A `mini`/`embedded` build is the **target** of a generation, not its host.
+[[example]]
+name = "designer_generate"
+path = "tools/designer_generate.rs"
+required-features = ["designer"]
+
 [[example]]
 name = "embedded_host"
 path = "examples/embedded_host.rs"
-

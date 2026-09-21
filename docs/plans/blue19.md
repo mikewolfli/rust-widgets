@@ -1,8 +1,9 @@
 # BLUE19 — 事件契约的类型化与设计器就绪（EventSchema + 自动接线 + 镜像判定）
 
-> 状态：**主体已完成（10 / 12 项）；剩 T-23 / T-24（模式 2 生成器，D7-b 衍生）**
+> 状态：**已完成（12 / 12 项）**
 > 执行日志：[`docs/log/log-20260920-3.md`](../log/log-20260920-3.md)（第 54 轮：D1–D4 + T-1 + T-2）、
-> [`docs/log/log-20260921-1.md`](../log/log-20260921-1.md)（第 55 轮：T-A / T-3 / T-5 复核 / T-8+T-10 / **2.5.0**）
+> [`docs/log/log-20260921-1.md`](../log/log-20260921-1.md)（第 55 轮：T-A / T-3 / T-5 复核 / T-8+T-10 → **2.5.0**）、
+> [`docs/log/log-20260921-2.md`](../log/log-20260921-2.md)（第 56 轮：**T-23 双模板生成器 + T-24 一致性门禁 → 2.5.1**）
 > 原则依据：[`docs/plans/principle.md`](principle.md)（继承 BLUE1–BLUE18 全部规则，含 #1–#94；
 > 本文件新增 #95–#101）
 > 上轮计划：[`docs/plans/blue18.md`](blue18.md)
@@ -931,8 +932,9 @@ fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect));
 >
 > **状态图例**：⬜ 未开始 · 🟡 进行中 · ✅ 已完成 · ⛔ 阻塞（等待裁定）
 >
-> **第 55 轮（2026-09-21）后**：本表所有 ⬜ 项已**逐条复核并完成**，仅 T-23/T-24 保留，
-> 理由（属 D7-b 新增能力，非未闭环项；且全部前置已就位）见 `log-20260921-1.md` §7。
+> **第 55–56 轮（2026-09-21）后**：本表**全部**任务已逐条复核并完成。
+> T-23/T-24 于第 56 轮落地（见 `log-20260921-2.md`）；
+> 仅 T-11–T-15 保留，它们是**本机能力外**的验证项（真机 / 逐参数），不是未实现的功能。
 
 ## A. 用户指定四步 + 镜像判定（本计划主体）
 
@@ -968,8 +970,8 @@ fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect));
 | **T-8** | **JSON 事件路径与 capability 事件表的合并**（`on_click` 等 8 个硬编码键 vs 186 个名字） | 本轮取证（§2.4） | 两套职责边界写入文档；门禁验证「一侧新增事件另一侧不静默落后」 | ✅ 第 55 轮完成（`event_route.rs` + `events:` 路由；`check_json_event_route.sh`） |
 | **T-9** | **`EventSignalBinder` 的「已发布但未接线」可查询化** | 新规则 #97 | 测试断言「未接线时返回未接线而非静默成功」 | ✅ 第 54/55 轮完成（`event_is_wired`；`tests/event_wiring_test.rs`） |
 | **T-10** | **为 JSON 事件路径建门禁**（当前**零覆盖**） | 本轮取证 | 门禁存在且能抓「加了 `on_*` 键但无实现」 | ✅ 第 55 轮完成（`check_json_event_route.sh`，2 步含反向注入） |
-| **T-23** | **代码生成器**（模式 2：JSON → Rust 源码） | D7-b、T-1、T-3 | 生成物可编译；与模式 1 行为等价 | ⬜ **未做**（D7-b 衍生；全部前置已就位，见 `log-20260921-1.md` §7） |
-| **T-24** | **两模式一致性门禁** | T-23 | 同一 JSON 经模式 1 与模式 2 产出**行为等价**（控件树/事件/属性） | ⬜ **未做**（依赖 T-23） |
+| **T-23** | **代码生成器**（模式 2：JSON → Rust 源码） | D7-b、T-1、T-3 | 生成物可编译；与模式 1 行为等价 | ✅ 第 56 轮完成（双模板；5 profile **实跑编译**；`src/designer/generator.rs`） |
+| **T-24** | **两模式一致性门禁** | T-23 | 同一 JSON 经模式 1 与模式 2 产出**行为等价**（控件树/事件/属性） | ✅ 第 56 轮完成（`check_mode_consistency.sh`：7 测试 + 反向注入，**两个模板各验一次**） |
 
 ## D. 多平台与工具链验证（本机能力内）
 
@@ -1115,41 +1117,66 @@ T-16 ~ T-18（版本/文档/日志，随各步落地同步）
 > **前提**：D7-b 已裁定要做模式 2。若裁定「只做模式 1」，本节置空。
 > **注意**：只要设计器要对 `mini`/`embedded` 有产物，模式 2 就是**刚需**（D7-c，§5.2）。
 
-- [ ] 代码生成器能把一份 JSON 转为**可编译的 Rust 源码**；
-- [ ] 生成物中**不含** JSON/CSS 运行时依赖（若选 D7-b-1 = (b)）；
-- [ ] 生成器复用 T-3 的类型兼容规则（**不是**另写一套）；
-- [ ] **双模板**（D7-c）：
-  - [ ] desktop/tablet/mobile 模板可生成 `Node` 构建代码（复用 `crate::view`）；
-  - [ ] **`mini`/`embedded` 模板生成 `add_child` 命令式代码**，且
+- [x] 代码生成器能把一份 JSON 转为**可编译的 Rust 源码**（`designer::generate`）。
+- [x] 生成物中**不含** JSON/CSS 运行时依赖（D7-b-1 = (b)）。
+      （stripped 模板**实跑编译**证明：`crate::view`/`crate::json`/`widget::runtime` 均不在场；
+      `mode_consistency_test` 另做文本断言，因为文本会**点名**越界符号，
+      而编译器只说它在哪里停下）
+- [x] 生成器复用 T-3 的类型兼容规则（**不是**另写一套）。
+      （`wire_verdict_for` 直接转调 `capability::compatibility`；
+      `check_generator_reuses_wire_rules.sh` 断言生产代码**不自行构造 verdict**）
+- [x] **双模板**（D7-c）：
+  - [x] desktop/tablet/mobile 模板可生成 `Node` 构建代码（复用 `crate::view`）；
+  - [x] **`mini`/`embedded` 模板生成 `add_child` 命令式代码**，且
         **不引用** `crate::view`/`crate::json`/受 `cfg(not(alloc_frugal))` 门控的 `create_*`；
-  - [ ] stripped 模板的产物**实跑编译通过**：
-        `--no-default-features --features mini` 与 `--features embedded`（**不是**「应该没问题」）；
-  - [ ] `mini` 下若控件数超 64，生成物会碰到 `BaseWidget` 的定容上限——
-        生成器必须能报告这一点（`child_capacity()` / `child_overflow_count()`）；
-- [ ] **模式一致性门禁（T-24）**：同一份 JSON 分别经模式 1 与模式 2，
+  - [x] stripped 模板的产物**实跑编译通过**：
+        `--no-default-features --features mini` 与 `--features embedded`（**不是**「应该没问题」）。
+        **实测**：该步骤逐条抓出 4 个在 desktop 上完全正常的缺陷（见 `log-20260921-2.md` §3）；
+  - [x] `mini` 下若控件数超定容上限，生成器会报告这一点
+        （`GenerationReport::capacity_overflow` + `TargetProfile::child_capacity`；
+        生成物内另有 `debug_assert_eq!(child_overflow_count(), before, ..)` 把静默丢弃变可见）；
+- [x] **模式一致性门禁（T-24）**：同一份 JSON 分别经模式 1 与模式 2，
       产出**行为等价**——断言控件树结构、已发布事件、属性值一致。
-      **反向注入**：让生成器丢一个控件 → 门禁必须 FAIL。
-- [ ] **T-24 的 profile 串味断言**：生成物用到的 API 集合必须与目标 profile 一致
+      **反向注入**：让生成器丢一个控件 → 门禁必须 FAIL（实测 FAIL，且**两个模板各自**验了一次）。
+- [x] **T-24 的 profile 串味断言**：生成物用到的 API 集合必须与目标 profile 一致
       （如不得在 mini 产物里出现 `create_button` 调用）；**反向注入**验证。
-- [ ] 若生成物入库（D7-b-3 = 入库），则有「重生→对比」门禁
-      （参照 `tools/check_abi.sh` 第 1 步的现成范式）。
 
-## 全局 DoD（主体完成时；T-23/T-24 除外）
+### D7-b-3 已裁定（2026-09-21，第 56 轮）：**生成物入库，设计器通过 API 调用**
 
-- [x] `bash tools/run_all_gates.sh` → **PASS=37 FAIL=1 TIMEOUT=0 SKIP=1**。
-      上轮基线 33 + 本轮新增 4。唯一 FAIL 为 `check_profiles.sh`，
-      **已用 `git stash` 反向取证证明与本轮无关**（本机缺 MSVC `lib.exe`，见日志 §9.1）。
+| 方面 | 裁定 | 理由 |
+|---|---|---|
+| **是否入库** | ✅ **入库（committed）** | 生成物在树里**就是一个 diff**：审阅者能在**同一个 PR** 里看到「工程文档改了 → 控件树随之变了」。构建期生成的产物在这点上不可见，直到它把构建弄坏 |
+| **入库的代价** | 用一个**再生→对比门禁**兑付 | 入库的风险是树里可能放着**陈旧**文件，所以这个决定**只**在有门禁时才安全（与 `check_abi.sh` 第 [2] 步同构） |
+| **谁调用** | **设计器程序**调 `designer::artifact::regenerate_into` | 拿到逐文件的 `ArtifactOutcome`，能在状态栏里区分「已保存」与「无变化」 |
+| **落盘位置** | `src/generated/ui_default.rs` + `ui_stripped.rs` | 两个模板的产物**互不可编译**（一个用 `crate::view`、一个用不到），所以**不能同文件**；按 **profile** 而非模板命名，因为 profile 才是读者要构建的东西 |
+| **写入前置条件** | 产物必须带 `GENERATED_MARKER`，否则**拒绝写入** | 否则门禁会把该文件当作「非生成物」跳过，静默关掉那个文件的漂移检查 |
+
+**落地证据**：
+
+- `tools/designer_generate.rs` —— 设计器可调用的 CLI（`--project/--root/--width/--height/--check`）；
+- `tools/check_generated_sources.sh` —— **4 步**：标记 → 再生逐字节对比 → `-D warnings` 编译 → **两向反向注入**；
+- `examples/generated_project/` —— 入库的参考产物（`project.json` + 两个生成文件）；
+- `tests/generated_artifacts_are_lint_clean_test.rs` —— 断言入库物与文档一致且编译无警告。
+
+> **一个由这条决定抓到的真实缺陷**：入库探针编译入库产物时，报出 `mut` 放置错误
+> ——**两个方向同时错**（子控件多了 `mut`，根少了 `mut`），而基于夹具的编译测试两样都没报。
+> 这就是「编译入库物」与「编译生成物」是两个不同问题的具体证据。
+
+## 全局 DoD（已达成）
+
+- [x] `bash tools/run_all_gates.sh` → **PASS=40 FAIL=1 TIMEOUT=0 SKIP=1**。
+      基线 33 + 第 55 轮 4 + 第 56 轮 3。唯一 FAIL 为 `check_profiles.sh`，
+      **已用 `git stash` 反向取证证明与本轮无关**（本机缺 MSVC `lib.exe`，见两轮日志）。
 - [x] 5 个 profile 全测试通过：`desktop` / `tablet` / `mobile` / `mini` / `embedded`。
-      `desktop` 全量 `5427 passed / 0 failed`；其余四个 `cargo check` 均 0 error / 0 warning。
+      `desktop` 全量 `5463 passed / 0 failed`；其余四个 `--all-targets` 均 0 error / 0 warning。
 - [x] `cargo clippy --no-default-features --features desktop --all-targets -- -D warnings` → 0 警告。
       跨目标 clippy（`aarch64-unknown-linux-ohos`，`-D warnings`）亦 PASS。
-- [x] 每个已修项在 `docs/log/` 的日志中**逐条标识**（`log-20260921-1.md` §10）。
+- [x] 每个已修项在 `docs/log/` 的日志中**逐条标识**（`log-20260921-1.md` / `log-20260921-2.md`）。
 - [x] 版本号与文档同步（`check_changelog_sync.sh` PASS；**2.5.0**）。
 
-> **不计入本 DoD 的剩余项**：T-23（代码生成器）/ T-24（模式一致性门禁）。
-> 它们是 D7-b「交付期模式 2」的**新增能力**，非未闭环项；
-> 其全部前置（T-1/T-2/T-3 + D7-c/D7-d 的 profile 事实）已就位，
-> 可作为**独立一轮**实施（规模与 T-1 相当）。理由见 `log-20260921-1.md` §7。
+> **不计入本 DoD 的剩余项**：T-11–T-15（真机 / 语言绑定逐参数）。
+> 它们是**本机能力外**的验证项，不是未实现的功能（T-13 交叉编译 PASS）。
+> 见 `log-20260921-2.md` §7。
 
 ---
 

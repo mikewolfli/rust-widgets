@@ -104,6 +104,27 @@ pub mod control_backend;
 pub mod core;
 /// Reactive data binding system — Model → View automatic synchronization.
 pub mod data_binding;
+/// Designer support: mode 2, generating Rust source from a project (BLUE19 T-23, D7-b-3).
+///
+/// # Why this has its own gate rather than riding on `full_widgets`
+///
+/// `full_widgets` answers "does this build have the widget tree and the capability table?", which
+/// every device application needs. This module answers a different question — "is this build **also**
+/// a design tool?" — and a shipping application does not.
+///
+/// The generator and its artifact writer are development-time facilities. Leaving them on for every
+/// profile would link a code generator plus `std::fs::write` into delivery artifacts, which is the
+/// weight mode 2 exists to remove (BLUE19 §5.1.2).
+///
+/// `desktop` enables the `designer` feature by default — it is the profile a designer **host** runs
+/// on. `tablet`/`mobile`/`mini`/`embedded` do not, because they are the **targets** of a generation,
+/// not its host (BLUE19 §5.3.4); a caller who wants the generator there asks for it:
+/// `--features tablet,designer`.
+///
+/// The condition is expressed as the `designer_tooling` alias from `build.rs` rather than a
+/// hand-written conjunction, per rule #47.
+#[cfg(designer_tooling)]
+pub mod designer;
 /// Embedded system optimizations and support.
 /// Unified error system (ErrorId, RwError, c_try!).
 pub mod error;
@@ -132,13 +153,6 @@ pub mod image;
 /// (BLUE15 rule #57).
 #[cfg(full_widgets)]
 pub mod json;
-/// Designer support: mode 2, generating Rust source from a project (BLUE19 T-23).
-///
-/// Gated with `crate::json` rather than with a device profile, because generating a program
-/// requires *parsing* the project, and the parser is `full_widgets`. A `mini`/`embedded` build is
-/// the **target** of a generation, not its host — BLUE19 §5.3.4.
-#[cfg(full_widgets)]
-pub mod designer;
 /// Layout managers.
 pub mod layout;
 /// Memory management utilities.

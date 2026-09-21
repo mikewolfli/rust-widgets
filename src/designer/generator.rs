@@ -565,7 +565,7 @@ fn emit_stripped_mode(
     factory: &WidgetFactory,
     report: &mut GenerationReport,
 ) -> String {
-    let mut nodes: Vec<(Vec<usize>, String)> = Vec::new();
+    let mut nodes: Vec<(Vec<usize>, String, bool)> = Vec::new();
     collect_stripped_nodes(project, request, &[], 1, geometry, factory, &mut nodes, report);
 
     if nodes.is_empty() {
@@ -576,12 +576,22 @@ fn emit_stripped_mode(
 
     // The root is built first: it owns the tree, and every other control is added to it or to a
     // descendant.
-    let (root_path, root_expr) = &nodes[0];
+    let (root_path, root_expr, _) = &nodes[0];
     debug_assert!(root_path.is_empty(), "the root must be collected first");
+    // The root **always** needs `mut`: `try_add_child` goes through `base_mut()`.
     body.push_str(&format!("    let mut root = {root_expr};\n"));
 
-    for (path, expr) in nodes.iter().skip(1) {
-        body.push_str(&format!("    let mut {} = {expr};\n", binding_name(path)));
+    // # Why no outer binding carries `mut`
+    //
+    // A child's setters run **inside** its own block expression, which ends by evaluating to the
+    // local — so the binding the parent sees is the block's value, read once by `add_child`. Nothing
+    // mutates it afterwards. The first version emitted `mut` here unconditionally, and the
+    // committed-artifact probe reported `warning: variable does not need to be mutable` on every
+    // child. (It reported the opposite for the root at the same time: `cannot borrow root as mutable`,
+    // because `base_mut()` *does* need it. Both halves are pinned by
+    // `tests/generated_artifacts_are_lint_clean_test.rs`.)
+    for (path, expr, _setters) in nodes.iter().skip(1) {
+        body.push_str(&format!("    let {} = {expr};\n", binding_name(path)));
     }
     body.push('\n');
 
@@ -595,7 +605,7 @@ fn emit_stripped_mode(
     // failed to compile on `mini`, which is what the compile test caught.
     //
     // Parent-before-child order: a control can only be added to a parent that already exists.
-    for (path, _expr) in nodes.iter().skip(1) {
+    for (path, _expr, _setters) in nodes.iter().skip(1) {
         let parent = if path.len() == 1 {
             String::from("root")
         } else {
@@ -629,7 +639,7 @@ fn collect_stripped_nodes(
     depth: usize,
     geometry: &GeometryPlan,
     factory: &WidgetFactory,
-    out: &mut Vec<(Vec<usize>, String)>,
+    out: &mut Vec<(Vec<usize>, String, bool)>,
     report: &mut GenerationReport,
 ) {
     let Some(node) = project.node(path) else {
@@ -701,12 +711,17 @@ fn collect_stripped_nodes(
         // The control is constructed into a named local so a setter can refer to it, then the
         // block evaluates to that local. A block expression keeps the collection a single
         // expression, so the parent's `add_child` still reads as one call.
+        //
+        // `mut` appears **only** when a setter follows. Emitting it unconditionally produced
+        // `warning: variable does not need to be mutable` on every control without one — which the
+        // committed-artifact probe surfaced, and which would have made `-D warnings` builds of a
+        // generated file fail for a reason that has nothing to do with the project document.
         expr =
             format!("{{\n        let mut {binding} = {expr};{setters}\n        {binding}\n    }}");
     }
 
     let _ = factory;
-    out.push((path.to_vec(), expr));
+    out.push((path.to_vec(), expr, !setters.is_empty()));
 
     let next_depth = depth + 1;
     for (child_index, child) in node.children.iter().enumerate() {

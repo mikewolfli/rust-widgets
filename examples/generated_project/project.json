@@ -1,0 +1,18 @@
+{
+  "window": {
+    "id": "root",
+    "title": "Generated Demo",
+    "width": 640,
+    "height": 480,
+    "layout": {
+      "type": "vbox",
+      "spacing": 6,
+      "children": [
+        { "label":  { "id": "heading", "text": "Generated from a project document" } },
+        { "button": { "id": "go", "text": "Go", "enabled": false,
+                      "events": { "clicked": "on_go" } } },
+        { "slider": { "id": "level", "value": 40 } }
+      ]
+    }
+  }
+}

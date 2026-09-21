@@ -66,6 +66,31 @@ rw_run_bounded "$PROFILE_TIMEOUT" cargo check --no-default-features --features m
 echo "[6/9] cargo check --no-default-features --features embedded --all-targets"
 rw_run_bounded "$PROFILE_TIMEOUT" cargo check --no-default-features --features embedded --all-targets
 
+# The designer's build surface (BLUE19 D7-b-3).
+#
+# `desktop` enables the `designer` feature by default, so [1/9] already covers the
+# default path. What it does **not** cover is the two configurations this feature
+# creates and that nothing else would build:
+#
+#   * `desktop,no-declarative-view` — the designer's *default* template emits
+#     `crate::view` code, so the generator must still compile when the declarative
+#     layer is absent from the host. (It reports rather than emitting; the point is
+#     that the module itself still builds.)
+#   * `tablet,designer` — the opt-in on a profile that does not enable it, which is
+#     the configuration `tools/check_designer_feature_gate.sh` proves is *reachable*.
+#     A reachable configuration that does not compile is worse than an unreachable one.
+#
+# Without these two lines the feature gate would be the only thing that ever names
+# them, and it only compiles a probe that calls `GENERATED_MARKER` — not the
+# generator, and not the artifact writer.
+echo "[6a/9] cargo check --features desktop,no-declarative-view --all-targets (designer without the declarative layer)"
+rw_run_bounded "$PROFILE_TIMEOUT" cargo check \
+  --no-default-features --features desktop,no-declarative-view --all-targets
+
+echo "[6a/9b] cargo check --features tablet,designer --all-targets (the explicit opt-in)"
+rw_run_bounded "$PROFILE_TIMEOUT" cargo check \
+  --no-default-features --features tablet,designer --all-targets
+
 # Cross-target backend checks.
 #
 # Why these exist: the five profile checks above all run against the **host**

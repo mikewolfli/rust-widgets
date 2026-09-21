@@ -111,12 +111,22 @@ impl log::Log for LogcatLogger {
     fn flush(&self) {}
 }
 
+// `c_char` rather than `i8`: `CString::as_ptr` yields `*const c_char`, and the sign of
+// `c_char` is **target-dependent** — `i8` on x86_64, `u8` on aarch64. Spelling `i8` here
+// compiled on `x86_64-linux-android` and failed on `aarch64-linux-android` with
+// `expected *const i8, found *const u8`, which is exactly the kind of target-specific
+// breakage a host-only build never sees. `tools/check_android_cross.sh` now compiles
+// both targets so it cannot come back.
 extern "C" {
-    fn __android_log_write(prio: i32, tag: *const i8, text: *const i8) -> i32;
+    fn __android_log_write(prio: i32, tag: *const core::ffi::c_char, text: *const core::ffi::c_char) -> i32;
 }
 
 /// Safe wrapper around `__android_log_write`.
-unsafe fn android_log_write(prio: i32, tag: *const i8, text: *const i8) -> i32 {
+unsafe fn android_log_write(
+    prio: i32,
+    tag: *const core::ffi::c_char,
+    text: *const core::ffi::c_char,
+) -> i32 {
     unsafe { __android_log_write(prio, tag, text) }
 }
 

@@ -57,17 +57,20 @@ capability matrix
 is generated from source and gated for drift in CI.
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.5.1-blue)]()
+[![version](https://img.shields.io/badge/version-2.5.0-blue)]()
 [![tests](https://img.shields.io/badge/tests-5300%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
-**Verified in 2.5.1:** every control profile builds clean — `cargo check --no-default-features
---features <desktop|tablet|mobile|mini|embedded>` reports 0 errors and 0 warnings on all five.
-The designer's second output mode lands: `rust_widgets::designer::generate` turns a JSON project
-into a Rust function that **compiles on its target**, checked for real against `desktop`, `tablet`,
-`mobile`, `mini` and `embedded` by `tools/check_generator_output_compiles.sh` (~33s). See
-[`CHANGELOG.md`](CHANGELOG.md) and
-[`docs/log/log-20260921-1.md`](docs/log/log-20260921-1.md) for per-change evidence.
+**Verified in 2.5.0:** every control profile builds clean — `cargo check --no-default-features
+--features <desktop|tablet|mobile|mini|embedded>` reports 0 errors and 0 warnings on all five. The
+generator is now a **feature-gated capability** rather than always-on code: `designer` is a
+development-time feature, `desktop` enables it by default because `desktop` is the profile a designer
+**host** runs on, and the other four leave it off because they are the **targets** of a generation —
+`tools/check_designer_feature_gate.sh` proves both directions. The generated sources are now
+**committed** (`examples/generated_project/src/generated/`), which makes the artifact a reviewable
+diff and is only safe with `tools/check_generated_sources.sh` regenerating and comparing them, the
+same shape as the C header's `check_abi.sh` step. See [`CHANGELOG.md`](CHANGELOG.md) and
+[`docs/log/log-20260921-2.md`](docs/log/log-20260921-2.md) for per-change evidence.
 
 <p align="center">
   <a href="README.zh-CN.md">
