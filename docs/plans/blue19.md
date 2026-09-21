@@ -1,9 +1,13 @@
 # BLUE19 — 事件契约的类型化与设计器就绪（EventSchema + 自动接线 + 镜像判定）
 
-> 状态：**已完成（12 / 12 项）**
+> 状态：**已完成（全部任务；DoD 无未勾选项）**
 > 执行日志：[`docs/log/log-20260920-3.md`](../log/log-20260920-3.md)（第 54 轮：D1–D4 + T-1 + T-2）、
-> [`docs/log/log-20260921-1.md`](../log/log-20260921-1.md)（第 55 轮：T-A / T-3 / T-5 复核 / T-8+T-10 → **2.5.0**）、
-> [`docs/log/log-20260921-2.md`](../log/log-20260921-2.md)（第 56 轮：**T-23 双模板生成器 + T-24 一致性门禁 → 2.5.1**）
+> [`docs/log/log-20260921-1.md`](../log/log-20260921-1.md)（第 55 轮：T-A / T-3 / T-5 复核 / T-8+T-10）、
+> [`docs/log/log-20260921-2.md`](../log/log-20260921-2.md)（第 56–57 轮：**T-23 双模板生成器 + T-24 一致性门禁
+> + D7-b-3 入库产物 + `designer` feature 门控 + T-11/T-12 误判纠正**）
+>
+> 全部工作属于 **版本 2.5.0**。记录时曾一度拆成 2.5.1 / 2.5.2——那是错的（2.5.0 才是当时
+> 已发布的版本），CHANGELOG 已合并回**一个** `## 2.5.0` 段落，详见该轮日志 §15。
 > 原则依据：[`docs/plans/principle.md`](principle.md)（继承 BLUE1–BLUE18 全部规则，含 #1–#94；
 > 本文件新增 #95–#101）
 > 上轮计划：[`docs/plans/blue18.md`](blue18.md)
@@ -975,13 +979,56 @@ fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect));
 
 ## D. 多平台与工具链验证（本机能力内）
 
+> **第 57 轮更正**：本节原先把 T-11/T-12 记为「本机能力外」。**实测后发现那个判断是错的**，
+> 并且**纠正它直接挖出一个真实缺陷**（见下）。教训：`⬜` 不等于「做不了」，
+> 而可能是「没试」。
+
 | # | 任务 | 工具 | 说明 | 状态 |
 |---|---|---|---|---|
-| **T-11** | Android 真机/模拟器验证 | `tools/build_android_testapp.sh` | 本机已装 Android Studio | ⬜ |
-| **T-12** | iOS 验证 | `tools/build_ios_testapp.sh` | 本机已装 Xcode | ⬜ |
-| **T-13** | HarmonyOS 验证 | `tools/check_harmony_cross.sh` | 本机已装鸿蒙套件；当前脚本走 `aarch64-unknown-linux-ohos` target，**未用完整 SDK 工具链** | 🟡 交叉编译 PASS，真机未验 |
-| **T-14** | macOS / Windows / Linux 桌面运行时 | `cargo test` | macOS 本机可跑；Windows/Linux 需目标机 | 🟡 macOS 已跑 |
-| **T-15** | 语言绑定逐参数契约核对（Python/Node/C++/Java/Android/iOS 共 6 个） | `tools/check_binding_symbol_coverage.sh` | 现只核对**符号存在**，未逐参数比对个数与所有权 | 🟡 符号覆盖 PASS，逐参数未做 |
+| **T-11** | Android 真机/模拟器验证 | `tools/build_android_testapp.sh` | 本机已装 Android SDK（`adb`/`emulator` 在 `~/Android/Sdk`，未在 `PATH`），**两个 AVD 存在**（`rw_test`/`rw_x64`） | ✅ **APK 实跑构建成功**；新门禁 `check_android_cross.sh` 覆盖 4 个 ABI；**真机安装未验** |
+| **T-12** | iOS 验证 | `tools/check_ios_cross.sh` | iOS **无需 macOS 即可类型检查**（`cargo check --target aarch64-apple-ios` 在 Linux 上 PASS） | ✅ **两个 iOS target 类型检查通过**；新门禁 `check_ios_cross.sh`；**运行与链接仍需 macOS** |
+| **T-13** | HarmonyOS 验证 | `tools/check_harmony_cross.sh` | 本机已装鸿蒙套件；脚本走 `aarch64-unknown-linux-ohos` target，**未用完整 SDK 工具链** | 🟡 交叉编译 PASS，真机未验 |
+| **T-14** | macOS / Windows / Linux 桌面运行时 | `cargo test` | macOS 需该平台；Windows 需目标机（且本机缺 MSVC） | 🟡 Linux 本机已跑；其余需目标机 |
+| **T-15** | 语言绑定逐参数契约核对（Python/Node/C++/Java/Android/iOS 共 6 个） | `tools/check_binding_symbol_coverage.sh` | 现只核对**符号存在**，未逐参数比对个数与所有权 | 🟡 符号覆盖 PASS，**逐参数未做** |
+
+### 🔴 T-11 挖出的真实缺陷（由一个从未被编译过的 target 藏住）
+
+**修什么**：`src/platform/android_jni.rs` 的 `android_log_write` 把参数写成 `*const i8`：
+
+```rust
+// 修复前（x86_64 上能编，aarch64 上不能）
+fn __android_log_write(prio: i32, tag: *const i8, text: *const i8) -> i32;
+```
+
+**为什么是错的**：`CString::as_ptr()` 返回 `*const c_char`，而 **`c_char` 的符号是 target 相关的
+—— x86_64 上是 `i8`，aarch64 上是 `u8`**。所以这个签名在 `x86_64-linux-android` 上编得过，
+而在 **APK 实际发货的 ABI** 上失败：
+
+```
+error[E0308]: mismatched types
+  expected `*const i8`, found `*const u8`
+```
+
+**为什么一直没人发现**：没有任何门禁编译 Android target。
+`build_android_testapp.sh` 只构建 `aarch64`，而它**本身不在门禁列表里**（要 Android SDK 才算得上「能跑」）。
+**这与 `check_profiles.sh` 第 [9b] 步（`mini` × 后端矩阵）是同一类问题**：一条**没有任何 job 编译过**的代码路径。
+
+**修法与防复发**：
+
+| 动作 | 结果 |
+|---|---|
+| 签名改为 `*const core::ffi::c_char` | APK **实跑构建成功**（`app-signed.apk`，9.7 MB） |
+| 新增 `tools/check_android_cross.sh` | 编译 **4 个 ABI**（不只是发货的那个）——`i8`/`u8` 这种分歧恰恰在**非主** ABI 上出现 |
+| 反向注入实测 | 把 `c_char` 改回 `i8` → `check_android_cross.sh` **FAIL**（`E0308`），还原 → PASS |
+
+### T-12 的边界（实测，不靠推测）
+
+| 能做到 | 做不到 |
+|---|---|
+| `cargo check --target aarch64-apple-ios` / `-ios-sim`**在 Linux 上通过**，覆盖全部 `cfg(target_os = "ios")` 模块与 `objc2` 路径 | **运行**与任何**链接**需 macOS + 模拟器 |
+| —— | `--all-targets` 需 iOS 的交叉 `CC`：`alloca`（经 `objc2`）要为 target 编 C。**已验证失败在 `alloca` 的 build script，`rust_widgets` 自身 0 错误** |
+
+⇒ 新门禁只做**能做的部分**，并把做不到的部分**写在脚本里**，而不是把一个依赖的宿主限制报成缺陷。
 
 ## E. 文档与版本同步
 
