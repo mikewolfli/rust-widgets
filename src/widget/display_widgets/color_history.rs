@@ -203,7 +203,7 @@ impl Draw for ColorHistory {
         //
         // Precedence: explicit style, then theme, then the literal as last resort.
         let style = self.base.style().clone();
-        let themed_background = crate::theme::global_theme_manager()
+        let themed_background = crate::style::theme_manager()
             .current_theme()
             .map(|active| active.colors.background);
         let background =
@@ -215,7 +215,7 @@ impl Draw for ColorHistory {
             let ink = style
                 .text_color
                 .or_else(|| {
-                    crate::theme::resolved_theme_style("color_history").and_then(|s| s.text_color)
+                    crate::style::resolved_theme_style("color_history").and_then(|s| s.text_color)
                 })
                 .unwrap_or(Color::BLACK);
             background.blend(&ink, 0.08)

@@ -243,20 +243,50 @@ impl Draw for SearchBox {
         let center_y = rect.y + rect.height as i32 / 2;
 
         // — Background —
+        //
+        // From the style, not a literal. This painted a fixed light grey in every state and
+        // so stayed light in a dark theme: the theme resolved a search box's colour, handed
+        // it to the widget, and the widget ignored it. The three-state ladder is kept, but
+        // it is now *derived* from the resolved colour — a focused box is the resolved
+        // colour blended toward the accent, a disabled one is faded — so the states stay
+        // distinguishable *and* follow the theme.
+        let style = self.style().clone();
+        // Resolved once, because the three branches below all need it and re-resolving would
+        // take the theme lock three times inside one draw.
+        let themed = crate::style::resolved_theme_style("search_box");
+        let themed_bg = themed.as_ref().and_then(|resolved| resolved.background_color);
+        let themed_border = themed.as_ref().and_then(|resolved| resolved.border_color);
+        // Precedence: an explicit style wins, then the theme, then the original literal as a
+        // last resort so an inactive theme still gives the widget a defined appearance.
+        let accent = style.border_color.or(themed_border);
+        let base_bg =
+            style.background_color.or(themed_bg).unwrap_or(Color::rgba(235, 235, 235, 200));
         let bg_color = if !is_enabled {
-            Color::rgba(240, 240, 240, 160)
+            // Faded rather than a separate literal: "disabled" is the same colour with the
+            // energy taken out, which is what blending toward white expresses.
+            base_bg.blend(&Color::WHITE, 0.25)
         } else if self.focused {
-            Color::rgba(245, 245, 255, 220)
+            base_bg.blend(&accent.unwrap_or(Color::rgba(60, 140, 255, 200)), 0.18)
         } else {
-            Color::rgba(235, 235, 235, 200)
+            base_bg
         };
         context.fill_rounded_rect(rect, 6, bg_color);
 
         // — Focus border —
         if self.focused && is_enabled {
-            context.draw_rounded_rect_stroke(rect, 6, Color::rgba(60, 140, 255, 200), 2);
+            context.draw_rounded_rect_stroke(
+                rect,
+                6,
+                accent.unwrap_or(Color::rgba(60, 140, 255, 200)),
+                2,
+            );
         } else {
-            context.draw_rounded_rect_stroke(rect, 6, Color::rgba(200, 200, 200, 160), 1);
+            context.draw_rounded_rect_stroke(
+                rect,
+                6,
+                style.border_color.unwrap_or(Color::rgba(200, 200, 200, 160)),
+                1,
+            );
         }
 
         // — Search icon (magnifying glass) —

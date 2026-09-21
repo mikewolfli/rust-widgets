@@ -306,7 +306,7 @@ impl Draw for GanttWidget {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("gantt_widget");
+        let theme = crate::style::resolved_theme_style("gantt_widget");
         // `gantt_widget` is not a control kind in the role table, so it classifies as
         // `Surface`, whose background is `theme.colors.background` — byte-identical
         // to the window behind it. The chart's own fill is therefore a step toward
@@ -329,7 +329,7 @@ impl Draw for GanttWidget {
         let selected_lane = background.blend(&text_color, 0.14);
         // Task bars are data marks drawn in the accent colour, which is what makes
         // them a chart rather than chrome.
-        let bar_color = crate::theme::resolved_theme_style("slider")
+        let bar_color = crate::style::resolved_theme_style("slider")
             .and_then(|accent| accent.background_color)
             .unwrap_or_else(|| background.blend(&text_color, 0.55));
         let progress_color = bar_color.blend(&text_color, 0.18);

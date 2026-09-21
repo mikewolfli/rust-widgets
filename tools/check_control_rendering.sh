@@ -55,6 +55,10 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 . "$ROOT_DIR/tools/lib_timeout.sh"
+# Resolved rather than assumed: on Windows the `python3` name is often the Microsoft
+# Store's execution alias, which blocks on the Store UI instead of running the script,
+# so a bare `python3` turns this gate into a hang (tools/lib_python.sh documents it).
+. "$ROOT_DIR/tools/lib_python.sh"
 
 STEP_BUDGET="${RW_GATE_TIMEOUT:-900}"
 
@@ -143,12 +147,21 @@ fi
 echo "  PASS  P2 surface-coincidence exemptions justified: $(awk '!/^#/ && NF>0' "$SURFACE_EXEMPT" | wc -l)"
 
 echo "[4/4] semantic tokens: each of the four has a control that reads it"
-if ! rw_run_bounded 120 python3 tools/semantic_color_census.py > /tmp/rw_semantic_census.log 2>&1; then
+if ! rw_run_bounded 120 "$PYTHON" tools/semantic_color_census.py > /tmp/rw_semantic_census.log 2>&1; then
     echo "  FAIL  a semantic token has no consumer (rule #109)"
     sed -n '1,40p' /tmp/rw_semantic_census.log
     exit 1
 fi
 sed -n '1,12p' /tmp/rw_semantic_census.log
 
+# The count comes from the census itself so the line cannot claim a number the run did
+# not measure. 188 is the registered-control count (187 before `heatmap`); printing a
+# literal here is how a gate starts lying about what it covered.
+CONTROL_COUNT="$("$PYTHON" -c '
+import re, pathlib
+src = pathlib.Path("src/widget/capability/properties.rs").read_text(encoding="utf-8")
+print(len(re.findall(r"canonical_name:\s*\x22", src)))
+')"
+
 echo ""
-echo "check_control_rendering: checked=187 skipped=0 failed=0"
+echo "check_control_rendering: checked=$CONTROL_COUNT skipped=0 failed=0"

@@ -362,7 +362,7 @@ impl Draw for FindReplaceDialog {
         // `resolved_theme_style`, so it is not held across the draw — the global
         // manager's mutex is not re-entrant.
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("find_replace_dialog");
+        let theme = crate::style::resolved_theme_style("find_replace_dialog");
         let themed_ink = theme.as_ref().and_then(|t| t.text_color);
         let themed_border = theme.as_ref().and_then(|t| t.border_color);
 
@@ -379,7 +379,7 @@ impl Draw for FindReplaceDialog {
         // The entry fields and the accent are read as their own lock acquisition and copied
         // out as values, so the guard is dropped before anything else touches the theme.
         let (window_fill, accent, muted) = {
-            let manager = crate::theme::global_theme_manager();
+            let manager = crate::style::theme_manager();
             match manager.current_theme() {
                 Some(active) => {
                     (active.colors.background, active.colors.primary, active.colors.secondary)
@@ -867,10 +867,10 @@ mod tests {
     /// output.
     #[test]
     fn a_shown_find_bar_renders_differently_in_light_and_dark() {
-        fn frame(appearance: crate::theme::AppearanceMode) -> String {
+        fn frame(appearance: crate::style::AppearanceMode) -> String {
             let _guard = crate::theme::theme_test_guard();
             {
-                let mut manager = crate::theme::global_theme_manager();
+                let mut manager = crate::style::theme_manager();
                 manager.register_theme(crate::theme::Theme::default());
                 manager.register_theme(crate::theme::Theme::dark());
                 manager.set_appearance(appearance);
@@ -882,14 +882,14 @@ mod tests {
             crate::widget::svg::render_to_svg(&mut dialog)
         }
 
-        let light = frame(crate::theme::AppearanceMode::Light);
-        let dark = frame(crate::theme::AppearanceMode::Dark);
+        let light = frame(crate::style::AppearanceMode::Light);
+        let dark = frame(crate::style::AppearanceMode::Dark);
         assert_ne!(
             light, dark,
             "a theme switch must change what a shown find bar paints; identical output \
              means the chrome is hardcoded"
         );
-        crate::theme::global_theme_manager().set_appearance(crate::theme::AppearanceMode::Light);
+        crate::style::theme_manager().set_appearance(crate::style::AppearanceMode::Light);
     }
 
     #[test]

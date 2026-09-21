@@ -412,7 +412,7 @@ pub trait EventHandler {
 `BaseWidget` provides a default implementation that maps platform events to
 signal emissions (click → `clicked.emit()`, mouse move → `hover.emit(point)`).
 
-### `WidgetKind` Enum — 179 Variants
+### `WidgetKind` Enum — 180 Variants
 
 The `WidgetKind` enum categorizes every widget type. Variants are
 feature-gated: 28 are available under all profiles, and 151 are unlocked with
@@ -892,7 +892,7 @@ pub trait ControlBackend {
 
 The dispatcher in `control_backend::dispatcher` routes widget creation calls
 to the appropriate backend based on compile-time feature flags. The routing
-system in `control_backend::routing` covers all 179 widget kinds. Every one is
+system in `control_backend::routing` covers all 180 widget kinds. Every one is
 custom-painted, so there is no second (platform-held) mechanism left to choose
 between.
 

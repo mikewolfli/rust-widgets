@@ -18,7 +18,7 @@ Two consequences worth internalising before you read further:
 1. **A control looks identical on every OS.** Your button has the same pixels on
    Windows, macOS, Linux, iOS, Android and the web, because the same Rust
    rasterizer drew all of them.
-2. **Widget availability is a *profile* question, not an OS question.** All 179
+2. **Widget availability is a *profile* question, not an OS question.** All 180
    widget kinds are available on every platform in the `desktop`/`tablet`/`mobile`
    profiles. Only the resource-constrained `embedded`/`mini` profiles compile a
    reduced set.
@@ -61,7 +61,7 @@ fn main() {
 
 ### Rich Widget Library — 179 Widget Kinds
 
-179 built-in widget kinds span every common UI need, and **all of them are
+180 built-in widget kinds span every common UI need, and **all of them are
 self-drawn and therefore available on every platform**:
 
 - **Core controls**: Button, CheckBox, RadioButton, Label, LineEdit, TextEdit,
@@ -95,7 +95,7 @@ Three rendering backends, automatically selected for your target:
 ### Nine Platforms, One API
 
 The table below lists **how each platform provides a surface and event loop** — not
-which controls are available. Because every control is self-drawn, all 179 widget
+which controls are available. Because every control is self-drawn, all 180 widget
 kinds work on every platform listed; only the `embedded`/`mini` profiles reduce the
 compiled-in set.
 

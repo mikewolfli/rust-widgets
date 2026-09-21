@@ -336,7 +336,7 @@ impl Draw for DropdownMenu {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("dropdown_menu");
+        let theme = crate::style::resolved_theme_style("dropdown_menu");
         // `dropdown_menu` is not a control kind in the role table, so it classifies as
         // `Surface`, whose background is `theme.colors.background` — the colour the
         // window paints. The field is therefore a step toward the foreground, so it

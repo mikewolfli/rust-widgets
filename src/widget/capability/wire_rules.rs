@@ -103,6 +103,12 @@ pub const WIRE_RULES: &[WireRule] = &[
     rule(Some(K::Int), K::Int, Direct, "the event's integer is already the property's type"),
     rule(Some(K::UInt), K::UInt, Direct, "the event's integer is already the property's type"),
     rule(Some(K::Float), K::Float, Direct, "the event's number is already the property's type"),
+    rule(
+        Some(K::Number),
+        K::Number,
+        Direct,
+        "both sides carry a number; the target picks Int or Float",
+    ),
     rule(Some(K::String), K::String, Direct, "the event's text is already the property's type"),
     rule(Some(K::Color), K::Color, Direct, "the event's colour is already the property's type"),
     rule(Some(K::Rect), K::Rect, Direct, "the event's rectangle is already the property's type"),
@@ -117,6 +123,17 @@ pub const WIRE_RULES: &[WireRule] = &[
         Direct,
         "an unsigned integer is exactly representable as a number",
     ),
+    // ── `Number` properties: the control picks the carrier, so both numeric sides fit ──
+    //
+    // `spin_box`'s four numeric properties are declared `Number` because they answer `Int`
+    // while `decimals == 0` and `Float` afterwards. Leaving them out of this table would
+    // state that *no* numeric event can drive them, so the designer would grey out every
+    // wire into a spin box's value. That is the failure the whitelist's reject-by-default
+    // direction exists to make visible, and the answer is to state the conversions rather
+    // than to add a `Number => accept anything` shortcut: text still must not be parsed.
+    rule(Some(K::Int), K::Number, Direct, "a whole number is a number the control can carry"),
+    rule(Some(K::UInt), K::Number, Direct, "a whole number is a number the control can carry"),
+    rule(Some(K::Float), K::Number, Direct, "a number is the property's own type"),
     // ── anything can be *displayed* as text; this is the one widening conversion allowed ──
     rule(Some(K::Bool), K::String, Converted, "a boolean is formatted as text for display"),
     rule(Some(K::Int), K::String, Converted, "an integer is formatted as text for display"),
@@ -127,6 +144,7 @@ pub const WIRE_RULES: &[WireRule] = &[
         "an unsigned integer is formatted as text for display",
     ),
     rule(Some(K::Float), K::String, Converted, "a number is formatted as text for display"),
+    rule(Some(K::Number), K::String, Converted, "a number is formatted as text for display"),
     rule(Some(K::Color), K::String, Converted, "a colour is written as its `#rrggbbaa` token"),
     rule(Some(K::Rect), K::String, Converted, "a rectangle is written as its `x,y,w,h` token"),
     rule(Some(K::Enum), K::String, Converted, "an enumerated token is already text"),
@@ -202,7 +220,7 @@ fn rejection_reason(
 ) -> &'static str {
     use crate::widget::capability::types::PropertyValueKind as Kind;
     match (source, target) {
-        (Some(Kind::String), Kind::Int | Kind::UInt | Kind::Float) => {
+        (Some(Kind::String), Kind::Int | Kind::UInt | Kind::Float | Kind::Number) => {
             "text cannot be assigned to a number: parsing can fail, and a failed parse has no \
              defined result here; add an explicit conversion"
         }
@@ -239,6 +257,7 @@ mod tests {
             Kind::Int,
             Kind::UInt,
             Kind::Float,
+            Kind::Number,
             Kind::String,
             Kind::Color,
             Kind::Rect,
@@ -252,9 +271,26 @@ mod tests {
         }
     }
 
+    /// A `Number` property is the one that must accept **both** numeric carriers: the
+    /// control decides whether it stores an `Int` or a `Float`, and the event's own shape
+    /// must not be able to veto that. Leaving this out would grey out every wire into a
+    /// spin box's value in the designer, which is the whole reason the pair is stated.
+    #[test]
+    fn a_number_property_accepts_both_numeric_carriers() {
+        for source in [Kind::Int, Kind::UInt, Kind::Float] {
+            assert_eq!(
+                compatibility(Some(source), prop(Kind::Number)),
+                Direct,
+                "{source:?} → Number must be offered; the control picks the carrier"
+            );
+        }
+        // Text is still refused, for the same reason it is refused for `Int`.
+        assert!(matches!(compatibility(Some(Kind::String), prop(Kind::Number)), Rejected(_)));
+    }
+
     #[test]
     fn a_number_can_be_displayed_as_text() {
-        for kind in [Kind::Int, Kind::UInt, Kind::Float] {
+        for kind in [Kind::Int, Kind::UInt, Kind::Float, Kind::Number] {
             assert_eq!(
                 compatibility(Some(kind), prop(Kind::String)),
                 Converted,
@@ -266,7 +302,7 @@ mod tests {
     /// The rejection branch BLUE19 §3.3 names by hand: text into a number must be refused.
     #[test]
     fn text_into_a_number_is_rejected_with_that_reason() {
-        for target in [Kind::Int, Kind::UInt, Kind::Float] {
+        for target in [Kind::Int, Kind::UInt, Kind::Float, Kind::Number] {
             let verdict = compatibility(Some(Kind::String), prop(target));
             match verdict {
                 Rejected(reason) => assert!(
@@ -292,6 +328,7 @@ mod tests {
             Kind::Int,
             Kind::UInt,
             Kind::Float,
+            Kind::Number,
             Kind::String,
             Kind::Color,
             Kind::Rect,

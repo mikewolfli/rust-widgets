@@ -28,7 +28,7 @@ There is no `CreateWindowExW`/`NSButton`/`gtk_button_new`/`android.widget.Button
 | Property | Self-drawn (this library) | Native controls |
 |---|---|---|
 | Appearance | **Identical on every OS** | Differs per OS toolkit and version |
-| Widget count | **179 kinds, all platforms** | Only what the OS toolkit offers |
+| Widget count | **180 kinds, all platforms** | Only what the OS toolkit offers |
 | Dependency weight | **No GUI toolkit linked** | GTK / AppKit / Win32 / Android SDK |
 | Headless & embedded | **Runs with no OS at all** (`mini`, SVG) | Impossible |
 | Deterministic tests | **Pixel/serialise snapshots** | Needs a real display |
@@ -45,7 +45,7 @@ A backend that cannot supply even a surface (for example a bare framebuffer) sti
 
 > **Migrating from 1.x?** Native control creation was removed from all ten backends in 2.0.0. See [`CHANGELOG.md`](CHANGELOG.md) and [`docs/MIGRATION_GUIDE.md`](docs/MIGRATION_GUIDE.md).
 
-All 179 widget kinds are self-drawn. Every one of them resolves a constructor through
+All 180 widget kinds are self-drawn. Every one of them resolves a constructor through
 `factory_name_for_kind` (`377` accepted names in total, counting aliases);
 `tools/check_widget_registration_fidelity.sh` fails if a kind is added without an
 answer, or resolves to no constructor at all — the latter caught four `create_*`
@@ -57,20 +57,34 @@ capability matrix
 is generated from source and gated for drift in CI.
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.5.0-blue)]()
-[![tests](https://img.shields.io/badge/tests-5300%2B-brightgreen)]()
+[![version](https://img.shields.io/badge/version-2.5.1-blue)]()
+[![tests](https://img.shields.io/badge/tests-5500%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
-**Verified in 2.5.0:** every control profile builds clean — `cargo check --no-default-features
---features <desktop|tablet|mobile|mini|embedded>` reports 0 errors and 0 warnings on all five. The
-generator is now a **feature-gated capability** rather than always-on code: `designer` is a
-development-time feature, `desktop` enables it by default because `desktop` is the profile a designer
-**host** runs on, and the other four leave it off because they are the **targets** of a generation —
-`tools/check_designer_feature_gate.sh` proves both directions. The generated sources are now
-**committed** (`examples/generated_project/src/generated/`), which makes the artifact a reviewable
-diff and is only safe with `tools/check_generated_sources.sh` regenerating and comparing them, the
-same shape as the C header's `check_abi.sh` step. See [`CHANGELOG.md`](CHANGELOG.md) and
-[`docs/log/log-20260921-2.md`](docs/log/log-20260921-2.md) for per-change evidence.
+**Verified in 2.5.1:** a control's **rendering** is now a checked dimension, not just its
+*declarations*. Four defects the user could see with their own eyes once shipped past all 64 existing
+gates, because every one of those gates asked the control what it declares and none looked at a
+pixel. 2.5.1 closes that gap in five layers:
+
+- **A rendering golden table** — all **188** controls are rendered in light and dark and asserted on
+  four judgements: it painted something, its colour is not the surface behind it, it changed with the
+  appearance, and the four semantic tokens (`error`/`warning`/`success`/`info`) have real consumers.
+- **A declaration/implementation alignment gate** — every declared property is really answered, every
+  `draw` really paints, every published event really exists.
+- **376 committed SVG snapshots** under [`snapshots/svg/`](snapshots/svg/) — one per control per
+  appearance, with a regenerate-and-compare gate, so a wrong-looking control shows up as a diff.
+- **`heatmap`** (a new control with both axes categorical) and **`spin_box` decimal support**
+  (`set_decimals(n)`).
+- **An honest WebEngine.** `WebEngineView` models a page; it does not render one, and now says so:
+  `supports_web_engine()` and `has_real_engine()` report the truth, and the 76-line WebKitGTK wrapper
+  that never displayed anything is gone.
+
+Three build configurations that were **already broken** before this release now build:
+`--features mini`, `--features embedded`, and `--features "windows desktop-runtime controls-native
+controls-custom"` (78 compile errors at the previous tag). All five profiles are 0 errors, 0 warnings,
+and `clippy -D warnings` is clean. See [`CHANGELOG.md`](CHANGELOG.md) and
+[`docs/log/log-20260921-3.md`](docs/log/log-20260921-3.md) for per-change evidence, including the
+reverse-injection record for every assertion.
 
 <p align="center">
   <a href="README.zh-CN.md">
@@ -257,9 +271,9 @@ what the OS can draw.
 
 | Profile | Widget set | Registry | Custom-painted controls | GPU | i18n |
 |---------|-----------|:--------:|:-----------------------:|:---:|:----:|
-| `desktop` | **179 kinds** (full) | ✅ | ✅ | ✅ wgpu | ✅ |
-| `tablet` | **179 kinds** (full) | ✅ | ✅ | ✅ wgpu | ✅ |
-| `mobile` | **179 kinds** (full) | ✅ | ✅ | ✅ wgpu | ✅ |
+| `desktop` | **180 kinds** (full) | ✅ | ✅ | ✅ wgpu | ✅ |
+| `tablet` | **180 kinds** (full) | ✅ | ✅ | ✅ wgpu | ✅ |
+| `mobile` | **180 kinds** (full) | ✅ | ✅ | ✅ wgpu | ✅ |
 | `embedded` | reduced core set | — | — | — software | — |
 | `mini` | reduced core set | — | — | — software | — |
 
@@ -484,7 +498,7 @@ silently stay unreachable from a language.
 
 ## Widget Library
 
-### Desktop/Tablet/Mobile (179 widget kinds)
+### Desktop/Tablet/Mobile (180 widget kinds)
 
 **Core**: Window, Dialog, MessageBox, FileDialog, ColorDialog, FontDialog, InputDialog, ProgressDialog, PopupWindow, Button, CheckBox, RadioButton, Label, LineEdit, TextEdit, RichEdit, ComboBox, SpinBox, ListBox, ListView, TreeView, TreeTable, ProgressBar, Slider, ScrollBar, ScrollArea, TabWidget, Splitter, GroupBox, Frame, MenuBar, Menu, MenuItem, ContextMenu, ToolBar, StatusBar, Canvas, Table, Grid, Chart, ToggleButton
 

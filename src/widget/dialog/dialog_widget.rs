@@ -254,7 +254,7 @@ impl Draw for Dialog {
         // `resolved_theme_style`, so it is not held across the draw — the global
         // manager's mutex is not re-entrant.
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("dialog");
+        let theme = crate::style::resolved_theme_style("dialog");
         // The dialog is a `Surface`-role control, and `Surface` resolves to
         // `theme.colors.background` — the colour the window behind it is already filled
         // with. Painting the frame in it would make the dialog indistinguishable from the
@@ -264,7 +264,7 @@ impl Draw for Dialog {
         // the guard is dropped before anything else touches the theme — the global
         // manager's mutex is not re-entrant.
         let window_fill = {
-            let manager = crate::theme::global_theme_manager();
+            let manager = crate::style::theme_manager();
             manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
         };
         let themed_surface = theme.as_ref().and_then(|t| t.background_color);

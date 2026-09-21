@@ -261,8 +261,8 @@ impl Draw for Roller {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("roller")
-            .or_else(|| crate::theme::resolved_theme_style("list_box"));
+        let theme = crate::style::resolved_theme_style("roller")
+            .or_else(|| crate::style::resolved_theme_style("list_box"));
         // `roller` is not a control kind in the role table, so it classifies as
         // `Surface`, whose background is `theme.colors.background` — byte-identical
         // to the window behind it. The wheel's own fill is therefore a step toward the
@@ -278,7 +278,7 @@ impl Draw for Roller {
         let bg_color = resolved.blend(&text_color, 0.08);
         // The centre item is a *selection*, which is chrome rather than data, so it
         // reads the theme's primary token instead of the previous literal blue.
-        let selected_bg = crate::theme::resolved_theme_style("button")
+        let selected_bg = crate::style::resolved_theme_style("button")
             .and_then(|button| button.background_color)
             .unwrap_or_else(|| bg_color.blend(&text_color, 0.6));
         // Its label stays a tint of the surface rather than a fixed white, so it

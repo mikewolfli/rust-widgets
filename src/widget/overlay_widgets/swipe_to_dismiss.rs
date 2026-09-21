@@ -185,6 +185,19 @@ impl Draw for SwipeToDismiss {
             return;
         }
 
+        // The child is mounted by this control, so this control is the one that has to
+        // theme it. The census themes the top-level control it creates and nothing
+        // below it (`render_one` draws the tree exactly as `Widget::draw` walks it), and
+        // the factory that builds this wrapper does not call `apply_active_theme`
+        // either — so a bare child label kept its own hardcoded ink and the wrapper's
+        // dominant colour was that literal in both appearances. Ordering it on every
+        // draw rather than only at `set_child` is the stronger guarantee: a child
+        // swapped in by a later `set_child` is themed too, and the stylesheet layer
+        // still wins because `merge_theme` only replaces what the theme itself wrote.
+        if let Some(child) = self.child.as_deref_mut().map(|c| c as &mut dyn Widget) {
+            crate::theme::apply_theme_to_widget(child);
+        }
+
         // ── Action background revealed behind the child as it slides ──
         if self.swipe_offset.abs() > 2.0 {
             let bg_rect = if self.swipe_offset < 0.0 {
@@ -202,8 +215,13 @@ impl Draw for SwipeToDismiss {
                 Rect::new(rect.x, rect.y, reveal_w, rect.height)
             };
 
-            // Red background
-            context.fill_rect(bg_rect, Color::rgba(255, 59, 48, 255)); // iOS red
+            // The action background is SEMANTIC colour, not chrome: the red *encodes* "this
+            // swipe deletes", so it reads the theme's error token rather than `style.*`. The
+            // literal it used to be stays as the `unwrap_or` fallback, so a build or theme
+            // with no palette still gets the iOS red this control has always painted.
+            let destructive = crate::style::semantic_color(crate::style::SemanticColor::Error)
+                .unwrap_or(Color::rgba(255, 59, 48, 255));
+            context.fill_rect(bg_rect, destructive);
 
             // Action text centered in revealed area
             if !self.action_text.is_empty() {
@@ -216,7 +234,9 @@ impl Draw for SwipeToDismiss {
                     Point::new(text_x, text_y),
                     &self.action_text,
                     &font,
-                    Color::WHITE,
+                    // Picked for legibility on whichever red the theme resolves, rather
+                    // than assuming the light-theme red and hardcoding white.
+                    destructive.contrast_color(),
                     HorizontalAlignment::Left,
                 );
             }
@@ -468,11 +488,7 @@ mod tests {
 
         sw.handle_event(&Event::MousePress { pos: Point::new(180, 25), button: 1 });
         sw.handle_event(&Event::MouseMove { pos: Point::new(60, 25) });
-        assert_eq!(
-            sw.swipe_offset(),
-            0.0,
-            "a disabled container must not track the pointer"
-        );
+        assert_eq!(sw.swipe_offset(), 0.0, "a disabled container must not track the pointer");
         sw.handle_event(&Event::MouseRelease { pos: Point::new(60, 25), button: 1 });
 
         assert!(!sw.is_dismissed(), "a disabled container must not dismiss");

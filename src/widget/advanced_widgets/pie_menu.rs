@@ -700,11 +700,11 @@ impl Draw for PieMenu {
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("pie_menu");
+        let theme = crate::style::resolved_theme_style("pie_menu");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.
         let (window_fill, foreground, secondary) = {
-            let manager = crate::theme::global_theme_manager();
+            let manager = crate::style::theme_manager();
             match manager.current_theme() {
                 Some(active) => {
                     (active.colors.background, active.colors.foreground, active.colors.secondary)

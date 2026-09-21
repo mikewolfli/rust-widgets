@@ -91,7 +91,14 @@ fn check_compiles(source: &str, features: &str) -> (String, bool) {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src")).expect("create the probe crate");
 
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    // The generated manifest is TOML, where `\` starts an escape — so a native Windows path
+    // (`D:\Workspace\...`) written verbatim makes the file unparsable, and the probe fails
+    // with `missing escaped value` before it ever reaches the generated source. That is a
+    // false failure about the host, not a finding about the generator: on Linux the path is
+    // `/workspace/...` and contains no backslash, so the gate passed there and the defect
+    // only appeared on Windows. TOML accepts forward slashes in a path on every platform, so
+    // normalising here keeps the probe a statement about the source under test.
+    let manifest_dir = env!("CARGO_MANIFEST_DIR").replace('\\', "/");
     std::fs::write(
         dir.join("Cargo.toml"),
         format!(
@@ -120,7 +127,7 @@ fn check_compiles(source: &str, features: &str) -> (String, bool) {
     // a future cargo version held the lock across the test run, `cargo check` would block forever and
     // hang the gate — the failure mode rules #58/#59 exist to prevent. `rw_run_bounded` cannot help
     // here (this is inside a Rust process), so the bound is applied to the spawned command directly.
-    let shared_target = std::path::Path::new(manifest_dir).join("target");
+    let shared_target = std::path::Path::new(&manifest_dir).join("target");
     let mut child = std::process::Command::new(env!("CARGO"))
         .arg("check")
         .arg("--quiet")

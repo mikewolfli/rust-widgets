@@ -238,7 +238,7 @@ impl Draw for FloatingLabel {
         // `resolved_theme_style`, so none is held across the draw or across another
         // accessor — the global manager's mutex is not re-entrant.
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("floating_label");
+        let theme = crate::style::resolved_theme_style("floating_label");
         // The label kind classifies as plain text, so the theme leaves its background
         // unset; a floating *label* decorates an editable field, so the field interior is
         // read from the input role, which resolves a colour in every appearance.
@@ -246,7 +246,7 @@ impl Draw for FloatingLabel {
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
             .or_else(|| {
-                crate::theme::resolved_theme_style("line_edit")
+                crate::style::resolved_theme_style("line_edit")
                     .and_then(|input| input.background_color)
             })
             .unwrap_or(Color::rgba(255, 255, 255, 255));

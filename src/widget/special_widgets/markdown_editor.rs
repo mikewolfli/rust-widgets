@@ -334,7 +334,7 @@ impl Draw for MarkdownEditor {
         // `resolved_theme_style`, so it is not held across the draw — the global
         // manager's mutex is not re-entrant.
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("markdown_editor");
+        let theme = crate::style::resolved_theme_style("markdown_editor");
         let surface = style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
@@ -351,7 +351,7 @@ impl Draw for MarkdownEditor {
         // accent: both derived from the resolved ink and surface, so they move with
         // the appearance instead of being fixed literals.
         let header_ink = ink.blend(&surface, 0.35);
-        let cursor_ink = crate::theme::global_theme_manager()
+        let cursor_ink = crate::style::theme_manager()
             .current_theme()
             .map(|active| active.colors.primary)
             .unwrap_or_else(|| ink.contrast_color());

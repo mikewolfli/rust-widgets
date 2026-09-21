@@ -182,7 +182,7 @@ impl Draw for PopupWindow {
         // The theme reads take and release the global manager's lock internally, so no guard
         // is held across the draw (the mutex is not re-entrant).
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("popup_window");
+        let theme = crate::style::resolved_theme_style("popup_window");
         // `popup_window` is absent from `WidgetRole::for_kind_name`'s table, so it classifies
         // as `Surface` and resolves to `theme.colors.background` — the window's own fill. A
         // popup painted in that colour would be byte-identical to the frame behind it, so a
@@ -190,7 +190,7 @@ impl Draw for PopupWindow {
         // it: the popup is raised *above* the window, so the step is taken toward the
         // foreground, the same distinction `Colors::input_background` draws for a field.
         let window_fill = {
-            let manager = crate::theme::global_theme_manager();
+            let manager = crate::style::theme_manager();
             manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
         };
         let ink = style

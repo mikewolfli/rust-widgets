@@ -69,7 +69,11 @@ for target in "${TARGETS[@]}"; do
   fi
 done
 if [[ "${#MISSING[@]}" -gt 0 ]]; then
-  echo "FAIL: these Android targets are not installed, so this gate cannot check them:" >&2
+  # `unsupported host` is the marker `tools/run_all_gates.sh` classifies on. Without it this
+  # gate reports FAIL on a host that simply has no Android toolchain — a *host* limitation
+  # counted as a defect in the code under test. The runner's own doc says the two must not be
+  # conflated (principle #59.4), and the marker is how the distinction is expressed.
+  echo "unsupported host: these Android targets are not installed, so this gate cannot check them:" >&2
   for target in "${MISSING[@]}"; do
     echo "  - $target" >&2
   done

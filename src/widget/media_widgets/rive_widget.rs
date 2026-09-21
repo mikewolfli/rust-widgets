@@ -597,9 +597,36 @@ impl Draw for RiveWidget {
         let rect = self.geometry();
         let is_enabled = self.base.is_enabled();
 
+        // Chrome colours resolve explicit style first, then the theme's resolved style for
+        // this control, and only then fall back to the original literal. The literal step is
+        // kept deliberately: an inactive theme must still give the widget a defined
+        // appearance, and the value is the one this widget painted before, so an existing
+        // pixel baseline cannot move. Resolved once per draw, because the empty state, the
+        // background, the border, the chips and the progress trough all read from it and
+        // re-resolving would take the theme lock several times inside one draw.
+        let style = self.style().clone();
+        let themed = crate::style::resolved_theme_style("rive_widget");
+        let themed_bg = themed.as_ref().and_then(|resolved| resolved.background_color);
+        let themed_border = themed.as_ref().and_then(|resolved| resolved.border_color);
+        let themed_text = themed.as_ref().and_then(|resolved| resolved.text_color);
+        let base_bg =
+            style.background_color.or(themed_bg).unwrap_or(Color::rgba(245, 240, 250, 255));
+        let border_color =
+            style.border_color.or(themed_border).unwrap_or(Color::rgba(140, 80, 180, 150));
+        // The placeholder ink follows the theme's foreground so it stays legible on whichever
+        // surface the theme painted; the literal is only the last resort.
+        let placeholder_text =
+            style.text_color.or(themed_text).unwrap_or(Color::rgba(160, 160, 160, 220));
+        // The neutral fill used by the name/progress pills and the progress trough: this
+        // control's chrome, derived from the resolved border so it tracks the theme instead
+        // of staying one grey in every appearance.
+        let trough_color = border_color.blend(&base_bg, 0.55);
+
         if self.animation_name.is_empty() {
-            // Empty state: draw a neutral placeholder.
-            context.fill_rounded_rect(rect, 4, Color::rgba(230, 230, 230, 200));
+            // Empty state: a neutral placeholder panel. The panel and the label are this
+            // widget's chrome — there is no animation data here at all — so both now follow
+            // the theme instead of pinning the control to one appearance.
+            context.fill_rounded_rect(rect, 4, base_bg);
             let font = Font::default();
             let text = "No Rive animation loaded";
             let metrics = context.measure_text(text, &font);
@@ -609,22 +636,22 @@ impl Draw for RiveWidget {
                 Point::new(text_x, text_y),
                 text,
                 &font,
-                Color::rgba(160, 160, 160, 220),
+                placeholder_text,
                 HorizontalAlignment::Left,
             );
             return;
         }
 
-        // Background.
-        let bg = if !is_enabled {
-            Color::rgba(200, 200, 200, 100)
-        } else {
-            Color::rgba(245, 240, 250, 255)
-        };
+        // Background — the surface the animation is rendered onto, i.e. chrome. The former
+        // literal is the fallback, and disabled is now *derived* from the resolved colour
+        // rather than being a second fixed grey, so the two states stay distinguishable in
+        // any theme.
+        let bg = if !is_enabled { base_bg.blend(&Color::WHITE, 0.35) } else { base_bg };
         context.fill_rect(rect, bg);
 
-        // Draw bounding box.
-        context.draw_rect_stroke(rect, Color::rgba(140, 80, 180, 150), 1);
+        // Draw bounding box — a chrome edge around the animation, so it follows the theme's
+        // border token rather than a fixed violet.
+        context.draw_rect_stroke(rect, border_color, 1);
 
         // Calculate scale from composition (default 100x100) to widget rect.
         let (comp_w, comp_h) = match self.animation_data {
@@ -689,7 +716,7 @@ impl Draw for RiveWidget {
             name_metrics.width as u32 + 8,
             name_metrics.height as u32 + 4,
         );
-        context.fill_rounded_rect(name_bg, 3, Color::rgba(0, 0, 0, 50));
+        context.fill_rounded_rect(name_bg, 3, trough_color);
         context.draw_text(
             Point::new(name_x, name_y),
             &name_text,
@@ -705,7 +732,7 @@ impl Draw for RiveWidget {
         let py = rect.y + 2 + p_metrics.ascent as i32;
         let p_bg =
             Rect::new(px - 2, rect.y + 1, p_metrics.width as u32 + 8, p_metrics.height as u32 + 4);
-        context.fill_rounded_rect(p_bg, 3, Color::rgba(0, 0, 0, 50));
+        context.fill_rounded_rect(p_bg, 3, trough_color);
         context.draw_text(
             Point::new(px, py),
             &progress_text,
@@ -714,7 +741,9 @@ impl Draw for RiveWidget {
             HorizontalAlignment::Left,
         );
 
-        // Play/pause icon.
+        // Play/pause icon. The two colours are deliberately not themed: green versus amber
+        // *is* the state encoding — "playing" versus "paused" — and a theme would recolour
+        // both to whatever roles they happened to match.
         let status = if self.is_playing { "▶" } else { "⏸" };
         context.draw_text(
             Point::new(rect.x + 4, rect.y + rect.height as i32 - 4),
@@ -752,7 +781,9 @@ impl Draw for RiveWidget {
             rect.width.saturating_sub(8),
             progress_bar_height,
         );
-        context.fill_rounded_rect(progress_bar_full, 3, Color::rgba(200, 200, 200, 150));
+        // The trough is chrome — the empty part of an indicator — so it follows the theme;
+        // the fill below is data and keeps its colour.
+        context.fill_rounded_rect(progress_bar_full, 3, trough_color);
 
         let filled_width =
             ((progress_bar_full.width as f64) * self.animation_progress as f64) as u32;
@@ -763,6 +794,8 @@ impl Draw for RiveWidget {
                 filled_width,
                 progress_bar_full.height,
             );
+            // Deliberately not themed: this violet *encodes progress*. Recolouring it from a
+            // theme would make the bar indistinguishable from the trough it sits in.
             context.fill_rounded_rect(progress_bar_fill, 3, Color::rgba(140, 60, 200, 200));
         }
     }

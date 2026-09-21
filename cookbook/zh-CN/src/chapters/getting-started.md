@@ -74,7 +74,7 @@ rust_widgets = "2.5.0"
 | **迷你** | `mini` | LVGL 风格：约 28 个核心控件、软件光栅化、无 alloc 密集型依赖 |
 
 > **配置文件决定的是控件集有多少被*编译进来* —— 而不是每个操作系统上能用哪些控件。**
-> 所有配置文件绘制的都是同样的自绘控件；`desktop`/`tablet`/`mobile` 会编译全部 179 种控件类型，
+> 所有配置文件绘制的都是同样的自绘控件；`desktop`/`tablet`/`mobile` 会编译全部 180 种控件类型，
 > 而 `embedded`/`mini` 只编译一个精简的核心子集。参见
 > [platform-support.md § 1.2](platform-support.md#12-控件可用性按配置文件划分而非按操作系统)。
 

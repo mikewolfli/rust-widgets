@@ -275,14 +275,14 @@ impl Draw for Breadcrumb {
         // the draw or across another accessor — the global manager's mutex is not
         // re-entrant.
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("breadcrumb");
+        let theme = crate::style::resolved_theme_style("breadcrumb");
         // `breadcrumb` resolves to the `Text` role, which carries a foreground but no
         // surface — a text control sits on whatever it was placed on. So the surface
         // comes from the theme's own background, which is what
         // `apply_active_theme` could not supply and what a light/dark switch changes
         // most. The guard is scoped to this expression and released before any other
         // theme accessor runs.
-        let theme_surface = crate::theme::global_theme_manager()
+        let theme_surface = crate::style::theme_manager()
             .current_theme()
             .map(|theme| theme.colors.background);
         let background = style

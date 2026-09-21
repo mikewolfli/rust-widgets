@@ -591,7 +591,7 @@ impl Draw for DataGrid {
         // theme through its `table` classification, which is `Input` — an interior that
         // moves with the appearance.
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("data_grid");
+        let theme = crate::style::resolved_theme_style("data_grid");
         let mut surface = style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
@@ -605,7 +605,7 @@ impl Draw for DataGrid {
         // painted in that colour would be byte-identical to the frame behind it, so a resolved
         // surface equal to the window fill is re-derived a visible step away from it, the same
         // distinction `Colors::input_background` draws for a field.
-        let window_fill = crate::theme::global_theme_manager()
+        let window_fill = crate::style::theme_manager()
             .current_theme()
             .map(|active| active.colors.background)
             .unwrap_or(Color::WHITE);
@@ -622,7 +622,7 @@ impl Draw for DataGrid {
         let cell_border = surface.blend(&ink, 0.10);
         // The accent is the theme's `primary`: the hue a theme is expected to vary most, so
         // the frozen-column indicator follows the appearance rather than staying a literal blue.
-        let accent = crate::theme::global_theme_manager()
+        let accent = crate::style::theme_manager()
             .current_theme()
             .map(|active| active.colors.primary)
             .unwrap_or(Color::PRIMARY);

@@ -243,9 +243,9 @@ impl RibbonPalette {
     /// not re-entrant. The window fill is read as its own scoped acquisition and copied out, so
     /// no guard is held while the rest of the palette is computed.
     fn resolve(style: &crate::style::WidgetStyle) -> Self {
-        let theme = crate::theme::resolved_theme_style("ribbon_bar");
+        let theme = crate::style::resolved_theme_style("ribbon_bar");
         let (window_fill, foreground, secondary, primary) = {
-            let manager = crate::theme::global_theme_manager();
+            let manager = crate::style::theme_manager();
             match manager.current_theme() {
                 Some(active) => (
                     active.colors.background,

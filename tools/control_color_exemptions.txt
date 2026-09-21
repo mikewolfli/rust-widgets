@@ -62,3 +62,13 @@ map_view map-content true The map tiles/layers are geographic content; their pal
 media_player video-surface true The player surface shows the media being played; that is content.
 font_preview glyph-samples true The glyph samples show the font's own appearance; that is the datum.
 emoji_picker emoji-glyphs true The emoji glyphs are the content being picked, not chrome.
+
+# ── Sparkline: the line is the whole control ───────────────────────────────
+# A sparkline IS its line. It paints no background, no border and no axis: the only
+# colour it draws with is `line_color` / `last_point_color`, and those are **fields the
+# caller sets** — the colour identifies which series the line is. There is no chrome in
+# this control to theme, so the exemption is not "we skipped it" but "there is nothing
+# here that is not data". Applied at the check-with-evidence level of principle #51:
+# the duplicate-code test found nothing to share, and forcing a theme read would add an
+# indirection that buys nothing and could repaint a caller's series colour.
+sparkline series-identity true The line's colour is the series identity and is set by the caller; the control paints no background, border or axis, so it has no chrome to theme at all.

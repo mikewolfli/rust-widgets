@@ -11,8 +11,24 @@ A platform `create_*` with **no** capability behind it is the failure this repor
 name is spellable and the trait method exists, but nothing can be constructed, so the call
 returns zero and the control is silently absent from the designer's list.
 
-The alias tables live in `src/widget/capability.rs`; this script reads them rather than
-re-stating them, so a new alias is picked up without editing it.
+# Why the comparison is by *normalised* name, not by literal spelling
+
+The first version of this script compared the platform name to the capability names with
+`==`. That made `create_checkbox` report as `UNRESOLVED (1)` — a **false positive**, and
+BLUE20 §1.7 recorded it as the layer's one real gap. It is not a gap: `WidgetFactory`
+stores every name under `normalize_key`, which strips `_`, `-` and spaces and lowercases,
+so `"checkbox"` and `"check_box"` are the *same key* and both already construct the
+control. Measured:
+
+    factory.create("checkbox", ..).is_some() == true   -> canonical_name == "check_box"
+    factory.create("checkBox", ..).is_some() == true
+
+The mistake was in the criterion, not in the code, so the fix is here (principle #110): a
+literal comparison under-reports reachability, and "fixing" it by adding an alias would
+have been a no-op that also violates `capability_alias_hygiene_test`. The alias tables live
+in `src/widget/capability.rs` and the normalisation rule in
+`src/widget/capability/coercion.rs::normalize_key`; this script reads them rather than
+re-stating them.
 """
 
 import re
@@ -21,6 +37,17 @@ import sys
 CAPABILITY = "src/widget/capability.rs"
 PROPERTIES = "src/widget/capability/properties.rs"
 PLATFORM = "src/platform/types.rs"
+
+
+def normalize_key(value: str) -> str:
+    """The factory's own name normalisation, mirrored from `coercion.rs::normalize_key`.
+
+    Duplicated rather than imported because this is a source-text scanner with no Rust
+toolchain in the loop, and because the *rule* (strip `_`, `-`, space; lowercase) is what
+    this script depends on. A divergence would show up as a spurious `UNRESOLVED`, which is
+    the finding this script exists to produce, so it fails loudly rather than silently.
+    """
+    return "".join(ch for ch in value.lower() if ch not in "_- ")
 
 
 def main() -> int:
@@ -34,6 +61,11 @@ def main() -> int:
     alias_names = set()
     for group in re.findall(r"aliases:\s*&\[([^\]]*)\]", properties):
         alias_names |= set(re.findall(r'"([^"]+)"', group))
+
+    # Keyed by the *normalised* name, which is what the factory actually looks up.
+    reachable: dict[str, str] = {normalize_key(name): name for name in canonical}
+    for name in alias_names:
+        reachable.setdefault(normalize_key(name), name)
 
     # `WidgetKind::ContextMenu => "menu"` — a variant that is a type alias.
     kind_alias = dict(re.findall(r'WidgetKind::(\w+) => "([^"]+)"', capability))
@@ -70,12 +102,18 @@ def main() -> int:
 
     unresolved = []
     for name in creates:
-        if name in canonical:
-            status = "capability"
+        key = normalize_key(name)
+        if key in reachable:
+            # Name the *canonical* spelling when the two differ, so a reader can see that
+            # `checkbox` resolved to `check_box` rather than being silently accepted.
+            canonical_hit = reachable[key]
+            status = (
+                "capability"
+                if canonical_hit == name
+                else f"normalised name -> {canonical_hit}"
+            )
         elif name in name_alias:
             status = f"name alias -> {name_alias[name]}"
-        elif name in alias_names:
-            status = "in a capability's aliases"
         else:
             camel = "".join(word.title() for word in name.split("_"))
             if camel in kind_alias:

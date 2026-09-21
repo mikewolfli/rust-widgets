@@ -204,18 +204,41 @@ impl Draw for HeroAnimation {
         let rect = self.geometry();
         let is_enabled = self.base.is_enabled();
 
-        let bg = if !is_enabled {
-            Color::rgba(240, 240, 240, 100)
-        } else {
-            Color::rgba(240, 240, 240, 255)
-        };
+        // Chrome colours resolve explicit style first, then the theme's resolved style for
+        // this control, and only then fall back to the original literal. The literal step is
+        // kept deliberately: an inactive theme must still give the widget a defined
+        // appearance, and the value is the one this widget painted before, so an existing
+        // pixel baseline cannot move. Resolved once per draw, because the shell, the label,
+        // the badge and the outline all read from it and re-resolving would take the theme
+        // lock several times inside one draw.
+        let style = self.style().clone();
+        let themed = crate::style::resolved_theme_style("hero_animation");
+        let themed_bg = themed.as_ref().and_then(|resolved| resolved.background_color);
+        let themed_border = themed.as_ref().and_then(|resolved| resolved.border_color);
+        let themed_text = themed.as_ref().and_then(|resolved| resolved.text_color);
+        let base_bg =
+            style.background_color.or(themed_bg).unwrap_or(Color::rgba(240, 240, 240, 255));
+        let shell_border = style.border_color.or(themed_border).unwrap_or(Color::rgba(0, 0, 0, 40));
+        // The ink is the theme's foreground, with `.contrast_color()` as the second choice so
+        // it stays readable on whichever surface the theme painted; only then the literal.
+        let ink = style
+            .text_color
+            .or(themed_text)
+            .or_else(|| style.background_color.or(themed_bg).map(|bg| bg.contrast_color()))
+            .unwrap_or(Color::rgba(160, 160, 160, 220));
+
+        // The outer shell is this widget's chrome. The former literals are the fallbacks, and
+        // the disabled state is now *derived* from the resolved colour rather than being a
+        // second fixed grey, so the two states stay distinguishable in any theme.
+        let bg = if !is_enabled { base_bg.blend(&Color::WHITE, 0.35) } else { base_bg };
         context.fill_rect(rect, bg);
 
         let src = self.source_widget.as_ref();
         let tgt = self.target_widget.as_ref();
 
         if src.is_none() && tgt.is_none() {
-            // No widgets configured: draw placeholder.
+            // No widgets configured: draw placeholder. The message is this widget's own
+            // chrome — a hint about missing configuration — so it follows the theme.
             let font = crate::core::Font::default();
             let text = "HeroAnimation\nSet source & target";
             let metrics = context.measure_text(text, &font);
@@ -225,7 +248,7 @@ impl Draw for HeroAnimation {
                 Point::new(text_x, text_y),
                 text,
                 &font,
-                Color::rgba(160, 160, 160, 220),
+                ink,
                 HorizontalAlignment::Left,
             );
             return;
@@ -245,6 +268,11 @@ impl Draw for HeroAnimation {
         let interp_rect = Rect::new(ix as i32, iy as i32, iw as u32, ih as u32);
 
         // Color interpolates from a "source" blue to a "target" green.
+        //
+        // Deliberately not themed: these are *data*, not chrome. The widget's whole subject
+        // is "animate from this colour to that colour", so recovering them from a palette
+        // would erase the demonstration — and a theme whose two tokens coincided would make
+        // the interpolation invisible.
         let src_color = Color::rgb(33, 118, 210); // Material blue
         let tgt_color = Color::rgb(76, 175, 80); // Material green
         let r = src_color.r as f32 + (tgt_color.r as f32 - src_color.r as f32) * t;
@@ -262,9 +290,12 @@ impl Draw for HeroAnimation {
         );
 
         context.fill_rounded_rect(interp_rect, 8, fade_color);
-        context.draw_rounded_rect_stroke(interp_rect, 8, Color::rgba(0, 0, 0, 40), 1);
+        // The outline around the interpolated element is chrome, so it takes the resolved
+        // theme border; the fill above keeps its interpolated data colour.
+        context.draw_rounded_rect_stroke(interp_rect, 8, shell_border, 1);
 
-        // Draw the progress indicator label.
+        // Draw the progress indicator label. The label is chrome, so it uses the resolved
+        // foreground instead of the fixed mid-grey that made it unreadable on a dark shell.
         let progress_text = format!("Progress: {:.0}%", t * 100.0);
         let font = crate::core::Font::default();
         let metrics = context.measure_text(&progress_text, &font);
@@ -274,11 +305,13 @@ impl Draw for HeroAnimation {
             Point::new(text_x, text_y),
             &progress_text,
             &font,
-            Color::rgba(80, 80, 80, 200),
+            ink,
             HorizontalAlignment::Left,
         );
 
-        // Draw source/target labels.
+        // Draw source/target labels. These are the endpoint colours of the transition shown
+        // above — "source blue" and "target green" — so like those they are data, and the
+        // label must match the colour it names rather than the theme's.
         if let (Some(_), None) = (src, tgt) {
             context.draw_text(
                 Point::new(rect.x + 4, rect.y + 14),

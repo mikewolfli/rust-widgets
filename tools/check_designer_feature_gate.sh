@@ -45,6 +45,10 @@ STRIPPED_FROM_DESIGNER=(tablet mobile mini embedded)
 
 # A throwaway crate whose only job is to *name* the gated module. `use` is enough: the question is
 # whether the path resolves, not whether the API works (the API has its own tests).
+#
+# `mktemp -d` yields a **host-native** path, which on Windows contains backslashes; a
+# `--manifest-path` argument is a plain filesystem path rather than TOML, so cargo accepts it
+# either way, but the derived `-dependencies` path below is TOML and must not carry them.
 PROBE_DIR="$(mktemp -d)"
 trap 'rm -rf "$PROBE_DIR"' EXIT
 mkdir -p "$PROBE_DIR/src"
@@ -56,6 +60,22 @@ printf 'pub fn probe() -> &%sstr { rust_widgets::designer::GENERATED_MARKER }\n'
 # before this gate runs, so the reuse is safe; the whole gate is bounded above either way.
 probe() {
   local features="$1"
+  # The probe manifest is TOML, where `\` starts an escape, so a native Windows path
+  # (`D:\Workspace\...`) written verbatim makes it unparsable and every probe fails — a
+  # false failure about the host rather than a finding about the feature gate.
+  #
+  # The conversion is `cygpath -m` ("mixed": a Windows path with forward slashes, exactly
+  # what TOML needs) where it exists. It does **not** fall back to a plain `\` → `/`
+  # substitution, because under git-bash `$PWD` is the MSYS form `/d/Workspace/...` and cargo
+  # reads that as a *drive-relative* path, resolving it to `C:\d\Workspace\...` — an error
+  # that looks like a missing crate rather than a bad path. Where `cygpath` is absent the path
+  # is already POSIX, so it is used as-is.
+  local manifest_path
+  if command -v cygpath >/dev/null 2>&1; then
+    manifest_path="$(cygpath -m "$ROOT_DIR")"
+  else
+    manifest_path="$ROOT_DIR"
+  fi
   cat > "$PROBE_DIR/Cargo.toml" <<EOF
 [package]
 name = "rw_designer_gate_probe"
@@ -65,7 +85,7 @@ edition = "2021"
 [workspace]
 
 [dependencies]
-rust_widgets = { path = "$ROOT_DIR", default-features = false, features = [$features] }
+rust_widgets = { path = "$manifest_path", default-features = false, features = [$features] }
 EOF
   CARGO_TARGET_DIR="$ROOT_DIR/target" \
     rw_run_bounded "$GATE_TIMEOUT" cargo check --quiet --manifest-path "$PROBE_DIR/Cargo.toml" \

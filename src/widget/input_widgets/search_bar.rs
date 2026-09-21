@@ -240,6 +240,15 @@ impl Draw for SearchBar {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
         let is_enabled = self.base.is_enabled();
+        // Resolved once for the whole draw: the field, the icon and the cancel label all read
+        // it, and re-resolving would take the theme lock once per read. Precedence is the
+        // crate-wide one — an explicit style wins, then the theme, then the literal.
+        let style = self.style().clone();
+        let themed = crate::style::resolved_theme_style("search_bar");
+        let themed_bg = themed.as_ref().and_then(|resolved| resolved.background_color);
+        let accent = style
+            .border_color
+            .or_else(|| themed.as_ref().and_then(|resolved| resolved.border_color));
         let cancel_width: u32 = if self.is_active && self.cancel_button_visible { 60 } else { 0 };
         let field_width = rect.width.saturating_sub(cancel_width + 4);
 
@@ -257,18 +266,23 @@ impl Draw for SearchBar {
                 Point::new(text_x, text_y),
                 cancel_text,
                 &cancel_font,
-                Color::rgba(52, 120, 246, 255),
+                // The cancel label is the control's accent — an actionable affordance — so it
+                // follows the resolved border colour rather than a fixed blue.
+                accent.unwrap_or(Color::rgba(52, 120, 246, 255)),
                 HorizontalAlignment::Left,
             );
         }
 
         // Search field background
+        //
+        // Resolved from the style so a theme switch reaches this control; the two states are
+        // *derived* from the resolved colour, so disabled reads as the same field with the
+        // energy taken out and the control follows the theme.
         let field_rect = Rect::new(rect.x, rect.y, field_width, rect.height);
-        let field_color = if !is_enabled {
-            Color::rgba(235, 235, 235, 200)
-        } else {
-            Color::rgba(200, 200, 205, 200)
-        };
+        let base_field =
+            style.background_color.or(themed_bg).unwrap_or(Color::rgba(200, 200, 205, 200));
+        let field_color =
+            if !is_enabled { base_field.blend(&Color::WHITE, 0.35) } else { base_field };
         let corner_radius = rect.height / 2;
         context.fill_rounded_rect(field_rect, corner_radius, field_color);
 
@@ -276,7 +290,8 @@ impl Draw for SearchBar {
         let icon_size: u32 = 14;
         let icon_left = rect.x + 10;
         let icon_top = rect.y + (rect.height as i32 - icon_size as i32) / 2;
-        let icon_color = Color::rgba(140, 140, 140, 255);
+        // The magnifier is a glyph, so it reads the control's text colour.
+        let icon_color = style.text_color.unwrap_or(Color::rgba(140, 140, 140, 255));
         context.draw_circle_stroke(
             Point::new(icon_left + (icon_size / 2) as i32, icon_top + (icon_size / 2) as i32),
             icon_size / 2,

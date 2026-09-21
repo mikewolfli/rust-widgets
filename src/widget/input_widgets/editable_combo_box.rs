@@ -285,7 +285,7 @@ impl Draw for EditableComboBox {
         // `resolved_theme_style`, so it is not held across the draw — the global
         // manager's mutex is not re-entrant.
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("editable_combo_box");
+        let theme = crate::style::resolved_theme_style("editable_combo_box");
         let themed_ink = theme.as_ref().and_then(|t| t.text_color);
         let themed_border = theme.as_ref().and_then(|t| t.border_color);
 
@@ -355,7 +355,7 @@ impl Draw for EditableComboBox {
 
         // The selected-row highlight is the theme's accent, which is the one hue a theme
         // is expected to vary most.
-        let highlight = crate::theme::global_theme_manager()
+        let highlight = crate::style::theme_manager()
             .current_theme()
             .map(|active| active.colors.primary.with_alpha(40))
             .unwrap_or_else(|| ink.blend(&field, 0.85));

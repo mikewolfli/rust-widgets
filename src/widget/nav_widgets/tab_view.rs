@@ -185,7 +185,7 @@ impl Draw for TabView {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("tab_view");
+        let theme = crate::style::resolved_theme_style("tab_view");
         // `tab_view` is not a control kind in the role table, so it classifies as
         // `Surface`, whose background is `theme.colors.background` — byte-identical
         // to the window behind it. The content area's fill is therefore a step toward
@@ -205,7 +205,7 @@ impl Draw for TabView {
         let inactive_tab = content_background.blend(&text_color, 0.05);
         // The selected indicator is a *selection* state, so it reads the theme's
         // primary token rather than a literal blue.
-        let indicator = crate::theme::resolved_theme_style("button")
+        let indicator = crate::style::resolved_theme_style("button")
             .and_then(|button| button.background_color)
             .unwrap_or_else(|| content_background.blend(&text_color, 0.6));
         let selected_text = indicator;

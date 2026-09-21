@@ -661,6 +661,46 @@ pub fn create_radar_chart(geometry: Rect, text: &str) -> Box<dyn Widget> {
 }
 
 #[cfg(full_widgets)]
+/// Creates a heat map pre-filled with a small sample matrix.
+///
+/// Unlike the radar chart and the kanban board, this one *is* pre-populated. The
+/// difference is what the sample has to be for the control to paint anything: a heat
+/// map with no cells draws only its frame, so an empty default would leave a caller
+/// looking at a control they cannot tell apart from a blank panel. The sample's labels
+/// are deliberately generic ("R1"/"C1") because a heat map's real axes are the caller's
+/// data — these exist to be replaced, and the three-row shape is what makes the ramp
+/// visible before any data arrives.
+pub fn create_heatmap(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    let mut heatmap = Heatmap::new(geometry);
+    let rows = vec!["R1".to_string(), "R2".to_string(), "R3".to_string()];
+    let columns = vec!["C1".to_string(), "C2".to_string(), "C3".to_string(), "C4".to_string()];
+    // A ramp-across-the-range sample, so P3 (light ≠ dark) is decided by the chrome rather
+    // than by the data and the control's theme response is not hidden by its values.
+    let values = vec![
+        vec![
+            HeatmapCell::new(1.0),
+            HeatmapCell::new(3.0),
+            HeatmapCell::new(6.0),
+            HeatmapCell::new(9.0),
+        ],
+        vec![
+            HeatmapCell::new(4.0),
+            HeatmapCell::new(7.0),
+            HeatmapCell::new(2.0),
+            HeatmapCell::new(5.0),
+        ],
+        vec![
+            HeatmapCell::new(8.0),
+            HeatmapCell::new(2.0),
+            HeatmapCell::new(5.0),
+            HeatmapCell::new(3.0),
+        ],
+    ];
+    heatmap.set_data(rows, columns, values);
+    label(geometry, text, Box::new(heatmap))
+}
+
+#[cfg(full_widgets)]
 /// Creates an empty kanban board. `text` is applied as the control's label.
 ///
 /// No sample columns: a column title is the caller's workflow vocabulary, and a

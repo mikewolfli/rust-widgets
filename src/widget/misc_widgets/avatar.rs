@@ -212,7 +212,7 @@ impl Draw for Avatar {
         // `resolved_theme_style`, so none is held across the draw or across another
         // accessor — the global manager's mutex is not re-entrant.
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("avatar");
+        let theme = crate::style::resolved_theme_style("avatar");
         let window_background = theme.as_ref().and_then(|t| t.background_color);
         // An avatar classifies as a generic surface, so the theme resolves it to the
         // window's own colour. A disc painted in that colour is *invisible* against the
@@ -221,7 +221,7 @@ impl Draw for Avatar {
         // the raised interactive surface, which the theme derives from its background and
         // foreground and which therefore differs between appearances.
         let raised =
-            crate::theme::resolved_theme_style("button").and_then(|button| button.background_color);
+            crate::style::resolved_theme_style("button").and_then(|button| button.background_color);
         let disc_background = style
             .background_color
             .filter(|colour| Some(*colour) != window_background)

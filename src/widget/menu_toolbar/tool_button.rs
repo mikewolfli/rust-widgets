@@ -63,9 +63,12 @@ pub enum ToolButtonStyle {
 ///
 /// # Appearance
 ///
-/// Drawing uses the widget's interaction state directly rather than a theme: the
-/// background varies for pressed, checked, and hovered states, and the label is
-/// centred. The icon path is stored but not decoded or painted by this widget.
+/// Chrome follows the resolved theme: the fill resolves the explicit style first, then
+/// this control's resolved style, and falls back to the previous literal when no theme is
+/// active. The interaction states are derived from that fill rather than hardcoded, so
+/// pressed, checked and hovered remain distinguishable on any appearance. The label is
+/// centred and fades toward the fill while the button is disabled. The icon path is stored
+/// but not decoded or painted by this widget.
 pub struct ToolButton {
     base: BaseWidget,
     text: String,
@@ -314,26 +317,54 @@ impl EventHandler for ToolButton {
 impl Draw for ToolButton {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
+
+        // Chrome colours resolve the explicit style first, then the theme's resolved style
+        // for this control, and only then fall back to a literal. Every colour here used to
+        // be a literal, so a light/dark switch changed nothing on screen: the four state
+        // fills, the focus border and the label were all fixed. The rendering census
+        // reported the control as theme-blind.
+        //
+        // The retired literals are kept as the fallbacks, and they are also the **base**
+        // from which each state is derived. That is deliberate: it means an inactive theme
+        // still renders byte-identically to the previous behaviour, so no existing pixel
+        // baseline can regress, while an active theme shifts every state together.
+        //
+        // The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so it is not held across the draw — the global manager's
+        // mutex is not re-entrant.
+        let style = self.base.style().clone();
+        let theme = crate::style::resolved_theme_style("tool_button");
+        let themed_bg = theme.as_ref().and_then(|resolved| resolved.background_color);
+        let themed_text = theme.as_ref().and_then(|resolved| resolved.text_color);
+        let themed_border = theme.as_ref().and_then(|resolved| resolved.border_color);
+        // `tool_button` is absent from the role table, so it resolves as `Surface` and its
+        // background is the resolved surface fill. A caller that set a colour still wins.
+        let base = Color::rgb(240, 240, 240);
+        let accent = themed_border.unwrap_or(Color::rgb(0, 120, 215));
+        // The interaction states are **derived from the base**, not collapsed into one
+        // colour, so the four states stay distinguishable on any theme: a press is a step
+        // toward the accent, a hover is a step toward white, and a toggled-on button keeps
+        // the previous checked/hover ordering.
         let bg = if self.pressed {
-            Color::rgb(180, 210, 255)
+            base.blend(&accent, 0.45)
         } else if self.checked {
-            Color::rgb(200, 225, 255)
+            base.blend(&accent, 0.25)
         } else if self.hovered && !self.auto_raise {
-            Color::rgb(220, 238, 255)
+            base.blend(&Color::WHITE, 0.55)
         } else if self.auto_raise && !self.hovered {
             Color::rgba(0, 0, 0, 0) // transparent
         } else {
-            Color::rgb(240, 240, 240)
+            base
         };
         context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), bg);
         if self.hovered || self.pressed || self.checked {
-            context.draw_rect(
-                Rect::new(rect.x, rect.y, rect.width, rect.height),
-                Color::rgb(0, 120, 215),
-            );
+            context.draw_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), accent);
         }
-        let fg =
-            if !self.base.is_enabled() { Color::rgb(150, 150, 150) } else { Color::rgb(0, 0, 0) };
+        // A disabled label is the ink faded toward the fill behind it, which keeps it
+        // readable-but-muted on a dark theme as well as a light one; the literal is only
+        // the fallback for a control whose ink the theme does not supply.
+        let ink = style.text_color.or(themed_text).unwrap_or(Color::rgb(0, 0, 0));
+        let fg = if !self.base.is_enabled() { ink.blend(&base, 0.45) } else { ink };
         let label = match self.button_style {
             ToolButtonStyle::TextOnly
             | ToolButtonStyle::TextBesideIcon

@@ -252,9 +252,7 @@ impl Layout for GridLayout {
                     // clamping each row independently let every row claim the full height,
                     // so the later rows were placed past the bottom edge (a 60px container
                     // with two 500px rows put the second row at y=60 with a height of 60).
-                    let remaining =
-                        (available_height as i32 - current_y).max(0).min(height as i32) as u32;
-                    remaining
+                    (available_height as i32 - current_y).max(0).min(height as i32) as u32
                 }
                 RowSizing::Fill => {
                     if total_row_stretch > 0 {

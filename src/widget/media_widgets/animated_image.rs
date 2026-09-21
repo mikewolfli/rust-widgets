@@ -307,9 +307,32 @@ impl Draw for AnimatedImage {
         let rect = self.geometry();
         let is_enabled = self.base.is_enabled();
 
+        // Chrome colours resolve explicit style first, then the theme's resolved style for
+        // this control, and only then fall back to the original literal. The literal step is
+        // kept deliberately: an inactive theme must still give the widget a defined
+        // appearance, and the value is the one this widget painted before, so an existing
+        // pixel baseline cannot move. Resolved once per draw, because the empty state, the
+        // background, the status chips and the counter all read from it and re-resolving
+        // would take the theme lock several times inside one draw.
+        let style = self.style().clone();
+        let themed = crate::style::resolved_theme_style("animated_image");
+        let themed_bg = themed.as_ref().and_then(|resolved| resolved.background_color);
+        let themed_border = themed.as_ref().and_then(|resolved| resolved.border_color);
+        let themed_text = themed.as_ref().and_then(|resolved| resolved.text_color);
+        let base_bg =
+            style.background_color.or(themed_bg).unwrap_or(Color::rgba(230, 230, 230, 200));
+        let border_color =
+            style.border_color.or(themed_border).unwrap_or(Color::rgba(160, 160, 160, 200));
+        // The placeholder ink follows the theme's foreground so it stays legible on whichever
+        // surface the theme painted; the literal is only the last resort.
+        let placeholder_text =
+            style.text_color.or(themed_text).unwrap_or(Color::rgba(160, 160, 160, 220));
+
         if self.frames.is_empty() {
-            // Empty state: draw a neutral placeholder.
-            context.fill_rounded_rect(rect, 4, Color::rgba(230, 230, 230, 200));
+            // Empty state: a neutral placeholder panel. The panel and the label are this
+            // widget's chrome — there is no frame data here at all — so both now follow the
+            // theme instead of pinning the control to one appearance.
+            context.fill_rounded_rect(rect, 4, base_bg);
             let font = crate::core::Font::default();
             let text = "No frames loaded";
             let metrics = context.measure_text(text, &font);
@@ -319,15 +342,18 @@ impl Draw for AnimatedImage {
                 Point::new(text_x, text_y),
                 text,
                 &font,
-                Color::rgba(160, 160, 160, 220),
+                placeholder_text,
                 HorizontalAlignment::Left,
             );
             return;
         }
 
         if let Some(frame) = self.frames.get(self.current_frame) {
-            // Background.
-            let bg = if !is_enabled { Color::rgba(200, 200, 200, 100) } else { Color::WHITE };
+            // Background — the surface the frame is matted onto, i.e. chrome. The former
+            // literal white is the fallback, and disabled is now *derived* from the resolved
+            // colour rather than being a second fixed grey, so the two states stay
+            // distinguishable in any theme.
+            let bg = if !is_enabled { base_bg.blend(&Color::WHITE, 0.35) } else { base_bg };
             context.fill_rect(rect, bg);
 
             // Draw the frame centered in the widget geometry.
@@ -335,11 +361,17 @@ impl Draw for AnimatedImage {
             let fh = frame.height as i32;
             let dx = rect.x + (rect.width as i32 - fw) / 2;
             let dy = rect.y + (rect.height as i32 - fh) / 2;
+            // Content, not chrome: the frame's own pixels are the caller's data — the whole
+            // subject of an animated image — so they are painted exactly as decoded and must
+            // never be recoloured from a theme.
             context.draw_image(dx.max(0), dy.max(0), frame.width, frame.height, &frame.data);
 
             // Draw play/pause indicator overlay if animation is stopped or paused.
             if !self.playing {
-                let overlay_color = Color::rgba(0, 0, 0, 80);
+                // The indicator chip is a status overlay rather than part of any frame, so the
+                // theme sets its tone. Only the alpha is carried across: the badge must stay
+                // dark enough to read as a scrim over arbitrary frame data.
+                let overlay_color = border_color;
                 let indicator_size = 32u32;
                 let ix = rect.x + (rect.width as i32 - indicator_size as i32) / 2;
                 let iy = rect.y + (rect.height as i32 - indicator_size as i32) / 2;
@@ -347,7 +379,8 @@ impl Draw for AnimatedImage {
                 context.fill_rounded_rect(indicator_rect, 6, overlay_color);
 
                 if self.current_frame == 0 && !self.playing {
-                    // Play triangle.
+                    // Play triangle. Deliberately not themed: it is a media glyph drawn on the
+                    // chip above, and a themed light-on-light pair would be invisible.
                     let cx = ix + indicator_size as i32 / 2;
                     let cy = iy + indicator_size as i32 / 2;
                     let tri_size = 10i32;
@@ -377,7 +410,10 @@ impl Draw for AnimatedImage {
             let pill_w = metrics.width as u32 + 8;
             let pill_h = metrics.height as u32 + 2;
             let pill_rect = Rect::new(cx - 4, cy - 1, pill_w, pill_h);
-            context.fill_rounded_rect(pill_rect, 3, Color::rgba(0, 0, 0, 60));
+            // Same rule as the play chip: the counter's backdrop belongs to the widget's
+            // chrome, but the white counter ink and the chip's own alpha are kept as they
+            // were, because they are the badge's legibility contract over the frame.
+            context.fill_rounded_rect(pill_rect, 3, border_color);
             context.draw_text(
                 Point::new(cx, cy + metrics.ascent as i32),
                 &counter_text,

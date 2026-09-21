@@ -43,6 +43,7 @@ impl WidgetFactory {
         self.register(line_capability(), create_line);
         self.register(meter_capability(), create_meter);
         self.register(radar_chart_capability(), create_radar_chart);
+        self.register(heatmap_capability(), create_heatmap);
         self.register(kanban_board_capability(), create_kanban_board);
         self.register(cascader_capability(), create_cascader);
         self.register(query_builder_capability(), create_query_builder);

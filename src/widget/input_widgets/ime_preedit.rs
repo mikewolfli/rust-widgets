@@ -218,11 +218,11 @@ impl Draw for ImePreedit {
         // released inside the accessor, so it is not held across the draw — the global manager's
         // mutex is not re-entrant.
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("ime_preedit");
+        let theme = crate::style::resolved_theme_style("ime_preedit");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.
         let (window_fill, foreground) = {
-            let manager = crate::theme::global_theme_manager();
+            let manager = crate::style::theme_manager();
             match manager.current_theme() {
                 Some(active) => (active.colors.background, active.colors.foreground),
                 None => (Color::rgb(240, 240, 240), Color::BLACK),
@@ -263,7 +263,7 @@ impl Draw for ImePreedit {
         // The underline marks the composition as uncommitted, so it carries the theme's primary
         // when the caller has not chosen one of its own.
         let underline_color = self.effective_underline_color(
-            crate::theme::semantic_color(crate::theme::SemanticColor::Info).unwrap_or(ink),
+            crate::style::semantic_color(crate::style::SemanticColor::Info).unwrap_or(ink),
         );
         context.draw_line_stroke(
             Point::new(rect.x, underline_y),

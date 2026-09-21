@@ -343,7 +343,7 @@ impl Draw for SignaturePad {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("signature_pad");
+        let theme = crate::style::resolved_theme_style("signature_pad");
         let background = style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))

@@ -741,10 +741,10 @@ impl EventHandler for WebEngineView {
             // identical on every press. A control cannot know which link was clicked
             // without a DOM hit-test, so inventing a URL was the wrong answer in both
             // respects — it is removed, and the click is reported instead.
-            Event::MousePress { pos, button } if *button == 1 => {
-                if self.geometry().contains_point(*pos) {
-                    self.base.clicked.emit();
-                }
+            Event::MousePress { pos, button }
+                if *button == 1 && self.geometry().contains_point(*pos) =>
+            {
+                self.base.clicked.emit();
             }
             Event::KeyPress { key, modifiers } => {
                 match *key {
@@ -787,11 +787,11 @@ impl Draw for WebEngineView {
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("web_engine_view");
+        let theme = crate::style::resolved_theme_style("web_engine_view");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.
         let (window_fill, foreground, secondary) = {
-            let manager = crate::theme::global_theme_manager();
+            let manager = crate::style::theme_manager();
             match manager.current_theme() {
                 Some(active) => {
                     (active.colors.background, active.colors.foreground, active.colors.secondary)

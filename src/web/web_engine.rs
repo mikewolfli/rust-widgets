@@ -10,23 +10,43 @@
 //! - `WidgetKind::WebEngineView`
 //! - Additional signals: `certificate_error`, `download_requested`
 //! - Additional methods: `set_plugins_enabled`, `set_private_browsing`
+//!
+//! # Rendering: simulated only (BLUE20 layer 5, ruling W1, 2026-09-21)
+//!
+//! This control does **not** render a web page. It models one: a URL, a title, a
+//! history and a 0 → 50 → 100 progress sequence, which is what the declarative
+//! and programmatic APIs are written against.
+//!
+//! A real engine used to be reachable on Linux behind the `webkit-engine` feature.
+//! It was removed because it **never displayed anything**: 76 lines of one-line
+//! forwards to `webkit2gtk`, one platform, and the `WebView` was never added to a
+//! GTK container, so no user could ever have seen a page through this library. Keeping
+//! it made the crate look like it rendered the web while it did not — the same defect
+//! class as an event that is published but never emitted (BLUE19 #97).
+//!
+//! What this control *can* do is evaluate JavaScript, through the pure-Rust
+//! [`boa`](super::js_engine) engine. That is an independent capability and is
+//! unaffected by the removal: it runs the script and returns its value, which is
+//! useful for validating expressions, templating and small computations
+//! (see [`Self::evaluate_javascript`]).
+//!
+//! A caller can ask whether a real engine is available with
+//! [`crate::platform::Platform::supports_web_engine`]; it answers `false` on every
+//! current backend, and the answer is honest rather than a silent degradation.
 
 use super::js_engine::{JsResult, JsValue};
 use super::web_core::{delegate_widget, WebViewCore};
 use crate::core::{ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-use crate::platform::types::NativeWebEngine;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 use crate::widget::{Widget, WidgetKind};
 
 /// Enhanced web engine view widget.
 ///
-/// When the active platform backend can host a real web engine
-/// (`Platform::create_web_engine`), navigation delegates to it; otherwise the
-/// simulated 0→50→100 progress callbacks are used. The engine is obtained at
-/// construction and held behind the platform-neutral [`NativeWebEngine`] trait,
-/// so this widget names no platform crate — see principle #36.
+/// Navigation runs the simulated loader: the core owns the URL, title and history,
+/// and drives the 0 → 50 → 100 progress callbacks. See the module docs for why there
+/// is no rendering engine behind it.
 pub struct WebEngineViewEnhanced {
     core: WebViewCore,
     /// Emitted when the engine rejects a site certificate, carrying the
@@ -35,48 +55,52 @@ pub struct WebEngineViewEnhanced {
     /// Emitted when a navigation asks to download rather than to display, carrying
     /// the URL of the download, through [`Self::request_download`].
     pub download_requested: Signal1<String>,
-    /// Real engine when the backend provides one, `None` for the simulated path.
-    webkit_backend: Option<Box<dyn NativeWebEngine>>,
 }
 
 impl WebEngineViewEnhanced {
     /// Creates an engine view in `geometry` with an empty URL, no title, and
     /// nothing loading.
-    ///
-    /// The active backend is asked for a native web engine at this point: if
-    /// [`Platform::create_web_engine`](crate::platform::Platform::create_web_engine)
-    /// returns one, navigation is forwarded to it; if it returns `None` — a
-    /// headless host, for instance — the widget degrades to the simulated path
-    /// rather than failing. Which of the two happened is not exposed, so a caller
-    /// that must know should query the platform directly.
     pub fn new(geometry: Rect) -> Self {
-        // Ask the active backend rather than testing `cfg(target_os)`: a headless
-        // Linux host returns `None` here and the widget degrades to simulation.
-        let webkit_backend = crate::platform::platform_facts().create_web_engine();
-
         Self {
             core: WebViewCore::new(WidgetKind::WebEngineView, geometry, "WebEngineView", ""),
             certificate_error: Signal1::new(),
             download_requested: Signal1::new(),
-            webkit_backend,
         }
     }
 
     // -- Accessors that delegate to core --
 
+    /// Whether a **real** web rendering engine is behind this view.
+    ///
+    /// # Why this query exists (BLUE20 layer 5, rules #97/#109)
+    ///
+    /// The previous implementation degraded silently: `new` asked the platform for an
+    /// engine, and whether it got one was **not exposed**, so a caller that had to know
+    /// was told to "query the platform directly". That made "this is a simulated view"
+    /// undetectable — the same defect class as an event that is published but never
+    /// emitted: a state the caller cannot observe and therefore cannot handle.
+    ///
+    /// It answers by asking the platform rather than by remembering a construction-time
+    /// fact, so it stays correct if a backend gains engine support later. Today it is
+    /// `false` everywhere (see [`Platform::supports_web_engine`]).
+    ///
+    /// [`Platform::supports_web_engine`]: crate::platform::Platform::supports_web_engine
+    pub fn has_real_engine(&self) -> bool {
+        crate::platform::platform_facts().supports_web_engine()
+    }
+
     /// The address currently shown, or `""` until something is loaded.
     ///
-    /// Read back from the core even when a native engine is driving, so it
-    /// reflects what this widget asked the engine to load rather than what the
-    /// engine ended up at after redirects.
+    /// Reflects what this widget was asked to load, rather than where a real engine
+    /// ended up after redirects — which is why it is the authority even on a backend
+    /// that has one.
     pub fn url(&self) -> &str {
         self.core.url()
     }
     /// Whether a navigation is in flight.
     ///
     /// On the simulated path a load completes within the call, so this is `false`
-    /// again by the time the loader returns; treat it as meaningful only while a
-    /// native engine is driving the load.
+    /// again by the time the loader returns.
     pub fn is_loading(&self) -> bool {
         self.core.is_loading()
     }
@@ -173,40 +197,17 @@ impl WebEngineViewEnhanced {
 
     /// Navigates to `url`.
     ///
-    /// With a native engine present the load is handed to it, and a failure is
-    /// logged and then ignored — the previous page stays on screen and this
-    /// method still returns `()`, so a caller that must react to a failed load
-    /// should watch the engine's own error signal instead. Without one, this
-    /// delegates to the simulated loader (see [`Self::set_url`] for that
-    /// contract).
+    /// Delegates to the simulated loader; see [`Self::set_url`] for that contract.
     pub fn load_url(&mut self, url: &str) {
-        if let Some(ref mut backend) = self.webkit_backend {
-            if let Err(error) = backend.load_url(url) {
-                log::warn!("[web] native engine load_url failed: {error}");
-            }
-            return;
-        }
         self.core.load_url(url);
     }
     /// Navigates to `url`, which must begin with `http://`, `https://` or
     /// `file://`.
     ///
-    /// Simulated path (no native engine): a URL with an unrecognised scheme is
-    /// logged and rejected, leaving the view untouched and returning silently;
-    /// navigating to the URL already displayed just marks the load complete at
-    /// 100%.
-    ///
-    /// Native path: the load is handed to the engine (failures logged, not
-    /// reported to the caller) *and* the core state is updated too, so the URL,
-    /// title and history stay in step with what the engine was asked to show.
+    /// A URL with an unrecognised scheme is logged and rejected, leaving the view
+    /// untouched and returning silently; navigating to the URL already displayed just
+    /// marks the load complete at 100%.
     pub fn set_url(&mut self, url: String) {
-        if let Some(ref mut backend) = self.webkit_backend {
-            if let Err(error) = backend.load_url(&url) {
-                log::warn!("[web] native engine load_url failed: {error}");
-            }
-            self.core.set_url(url);
-            return;
-        }
         self.core.set_url(url);
     }
     /// Loads `html` as the document, with `base_url` as the address it is
@@ -217,64 +218,34 @@ impl WebEngineViewEnhanced {
     /// parsing, scripting or sanitising happens, so this is a way to display
     /// markup, not to run a page.
     pub fn load_html(&mut self, html: &str, base_url: Option<&str>) {
-        if let Some(ref mut backend) = self.webkit_backend {
-            if let Err(error) = backend.load_html(html, base_url) {
-                log::warn!("[web] native engine load_html failed: {error}");
-            }
-            self.core.load_html(html, base_url);
-            return;
-        }
         self.core.load_html(html, base_url);
     }
     /// Loads `data` as the document at `base_url`, declaring the bytes to be of
     /// type `mime_type` (the title becomes `"Data: <mime_type>"`).
     ///
-    /// The engine trait has no native equivalent, so this always takes the
-    /// simulated path even when a native engine is present. `data` is decoded
-    /// with [`String::from_utf8_lossy`], so invalid UTF-8 becomes replacement
-    /// characters rather than an error.
+    /// `data` is decoded with [`String::from_utf8_lossy`], so invalid UTF-8 becomes
+    /// replacement characters rather than an error.
     pub fn load_data(&mut self, data: &[u8], mime_type: &str, base_url: &str) {
-        // `load_data` has no native equivalent on the engine trait; the core path
-        // still runs, and the early return below keeps the prior behaviour of
-        // routing through core only when a native engine is present.
         self.core.load_data(data, mime_type, base_url);
     }
     /// Steps one entry back in session history. A no-op when there is nothing
-    /// behind the current entry, or when a native engine is present and returns
-    /// without the entry — the core's history is not consulted on that path.
+    /// behind the current entry.
     pub fn go_back(&mut self) {
-        if let Some(ref mut backend) = self.webkit_backend {
-            backend.go_back();
-            return;
-        }
         self.core.go_back();
     }
     /// Steps one entry forward in session history. A no-op when there is nothing
     /// ahead of the current entry.
     pub fn go_forward(&mut self) {
-        if let Some(ref mut backend) = self.webkit_backend {
-            backend.go_forward();
-            return;
-        }
         self.core.go_forward();
     }
     /// Reloads the current document, driving the same 0 → 50 → 100 progress
-    /// callbacks as a fresh load on the simulated path. Does nothing when there
-    /// is no URL.
+    /// callbacks as a fresh load. Does nothing when there is no URL.
     pub fn reload(&mut self) {
-        if let Some(ref mut backend) = self.webkit_backend {
-            backend.reload();
-            return;
-        }
         self.core.reload();
     }
     /// Aborts an in-flight load and resets progress to 0. A no-op when nothing
     /// is loading.
     pub fn stop(&mut self) {
-        if let Some(ref mut backend) = self.webkit_backend {
-            backend.stop_loading();
-            return;
-        }
         self.core.stop();
     }
     /// Sets the title, emitting the core's `title_changed` signal only when the
@@ -548,5 +519,119 @@ mod tests {
     fn test_web_engine_view_plugins_access() {
         let engine = WebEngineViewEnhanced::new(Rect::new(0, 0, 800, 600));
         assert!(engine.plugins().list().is_empty());
+    }
+
+    // ── BLUE20 layer 5: the degradation must be queryable ─────────────────────
+
+    /// The query must exist and must agree with the platform.
+    ///
+    /// Before this, whether a real engine backed the view was **not exposed** — the
+    /// constructor's doc said a caller that had to know should "query the platform
+    /// directly", which is a promise the caller cannot keep because the *widget* was
+    /// what held the engine. This asserts the two agree, so the widget can never claim
+    /// an engine the platform does not have (or vice versa).
+    #[test]
+    fn test_has_real_engine_agrees_with_the_platform() {
+        let engine = WebEngineViewEnhanced::new(Rect::new(0, 0, 800, 600));
+        assert_eq!(
+            engine.has_real_engine(),
+            crate::platform::platform_facts().supports_web_engine(),
+            "the widget must report the platform's capability, not remember its own guess"
+        );
+    }
+
+    /// The honest answer on every current backend is `false` (ruling W1).
+    ///
+    /// Asserting the literal is deliberate *here* — unlike the colour assertions, where a
+    /// literal is a theme implementation detail, "no backend renders the web" is a fact
+    /// about the library's current capability, and it is the coordinate this whole layer
+    /// is about. If a backend gains a real engine, this test is the reminder to update the
+    /// claim in the module docs rather than a silent change.
+    #[test]
+    fn test_no_backend_renders_the_web_today() {
+        let engine = WebEngineViewEnhanced::new(Rect::new(0, 0, 800, 600));
+        assert!(
+            !engine.has_real_engine(),
+            "a real engine became available: update the module docs of src/web/web_engine.rs \
+             and src/platform/types.rs, which state that no backend renders the web"
+        );
+    }
+
+    /// The simulated path must still be fully functional after the engine removal: a
+    /// navigation updates the URL, the title and the history exactly as before.
+    #[test]
+    fn test_simulated_navigation_survives_the_engine_removal() {
+        let mut engine = WebEngineViewEnhanced::new(Rect::new(0, 0, 800, 600));
+        engine.load_url("https://example.com");
+        assert_eq!(engine.url(), "https://example.com");
+        assert_eq!(engine.load_progress(), 100, "the simulated loader completes");
+        engine.load_url("https://example.org");
+        assert!(engine.can_go_back(), "history is still recorded");
+        engine.go_back();
+        assert_eq!(engine.url(), "https://example.com");
+        assert!(engine.can_go_forward());
+        engine.go_forward();
+        assert_eq!(engine.url(), "https://example.org");
+        engine.reload();
+        assert_eq!(engine.url(), "https://example.org");
+    }
+
+    /// `stop` cancels an **in-flight** load only.
+    ///
+    /// Asserting the guard is the point: a `stop` on an idle view must be a no-op rather
+    /// than clearing the progress of a load that already finished — otherwise a stray
+    /// cancel would make a completed navigation look like it never happened.
+    #[test]
+    fn test_stop_only_cancels_an_in_flight_load() {
+        let mut engine = WebEngineViewEnhanced::new(Rect::new(0, 0, 800, 600));
+        engine.load_url("https://example.com");
+        assert_eq!(engine.load_progress(), 100);
+        assert!(!engine.is_loading(), "the simulated loader has already finished");
+        engine.stop();
+        assert_eq!(
+            engine.load_progress(),
+            100,
+            "stopping an idle view must not discard a completed load's progress"
+        );
+    }
+
+    /// JavaScript evaluation is an independent capability (pure-Rust `boa`) and must keep
+    /// working: it never went through the removed engine trait.
+    ///
+    /// The result is the script's completion value. A declaration whose initialiser is an
+    /// expression completes with that value (`var x = 1` -> `1`); a bare statement's
+    /// completion is `Undefined`. Both are asserted because the engine now evaluates
+    /// arithmetic at all — before this, `1 + 2` produced `Undefined`, which contradicted
+    /// the module's own documentation.
+    #[test]
+    fn test_javascript_evaluation_is_unaffected_by_the_engine_removal() {
+        let mut engine = WebEngineViewEnhanced::new(Rect::new(0, 0, 800, 600));
+        engine.load_html("<p>hi</p>", None);
+        engine.set_javascript_enabled(true);
+        // Without the `js-engine` feature the call must report why rather than panic.
+        match engine.evaluate_javascript("1 + 2") {
+            Ok(value) => {
+                assert_eq!(value, JsValue::Number(3.0), "an expression evaluates to its value");
+                assert_eq!(
+                    engine.evaluate_javascript("(1 + 2) * 3").unwrap(),
+                    JsValue::Number(9.0),
+                    "parentheses group, and precedence is respected"
+                );
+                assert_eq!(
+                    engine.evaluate_javascript("var x = 1; x + 1").unwrap(),
+                    JsValue::Number(2.0),
+                    "a declaration followed by an expression runs both"
+                );
+                assert_eq!(
+                    engine.evaluate_javascript("1 < 2").unwrap(),
+                    JsValue::Boolean(true),
+                    "comparison is not mistaken for a declaration"
+                );
+            }
+            Err(error) => assert!(
+                error.message.contains("JavaScript is disabled"),
+                "the only acceptable failure is the feature being off; got {error:?}"
+            ),
+        }
     }
 }

@@ -93,7 +93,7 @@ impl Divider {
         if self.color_is_explicit {
             return self.color;
         }
-        crate::theme::resolved_theme_style("divider")
+        crate::style::resolved_theme_style("divider")
             .and_then(|style| style.border_color.or(style.background_color))
             .unwrap_or(self.color)
     }

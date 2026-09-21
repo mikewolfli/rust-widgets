@@ -521,11 +521,11 @@ impl Draw for DateTimeEdit {
         // `background_color` (ThemeRole::Input resolves that to `None`), so the interior
         // is derived below from the theme's own background rather than left unset.
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("date_time_edit");
+        let theme = crate::style::resolved_theme_style("date_time_edit");
         // Read as its own lock acquisition and copied out as values, so the guard is
         // dropped before anything else touches the theme.
         let (window_fill, foreground) = {
-            let manager = crate::theme::global_theme_manager();
+            let manager = crate::style::theme_manager();
             match manager.current_theme() {
                 Some(active) => (active.colors.background, active.colors.foreground),
                 None => (Color::rgb(240, 240, 240), Color::BLACK),

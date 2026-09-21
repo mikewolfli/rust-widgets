@@ -31,7 +31,7 @@
 | 特性 | 自绘（本库） | 原生控件 |
 |---|---|---|
 | 外观 | **跨 OS 完全一致** | 随各 OS 工具包与版本变化 |
-| 控件数量 | **179 种，全平台可用** | 仅限该 OS 工具包提供的 |
+| 控件数量 | **180 种，全平台可用** | 仅限该 OS 工具包提供的 |
 | 依赖体积 | **不链接任何 GUI 工具包** | GTK / AppKit / Win32 / Android SDK |
 | 无OS与嵌入式 | **无 OS 也能运行**（`mini`、SVG） | 不可能 |
 | 测试确定性 | **像素／序列化快照** | 需要真实显示器 |
@@ -91,9 +91,9 @@
 
 | Profile | 控件集 | 注册表 | 自绘控件托管 | GPU | i18n |
 |---------|-------|:------:|:-----------:|:---:|:----:|
-| `desktop` | **179 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
-| `tablet` | **179 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
-| `mobile` | **179 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
+| `desktop` | **180 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
+| `tablet` | **180 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
+| `mobile` | **180 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
 | `embedded` | 精简核心集 | — | — | — 软件 | — |
 | `mini` | 精简核心集 | — | — | — 软件 | — |
 
@@ -121,7 +121,7 @@ Arc、Spinner、Roller、Dropdown、TextArea、Keyboard、Switch。
 
 ---
 
-179 种控件全部为自绘。每一种都能通过 `factory_name_for_kind` 解析出构造器
+180 种控件全部为自绘。每一种都能通过 `factory_name_for_kind` 解析出构造器
 （含别名共 **377** 个可解析名称）；
 新增 kind 若无法归类、或解析不出任何构造器，`tools/check_widget_registration_fidelity.sh`
 会直接失败 —— 后者已捕获 4 类 `create_*` 永远返回 id `0` 的缺陷
@@ -130,18 +130,28 @@ Arc、Spinner、Roller、Dropdown、TextArea、Keyboard、Switch。
 （`docs/plans/platform_capability_matrix.md`）由源码机械派生，并在 CI 中设有防脱节门禁。
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.5.0-blue)]()
-[![tests](https://img.shields.io/badge/tests-5300%2B-brightgreen)]()
+[![version](https://img.shields.io/badge/version-2.5.1-blue)]()
+[![tests](https://img.shields.io/badge/tests-5500%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
-**2.5.0 实测：** 五个档位全部构建干净——`cargo check --no-default-features --features <desktop|tablet|mobile|mini|embedded>` 在五个档位上均为 0 error、0 warning。
-代码生成器从「永远编进去的代码」变为了**受 feature 门控的能力**：`designer` 是一个**开发期** feature，
-`desktop` 默认启用它，因为 `desktop` 正是设计器**宿主**所运行的档位；其余四个档位默认关闭，因为它们是一次生成的**目标**而非宿主——
-`tools/check_designer_feature_gate.sh` 对两个方向都做了证明。生成物现在**入库提交**（`examples/generated_project/src/generated/`），
-这让生成结果成为可在评审中看到的 diff，而其安全前提正是 `tools/check_generated_sources.sh` 的「重新生成并逐字节比对」，与 C 头文件既有的 `check_abi.sh` 步骤形状一致。
-详见
-[`CHANGELOG.md`](CHANGELOG.md)（中文版见 [`docs/reports/CHANGELOG.md`](docs/reports/CHANGELOG.md)）及
-[`docs/log/log-20260921-2.md`](docs/log/log-20260921-2.md)。
+**2.5.1 实测：** 控件的**渲染结果**现在是一个被验证的维度，而不再只验证它的*声明*。
+曾有四类用户**亲眼可见**的缺陷，躲过了当时已有的全部 64 个门禁——因为那些门禁都在问控件「声明了什么」，没有一条去看像素。
+2.5.1 用五层补上这个维度：
+
+- **渲染黄金表** —— 全部 **188** 个控件在 light/dark 下各渲染一次，断言四件事：确实画出了东西、颜色不等于它所在的表面、随外观变化、
+  四个语义 token（`error`/`warning`/`success`/`info`）都有真实消费者。
+- **声明与实现对齐门禁** —— 每个声明的属性确实被回答、每个 `draw` 确实作画、每个已发布事件确实存在。
+- **376 个入库 SVG 快照**（[`snapshots/svg/`](snapshots/svg/)）—— 每个控件两种外观各一份，配「重新生成并逐字节比对」门禁，
+  于是「看着不对」会显示为 diff。
+- **`heatmap`** 新控件（两个轴都是分类轴）与 **`spin_box` 小数支持**（`set_decimals(n)`）。
+- **诚实的 WebEngine**。`WebEngineView` 是「模拟」一个页面，不渲染页面，现在也如实这么说了：
+  `supports_web_engine()` 与 `has_real_engine()` 给出真话，那 76 行从未显示过任何内容的 WebKitGTK 包装已删除。
+
+另外，**三个本已损坏**的构建配置现在能构建了：`--features mini`、`--features embedded`、
+以及 `--features "windows desktop-runtime controls-native controls-custom"`（上一个版本上有 78 个编译错误）。
+五个档位均 0 error、0 warning，`clippy -D warnings` 干净。
+详见 [`CHANGELOG.md`](CHANGELOG.md)、
+[`docs/log/log-20260921-3.md`](docs/log/log-20260921-3.md)（含每条断言的反向注入证据）。
 
 <p align="center">
   <a href="README.md">
@@ -442,7 +452,7 @@ assert_eq!(report.patches.len(), 1);            // 一个 SetProperty，别无�
 
 ## 控件库
 
-### 桌面/平板/手机（179 种控件）
+### 桌面/平板/手机（180 种控件）
 
 **核心**：Window、Dialog、MessageBox、FileDialog、ColorDialog、FontDialog、InputDialog、ProgressDialog、PopupWindow、Button、CheckBox、RadioButton、Label、LineEdit、TextEdit、RichEdit、ComboBox、SpinBox、ListBox、ListView、TreeView、TreeTable、ProgressBar、Slider、ScrollBar、ScrollArea、TabWidget、Splitter、GroupBox、Frame、MenuBar、Menu、MenuItem、ContextMenu、ToolBar、StatusBar、Canvas、Table、Grid、Chart、ToggleButton
 

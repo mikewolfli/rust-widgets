@@ -89,17 +89,6 @@ impl Platform for LinuxPlatform {
         crate::platform::types::unix_print_clients_available()
     }
 
-    /// Hands back a real `webkit2gtk::WebView` wrapper when the `webkit-engine`
-    /// feature is on and GTK can create one.
-    ///
-    /// `None` on a headless host or a build without the feature, which tells
-    /// `src/web/` to use its simulated navigation path.
-    #[cfg(all(target_os = "linux", feature = "webkit-engine", widgets_unstripped))]
-    fn create_web_engine(&self) -> Option<Box<dyn crate::platform::types::NativeWebEngine>> {
-        super::webkit_engine::WebKitEngine::new()
-            .map(|engine| Box::new(engine) as Box<dyn crate::platform::types::NativeWebEngine>)
-    }
-
     /// A self-drawn widget gets a `gtk::DrawingArea` inside the window's content
     /// container; its `draw` signal blits a frame from `widget::runtime`.
     /// See `linux/canvas.rs`.

@@ -512,7 +512,7 @@ pub trait Draw {
 
 ### 控件种类枚举
 
-`WidgetKind` 枚举系统中的每种控件类型（设备档位下共 179 种）。选定的变体：
+`WidgetKind` 枚举系统中的每种控件类型（设备档位下共 180 种）。选定的变体：
 
 - `Button`, `CheckBox`, `RadioButton`, `Label`
 - `LineEdit`, `TextArea`, `ComboBox`, `ListBox`, `SpinBox`, `Dropdown`

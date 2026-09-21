@@ -2,7 +2,205 @@
 // SPDX-License-Identifier: MIT
 
 //! Theme configuration types including high contrast mode.
+//!
+//! # Why the theme *lookups* live here (BLUE20 layer 4, 2026-09-21)
+//!
+//! `crate::theme` is gated on `device_profile`, so it does not exist on `mini`/`embedded`
+//! — yet ~120 control files read the theme while drawing, and those files *do* compile in
+//! every profile that has [`crate::widget`]. That mismatch is what made
+//! `cargo check --features mini` fail with `cannot find theme in crate` at each call site.
+//!
+//! The two functions below are the **always-available** form of those lookups. When
+//! `crate::theme` is compiled in they forward to it, so there is exactly one
+//! implementation and no chance of two palettes; when it is not, they answer `None`,
+//! which every existing call site already handles (it is the same answer the theme gives
+//! when no theme is active). A control therefore compiles everywhere and resolves to "no
+//! theme" where there is no theme, rather than the crate pretending otherwise
+//! (principle #37).
+//!
+//! Call sites in the widget layer should name `crate::style::resolved_theme_style` rather
+//! than `crate::theme::resolved_theme_style`, which is why the two names are otherwise
+//! identical: the re-export below is the single entry point.
 use crate::core::Color;
+use crate::style::WidgetStyle;
+
+/// The resolved style for the control registered as `widget_name`, or `None` when no theme
+/// is active or the build has no theme module.
+///
+/// The always-available counterpart of `crate::theme::resolved_theme_style`; see the
+/// module docs for why it lives here.
+#[cfg(device_profile)]
+pub fn resolved_theme_style(widget_name: &str) -> Option<WidgetStyle> {
+    crate::theme::resolved_theme_style(widget_name)
+}
+
+/// No theme module in this profile, so there is no style to resolve.
+///
+/// `None` rather than a fabricated default: a control that falls back to its own literal
+/// is visibly un-themed, whereas a fabricated style would look themed while matching
+/// nothing the user configured.
+#[cfg(not(device_profile))]
+pub fn resolved_theme_style(_widget_name: &str) -> Option<WidgetStyle> {
+    None
+}
+
+/// The resolved style for `kind_name` with an optional CSS `class`, or `None` when no
+/// theme is active or the build has no theme module.
+///
+/// The always-available counterpart of `crate::theme::resolved_theme_style_for`.
+#[cfg(device_profile)]
+pub fn resolved_theme_style_for(kind_name: &str, class_name: Option<&str>) -> Option<WidgetStyle> {
+    crate::theme::resolved_theme_style_for(kind_name, class_name)
+}
+
+/// No theme module in this profile; see [`resolved_theme_style`].
+#[cfg(not(device_profile))]
+pub fn resolved_theme_style_for(
+    _kind_name: &str,
+    _class_name: Option<&str>,
+) -> Option<WidgetStyle> {
+    None
+}
+
+// ── The theme-facing types and lookups a control may name ───────────────────────
+//
+// A control that paints a *state* (a banner severity, a validation message, a completed
+// progress run) reads a semantic token; a control that re-resolves its style mid-draw reads
+// the manager. Those names live in `crate::theme`, which exists only on a device profile —
+// but the controls that use them also compile in `--no-default-features --features
+// "windows desktop-runtime controls-native controls-custom"`, a full widget set with no
+// device profile. That mismatch was 78 compile errors at HEAD.
+//
+// So this module carries the always-available form of both. Where the theme module exists
+// the names are **re-exports** of it (rule #54: one definition); where it does not, a
+// minimal shape stands in whose reads answer "no theme", which is what every call site's
+// own `Some(..) => themed, None => literal` ladder already handles. That keeps the
+// condition here, once, rather than at each of the ~120 call sites (principle #47).
+
+/// The theme data model, re-exported so there is exactly one definition of each type
+/// wherever a theme module exists (rule #54).
+#[cfg(device_profile)]
+pub use crate::theme::{AppearanceMode, Colors, SemanticColor, Theme};
+
+/// The four semantic colour tokens `Theme::colors` declares.
+///
+/// Defined here only where `crate::theme` is absent. A call site that *names* a token must
+/// compile, and [`semantic_color`] then answers `None` regardless — so a control built
+/// against this cannot render a token colour that no theme supplied.
+#[cfg(not(device_profile))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SemanticColor {
+    /// The information indicator.
+    Info,
+    /// A completed, successful outcome.
+    Success,
+    /// Something that needs attention but is not a failure.
+    Warning,
+    /// A failure.
+    Error,
+}
+
+/// The appearance selector where `crate::theme` is absent. See [`SemanticColor`].
+#[cfg(not(device_profile))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+pub enum AppearanceMode {
+    /// Light background, dark foreground.
+    #[default]
+    Light,
+    /// Dark background, light foreground.
+    Dark,
+}
+
+/// The palette shape a call site may name where `crate::theme` is absent.
+///
+/// It mirrors `Theme::colors` so `active.colors.background` type-checks, but no value of it
+/// is ever produced — see [`ThemeManagerPlaceholder::current_theme`]. It exists so the code
+#[cfg(not(device_profile))]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Theme {
+    /// The colour set, mirroring `crate::theme::Theme::colors`.
+    pub colors: Colors,
+}
+
+/// The colour fields a control reads, mirroring `crate::theme::Colors`.
+#[cfg(not(device_profile))]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Colors {
+    /// Window/background colour.
+    pub background: Color,
+    /// Default ink colour.
+    pub foreground: Color,
+    /// Primary brand/action colour.
+    pub primary: Color,
+    /// Secondary neutral colour.
+    pub secondary: Color,
+    /// Accent colour.
+    pub accent: Color,
+    /// Error-state colour.
+    pub error: Color,
+    /// Warning-state colour.
+    pub warning: Color,
+    /// Success-state colour.
+    pub success: Color,
+    /// Disabled-state colour.
+    pub disabled: Color,
+    /// Informational-state colour.
+    pub info: Color,
+}
+
+/// The active theme's colour for `token`, or `None` when no theme is active.
+#[cfg(device_profile)]
+pub fn semantic_color(token: SemanticColor) -> Option<Color> {
+    crate::theme::semantic_color(token)
+}
+
+/// No theme module in this profile, so there is no palette to resolve a token against.
+#[cfg(not(device_profile))]
+pub fn semantic_color(_token: SemanticColor) -> Option<Color> {
+    None
+}
+
+/// The process-wide theme manager, behind its lock.
+///
+/// The return type is spelled out rather than elided because it is a guard: a caller must
+/// not hold it across a draw, and naming it makes that visible at the call site.
+#[cfg(device_profile)]
+pub fn theme_manager() -> crate::compat::MutexGuard<'static, crate::theme::ThemeManager> {
+    crate::theme::global_theme_manager()
+}
+
+/// The process-wide theme manager, for a build that has none.
+///
+/// A build without a device profile has no theme module, so there is no palette to read.
+/// This returns a manager-shaped value whose `current_theme()` is `None`, which is the same
+/// answer the real manager gives when no theme is active — so every call site's existing
+/// `Some(..) => themed, None => literal` ladder works unchanged and no `#[cfg]` is needed at
+/// those ~90 sites. Inventing a palette here would be worse than `None`: a control would
+/// paint colours no user configured while looking themed.
+#[cfg(not(device_profile))]
+pub fn theme_manager() -> ThemeManagerPlaceholder {
+    ThemeManagerPlaceholder
+}
+
+/// The manager-shaped value a build without a theme module returns.
+///
+/// Deliberately not a `crate::theme::ThemeManager`: it has no registry, no setters and no
+/// signal, so a caller cannot mutate or observe it. It exposes only the *read* path a
+/// control's draw uses — `current_theme()` yielding a palette — and that read answers
+/// `None`, so every call site's existing `Some(..) => themed, None => literal` ladder works
+/// unchanged and no `#[cfg]` is needed at those ~90 sites. Inventing a palette here would be
+/// worse than `None`: a control would paint colours no user configured while looking themed.
+#[cfg(not(device_profile))]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ThemeManagerPlaceholder;
+
+#[cfg(not(device_profile))]
+impl ThemeManagerPlaceholder {
+    /// There is never a theme in this profile, so this is always `None`.
+    pub fn current_theme(&self) -> Option<Theme> {
+        None
+    }
+}
 
 /// High contrast theme mode detection and configuration (BLUE11 R7.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

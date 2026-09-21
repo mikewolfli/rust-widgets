@@ -1033,9 +1033,36 @@ impl Draw for LottieWidget {
         let rect = self.geometry();
         let is_enabled = self.base.is_enabled();
 
+        // Chrome colours resolve explicit style first, then the theme's resolved style for
+        // this control, and only then fall back to the original literal. The literal step is
+        // kept deliberately: an inactive theme must still give the widget a defined
+        // appearance, and the value is the one this widget painted before, so an existing
+        // pixel baseline cannot move. Resolved once per draw, because the empty state, the
+        // background, the border, the chips and the progress trough all read from it and
+        // re-resolving would take the theme lock several times inside one draw.
+        let style = self.style().clone();
+        let themed = crate::style::resolved_theme_style("lottie_widget");
+        let themed_bg = themed.as_ref().and_then(|resolved| resolved.background_color);
+        let themed_border = themed.as_ref().and_then(|resolved| resolved.border_color);
+        let themed_text = themed.as_ref().and_then(|resolved| resolved.text_color);
+        let base_bg =
+            style.background_color.or(themed_bg).unwrap_or(Color::rgba(240, 240, 250, 255));
+        let border_color =
+            style.border_color.or(themed_border).unwrap_or(Color::rgba(100, 100, 180, 150));
+        // The placeholder ink follows the theme's foreground so it stays legible on whichever
+        // surface the theme painted; the literal is only the last resort.
+        let placeholder_text =
+            style.text_color.or(themed_text).unwrap_or(Color::rgba(160, 160, 160, 220));
+        // The neutral fill used by the pill chips and the progress trough: this control's
+        // chrome, derived from the resolved border so it tracks the theme instead of staying
+        // one grey in every appearance.
+        let trough_color = border_color.blend(&base_bg, 0.55);
+
         if self.total_frames == 0 {
-            // Empty state: draw a neutral placeholder.
-            context.fill_rounded_rect(rect, 4, Color::rgba(230, 230, 230, 200));
+            // Empty state: a neutral placeholder panel. The panel and the label are this
+            // widget's chrome — there is no animation data here at all — so both now follow
+            // the theme instead of pinning the control to one appearance.
+            context.fill_rounded_rect(rect, 4, base_bg);
             let font = Font::default();
             let text = "No Lottie animation loaded";
             let metrics = context.measure_text(text, &font);
@@ -1045,22 +1072,22 @@ impl Draw for LottieWidget {
                 Point::new(text_x, text_y),
                 text,
                 &font,
-                Color::rgba(160, 160, 160, 220),
+                placeholder_text,
                 HorizontalAlignment::Left,
             );
             return;
         }
 
-        // Background.
-        let bg = if !is_enabled {
-            Color::rgba(200, 200, 200, 100)
-        } else {
-            Color::rgba(240, 240, 250, 255)
-        };
+        // Background — the surface the composition is rendered onto, i.e. chrome. The former
+        // literal is the fallback, and disabled is now *derived* from the resolved colour
+        // rather than being a second fixed grey, so the two states stay distinguishable in
+        // any theme.
+        let bg = if !is_enabled { base_bg.blend(&Color::WHITE, 0.35) } else { base_bg };
         context.fill_rect(rect, bg);
 
-        // Draw bounding box.
-        context.draw_rect_stroke(rect, Color::rgba(100, 100, 180, 150), 1);
+        // Draw bounding box — a chrome edge around the composition, so it follows the
+        // theme's border token rather than a fixed violet.
+        context.draw_rect_stroke(rect, border_color, 1);
 
         // Render Lottie shapes from the parsed JSON.
         let frame = self.current_frame as f64 + self.frame_offset;
@@ -1076,7 +1103,10 @@ impl Draw for LottieWidget {
         let pill_w = c_metrics.width as u32 + 8;
         let pill_h = c_metrics.height as u32 + 2;
         let pill_rect = Rect::new(cx - 4, cy - 1, pill_w, pill_h);
-        context.fill_rounded_rect(pill_rect, 3, Color::rgba(0, 0, 0, 60));
+        // Same rule as the play chip: the counter's backdrop belongs to the widget's
+        // chrome, but the white counter ink and the chip's own alpha are kept as they were,
+        // because they are the badge's legibility contract over the composition.
+        context.fill_rounded_rect(pill_rect, 3, border_color);
         context.draw_text(
             Point::new(cx, cy + c_metrics.ascent as i32),
             &counter_text,
@@ -1085,7 +1115,9 @@ impl Draw for LottieWidget {
             HorizontalAlignment::Left,
         );
 
-        // Play/pause indicator at top-left.
+        // Play/pause indicator at top-left. The two colours are deliberately not themed:
+        // green versus amber *is* the state encoding — "playing" versus "paused" — and a
+        // theme would recolour both to whatever roles they happened to match.
         let status = if self.playing { "▶" } else { "⏸" };
         let status_metrics = context.measure_text(status, &font);
         context.draw_text(
@@ -1109,7 +1141,9 @@ impl Draw for LottieWidget {
             rect.width.saturating_sub(8),
             progress_bar_height,
         );
-        context.fill_rounded_rect(progress_bar_full, 3, Color::rgba(200, 200, 200, 150));
+        // The trough is chrome — the empty part of an indicator — so it follows the theme;
+        // the fill below is data and keeps its colour.
+        context.fill_rounded_rect(progress_bar_full, 3, trough_color);
 
         if self.total_frames > 0 {
             let fill_ratio = (self.current_frame as f64) / (self.total_frames as f64);
@@ -1121,6 +1155,8 @@ impl Draw for LottieWidget {
                     filled_width,
                     progress_bar_full.height,
                 );
+                // Deliberately not themed: this blue *encodes progress*. Recolouring it from
+                // a theme would make the bar indistinguishable from the trough it sits in.
                 context.fill_rounded_rect(progress_bar_fill, 3, Color::rgba(60, 120, 220, 200));
             }
         }

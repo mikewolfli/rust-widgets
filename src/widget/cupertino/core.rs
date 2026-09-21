@@ -295,11 +295,11 @@ impl Draw for MaterialSnackbar {
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("material_snackbar");
+        let theme = crate::style::resolved_theme_style("material_snackbar");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.
         let (window_fill, foreground, secondary, primary) = {
-            let manager = crate::theme::global_theme_manager();
+            let manager = crate::style::theme_manager();
             match manager.current_theme() {
                 Some(active) => (
                     active.colors.background,
@@ -592,7 +592,7 @@ impl Draw for CupertinoAlertDialog {
         // `resolved_theme_style`, so it is not held across the draw — the global manager's
         // mutex is not re-entrant.
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("cupertino_alert_dialog");
+        let theme = crate::style::resolved_theme_style("cupertino_alert_dialog");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme. The dialog is not in the role table, so it
         // classifies as `Surface` and its resolved background is the window fill itself; the
@@ -600,7 +600,7 @@ impl Draw for CupertinoAlertDialog {
         // window's. The confirm/cancel actions are the dialog's accent-coloured affordances,
         // so they read the theme's primary token rather than iOS blue.
         let (window_fill, foreground, primary, background) = {
-            let manager = crate::theme::global_theme_manager();
+            let manager = crate::style::theme_manager();
             match manager.current_theme() {
                 Some(active) => (
                     active.colors.background,
@@ -997,7 +997,7 @@ impl Draw for CupertinoSlider {
         // `resolved_theme_style`, so it is not held across the draw — the global manager's
         // mutex is not re-entrant.
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("cupertino_slider");
+        let theme = crate::style::resolved_theme_style("cupertino_slider");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme. `cupertino_slider` is not in the role
         // table, so it classifies as `Surface` and its resolved background is the window
@@ -1005,7 +1005,7 @@ impl Draw for CupertinoSlider {
         // than painting the window's. The filled run of the track is a value indicator, the
         // same role `Slider`'s own fill plays, so it reads the theme's accent.
         let (window_fill, foreground, accent, muted) = {
-            let manager = crate::theme::global_theme_manager();
+            let manager = crate::style::theme_manager();
             match manager.current_theme() {
                 Some(active) => (
                     active.colors.background,
@@ -1266,11 +1266,11 @@ impl Draw for MaterialNavigationRail {
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("material_navigation_rail");
+        let theme = crate::style::resolved_theme_style("material_navigation_rail");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.
         let (window_fill, foreground, secondary, primary) = {
-            let manager = crate::theme::global_theme_manager();
+            let manager = crate::style::theme_manager();
             match manager.current_theme() {
                 Some(active) => (
                     active.colors.background,

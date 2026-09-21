@@ -1,8 +1,8 @@
 [package]
 name = "rust_widgets"
-version = "2.5.0"
+version = "2.5.1"
 edition = "2021"
-description = "Pure Rust cross-platform native GUI library with hardware-adaptive rendering, 179 widgets, touch/gesture support, i18n, and SVG-pipeline-accurate output"
+description = "Pure Rust cross-platform native GUI library with hardware-adaptive rendering, 180 widgets, touch/gesture support, i18n, and SVG-pipeline-accurate output"
 license = "MIT"
 keywords = ["gui", "widget", "cross-platform", "mobile", "wasm"]
 categories = ["gui", "rendering", "graphics", "embedded", "wasm"]
@@ -67,11 +67,15 @@ default = ["desktop"]
 
 ## Full desktop: native platform, GPU, touch, i18n, chart, print, PDF, A11y.
 ##
-## NOTE: `audio-output`, `symphonia-codecs`, `webkit-engine`, and `video-codecs`
+## NOTE: `audio-output`, `symphonia-codecs`, and `video-codecs`
 ## are NOT enabled by default because they pull in large system-library
-## dependencies (ALSA, WebKitGTK, FFmpeg, symphonia). Enable them explicitly:
+## dependencies (ALSA, FFmpeg, symphonia). Enable them explicitly:
 ##   cargo build --features "desktop,audio-output,symphonia-codecs,video-codecs"
 ## Or use the `full` meta-feature for everything.
+##
+## `webkit-engine` used to be listed here. It was removed in BLUE20 layer 5 (ruling W1,
+## 2026-09-21) together with the 76-line WebKitGTK wrapper it gated: the wrapper never
+## displayed a page, so the feature advertised a capability the library did not have.
 desktop = [
     "os-auto",
     "cocoa-legacy",
@@ -287,12 +291,13 @@ profile-embedded-mini = []
 
 # New capability features
 # Note: pdf-encryption, audio-output, js-engine are cross-platform (Pure Rust / system-agnostic).
-# webkit-engine is Linux-only (webkit2gtk requires GTK+WebKit system libs).
 # video-codecs is cross-platform when system FFmpeg is installed.
+# `webkit-engine` was here (Linux-only, gating a wrapper over webkit2gtk). Deleted by
+# BLUE20 layer 5 (ruling W1) because the wrapper never displayed a page; the feature
+# promised a rendering engine the library did not have.
 pdf-encryption = ["aes", "sha2", "cbc"]
 audio-output = ["cpal"]
 js-engine = ["boa_engine"]
-webkit-engine = ["dep:webkit2gtk"]
 video-codecs = ["dep:ffmpeg-next"]
 web-http = ["dep:ureq"]
 
@@ -367,7 +372,6 @@ full = [
     "symphonia-codecs",
     "audio-output",
     "js-engine",
-    "webkit-engine",
     "video-codecs",
 ]
 
@@ -514,7 +518,10 @@ wayland-protocols = { version = "0.32", features = [
 ], optional = true }
 wayland-cursor = { version = "0.31", optional = true }
 zbus = { version = "5", optional = true }
-webkit2gtk = { version = "2.0", optional = true }
+
+# `webkit2gtk` was a dependency here, gated by the `webkit-engine` feature. Both were
+# removed by BLUE20 layer 5 (ruling W1, 2026-09-21): the wrapper never displayed a page,
+# so the dependency pulled in GTK+WebKit system libraries for no observable behaviour.
 
 # NOTE: there is deliberately no `[target.'cfg(target_os = "harmony")'.dependencies]`
 # section. OpenHarmony targets are spelled `*-unknown-linux-ohos` and rustc reports
@@ -600,6 +607,27 @@ harness = false
 [[example]]
 name = "view_counter"
 path = "examples/view_counter.rs"
+
+# BLUE20 layer 1 — the rendering census probe.
+#
+# `required-features = ["desktop"]` rather than a crate-level `#![cfg]` on its own: an
+# example whose body is removed by an inner `cfg` still needs *a* `main` for cargo to link
+# it, so `cargo check --all-targets` on `mini` failed with `E0601: main function not found`.
+# Declaring the requirement excludes the target from those builds outright, which is the
+# accurate statement — this probe has nothing to measure in a stripped profile — instead of
+# asking it to compile into a `main` that cannot use the widget registry it needs.
+[[example]]
+name = "control_rendering_census"
+path = "examples/control_rendering_census.rs"
+required-features = ["desktop"]
+
+# BLUE20 layer 3 — writes `snapshots/svg/<name>.svg` for every published control.
+# `required-features` for the same reason as the census probe above, and because the
+# snapshots themselves need the theme module that only a device profile has.
+[[example]]
+name = "export_control_svgs"
+path = "examples/export_control_svgs.rs"
+required-features = ["desktop"]
 
 # Compile-time probe for the declarative-layer platform gate.
 #

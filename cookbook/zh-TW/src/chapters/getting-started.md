@@ -75,7 +75,7 @@ rust-widgets 使用**三軸功能系統**，讓你可以組合出你真正需要
 
 > **設定檔決定的是有多少 widget 集合會被「編譯進去」— 從來不是哪個作業系統能使用哪些控件。**
 > 所有設定檔繪製的都是同一套自繪控件；`desktop`/`tablet`/`mobile` 會編譯全部
-> 179 種 widget，而 `embedded`/`mini` 只編譯精簡的核心集合。請參閱
+> 180 種 widget，而 `embedded`/`mini` 只編譯精簡的核心集合。請參閱
 > [platform-support.md § 1.2](platform-support.md#12-widget-可用性取決於設定檔而非作業系統)。
 
 ### 軸線 2：作業系統後端（選擇一個或自動偵測）

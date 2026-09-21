@@ -78,12 +78,12 @@ impl BannerSeverity {
     /// *consumed* rather than merely declared. Before it existed the four tokens
     /// had zero readers in the control layer, so a theme author could change
     /// `error` and no banner moved — an empty declaration (BLUE20 §1.4, rule #109).
-    pub fn semantic(self) -> crate::theme::SemanticColor {
+    pub fn semantic(self) -> crate::style::SemanticColor {
         match self {
-            BannerSeverity::Info => crate::theme::SemanticColor::Info,
-            BannerSeverity::Success => crate::theme::SemanticColor::Success,
-            BannerSeverity::Warning => crate::theme::SemanticColor::Warning,
-            BannerSeverity::Error => crate::theme::SemanticColor::Error,
+            BannerSeverity::Info => crate::style::SemanticColor::Info,
+            BannerSeverity::Success => crate::style::SemanticColor::Success,
+            BannerSeverity::Warning => crate::style::SemanticColor::Warning,
+            BannerSeverity::Error => crate::style::SemanticColor::Error,
         }
     }
 
@@ -104,7 +104,7 @@ impl BannerSeverity {
 
     /// The token colour, or `None` when no theme is active.
     fn token_color(self) -> Option<Color> {
-        crate::theme::semantic_color(self.semantic())
+        crate::style::semantic_color(self.semantic())
     }
 
     /// The background the bar is filled with.
@@ -118,7 +118,7 @@ impl BannerSeverity {
     /// held across each other or across the draw — so a `Draw` that resolves a
     /// token cannot deadlock the non-reentrant global manager.
     fn background(self) -> Color {
-        let surface = crate::theme::resolved_theme_style("banner")
+        let surface = crate::style::resolved_theme_style("banner")
             .and_then(|style| style.background_color)
             .unwrap_or(Color::WHITE);
         match self.token_color() {
@@ -148,7 +148,7 @@ impl BannerSeverity {
     /// it is the *accent*, and text drawn in the accent on an accent-tinted fill
     /// would be nearly invisible.
     fn default_text(self) -> Color {
-        crate::theme::resolved_theme_style("banner")
+        crate::style::resolved_theme_style("banner")
             .and_then(|style| style.text_color)
             .unwrap_or(Color::BLACK)
     }

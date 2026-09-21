@@ -535,6 +535,16 @@ impl ControlBackend for NativeControlBackend {
     ) -> ObjectId {
         get_platform().create_panel(parent, x, y, width, height)
     }
+    fn create_heatmap(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        get_platform().create_panel(parent, x, y, width, height)
+    }
     fn create_cascader(
         &self,
         parent: ObjectId,

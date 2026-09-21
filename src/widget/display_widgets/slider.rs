@@ -616,9 +616,14 @@ impl Draw for Slider {
         // `slider` classifies as `WidgetRole::Accent`, whose resolved colours are the theme's
         // accent token and its contrasting ink. `primary` is read alongside it as the crate's
         // conventional value-indicator token, so the handle matches the rest of the library.
-        let theme = crate::theme::resolved_theme_style("slider");
+        let theme = crate::style::resolved_theme_style("slider");
+        // A stripped device build (`mini`/`embedded`) has no theme module, so there is no
+        // manager to read. The literals below are the same ones the `None` arm uses, which
+        // is what keeps the two profiles rendering alike rather than inventing a palette
+        // for the profile that has none (principle #37).
+        #[cfg(device_profile)]
         let (window_fill, foreground, primary, accent, muted) = {
-            let manager = crate::theme::global_theme_manager();
+            let manager = crate::style::theme_manager();
             match manager.current_theme() {
                 Some(active) => (
                     active.colors.background,
@@ -636,6 +641,14 @@ impl Draw for Slider {
                 ),
             }
         };
+        #[cfg(not(device_profile))]
+        let (window_fill, foreground, primary, accent, muted) = (
+            Color::rgb(240, 240, 240),
+            Color::BLACK,
+            Color::rgb(33, 150, 243),
+            Color::rgb(255, 152, 0),
+            Color::rgb(158, 158, 158),
+        );
 
         // The groove: a caller's own colour wins, then the theme's resolved background. A control
         // classified as `Surface` or `Accent` resolves to something that is not the window fill on

@@ -289,13 +289,13 @@ impl Draw for CollapsiblePane {
         // The theme reads take and release the global manager's lock internally, so no guard
         // is held across the draw (the mutex is not re-entrant).
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("collapsible_pane");
+        let theme = crate::style::resolved_theme_style("collapsible_pane");
         // `collapsible_pane` is absent from `WidgetRole::for_kind_name`'s table, so it
         // classifies as `Surface` and resolves to `theme.colors.background` — the window's
         // own fill. A header painted in that colour would be byte-identical to the frame
         // behind it, so a resolved surface equal to the window fill is re-derived a visible
         // step away from it, the same distinction `Colors::input_background` draws for a field.
-        let window_fill = crate::theme::global_theme_manager()
+        let window_fill = crate::style::theme_manager()
             .current_theme()
             .map(|active| active.colors.background)
             .unwrap_or(Color::WHITE);
@@ -613,7 +613,7 @@ mod tests {
 
         // The colour each region resolves to under the active theme, computed from the same
         // inputs the draw uses rather than read back out of the SVG.
-        let window_fill = crate::theme::global_theme_manager()
+        let window_fill = crate::style::theme_manager()
             .current_theme()
             .map(|active| active.colors.background)
             .unwrap_or(Color::WHITE);

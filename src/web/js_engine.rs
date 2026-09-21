@@ -318,12 +318,20 @@ pub trait JsEngine: Send + Sync {
 ///
 /// It is not a conforming engine: it supports var/let/const declarations,
 /// function definitions and calls with positional parameters, `if`/`else`,
-/// `for` loops, array literals, member/index access and the `parseInt`,
-/// `parseFloat`, `String`, `Number` and `Boolean` built-ins, but it performs no
-/// prototype lookups, no closures (function bodies see whatever globals exist at
-/// call time), no exceptions/`try`, and no real number formatting. Parsing is
-/// textual and recursive, so deeply nested scripts consume stack proportional to
-/// nesting depth.
+/// `for` loops, array literals, member/index access, the **arithmetic, comparison and
+/// logical operators** (`+ - * / %`, `== != < <= > >=`, `&& || !`, with the usual
+/// precedence and left associativity), and the `parseInt`, `parseFloat`, `String`,
+/// `Number` and `Boolean` built-ins. It performs no prototype lookups, no closures
+/// (function bodies see whatever globals exist at call time), no exceptions/`try`, and
+/// no real number formatting. Parsing is textual and recursive, so deeply nested
+/// scripts consume stack proportional to nesting depth.
+///
+/// # What it does not do
+///
+/// An argument that is itself an expression (`f(a + 1)`) is not evaluated: arguments are
+/// read as literals, so a bare identifier there becomes `undefined`. Pass the computed
+/// value from the caller or bind it to a variable first. There are no escapes inside
+/// string literals, and no arrow functions (`=>`).
 ///
 /// Globals are stored in the engine as well as in the passed [`JsContext`], and
 /// the context argument is ignored by the [`JsEngine`] methods, so two calls
@@ -347,7 +355,10 @@ impl SimpleJsEngine {
         functions.insert("Boolean".to_string(), JsValue::Function("Boolean".to_string()));
         Self { variables: HashMap::new(), functions }
     }
-    fn parse_value(&self, s: &str) -> JsValue {
+    /// Parses a literal: numbers, strings, booleans, `null`/`undefined`, array literals and
+    /// a variable reference. **No operators** — see [`Self::eval_expression`], which is what
+    /// evaluates anything containing one.
+    fn parse_literal(&mut self, s: &str) -> JsValue {
         let s = s.trim().trim_end_matches(';');
         if s == "undefined" {
             return JsValue::Undefined;
@@ -361,10 +372,10 @@ impl SimpleJsEngine {
         if s == "false" {
             return JsValue::Boolean(false);
         }
-        if s.starts_with('"') && s.ends_with('"') {
+        if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
             return JsValue::String(s[1..s.len() - 1].to_string());
         }
-        if s.starts_with('\'') && s.ends_with('\'') {
+        if s.len() >= 2 && s.starts_with('\'') && s.ends_with('\'') {
             return JsValue::String(s[1..s.len() - 1].to_string());
         }
         // Array literal
@@ -374,18 +385,139 @@ impl SimpleJsEngine {
                 return JsValue::Array(Vec::new());
             }
             let elements: Vec<JsValue> =
-                inner.split(',').map(|part| self.parse_value(part.trim())).collect();
+                split_top_level(inner).into_iter().map(|part| self.parse_literal(&part)).collect();
             return JsValue::Array(elements);
         }
         if let Ok(n) = s.parse::<f64>() {
             return JsValue::Number(n);
         }
+        // `NaN`/`Infinity` are literal globals, and `s.parse::<f64>()` accepts neither.
+        if s == "NaN" {
+            return JsValue::Number(f64::NAN);
+        }
+        if s == "Infinity" {
+            return JsValue::Number(f64::INFINITY);
+        }
         if let Some(v) = self.variables.get(s) {
             return v.clone();
         }
+        // A trailing call is resolved here too, so an expression like `parseInt(x) + 1`
+        // works: [`Self::eval_expression`] splits on operators and hands each operand to
+        // this function, and a function call is an operand.
+        if let Some(call) = parse_call(s) {
+            if let Ok(value) = self.call_function(&call.0, &call.1, &mut JsContext::new()) {
+                return value;
+            }
+        }
         JsValue::Undefined
     }
-    /// Evaluate a block (a semicolon-delineated sequence of statements) and
+
+    /// Evaluates an expression, including the operators this engine supports.
+    ///
+    /// # Why this exists
+    ///
+    /// The module documented "a pragmatic subset of JavaScript" and named the constructs
+    /// it understood. Arithmetic was not among them: `1 + 2` parsed as a *literal*, failed
+    /// the number parse, and fell through to `undefined`. That is a documentation/implementation
+    /// disagreement of exactly the kind BLUE20 layer 2 exists to find, and it is worse than
+    /// a missing feature because the docs told callers to rely on it.
+    ///
+    /// # Grammar
+    ///
+    /// ``expr := or`` over ``||``, ``&&``, ``==``/``!=``, ``</``<=``/>``>=``, ``+``/``-``,
+    /// ``*``/``/``/``%``, unary ``-``/``!``, then a primary (literal, call, parenthesised).
+    /// Precedence is handled by splitting at the **lowest-precedence** operator found at
+    /// the top level, which recurses naturally and needs no parser state.
+    ///
+    /// `+` concatenates when either side is a string, which is ECMAScript's rule and the
+    /// behaviour a caller writing `"n=" + n` expects.
+    fn eval_expression(&mut self, expr: &str) -> JsResult<JsValue> {
+        let expr = expr.trim();
+        if expr.is_empty() {
+            return Ok(JsValue::Undefined);
+        }
+        // A whole expression in parentheses: strip and recurse, so `(1 + 2) * 3` groups.
+        if expr.starts_with('(') && matching_paren(expr) == Some(expr.len() - 1) {
+            return self.eval_expression(&expr[1..expr.len() - 1]);
+        }
+
+        // Lowest precedence first, so the *last* split is the outer operation.
+        for ops in [
+            &["||"][..],
+            &["&&"][..],
+            &["===", "!==", "==", "!="][..],
+            &["<=", ">=", "<", ">"][..],
+            &["+", "-"][..],
+            &["*", "/", "%"][..],
+        ] {
+            if let Some((index, op)) = find_top_level_operator(expr, ops) {
+                let left = &expr[..index];
+                let right = &expr[index + op.len()..];
+                // Short-circuit *and* `||`, because evaluating the right side of either
+                // has no effect but can fail (a divide by zero is fine in JS, but a
+                // malformed right side would raise where ECMAScript would not).
+                let left_value = self.eval_expression(left)?;
+                match op {
+                    "&&" => {
+                        return if left_value.is_truthy() {
+                            self.eval_expression(right)
+                        } else {
+                            Ok(left_value)
+                        };
+                    }
+                    "||" => {
+                        return if left_value.is_truthy() {
+                            Ok(left_value)
+                        } else {
+                            self.eval_expression(right)
+                        };
+                    }
+                    _ => {}
+                }
+                let right_value = self.eval_expression(right)?;
+                return Ok(apply_operator(op, &left_value, &right_value));
+            }
+        }
+
+        // Unary minus and logical not, which bind tighter than any binary operator above.
+        if let Some(rest) = expr.strip_prefix('!') {
+            return Ok(JsValue::Boolean(!self.eval_expression(rest)?.is_truthy()));
+        }
+        if let Some(rest) = expr.strip_prefix('-') {
+            let value = self.eval_expression(rest)?;
+            return Ok(JsValue::Number(-value.to_number()));
+        }
+
+        // A primary: a variable, a literal, or a call.
+        //
+        // The variable is looked up **before** `parse_call`, because an expression like
+        // `a + 1` where `a` is a variable must read the variable and not be treated as an
+        // identifier token. `parse_literal` does the lookup itself; this is the same
+        // ordering, made explicit here so a call that *is* a variable holding a function
+        // still resolves (the variable wins, matching `call_function`'s own precedence).
+        if let Some(value) = self.variables.get(expr) {
+            return Ok(value.clone());
+        }
+        if let Some((name, args)) = parse_call(expr) {
+            let mut ctx = JsContext::new();
+            // Arguments are evaluated here so `f(a) + 1` reads `a`; `parse_call` can only
+            // see literals, so an identifier argument is resolved against the variables
+            // before the call.
+            let args: Vec<JsValue> = args
+                .into_iter()
+                .map(|arg| match arg {
+                    JsValue::String(token) => {
+                        self.eval_expression(&token).unwrap_or(JsValue::Undefined)
+                    }
+                    other => other,
+                })
+                .collect();
+            return self.call_function(&name, &args, &mut ctx);
+        }
+        Ok(self.parse_literal(expr))
+    }
+
+    /// Evaluates a block (a semicolon-delineated sequence of statements) and
     /// return the value of the last expression (if any).
     fn eval_block(&mut self, block: &str, context: &mut JsContext) -> JsResult<JsValue> {
         let block = block.trim();
@@ -414,7 +546,18 @@ impl SimpleJsEngine {
         }
         let mut last_val = JsValue::Undefined;
         for stmt in &stmts {
-            last_val = self.evaluate(stmt, context)?;
+            // A block whose only `;` is nested (inside `{…}`) produces exactly one
+            // "statement" that is the whole input. Calling `evaluate` on it would re-enter
+            // this function on the same text and recurse until the stack ran out — the
+            // function-definition case (`function f() { return 1; }`) hit exactly that.
+            // When there is only one piece and it is the input itself, the block wrapper
+            // added nothing, so `eval_stmt` is the right entry point: it owns the
+            // constructs the split could not reach.
+            last_val = if stmts.len() == 1 && stmts[0] == block {
+                self.eval_stmt(stmt, context)?
+            } else {
+                self.evaluate(stmt, context)?
+            };
         }
         Ok(last_val)
     }
@@ -472,7 +615,7 @@ impl SimpleJsEngine {
                 JsError::at_offset("Unclosed condition in 'if'".to_string(), stmt, stmt.len())
             })?;
             let condition = stmt[cond_start + 1..cond_start + cond_end].trim();
-            let cond_val = self.evaluate(condition, context)?;
+            let cond_val = self.eval_expression(condition)?;
             let after_cond = stmt[cond_start + cond_end + 1..].trim();
             let mut body = after_cond;
             let mut else_body: Option<String> = None;
@@ -533,7 +676,7 @@ impl SimpleJsEngine {
             }
             // Loop
             for _ in 0..10000 {
-                let cond_val = self.evaluate(&loop_cond, context)?;
+                let cond_val = self.eval_expression(&loop_cond)?;
                 if !cond_val.is_truthy() {
                     break;
                 }
@@ -571,16 +714,323 @@ impl SimpleJsEngine {
                 if before != '<' && before != '>' && before != '!' && before != '=' {
                     let name = stmt[..eq_pos].trim().to_string();
                     let value_str = stmt[eq_pos + 1..].trim();
-                    let value = self.parse_value(value_str);
+                    let value = self.eval_expression(value_str)?;
                     self.variables.insert(name, value.clone());
                     return Ok(value);
                 }
             }
         }
-        Ok(self.parse_value(stmt))
+        self.eval_expression(stmt)
     }
 }
 crate::impl_default_via_new!(SimpleJsEngine);
+
+/// Splits `text` on the commas that are not nested inside `()`/`[]`/`{}`, or inside a
+/// string. Used for argument lists and array literals, where a naive `split(',')` breaks
+/// `f(1, 2)`-style arguments containing a comma of their own (`[1, [2, 3]]`).
+fn split_top_level(text: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    let mut quote: Option<char> = None;
+    for (index, ch) in text.char_indices() {
+        if let Some(open) = quote {
+            // Inside a string: only the matching quote closes it (no escape handling,
+            // matching the rest of this engine, which does not process escapes).
+            if ch == open {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' => quote = Some(ch),
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(text[start..index].trim().to_string());
+                start = index + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    let tail = text[start..].trim();
+    if !tail.is_empty() {
+        parts.push(tail.to_string());
+    }
+    parts
+}
+
+/// The index of the matching `)` for the `(` at byte 0, or `None` when it is unbalanced.
+fn matching_paren(text: &str) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut quote: Option<char> = None;
+    for (index, ch) in text.char_indices() {
+        if let Some(open) = quote {
+            if ch == open {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' => quote = Some(ch),
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Finds the lowest-precedence binary operator in `text` at nesting depth zero.
+///
+/// Scans **right to left** so that the leftmost split of a left-associative chain is the
+/// last one taken: `1 - 2 - 3` must evaluate as `(1 - 2) - 3`. Scanning left to right and
+/// splitting on the first `-` would produce `1 - (2 - 3)`.
+///
+/// `-` and `+` are skipped when they are unary (at the start, or after another operator)
+/// so `-3 + 1` does not split at index 0 and `1 + -2` does not split at the sign.
+fn find_top_level_operator<'a>(text: &str, operators: &[&'a str]) -> Option<(usize, &'a str)> {
+    let bytes = text.as_bytes();
+    let mut depth = 0i32;
+    let mut quote: Option<char> = None;
+    let mut candidates: Vec<(usize, &'a str)> = Vec::new();
+
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let mut position = 0usize;
+    while position < chars.len() {
+        let (index, ch) = chars[position];
+        if let Some(open) = quote {
+            if ch == open {
+                quote = None;
+            }
+            position += 1;
+            continue;
+        }
+        match ch {
+            '"' | '\'' => {
+                quote = Some(ch);
+                position += 1;
+                continue;
+            }
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            _ => {}
+        }
+        if depth == 0 {
+            for operator in operators {
+                if !text[index..].starts_with(operator) {
+                    continue;
+                }
+                // A `-` is unary when nothing but whitespace precedes it, or when the
+                // preceding non-space character is another operator or an opening bracket.
+                if operator == &"-" || operator == &"+" {
+                    let before = bytes[..index]
+                        .iter()
+                        .rev()
+                        .find(|byte| !byte.is_ascii_whitespace())
+                        .copied();
+                    let is_unary = match before {
+                        None => true,
+                        Some(byte) => matches!(
+                            byte,
+                            b'+' | b'-'
+                                | b'*'
+                                | b'/'
+                                | b'%'
+                                | b'('
+                                | b'['
+                                | b'<'
+                                | b'>'
+                                | b'='
+                                | b'!'
+                                | b'&'
+                                | b'|'
+                                | b','
+                        ),
+                    };
+                    if is_unary {
+                        continue;
+                    }
+                }
+                // Require `=`-operators to match their full form, so `==` is not found as
+                // a lone `=` and `<=` is not matched by `<`.
+                if operator == &"<" && text[index..].starts_with("<=") {
+                    continue;
+                }
+                if operator == &">" && text[index..].starts_with(">=") {
+                    continue;
+                }
+                if operator == &"=" && !text[index..].starts_with("==") {
+                    continue;
+                }
+                if (operator == &"==" || operator == &"!=")
+                    && (text[index..].starts_with("===") || text[index..].starts_with("!=="))
+                {
+                    continue;
+                }
+                candidates.push((index, operator));
+                break;
+            }
+        }
+        position += 1;
+    }
+
+    // The rightmost candidate is the leftmost operation of a left-associative chain.
+    candidates.pop()
+}
+
+/// Applies a binary operator with ECMAScript's coercion rules for the supported cases.
+fn apply_operator(operator: &str, left: &JsValue, right: &JsValue) -> JsValue {
+    match operator {
+        // `+` concatenates when either side is a string, which is ECMAScript's rule.
+        "+" => match (left, right) {
+            (JsValue::String(a), _) => JsValue::String(format!("{a}{}", right.to_string())),
+            (_, JsValue::String(b)) => JsValue::String(format!("{}{b}", left.to_string())),
+            _ => JsValue::Number(left.to_number() + right.to_number()),
+        },
+        "-" => JsValue::Number(left.to_number() - right.to_number()),
+        "*" => JsValue::Number(left.to_number() * right.to_number()),
+        // Division by zero is `Infinity`/`NaN` in ECMAScript, not an error, and `f64`
+        // already produces exactly those values.
+        "/" => JsValue::Number(left.to_number() / right.to_number()),
+        "%" => JsValue::Number(left.to_number() % right.to_number()),
+        "==" | "===" => JsValue::Boolean(loose_equals(left, right)),
+        "!=" | "!==" => JsValue::Boolean(!loose_equals(left, right)),
+        "<" => JsValue::Boolean(compare(left, right) == Some(core::cmp::Ordering::Less)),
+        ">" => JsValue::Boolean(compare(left, right) == Some(core::cmp::Ordering::Greater)),
+        "<=" => JsValue::Boolean(matches!(
+            compare(left, right),
+            Some(core::cmp::Ordering::Less | core::cmp::Ordering::Equal)
+        )),
+        ">=" => JsValue::Boolean(matches!(
+            compare(left, right),
+            Some(core::cmp::Ordering::Greater | core::cmp::Ordering::Equal)
+        )),
+        // Unreachable: every operator above is listed, and the set is a `const` here.
+        _ => JsValue::Undefined,
+    }
+}
+
+/// Equality with the coercion a caller writing `==` expects: two numbers compare
+/// numerically, a number and a string compare by value, and anything else is identity.
+fn loose_equals(left: &JsValue, right: &JsValue) -> bool {
+    match (left, right) {
+        (JsValue::Number(a), JsValue::Number(b)) => a == b,
+        (JsValue::String(a), JsValue::String(b)) => a == b,
+        (JsValue::Boolean(a), JsValue::Boolean(b)) => a == b,
+        (JsValue::Number(n), JsValue::String(s)) | (JsValue::String(s), JsValue::Number(n)) => {
+            s.trim().parse::<f64>().map(|parsed| parsed == *n).unwrap_or(false)
+        }
+        // `null` and `undefined` are equal to each other and to nothing else, which is
+        // the one coercion ECMAScript's `==` performs that surprises people.
+        (JsValue::Null, JsValue::Undefined) | (JsValue::Undefined, JsValue::Null) => true,
+        _ => left.to_string() == right.to_string(),
+    }
+}
+
+/// Ordering for the comparison operators, or `None` when the operands are not comparable.
+///
+/// Two strings compare lexicographically (the `"a" < "b"` a caller expects); a numeric
+/// operand forces a numeric comparison. `None` yields `false` for every operator rather
+/// than an ordering, because a comparison that has no answer is not `true` in JS either.
+fn compare(left: &JsValue, right: &JsValue) -> Option<core::cmp::Ordering> {
+    match (left, right) {
+        (JsValue::String(a), JsValue::String(b)) => Some(a.cmp(b)),
+        (JsValue::Number(a), JsValue::Number(b)) => a.partial_cmp(b),
+        (a, b) => a.to_number().partial_cmp(&b.to_number()),
+    }
+}
+
+/// Parses `name(args)` into the name and its evaluated arguments, or `None` when `text`
+/// is not a call wrapped around the whole expression.
+fn parse_call(text: &str) -> Option<(String, Vec<JsValue>)> {
+    let text = text.trim();
+    let open = text.find('(')?;
+    // The parenthesised part must be the tail: `f(1) + 2` is an expression, not a call,
+    // and is handled by `eval_expression` splitting at the `+` before reaching here.
+    if matching_paren(&text[open..]) != Some(text.len() - 1 - open) {
+        return None;
+    }
+    let name = text[..open].trim();
+    if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') {
+        return None;
+    }
+    let inner = &text[open + 1..text.len() - 1];
+    let args = split_top_level(inner);
+    // Argument *parsing* is deferred to the engine's own literal parser so a call site
+    // does not need a mutable borrow here; nested arithmetic in an argument is therefore
+    // not evaluated, which the module docs state.
+    let parsed: Vec<JsValue> = args.iter().map(|arg| literal_value(arg)).collect();
+    Some((name.to_string(), parsed))
+}
+
+/// A free function version of the literal parse, for [`parse_call`]'s arguments.
+///
+/// Kept separate from `SimpleJsEngine::parse_literal` because it cannot see the engine's
+/// variables: an argument that is a bare identifier becomes `Undefined` here, and the
+/// caller's own binding is used by `call_function` instead.
+fn literal_value(text: &str) -> JsValue {
+    let text = text.trim();
+    if text == "undefined" {
+        return JsValue::Undefined;
+    }
+    if text == "null" {
+        return JsValue::Null;
+    }
+    if text == "true" {
+        return JsValue::Boolean(true);
+    }
+    if text == "false" {
+        return JsValue::Boolean(false);
+    }
+    if text.len() >= 2 && text.starts_with('"') && text.ends_with('"') {
+        return JsValue::String(text[1..text.len() - 1].to_string());
+    }
+    if text.len() >= 2 && text.starts_with('\'') && text.ends_with('\'') {
+        return JsValue::String(text[1..text.len() - 1].to_string());
+    }
+    if let Ok(number) = text.parse::<f64>() {
+        return JsValue::Number(number);
+    }
+    // A bare identifier reaches the caller as a `String` token so a custom built-in can
+    // read a global by name; the engine's own built-ins use `to_number()`, which treats an
+    // unparsable string as `NaN`, so a mis-typed argument still behaves like JS.
+    JsValue::String(text.to_string())
+}
+
+/// Whether `script` begins a construct only [`SimpleJsEngine::eval_stmt`] understands.
+///
+/// Used to route a single-statement script: a script that starts one of these must go to
+/// the statement evaluator, and everything else is an expression. Keeping the list here,
+/// next to the router, is what makes "is this a statement" one decision rather than a set
+/// of prefixes tested in two places.
+fn starts_a_statement(script: &str) -> bool {
+    const STATEMENT_STARTS: &[&str] = &[
+        "function ",
+        "if ",
+        "if(",
+        "for ",
+        "for(",
+        "while ",
+        "while(",
+        "return",
+        "break",
+        "continue",
+        "{",
+        // Declaration-only scripts are statements; `evaluate` handles a declaration with a
+        // continuation in the block arm above, so reaching here means there is no `;`.
+        "var ",
+        "let ",
+        "const ",
+    ];
+    STATEMENT_STARTS.iter().any(|prefix| script.starts_with(prefix))
+}
+
 impl JsEngine for SimpleJsEngine {
     /// Evaluates `script`, dispatching on its textual prefix.
     ///
@@ -609,12 +1059,22 @@ impl JsEngine for SimpleJsEngine {
                 JsError::at_offset("Missing ')' in console call".to_string(), script, script.len())
             })?;
             let content = &script[start..end];
-            let value = self.parse_value(content);
+            let value = self.eval_expression(content)?;
             context.log(value.to_string());
             return Ok(value);
         }
         // --- var / let / const declarations ---
-        if script.starts_with("var ") || script.starts_with("let ") || script.starts_with("const ")
+        //
+        // Only a **declaration-only** script is handled here, so that the declaration's
+        // initialiser is stored. A script that continues past the declaration
+        // (`var a = 3; a + 1`) goes to the block evaluator, which evaluates the
+        // declaration as a statement and then the rest. Handling it here and returning
+        // would silently drop everything after the first `;` — the script would appear to
+        // run and produce the wrong value, which is worse than an error.
+        if (script.starts_with("var ")
+            || script.starts_with("let ")
+            || script.starts_with("const "))
+            && !script.contains(';')
         {
             let prefix_len = if script.starts_with("const ") { 6 } else { 4 };
             let rest = &script[prefix_len..];
@@ -622,7 +1082,7 @@ impl JsEngine for SimpleJsEngine {
                 let name = rest[..eq_pos].trim().to_string();
                 let value_str = rest[eq_pos + 1..].trim();
                 // Check if value is a function definition or complex expression
-                let value = self.parse_value(value_str);
+                let value = self.eval_expression(value_str)?;
                 self.variables.insert(name, value.clone());
                 return Ok(value);
             } else {
@@ -631,8 +1091,23 @@ impl JsEngine for SimpleJsEngine {
                 return Ok(JsValue::Undefined);
             }
         }
-        // Delegate to eval_stmt for all other constructs
-        self.eval_stmt(script, context)
+        // A multi-statement script (or any construct `eval_stmt` owns) is evaluated as a
+        // block, so every statement runs and the last one's value is the result.
+        if script.contains(';') {
+            return self.eval_block(script, context);
+        }
+        // An expression is evaluated as an expression, **not** through `eval_stmt`.
+        //
+        // `eval_stmt`'s fallback treats a `name = value` shape as an assignment, and its
+        // guard for `==` was too narrow to keep `1 == 1` out: the text starts with `1`, so
+        // a naive `find('=')` found the first `=` of `==` and stored a variable called
+        // `1 =`. Routing on "does this contain a comparison operator" would be brittle, so
+        // the expression evaluator is asked first and its verdict is used whenever the
+        // script is not one of the statement forms `eval_stmt` owns.
+        if starts_a_statement(script) {
+            return self.eval_stmt(script, context);
+        }
+        self.eval_expression(script)
     }
     /// Calls a user-defined function if one exists, otherwise a built-in.
     ///
@@ -888,6 +1363,110 @@ mod tests {
         assert_eq!(result, JsValue::Number(42.0));
         let result = engine.evaluate("x", &mut context).unwrap();
         assert_eq!(result, JsValue::Number(42.0));
+    }
+
+    // ── Arithmetic and operator precedence ─────────────────────────────────────
+    //
+    // The module documented a "pragmatic subset" that a reader would take to include
+    // arithmetic, and it did not: a binary expression parsed as a literal, failed the
+    // number parse, and became `undefined`. These pin the behaviour the docs describe.
+
+    #[test]
+    fn arithmetic_evaluates_instead_of_returning_undefined() {
+        let mut engine = SimpleJsEngine::new();
+        let mut context = JsContext::new();
+        for (script, expected) in [
+            ("1 + 2", 3.0),
+            ("1+2", 3.0),
+            ("7 - 2", 5.0),
+            ("3 * 4", 12.0),
+            ("8 / 2", 4.0),
+            ("7 % 4", 3.0),
+            ("-3 + 1", -2.0),
+            ("2 + 3 * 4", 14.0),
+            ("(2 + 3) * 4", 20.0),
+            ("10 - 2 - 3", 5.0),
+        ] {
+            assert_eq!(
+                engine.evaluate(script, &mut context).unwrap(),
+                JsValue::Number(expected),
+                "{script} must evaluate to {expected}"
+            );
+        }
+    }
+
+    /// Comparison is an operator, not a declaration: `1 == 1` must not be read as an
+    /// assignment to a variable called "1 =".
+    #[test]
+    fn comparison_is_not_mistaken_for_a_declaration() {
+        let mut engine = SimpleJsEngine::new();
+        let mut context = JsContext::new();
+        assert_eq!(engine.evaluate("1 == 1", &mut context).unwrap(), JsValue::Boolean(true));
+        assert_eq!(engine.evaluate("1 == 2", &mut context).unwrap(), JsValue::Boolean(false));
+        assert_eq!(engine.evaluate("1 != 2", &mut context).unwrap(), JsValue::Boolean(true));
+        assert_eq!(engine.evaluate("1 < 2", &mut context).unwrap(), JsValue::Boolean(true));
+        assert_eq!(engine.evaluate("2 <= 2", &mut context).unwrap(), JsValue::Boolean(true));
+        assert_eq!(engine.evaluate("2 > 3", &mut context).unwrap(), JsValue::Boolean(false));
+        assert_eq!(engine.evaluate("3 >= 3", &mut context).unwrap(), JsValue::Boolean(true));
+        assert_eq!(engine.evaluate("1 > 2", &mut context).unwrap(), JsValue::Boolean(false));
+    }
+
+    /// A script with more than one statement must run **all** of them. The declaration
+    /// arm used to return after the first, silently discarding the rest.
+    #[test]
+    fn every_statement_in_a_script_runs() {
+        let mut engine = SimpleJsEngine::new();
+        let mut context = JsContext::new();
+        assert_eq!(
+            engine.evaluate("var a = 3; a + 1", &mut context).unwrap(),
+            JsValue::Number(4.0)
+        );
+        assert_eq!(
+            engine.evaluate("var c = 2; var d = 5; c * d", &mut context).unwrap(),
+            JsValue::Number(10.0)
+        );
+    }
+
+    /// `+` concatenates when either side is a string, and a variable is read rather than
+    /// treated as an identifier token.
+    #[test]
+    fn string_concatenation_and_variable_lookup_agree() {
+        let mut engine = SimpleJsEngine::new();
+        let mut context = JsContext::new();
+        assert_eq!(
+            engine.evaluate("\"n=\" + 3", &mut context).unwrap(),
+            JsValue::String("n=3".to_string())
+        );
+        assert_eq!(engine.evaluate("var n = 3; n", &mut context).unwrap(), JsValue::Number(3.0));
+    }
+
+    /// A function body whose only `;` is inside its braces must not re-enter the block
+    /// evaluator forever. This reproduced as a **stack overflow** (not an error) before the
+    /// single-piece case was routed to `eval_stmt`.
+    #[test]
+    fn a_function_body_does_not_recurse_forever() {
+        let mut engine = SimpleJsEngine::new();
+        let mut context = JsContext::new();
+        let defined = engine.evaluate("function add(a, b) { return a + b; }", &mut context);
+        assert!(defined.is_ok(), "defining a function must not overflow the stack");
+        let called = engine.call_function(
+            "add",
+            &[JsValue::Number(2.0), JsValue::Number(3.0)],
+            &mut context,
+        );
+        assert_eq!(called.unwrap(), JsValue::Number(5.0), "the body runs the arithmetic");
+    }
+
+    /// Short-circuiting must not evaluate the branch it skips, and must still yield the
+    /// operand rather than a coerced boolean (ECMAScript returns the operand).
+    #[test]
+    fn logical_operators_short_circuit_and_yield_an_operand() {
+        let mut engine = SimpleJsEngine::new();
+        let mut context = JsContext::new();
+        assert_eq!(engine.evaluate("true && 5", &mut context).unwrap(), JsValue::Number(5.0));
+        assert_eq!(engine.evaluate("false && 5", &mut context).unwrap(), JsValue::Boolean(false));
+        assert_eq!(engine.evaluate("false || 7", &mut context).unwrap(), JsValue::Number(7.0));
+        assert_eq!(engine.evaluate("!0", &mut context).unwrap(), JsValue::Boolean(true));
     }
     #[test]
     fn test_function_definition() {

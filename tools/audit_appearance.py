@@ -25,6 +25,7 @@ Exit status is 0: this measures, it does not gate. The gate is
 """
 
 import glob
+import os
 import re
 import sys
 
@@ -37,11 +38,19 @@ PIXEL_READ = re.compile(r"render_frame_tree|frame_rgba|blit_rgba|render_widget_t
 
 
 def main() -> int:
+    # `glob` yields host-native separators on Windows (`src\\widget\\...`); the coverage
+    # comparison below matches those paths against the ones collected from the same walk,
+    # so both sides are normalised to `/` first. Without this the count reads 0 on
+    # Windows even when a test does render the file, which is a measurement artifact,
+    # not a finding.
+    def normalise(path: str) -> str:
+        return path.replace(os.sep, "/")
+
     draw_files = []
     for path in sorted(glob.glob(WIDGET_GLOB, recursive=True)):
         text = open(path, encoding="utf-8", errors="ignore").read()
         if "impl Draw for" in text:
-            draw_files.append((path, text))
+            draw_files.append((normalise(path), text))
 
     print(f"=== files with a Draw impl: {len(draw_files)} ===")
 
@@ -67,7 +76,7 @@ def main() -> int:
         for path in glob.glob(pattern, recursive=True):
             text = open(path, encoding="utf-8", errors="ignore").read()
             if PIXEL_READ.search(text):
-                pixel_files.add(path)
+                pixel_files.add(normalise(path))
 
     covered = sum(1 for path, _ in draw_files if path in pixel_files)
     print(f"\n=== Draw files a test renders as pixels: {covered} / {len(draw_files)} ===")

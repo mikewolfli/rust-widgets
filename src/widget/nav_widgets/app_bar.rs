@@ -149,7 +149,7 @@ impl Draw for AppBar {
         // `resolved_theme_style`, so none is held across the draw or across another
         // accessor — the global manager's mutex is not re-entrant.
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("app_bar");
+        let theme = crate::style::resolved_theme_style("app_bar");
         let background = style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))

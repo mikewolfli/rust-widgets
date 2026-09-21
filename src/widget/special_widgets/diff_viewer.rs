@@ -268,7 +268,7 @@ impl Draw for DiffViewer {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("diff_viewer");
+        let theme = crate::style::resolved_theme_style("diff_viewer");
         let background = style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
@@ -284,16 +284,16 @@ impl Draw for DiffViewer {
         // The split divider and the selection outline are secondary chrome, derived
         // from the resolved colours so they follow the appearance too.
         let divider = background.blend(&text_color, 0.15);
-        let selection = crate::theme::semantic_color(crate::theme::SemanticColor::Info)
+        let selection = crate::style::semantic_color(crate::style::SemanticColor::Info)
             .unwrap_or_else(|| background.blend(&text_color, 0.5));
         // Added / Removed / Changed are *states*, so they read the theme's semantic
         // tokens and are tinted over the resolved surface to stay legible in both
         // appearances.
-        let added = crate::theme::semantic_color(crate::theme::SemanticColor::Success)
+        let added = crate::style::semantic_color(crate::style::SemanticColor::Success)
             .map(|token| token.blend(&background, 0.85));
-        let removed = crate::theme::semantic_color(crate::theme::SemanticColor::Error)
+        let removed = crate::style::semantic_color(crate::style::SemanticColor::Error)
             .map(|token| token.blend(&background, 0.85));
-        let changed = crate::theme::semantic_color(crate::theme::SemanticColor::Warning)
+        let changed = crate::style::semantic_color(crate::style::SemanticColor::Warning)
             .map(|token| token.blend(&background, 0.85));
 
         context.fill_rect(rect, background);

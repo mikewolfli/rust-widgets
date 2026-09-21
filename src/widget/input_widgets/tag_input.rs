@@ -394,20 +394,40 @@ impl Draw for TagInput {
         let is_enabled = self.base.is_enabled();
 
         // ── Background ──
+        // Resolved from the style so a theme switch reaches this control; the three-state
+        // ladder is *derived* from the resolved colour rather than being three fixed greys, so
+        // the states stay distinguishable and the control follows the theme.
+        let style = self.style().clone();
+        let themed = crate::style::resolved_theme_style("tag_input");
+        let themed_bg = themed.as_ref().and_then(|resolved| resolved.background_color);
+        let themed_border = themed.as_ref().and_then(|resolved| resolved.border_color);
+        let accent = style.border_color.or(themed_border);
+        let base_bg =
+            style.background_color.or(themed_bg).unwrap_or(Color::rgba(235, 235, 235, 200));
         let bg_color = if !is_enabled {
-            Color::rgba(240, 240, 240, 160)
+            base_bg.blend(&Color::WHITE, 0.35)
         } else if self.focused {
-            Color::rgba(245, 245, 255, 220)
+            base_bg.blend(&accent.unwrap_or(Color::rgba(60, 140, 255, 200)), 0.18)
         } else {
-            Color::rgba(235, 235, 235, 200)
+            base_bg
         };
         context.fill_rounded_rect(rect, 6, bg_color);
 
-        // ── Focus border ──
+        // — Focus border —
         if self.focused && is_enabled {
-            context.draw_rounded_rect_stroke(rect, 6, Color::rgba(60, 140, 255, 200), 2);
+            context.draw_rounded_rect_stroke(
+                rect,
+                6,
+                accent.unwrap_or(Color::rgba(60, 140, 255, 200)),
+                2,
+            );
         } else {
-            context.draw_rounded_rect_stroke(rect, 6, Color::rgba(200, 200, 200, 160), 1);
+            context.draw_rounded_rect_stroke(
+                rect,
+                6,
+                style.border_color.unwrap_or(Color::rgba(200, 200, 200, 160)),
+                1,
+            );
         }
 
         let mut current_x = rect.x + TAG_PADDING;
@@ -421,15 +441,21 @@ impl Draw for TagInput {
             let chip_rect = Rect::new(current_x, chip_y, chip_width as u32, TAG_HEIGHT as u32);
 
             // Chip background
+            // The chip is this control's own chrome — a filled pill holding a tag — so its
+            // fill follows the resolved accent rather than a fixed Material blue. The close
+            // button is then the chip's *inverse* (white circle, accent X), which is what a
+            // "remove this" affordance looks like on a coloured pill; deriving it keeps the
+            // pair legible whatever the theme's accent is.
             let chip_bg = if is_enabled {
-                Color::rgb(25, 118, 210) // Material blue
+                accent.unwrap_or(Color::rgb(25, 118, 210))
             } else {
                 Color::rgba(180, 180, 180, 160)
             };
             context.fill_rounded_rect(chip_rect, TAG_CHIP_RADIUS, chip_bg);
 
-            // Chip text
-            let text_color = Color::WHITE;
+            // Chip text: the contrasting ink for the fill, so it stays legible when the
+            // theme's accent is light.
+            let text_color = chip_bg.contrast_color();
             let text_x = current_x + TAG_PADDING;
             let text_origin = Point::new(text_x, chip_y + TAG_HEIGHT / 2);
             context.draw_text(
@@ -447,7 +473,7 @@ impl Draw for TagInput {
 
             // X mark (two diagonal lines)
             let x_offset = (TAG_CLOSE_RADIUS as f32 * 0.45) as i32;
-            let close_fg = Color::rgb(25, 118, 210);
+            let close_fg = chip_bg;
             context.draw_line(
                 Point::new(close_center.x - x_offset, close_center.y - x_offset),
                 Point::new(close_center.x + x_offset, close_center.y + x_offset),

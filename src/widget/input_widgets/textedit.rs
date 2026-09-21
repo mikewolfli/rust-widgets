@@ -390,8 +390,8 @@ impl Draw for TextEdit {
         // The fallback name matters: the role table is keyed on **role** names, so `text_edit`
         // (the factory name) is not in it and would classify as `Surface`, i.e. the window fill.
         // `line_edit` is, and resolves to the field interior plus the theme's foreground.
-        let theme = crate::theme::resolved_theme_style("text_edit")
-            .or_else(|| crate::theme::resolved_theme_style("line_edit"));
+        let theme = crate::style::resolved_theme_style("text_edit")
+            .or_else(|| crate::style::resolved_theme_style("line_edit"));
         let field_from_theme = theme
             .as_ref()
             .and_then(|t| t.background_color)
@@ -399,7 +399,7 @@ impl Draw for TextEdit {
         // The window fill, read as its own lock acquisition and copied out as a value, so the
         // guard is dropped before anything else touches the theme.
         let window_fill = {
-            let manager = crate::theme::global_theme_manager();
+            let manager = crate::style::theme_manager();
             manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
         };
         // The filter is on the **resolved** value, not only on the theme's: the active theme is

@@ -3,7 +3,7 @@
 
 //! Platform abstraction types and capability contracts.
 
-use crate::compat::{format, Box, String, Vec};
+use crate::compat::{format, String, Vec};
 use crate::core::{ObjectId, Orientation, PlatformFamily};
 #[cfg(all(feature = "serde", widgets_unstripped))]
 use serde::{Deserialize, Serialize};
@@ -154,29 +154,25 @@ pub const fn compile_target_shortcut_style() -> crate::shortcut::PlatformShortcu
 
 /// A backend-owned native web engine view.
 ///
-/// Widgets in `src/web/` drive a real browser engine through this trait without
-/// naming any platform library. The concrete type (a `webkit2gtk::WebView` on the
-/// Linux GTK backend) is constructed by the backend and never appears in the
-/// widget layer — see principle #36.
+/// **Removed in BLUE20 layer 5 (ruling W1, 2026-09-21).** This trait declared six
+/// navigation methods and had exactly one implementation — 76 lines of one-line
+/// forwards to `webkit2gtk` on Linux — which was never added to a GTK container, so
+/// it never displayed a page. A trait with an implementation that produces no
+/// observable behaviour, and a default `None` on every other backend, made the crate
+/// look like it rendered the web while it did not.
 ///
-/// All methods report failure through enums or `Result` rather than panicking:
-/// a headless CI host has no display, and that must surface as "no engine" so the
-/// caller can fall back to the simulated path.
-pub trait NativeWebEngine: Send {
-    /// Begins loading `url`.
-    fn load_url(&mut self, url: &str) -> Result<(), String>;
-    /// Begins loading `html`, optionally resolving relative references against
-    /// `base_url`.
-    fn load_html(&mut self, html: &str, base_url: Option<&str>) -> Result<(), String>;
-    /// Navigates back in the session history.
-    fn go_back(&mut self);
-    /// Navigates forward in the session history.
-    fn go_forward(&mut self);
-    /// Reloads the current document.
-    fn reload(&mut self);
-    /// Cancels an in-flight page load.
-    fn stop_loading(&mut self);
-}
+/// What replaced it:
+///
+/// * [`Platform::supports_web_engine`] — the capability question, answered honestly
+///   (`false` everywhere today) instead of a `Option<Box<dyn ..>>` whose `None` a
+///   caller could not distinguish from "not attempted".
+/// * `src/web/`'s simulated loader, which is the `web_engine_view` control's real
+///   behaviour and is unaffected.
+/// * `evaluate_javascript`, which runs on the pure-Rust `boa` engine and never went
+///   through this trait at all (see `src/web/web_engine.rs`).
+///
+/// The deletion is recorded in `docs/log/` and gated by
+/// `tools/check_web_engine_honest.sh`, which fails if any of the removed names returns.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(all(feature = "serde", widgets_unstripped), derive(Serialize, Deserialize))]
@@ -786,17 +782,28 @@ pub trait Platform: Send + Sync {
     // capability (principle #41/#53), and one that names a mechanism in the public
     // `Platform` trait is exactly what principle #52 forbids.
 
-    /// Creates a native web engine view, when this backend can host one.
+    /// Whether this backend can host a **real** web rendering engine.
     ///
-    /// Returns `None` on backends with no embeddable engine (or no display), which
-    /// tells `src/web/` to use its simulated navigation path. The concrete engine
-    /// type is a backend-private implementation detail; callers only ever see
-    /// [`NativeWebEngine`], so no platform crate is named above this layer
-    /// (principle #36).
+    /// # Why this replaced `create_web_engine` (BLUE20 layer 5, ruling W1)
     ///
-    /// The default is `None`; backends with a real engine override it.
-    fn create_web_engine(&self) -> Option<Box<dyn NativeWebEngine>> {
-        None
+    /// The previous shape returned `Option<Box<dyn NativeWebEngine>>`, and its `None`
+    /// conflated two different facts: "this backend has no engine" and "this backend's
+    /// engine could not be constructed right now" (no display, GTK not initialised). A
+    /// caller that needed to tell the user which happened could not — the doc said so in
+    /// as many words. Reporting a *capability* answers the question a caller can act on,
+    /// and it is the same shape as [`Platform::supports_surfaces`] next to it
+    /// (principle #53: a capability difference is a runtime fact, not an API fork).
+    ///
+    /// The honest answer is `false` on **every** current backend. The one implementation
+    /// that ever returned `true` was Linux behind the `webkit-engine` feature, and it was
+    /// removed because it never displayed a page (see the note where `NativeWebEngine`
+    /// was). Backends that gain one must override this *and* say so here.
+    ///
+    /// Callers use it to decide whether to present "rendered page" or "simulated
+    /// navigation" affordances, which is the distinction that was previously
+    /// unqueryable.
+    fn supports_web_engine(&self) -> bool {
+        false
     }
 
     /// Translates a shortcut into the backend's own accelerator representation.

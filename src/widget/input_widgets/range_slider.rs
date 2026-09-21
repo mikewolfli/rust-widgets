@@ -372,9 +372,9 @@ impl Draw for RangeSlider {
         // `range_slider` is not in the role table, so it classifies as `Surface` and its resolved
         // background is the window fill itself; the empty track below therefore derives its own
         // distinct colour rather than painting the window's.
-        let theme = crate::theme::resolved_theme_style("range_slider");
+        let theme = crate::style::resolved_theme_style("range_slider");
         let (window_fill, foreground, primary, muted, disabled) = {
-            let manager = crate::theme::global_theme_manager();
+            let manager = crate::style::theme_manager();
             match manager.current_theme() {
                 Some(active) => (
                     active.colors.background,

@@ -109,6 +109,19 @@ fn to_capability_value(
         Some(PropertyValueKind::Int) => value.as_i64().map(CapabilityValue::Int),
         Some(PropertyValueKind::UInt) => value.as_u64().map(CapabilityValue::UInt),
         Some(PropertyValueKind::Float) => value.as_f64().map(CapabilityValue::Float),
+        // A `Number` property decides its own carrier: an integer-mode spin box must
+        // keep answering `Int` for `{"value": 3}`, so the JSON number's own shape picks
+        // the variant. Accepting a decimal here is deliberate — `{"value": 3.0}` is a
+        // legitimate way to spell three, and rejecting it would make the JSON layer
+        // harder to use than the Rust API it wraps.
+        Some(PropertyValueKind::Number) => {
+            let n = value.as_f64()?;
+            if n.fract() == 0.0 && n >= i64::MIN as f64 && n <= i64::MAX as f64 {
+                Some(CapabilityValue::Int(n as i64))
+            } else {
+                Some(CapabilityValue::Float(n))
+            }
+        }
         Some(PropertyValueKind::String) | Some(PropertyValueKind::Enum) => {
             value.as_str().map(|s| CapabilityValue::String(s.to_string()))
         }
@@ -257,6 +270,33 @@ mod tests {
         // A string is not an integer either.
         let quoted = serde_json::json!("50");
         assert_eq!(to_capability_value(&quoted, Some(PropertyValueKind::Int)), None);
+    }
+
+    /// A `Number` property picks the carrier from the JSON number's own shape, which is
+    /// what keeps `{"value": 3}` valid after a spin box has been given decimals
+    /// (principle #21).
+    #[test]
+    fn to_capability_value_number_keeps_the_json_shape() {
+        assert_eq!(
+            to_capability_value(&serde_json::json!(3), Some(PropertyValueKind::Number)),
+            Some(CapabilityValue::Int(3)),
+            "a whole number must stay an Int, so integer callers are unaffected"
+        );
+        assert_eq!(
+            to_capability_value(&serde_json::json!(3.5), Some(PropertyValueKind::Number)),
+            Some(CapabilityValue::Float(3.5))
+        );
+        // `3.0` is a decimal spelling of a whole number, so it is accepted as an `Int`
+        // rather than rejected for having a fractional part that happens to be zero.
+        assert_eq!(
+            to_capability_value(&serde_json::json!(3.0), Some(PropertyValueKind::Number)),
+            Some(CapabilityValue::Int(3))
+        );
+        // Text is still refused: parsing can fail, and a failure has no defined result.
+        assert_eq!(
+            to_capability_value(&serde_json::json!("3"), Some(PropertyValueKind::Number)),
+            None
+        );
     }
 
     #[test]

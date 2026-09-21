@@ -31,6 +31,9 @@
 //! # Gating
 //!
 //! Requires the full widget set and the theme module, i.e. the `desktop` profile.
+//! Declared in `Cargo.toml` with `required-features = ["desktop"]`, so a stripped profile
+//! skips the target rather than trying to link an example whose body an inner `#![cfg]`
+//! removed — an inner `cfg` alone is not enough, because cargo still needs *a* `main`.
 
 #![cfg(all(not(feature = "mini"), not(target_arch = "wasm32")))]
 

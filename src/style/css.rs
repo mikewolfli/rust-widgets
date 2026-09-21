@@ -247,6 +247,8 @@ const CSS_SUPPORTED_KINDS: &[WidgetKind] = &[
     #[cfg(full_widgets)]
     WidgetKind::RadarChart,
     #[cfg(full_widgets)]
+    WidgetKind::Heatmap,
+    #[cfg(full_widgets)]
     WidgetKind::KanbanBoard,
     #[cfg(full_widgets)]
     WidgetKind::Cascader,

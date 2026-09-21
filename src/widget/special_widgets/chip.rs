@@ -313,7 +313,7 @@ impl Draw for Chip {
         // lock internally, so no guard is held across the draw or across another
         // accessor (the mutex is not re-entrant).
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("chip");
+        let theme = crate::style::resolved_theme_style("chip");
         let background = style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))

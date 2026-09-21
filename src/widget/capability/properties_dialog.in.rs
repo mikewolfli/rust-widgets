@@ -36,7 +36,11 @@ macro_rules! impl_properties_dialog {
                 true,
                 &["none", "information", "question", "warning", "critical"],
             ),
-            PropertySchema::new("modal", PropertyValueKind::Bool, false, false),
+            // `true, true`: the control has both a getter and a setter (`is_modal` /
+            // `set_modal`), so declaring it non-readable made the designer hide a property
+            // that works. BLUE20 layer 2's Q1 gate found this by comparing the schema
+            // against the control's own `property_names()`.
+            PropertySchema::new("modal", PropertyValueKind::Bool, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

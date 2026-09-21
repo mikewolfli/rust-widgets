@@ -375,7 +375,7 @@ impl Draw for NotificationCenter {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("notification_center");
+        let theme = crate::style::resolved_theme_style("notification_center");
         // `notification_center` is not a control kind in the role table, so it
         // classifies as `Surface`, whose background is `theme.colors.background` —
         // byte-identical to the window behind it. The panel is therefore a step
@@ -422,10 +422,10 @@ impl Draw for NotificationCenter {
 
             // The badge is a *state* indicator, so it reads the theme's semantic
             // tokens rather than a literal pair of its own.
-            let badge_color = crate::theme::semantic_color(match item.level {
-                NotificationLevel::Info => crate::theme::SemanticColor::Info,
-                NotificationLevel::Warning => crate::theme::SemanticColor::Warning,
-                NotificationLevel::Error => crate::theme::SemanticColor::Error,
+            let badge_color = crate::style::semantic_color(match item.level {
+                NotificationLevel::Info => crate::style::SemanticColor::Info,
+                NotificationLevel::Warning => crate::style::SemanticColor::Warning,
+                NotificationLevel::Error => crate::style::SemanticColor::Error,
             })
             .map(|token| token.blend(&background, 0.25))
             .unwrap_or_else(|| background.blend(&text_color, 0.5));

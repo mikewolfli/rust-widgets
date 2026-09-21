@@ -80,10 +80,15 @@ macro_rules! impl_properties_input {
         ];
 
         pub(crate) const SPIN_BOX_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema::new("minimum", PropertyValueKind::Int, true, true),
-            PropertySchema::new("maximum", PropertyValueKind::Int, true, true),
-            PropertySchema::new("value", PropertyValueKind::Int, true, true),
-            PropertySchema::new("single_step", PropertyValueKind::Int, true, true),
+            // `Number`, not `Int`: these four report `Int` while `decimals == 0` (the
+            // default, so every existing caller is unaffected) and `Float` once decimals
+            // are enabled. Declaring `Int` would be a lie in decimal mode, and declaring
+            // `Float` would be one in integer mode. See `PropertyValueKind::Number`.
+            PropertySchema::new("minimum", PropertyValueKind::Number, true, true),
+            PropertySchema::new("maximum", PropertyValueKind::Number, true, true),
+            PropertySchema::new("value", PropertyValueKind::Number, true, true),
+            PropertySchema::new("single_step", PropertyValueKind::Number, true, true),
+            PropertySchema::new("decimals", PropertyValueKind::UInt, true, true),
             PropertySchema::new("prefix", PropertyValueKind::String, true, true),
             PropertySchema::new("suffix", PropertyValueKind::String, true, true),
             PropertySchema::new("special_value_text", PropertyValueKind::String, true, true),

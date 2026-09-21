@@ -208,13 +208,13 @@ impl Draw for NavigationDrawer {
         // The theme reads take and release the global manager's lock internally, so no guard
         // is held across the draw (the mutex is not re-entrant).
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("navigation_drawer");
+        let theme = crate::style::resolved_theme_style("navigation_drawer");
         // `navigation_drawer` is absent from `WidgetRole::for_kind_name`'s table, so it
         // classifies as `Surface` and resolves to `theme.colors.background` — the window's
         // own fill. A panel painted in that colour would be byte-identical to the frame
         // behind it, so a resolved surface equal to the window fill is re-derived a visible
         // step away from it, the same distinction `Colors::input_background` draws for a field.
-        let window_fill = crate::theme::global_theme_manager()
+        let window_fill = crate::style::theme_manager()
             .current_theme()
             .map(|active| active.colors.background)
             .unwrap_or(Color::WHITE);
@@ -224,7 +224,7 @@ impl Draw for NavigationDrawer {
             .unwrap_or(Color::rgb(30, 30, 30));
         // The selected item and the scrim are the accent: the hue a theme is expected to vary
         // most, so selection follows the appearance rather than a literal blue.
-        let accent = crate::theme::global_theme_manager()
+        let accent = crate::style::theme_manager()
             .current_theme()
             .map(|active| active.colors.primary)
             .unwrap_or(Color::rgb(30, 100, 200));

@@ -334,8 +334,8 @@ impl Draw for LCDNumber {
         // manager's lock internally, so no guard is held across either call or the
         // draw (the mutex is not re-entrant).
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("lcd_number");
-        let theme_background = crate::theme::global_theme_manager()
+        let theme = crate::style::resolved_theme_style("lcd_number");
+        let theme_background = crate::style::theme_manager()
             .current_theme()
             .map(|theme| theme.colors.background)
             .unwrap_or(Color::BLACK);
@@ -376,7 +376,7 @@ impl Draw for LCDNumber {
         if self.check_overflow() {
             // Overflow is the state a user has to act on, so it reads the theme's
             // warning token rather than a literal yellow.
-            let overflow_color = crate::theme::semantic_color(crate::theme::SemanticColor::Warning)
+            let overflow_color = crate::style::semantic_color(crate::style::SemanticColor::Warning)
                 .map(|token| token.blend(&bg_color, 0.2))
                 .unwrap_or_else(|| fg_color.blend(&bg_color, 0.3));
             context.fill_circle(Point::new(rect.x + 10, rect.y + 10), 5, overflow_color);

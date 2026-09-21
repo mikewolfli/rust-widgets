@@ -170,7 +170,7 @@ impl Draw for CupertinoSegmentedControl {
         // `resolved_theme_style`, so it is not held across the draw — the global manager's
         // mutex is not re-entrant.
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("cupertino_segmented_control");
+        let theme = crate::style::resolved_theme_style("cupertino_segmented_control");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme. The control is not in the role table, so it
         // classifies as `Surface` and its resolved background is the window fill itself; the
@@ -178,7 +178,7 @@ impl Draw for CupertinoSegmentedControl {
         // window's. The selected segment is the control's value indicator, so its sliding
         // highlight reads the theme's primary.
         let (window_fill, foreground, primary) = {
-            let manager = crate::theme::global_theme_manager();
+            let manager = crate::style::theme_manager();
             match manager.current_theme() {
                 Some(active) => {
                     (active.colors.background, active.colors.foreground, active.colors.primary)
@@ -220,7 +220,7 @@ impl Draw for CupertinoSegmentedControl {
         // selected label stays legible on either appearance. A caller's explicit text colour
         // still wins.
         let selected_bg = primary.contrast_color().blend(&primary, 0.30);
-        let highlight_color = style.text_color.map(|resolved| resolved).unwrap_or(selected_bg);
+        let highlight_color = style.text_color.unwrap_or(selected_bg);
         let indicator_color = if self.base.is_enabled() {
             highlight_color
         } else {

@@ -257,12 +257,21 @@ fn unix_print_probe_detects_cups_client_despite_nonzero_version_exit() {
     }
 }
 
-/// A backend with no engine must report `None` so `src/web/` uses the simulated
-/// path instead of trying to drive a native view that does not exist.
+/// A backend with no engine must say so, so a caller can present the simulated
+/// navigation path for what it is instead of implying a rendered page.
+///
+/// This replaced an assertion that the old `create_web_engine()` returned `None`. The
+/// trait method was removed by BLUE20 layer 5 (ruling W1) because its `None` conflated
+/// "no engine exists" with "the engine could not be constructed", and a capability
+/// question is what a caller can actually act on. The default is the honest answer, so
+/// a backend that declares nothing declares no engine.
 #[test]
-fn stub_reports_no_native_web_engine() {
+fn stub_reports_no_web_engine_capability() {
     let platform = StubPlatform::new("test-desktop", PlatformFamily::Desktop);
-    assert!(platform.create_web_engine().is_none());
+    assert!(
+        !platform.supports_web_engine(),
+        "a backend that implements nothing must not claim a rendering engine"
+    );
 }
 
 /// Shortcut notation is asked of the backend rather than decided by `cfg!` in the

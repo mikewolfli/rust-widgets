@@ -454,11 +454,11 @@ impl Draw for FontComboBox {
         // `font_combo_box` classifies as `WidgetRole::Input` (the role table lists it as
         // `fontcombobox`), whose resolved background is the field interior — lighter on a light
         // theme, darker on a dark one — and whose ink is the theme's foreground.
-        let theme = crate::theme::resolved_theme_style("font_combo_box");
+        let theme = crate::style::resolved_theme_style("font_combo_box");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.
         let (window_fill, foreground, primary, secondary) = {
-            let manager = crate::theme::global_theme_manager();
+            let manager = crate::style::theme_manager();
             match manager.current_theme() {
                 Some(active) => (
                     active.colors.background,

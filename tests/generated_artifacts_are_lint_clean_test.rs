@@ -58,7 +58,11 @@ fn compile_denying_warnings(sources: &[(String, String)]) -> (String, bool) {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src")).expect("create the probe crate");
 
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    // The generated manifest is TOML, where `\` starts an escape — so a native Windows path
+    // (`D:\Workspace\...`) written verbatim makes the file unparsable and the probe fails with
+    // `missing escaped value` before it reaches the committed source. A false failure about the
+    // host, not a finding about the artifact. TOML accepts forward slashes on every platform.
+    let manifest_dir = env!("CARGO_MANIFEST_DIR").replace('\\', "/");
     std::fs::write(
         dir.join("Cargo.toml"),
         format!(
@@ -82,7 +86,7 @@ fn compile_denying_warnings(sources: &[(String, String)]) -> (String, bool) {
     // Shared with the workspace so the library's rlib is reused rather than rebuilt. The dependency
     // on cargo releasing its build lock before the test binary runs is the same one documented in
     // `generator_output_compiles_test.rs::check_compiles`, and it is bounded the same way.
-    let shared_target = std::path::Path::new(manifest_dir).join("target");
+    let shared_target = std::path::Path::new(&manifest_dir).join("target");
     let mut child = std::process::Command::new(env!("CARGO"))
         .arg("check")
         .arg("--all-targets")

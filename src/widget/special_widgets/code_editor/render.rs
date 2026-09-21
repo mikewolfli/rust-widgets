@@ -40,7 +40,7 @@ use alloc::vec::Vec;
 /// resort for a process with no theme at all.
 ///
 /// The theme read inside [`EditorChrome::resolve`] happens through
-/// [`crate::theme::resolved_theme_style`], which takes and releases the manager lock
+/// [`crate::style::resolved_theme_style`], which takes and releases the manager lock
 /// internally. No lock is held across the call, so the non-re-entrant global mutex is
 /// never re-entered.
 struct EditorChrome {
@@ -92,7 +92,7 @@ impl EditorChrome {
     /// Resolves every chrome colour for the current appearance.
     fn resolve(editor: &CodeEditor) -> Self {
         let style = editor.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("code_editor");
+        let theme = crate::style::resolved_theme_style("code_editor");
 
         // Explicit style first, then the theme's resolved style for this control, then
         // the light preset's literal. That field order is the documented precedence, so a
@@ -112,7 +112,7 @@ impl EditorChrome {
         // which is what makes the caret and the selection follow the appearance. It is
         // read here as its own lock acquisition, released before the semantic reads
         // below — the global manager's mutex is not re-entrant.
-        let accent = crate::theme::global_theme_manager()
+        let accent = crate::style::theme_manager()
             .current_theme()
             .map(|active| active.colors.primary)
             .unwrap_or(editor.palette.bracket_color);
@@ -120,9 +120,9 @@ impl EditorChrome {
         // Search highlights and the error-tinted frame are semantic: they mean "this is
         // the hit you are on" and "this is an error", so they read the theme's semantic
         // tokens rather than a literal that only happens to be amber today.
-        let warning = crate::theme::semantic_color(crate::theme::SemanticColor::Warning)
+        let warning = crate::style::semantic_color(crate::style::SemanticColor::Warning)
             .unwrap_or(editor.palette.search_color);
-        let error = crate::theme::semantic_color(crate::theme::SemanticColor::Error)
+        let error = crate::style::semantic_color(crate::style::SemanticColor::Error)
             .unwrap_or(editor.palette.border_color);
 
         // Bands beside the surface are derived from it, so each stays one visible step
@@ -315,7 +315,7 @@ impl CodeEditor {
         // The close affordance is a dismissal, so it carries the theme's error colour
         // rather than the literal red it used to: the same token means "this removes
         // something" everywhere else in the library.
-        let close_color = crate::theme::semantic_color(crate::theme::SemanticColor::Error)
+        let close_color = crate::style::semantic_color(crate::style::SemanticColor::Error)
             .unwrap_or(chrome.accent);
         context.draw_rect(close, close_color);
         context.draw_text(

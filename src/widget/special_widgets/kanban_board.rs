@@ -757,7 +757,7 @@ impl Draw for KanbanBoard {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("kanban_board");
+        let theme = crate::style::resolved_theme_style("kanban_board");
         // `kanban_board` is not a control kind in the role table, so it classifies as
         // `Surface` — whose background is `theme.colors.background`, the very colour a
         // window paints. Filling the whole rect with it would make the board
@@ -854,7 +854,7 @@ impl BoardChrome {
     /// The WIP limit is a *state* the user has to act on, so it reads the theme's
     /// error token rather than a literal red.
     fn at_limit(&self) -> Color {
-        crate::theme::semantic_color(crate::theme::SemanticColor::Error)
+        crate::style::semantic_color(crate::style::SemanticColor::Error)
             .map(|token| token.blend(&self.background, 0.2))
             .unwrap_or_else(|| self.text_color.blend(&self.background, 0.3))
     }

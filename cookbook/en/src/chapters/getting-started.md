@@ -80,7 +80,7 @@ the binary you need. Pick one option from each axis:
 
 > **A profile chooses how much of the widget set is *compiled in* — never which
 > controls are available per OS.** Every profile paints the same self-drawn controls;
-> `desktop`/`tablet`/`mobile` compile all 179 widget kinds, while `embedded`/`mini`
+> `desktop`/`tablet`/`mobile` compile all 180 widget kinds, while `embedded`/`mini`
 > compile a reduced core set. See
 > [platform-support.md § 1.2](platform-support.md#12-widget-availability-is-per-profile-not-per-os).
 

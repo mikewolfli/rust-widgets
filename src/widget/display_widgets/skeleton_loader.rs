@@ -194,8 +194,30 @@ impl Draw for SkeletonLoader {
         let cx = rect.x + rect.width as i32 / 2;
         let cy = rect.y + rect.height as i32 / 2;
 
+        // Chrome colours resolve the explicit style first, then the theme's resolved style
+        // for this control, and only then the original literal. The literal stays as the
+        // fallback so an inactive theme still has a defined appearance. Previously the RGB
+        // was a literal grey, so the placeholder shimmered the same in light and dark and the
+        // rendering census reported the control as theme-blind.
+        //
+        // `resolved_theme_style` takes and releases the global manager's lock internally, so
+        // no guard is held across the draw (the mutex is not re-entrant).
+        let style = self.base.style().clone();
+        let themed = crate::style::resolved_theme_style("skeleton_loader");
+        let themed_bg = themed.as_ref().and_then(|r| r.background_color);
+        let themed_text = themed.as_ref().and_then(|r| r.text_color);
+        // The resolved surface, re-derived one visible step towards the theme's ink: the
+        // placeholder's whole job is to be *seen* against the surface it sits on, so painting
+        // it in that exact surface colour would defeat it.
+        let surface = style.background_color.or(themed_bg).unwrap_or(Color::WHITE);
+        let ink = style.text_color.or(themed_text).unwrap_or(Color::rgb(200, 200, 200));
+        let skeleton = surface.blend(&ink, 0.35);
+
         let opacity = self.current_opacity();
-        let base_color = Color::rgba(200, 200, 200, (opacity * 255.0).round() as u8);
+        // Only the RGB comes from the resolved colour: the alpha below is the shimmer
+        // animation's own modulation and is deliberately left exactly as it was.
+        let base_color =
+            Color::rgba(skeleton.r, skeleton.g, skeleton.b, (opacity * 255.0).round() as u8);
 
         match self.shape {
             SkeletonShape::Rect(w, h) => {

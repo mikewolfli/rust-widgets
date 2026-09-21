@@ -98,10 +98,14 @@ pub mod nav_widgets;
 #[cfg(full_widgets)]
 pub mod overlay_widgets;
 pub mod registry;
-// The rendering census needs both a registry to enumerate and a theme to switch, so
-// it follows `capability`'s gate (`widgets_unstripped`). A build without either has
-// nothing to measure and nothing to measure it against.
-#[cfg(widgets_unstripped)]
+// The rendering census needs **both** a registry to enumerate and a theme to switch
+// between. The registry follows `widgets_unstripped`; the theme follows `device_profile`,
+// and the two are not the same condition: a `windows + controls-custom` build has an
+// unstripped widget set but no device profile, so it has no `crate::theme` — and the
+// previous `widgets_unstripped` gate let the module compile there and fail with
+// `unresolved import crate::theme`. `full_widgets` is exactly "a device profile *and* an
+// unstripped widget set", which is what this module actually requires (principle #47).
+#[cfg(full_widgets)]
 pub mod census;
 #[cfg(full_widgets)]
 pub mod special_widgets;
@@ -448,11 +452,11 @@ pub use view_widgets::{
 pub use special_widgets::{
     Breadcrumb, BreadcrumbSegment, Canvas, ChartWidget, Chip, ChipItem, CodeEditor, ColorPicker,
     CommandEntry, CommandPalette, DiagnosticMarker, DiffKind, DiffLine, DiffViewer,
-    FreeformShapeWidget, GanttTask, GanttWidget, GridWidget, KanbanBoard, KanbanCard, KanbanColumn,
-    MapMarker, MapView, MarkdownEditor, MarkerSeverity, MediaPlayer, NotificationCenter,
-    NotificationItem, NotificationLevel, RadarChart, SegmentItem, SegmentedControl, SignaturePad,
-    SignatureStroke, Snackbar, SplitAction, SplitButton, TerminalView, TimelineItem,
-    TimelineWidget, Toast, ToastItem, ToastLevel, ToastStack,
+    FreeformShapeWidget, GanttTask, GanttWidget, GridWidget, Heatmap, HeatmapCell, KanbanBoard,
+    KanbanCard, KanbanColumn, MapMarker, MapView, MarkdownEditor, MarkerSeverity, MediaPlayer,
+    NotificationCenter, NotificationItem, NotificationLevel, RadarChart, SegmentItem,
+    SegmentedControl, SignaturePad, SignatureStroke, Snackbar, SplitAction, SplitButton,
+    TerminalView, TimelineItem, TimelineWidget, Toast, ToastItem, ToastLevel, ToastStack,
 };
 /// Alias for [`ProgressBar`], naming an indicator use case.
 /// This is a plain progress bar: it does not animate on its own.

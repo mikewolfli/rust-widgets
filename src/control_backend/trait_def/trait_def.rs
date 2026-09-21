@@ -569,6 +569,17 @@ pub trait ControlBackend: Send + Sync {
     ) -> ObjectId {
         0
     }
+    /// Create heat map control.
+    fn create_heatmap(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
     /// Create cascader (multi-level path chooser) control.
     fn create_cascader(
         &self,

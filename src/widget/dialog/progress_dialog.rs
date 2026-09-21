@@ -318,7 +318,7 @@ impl Draw for ProgressDialog {
         // The theme reads take and release the global manager's lock internally, so no guard
         // is held across the draw (the mutex is not re-entrant).
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("progress_dialog");
+        let theme = crate::style::resolved_theme_style("progress_dialog");
         // `progress_dialog` is absent from `WidgetRole::for_kind_name`'s table, so it
         // classifies as `Surface` and resolves to `theme.colors.background` — the window's
         // own fill. A panel painted in that colour would be byte-identical to the frame
@@ -326,7 +326,7 @@ impl Draw for ProgressDialog {
         // step away from it, the same distinction `Colors::input_background` draws for a
         // field.
         let window_fill = {
-            let manager = crate::theme::global_theme_manager();
+            let manager = crate::style::theme_manager();
             manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
         };
         let ink = style
@@ -355,7 +355,7 @@ impl Draw for ProgressDialog {
         // appearance, so it reads the theme's semantic `success` token instead of the
         // literal green it used to carry. `semantic_color` takes its own lock and returns an
         // owned `Color`, so no guard outlives the call.
-        let progress_fill = crate::theme::semantic_color(crate::theme::SemanticColor::Success)
+        let progress_fill = crate::style::semantic_color(crate::style::SemanticColor::Success)
             .unwrap_or(Color::rgb(6, 176, 37));
 
         context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), surface);

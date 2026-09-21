@@ -498,7 +498,7 @@ impl TabBar {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("tab_bar");
+        let theme = crate::style::resolved_theme_style("tab_bar");
         // `tab_bar` is not a control kind in the role table, so it classifies as
         // `Surface`, whose background is `theme.colors.background` — byte-identical
         // to the window behind it. The current tab's fill is therefore a step toward
@@ -522,7 +522,7 @@ impl TabBar {
         let disabled_tab = current_tab.blend(&text_color, 0.14);
         let inactive_tab = current_tab.blend(&text_color, 0.06);
         let hovered_tab = current_tab.blend(
-            &crate::theme::resolved_theme_style("button")
+            &crate::style::resolved_theme_style("button")
                 .and_then(|button| button.background_color)
                 .unwrap_or(text_color),
             0.08,

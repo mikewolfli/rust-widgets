@@ -328,11 +328,11 @@ impl Draw for OrderBookWidget {
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("order_book");
+        let theme = crate::style::resolved_theme_style("order_book");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.
         let (window_fill, foreground, secondary) = {
-            let manager = crate::theme::global_theme_manager();
+            let manager = crate::style::theme_manager();
             match manager.current_theme() {
                 Some(active) => {
                     (active.colors.background, active.colors.foreground, active.colors.secondary)
@@ -492,12 +492,18 @@ impl WidgetProperties for OrderBookWidget {
                 _ => Err(CapabilityAccessError::TypeMismatch),
             },
             "show_spread" => {
-                let CapabilityValue::Bool(_) = value else {
-                    return Err(CapabilityAccessError::TypeMismatch);
-                };
                 // The spread separator is part of what makes the ladder readable, so it
                 // is not switchable; the property exists so a caller can confirm it is
-                // on, and the write is accepted only for the value it already holds.
+                // on, and **every** write is refused as read-only.
+                //
+                // The type is deliberately not inspected first. Checking it and answering
+                // `TypeMismatch` for a non-bool made the control's answer depend on the
+                // *value* of a write that can never succeed: a caller writing `Null` (or
+                // any other type) was told "wrong type", which invites them to retry with
+                // a bool — and only then learn the name is read-only. The declaration says
+                // `writable: false`, so `ReadOnlyProperty` is the one honest answer and it
+                // must not depend on what was passed.
+                let _ = value;
                 Err(CapabilityAccessError::ReadOnlyProperty)
             }
             _ => base_property_set(self, name, value),

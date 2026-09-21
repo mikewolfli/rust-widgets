@@ -401,7 +401,7 @@ pub trait EventHandler {
 
 `BaseWidget` 提供了一个默认实现，将平台事件映射为信号发射（click → `clicked.emit()`，鼠标移动 → `hover.emit(point)`）。
 
-### `WidgetKind` Enum — 179 变体
+### `WidgetKind` Enum — 180 变体
 
 `WidgetKind` 枚举对所有控件类型进行分类。变体受功能门控：28 个在所有配置文件中可用，151 个通过非 `mini` 功能解锁：
 
@@ -867,7 +867,7 @@ pub trait ControlBackend {
 
 ### 调度策略
 
-`control_backend::dispatcher` 中的调度器根据编译时的功能标志将控件创建调用路由到相应的后端。`control_backend::routing` 中的路由系统覆盖全部 179 种控件类型；每种控件均为自绘，已无第二套（平台托管）机制可选。
+`control_backend::dispatcher` 中的调度器根据编译时的功能标志将控件创建调用路由到相应的后端。`control_backend::routing` 中的路由系统覆盖全部 180 种控件类型；每种控件均为自绘，已无第二套（平台托管）机制可选。
 
 ---
 

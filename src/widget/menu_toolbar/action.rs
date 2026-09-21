@@ -374,11 +374,9 @@ impl EventHandler for Action {
                 self.base.request_redraw();
                 self.hovered.emit();
             }
-            Event::MouseLeave { .. } => {
-                if self.is_hovered {
-                    self.is_hovered = false;
-                    self.base.request_redraw();
-                }
+            Event::MouseLeave { .. } if self.is_hovered => {
+                self.is_hovered = false;
+                self.base.request_redraw();
             }
             _ => { /* Other events are not relevant */ }
         }
@@ -415,7 +413,7 @@ impl Draw for Action {
         }
 
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("action");
+        let theme = crate::style::resolved_theme_style("action");
         let ink = style
             .text_color
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))

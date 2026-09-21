@@ -423,7 +423,7 @@ impl EventHandler for MyWidget {
 
 ---
 
-## `WidgetKind` 列舉——179 變體
+## `WidgetKind` 列舉——180 變體
 
 `WidgetKind` 列舉將每個控制項型別分類。它透過功能旗標進行門控：28 個變體始終可用；151 個需要非 `mini` 功能。
 

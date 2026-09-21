@@ -301,7 +301,7 @@ impl Draw for SplashScreen {
         // The theme reads take and release the global manager's lock internally, so no
         // guard is held across the draw (the mutex is not re-entrant).
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("splash_screen");
+        let theme = crate::style::resolved_theme_style("splash_screen");
         let surface = style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
@@ -311,7 +311,7 @@ impl Draw for SplashScreen {
         // behind it. A resolved surface equal to the theme's background is therefore
         // re-derived one step toward the ink, the same distinction `Colors::input_background`
         // draws for a field.
-        let themed_background = crate::theme::global_theme_manager()
+        let themed_background = crate::style::theme_manager()
             .current_theme()
             .map(|active| active.colors.background);
         let surface = match themed_background {
@@ -334,7 +334,7 @@ impl Draw for SplashScreen {
             .unwrap_or_else(|| surface.blend(&ink, 0.3));
         // The accent is the theme's `primary`: the hue a theme is expected to vary most, so
         // the logo block and the completed portion of the bar follow the appearance.
-        let accent = crate::theme::global_theme_manager()
+        let accent = crate::style::theme_manager()
             .current_theme()
             .map(|active| active.colors.primary)
             .unwrap_or(Color::rgb(66, 133, 214));

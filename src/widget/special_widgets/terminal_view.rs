@@ -206,8 +206,8 @@ impl Draw for TerminalView {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("terminal_view")
-            .or_else(|| crate::theme::resolved_theme_style("text_edit"));
+        let theme = crate::style::resolved_theme_style("terminal_view")
+            .or_else(|| crate::style::resolved_theme_style("text_edit"));
         // `terminal_view` is not a control kind in the role table, so it classifies
         // as `Surface`, whose background is `theme.colors.background` — byte-identical
         // to the window behind it. `TerminalView` is built on `WidgetKind::TextEdit`,
@@ -233,7 +233,7 @@ impl Draw for TerminalView {
         let output_color = text_color;
         // The prompt line is a *success* state — the shell is ready for input — so it
         // reads the theme's success token rather than a literal green.
-        let prompt_color = crate::theme::semantic_color(crate::theme::SemanticColor::Success)
+        let prompt_color = crate::style::semantic_color(crate::style::SemanticColor::Success)
             .map(|token| token.blend(&background, 0.15))
             .unwrap_or_else(|| background.blend(&text_color, 0.6));
 

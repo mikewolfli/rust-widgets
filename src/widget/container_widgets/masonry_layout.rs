@@ -160,14 +160,41 @@ impl Draw for MasonryLayout {
         let corner_radius: u32 = 6;
         let font = Font::simple("Arial", 12.0);
 
+        // The container behind the cards is this control's chrome, so it follows the
+        // theme. `resolved_theme_style` takes and releases the global manager's lock
+        // internally, so no guard is held across the draw (the mutex is not re-entrant).
+        //
+        // `masonry_layout` is absent from `WidgetRole::for_kind_name`'s table, so it
+        // classifies as `Surface` and resolves to `theme.colors.background` — the window's
+        // own fill. Painting that leaves the panel byte-identical to the frame behind it,
+        // so the resolved surface is re-derived a visible step away from the window's ink
+        // colour; a colour the caller set still wins.
+        let style = self.base.style().clone();
+        let themed = crate::style::resolved_theme_style("masonry_layout");
+        let themed_bg = themed.as_ref().and_then(|r| r.background_color);
+        let themed_text = themed.as_ref().and_then(|r| r.text_color);
+        // Precedence: explicit style → theme → the ORIGINAL LITERAL. The literal has to
+        // stay: an inactive theme still needs a defined appearance, and keeping the old
+        // value means the existing pixel baselines cannot regress.
+        let base = style.background_color.or(themed_bg).unwrap_or(Color::rgba(180, 180, 180, 200));
+        let ink = style.text_color.or(themed_text).unwrap_or_else(|| base.contrast_color());
+        let container_bg = base.blend(&ink, 0.04);
+
         let layout = self.layout_items();
 
+        // The panel is drawn first so an empty layout still shows where the control is
+        // rather than being indistinguishable from the frame behind it.
+        context.fill_rect(rect, container_bg);
+
         for (_item, item_rect) in &layout {
-            // Draw the item card background.
+            // Draw the item card background. `_item.color` is the per-card colour the
+            // CALLER supplied — it identifies the card, so it is data and is passed
+            // through untouched rather than resolved from the theme.
             context.fill_rounded_rect(*item_rect, corner_radius, _item.color);
 
-            // Draw the label text centered in the item.
-            let text_color = Color::WHITE;
+            // Draw the label text centered in the item, in whichever ink is legible on
+            // that card's own colour.
+            let text_color = _item.color.contrast_color();
             let text_x = item_rect.x + 6;
             let text_y = item_rect.y + (item_rect.height as i32 / 2) - 6;
             context.draw_text(
@@ -179,10 +206,11 @@ impl Draw for MasonryLayout {
             );
         }
 
-        // If there are no items, draw an empty-state hint.
+        // If there are no items, draw an empty-state hint. The hint is chrome, so it reads
+        // the resolved ink instead of a literal grey.
         if self.items.is_empty() {
             let hint = "No items";
-            let hint_color = Color::rgba(180, 180, 180, 200);
+            let hint_color = ink.blend(&base, 0.35);
             let hint_font = Font::simple("Arial", 16.0);
             let hint_x = rect.x + (rect.width / 4) as i32;
             let hint_y = rect.y + (rect.height / 3) as i32;

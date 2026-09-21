@@ -71,6 +71,7 @@ pub fn value_kind_token(kind: PropertyValueKind) -> &'static str {
         PropertyValueKind::Int => "int",
         PropertyValueKind::UInt => "uint",
         PropertyValueKind::Float => "float",
+        PropertyValueKind::Number => "number",
         PropertyValueKind::String => "string",
         PropertyValueKind::Enum => "enum",
         PropertyValueKind::Color => "color",
@@ -88,6 +89,7 @@ pub fn value_kind_from_token(token: &str) -> Option<PropertyValueKind> {
         "int" => Some(PropertyValueKind::Int),
         "uint" => Some(PropertyValueKind::UInt),
         "float" => Some(PropertyValueKind::Float),
+        "number" => Some(PropertyValueKind::Number),
         "string" => Some(PropertyValueKind::String),
         "enum" => Some(PropertyValueKind::Enum),
         "color" => Some(PropertyValueKind::Color),
@@ -1157,9 +1159,16 @@ mod tests {
     }
 
     /// An unknown kind or shape must be refused rather than defaulted.
+    ///
+    /// The sentinel is `"quaternion"`, which is not a token this reader knows and is not
+    /// about to be one. It used to be `"number"`, which stopped being a valid sentinel the
+    /// moment `PropertyValueKind::Number` was added — the test then failed for the right
+    /// reason (the token is accepted now) and had to move to a spelling that stays unknown.
     #[test]
     fn an_unrecognised_kind_is_refused() {
-        let json = manifest_to_json(&sample()).replace("\"kind\": \"int\"", "\"kind\": \"number\"");
+        let json =
+            manifest_to_json(&sample()).replace("\"kind\": \"int\"", "\"kind\": \"quaternion\"");
+        assert_ne!(json, manifest_to_json(&sample()), "the sentinel must actually appear");
         let result = DesignerManifest::from_json(&json);
         assert!(result.is_err(), "a kind this reader does not know must not be accepted");
     }
@@ -1186,6 +1195,7 @@ mod tests {
             PropertyValueKind::Int,
             PropertyValueKind::UInt,
             PropertyValueKind::Float,
+            PropertyValueKind::Number,
             PropertyValueKind::String,
             PropertyValueKind::Enum,
             PropertyValueKind::Color,

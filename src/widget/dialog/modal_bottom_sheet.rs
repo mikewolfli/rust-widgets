@@ -292,7 +292,7 @@ impl Draw for ModalBottomSheet {
         // The theme reads take and release the global manager's lock internally, so no
         // guard is held across the draw (the mutex is not re-entrant).
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("modal_bottom_sheet");
+        let theme = crate::style::resolved_theme_style("modal_bottom_sheet");
         // `modal_bottom_sheet` is absent from `WidgetRole::for_kind_name`'s table, so it
         // classifies as `Surface` and resolves to `theme.colors.background` — the window's
         // own fill. A pane painted in that colour would be byte-identical to the dark scrim
@@ -300,7 +300,7 @@ impl Draw for ModalBottomSheet {
         // re-derived a visible step away from it, the same distinction
         // `Colors::input_background` draws for a field.
         let window_fill = {
-            let manager = crate::theme::global_theme_manager();
+            let manager = crate::style::theme_manager();
             manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
         };
         let ink = style

@@ -31,11 +31,9 @@ pub(crate) mod overlay_place;
 #[cfg(all(target_os = "linux", feature = "gtk-native", widgets_unstripped))]
 pub(crate) mod canvas;
 
-/// Native WebKitGTK web engine (Linux only).
-///
-/// Holds every `webkit2gtk` reference in the crate so `src/web/` can drive a real
-/// browser engine without importing a platform crate — see principle #36.
-#[cfg(all(target_os = "linux", feature = "webkit-engine", widgets_unstripped))]
-pub(crate) mod webkit_engine;
+// The `webkit_engine` module lived here: 76 lines wrapping `webkit2gtk::WebView` behind
+// a private trait, never added to a GTK container. Deleted by BLUE20 layer 5 (ruling W1,
+// 2026-09-21) because it never displayed a page. See `src/platform/types.rs` where
+// `NativeWebEngine` was, and `tools/check_web_engine_honest.sh`, which fails if it returns.
 
 pub use types::*;

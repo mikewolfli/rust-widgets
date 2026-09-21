@@ -156,7 +156,7 @@ impl Draw for ColorWell {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("color_well");
+        let theme = crate::style::resolved_theme_style("color_well");
         // The swatch itself (`self.color`) is the datum the control exists to show,
         // so it is painted verbatim; only the surface behind a translucent swatch
         // and the border around it follow the appearance.

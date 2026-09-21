@@ -77,17 +77,26 @@ done
 
 echo "--- [3] Ask cargo which files the package would contain ---"
 PKG_LIST="$(mktemp)"
-trap 'rm -f "$PKG_LIST"' EXIT
+RAW_LIST="$(mktemp)"
+trap 'rm -f "$PKG_LIST" "$RAW_LIST"' EXIT
 
 # `--list` does not build, but it does resolve the index, so it is bounded.
-if ! rw_run_bounded 300 cargo package --list --allow-dirty >"$PKG_LIST" 2>/dev/null; then
+if ! rw_run_bounded 300 cargo package --list --allow-dirty >"$RAW_LIST" 2>/dev/null; then
   echo "check_declared_targets_ship: unsupported host (cargo package --list did not complete)" >&2
   exit 0
 fi
 
-if [ ! -s "$PKG_LIST" ]; then
+if [ ! -s "$RAW_LIST" ]; then
   error "cargo package --list produced no output, so nothing could be verified"
 fi
+
+# `cargo package --list` prints **host-native** separators: on Windows the paths come
+# back as `examples\foo.rs`, while every `path = "..."` in `Cargo.toml` — and therefore
+# every element of `DECLARED` — uses `/`. Comparing them verbatim made every declared
+# target look unpackaged on Windows, which is a false positive about the *host*, not a
+# finding about the crate (the same mistake `tools/audit_appearance.py` had). Normalise
+# once, here, so the comparison is about the file rather than about the separator.
+tr '\\' '/' < "$RAW_LIST" | sort -u > "$PKG_LIST"
 
 echo "--- [4] Every declared target path must be packaged ---"
 for p in "${DECLARED[@]}"; do

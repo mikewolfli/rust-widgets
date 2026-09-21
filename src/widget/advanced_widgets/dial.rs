@@ -355,13 +355,13 @@ impl Draw for Dial {
         // `resolved_theme_style`, so it is not held across the draw — the global manager's
         // mutex is not re-entrant.
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("dial");
+        let theme = crate::style::resolved_theme_style("dial");
         // Read as its own lock acquisition and copied out as values, so the guard is
         // dropped before anything else touches the theme. The accent is the dial's value
         // colour: the needle is a value indicator, the same role a progress bar's fill
         // plays, and reading the token is what makes the indicator move with the theme.
         let (window_fill, foreground, accent, muted) = {
-            let manager = crate::theme::global_theme_manager();
+            let manager = crate::style::theme_manager();
             match manager.current_theme() {
                 Some(active) => (
                     active.colors.background,

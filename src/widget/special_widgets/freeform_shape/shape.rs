@@ -795,7 +795,7 @@ impl Draw for FreeformShapeWidget {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("freeform_shape");
+        let theme = crate::style::resolved_theme_style("freeform_shape");
         // `freeform_shape` is not a control kind in the role table, so it classifies as
         // `Surface`, whose background is `theme.colors.background` — the window's own
         // colour. The plate behind the outline is therefore a step toward the

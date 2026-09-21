@@ -325,12 +325,12 @@ impl Draw for RichEdit {
         // The fallback name matters: the role table is keyed on **role** names, so `rich_edit`
         // (the factory name) is not in it and would classify as `Surface`, i.e. the window fill.
         // `richedit` is, and resolves to the editable interior plus the theme's foreground.
-        let theme = crate::theme::resolved_theme_style("rich_edit")
-            .or_else(|| crate::theme::resolved_theme_style("richedit"));
+        let theme = crate::style::resolved_theme_style("rich_edit")
+            .or_else(|| crate::style::resolved_theme_style("richedit"));
         // The window fill, read as its own lock acquisition and copied out as a value, so the
         // guard is dropped before anything else touches the theme.
         let window_fill = {
-            let manager = crate::theme::global_theme_manager();
+            let manager = crate::style::theme_manager();
             manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
         };
         let paper_from_theme =
@@ -385,7 +385,7 @@ impl Draw for RichEdit {
                     let cursor_x = rect.x + padding + (col as i32) * 7;
                     // The caret is the selection indicator, so it carries the accent rather than
                     // a fixed black the user could not find on a dark page.
-                    let caret = crate::theme::semantic_color(crate::theme::SemanticColor::Info)
+                    let caret = crate::style::semantic_color(crate::style::SemanticColor::Info)
                         .unwrap_or(ink);
                     context.draw_line(
                         crate::core::Point::new(cursor_x, line_y - line_height + 2),

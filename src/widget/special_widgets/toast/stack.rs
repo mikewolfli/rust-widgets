@@ -283,7 +283,7 @@ impl Draw for ToastStack {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("toast_stack");
+        let theme = crate::style::resolved_theme_style("toast_stack");
         // `toast_stack` is not a control kind in the role table, so it classifies as
         // `Surface`, whose background is `theme.colors.background` — byte-identical
         // to the window behind it. The stack's own fill is therefore a step toward
@@ -334,11 +334,11 @@ impl Draw for ToastStack {
 
             // The badge is a *state* indicator, so it reads the theme's semantic
             // tokens rather than a literal colour per level.
-            let badge = crate::theme::semantic_color(match item.level {
-                ToastLevel::Info => crate::theme::SemanticColor::Info,
-                ToastLevel::Success => crate::theme::SemanticColor::Success,
-                ToastLevel::Warning => crate::theme::SemanticColor::Warning,
-                ToastLevel::Error => crate::theme::SemanticColor::Error,
+            let badge = crate::style::semantic_color(match item.level {
+                ToastLevel::Info => crate::style::SemanticColor::Info,
+                ToastLevel::Success => crate::style::SemanticColor::Success,
+                ToastLevel::Warning => crate::style::SemanticColor::Warning,
+                ToastLevel::Error => crate::style::SemanticColor::Error,
             })
             .map(|token| token.blend(&bg, 0.15))
             .unwrap_or_else(|| bg.blend(&text_color, 0.6));

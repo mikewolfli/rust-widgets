@@ -5,6 +5,120 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 2.5.1 (2026-09-21) — A Control's Rendering Became a Verified Dimension, the WebEngine Stopped Claiming What It Could Not Do, and Three Broken Builds Were Fixed
+
+Backward compatible: no public signature was removed and no existing behaviour changed. The one
+removed item is a **private** trait (`NativeWebEngine`) that had a single implementation which never
+displayed anything — see "The WebEngine became honest" below.
+
+---
+
+### 1. The rendering dimension — 188 controls now have their pixels checked
+
+Every gate before this one was built on **declarations**: does the control publish a property, does
+it publish an event, does it `impl Draw`. Round 58 shipped four defects the user saw with their own
+eyes — a control laid out off-canvas, a window fill covering its children, a theme switch that did
+nothing, `list_box` painted in the window's own colour — and **every one of them satisfied all 64
+gates that existed**, because none of those gates looked at a rendered pixel.
+
+This release adds that dimension, in five layers:
+
+* **A rendering golden table.** All **188** controls are constructed, rendered twice (light and dark)
+  into an in-memory raster, and asserted on four judgements: `P1` it painted at least one pixel
+  distinguishable from its background; `P2` its dominant colour is not the surface it sits on; `P3`
+  its dominant colour differs between the two appearances; `P4` each of the four semantic tokens
+  (`error`/`warning`/`success`/`info`) has a real consumer and moves with the appearance. The
+  traversal unit is the **canonical name**, never `WidgetKind`: 13 kinds are shared by 2–5 controls,
+  so a kind sweep would have silently skipped 19 of them.
+* **A data-colour exemption table.** `P3` would otherwise fail a chart whose *series* colour is
+  deliberately constant. Controls whose colour **is** the data (series palettes, K-line red/green,
+  the colour spectrum, meter thresholds, map tiles) are registered in
+  `tools/control_color_exemptions.txt` **with a written reason**; the four controls that carry
+  *semantic* colours (`banner`, `calendar`, `progress_dialog`, `message_box`) are refused entry, so
+  "the theme declares four semantic tokens and nobody reads them" cannot be legalised.
+* **A declaration/implementation alignment gate.** Three assertions that no existing gate could make:
+  `Q1` every declared property is answered by the control that declares it (with its declared
+  writability); `Q2` every `draw` body actually paints — an empty `impl Draw` is what principle #5
+  forbids; `Q3` every published event list is a set and carries a payload shape.
+* **376 SVG snapshots** under `snapshots/svg/`, one per control per appearance, named by canonical
+  name, committed, with a regenerate-and-compare gate. A wrong-looking control is not something an
+  assertion can catch; a diffable image is.
+* **A WebEngine that reports what it is**, below.
+
+### 2. Real defects this dimension found (and fixed)
+
+These were **not** visible from any declaration, and every one of them is now covered by an
+assertion with a reverse-injection record:
+
+| Defect | How it was found |
+|---|---|
+| `message_box` declared `modal` as neither readable nor writable while the control had a working getter and setter | `Q1` — the designer was hiding a property that works |
+| `order_book::show_spread` answered `TypeMismatch` for a non-bool write and `ReadOnlyProperty` for a bool one | `Q1` writability — a caller was told "wrong type" about a name that can never accept a write |
+| The JS engine **documented arithmetic** and `1 + 2` returned `undefined` | `Q1`'s investigation — the docs promised what the code did not do |
+| The SVG exporter rendered every control with the theme never applied, so `<name>.svg` and `<name>.light.svg` were byte-identical apart from a comment | `check_svg_snapshots.sh` step [4] — the snapshots existed and proved nothing |
+| One example and one test used a crate-level `#![cfg]` without `required-features`, so `cargo check --all-targets` on `mini` failed with `E0601: main function not found` | `check_profiles.sh` |
+| The clipboard test raced other tests on the process-wide clipboard and failed intermittently under the parallel harness | repeated `cargo test` runs |
+
+### 3. Three build configurations that were already broken are now fixed
+
+`cargo check --no-default-features --features mini`, `... --features embedded`, and
+`--features "windows desktop-runtime controls-native controls-custom"` **failed at the previous
+tag**: the widget layer referenced `crate::theme` from ~120 files, while that module is gated on
+`device_profile` and those three configurations do not set it (78 errors in the last one).
+
+Widening the theme module was not the fix — it needs `serde` and the capability registry. The fix
+is a single always-available entry point in `src/style/` (`resolved_theme_style`,
+`resolved_theme_style_for`, `theme_manager`, `semantic_color`, plus the type shapes), so one path
+compiles in every profile and answers "no theme" where there is no theme. `mini` has no colour
+model at all, and now says so instead of failing to compile.
+
+### 4. The WebEngine became honest
+
+`WebEngineView` models a web page; it does not render one, and now says so.
+
+A real engine used to be reachable on Linux behind the `webkit-engine` feature: **76 lines** of
+one-line forwards to `webkit2gtk`, one platform, and the `WebView` was **never added to a GTK
+container** — so no user could ever have seen a page through this library, while the feature list
+and the docs said otherwise. It was removed rather than completed, because completing it means
+500–1500 lines per platform plus a hard dependency on system libraries, and because JavaScript
+evaluation (the other half of "web support") runs on the pure-Rust `boa` engine and never went
+through that trait at all.
+
+What replaced it:
+
+* `Platform::supports_web_engine()` — a capability question, answered `false` on every current
+  backend, instead of an `Option` whose `None` conflated "no engine exists" with "the engine could
+  not be constructed".
+* `WebEngineViewEnhanced::has_real_engine()` — the degradation is now **queryable** from the widget
+  itself. It previously was not: the constructor's doc told a caller that had to know to "query the
+  platform directly", which is impossible when the *widget* is what held the engine. That made
+  "this is a simulated view" undetectable — the same defect class as an event that is published but
+  never emitted.
+* `tools/check_web_engine_honest.sh` fails if any of the removed names returns.
+
+### 5. Two toolchain-independent gate defects (false failures on Windows)
+
+Four gates reported failures that were about the *host*, not the code: TOML manifests written with a
+native Windows path (`\` starts an escape, so the file was unparsable), and `cargo package --list`
+output compared verbatim against forward-slash paths. Also, `check_android_cross.sh` /
+`check_ios_cross.sh` reported a missing toolchain as `FAIL` rather than `SKIP`, so an unavailable
+target was counted as a defect in the code under test. All four now report accurately.
+
+### Measured facts
+
+- `cargo test --no-default-features --features desktop` → **5543 passed / 0 failed** (45 suites).
+- `cargo clippy --no-default-features --features desktop --all-targets -- -D warnings` → **clean**.
+- `cargo check --no-default-features --features <desktop|tablet|mobile|mini|embedded> --all-targets`
+  → **0 errors, 0 warnings** on all five (three of which did not build at the previous tag).
+- Rendering census: **checked=188, skipped=0, failed=0**.
+- Declaration alignment: **checked=188, skipped=199 (each with a reason), failed=0**.
+- SVG snapshots: **376 files** (188 controls × 2 appearances), regeneration byte-identical.
+- Semantic tokens: all four have consumers; none is an empty declaration.
+- WebEngine: zero residue from the removed wrapper; `supports_web_engine()` is `false` everywhere.
+
+See [`docs/log/log-20260921-3.md`](docs/log/log-20260921-3.md) for the per-change evidence, the
+reverse-injection records, and the layer-by-layer counts.
+
 ## 2.5.0 (2026-09-21) — Events Became a Typed Contract, a Project Document Becomes Rust Source, and the Designer Is Gated and Committed
 
 Backward compatible. **No public signature was removed and no existing behaviour changed.** This

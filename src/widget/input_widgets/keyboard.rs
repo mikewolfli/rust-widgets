@@ -440,11 +440,13 @@ impl Draw for Keyboard {
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("keyboard");
+        let theme = crate::style::resolved_theme_style("keyboard");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
-        // before anything else touches the theme.
+        // before anything else touches the theme. A stripped device build has no theme
+        // module, so the literals are its only rung — the same ones the `None` arm uses.
+        #[cfg(device_profile)]
         let (window_fill, foreground, primary, muted) = {
-            let manager = crate::theme::global_theme_manager();
+            let manager = crate::style::theme_manager();
             match manager.current_theme() {
                 Some(active) => (
                     active.colors.background,
@@ -460,6 +462,13 @@ impl Draw for Keyboard {
                 ),
             }
         };
+        #[cfg(not(device_profile))]
+        let (window_fill, foreground, primary, muted) = (
+            Color::rgb(240, 240, 240),
+            Color::BLACK,
+            Color::rgb(33, 150, 243),
+            Color::rgb(158, 158, 158),
+        );
 
         let ink = style
             .text_color

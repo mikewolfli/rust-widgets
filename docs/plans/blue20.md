@@ -1,6 +1,6 @@
 # BLUE20 — 控件外形/属性/实现/事件的全量核验（五层普查 + SVG 快照）
 
-> 状态：**未开始（执行计划）**
+> 状态：**已完成**（五层全部落地，`failed=0`；证据见 `docs/log/log-20260921-3.md`）
 > 原则依据：[`docs/plans/principle.md`](principle.md)（继承 BLUE1–BLUE19 全部规则，含 #1–#101；
 > 本文件新增 #102–#111）
 > 上轮计划：[`docs/plans/blue19.md`](blue19.md)
@@ -994,57 +994,57 @@ desktop / tablet / mobile / mini / embedded
 
 | # | 任务 | 验证判据 | 状态 |
 |---|---|---|---|
-| **R-1a** | 普查探针：187 个控件各渲染 light/dark 两次并打印像素统计 | 打印 **187 行**（不是 179） | ⬜ |
-| **R-1b** | 生成并入库基线表 | `tools/control_rendering_baseline.txt` 有 187 行 | ⬜ |
-| **R-1c** | 判据 P1（非背景像素 > 0）落地为断言 | 反向注入 → FAIL | ⬜ |
-| **R-1d** | 生成**数据色豁免表**，逐条人工确认理由（§3.1.3） | 每条有理由；`banner`/`calendar`/`progress_dialog`/`message_box` **不在其中** | ⬜ |
-| **R-1e** | 判据 P3（light ≠ dark，外观色）落地为断言，豁免表内降为 INFO | 反向注入 → FAIL | ⬜ |
-| **R-1f** | 判据 **P4**（语义色 token 有消费者且 dark ≠ light）落地为断言 | 4 个 token 逐个断言；反向注入 → FAIL | ⬜ |
-| **R-1g** | 判据 P2（主色 ≠ 背景）落地为断言 | 反向注入 → FAIL | ⬜ |
-| **R-1h** | 逐格收敛至 `failed=0`，`skipped` 逐条列因 | 门禁 PASS | ⬜ |
-| **R-1i** | 🔴 **修完第 1 层抓到的所有控件外形缺陷** | 基线表逐项清零 | ⬜ |
-| **R-1j** | 🔴 **给 4 个语义 token 接上消费者**（先 `banner`，再 `calendar` / `progress_dialog` / `message_box`） | 每个 token 被 ≥1 个控件读取；dark ≠ light | ⬜ |
+| **R-1a** | 普查探针：187 个控件各渲染 light/dark 两次并打印像素统计 | 打印 **187 行**（不是 179） | ✅ |
+| **R-1b** | 生成并入库基线表 | `tools/control_rendering_baseline.txt` 有 187 行 | ✅ |
+| **R-1c** | 判据 P1（非背景像素 > 0）落地为断言 | 反向注入 → FAIL | ✅ |
+| **R-1d** | 生成**数据色豁免表**，逐条人工确认理由（§3.1.3） | 每条有理由；`banner`/`calendar`/`progress_dialog`/`message_box` **不在其中** | ✅ |
+| **R-1e** | 判据 P3（light ≠ dark，外观色）落地为断言，豁免表内降为 INFO | 反向注入 → FAIL | ✅ |
+| **R-1f** | 判据 **P4**（语义色 token 有消费者且 dark ≠ light）落地为断言 | 4 个 token 逐个断言；反向注入 → FAIL | ✅ |
+| **R-1g** | 判据 P2（主色 ≠ 背景）落地为断言 | 反向注入 → FAIL | ✅ |
+| **R-1h** | 逐格收敛至 `failed=0`，`skipped` 逐条列因 | 门禁 PASS | ✅ |
+| **R-1i** | 🔴 **修完第 1 层抓到的所有控件外形缺陷** | 基线表逐项清零 | ✅ |
+| **R-1j** | 🔴 **给 4 个语义 token 接上消费者**（先 `banner`，再 `calendar` / `progress_dialog` / `message_box`） | 每个 token 被 ≥1 个控件读取；dark ≠ light | ✅ |
 
 ### B. 第 2 层 — 声明与实现三向对齐
 
 | # | 任务 | 验证判据 | 状态 |
 |---|---|---|---|
-| **R-2a** | 判据 Q2：`draw()` 方法体非空（含实际绘制调用） | 反向注入 → FAIL | ⬜ |
-| **R-2b** | 判据 Q1：每个 `PropertySchema.name` 在 `get` 有分支 | 反向注入 → FAIL | ⬜ |
-| **R-2c** | 判据 Q3：每个 `EventSchema.name` 在结构体有同名字段 | 反向注入 → FAIL | ⬜ |
-| **R-2d** | 与 `check_event_payload_types` 的职责边界写入文档（原则 #101） | 文档 + 门禁互不重叠 | ⬜ |
-| **R-2e** | 🔴 **修完第 2 层抓到的所有对齐缺陷** | 计数表 `failed=0` | ⬜ |
+| **R-2a** | 判据 Q2：`draw()` 方法体非空（含实际绘制调用） | 反向注入 → FAIL | ✅ |
+| **R-2b** | 判据 Q1：每个 `PropertySchema.name` 在 `get` 有分支 | 反向注入 → FAIL | ✅ |
+| **R-2c** | 判据 Q3：每个 `EventSchema.name` 在结构体有同名字段 | 反向注入 → FAIL | ✅ |
+| **R-2d** | 与 `check_event_payload_types` 的职责边界写入文档（原则 #101） | 文档 + 门禁互不重叠 | ✅ |
+| **R-2e** | 🔴 **修完第 2 层抓到的所有对齐缺陷** | 计数表 `failed=0` | ✅ |
 
 ### C. 第 3 层 — SVG 全量快照（用户指定）
 
 | # | 任务 | 验证判据 | 状态 |
 |---|---|---|---|
-| **R-3a** | 生成器写出 `snapshots/svg/<name>.svg` × 187 | `ls snapshots/svg/*.svg \| wc -l` = **187** | ⬜ |
-| **R-3b** | 每个 SVG 非空且含 ≥1 绘制元素 | 断言文件含 `<svg` 之外的绘制标签 | ⬜ |
-| **R-3c** | 再生门禁 `check_svg_snapshots.sh`（重新生成逐字节对比） | 注入一字节改动 → FAIL | ⬜ |
-| **R-3d** | `snapshots/svg/README.md` + `GENERATED_MARKER` | 门禁不把生成物当非生成物跳过 | ⬜ |
-| **R-3e** | light 对照快照 `<name>.light.svg`（可选但推荐） | 存在则一并纳入再生门禁 | ⬜ |
+| **R-3a** | 生成器写出 `snapshots/svg/<name>.svg` × 187 | `ls snapshots/svg/*.svg \| wc -l` = **187** | ✅ |
+| **R-3b** | 每个 SVG 非空且含 ≥1 绘制元素 | 断言文件含 `<svg` 之外的绘制标签 | ✅ |
+| **R-3c** | 再生门禁 `check_svg_snapshots.sh`（重新生成逐字节对比） | 注入一字节改动 → FAIL | ✅ |
+| **R-3d** | `snapshots/svg/README.md` + `GENERATED_MARKER` | 门禁不把生成物当非生成物跳过 | ✅ |
+| **R-3e** | light 对照快照 `<name>.light.svg`（可选但推荐） | 存在则一并纳入再生门禁 | ✅ |
 
 ### D. 第 4 层 — 跨层一致性与缺口收敛
 
 | # | 任务 | 验证判据 | 状态 |
 |---|---|---|---|
-| **R-4a** | 补真别名：`check_box` 加 `"checkbox"`；修正脚本判据排除非控件工厂 | `create_web_engine` 不再报未解析；`checkbox` 可创建 | ⬜ |
-| **R-4b** | 把该脚本接入 `tools/check_platform_create_coverage.sh` 并登记进 `run_all_gates.sh` | 反向注入（删一条别名）→ 门禁 FAIL | ⬜ |
-| **R-4c** | `spin_box` 浮点支持（`set_decimals(n)` + 浮点格式化） | 既有整数测试不回退；浮点往返测试通过；**不**新增 `double_spin_box` | ⬜ |
-| **R-4d** | 新增 `heatmap` 控件（全链：capability + 构造 + 属性 + 事件 + 平台 + 三端构建） | capability 187 → 188；第 1 层普查覆盖它；第 3 层为它出 SVG | ⬜ |
-| **R-4e** | 新增控件的**设计器就绪**检查（外形/属性/事件/构建 四项逐项有测试） | 四项逐项有证据，不得用「大概齐了」 | ⬜ |
+| **R-4a** | 补真别名：`check_box` 加 `"checkbox"`；修正脚本判据排除非控件工厂 | `create_web_engine` 不再报未解析；`checkbox` 可创建 | ✅ |
+| **R-4b** | 把该脚本接入 `tools/check_platform_create_coverage.sh` 并登记进 `run_all_gates.sh` | 反向注入（删一条别名）→ 门禁 FAIL | ✅ |
+| **R-4c** | `spin_box` 浮点支持（`set_decimals(n)` + 浮点格式化） | 既有整数测试不回退；浮点往返测试通过；**不**新增 `double_spin_box` | ✅ |
+| **R-4d** | 新增 `heatmap` 控件（全链：capability + 构造 + 属性 + 事件 + 平台 + 三端构建） | capability 187 → 188；第 1 层普查覆盖它；第 3 层为它出 SVG | ✅ |
+| **R-4e** | 新增控件的**设计器就绪**检查（外形/属性/事件/构建 四项逐项有测试） | 四项逐项有证据，不得用「大概齐了」 | ✅ |
 
 ### E. 第 5 层 — WebEngine 诚实降级（§1.8，**已裁定 W1**）
 
 | # | 任务 | 验证判据 | 状态 |
 |---|---|---|---|
-| **R-5a** | 补 `supports_web_engine()`（命名对齐 `supports_surfaces()`） | 函数存在；W1 删除后应**恒为 `false`**（无引擎） | ⬜ |
-| **R-5b** | `WebEngineView` 对外如实报「模拟」 | 新增查询可区分「真引擎」与「模拟」；反向注入 → 测试 FAIL | ⬜ |
-| **R-5c** | 修正「降级不可查询」的文档 | 文档与实现一致（原则 #18） | ⬜ |
-| **R-5d** | ✅ **执行 W1**：按 §3.5.4 的 10 项清单删除 WebKit 包装 | `grep -rn "NativeWebEngine\|webkit_engine\|webkit2gtk\|webkit-engine" src/ Cargo.toml` → **无输出** | ⬜ |
-| **R-5e** | 删除后全链构建验证 | `desktop` / `full` / `mini` 均 0 error；`check_profiles.sh` exit=0 | ⬜ |
-| **R-5f** | 文档同步：§1.8、cookbook、README 中关于 webkit 的描述 | 无任何文档再声称「支持原生网页渲染」 | ⬜ |
+| **R-5a** | 补 `supports_web_engine()`（命名对齐 `supports_surfaces()`） | 函数存在；W1 删除后应**恒为 `false`**（无引擎） | ✅ |
+| **R-5b** | `WebEngineView` 对外如实报「模拟」 | 新增查询可区分「真引擎」与「模拟」；反向注入 → 测试 FAIL | ✅ |
+| **R-5c** | 修正「降级不可查询」的文档 | 文档与实现一致（原则 #18） | ✅ |
+| **R-5d** | ✅ **执行 W1**：按 §3.5.4 的 10 项清单删除 WebKit 包装 | `grep -rn "NativeWebEngine\|webkit_engine\|webkit2gtk\|webkit-engine" src/ Cargo.toml` → **无输出** | ✅ |
+| **R-5e** | 删除后全链构建验证 | `desktop` / `full` / `mini` 均 0 error；`check_profiles.sh` exit=0 | ✅ |
+| **R-5f** | 文档同步：§1.8、cookbook、README 中关于 webkit 的描述 | 无任何文档再声称「支持原生网页渲染」 | ✅ |
 
 ### F. 纪律（每轮遵守）
 
@@ -1059,9 +1059,9 @@ desktop / tablet / mobile / mini / embedded
 
 | # | 任务 | 验证判据 | 状态 |
 |---|---|---|---|
-| **R-8** | 每层完成后写 `docs/log/`，逐条标识已修项 | 日志含「已修清单 + 验证证据」 | ⬜ |
-| **R-9** | 新门禁登记进 `tools/run_all_gates.sh` 的覆盖范围 | `run_all_gates.sh` 计数增加 | ⬜ |
-| **R-10** | 版本与文档同步 | `check_changelog_sync.sh` PASS | ⬜ |
+| **R-8** | 每层完成后写 `docs/log/`，逐条标识已修项 | 日志含「已修清单 + 验证证据」 | ✅ |
+| **R-9** | 新门禁登记进 `tools/run_all_gates.sh` 的覆盖范围 | `run_all_gates.sh` 计数增加 | ✅ |
+| **R-10** | 版本与文档同步 | `check_changelog_sync.sh` PASS | ✅ |
 
 ---
 
@@ -1071,69 +1071,69 @@ desktop / tablet / mobile / mini / embedded
 
 ### DoD-R-1（渲染黄金表）
 
-- [ ] 普查覆盖 **187** 个控件名（按名字遍历，非按 kind），`checked=187`。
-- [ ] 基线表入库，187 行，每行含：非背景像素、light 主色、dark 主色、边框有无、文字像素。
-- [ ] **四条**判据（P1/P2/P3/P4）各自是一条**断言**，且各自有一条**反向注入 FAIL** 的实测记录。
-- [ ] **数据色豁免表**入库，每条附「为什么是数据而非外观」的理由；
+- [x] 普查覆盖 **187** 个控件名（按名字遍历，非按 kind），`checked=187`。
+- [x] 基线表入库，187 行，每行含：非背景像素、light 主色、dark 主色、边框有无、文字像素。
+- [x] **四条**判据（P1/P2/P3/P4）各自是一条**断言**，且各自有一条**反向注入 FAIL** 的实测记录。
+- [x] **数据色豁免表**入库，每条附「为什么是数据而非外观」的理由；
       且 `banner` / `calendar` / `progress_dialog` / `message_box` **不在豁免表内**。
-- [ ] **语义色普查**：`error` / `warning` / `success` / `info` 每个 token 至少被一个控件的
+- [x] **语义色普查**：`error` / `warning` / `success` / `info` 每个 token 至少被一个控件的
       `Draw` 读取，且 dark ≠ light（规则 #109）。
-- [ ] **第 58 轮的假通过场景被专门覆盖**：门禁在窗口位于非零坐标时仍能抓到
+- [x] **第 58 轮的假通过场景被专门覆盖**：门禁在窗口位于非零坐标时仍能抓到
       「控件不可见」（即不依赖 `(0,0)` 这个偶然条件）。
-- [ ] 第 1 层抓到的控件外形缺陷**全部修复**，基线表逐项清零，`failed=0`。
-- [ ] `skipped` 非零时逐条列出**原因**（哪个 profile / 缺什么能力）。
+- [x] 第 1 层抓到的控件外形缺陷**全部修复**，基线表逐项清零，`failed=0`。
+- [x] `skipped` 非零时逐条列出**原因**（哪个 profile / 缺什么能力）。
 
 ### DoD-R-2（声明与实现三向对齐）
 
-- [ ] 三条判据 Q1/Q2/Q3 各自是一条断言 + 一条反向注入 FAIL。
-- [ ] 计数表 `checked / skipped / failed` 三个数齐全。
-- [ ] 与 `check_event_payload_types` 的职责边界写入模块文档（原则 #101）。
-- [ ] 抓到的对齐缺陷**全部修复**，`failed=0`。
+- [x] 三条判据 Q1/Q2/Q3 各自是一条断言 + 一条反向注入 FAIL。
+- [x] 计数表 `checked / skipped / failed` 三个数齐全。
+- [x] 与 `check_event_payload_types` 的职责边界写入模块文档（原则 #101）。
+- [x] 抓到的对齐缺陷**全部修复**，`failed=0`。
 
 ### DoD-R-3（SVG 全量快照）
 
-- [ ] `ls snapshots/svg/*.svg | wc -l` = **187**。
-- [ ] 每个文件含 ≥1 绘制元素（非空骨架）。
-- [ ] 文件名 = `canonical_name`（含下划线，如 `combo_box.svg`）。
-- [ ] 再生门禁存在，且**注入一字节改动后实测 FAIL**。
-- [ ] 产物带 `GENERATED_MARKER`，门禁的「非生成物」跳过逻辑不会误跳过它。
-- [ ] `snapshots/svg/README.md` 说明用途、再生方式、新增控件时的更新步骤。
+- [x] `ls snapshots/svg/*.svg | wc -l` = **187**。
+- [x] 每个文件含 ≥1 绘制元素（非空骨架）。
+- [x] 文件名 = `canonical_name`（含下划线，如 `combo_box.svg`）。
+- [x] 再生门禁存在，且**注入一字节改动后实测 FAIL**。
+- [x] 产物带 `GENERATED_MARKER`，门禁的「非生成物」跳过逻辑不会误跳过它。
+- [x] `snapshots/svg/README.md` 说明用途、再生方式、新增控件时的更新步骤。
 
 ### DoD-R-4（跨层一致性与缺口收敛）
 
-- [ ] `python3 tools/audit_platform_create_coverage.py` → `UNRESOLVED (0)`，exit 0。
-- [ ] 门禁 `tools/check_platform_create_coverage.sh` 存在，且**反向注入（删一条别名）实测 FAIL**。
-- [ ] 该门禁已登记进 `tools/run_all_gates.sh`（否则等于没接）。
-- [ ] `spin_box` 浮点：`set_decimals(2)` 后 `set_value(1.5)` 往返正确；
+- [x] `python3 tools/audit_platform_create_coverage.py` → `UNRESOLVED (0)`，exit 0。
+- [x] 门禁 `tools/check_platform_create_coverage.sh` 存在，且**反向注入（删一条别名）实测 FAIL**。
+- [x] 该门禁已登记进 `tools/run_all_gates.sh`（否则等于没接）。
+- [x] `spin_box` 浮点：`set_decimals(2)` 后 `set_value(1.5)` 往返正确；
       既有整数测试 **0 回退**（规则 #21 向前兼容）。
-- [ ] `heatmap` 在 capability 表中（`checked=188`），且：
+- [x] `heatmap` 在 capability 表中（`checked=188`），且：
       - 第 1 层普查能渲染它（非背景像素 > 0）；
       - 第 3 层为它生成 `snapshots/svg/heatmap.svg`；
       - **desktop / tablet / mobile** 三端构建通过（规则 #20）。
-- [ ] 新控件的属性/事件逐项有测试，**不得**是只有 `impl Draw` 的空壳（规则 #5）。
+- [x] 新控件的属性/事件逐项有测试，**不得**是只有 `impl Draw` 的空壳（规则 #5）。
 
 ### DoD-R-5（WebEngine 诚实降级 — **W1 已裁定**）
 
-- [ ] `supports_web_engine()` 存在，且与 `supports_surfaces()` 同构（同一命名与语义风格）。
-- [ ] 调用方能**查询**到当前是「模拟」而非真引擎（不再是「不暴露给调用方」）。
-- [ ] 反向注入：把该查询改成恒报「真引擎」 → 测试必须 FAIL。
-- [ ] **W1 删除完成且零残留**：
+- [x] `supports_web_engine()` 存在，且与 `supports_surfaces()` 同构（同一命名与语义风格）。
+- [x] 调用方能**查询**到当前是「模拟」而非真引擎（不再是「不暴露给调用方」）。
+- [x] 反向注入：把该查询改成恒报「真引擎」 → 测试必须 FAIL。
+- [x] **W1 删除完成且零残留**：
       `grep -rn "NativeWebEngine\|webkit_engine\|webkit2gtk\|webkit-engine" src/ Cargo.toml`
       → **无输出**。
-- [ ] §3.5.4 的 10 项清单**逐项完成**（含 `full` 列表移除与注释修正）。
-- [ ] 删除后构建全过：`desktop` / `full` / `mini` 均 **0 error**；`check_profiles.sh` **exit=0**。
-- [ ] **保留项未被误删**：`WebEngineViewEnhanced` 本体、boa 的 `evaluate_javascript`、
+- [x] §3.5.4 的 10 项清单**逐项完成**（含 `full` 列表移除与注释修正）。
+- [x] 删除后构建全过：`desktop` / `full` / `mini` 均 **0 error**；`check_profiles.sh` **exit=0**。
+- [x] **保留项未被误删**：`WebEngineViewEnhanced` 本体、boa 的 `evaluate_javascript`、
       `web_engine_view` 的 capability 记录、`src/web/` 其余模块。
-- [ ] 文档不再声称本库支持原生网页渲染（§1.8 / README / cookbook）。
-- [ ] 模拟路径**行为不变**：`cargo test --features desktop --lib web` 全绿。
+- [x] 文档不再声称本库支持原生网页渲染（§1.8 / README / cookbook）。
+- [x] 模拟路径**行为不变**：`cargo test --features desktop --lib web` 全绿。
 
 ### 全局 DoD
 
-- [ ] `bash tools/run_all_gates.sh` → `FAIL=0`（`SKIP` 逐条有理由）。
-- [ ] 5 个 profile 全部通过：`desktop` / `tablet` / `mobile` / `mini` / `embedded`。
-- [ ] `cargo clippy --no-default-features --features desktop --all-targets -- -D warnings` → 0 警告。
-- [ ] 每个已修项在 `docs/log/` 中逐条标识。
-- [ ] **五层**计数表写入日志（规则 #100）。
+- [x] `bash tools/run_all_gates.sh` → `FAIL=0`（`SKIP` 逐条有理由）。
+- [x] 5 个 profile 全部通过：`desktop` / `tablet` / `mobile` / `mini` / `embedded`。
+- [x] `cargo clippy --no-default-features --features desktop --all-targets -- -D warnings` → 0 警告。
+- [x] 每个已修项在 `docs/log/` 中逐条标识。
+- [x] **五层**计数表写入日志（规则 #100）。
 
 ---
 

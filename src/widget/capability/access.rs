@@ -361,10 +361,15 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::SpinBox => match property_name {
+            // Integer-shaped by default, matching `SpinBox::new`: `decimals == 0` is the
+            // default precision, so the default value of these four is an `Int` like it
+            // always was. A decimal-mode spin box reports `Float` through `get` instead;
+            // the declared kind is `Number`, which is exactly this two-carrier promise.
             "minimum" => CapabilityValue::Int(0),
             "maximum" => CapabilityValue::Int(99),
             "value" => CapabilityValue::Int(0),
             "single_step" => CapabilityValue::Int(1),
+            "decimals" => CapabilityValue::UInt(0),
             "prefix" => CapabilityValue::String(String::new()),
             "suffix" => CapabilityValue::String(String::new()),
             "special_value_text" => CapabilityValue::Null,
@@ -951,6 +956,21 @@ pub fn default_widget_property_default_value(
             "hovered_column" => CapabilityValue::Null,
             // Mirrors the `COLUMN_WIDTH` layout constant in the control.
             "column_width" => CapabilityValue::UInt(220),
+            _ => return None,
+        },
+        WidgetKind::Heatmap => match property_name {
+            "row_count" => CapabilityValue::UInt(0),
+            "column_count" => CapabilityValue::UInt(0),
+            // `None` means "derive the scale from the data", so the default is a null
+            // rather than a fabricated 0..1 range — a fabricated range would make an
+            // empty control report a colour scale it is not using.
+            "scale_minimum" => CapabilityValue::Null,
+            "scale_maximum" => CapabilityValue::Null,
+            "resolved_minimum" => CapabilityValue::Null,
+            "resolved_maximum" => CapabilityValue::Null,
+            // Mirrors `Heatmap::new`.
+            "show_labels" => CapabilityValue::Bool(true),
+            "show_legend" => CapabilityValue::Bool(true),
             _ => return None,
         },
         WidgetKind::Cascader => match property_name {

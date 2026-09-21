@@ -227,7 +227,7 @@ impl Draw for RefreshControl {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("refresh_control");
+        let theme = crate::style::resolved_theme_style("refresh_control");
         // `refresh_control` is not a control kind in the role table, so it classifies
         // as `Surface`, whose background is `theme.colors.background` — byte-identical
         // to the window behind it. The content area's fill is therefore a step toward
@@ -250,7 +250,7 @@ impl Draw for RefreshControl {
         let indicator_background = background.blend(&text_color, 0.12);
         // The spinner is an in-progress *state*, so it reads the theme's primary
         // token rather than a literal blue.
-        let accent = crate::theme::resolved_theme_style("button")
+        let accent = crate::style::resolved_theme_style("button")
             .and_then(|button| button.background_color)
             .unwrap_or_else(|| background.blend(&text_color, 0.55));
         // Below the threshold the arrow is inactive chrome, so it is muted toward the

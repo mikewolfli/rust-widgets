@@ -8,26 +8,50 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 
-use crate::widget::capability::coercion::{expect_bool, expect_i64, expect_string};
+use crate::widget::capability::coercion::{expect_bool, expect_f64, expect_i64, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::numeric::ordered_clamp_i32;
+use crate::widget::numeric::ordered_clamp_f64;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
-/// Spin box widget for integer input.
+
+/// Upper bound on [`SpinBox::decimals`], matching the widest precision the default
+/// display grammar can print. A larger precision would render digits that are pure
+/// binary noise, which is worse than refusing the setting.
+pub const SPIN_BOX_MAX_DECIMALS: u32 = 9;
+
+/// Spin box widget for numeric input.
+///
+/// # Integer or decimal (BLUE20 layer 4c)
+///
+/// The value is stored as an `f64` and the displayed precision is a setting
+/// ([`SpinBox::decimals`]). `decimals == 0` is the integer case and is the default, so
+/// the widget's integer behaviour is unchanged: every integer accessor round-trips
+/// exactly, and `"5"` displays as `"5"`. Raising `decimals` does not add a *second*
+/// control — `double_spin_box` is already an alias of this one — it adds the decimal
+/// mode the alias promises. Two near-identical controls would have to be maintained in
+/// lockstep and would drift; one control with a precision setting cannot.
 pub struct SpinBox {
     base: BaseWidget,
-    value: i32,
+    /// Shown value. Held as `f64` so a decimal spin box and an integer spin box are the
+    /// same widget; `decimals == 0` restricts it to whole numbers.
+    value: f64,
     /// Lower bound of the value range; also the value that triggers
     /// `special_value_text`.
-    minimum: i32,
+    minimum: f64,
     /// Upper bound of the value range; the value a wrapping `step_up` from
     /// `maximum` lands on.
-    maximum: i32,
+    maximum: f64,
     /// Amount added or subtracted per step. Applied to the current value, so a
     /// step may be clamped (or wrapped) rather than landing on a multiple.
-    single_step: i32,
+    single_step: f64,
+    /// Digits shown after the decimal separator. `0` means an integer spin box, which
+    /// is the default and the previous behaviour.
+    ///
+    /// Not a display-only filter: the value itself is rounded to this precision on every
+    /// write, so `get("value")` cannot report a number the user never could have entered.
+    decimals: u32,
     /// Text placed before the number in the displayed value; display only — it
     /// is not part of the parsed numeric value.
     prefix: String,
@@ -50,14 +74,15 @@ pub struct SpinBox {
     pub editing_finished: GenericSignal,
 }
 impl SpinBox {
-    /// Creates a spin box with default range 0-99.
+    /// Creates a spin box with default range 0-99 and integer precision.
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::SpinBox, geometry, "SpinBox"),
-            value: 0,
-            minimum: 0,
-            maximum: 99,
-            single_step: 1,
+            value: 0.0,
+            minimum: 0.0,
+            maximum: 99.0,
+            single_step: 1.0,
+            decimals: 0,
             prefix: String::new(),
             suffix: String::new(),
             special_value_text: None,
@@ -66,59 +91,163 @@ impl SpinBox {
             editing_finished: GenericSignal::new(),
         }
     }
-    /// Returns current value.
+    /// Returns the current value, as an integer.
+    ///
+    /// Rounds rather than truncates: with `decimals == 3` and a value of `2.7`, "the
+    /// value as an integer" is `3`, and truncation would also turn `-2.7` into `-2`, an
+    /// error that grows with magnitude. The exact value is [`Self::value_f64`].
     pub fn value(&self) -> i32 {
+        round_to_i32(self.value)
+    }
+    /// Returns the current value at full precision.
+    pub fn value_f64(&self) -> f64 {
         self.value
     }
-    /// Sets value, clamped to valid range.
+    /// Sets the value, clamped to the range and rounded to [`Self::decimals`].
     pub fn set_value(&mut self, value: i32) {
-        let clamped = ordered_clamp_i32(value, self.minimum, self.maximum);
-        if self.value == clamped {
+        self.set_value_f64(value as f64);
+    }
+    /// Sets the value as a decimal, clamped and rounded to [`Self::decimals`].
+    ///
+    /// A non-finite input is ignored rather than stored: `NaN` has no position in a
+    /// range, and storing it would make every later comparison (`==`, `<`) false and the
+    /// control unreadable. `±inf` is a legitimate open bound, so it is clamped normally.
+    pub fn set_value_f64(&mut self, value: f64) {
+        if value.is_nan() {
             return;
         }
-        self.value = clamped;
-        self.value_changed.emit(self.value);
+        let clamped = ordered_clamp_f64(value, self.minimum, self.maximum);
+        let rounded = round_to_decimals(clamped, self.decimals);
+        // `==` on two f64s that both passed through the same rounding is exact: this is
+        // not approximate comparison, it is "did the write change anything".
+        if self.value == rounded {
+            return;
+        }
+        self.value = rounded;
+        self.value_changed.emit(self.value());
         self.base.request_redraw();
     }
-    /// Returns minimum value.
+    /// Returns minimum value, as an integer.
     pub fn minimum(&self) -> i32 {
+        round_to_i32(self.minimum)
+    }
+    /// Returns the minimum at full precision.
+    pub fn minimum_f64(&self) -> f64 {
         self.minimum
     }
     /// Sets minimum value.
     pub fn set_minimum(&mut self, minimum: i32) {
+        self.set_minimum_f64(minimum as f64);
+    }
+    /// Sets the minimum as a decimal, re-clamping the range and the value.
+    pub fn set_minimum_f64(&mut self, minimum: f64) {
+        if minimum.is_nan() {
+            return;
+        }
         self.minimum = minimum;
         if self.maximum < self.minimum {
             self.maximum = self.minimum;
         }
-        self.set_value(self.value); // Re-clamp
+        self.set_value_f64(self.value); // Re-clamp
+        self.base.request_redraw();
     }
-    /// Returns maximum value.
+    /// Returns maximum value, as an integer.
     pub fn maximum(&self) -> i32 {
+        round_to_i32(self.maximum)
+    }
+    /// Returns the maximum at full precision.
+    pub fn maximum_f64(&self) -> f64 {
         self.maximum
     }
     /// Sets maximum value.
     pub fn set_maximum(&mut self, maximum: i32) {
+        self.set_maximum_f64(maximum as f64);
+    }
+    /// Sets the maximum as a decimal, re-clamping the range and the value.
+    pub fn set_maximum_f64(&mut self, maximum: f64) {
+        if maximum.is_nan() {
+            return;
+        }
         self.maximum = maximum;
         if self.minimum > self.maximum {
             self.minimum = self.maximum;
         }
-        self.set_value(self.value); // Re-clamp
+        self.set_value_f64(self.value); // Re-clamp
+        self.base.request_redraw();
     }
     /// Sets both minimum and maximum in one call.
     /// This is a convenience writer; query bounds via `minimum()` and `maximum()`.
     pub fn set_range(&mut self, minimum: i32, maximum: i32) {
-        self.minimum = minimum;
-        self.maximum = maximum.max(minimum);
-        self.set_value(self.value); // Re-clamp
+        self.set_range_f64(minimum as f64, maximum as f64);
     }
-    /// Returns single step value.
+    /// Sets both bounds as decimals in one call.
+    ///
+    /// The bounds are ordered before being stored, so `set_range_f64(10.0, 0.0)` names
+    /// the range `[0.0, 10.0]` instead of leaving an inverted pair that `set_value_f64`
+    /// would then clamp against (principle #17, and the panic `ordered_clamp_f64`
+    /// exists to prevent is only half the story — an inverted *stored* pair silently
+    /// collapses the range to a point).
+    pub fn set_range_f64(&mut self, minimum: f64, maximum: f64) {
+        if minimum.is_nan() || maximum.is_nan() {
+            return;
+        }
+        self.minimum = minimum.min(maximum);
+        self.maximum = minimum.max(maximum);
+        self.set_value_f64(self.value); // Re-clamp
+        self.base.request_redraw();
+    }
+    /// Returns the number of digits shown after the decimal separator.
+    pub fn decimals(&self) -> u32 {
+        self.decimals
+    }
+    /// Sets the display precision, `0` for an integer spin box.
+    ///
+    /// Values above [`SPIN_BOX_MAX_DECIMALS`] are clamped rather than accepted: the
+    /// digits past that point are binary noise, and printing them would show the user a
+    /// number the widget does not actually hold. Changing the precision re-rounds the
+    /// current value immediately, so what is displayed and what is stored agree. It does
+    /// **not** emit `value_changed`: no step was taken, and a caller counting changes
+    /// would otherwise see a phantom one.
+    pub fn set_decimals(&mut self, decimals: u32) {
+        let decimals = decimals.min(SPIN_BOX_MAX_DECIMALS);
+        if self.decimals == decimals {
+            return;
+        }
+        self.decimals = decimals;
+        self.value = round_to_decimals(self.value, decimals);
+        self.base.request_redraw();
+    }
+    /// Returns single step value, as an integer.
     pub fn single_step(&self) -> i32 {
+        round_to_i32(self.single_step)
+    }
+    /// Returns the step at full precision.
+    pub fn single_step_f64(&self) -> f64 {
         self.single_step
     }
     /// Sets single step value.
+    ///
+    /// A step of zero would make `step_up`/`step_down` do nothing at all, which looks
+    /// like a broken button rather than a configured one, so the magnitude is floored at
+    /// `1` in integer mode. In decimal mode the floor is one unit of the last displayed
+    /// place (`0.01` at two decimals), because `0.5` is a meaningful step for a decimal
+    /// spin box and a meaningful step must never round to "no step".
     pub fn set_single_step(&mut self, step: i32) {
-        self.single_step = step.max(1);
+        self.set_single_step_f64(step as f64);
+    }
+    /// Sets the step as a decimal, floored at the smallest representable increment.
+    pub fn set_single_step_f64(&mut self, step: f64) {
+        let floor = self.smallest_step();
+        self.single_step = if step.is_nan() { floor } else { step.abs().max(floor) };
         self.base.request_redraw();
+    }
+    /// The smallest step that still changes the displayed value.
+    fn smallest_step(&self) -> f64 {
+        if self.decimals == 0 {
+            1.0
+        } else {
+            10f64.powi(-(self.decimals as i32))
+        }
     }
     /// Returns prefix text.
     pub fn prefix(&self) -> &str {
@@ -166,7 +295,7 @@ impl SpinBox {
                 new_value = self.maximum;
             }
         }
-        self.set_value(new_value);
+        self.set_value_f64(new_value);
     }
     /// Decrements value by single step.
     pub fn step_down(&mut self) {
@@ -178,18 +307,85 @@ impl SpinBox {
                 new_value = self.minimum;
             }
         }
-        self.set_value(new_value);
+        self.set_value_f64(new_value);
     }
-    /// Returns display text.
+    /// Returns the formatted number, without prefix or suffix.
+    ///
+    /// The precision comes from [`Self::decimals`], so an integer spin box prints `5`
+    /// and a two-decimal one prints `1.50` — the same digits the user could have typed.
+    /// Trailing zeros are kept, because dropping them would make a two-decimal spin box
+    /// look like it had accepted `1.5` when it holds `1.50`.
+    pub fn formatted_value(&self) -> String {
+        match self.decimals {
+            0 => format!("{}", round_to_i32(self.value)),
+            n => format!("{:.*}", n as usize, self.value),
+        }
+    }
+    /// Returns display text: the special value text, or prefix + number + suffix.
     fn display_text(&self) -> String {
         if let Some(special) = &self.special_value_text {
             if self.value == self.minimum {
                 return special.clone();
             }
         }
-        let text = format!("{}{}{}", self.prefix, self.value, self.suffix);
-        text
+        format!("{}{}{}", self.prefix, self.formatted_value(), self.suffix)
     }
+}
+
+/// Rounds to the nearest integer, saturating instead of wrapping out of `i32`.
+///
+/// `as i32` truncates *and* saturates silently since Rust 1.45, which is two surprises
+/// at once; the round-then-saturate here is explicit about both halves. The saturation
+/// matters because `f64::INFINITY` is a legal bound, and an unbounded spin box reading
+/// its `i32` value must not report `i32::MAX` for `0.0`.
+fn round_to_i32(value: f64) -> i32 {
+    if value.is_nan() {
+        return 0;
+    }
+    let rounded = value.round();
+    if rounded >= i32::MAX as f64 {
+        i32::MAX
+    } else if rounded <= i32::MIN as f64 {
+        i32::MIN
+    } else {
+        rounded as i32
+    }
+}
+
+/// Rounds `value` to `decimals` places after the decimal separator.
+///
+/// # Why this goes through the decimal text
+///
+/// The obvious form is `(value * 10^n).round() / 10^n`, and it can disagree with what the
+/// widget prints. `format!("{:.n}", x)` is correctly rounded *once*, from `x`; the scale
+/// form rounds an intermediate product that carries its own representation error, and a
+/// product that lands on a tie rounds the wrong way. Measured on this build,
+/// `2.0965 x 1000.0` is exactly `2096.5000000000005`, so the scale form gives `2.097` while
+/// the text says `2.096`. Those are the same number printed two ways, and a spin box whose
+/// stored value disagrees with its own display is showing the user a figure it does not
+/// hold. Taking the text as the authority is what makes the two agree to the digit.
+///
+/// # What this does *not* do
+///
+/// It does not "round the way a human would read the literal". `1.005` and `2.675` as
+/// `f64` **are** `1.00499999999999989...` and `2.67499999999999982...`, so rounding them to
+/// two places gives `1.00` and `2.67` — correctly, and the same answer a decimal parser
+/// would produce from the identical text. No rounding scheme can recover a midpoint the
+/// input never stored; that would require carrying the value as decimal text instead of
+/// `f64`, which is a much larger change than this setting. The invariant guaranteed here is
+/// the one that matters: **the stored value equals the number the widget prints.**
+fn round_to_decimals(value: f64, decimals: u32) -> f64 {
+    if decimals == 0 {
+        let rounded = value.round();
+        // `-0.0` and `0.0` compare equal but format differently (`-0`), and a value of
+        // `-0.4` rounded to integers is zero, not "negative zero".
+        return if rounded == 0.0 { 0.0 } else { rounded };
+    }
+    if !value.is_finite() {
+        return value;
+    }
+    let text = format!("{:.*}", decimals as usize, value);
+    text.parse::<f64>().unwrap_or(value)
 }
 // Implement Widget trait
 impl Widget for SpinBox {
@@ -201,8 +397,10 @@ impl Widget for SpinBox {
     }
 
     fn size_hint(&self) -> Size {
-        // Value digits + up/down buttons (~20px)
-        let val_w = format!("{}", self.value()).len() as u32 * 10 + 25;
+        // Width follows the *formatted* text, not the integer value: a spin box showing
+        // `1234.50` is six characters wider than one showing `1234`, and sizing off the
+        // integer form would clip the decimals it was explicitly asked to display.
+        let val_w = self.formatted_value().len() as u32 * 10 + 25;
         Size::new(val_w.max(60), 24)
     }
     impl_draw_bridge!();
@@ -210,13 +408,31 @@ impl Widget for SpinBox {
 }
 
 /// `SpinBox`'s property contract.
+///
+/// # Integers stay integers (principle #21)
+///
+/// The three numeric properties report `Int` whenever `decimals == 0`, which is the
+/// default, so existing callers that write `{"value": 3}` and read back `Int(3)` are
+/// unaffected. Only a caller that has opted into decimals sees a `Float`, and a caller
+/// that sends an `Int` to a decimal spin box is accepted (it is an exact number) rather
+/// than rejected as a type error.
 impl WidgetProperties for SpinBox {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        // Integer mode reports integers; the caller that set `decimals(0)` asked for an
+        // integer spin box and should not have to unwrap a float to read it.
+        let as_number = |value: f64| {
+            if self.decimals == 0 {
+                CapabilityValue::Int(round_to_i32(value) as i64)
+            } else {
+                CapabilityValue::Float(value)
+            }
+        };
         match name {
-            "minimum" => Ok(CapabilityValue::Int(self.minimum() as i64)),
-            "maximum" => Ok(CapabilityValue::Int(self.maximum() as i64)),
-            "value" => Ok(CapabilityValue::Int(self.value() as i64)),
-            "single_step" => Ok(CapabilityValue::Int(self.single_step() as i64)),
+            "minimum" => Ok(as_number(self.minimum_f64())),
+            "maximum" => Ok(as_number(self.maximum_f64())),
+            "value" => Ok(as_number(self.value_f64())),
+            "single_step" => Ok(as_number(self.single_step_f64())),
+            "decimals" => Ok(CapabilityValue::Int(self.decimals() as i64)),
             "prefix" => Ok(CapabilityValue::String(self.prefix().to_string())),
             "suffix" => Ok(CapabilityValue::String(self.suffix().to_string())),
             "special_value_text" => match self.special_value_text() {
@@ -229,21 +445,42 @@ impl WidgetProperties for SpinBox {
     }
 
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        // A number arrives as `Int` or `Float` depending on how the caller spelled it
+        // (`3` vs `3.0`), and both mean the same value. Accepting both is what keeps
+        // `{"value": 3}` valid after a spin box has been given decimals.
+        fn number(value: CapabilityValue) -> Result<f64, CapabilityAccessError> {
+            match value {
+                CapabilityValue::Int(int) => Ok(int as f64),
+                other => expect_f64(other),
+            }
+        }
         match name {
             "minimum" => {
-                self.set_minimum(expect_i64(value)? as i32);
+                self.set_minimum_f64(number(value)?);
                 Ok(())
             }
             "maximum" => {
-                self.set_maximum(expect_i64(value)? as i32);
+                self.set_maximum_f64(number(value)?);
                 Ok(())
             }
             "value" => {
-                self.set_value(expect_i64(value)? as i32);
+                self.set_value_f64(number(value)?);
                 Ok(())
             }
             "single_step" => {
-                self.set_single_step(expect_i64(value)? as i32);
+                self.set_single_step_f64(number(value)?);
+                Ok(())
+            }
+            "decimals" => {
+                let decimals = expect_i64(value)?;
+                // `decimals` is declared `UInt`, so a negative is not a type error but a
+                // value that addresses nothing. Answering `OutOfRange` says exactly that
+                // and keeps the caller's mistake (their argument) distinct from a
+                // capability gap (`UnsupportedOnWidget`) — the distinction
+                // `CapabilityAccessError::OutOfRange` exists to preserve.
+                let decimals =
+                    u32::try_from(decimals).map_err(|_| CapabilityAccessError::OutOfRange)?;
+                self.set_decimals(decimals);
                 Ok(())
             }
             "prefix" => {
@@ -276,6 +513,7 @@ impl WidgetProperties for SpinBox {
             "maximum",
             "value",
             "single_step",
+            "decimals",
             "prefix",
             "suffix",
             "special_value_text",
@@ -650,5 +888,237 @@ mod tests {
         let sb = SpinBox::new(Rect::new(0, 0, 100, 24));
         let _value_changed = &sb.value_changed;
         let _editing_finished = &sb.editing_finished;
+    }
+
+    // ── Decimal mode (BLUE20 layer 4c) ─────────────────────────────────────────
+
+    /// The default must be an integer spin box, or every existing caller changes
+    /// behaviour. This is the forward-compatibility half of the feature (principle #21).
+    #[test]
+    fn spinbox_defaults_to_integer_precision() {
+        let sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        assert_eq!(sb.decimals(), 0);
+        assert_eq!(sb.formatted_value(), "0", "integer mode must print no decimals");
+    }
+
+    /// The round trip the task names: `set_decimals(2)` then `set_value(1.5)`.
+    #[test]
+    fn spinbox_decimal_round_trip() {
+        let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        sb.set_decimals(2);
+        sb.set_value_f64(1.5);
+        assert_eq!(sb.value_f64(), 1.5);
+        assert_eq!(sb.value(), 2, "the integer reading rounds, it does not truncate");
+        assert_eq!(sb.formatted_value(), "1.50", "a two-decimal box shows two decimals");
+    }
+
+    /// Steps in decimal mode move by the decimal step, not by one.
+    #[test]
+    fn spinbox_decimal_step() {
+        let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        sb.set_decimals(2);
+        sb.set_single_step_f64(0.25);
+        sb.set_value_f64(1.0);
+        sb.step_up();
+        assert_eq!(sb.value_f64(), 1.25);
+        sb.step_down();
+        sb.step_down();
+        assert_eq!(sb.value_f64(), 0.75);
+    }
+
+    /// A step smaller than one displayed unit would make the buttons look broken, so
+    /// the floor is the unit of the last displayed place — not a hardcoded `1`.
+    #[test]
+    fn spinbox_decimal_step_floor_is_the_last_place() {
+        let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        sb.set_decimals(2);
+        sb.set_single_step_f64(0.0);
+        assert_eq!(sb.single_step_f64(), 0.01);
+        sb.set_single_step_f64(-0.5);
+        assert_eq!(sb.single_step_f64(), 0.5, "a negative step is a magnitude, not a direction");
+    }
+
+    /// Changing the precision must re-round the stored value, or the display and the
+    /// value disagree and the control reports digits the user could not have entered.
+    #[test]
+    fn spinbox_set_decimals_rerounds_the_value() {
+        let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        sb.set_decimals(4);
+        sb.set_value_f64(1.23456);
+        assert_eq!(sb.value_f64(), 1.2346);
+        sb.set_decimals(2);
+        assert_eq!(sb.value_f64(), 1.23);
+        sb.set_decimals(0);
+        assert_eq!(sb.value_f64(), 1.0);
+    }
+
+    /// Storing and displaying must agree to the digit. `2.0965` at three places is the
+    /// case that separates the two implementations on this build: the scale form computes
+    /// `2096.5000000000005` and rounds it to `2.097`, while a correctly-rounded decimal
+    /// formatter prints `2.096`. Using the text as the authority is what keeps the stored
+    /// value equal to the digits on screen.
+    #[test]
+    fn spinbox_stored_value_equals_the_printed_value() {
+        let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        sb.set_decimals(3);
+        sb.set_value_f64(2.0965);
+        assert_eq!(
+            sb.formatted_value(),
+            "2.096",
+            "the printed digits must be the correctly-rounded ones"
+        );
+        assert_eq!(
+            sb.value_f64(),
+            2.096,
+            "and the stored value must be exactly the number that was printed — the scale \
+             form would store 2.097 here and disagree with its own display"
+        );
+    }
+
+    /// A literal that is already below the midpoint must round **down**. This is the
+    /// honest half of the rounding story: no scheme can recover digits the input never
+    /// held, and `1.005` as an `f64` is `1.004999...`, so `1.00` is the correct answer —
+    /// and the same one a decimal parser produces from the identical text.
+    #[test]
+    fn spinbox_rounds_a_below_midpoint_literal_down() {
+        let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        sb.set_decimals(2);
+        sb.set_value_f64(1.005);
+        assert_eq!(
+            sb.formatted_value(),
+            "1.00",
+            "1.005 as an f64 is 1.004999...; 1.00 is the correct rounding of the value that was \
+             actually stored, not a rounding failure"
+        );
+        assert_eq!(sb.value_f64(), 1.0);
+        // The same text through a decimal parser lands on the same `f64`, which is the
+        // proof that this is the input's limit and not the widget's rounding bug.
+        let parsed: f64 = "1.005".parse().unwrap();
+        assert_eq!(parsed, 1.005, "the literal and the parsed text must be the same f64");
+    }
+
+    /// `NaN` has no position in a range. Storing it would make every later comparison
+    /// false and the control unreadable, so the write must be refused rather than kept.
+    #[test]
+    fn spinbox_rejects_nan_and_keeps_the_previous_value() {
+        let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        sb.set_value_f64(3.0);
+        sb.set_value_f64(f64::NAN);
+        assert_eq!(sb.value_f64(), 3.0);
+        sb.set_minimum_f64(f64::NAN);
+        assert_eq!(sb.minimum_f64(), 0.0);
+        sb.set_maximum_f64(f64::NAN);
+        assert_eq!(sb.maximum_f64(), 99.0);
+    }
+
+    /// Infinity is a legitimate open bound, so it is clamped, not rejected.
+    #[test]
+    fn spinbox_infinite_bounds_are_a_valid_range() {
+        let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        sb.set_maximum_f64(f64::INFINITY);
+        sb.set_range_f64(0.0, f64::INFINITY);
+        sb.set_value_f64(1.0e9);
+        assert_eq!(sb.value_f64(), 1.0e9);
+    }
+
+    /// Crossed bounds name the same range in either order. Storing an inverted pair
+    /// would silently collapse the range to a single point.
+    #[test]
+    fn spinbox_crossed_decimal_bounds_are_ordered() {
+        let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        sb.set_range_f64(10.0, 0.0);
+        assert_eq!(sb.minimum_f64(), 0.0);
+        assert_eq!(sb.maximum_f64(), 10.0);
+        sb.set_value_f64(20.0);
+        assert_eq!(sb.value_f64(), 10.0);
+    }
+
+    /// `-0.0` formats as `-0`, which reads as a defect. Rounding to integers must
+    /// normalise it — and `decimals == 0` is exactly where the sign can be lost.
+    #[test]
+    fn spinbox_negative_zero_rounds_to_zero() {
+        let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        sb.set_minimum(-5);
+        sb.set_value_f64(-0.4);
+        assert_eq!(sb.value_f64(), 0.0);
+        assert_eq!(sb.formatted_value(), "0", "a zero must not be printed as `-0`");
+    }
+
+    /// The property route must stay integer-typed until decimals are enabled, and
+    /// report `Float` afterwards — the declaration says `Number`, and this is what
+    /// that word means at runtime.
+    #[test]
+    fn spinbox_value_property_switches_carrier_with_decimals() {
+        use crate::widget::capability::WidgetProperties;
+        let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        assert_eq!(sb.get("value").unwrap(), CapabilityValue::Int(0));
+        assert_eq!(sb.set("value", CapabilityValue::Int(7)), Ok(()));
+        assert_eq!(sb.get("value").unwrap(), CapabilityValue::Int(7));
+
+        sb.set("decimals", CapabilityValue::Int(2)).unwrap();
+        assert_eq!(sb.get("decimals").unwrap(), CapabilityValue::Int(2));
+        // A decimal write is accepted and read back as a Float.
+        assert_eq!(sb.set("value", CapabilityValue::Float(2.5)), Ok(()));
+        assert_eq!(sb.get("value").unwrap(), CapabilityValue::Float(2.5));
+        // An integer write still works, which is what keeps `{"value": 3}` valid.
+        assert_eq!(sb.set("value", CapabilityValue::Int(3)), Ok(()));
+        assert_eq!(sb.get("value").unwrap(), CapabilityValue::Float(3.0));
+    }
+
+    /// A precision beyond what the display grammar can print is clamped, not accepted:
+    /// the digits past that point are binary noise the widget does not hold.
+    #[test]
+    fn spinbox_decimals_are_bounded_and_negative_is_refused() {
+        use crate::widget::capability::WidgetProperties;
+        let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        sb.set_decimals(99);
+        assert_eq!(sb.decimals(), SPIN_BOX_MAX_DECIMALS);
+        assert_eq!(
+            sb.set("decimals", CapabilityValue::Int(-1)),
+            Err(CapabilityAccessError::OutOfRange),
+            "a negative precision is a value error, not a silently accepted magnitude"
+        );
+        assert_eq!(sb.decimals(), SPIN_BOX_MAX_DECIMALS, "the refused write must not take effect");
+    }
+
+    /// The width must follow the formatted text; sizing off the integer form clips
+    /// exactly the decimals the caller asked for.
+    #[test]
+    fn spinbox_size_hint_accounts_for_decimals() {
+        let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        sb.set_value(1234);
+        let integer_width = sb.size_hint().width;
+        sb.set_decimals(2);
+        assert!(
+            sb.size_hint().width > integer_width,
+            "a two-decimal box showing 1234.00 must be wider than one showing 1234"
+        );
+    }
+
+    /// Setting the precision re-rounds the value but must not claim the value changed:
+    /// no step was taken, so a caller counting `value_changed` would see a phantom one.
+    #[test]
+    fn spinbox_set_decimals_does_not_emit_value_changed() {
+        use crate::compat::Arc;
+        use core::sync::atomic::{AtomicU32, Ordering};
+        let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        sb.set_decimals(3);
+        sb.set_value_f64(1.2345);
+        // `Signal1::connect` requires `Send + Sync + 'static`, so the counter is an
+        // atomic behind an `Arc` rather than an `Rc<Cell<..>>`.
+        let seen = Arc::new(AtomicU32::new(0));
+        let counter = seen.clone();
+        sb.value_changed.connect(move |_| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+        sb.set_decimals(1);
+        assert_eq!(
+            seen.load(Ordering::SeqCst),
+            0,
+            "re-rounding on a precision change is not a value change"
+        );
+        assert_eq!(sb.value_f64(), 1.2);
+        sb.step_up();
+        assert_eq!(seen.load(Ordering::SeqCst), 1, "a real step still emits");
     }
 }

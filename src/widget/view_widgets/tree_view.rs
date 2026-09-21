@@ -288,7 +288,7 @@ impl Draw for TreeView {
         // take and release the global manager's lock internally, so no guard is held across
         // the draw (the mutex is not re-entrant).
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("tree_view");
+        let theme = crate::style::resolved_theme_style("tree_view");
         let surface = style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
@@ -304,7 +304,7 @@ impl Draw for TreeView {
             .unwrap_or_else(|| surface.blend(&ink, 0.20));
         // The focused node is a selection state, so it reads the theme's accent token and is
         // laid over the surface, which keeps it legible in either appearance.
-        let accent = crate::theme::global_theme_manager()
+        let accent = crate::style::theme_manager()
             .current_theme()
             .map(|active| active.colors.primary)
             .unwrap_or(Color::PRIMARY);

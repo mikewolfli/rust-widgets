@@ -180,16 +180,27 @@ pub mod signal;
 pub mod style;
 /// Test infrastructure and utilities.
 pub mod test;
-/// Desktop-only: Theme management.
+/// Theme management — the palette, the appearance selector and the role table controls
+/// resolve against, plus the process-wide manager that selects among them.
 ///
-/// Gated on the device profiles rather than on `desktop` alone: a theme is part
-/// of the style resolution chain that the declarative JSON engine
-/// (`crate::json`, itself available on `desktop`/`tablet`/`mobile`) consults, so a
-/// tablet or mobile build must have it too. Gating on `desktop` was wrong and only
-/// showed up when `tablet` was built with the JSON engine enabled.
+/// # Gating (BLUE20 layer 4, 2026-09-21)
 ///
-/// `device_profile` rather than `full_widgets`: the theme system carries no widget
-/// set, so it stays available even on a device build with stripped widgets.
+/// Gated on `device_profile` (`desktop`/`tablet`/`mobile`), which is a *conjunction*: the
+/// theme model needs a colour system (`not(alloc_frugal)`) **and** `serde`, and only the
+/// three device profiles enable both. `mini` has no palette; the mixed
+/// `windows + controls-custom` build has no `serde`.
+///
+/// # Why the widget layer no longer breaks when this is absent
+///
+/// ~120 control files read the theme while drawing, and they also compile in
+/// `--no-default-features --features "windows desktop-runtime controls-native
+/// controls-custom"` — a full widget set with no device profile. Referencing
+/// `crate::theme` from those files was 78 compile errors at HEAD. They now go through
+/// `crate::style`, which exposes the same lookups (and the same type *shape* where the real
+/// types are absent) and answers "no theme" there, so one path compiles in every profile
+/// and the widgets fall back to their own literals where there is no palette to read
+/// (principles #37/#47: a missing capability is reported, and the condition lives in one
+/// place rather than at each call site).
 #[cfg(device_profile)]
 pub mod theme;
 /// Undo/Redo framework for undoable commands and cross-widget undo/redo.

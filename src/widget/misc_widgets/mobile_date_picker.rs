@@ -167,11 +167,11 @@ impl Draw for MobileDatePicker {
         // `mobile_date_picker` is not in the role table, so it classifies as `Surface` and its
         // resolved background is the window fill itself; the drum below therefore derives its own
         // distinct surface rather than painting the window's.
-        let theme = crate::theme::resolved_theme_style("mobile_date_picker");
+        let theme = crate::style::resolved_theme_style("mobile_date_picker");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.
         let (window_fill, foreground, primary, secondary, disabled) = {
-            let manager = crate::theme::global_theme_manager();
+            let manager = crate::style::theme_manager();
             match manager.current_theme() {
                 Some(active) => (
                     active.colors.background,

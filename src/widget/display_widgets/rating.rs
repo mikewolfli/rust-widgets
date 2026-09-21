@@ -170,7 +170,7 @@ impl Draw for Rating {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("rating");
+        let theme = crate::style::resolved_theme_style("rating");
         let background = style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
@@ -193,7 +193,7 @@ impl Draw for Rating {
         // fixed gold. The warning token is that slot's public accessor. An empty star
         // is the unselected state of the same control: a tint of the resolved
         // foreground, muted further when the control is disabled.
-        let accent = crate::theme::semantic_color(crate::theme::SemanticColor::Warning)
+        let accent = crate::style::semantic_color(crate::style::SemanticColor::Warning)
             .map(|token| token.blend(&background, 0.0))
             .unwrap_or_else(|| text_color.blend(&background, 0.0));
         // An explicit style wins over the palette, so a host that set a star colour

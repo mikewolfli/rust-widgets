@@ -13,7 +13,7 @@
 在继续阅读之前，有两个结果值得先内化：
 
 1. **控件在每个操作系统上看起来完全相同。** 你的按钮在 Windows、macOS、Linux、iOS、Android 与 Web 上拥有相同的像素，因为它们都是由同一套 Rust 光栅化器绘制的。
-2. **控件可用性属于*配置文件*问题，而非操作系统问题。** 在 `desktop`/`tablet`/`mobile` 配置文件中，全部 179 种控件在每个平台上都可用。只有资源受限的 `embedded`/`mini` 配置文件会编译一个精简的集合。
+2. **控件可用性属于*配置文件*问题，而非操作系统问题。** 在 `desktop`/`tablet`/`mobile` 配置文件中，全部 180 种控件在每个平台上都可用。只有资源受限的 `embedded`/`mini` 配置文件会编译一个精简的集合。
 
 这就是为什么平台章节记录的是[每个操作系统*提供*什么](chapters/platform-support.md#13-平台服务确实因操作系统而异)（DPI、IME、无障碍、原生菜单），而不是列出哪些控件在哪些地方能用 —— 因为那张列表到处都一样。
 
@@ -44,9 +44,9 @@ fn main() {
 
 ## 主要特性
 
-### 丰富的控件库——179 种控件
+### 丰富的控件库——180 种控件
 
-内置 179 种控件，涵盖各种常见的 UI 需求，而且**全部都是自绘的，因此每个平台都能使用**：
+内置 180 种控件，涵盖各种常见的 UI 需求，而且**全部都是自绘的，因此每个平台都能使用**：
 
 - **核心控件**：Button、CheckBox、RadioButton、Label、LineEdit、TextEdit、ComboBox、SpinBox、Slider、ScrollBar、ProgressBar
 - **容器**：Window、Dialog、Frame、TabWidget、Splitter、GroupBox、StackedWidget、DockWidget、MdiArea、ToolBox、CollapsiblePane
@@ -71,7 +71,7 @@ fn main() {
 ### 九大平台，统一 API
 
 下表列出的是**各平台如何提供绘图表面与事件循环**——而非哪些控件可用。
-因为所有控件均为自绘，下列每个平台都支持全部 179 种控件；只有
+因为所有控件均为自绘，下列每个平台都支持全部 180 种控件；只有
 `embedded`/`mini` 配置会减少编译进来的控件数量。
 
 | 平台 | 后端提供 | Feature 标志 |

@@ -297,7 +297,7 @@ impl Draw for MultiSelectComboBox {
         // `resolved_theme_style`, so it is not held across the draw — the global
         // manager's mutex is not re-entrant.
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("multi_select_combo_box");
+        let theme = crate::style::resolved_theme_style("multi_select_combo_box");
         let themed_ink = theme.as_ref().and_then(|t| t.text_color);
         let themed_border = theme.as_ref().and_then(|t| t.border_color);
 
@@ -324,7 +324,7 @@ impl Draw for MultiSelectComboBox {
         // The accent is the theme's `primary`: the hue a theme is expected to vary most,
         // which is what makes the ticks and the arrow follow the appearance. It is read as
         // its own lock acquisition, released before the draw's other theme reads.
-        let accent = crate::theme::global_theme_manager()
+        let accent = crate::style::theme_manager()
             .current_theme()
             .map(|active| active.colors.primary)
             .unwrap_or_else(|| ink.blend(&field, 0.4));

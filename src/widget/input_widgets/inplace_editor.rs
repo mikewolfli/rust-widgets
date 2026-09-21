@@ -317,12 +317,12 @@ impl Draw for InplaceEditor {
         // The theme reads take and release the global manager's lock internally, so no guard
         // is held across the draw (the mutex is not re-entrant).
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("inplace_editor");
+        let theme = crate::style::resolved_theme_style("inplace_editor");
         // `inplace_editor` classifies as `Input`, which *does* carry a surface
         // (`Colors::input_background`), so the resolved background is already a visible step
         // from the window. It falls back to the theme's `background` when a theme supplies
         // none, which is what reaches this arm at all.
-        let window_fill = crate::theme::global_theme_manager()
+        let window_fill = crate::style::theme_manager()
             .current_theme()
             .map(|active| active.colors.background)
             .unwrap_or(Color::WHITE);
@@ -332,7 +332,7 @@ impl Draw for InplaceEditor {
             .unwrap_or(Color::rgb(50, 50, 50));
         // The accent is the theme's `primary`: the hue a theme is expected to vary most, so
         // the edit-mode frame follows the appearance rather than staying a literal blue.
-        let accent = crate::theme::global_theme_manager()
+        let accent = crate::style::theme_manager()
             .current_theme()
             .map(|active| active.colors.primary)
             .unwrap_or(Color::rgb(0, 120, 255));

@@ -326,7 +326,7 @@ impl Draw for PropertiesPanel {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("properties_panel");
+        let theme = crate::style::resolved_theme_style("properties_panel");
         // `properties_panel` is not a control kind in the role table, so it classifies
         // as `Surface`, whose background is `theme.colors.background` — byte-identical
         // to the window behind it. The panel's own fill is therefore a step toward the

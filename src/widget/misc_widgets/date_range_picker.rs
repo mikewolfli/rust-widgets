@@ -293,7 +293,7 @@ impl Draw for DateRangePicker {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("date_range_picker");
+        let theme = crate::style::resolved_theme_style("date_range_picker");
         let surface = style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
@@ -310,7 +310,7 @@ impl Draw for DateRangePicker {
         // rather than a fixed blue. `primary` is the theme's brand/action colour.
         let accent = theme
             .as_ref()
-            .and_then(|_| crate::theme::semantic_color(crate::theme::SemanticColor::Info))
+            .and_then(|_| crate::style::semantic_color(crate::style::SemanticColor::Info))
             .unwrap_or(Color::BLUE);
 
         context.fill_rect(rect, bg_color);

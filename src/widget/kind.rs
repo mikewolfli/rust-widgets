@@ -154,6 +154,15 @@ pub enum WidgetKind {
     /// `special_widgets::radar_chart`), which is the condition rule #80 sets.
     #[cfg(widgets_unstripped)]
     RadarChart,
+    /// Heat map — a matrix of values rendered as a grid of coloured cells.
+    ///
+    /// A separate kind rather than a `Chart` variant because both of its axes are
+    /// **categorical**: there is no ordered value axis to interpolate along, the cell at
+    /// `(row, column)` *is* the datum, and the colour of that cell is a function of the
+    /// value through a colour scale. `ChartWidget`'s model is one value per index, and a
+    /// heat map's is one value per coordinate pair — not the same shape (rule #80).
+    #[cfg(widgets_unstripped)]
+    Heatmap,
     /// Board of columns holding draggable cards.
     ///
     /// A separate kind rather than a `ListView` variant: the model is two-level and

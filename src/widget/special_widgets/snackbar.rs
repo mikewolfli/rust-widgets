@@ -235,7 +235,7 @@ impl Draw for Snackbar {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("snackbar");
+        let theme = crate::style::resolved_theme_style("snackbar");
         // `Snackbar` is built on `WidgetKind::StatusBar` and classifies as
         // `Surface`, whose background is `theme.colors.background` — byte-identical
         // to the window behind it. The panel's own fill is therefore a step toward
@@ -263,14 +263,14 @@ impl Draw for Snackbar {
         let bar_text = bar_background.blend(&background, 0.92);
         // The action is a brand action, so it reads the theme's primary token rather
         // than a literal blue.
-        let action_background = crate::theme::resolved_theme_style("button")
+        let action_background = crate::style::resolved_theme_style("button")
             .and_then(|button| button.background_color)
             .unwrap_or_else(|| background.blend(&text_color, 0.55));
         let action_border = action_background.blend(&text_color, 0.18);
         let action_text = action_background.blend(&background, 0.92);
         // Progress is a completion *state*, so it reads the theme's success token.
         let track = bar_background.blend(&text_color, 0.12);
-        let progress_fill = crate::theme::semantic_color(crate::theme::SemanticColor::Success)
+        let progress_fill = crate::style::semantic_color(crate::style::SemanticColor::Success)
             .map(|token| token.blend(&bar_background, 0.2))
             .unwrap_or_else(|| bar_background.blend(&background, 0.5));
 

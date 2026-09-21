@@ -3,9 +3,9 @@
 #
 token     consumers
 --------  ------------------------------------------------
-info      src/widget/overlay_widgets/banner.rs
-success   src/widget/overlay_widgets/banner.rs
-warning   src/widget/overlay_widgets/banner.rs
-error     src/widget/overlay_widgets/banner.rs
+info      src/widget/dialog/message_box.rs, src/widget/input_widgets/ime_preedit.rs, src/widget/input_widgets/rich_edit.rs, src/widget/misc_widgets/bezier_curve_editor.rs, src/widget/misc_widgets/date_range_picker.rs, src/widget/overlay_widgets/banner.rs, src/widget/special_widgets/diff_viewer.rs, src/widget/special_widgets/notification_center.rs, src/widget/special_widgets/toast/single.rs, src/widget/special_widgets/toast/stack.rs
+success   src/widget/dialog/progress_dialog.rs, src/widget/dialog/wizard.rs, src/widget/display_widgets/switch.rs, src/widget/misc_widgets/barcode_scanner.rs, src/widget/overlay_widgets/banner.rs, src/widget/special_widgets/diff_viewer.rs, src/widget/special_widgets/snackbar.rs, src/widget/special_widgets/terminal_view.rs, src/widget/special_widgets/toast/single.rs, src/widget/special_widgets/toast/stack.rs
+warning   src/widget/dialog/message_box.rs, src/widget/display_widgets/lcd_number.rs, src/widget/display_widgets/rating.rs, src/widget/overlay_widgets/banner.rs, src/widget/special_widgets/code_editor/render.rs, src/widget/special_widgets/diff_viewer.rs, src/widget/special_widgets/notification_center.rs, src/widget/special_widgets/toast/single.rs, src/widget/special_widgets/toast/stack.rs, src/widget/view_widgets/query_builder.rs
+error     src/widget/dialog/message_box.rs, src/widget/misc_widgets/barcode_scanner.rs, src/widget/overlay_widgets/banner.rs, src/widget/special_widgets/code_editor/render.rs, src/widget/special_widgets/diff_viewer.rs, src/widget/special_widgets/kanban_board.rs, src/widget/special_widgets/notification_center.rs, src/widget/special_widgets/toast/single.rs, src/widget/special_widgets/toast/stack.rs, src/widget/view_widgets/query_builder.rs
 
 checked=4 skipped=0 failed=0

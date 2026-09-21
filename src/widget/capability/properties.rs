@@ -69,6 +69,12 @@ pub(crate) fn check_box_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::CheckBox,
         canonical_name: "check_box",
+        // Deliberately empty. BLUE20 §1.7 recorded this as a gap because
+        // `Platform::create_checkbox` had no literal match here — but `WidgetFactory`
+        // stores every name under `normalize_key`, which strips `_`/`-`/spaces, so
+        // `"checkbox"` already resolves to `check_box` and adding the alias would be a
+        // no-op that breaks `capability_alias_hygiene_test::no_alias_is_inert_under_normalisation`.
+        // The gap was in the audit script's criterion, not in this table (rule #110).
         aliases: &[],
         properties: CHECK_BOX_PROPERTIES,
         events: events_of!("check_box"),
@@ -1395,6 +1401,26 @@ pub(crate) fn radar_chart_capability() -> WidgetCapability {
         properties: RADAR_CHART_PROPERTIES,
         events: events_of!("radar_chart"),
         commands: &["set_axes", "set_series", "add_series"],
+    }
+}
+
+/// `Heatmap` — a matrix of values rendered as a grid of coloured cells.
+///
+/// Not registered as a `chart_type` token: the data model differs (two **categorical**
+/// axes and one value per coordinate pair), so it is its own control rather than a style
+/// of `ChartWidget`. See the module docs of `special_widgets::heatmap`.
+#[cfg(not(alloc_frugal))]
+pub(crate) fn heatmap_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Heatmap,
+        canonical_name: "heatmap",
+        // `heat_map` is deliberately *not* listed: `normalize_key` strips `_`, so both
+        // spellings already reach this row, and an alias that normalises to its own
+        // canonical name is a no-op (`capability_alias_hygiene_test`).
+        aliases: &["heatmap_chart"],
+        properties: HEATMAP_PROPERTIES,
+        events: events_of!("heatmap"),
+        commands: &["set_data", "set_cell", "clear"],
     }
 }
 

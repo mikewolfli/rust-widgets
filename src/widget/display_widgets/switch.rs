@@ -162,18 +162,27 @@ impl Draw for Switch {
         //
         // Precedence: an explicit style wins, then the theme's resolved style, then
         // the accent for the on state, then the literal.
-        let theme = crate::theme::resolved_theme_style("switch");
+        let theme = crate::style::resolved_theme_style("switch");
         let themed_background = theme.as_ref().and_then(|resolved| resolved.background_color);
-        let themed_accent = crate::theme::semantic_color(crate::theme::SemanticColor::Success);
+        // A stripped device build has no theme module, so the semantic token cannot be read
+        // and the literal below is the only rung. `#[cfg]` on the binding rather than on the
+        // call keeps the binding's type identical in both profiles.
+        #[cfg(device_profile)]
+        let themed_accent = crate::style::semantic_color(crate::style::SemanticColor::Success);
+        #[cfg(not(device_profile))]
+        let themed_accent: Option<Color> = None;
         // A switch that resolved to the window's own background would be invisible
         // against the surface it sits on, so the track steps one shade from the
         // resolved ink when the two would collide.
+        #[cfg(device_profile)]
         let themed_track = themed_background.filter(|background| {
-            let window = crate::theme::global_theme_manager()
+            let window = crate::style::theme_manager()
                 .current_theme()
                 .map(|active| active.colors.background);
             window != Some(*background)
         });
+        #[cfg(not(device_profile))]
+        let themed_track = themed_background;
 
         let track_color = if !is_enabled {
             style.background_color.or(themed_track).unwrap_or(Color::rgba(200, 200, 200, 128))

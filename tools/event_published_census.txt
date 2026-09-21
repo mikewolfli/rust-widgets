@@ -73,6 +73,7 @@ gantt_widget: task_selected
 grid: cell_clicked, cell_hovered
 grid_table: cell_selected, cell_double_clicked, sort_changed, header_clicked
 group_box: toggled
+heatmap: cell_clicked, cell_hovered
 hero_animation: animation_completed
 icon:
 image_gallery: image_changed

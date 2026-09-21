@@ -69,7 +69,7 @@ fn rgb(color: Option<Color>) -> String {
 /// Prints the resolved styles for whichever appearance is active, then one row per kind.
 fn dump(label: &str, window_bg: Option<Color>) {
     println!("── {label} ──  window background: {}", rgb(window_bg));
-    println!("{:<16} {:<28} {:<28} {}", "kind", "background", "text", "border");
+    println!("{:<16} {:<28} {:<28} border", "kind", "background", "text");
     println!("{}", "-".repeat(96));
     for kind in KINDS {
         match resolved_theme_style(kind) {
@@ -81,12 +81,10 @@ fn dump(label: &str, window_bg: Option<Color>) {
                 // Mark the rows that would be painted invisibly: a control whose fill
                 // equals the window background has no visible extent at all.
                 let invisible = match (style.background_color, window_bg) {
-                    (Some(fill), Some(bg)) => {
-                        if fill.r == bg.r && fill.g == bg.g && fill.b == bg.b {
-                            "  <-- same as window background"
-                        } else {
-                            ""
-                        }
+                    (Some(fill), Some(bg))
+                        if fill.r == bg.r && fill.g == bg.g && fill.b == bg.b =>
+                    {
+                        "  <-- same as window background"
                     }
                     _ => "",
                 };

@@ -234,7 +234,7 @@ impl Draw for CupertinoDatePicker {
         // `resolved_theme_style`, so it is not held across the draw — the global manager's
         // mutex is not re-entrant.
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("cupertino_date_picker");
+        let theme = crate::style::resolved_theme_style("cupertino_date_picker");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme. The picker is not in the role table, so it
         // classifies as `Surface` and its resolved background is the window fill itself; the
@@ -243,7 +243,7 @@ impl Draw for CupertinoDatePicker {
         // accent. `muted` is the theme's own de-emphasised colour, which replaces the two
         // fixed greys the unselected rows and the arrows used.
         let (window_fill, foreground, accent, muted, disabled) = {
-            let manager = crate::theme::global_theme_manager();
+            let manager = crate::style::theme_manager();
             match manager.current_theme() {
                 Some(active) => (
                     active.colors.background,

@@ -70,6 +70,7 @@ fn all_kinds() -> Vec<WidgetKind> {
         Grid,
         Chart,
         RadarChart,
+        Heatmap,
         KanbanBoard,
         Cascader,
         QueryBuilder,
@@ -265,6 +266,7 @@ fn exhaustive(kind: WidgetKind) -> &'static str {
         Grid => "Grid",
         Chart => "Chart",
         RadarChart => "RadarChart",
+        Heatmap => "Heatmap",
         KanbanBoard => "KanbanBoard",
         Cascader => "Cascader",
         QueryBuilder => "QueryBuilder",
@@ -485,7 +487,12 @@ mod tests {
     /// mutually visible.
     #[test]
     fn kind_list_is_exhaustive() {
-        assert_eq!(super::all_kinds().len(), 179);
+        // 180 since BLUE20 layer 4 added `Heatmap`. The number is written down here on
+        // purpose: this is the list the reachability gate iterates, so a variant added to
+        // `WidgetKind` without a row here would silently escape the gate. `exhaustive`
+        // already makes that a compile error; this makes the count disagree too, so the two
+        // signals cannot be dismissed as "just a missing row".
+        assert_eq!(super::all_kinds().len(), 180);
     }
 
     /// The `match` in `exhaustive` and the `vec!` in `all_kinds` must agree.

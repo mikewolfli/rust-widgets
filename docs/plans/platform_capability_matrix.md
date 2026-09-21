@@ -109,6 +109,7 @@
 | **Grid** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **GridTable** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **GroupBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Heatmap** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **HeroAnimation** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Icon** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **ImageGallery** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
@@ -227,9 +228,9 @@
 
 ---
 
-Total widgets: 188 (179 WidgetKind variants plus 9 documented WebEngine wrapper types)
+Total widgets: 189 (180 WidgetKind variants plus 9 documented WebEngine wrapper types)
 
-C-ABI typed constructors: 22 of 188 widget types. The remainder are reachable through `rw_create_widget_of_kind`, which takes a factory name at run time.
+C-ABI typed constructors: 22 of 189 widget types. The remainder are reachable through `rw_create_widget_of_kind`, which takes a factory name at run time.
 
 ---
 
@@ -248,7 +249,7 @@ emitted only for `data_view`, `property_grid`, `collapsible_pane`, `column_view`
 | `create_line_edit` | RichEdit, TextEdit |
 | `create_list_box` | CheckListBox, TreeView |
 | `create_list_view` | ColumnView, UndoView |
-| `create_panel` | Canvas, Cascader, Chart, CollapsiblePane, DataView, DockPanel, DockWidget, EmojiPicker, Grid, KanbanBoard, MdiArea, Mention, PropertyGrid, QueryBuilder, RadarChart, StackedWidget, Table, Toolbox, Wizard |
+| `create_panel` | Canvas, Cascader, Chart, CollapsiblePane, DataView, DockPanel, DockWidget, EmojiPicker, Grid, Heatmap, KanbanBoard, MdiArea, Mention, PropertyGrid, QueryBuilder, RadarChart, StackedWidget, Table, Toolbox, Wizard |
 | `create_progress_bar` | ActivityIndicator |
 | `create_slider` | Dial |
 

@@ -393,20 +393,34 @@ impl Draw for MaskedEdit {
         let font = Font::simple("monospace", 13.0);
 
         // ── Background ──
+        //
+        // Resolved from the style so a theme switch reaches this control; previously the three
+        // states were fixed light greys and the box stayed light in a dark theme. The state
+        // ladder is preserved but *derived*: focused is the resolved colour brightened toward
+        // white, disabled is faded, so the states stay distinguishable and follow the theme.
+        let style = self.style().clone();
+        let themed = crate::style::resolved_theme_style("masked_edit");
+        let themed_bg = themed.as_ref().and_then(|resolved| resolved.background_color);
+        let themed_border = themed.as_ref().and_then(|resolved| resolved.border_color);
+        // Explicit style wins, then the theme, then the original literal as a last resort so
+        // an inactive theme still leaves the control with a defined appearance.
+        let base_bg =
+            style.background_color.or(themed_bg).unwrap_or(Color::rgba(248, 248, 250, 200));
+        let accent = style.border_color.or(themed_border);
         let bg_color = if !is_enabled {
-            Color::rgba(240, 240, 240, 180)
+            base_bg.blend(&Color::WHITE, 0.35)
         } else if self.focused {
-            Color::WHITE
+            base_bg.blend(&Color::WHITE, 0.55)
         } else {
-            Color::rgba(248, 248, 250, 200)
+            base_bg
         };
         context.fill_rounded_rect(geom, 4, bg_color);
 
         // ── Border ──
         let border_color = if self.focused && is_enabled {
-            Color::rgb(25, 118, 210)
+            accent.unwrap_or(Color::rgb(25, 118, 210))
         } else {
-            Color::rgba(190, 190, 200, 200)
+            style.border_color.unwrap_or(Color::rgba(190, 190, 200, 200))
         };
         context.draw_rounded_rect_stroke(geom, 4, border_color, if self.focused { 2 } else { 1 });
 

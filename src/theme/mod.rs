@@ -32,10 +32,70 @@
 //! # Reachability
 //!
 //! **State:** Exposed over the C ABI (`rw_set_theme`, `rw_theme_names`, `rw_set_high_contrast`). Also applied automatically by both creation funnels.
+// The theme **types** are plain data — a palette, an appearance selector, a role table and
+// a token enum — with no dependency on the manager, the registry or the platform. The
+// widget layer names them (`active.colors.background`, `SemanticColor::Warning`) in builds
+// that have a full widget set and no device profile, so the module is compiled wherever a
+// colour can be resolved at all. `mini` is the exception: no platform singleton, no palette.
+//
+// The explicit re-export list at the bottom of this file is the module's public surface;
+// it is written out rather than globbed so each name has one documented home.
 mod apply;
 pub(crate) use apply::apply_active_theme;
 mod manager;
 mod types;
+
+/// Applies the active theme's style for `widget` to `widget`, as the creation funnels do.
+///
+/// # Why this is public
+///
+/// [`apply_active_theme`](crate::theme) is crate-private because the funnels are the only
+/// *production* callers, but a tool that renders a control **outside** a funnel needs the
+/// same styling or it renders something no user will ever see. The BLUE20 layer 3 SVG
+/// exporter was exactly that case: it rendered every control with the theme never applied,
+/// so `<name>.svg` and `<name>.light.svg` came out byte-identical apart from their comment
+/// — the snapshots existed, looked right in a file listing, and proved nothing.
+///
+/// This is a single entry point rather than a second implementation: it resolves the
+/// style through the same `manager.resolve_style` the funnels use and merges it the same
+/// way, so a caller cannot accidentally get a different palette from a control created the
+/// normal way. It is `#[cfg]`-gated the same way `apply_active_theme` is, so a profile
+/// without a theme module reports `false` (nothing was applied) instead of pretending.
+///
+/// Returns `true` when a style was applied, `false` when there is no active theme or the
+/// build has no theme module — the honest answer in both cases (principle #37: a missing
+/// capability is reported, never faked).
+///
+/// # Gating
+///
+/// `not(alloc_frugal)` alone is **not** enough. `alloc_frugal` is about the allocator, and
+/// it is false for `mini`/`embedded` — but those profiles have no colour model at all, so
+/// `crate::theme` does not exist and naming it fails to compile. The condition that
+/// actually matches the module is `full_widgets`, which is what `apply_active_theme` itself
+/// is gated on and what `build.rs` defines for "a device profile *and* a full widget set".
+/// Copying the neighbouring `#[cfg]` without checking it against the module is exactly the
+/// drift principle #47 exists to prevent.
+#[cfg(full_widgets)]
+pub fn apply_theme_to_widget(widget: &mut dyn crate::widget::Widget) -> bool {
+    // `apply_active_theme` already handles "no active theme" by returning without styling,
+    // so the emptiness check is only to make the return value truthful.
+    if global_theme_manager().current_theme().is_none() {
+        return false;
+    }
+    apply_active_theme(widget);
+    true
+}
+
+/// The no-theme arm, for the profiles that compile this module out.
+///
+/// A separate definition rather than a `cfg` inside one body: the module is not compiled in
+/// these profiles, so a caller in the widget layer can still link against the name and get
+/// the truthful "nothing was applied" answer instead of an unresolved symbol.
+#[cfg(not(full_widgets))]
+pub fn apply_theme_to_widget(widget: &mut dyn crate::widget::Widget) -> bool {
+    let _ = widget;
+    false
+}
 
 /// The high-contrast override that [`resolved_theme_style`] honours.
 ///

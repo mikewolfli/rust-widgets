@@ -283,7 +283,7 @@ impl Draw for BezierCurveEditor {
         // global manager's lock internally, so no guard is held across the draw (the
         // mutex is not re-entrant).
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("bezier_curve_editor");
+        let theme = crate::style::resolved_theme_style("bezier_curve_editor");
         let surface = style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
@@ -366,7 +366,7 @@ impl Draw for BezierCurveEditor {
         context.draw_line(p3, cp2_pixel, poly_color);
 
         // ── Bezier curve ──
-        let curve_color = crate::theme::semantic_color(crate::theme::SemanticColor::Info)
+        let curve_color = crate::style::semantic_color(crate::style::SemanticColor::Info)
             .map(|token| surface.blend(&token, 0.8))
             .unwrap_or_else(|| surface.blend(&Color::BLUE, 0.8));
         let segments = 50;

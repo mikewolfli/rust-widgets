@@ -229,12 +229,36 @@ impl Draw for ProgressCircle {
         let is_enabled = self.base.is_enabled();
         let stroke_w = self.stroke_width as u32;
 
-        // Draw track (full circle)
-        let track_color =
-            if is_enabled { self.track_color } else { Color::rgba(200, 200, 200, 100) };
+        // Draw track (full circle). The track is the ring's empty groove — chrome, not a
+        // value — so it follows the theme. Chrome colours resolve the explicit style first,
+        // then the theme's resolved style for this control, and only then the original
+        // literal, which stays as the fallback so an inactive theme still has a defined
+        // appearance. The theme read is a separate manager lock, taken and released inside
+        // `resolved_theme_style`, so no guard is held across the draw (the mutex is not
+        // re-entrant).
+        let style = self.base.style().clone();
+        let themed = crate::style::resolved_theme_style("progress_circle");
+        let themed_bg = themed.as_ref().and_then(|r| r.background_color);
+        // `progress_circle` is `WidgetRole::Accent`, so the theme writes a groove colour into
+        // the style's background. The control's own `track_color` literal is deliberately
+        // **not** the base here: it is a near-white grey in every palette, so using it would
+        // leave the track identical in light and dark — the exact defect being fixed. It
+        // stays as the enabled-state literal fallback instead.
+        let fallback_track = themed_bg.unwrap_or(Color::rgba(220, 220, 220, 200));
+        let surface = style.background_color.unwrap_or(fallback_track);
+        let track_color = if is_enabled {
+            surface
+        } else {
+            // A disabled control is a chrome state, so the groove is derived from the
+            // resolved colours rather than from a second hardcoded grey.
+            surface.blend(&Color::DISABLED_FOREGROUND, 0.5)
+        };
 
         // Draw track as a circle stroke
         context.draw_circle_stroke(center, radius as u32, track_color, stroke_w.max(1));
+
+        // The progress arc is deliberately NOT themed: its colour can encode a value or a
+        // threshold the caller chose, which is data, so its computation is left untouched.
 
         if self.indeterminate {
             // In indeterminate mode, draw a single arc segment that sweeps ~135 degrees

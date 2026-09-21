@@ -447,6 +447,27 @@ macro_rules! impl_properties_other {
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const HEATMAP_PROPERTIES: &[PropertySchema] = &[
+            // The labels and the matrix are written through `set_data`; what the property
+            // layer reports is the shape of what was set, plus the scale the colours
+            // actually use. Reporting the *resolved* scale is what makes a derived range
+            // inspectable — a caller otherwise cannot tell which values the published
+            // `scale_minimum` / `scale_maximum` pair is standing in for.
+            PropertySchema::new("row_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("column_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("scale_minimum", PropertyValueKind::Float, true, true),
+            PropertySchema::new("scale_maximum", PropertyValueKind::Float, true, true),
+            PropertySchema::new("resolved_minimum", PropertyValueKind::Float, true, false),
+            PropertySchema::new("resolved_maximum", PropertyValueKind::Float, true, false),
+            PropertySchema::new("show_labels", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("show_legend", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
         pub(crate) const METER_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("value", PropertyValueKind::UInt, true, true),
             PropertySchema::new("minimum", PropertyValueKind::UInt, true, true),

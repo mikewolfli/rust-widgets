@@ -306,16 +306,45 @@ impl Draw for MenuButton {
         let is_enabled = self.base.is_enabled();
         let font = Font::simple("sans-serif", 13.0);
 
+        // Chrome colours resolve the explicit style first, then the theme's resolved style
+        // for this control, and only then the original literal. The literal stays as the
+        // fallback so an inactive theme still has a defined appearance, and because keeping
+        // the old value means the existing pixel baselines cannot regress. The theme read is
+        // a separate manager lock, taken and released inside `resolved_theme_style`, so no
+        // guard is held across the draw (the mutex is not re-entrant).
+        let style = self.base.style().clone();
+        let themed = crate::style::resolved_theme_style("menu_button");
+        let themed_bg = themed.as_ref().and_then(|r| r.background_color);
+        let themed_border = themed.as_ref().and_then(|r| r.border_color);
+        let themed_text = themed.as_ref().and_then(|r| r.text_color);
+        // `menu_button` is absent from `WidgetRole::for_kind_name`'s table, so it classifies
+        // as `Surface` and resolves to `theme.colors.background`; the fallback is the button's
+        // own resting grey rather than that surface, because the stroke below needs a fill to
+        // stand against.
+        let background =
+            style.background_color.or(themed_bg).unwrap_or(Color::rgba(235, 235, 240, 200));
+        let border =
+            style.border_color.or(themed_border).unwrap_or(Color::rgba(180, 180, 190, 200));
+        let ink = style.text_color.or(themed_text).unwrap_or(Color::rgb(33, 33, 33));
+        // The three button states are derived from the resolved pair instead of from three
+        // separate literals, so they keep their relationship in either appearance: a disabled
+        // button recedes towards the surface, an open-menu button steps towards the accent.
+        let accent = crate::style::theme_manager()
+            .current_theme()
+            .map(|theme| theme.colors.accent)
+            .unwrap_or(Color::rgba(200, 200, 220, 200));
+        let disabled_ink = ink.blend(&background, 0.55);
+
         // ── Draw button background ──
         let bg_color = if !is_enabled {
-            Color::rgba(220, 220, 220, 180)
+            background.blend(&ink, 0.08)
         } else if self.menu_open {
-            Color::rgba(200, 200, 220, 200)
+            background.blend(&accent, 0.25)
         } else {
-            Color::rgba(235, 235, 240, 200)
+            background
         };
         context.fill_rounded_rect(geom, 4, bg_color);
-        context.draw_rounded_rect_stroke(geom, 4, Color::rgba(180, 180, 190, 200), 1);
+        context.draw_rounded_rect_stroke(geom, 4, border, 1);
 
         // ── Draw icon if present ──
         let mut text_offset_x = geom.x + PADDING;
@@ -325,15 +354,14 @@ impl Draw for MenuButton {
                 Point::new(text_offset_x, geom.y + geom.height as i32 / 2),
                 icon_str,
                 &icon_font,
-                if is_enabled { Color::rgb(50, 50, 50) } else { Color::rgba(150, 150, 150, 200) },
+                if is_enabled { ink } else { disabled_ink },
                 HorizontalAlignment::Left,
             );
             text_offset_x += 22; // space for icon
         }
 
         // ── Draw button text ──
-        let text_color =
-            if !is_enabled { Color::rgba(150, 150, 150, 200) } else { Color::rgb(33, 33, 33) };
+        let text_color = if !is_enabled { disabled_ink } else { ink };
         let text_y = geom.y + geom.height as i32 / 2;
         context.draw_text(
             Point::new(text_offset_x, text_y),
@@ -346,11 +374,7 @@ impl Draw for MenuButton {
         // ── Draw dropdown arrow ──
         let arrow_x = geom.x + geom.width as i32 - PADDING - 8;
         let arrow_y = geom.y + geom.height as i32 / 2 - 2;
-        let arrow_color = if !is_enabled {
-            Color::rgba(150, 150, 150, 180)
-        } else {
-            Color::rgba(80, 80, 80, 220)
-        };
+        let arrow_color = if !is_enabled { disabled_ink } else { ink };
         // Draw a small triangle pointing down (filled path)
         context.execute_command(RenderCommand::DrawPath {
             points: vec![
@@ -367,24 +391,35 @@ impl Draw for MenuButton {
         // ── Draw dropdown menu ──
         if self.menu_open {
             let menu = self.menu_rect();
+            // The popup panel is chrome: a popup that stayed white in a dark theme would be
+            // the brightest object on screen. It reads the resolved surface, and the literal
+            // it used to be stays as the fallback.
+            let panel = crate::style::resolved_theme_style("menu_button")
+                .and_then(|r| r.background_color)
+                .or(themed_bg)
+                .unwrap_or(Color::WHITE);
+            let panel_border =
+                style.border_color.or(themed_border).unwrap_or(Color::rgba(190, 190, 200, 200));
+            let item_ink = style.text_color.or(themed_text).unwrap_or(Color::rgb(33, 33, 33));
+            // A selected row's highlight is chrome, not data, so it is resolved from the
+            // theme's accent rather than from a literal tint of blue.
+            let item_highlight = panel.blend(&accent, 0.3);
+            let item_rule = panel.blend(&item_ink, 0.08);
             // Menu background
-            context.fill_rounded_rect(menu, 4, Color::WHITE);
-            context.draw_rounded_rect_stroke(menu, 4, Color::rgba(190, 190, 200, 200), 1);
+            context.fill_rounded_rect(menu, 4, panel);
+            context.draw_rounded_rect_stroke(menu, 4, panel_border, 1);
 
             for (i, item) in self.menu_items.iter().enumerate() {
                 let item_rect = self.item_rect(i);
 
                 // Highlight on hover/checked
                 if item.checked {
-                    context.fill_rounded_rect(item_rect, 2, Color::rgba(220, 235, 255, 200));
+                    context.fill_rounded_rect(item_rect, 2, item_highlight);
                 }
 
                 // Item text
-                let item_text_color = if !item.enabled {
-                    Color::rgba(180, 180, 180, 200)
-                } else {
-                    Color::rgb(33, 33, 33)
-                };
+                let item_text_color =
+                    if !item.enabled { item_ink.blend(&panel, 0.5) } else { item_ink };
                 let item_font = Font::simple("sans-serif", 12.0);
                 let mut item_x = item_rect.x + PADDING;
 
@@ -415,9 +450,9 @@ impl Draw for MenuButton {
                     let check_font = Font::simple("sans-serif", 12.0);
                     context.draw_text(
                         Point::new(check_x, item_rect.y + item_rect.height as i32 / 2),
-                        "✓",
+                        "\u{2713}",
                         &check_font,
-                        Color::rgb(25, 118, 210),
+                        accent.contrast_color(),
                         HorizontalAlignment::Left,
                     );
                 }
@@ -433,7 +468,7 @@ impl Draw for MenuButton {
                             Point::new(sub_x + 5, sub_y + 4),
                         ],
                         closed: true,
-                        color: Color::rgba(120, 120, 120, 200),
+                        color: item_ink.blend(&panel, 0.45),
                         filled: true,
                         width: 1,
                     });
@@ -447,7 +482,7 @@ impl Draw for MenuButton {
                             item_rect.x + item_rect.width as i32 - 4,
                             item_rect.y + item_rect.height as i32,
                         ),
-                        Color::rgba(230, 230, 235, 200),
+                        item_rule,
                     );
                 }
             }

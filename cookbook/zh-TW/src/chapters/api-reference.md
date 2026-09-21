@@ -512,7 +512,7 @@ pub trait Draw {
 
 ### 控制項種類列舉
 
-`WidgetKind` 列舉系統中的每一種控制項型別（裝置設定檔下共 179 種）。選取的部分變體：
+`WidgetKind` 列舉系統中的每一種控制項型別（裝置設定檔下共 180 種）。選取的部分變體：
 
 - `Button`, `CheckBox`, `RadioButton`, `Label`
 - `LineEdit`, `TextArea`, `ComboBox`, `ListBox`, `SpinBox`, `Dropdown`

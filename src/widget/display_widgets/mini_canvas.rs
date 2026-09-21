@@ -189,11 +189,24 @@ impl Draw for MiniCanvas {
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
         let style = self.style().clone();
-        let theme = crate::theme::resolved_theme_style("mini_canvas");
+        // `crate::theme` exists only in a `full_widgets` build (see `src/theme/mod.rs` and
+        // principle #47). A `mini`/`embedded` build has no colour model at all, so the theme
+        // read has to be conditioned on the module being there — naming it unconditionally
+        // is what broke those two profiles.
+        //
+        // The fallback is *not* a fabricated theme: it is the same explicit ladder the
+        // control documents (explicit style -> resolved theme style -> literal), with the
+        // middle rung absent because the profile has no theme. A caller in that profile
+        // still gets the explicit style when it set one.
+        #[cfg(full_widgets)]
+        let theme = crate::style::resolved_theme_style("mini_canvas");
+        #[cfg(not(full_widgets))]
+        let theme: Option<crate::style::WidgetStyle> = None;
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.
+        #[cfg(full_widgets)]
         let (window_fill, foreground, secondary) = {
-            let manager = crate::theme::global_theme_manager();
+            let manager = crate::style::theme_manager();
             match manager.current_theme() {
                 Some(active) => {
                     (active.colors.background, active.colors.foreground, active.colors.secondary)
@@ -201,6 +214,11 @@ impl Draw for MiniCanvas {
                 None => (Color::rgb(240, 240, 240), Color::BLACK, Color::rgb(158, 158, 158)),
             }
         };
+        // No theme module: the literals are the only rung available, and they are the same
+        // ones the `None` arm above uses so the two profiles render alike.
+        #[cfg(not(full_widgets))]
+        let (window_fill, foreground, secondary) =
+            (Color::rgb(240, 240, 240), Color::BLACK, Color::rgb(158, 158, 158));
         let ink = style
             .text_color
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))

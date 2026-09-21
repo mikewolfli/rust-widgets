@@ -299,12 +299,50 @@ impl EventHandler for MenuBar {
 impl Draw for MenuBar {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
+
+        // A menu bar is very nearly all chrome — its fill, its separators, its entry
+        // highlights and its labels. Every one of those was a literal, so a light/dark
+        // switch repainted nothing and the rendering census reported the control as
+        // theme-blind.
+        //
+        // Chrome colours resolve the explicit style first, then the theme's resolved style
+        // for this control, and only then the original literal. The literal stays as the
+        // fallback so an inactive theme still has a defined appearance. The theme read is a
+        // separate manager lock, taken and released inside `resolved_theme_style`, so no
+        // guard is held across the draw (the mutex is not re-entrant).
+        let style = self.base.style().clone();
+        let themed = crate::style::resolved_theme_style("menu_bar");
+        let themed_bg = themed.as_ref().and_then(|r| r.background_color);
+        let themed_border = themed.as_ref().and_then(|r| r.border_color);
+        let themed_text = themed.as_ref().and_then(|r| r.text_color);
+        // `menu_bar` is absent from `WidgetRole::for_kind_name`'s table, so it classifies as
+        // `Surface` and resolves to `theme.colors.background` — the window's own fill. A bar
+        // painted in that colour is byte-identical to the frame behind it, so the resolved
+        // surface is re-derived a visible step towards the theme's ink; a colour the caller
+        // set still wins.
+        let base = style.background_color.or(themed_bg).unwrap_or(Color::rgb(240, 240, 240));
+        let ink = style.text_color.or(themed_text).unwrap_or(Color::rgb(0, 0, 0));
+        let background = base.blend(&ink, 0.06);
+        // The bottom rule is chrome, and its literal was darker than the bar; deriving it
+        // from the resolved pair keeps that relationship in either appearance.
+        let separator =
+            style.border_color.or(themed_border).unwrap_or_else(|| background.blend(&ink, 0.32));
+        // The active entry is filled with the accent token (the "open menu" indicator),
+        // the hovered one with a lighter step of the same family, and the label over each
+        // is picked for contrast rather than hardcoded white-on-accent.
+        let active_fill = crate::style::theme_manager()
+            .current_theme()
+            .map(|theme| theme.colors.primary)
+            .unwrap_or(Color::rgb(0, 120, 215));
+        let hover_fill = background.blend(&active_fill, 0.25);
+        let disabled_ink = ink.blend(&background, 0.5);
+
         // Menu bar background
-        context.fill_rect(rect, Color::rgb(240, 240, 240));
+        context.fill_rect(rect, background);
         context.draw_line(
             Point::new(rect.x, rect.y + rect.height as i32 - 1),
             Point::new(rect.x + rect.width as i32, rect.y + rect.height as i32 - 1),
-            Color::rgb(200, 200, 200),
+            separator,
         );
         let mut x = rect.x;
         for (i, entry) in self.entries.iter().enumerate() {
@@ -313,16 +351,16 @@ impl Draw for MenuBar {
             let is_active = self.active_index == Some(i);
             let entry_rect = Rect { x, y: rect.y, width: w as u32, height: rect.height };
             if is_active {
-                context.fill_rect(entry_rect, Color::rgb(0, 120, 215));
+                context.fill_rect(entry_rect, active_fill);
             } else if is_hovered {
-                context.fill_rect(entry_rect, Color::rgb(210, 230, 255));
+                context.fill_rect(entry_rect, hover_fill);
             }
             let fg = if !entry.is_enabled() {
-                Color::rgb(150, 150, 150)
+                disabled_ink
             } else if is_active {
-                Color::rgb(255, 255, 255)
+                active_fill.contrast_color()
             } else {
-                Color::rgb(0, 0, 0)
+                ink
             };
             context.draw_text(
                 Point::new(x + w / 2, rect.y + rect.height as i32 / 2),

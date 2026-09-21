@@ -942,6 +942,10 @@ mod tests {
     #[test]
     fn lineedit_clipboard_copy_paste_cut() {
         use crate::event::Event::KeyPress;
+        // The clipboard is process-wide, so this test must not run concurrently with any
+        // other test that copies or pastes. Without the guard it failed intermittently
+        // under the parallel harness while passing on its own.
+        let _clipboard = crate::clipboard::clipboard_test_guard();
 
         let mut source = LineEdit::new(Rect::new(0, 0, 200, 24));
         source.set_text("hello world");

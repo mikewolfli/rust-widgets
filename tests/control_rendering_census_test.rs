@@ -35,7 +35,12 @@
 //! invisible control fails the test, and removing one from the list is the only
 //! way to record a fix. The same shape is used for `KNOWN_THEME_BLIND`.
 
-#![cfg(all(not(feature = "mini"), not(target_arch = "wasm32")))]
+// The census needs the theme module and the full widget registry, which exist only on a
+// **device** profile (`desktop`/`tablet`/`mobile`). `not(mini)` was too weak: `embedded` is
+// also stripped of both, so the test failed to compile there with `cannot find theme in
+// rust_widgets`. Naming the requirement directly is what keeps this true when a profile is
+// added, rather than a `not(...)` list that has to be extended.
+#![cfg(all(not(feature = "mini"), not(feature = "embedded"), not(target_arch = "wasm32")))]
 
 use rust_widgets::theme::theme_test_guard;
 use rust_widgets::widget::census::{
@@ -56,25 +61,7 @@ const KNOWN_INVISIBLE: &[&str] = &[];
 ///
 /// These are hardcoded-chrome defects: a theme switch leaves them unchanged. The
 /// list is asserted in both directions like [`KNOWN_INVISIBLE`].
-const KNOWN_THEME_BLIND: &[&str] = &[
-    "animated_image",
-    "carousel",
-    "hero_animation",
-    "lottie_widget",
-    "masked_edit",
-    "masonry_layout",
-    "menu_bar",
-    "menu_button",
-    "progress_circle",
-    "rive_widget",
-    "search_bar",
-    "search_box",
-    "skeleton_loader",
-    "sparkline",
-    "swipe_to_dismiss",
-    "tag_input",
-    "tool_button",
-];
+const KNOWN_THEME_BLIND: &[&str] = &[];
 
 /// Controls whose painted body is **defined** to be the surface they sit on.
 ///
@@ -228,10 +215,8 @@ fn p3_chrome_follows_the_appearance_unless_exempted_as_data() {
         if exemptions.iter().any(|name| name == row.name) {
             continue;
         }
-        if !row.differs_between_appearances() {
-            if !KNOWN_THEME_BLIND.contains(&row.name) {
-                unexpected.push(row.name);
-            }
+        if !row.differs_between_appearances() && !KNOWN_THEME_BLIND.contains(&row.name) {
+            unexpected.push(row.name);
         }
     }
     assert!(

@@ -198,10 +198,13 @@ impl Draw for Window {
         // so the rendering census could not tell it apart from an empty surface.
         //
         // Precedence is unchanged: an explicit style wins, then the theme, then the
-        // literal as a last resort for a manager with no active theme.
-        let themed_background = crate::theme::global_theme_manager()
-            .current_theme()
-            .map(|active| active.colors.background);
+        // literal as a last resort for a manager with no active theme. A stripped device
+        // build has no theme module, so the literal is its only rung.
+        #[cfg(device_profile)]
+        let themed_background =
+            crate::style::theme_manager().current_theme().map(|active| active.colors.background);
+        #[cfg(not(device_profile))]
+        let themed_background: Option<Color> = None;
         let bg_color =
             style.background_color.or(themed_background).unwrap_or(Color::rgb(240, 240, 240));
 

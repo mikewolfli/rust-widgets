@@ -48,6 +48,17 @@ macro_rules! impl_other_widgets {
             self.mount_widget_of_kind(WidgetKind::RadarChart, parent, "", x, y, width, height)
         }
         #[cfg(not(alloc_frugal))]
+        fn create_heatmap(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::Heatmap, parent, "", x, y, width, height)
+        }
+        #[cfg(not(alloc_frugal))]
         fn create_kanban_board(
             &self,
             parent: ObjectId,
@@ -122,7 +133,15 @@ macro_rules! impl_other_widgets {
             }
             #[cfg(not(full_widgets))]
             {
-                self.mount_widget_of_kind(WidgetKind::WebEngineView, parent, "", x, y, width, height)
+                self.mount_widget_of_kind(
+                    WidgetKind::WebEngineView,
+                    parent,
+                    "",
+                    x,
+                    y,
+                    width,
+                    height,
+                )
             }
         }
         #[cfg(not(alloc_frugal))]
@@ -172,7 +191,15 @@ macro_rules! impl_other_widgets {
             }
             #[cfg(not(full_widgets))]
             {
-                self.mount_widget_of_kind(WidgetKind::WebEngineView, parent, "", x, y, width, height)
+                self.mount_widget_of_kind(
+                    WidgetKind::WebEngineView,
+                    parent,
+                    "",
+                    x,
+                    y,
+                    width,
+                    height,
+                )
             }
         }
         #[cfg(full_widgets)]
@@ -195,7 +222,15 @@ macro_rules! impl_other_widgets {
             }
             #[cfg(not(full_widgets))]
             {
-                self.mount_widget_of_kind(WidgetKind::WebEngineView, parent, "", x, y, width, height)
+                self.mount_widget_of_kind(
+                    WidgetKind::WebEngineView,
+                    parent,
+                    "",
+                    x,
+                    y,
+                    width,
+                    height,
+                )
             }
         }
         #[cfg(full_widgets)]
@@ -213,7 +248,15 @@ macro_rules! impl_other_widgets {
             }
             #[cfg(not(full_widgets))]
             {
-                self.mount_widget_of_kind(WidgetKind::WebEngineView, parent, "", x, y, width, height)
+                self.mount_widget_of_kind(
+                    WidgetKind::WebEngineView,
+                    parent,
+                    "",
+                    x,
+                    y,
+                    width,
+                    height,
+                )
             }
         }
         #[cfg(full_widgets)]
@@ -231,7 +274,15 @@ macro_rules! impl_other_widgets {
             }
             #[cfg(not(full_widgets))]
             {
-                self.mount_widget_of_kind(WidgetKind::WebEngineView, parent, "", x, y, width, height)
+                self.mount_widget_of_kind(
+                    WidgetKind::WebEngineView,
+                    parent,
+                    "",
+                    x,
+                    y,
+                    width,
+                    height,
+                )
             }
         }
         #[cfg(full_widgets)]
@@ -249,7 +300,15 @@ macro_rules! impl_other_widgets {
             }
             #[cfg(not(full_widgets))]
             {
-                self.mount_widget_of_kind(WidgetKind::WebEngineView, parent, "", x, y, width, height)
+                self.mount_widget_of_kind(
+                    WidgetKind::WebEngineView,
+                    parent,
+                    "",
+                    x,
+                    y,
+                    width,
+                    height,
+                )
             }
         }
         #[cfg(full_widgets)]
@@ -267,7 +326,15 @@ macro_rules! impl_other_widgets {
             }
             #[cfg(not(full_widgets))]
             {
-                self.mount_widget_of_kind(WidgetKind::WebEngineView, parent, "", x, y, width, height)
+                self.mount_widget_of_kind(
+                    WidgetKind::WebEngineView,
+                    parent,
+                    "",
+                    x,
+                    y,
+                    width,
+                    height,
+                )
             }
         }
         #[cfg(full_widgets)]
@@ -285,7 +352,15 @@ macro_rules! impl_other_widgets {
             }
             #[cfg(not(full_widgets))]
             {
-                self.mount_widget_of_kind(WidgetKind::WebEngineView, parent, "", x, y, width, height)
+                self.mount_widget_of_kind(
+                    WidgetKind::WebEngineView,
+                    parent,
+                    "",
+                    x,
+                    y,
+                    width,
+                    height,
+                )
             }
         }
         #[cfg(full_widgets)]
@@ -303,7 +378,15 @@ macro_rules! impl_other_widgets {
             }
             #[cfg(not(full_widgets))]
             {
-                self.mount_widget_of_kind(WidgetKind::WebEngineView, parent, "", x, y, width, height)
+                self.mount_widget_of_kind(
+                    WidgetKind::WebEngineView,
+                    parent,
+                    "",
+                    x,
+                    y,
+                    width,
+                    height,
+                )
             }
         }
         #[cfg(full_widgets)]
@@ -321,7 +404,15 @@ macro_rules! impl_other_widgets {
             }
             #[cfg(not(full_widgets))]
             {
-                self.mount_widget_of_kind(WidgetKind::WebEngineView, parent, "", x, y, width, height)
+                self.mount_widget_of_kind(
+                    WidgetKind::WebEngineView,
+                    parent,
+                    "",
+                    x,
+                    y,
+                    width,
+                    height,
+                )
             }
         }
         #[cfg(full_widgets)]
@@ -339,7 +430,15 @@ macro_rules! impl_other_widgets {
             }
             #[cfg(not(full_widgets))]
             {
-                self.mount_widget_of_kind(WidgetKind::WebEngineView, parent, "", x, y, width, height)
+                self.mount_widget_of_kind(
+                    WidgetKind::WebEngineView,
+                    parent,
+                    "",
+                    x,
+                    y,
+                    width,
+                    height,
+                )
             }
         }
     };

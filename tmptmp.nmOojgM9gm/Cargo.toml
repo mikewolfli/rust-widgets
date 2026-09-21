@@ -1,0 +1,9 @@
+[package]
+name = "rw_designer_gate_probe"
+version = "0.0.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+rust_widgets = { path = "D:/Workspace/RustWorkspace/rust-widgets", default-features = false, features = ["desktop"] }

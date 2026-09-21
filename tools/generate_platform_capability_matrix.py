@@ -140,6 +140,7 @@ WIDGETS: Dict[str, Tuple[str, List[str]]] = {
     "Grid": ("Grid", CELLS),
     "Chart": ("Chart", CELLS),
     "RadarChart": ("RadarChart", CELLS),
+    "Heatmap": ("Heatmap", CELLS),
     "CandlestickChart": ("CandlestickChart", CELLS),
     "VolumeChart": ("VolumeChart", CELLS),
     "DepthChart": ("DepthChart", CELLS),

@@ -68,7 +68,7 @@
 | `capability.rs` | WidgetCapability, WidgetFactory, generic property read/write |
 | `draw.rs` | Draw trait (custom rendering) |
 | `image.rs` | Image struct + ImageFormat |
-| `kind.rs` | WidgetKind enum (179 variants) |
+| `kind.rs` | WidgetKind enum (180 variants) |
 | `mod.rs` | Re-exports + type aliases |
 | `registry.rs` | SimpleRegistry for child forwarding |
 | `widget_trait.rs` | Widget trait (geometry, style, signals, CSS, a11y) |
@@ -251,7 +251,7 @@ EventHandler (handle_event)
             └── accessible_name / accessible_role
 
 Draw (draw, uses_custom_drawing)
-    └── All 179 widget kinds implement Draw
+    └── All 180 widget kinds implement Draw
 
 Platform (Send + Sync)
     ├── create_window/create_button/create_checkbox/...
@@ -313,7 +313,7 @@ Axis 3: Capabilities (arbitrary composition)
 
 ---
 
-## 6. WidgetKind→Module Mapping (179 variants)
+## 6. WidgetKind→Module Mapping (180 variants)
 
 | WidgetKind | Module Path | Type |
 |-----------|-------------|------|

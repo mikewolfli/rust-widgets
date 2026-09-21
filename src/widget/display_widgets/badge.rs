@@ -241,7 +241,7 @@ impl Draw for Badge {
         // `resolved_theme_style`, so it is not held across the draw — the global
         // manager's mutex is not re-entrant.
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("badge");
+        let theme = crate::style::resolved_theme_style("badge");
         let bg_color = style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))

@@ -591,7 +591,7 @@ impl Draw for QueryBuilder {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("query_builder");
+        let theme = crate::style::resolved_theme_style("query_builder");
         // `query_builder` is not a control kind in the role table, so it classifies as
         // `Surface`, whose background is `theme.colors.background` — the window's own
         // colour. The builder is therefore a step toward the foreground, so it reads
@@ -694,7 +694,7 @@ impl QueryBuilderChrome {
     /// theme's accent slot through the semantic warning token so the two
     /// conjunctions stay tellable apart in both appearances.
     fn or_chip(&self) -> Color {
-        crate::theme::semantic_color(crate::theme::SemanticColor::Warning)
+        crate::style::semantic_color(crate::style::SemanticColor::Warning)
             .map(|token| token.blend(&self.background, 0.15))
             .unwrap_or_else(|| self.border.blend(&self.background, 0.4))
     }
@@ -702,7 +702,7 @@ impl QueryBuilderChrome {
     /// The `!` negation marker and the remove cross: states the user acts on, so
     /// they read the theme's error token rather than a literal red or grey.
     fn remove(&self) -> Color {
-        crate::theme::semantic_color(crate::theme::SemanticColor::Error)
+        crate::style::semantic_color(crate::style::SemanticColor::Error)
             .map(|token| token.blend(&self.background, 0.3))
             .unwrap_or_else(|| self.text_color.blend(&self.background, 0.3))
     }

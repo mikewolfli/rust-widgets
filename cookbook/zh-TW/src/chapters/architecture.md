@@ -402,7 +402,7 @@ pub trait EventHandler {
 
 `BaseWidget` 提供了一個預設實作，將平台事件對應到訊號發射（點擊 → `clicked.emit()`、滑鼠移動 → `hover.emit(point)`）。
 
-### `WidgetKind` 列舉 — 179 個變體
+### `WidgetKind` 列舉 — 180 個變體
 
 `WidgetKind` 列舉對每個 widget 型別進行分類。變體是功能閘控的：在所有設定檔下都有 28 個可用，151 個需要非 `mini` 功能才能解鎖：
 
@@ -868,7 +868,7 @@ pub trait ControlBackend {
 
 ### 分派策略
 
-`control_backend::dispatcher` 中的分派器根據編譯期功能標記，將 widget 建立呼叫路由到適當的後端。`control_backend::routing` 中的路由系統涵蓋全部 179 種 widget 種類；每種 widget 皆為自繪，已無第二套（平台託管）機制可選。
+`control_backend::dispatcher` 中的分派器根據編譯期功能標記，將 widget 建立呼叫路由到適當的後端。`control_backend::routing` 中的路由系統涵蓋全部 180 種 widget 種類；每種 widget 皆為自繪，已無第二套（平台託管）機制可選。
 
 ---
 

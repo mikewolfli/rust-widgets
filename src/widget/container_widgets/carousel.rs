@@ -740,6 +740,41 @@ impl WidgetProperties for Carousel {
     }
 }
 
+impl Carousel {
+    /// The carousel's own chrome colours, resolved for the active theme.
+    ///
+    /// Explicit style first, then the theme's resolved style for this control, and only
+    /// then a literal. The theme step is what makes an appearance switch visible: the
+    /// panel, the indicator strip and the disabled tint below were literals, so light and
+    /// dark rendered identically and the rendering census reported the control as
+    /// theme-blind.
+    ///
+    /// `resolved_theme_style` takes and releases the global manager's lock internally, so
+    /// no guard is held across the draw (the mutex is not re-entrant).
+    ///
+    /// `carousel` is absent from `WidgetRole::for_kind_name`'s table, so it classifies as
+    /// `Surface` and resolves to `theme.colors.background` — the window's own fill. A
+    /// panel painted in that colour is a legitimate look for this control, so the resolved
+    /// surface is used as-is rather than re-derived a step away from the window.
+    fn chrome_colors(&self) -> (Color, Color, Color) {
+        let style = self.base.style().clone();
+        let themed = crate::style::resolved_theme_style("carousel");
+        let themed_bg = themed.as_ref().and_then(|r| r.background_color);
+        let themed_border = themed.as_ref().and_then(|r| r.border_color);
+        let themed_text = themed.as_ref().and_then(|r| r.text_color);
+        // Precedence: explicit style → theme → the ORIGINAL LITERAL. The literal has to
+        // stay: an inactive theme still needs a defined appearance, and keeping the old
+        // value means the existing pixel baselines cannot regress.
+        let base = style.background_color.or(themed_bg).unwrap_or(Color::rgba(230, 230, 230, 200));
+        // The indicator marks are chrome too, and a mark painted in the panel colour would
+        // be invisible; contrast against the panel is the one thing it must have.
+        let mark = style.text_color.or(themed_text).unwrap_or_else(|| base.contrast_color());
+        let border =
+            style.border_color.or(themed_border).unwrap_or_else(|| base.blend(&mark, 0.25));
+        (base, mark, border)
+    }
+}
+
 impl Draw for Carousel {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
@@ -747,8 +782,24 @@ impl Draw for Carousel {
         let page_count = self.pages.len();
 
         if page_count == 0 {
-            // Empty carousel — draw a neutral background
-            context.fill_rounded_rect(rect, 8, Color::rgba(230, 230, 230, 200));
+            // An empty carousel is a chrome state, so the interior below is painted from the
+            // resolved panel colour and then stepped toward the text colour, following the
+            // rule `draw_page` already uses (page body → panel → marks). The interior must
+            // not be the surface colour itself: an early version painted the whole rectangle
+            // in the resolved surface, which made the control byte-identical to the window
+            // behind it — perfectly invisible, and the census reported exactly that (P2).
+            // Deriving one step off the surface keeps the panel reading as a panel on a light
+            // theme and on a dark one, while the border keeps the control's extent visible.
+            let (panel, mark, border) = self.chrome_colors();
+            let interior = panel.blend(&mark, 0.08);
+            context.fill_rect(rect, border);
+            let inner = Rect::new(
+                rect.x + 1,
+                rect.y + 1,
+                rect.width.saturating_sub(2),
+                rect.height.saturating_sub(2),
+            );
+            context.fill_rounded_rect(inner, 8, interior);
             return;
         }
 
@@ -861,6 +912,17 @@ impl Carousel {
         Some(candidate as usize)
     }
 
+    /// Returns whether the indicator strip occupies the bottom edge of the page
+    /// rectangle.
+    ///
+    /// Only a bottom indicator sits *inside* the page's rectangle; the other three
+    /// edges reserve their strip outside it (see [`Self::content_rect`]). Naming the
+    /// distinction once keeps the page body and the reserved strip from disagreeing.
+    fn tail_reserved(&self) -> bool {
+        self.indicator_drawn()
+            && matches!(self.indicator_position, CarouselIndicatorPosition::Bottom)
+    }
+
     /// The page revealed by a drag of `offset_x`, if any.
     fn step_for_offset(&self, offset_x: i32) -> Option<usize> {
         let step = if offset_x > 0 { -1 } else { 1 };
@@ -868,6 +930,10 @@ impl Carousel {
     }
 
     /// Draws one page, either its mounted control or its title card.
+    ///
+    /// `page.color` is the **caller's** page colour — it identifies which page this is,
+    /// so it is data and stays exactly as the caller set it. The disabled tint and the
+    /// title ink drawn over it are chrome, so those follow the theme.
     fn draw_page(
         &mut self,
         context: &mut RenderContext,
@@ -882,17 +948,31 @@ impl Carousel {
             (page.color, page.title.clone(), page.content.is_some())
         };
 
+        let (panel, mark, _border) = self.chrome_colors();
         let bg_color = if !is_enabled {
-            Color::rgba(
-                color.r.saturating_sub(40),
-                color.g.saturating_sub(40),
-                color.b.saturating_sub(40),
-                160,
-            )
+            // A disabled control is a chrome state, so it is derived from the resolved
+            // colours rather than from a second hardcoded grey.
+            color.blend(&panel, 0.45)
         } else {
             color
         };
-        context.fill_rounded_rect(page_rect, 8, bg_color);
+        // The page fill is the caller's colour, but the panel behind it is chrome: the
+        // strip below is drawn in the panel colour before the page covers the rest of the
+        // rectangle. Filling the whole rectangle with the page colour would leave the
+        // carousel with no themed surface at all, and a data-coloured page would become the
+        // control's dominant colour in both appearances.
+        //
+        // The strip is only subtracted when the indicator actually occupies that edge, which
+        // is the same reservation `content_rect` and `draw_indicator` make — so the page body
+        // and the marks never overlap.
+        context.fill_rect(page_rect, panel);
+        let page_body = Rect::new(
+            page_rect.x,
+            page_rect.y,
+            page_rect.width,
+            page_rect.height.saturating_sub(if self.tail_reserved() { INDICATOR_STRIP } else { 0 }),
+        );
+        context.fill_rounded_rect(page_body, 8, bg_color);
 
         if has_content {
             // Lay the child out to the page rectangle before drawing, so a page
@@ -916,7 +996,7 @@ impl Carousel {
         let text_x = page_rect.x + (page_rect.width as i32 - metrics.width as i32) / 2;
         let text_y = page_rect.y + (page_rect.height as i32 / 2) - (metrics.height as i32 / 2)
             + metrics.ascent as i32;
-        let text_color = if !is_enabled { Color::rgba(255, 255, 255, 160) } else { Color::WHITE };
+        let text_color = if !is_enabled { mark.blend(&panel, 0.35) } else { mark };
         context.draw_text(
             Point::new(text_x, text_y),
             &title,
@@ -945,6 +1025,9 @@ impl Carousel {
 
         let page_count = self.pages.len();
         let vertical = self.indicator_position.is_vertical();
+        // The strip is the carousel's own chrome: it sits on the panel resolved in
+        // `draw`, and its marks are resolved with it, so a theme switch repaints both.
+        let (strip, mark, _border) = self.chrome_colors();
 
         // The slot the strip is centred on, and the cross-axis coordinate of the
         // strip's centre. Both edges share this arithmetic; only the axis differs.
@@ -990,11 +1073,35 @@ impl Carousel {
                 Point::new(text_x, text_y),
                 &label,
                 &font,
-                Color::WHITE,
+                mark,
                 HorizontalAlignment::Left,
             );
             return;
         }
+
+        // The reserved strip is painted before the marks, so a page that is close in
+        // colour to the panel still has a defined band to read the counter against.
+        let strip_rect = match self.indicator_position {
+            CarouselIndicatorPosition::Bottom => Rect::new(
+                rect.x,
+                rect.y + rect.height as i32 - INDICATOR_STRIP as i32,
+                rect.width,
+                INDICATOR_STRIP,
+            ),
+            CarouselIndicatorPosition::Top => {
+                Rect::new(rect.x, rect.y, rect.width, INDICATOR_STRIP)
+            }
+            CarouselIndicatorPosition::Left => {
+                Rect::new(rect.x, rect.y, INDICATOR_STRIP, rect.height)
+            }
+            CarouselIndicatorPosition::Right => Rect::new(
+                rect.x + rect.width as i32 - INDICATOR_STRIP as i32,
+                rect.y,
+                INDICATOR_STRIP,
+                rect.height,
+            ),
+        };
+        context.fill_rect(strip_rect, strip);
 
         // Past twenty pages the far end is elided, so the strip stays the same
         // width however many pages exist — the same cap `PagerPageView` used.
@@ -1017,12 +1124,12 @@ impl Carousel {
             let active = *slot == Some(self.current_index);
             let Some(_) = slot else {
                 // Ellipsis marker: a smaller, dimmer mark of the same shape.
-                let mark = if vertical {
+                let ellipsis = if vertical {
                     Rect::new(cross_center - 1, along - 1, 2, 2)
                 } else {
                     Rect::new(along - 1, cross_center - 1, 2, 2)
                 };
-                context.fill_rounded_rect(mark, 1, Color::rgba(255, 255, 255, 60));
+                context.fill_rounded_rect(ellipsis, 1, mark.blend(&strip, 0.5));
                 continue;
             };
 
@@ -1045,19 +1152,19 @@ impl Carousel {
                 CarouselIndicatorStyle::Numeric | CarouselIndicatorStyle::Hidden => continue,
             };
 
-            let mark_color = if active { Color::WHITE } else { Color::rgba(255, 255, 255, 120) };
+            let mark_color = if active { mark } else { mark.blend(&strip, 0.45) };
             context.fill_rounded_rect(marker_rect, 4, mark_color);
 
             if active {
                 // The active mark gains a halo, so the current page is legible
-                // even where the page colour is close to white.
+                // even where the page colour is close to the mark.
                 let halo = Rect::new(
                     marker_rect.x - 1,
                     marker_rect.y - 1,
                     marker_rect.width + 2,
                     marker_rect.height + 2,
                 );
-                context.draw_rounded_rect_stroke(halo, 5, Color::rgba(255, 255, 255, 80), 1);
+                context.draw_rounded_rect_stroke(halo, 5, mark.blend(&strip, 0.6), 1);
             }
         }
     }

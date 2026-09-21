@@ -199,6 +199,22 @@ pub enum PropertyValueKind {
     UInt,
     /// Floating-point-valued; carried as [`CapabilityValue::Float`].
     Float,
+    /// A number whose integer/decimal form is chosen at runtime by another property.
+    ///
+    /// # Why this is not just `Float`
+    ///
+    /// `spin_box` publishes `value`, `minimum`, `maximum` and `single_step`. With
+    /// `decimals == 0` those report `CapabilityValue::Int` — an integer spin box must not
+    /// make every caller unwrap a float — and with `decimals > 0` they report `Float`.
+    /// Declaring `Int` would be wrong in decimal mode; declaring `Float` would be wrong
+    /// in integer mode. Declaring `Number` says the one true thing: this property is a
+    /// number, and the task of picking the carrier belongs to the control.
+    ///
+    /// It is distinct from `Float` because it must *accept* an `Int` as well (a caller
+    /// writing `{"value": 3}` must keep working after decimals are enabled), and distinct
+    /// from `Int` for the mirror reason. Carried as [`CapabilityValue::Int`] or
+    /// [`CapabilityValue::Float`].
+    Number,
     /// Free text; carried as [`CapabilityValue::String`].
     String,
     /// One of a fixed set of choices. Carried as [`CapabilityValue::String`]

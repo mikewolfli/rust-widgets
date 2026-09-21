@@ -55,7 +55,10 @@ for target in "${TARGETS[@]}"; do
   fi
 done
 if [[ "${#MISSING[@]}" -gt 0 ]]; then
-  echo "FAIL: these iOS targets are not installed, so this gate cannot check them:" >&2
+  # `unsupported host`: see `tools/check_android_cross.sh` for why the marker matters — the
+  # runner classifies on it, so without it a host with no iOS toolchain is reported as a
+  # defect in the code under test (principle #59.4).
+  echo "unsupported host: these iOS targets are not installed, so this gate cannot check them:" >&2
   for target in "${MISSING[@]}"; do
     echo "  - $target" >&2
   done

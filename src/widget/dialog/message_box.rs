@@ -8,10 +8,10 @@ use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
-use crate::theme::SemanticColor;
+use crate::style::SemanticColor;
 use crate::tr;
 use crate::widget::capability::coercion::{
-    expect_message_box_icon, expect_string, message_box_icon_to_str,
+    expect_bool, expect_message_box_icon, expect_string, message_box_icon_to_str,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -328,7 +328,7 @@ impl MessageBox {
         };
         // `semantic_color` takes and releases the manager's lock and returns an owned
         // colour, so no guard outlives the call.
-        crate::theme::semantic_color(token).unwrap_or_else(|| self.icon_color_fallback())
+        crate::style::semantic_color(token).unwrap_or_else(|| self.icon_color_fallback())
     }
 
     /// The literal last resort behind [`Self::icon_color`], used only when no theme is
@@ -384,6 +384,7 @@ impl WidgetProperties for MessageBox {
             "title" => Ok(CapabilityValue::String(self.title().to_string())),
             "text" => Ok(CapabilityValue::String(self.text().to_string())),
             "icon" => Ok(CapabilityValue::String(message_box_icon_to_str(self.icon()).to_string())),
+            "modal" => Ok(CapabilityValue::Bool(self.is_modal())),
             _ => base_property_get(self, name),
         }
     }
@@ -410,14 +411,22 @@ impl WidgetProperties for MessageBox {
                 self.set_icon(expect_message_box_icon(value)?);
                 Ok(())
             }
+            "modal" => {
+                self.set_modal(expect_bool(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
-    /// `"title"`, `"text"`, `"icon"`, then every universally supported base
+    /// `"title"`, `"text"`, `"icon"`, `"modal"`, then every universally supported base
     /// property.
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["title", "text", "icon", BASE_PROPERTY_NAMES]
+        // `modal` is listed because the schema publishes it: the getter and setter exist,
+        // so a name that is declared but absent here is a property the designer offers and
+        // the control cannot answer. This is the BLUE20 layer 2 Q1 defect the alignment gate
+        // exists to find, and `BASE_PROPERTY_NAMES` does not carry it.
+        property_names_of!["title", "text", "icon", "modal", BASE_PROPERTY_NAMES]
     }
 
     /// Runs one of the commands `message_box` publishes.
@@ -479,7 +488,7 @@ impl Draw for MessageBox {
         // The theme reads take and release the global manager's lock internally, so no
         // guard is held across the draw (the mutex is not re-entrant).
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("message_box");
+        let theme = crate::style::resolved_theme_style("message_box");
         // `message_box` is absent from `WidgetRole::for_kind_name`'s table — the variant
         // spells as `message_box`, but only `errordialog` is classified — so it resolves to
         // `theme.colors.background`: the colour the window behind it is already filled with.
@@ -487,7 +496,7 @@ impl Draw for MessageBox {
         // resolved surface equal to the window fill is re-derived a visible step away from
         // it, the same distinction `Colors::input_background` draws for a field.
         let window_fill = {
-            let manager = crate::theme::global_theme_manager();
+            let manager = crate::style::theme_manager();
             manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
         };
         let ink = style

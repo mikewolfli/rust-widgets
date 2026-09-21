@@ -254,7 +254,7 @@ impl Draw for BarcodeScanner {
         // global manager's lock internally, so no guard is held across the draw (the
         // mutex is not re-entrant).
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("barcode_scanner");
+        let theme = crate::style::resolved_theme_style("barcode_scanner");
         let text_color = style
             .text_color
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))
@@ -275,9 +275,9 @@ impl Draw for BarcodeScanner {
         let vf_border = surface.blend(&text_color, 0.35);
         // The brackets read as the scanner's "ready" accent, and the sweep line as
         // the active state, so each reads its own semantic token.
-        let bracket_color = crate::theme::semantic_color(crate::theme::SemanticColor::Success)
+        let bracket_color = crate::style::semantic_color(crate::style::SemanticColor::Success)
             .unwrap_or(Color::GREEN);
-        let scan_line_color = crate::theme::semantic_color(crate::theme::SemanticColor::Success)
+        let scan_line_color = crate::style::semantic_color(crate::style::SemanticColor::Success)
             .unwrap_or(Color::GREEN);
 
         // Background
@@ -443,10 +443,10 @@ impl Draw for BarcodeScanner {
         // Status indicator: "scanning" is the success state, "idle" the error one,
         // so each reads its own semantic token instead of a fixed green/red.
         let status_color = if self.is_scanning {
-            crate::theme::semantic_color(crate::theme::SemanticColor::Success)
+            crate::style::semantic_color(crate::style::SemanticColor::Success)
                 .unwrap_or(Color::GREEN)
         } else {
-            crate::theme::semantic_color(crate::theme::SemanticColor::Error).unwrap_or(Color::RED)
+            crate::style::semantic_color(crate::style::SemanticColor::Error).unwrap_or(Color::RED)
         };
         let dot_rect = Rect::new(rect.x + 6, rect.y + 6, 8, 8);
         context.fill_rect(dot_rect, status_color);

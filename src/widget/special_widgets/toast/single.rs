@@ -252,7 +252,7 @@ impl Draw for Toast {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style().clone();
-        let theme = crate::theme::resolved_theme_style("toast");
+        let theme = crate::style::resolved_theme_style("toast");
         // `toast` is not a control kind in the role table, so it classifies as
         // `Surface`, whose background is `theme.colors.background` — byte-identical
         // to the window behind it. The toast's own fill is therefore a step toward
@@ -272,11 +272,11 @@ impl Draw for Toast {
         let background = resolved.blend(&text_color, 0.08);
         // The severity stripe is a *state* indicator, so it reads the theme's
         // semantic tokens rather than a literal colour per level.
-        let accent = crate::theme::semantic_color(match self.level {
-            ToastLevel::Info => crate::theme::SemanticColor::Info,
-            ToastLevel::Success => crate::theme::SemanticColor::Success,
-            ToastLevel::Warning => crate::theme::SemanticColor::Warning,
-            ToastLevel::Error => crate::theme::SemanticColor::Error,
+        let accent = crate::style::semantic_color(match self.level {
+            ToastLevel::Info => crate::style::SemanticColor::Info,
+            ToastLevel::Success => crate::style::SemanticColor::Success,
+            ToastLevel::Warning => crate::style::SemanticColor::Warning,
+            ToastLevel::Error => crate::style::SemanticColor::Error,
         })
         .map(|token| token.blend(&background, 0.15))
         .unwrap_or_else(|| background.blend(&text_color, 0.6));

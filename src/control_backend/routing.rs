@@ -101,6 +101,7 @@ mod tests {
             | WidgetKind::Grid
             | WidgetKind::Chart
             | WidgetKind::RadarChart
+            | WidgetKind::Heatmap
             | WidgetKind::KanbanBoard
             | WidgetKind::Cascader
             | WidgetKind::QueryBuilder
