@@ -670,10 +670,16 @@ impl Draw for Menu {
             Rect::new(rect.x, rect.y, rect.width, heading_h as u32),
             face.blend(&ink, 0.10),
         );
+        // The origin is the glyph's **top** edge, so the heading's vertical centre is half the
+        // difference between the strip and the line box. Passing the strip's midline put the
+        // glyph's top *at* the centre, so a 14 px label in a 20 px heading ended at y = 24 —
+        // four pixels below the strip it belongs to.
+        let heading_font = Font::default();
+        let heading_text_h = context.measure_text("M", &heading_font).height;
         context.draw_text(
-            Point::new(rect.x + 8, rect.y + heading_h as i32 / 2),
+            Point::new(rect.x + 8, rect.y + (heading_h as i32 - heading_text_h as i32) / 2),
             &self.title,
-            &Font::default(),
+            &heading_font,
             ink,
             HorizontalAlignment::Left,
         );

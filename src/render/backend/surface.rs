@@ -139,6 +139,61 @@ fn global_software_render_config() -> &'static Mutex<SoftwareRenderConfig> {
     CONFIG.get_or_init(|| Mutex::new(SoftwareRenderConfig::default()))
 }
 
+/// Horizontal breathing space [`RenderContext::draw_text_fitted`] keeps at each end.
+///
+/// Three pixels: enough that a fitted label does not touch the frame it sits in, small
+/// enough not to visibly shorten a label that already fits. Named so the fit check and the
+/// origin computation cannot disagree about it — they did while it was a literal in one of
+/// the two places.
+pub const TEXT_FIT_MARGIN: u32 = 3;
+
+/// The longest prefix of `text` that advances at most `max_width` pixels in `font`.
+///
+/// Returns `text` unchanged when it fits, an empty string when not even one cluster fits,
+/// and otherwise a prefix ending in `…` whose advance stays within the budget.
+///
+/// # Why the advance model is repeated here
+///
+/// It matches [`PaintBackend::shape_text`]: one cluster per `char`, each advancing by the
+/// font's size. Measuring with the model the renderer draws with is what makes the fitted
+/// string actually fit; a private estimate here would reintroduce the mismatch this exists
+/// to remove (a CJK title measured by `len()` is four times its drawn width).
+fn fit_text_to_width(
+    text: &str,
+    max_width: f32,
+    font: &Font,
+    backend: &dyn PaintBackend,
+) -> crate::compat::String {
+    if text.is_empty() || max_width <= 0.0 {
+        return crate::compat::String::new();
+    }
+    if backend.measure_text(text, font).width as f32 <= max_width {
+        return text.to_string();
+    }
+    // A single ellipsis stands in when the budget cannot hold any glyph at all: an empty
+    // label would read as "this control has no text", which is a different statement.
+    const ELLIPSIS: char = '\u{2026}';
+    let ellipsis_width = backend.measure_text(&ELLIPSIS.to_string(), font).width as f32;
+    if ellipsis_width > max_width {
+        return ELLIPSIS.to_string();
+    }
+    let budget = max_width - ellipsis_width;
+    let mut kept = crate::compat::String::new();
+    for ch in text.chars() {
+        let candidate = {
+            let mut next = kept.clone();
+            next.push(ch);
+            next
+        };
+        if backend.measure_text(&candidate, font).width as f32 > budget {
+            break;
+        }
+        kept = candidate;
+    }
+    kept.push(ELLIPSIS);
+    kept
+}
+
 #[cfg(test)]
 pub(crate) fn software_render_config_test_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -427,6 +482,56 @@ impl<'a> RenderContext<'a> {
     /// an unscaled layout measurement and carries no `(x, y)` origin.
     pub fn measure_text(&self, text: &str, font: &Font) -> TextMetrics {
         self.backend.measure_text(text, font)
+    }
+
+    /// Draws `text` fitted inside `bounds`, truncating with an ellipsis when it is wider.
+    ///
+    /// # Why this exists as a context method
+    ///
+    /// `draw_text` places a string and never asks whether it fits. A glyph's advance is
+    /// `font.size()` pixels per cluster, so a 14 px font advances 14 px per character: a
+    /// label longer than its control simply kept going, and the trailing glyphs landed
+    /// outside the control's own rectangle. The software backend clips at the canvas edge,
+    /// so the overflow was invisible there; the SVG backend emits absolute coordinates, so
+    /// the same label appeared to run out of the picture. Around forty controls drew a
+    /// placeholder, a file name or a status line wider than themselves.
+    ///
+    /// Naming the *rectangle* rather than a maximum width is the point: every call site
+    /// already has the control's (or a cell's) rectangle in hand, and each was re-deriving
+    /// "how much room is left" — or forgetting to. Passing the box makes the bound
+    /// impossible to leave out by accident.
+    ///
+    /// `alignment` positions the *fitted* string, so a centred label stays centred inside
+    /// `bounds` after truncation rather than drifting. The returned string is what was
+    /// drawn, which lets a caller reserve the width it actually occupies.
+    pub fn draw_text_fitted(
+        &mut self,
+        bounds: Rect,
+        text: &str,
+        font: &Font,
+        color: Color,
+        alignment: HorizontalAlignment,
+    ) -> crate::compat::String {
+        let inset = TEXT_FIT_MARGIN as i32;
+        let available = (bounds.width as i32 - inset).max(0) as f32;
+        let fitted = fit_text_to_width(text, available, font, self.backend);
+        let origin = match alignment {
+            // The caller's origin is the glyph's top-left, so a left-aligned label starts
+            // at the box's own left edge plus the inset.
+            HorizontalAlignment::Left => Point::new(bounds.x + inset, bounds.y),
+            // Centred and right-aligned labels are positioned from the box, not from the
+            // pointer, so the fitted string cannot drift as it shortens.
+            HorizontalAlignment::Center => {
+                let width = self.measure_text(&fitted, font).width as i32;
+                Point::new(bounds.x + (bounds.width as i32 - width) / 2, bounds.y)
+            }
+            HorizontalAlignment::Right => {
+                let width = self.measure_text(&fitted, font).width as i32;
+                Point::new(bounds.x + bounds.width as i32 - width - inset, bounds.y)
+            }
+        };
+        self.draw_text(origin, &fitted, font, color, HorizontalAlignment::Left);
+        fitted
     }
     /// Splits `text` into visual clusters (grapheme-like units) with per-cluster
     /// advances, as used for hit testing and caret placement.

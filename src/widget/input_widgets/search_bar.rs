@@ -283,6 +283,11 @@ impl Draw for SearchBar {
             style.background_color.or(themed_bg).unwrap_or(Color::rgba(200, 200, 205, 200));
         let field_color =
             if !is_enabled { base_field.blend(&Color::WHITE, 0.35) } else { base_field };
+        // The field's ink: the typed text and the placeholder both read on `field_color`, so
+        // they are derived from it rather than being two literals written for a light field.
+        // The previous pair (`40,40,40` and `160,160,160`) rendered at 1.5:1 and 2.6:1 once the
+        // field resolved to a dark surface.
+        let field_ink = field_color.contrast_color();
         let corner_radius = rect.height / 2;
         context.fill_rounded_rect(field_rect, corner_radius, field_color);
 
@@ -316,17 +321,17 @@ impl Draw for SearchBar {
         let font = Font::simple("sans-serif", 14.0);
 
         if self.text.is_empty() {
-            // Draw placeholder text
+            // Draw placeholder text. Same centring fix as the typed branch below: `ascent` is
+            // inside the line box, so adding it to an already-centred y put the hint half a line
+            // low, and the fixed grey could not read on a themed field.
             let metrics = context.measure_text(&self.placeholder, &font);
             if text_width >= metrics.width {
-                let text_y = rect.y
-                    + (rect.height as i32 - metrics.height as i32) / 2
-                    + metrics.ascent as i32;
-                context.draw_text(
-                    Point::new(text_left, text_y),
+                let text_y = rect.y + (rect.height as i32 - metrics.height as i32) / 2;
+                context.draw_text_fitted(
+                    Rect::new(text_left, text_y, text_width.max(1), metrics.height.max(1)),
                     &self.placeholder,
                     &font,
-                    Color::rgba(160, 160, 160, 255),
+                    field_ink.blend(&field_color, 0.45),
                     HorizontalAlignment::Left,
                 );
             }
@@ -334,14 +339,21 @@ impl Draw for SearchBar {
             // Draw text
             let metrics = context.measure_text(&self.text, &font);
             if text_width >= metrics.width {
-                let text_y = rect.y
-                    + (rect.height as i32 - metrics.height as i32) / 2
-                    + metrics.ascent as i32;
-                context.draw_text(
-                    Point::new(text_left, text_y),
+                // Two defects in one origin. It added `ascent` on top of an already-centred y —
+                // the renderer's origin is the glyph's **top** edge, so the label sat half a
+                // line low — and it used a fixed `40,40,40`, which is a light field's ink and
+                // rendered at 1.5:1 once the field's background resolved to a dark surface.
+                let text_y = rect.y + (rect.height as i32 - metrics.height as i32) / 2;
+                context.draw_text_fitted(
+                    Rect::new(
+                        text_left,
+                        text_y,
+                        (rect.width as i32 - (text_left - rect.x) - 12).max(1) as u32,
+                        metrics.height.max(1),
+                    ),
                     &self.text,
                     &font,
-                    Color::rgba(40, 40, 40, 255),
+                    field_ink,
                     HorizontalAlignment::Left,
                 );
             }

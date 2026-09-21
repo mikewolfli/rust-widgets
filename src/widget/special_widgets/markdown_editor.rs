@@ -374,8 +374,11 @@ impl Draw for MarkdownEditor {
                 self.heading_count()
             )
         };
-        context.draw_text(
-            Point::new(rect.x + 8, rect.y + 16),
+        // Fitted to the control's width: the header is a long line of counts, and a narrow
+        // editor previously drew it straight past its own right edge.
+        let header_band = Rect::new(rect.x + 8, rect.y + 4, rect.width.saturating_sub(16), 14);
+        context.draw_text_fitted(
+            header_band,
             &header,
             &Font::default(),
             header_ink,

@@ -1,0 +1,50 @@
+# BLUE20 layer 3 — P5 overflow exemptions (drawing that legitimately leaves the box)
+#
+# Format: one entry per line, four whitespace-separated fields:
+#     <control-name> <what-overflows> <flag> <reason...>
+#
+# The `<flag>` column mirrors the two exemption tables beside this one so all three
+# parse the same way; it is always `true` here, meaning "yes, this overflow is
+# intended".
+#
+# # What P5 asks
+#
+# P5 renders a control through the SVG backend and requires every element it emits to
+# lie inside the control's own rectangle. It exists because P1-P4 are measured from a
+# **raster**, and a raster is bounded by the surface it was rendered into: a control
+# that paints outside its own box produces a perfectly normal census, since the
+# out-of-bounds pixels are clipped away and the rest are counted. The SVG snapshot is
+# the opposite — absolute coordinates, no bound — so the same defect shows up there as
+# drawing that escapes the picture, which is how `group_box` was found shipping a title
+# whose text sat at `y = -8`.
+#
+# The two backends disagreeing is itself the defect: whatever one clips the other
+# shows. So the bar for an entry here is high — the control must be *defined* to
+# overflow, and the overflow must be a property a user would recognise.
+#
+# # Bar for entry
+#
+# The reason must explain why leaving the box is the control's contract, not merely
+# that clipping it would be inconvenient. Rejected reasons: "skip for now",
+# "fix later", "the snapshot looks better this way". The list is asserted in both
+# directions — an entry whose control has stopped overflowing is a test failure — so
+# it can only shrink by correcting the control.
+#
+# # Why the initial set is empty
+#
+# It was empty by construction, not by assumption. Every control the census flagged
+# was examined one at a time, and each turned out to be a genuine defect rather than
+# an intended overflow: `group_box`/`panel` drew their title above the frame,
+# `splash_screen` placed its logo block above the frame, `pagination` drew a 48 px
+# font into a 22 px bar, `quote_board` let a header label start at a negative x, and
+# `empty_state` stacked its content taller than the control. All five were fixed.
+#
+# The overlays that *should* be exempt on principle — `dialog`, `popup_window`,
+# `tooltip`, `menu` — were re-examined too. They are **positioned as child widgets**:
+# the host lays them out, so their own geometry is already the rectangle they paint
+# into, and a snapshot that renders them standalone at the census rectangle is an
+# artifact of the census rather than a fact about the control. They therefore land
+# inside their own box and need no entry. Recording them here "just in case" would
+# turn this table into the blanket permission the two tables beside it warn about.
+#
+# (No entries below this line.)

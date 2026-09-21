@@ -8,7 +8,7 @@
 //! action buttons for find next, find previous, replace, replace all,
 //! and close. Emits typed signals when actions are triggered.
 
-use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -277,6 +277,20 @@ impl FindReplaceDialog {
         );
         (row1, row2)
     }
+
+    /// The line box, vertically centred in `cell`, that a label in `font` should occupy.
+    ///
+    /// Both rows of this panel draw each label from a hand-computed `y + height / 2 + 4`
+    /// origin. The `+ 4` is not a centring term: the renderer's origin is the glyph's
+    /// **top-left**, so the box painted downward from a point already below the cell's own
+    /// middle and the bottom half of every label hung out of the row. Centring the measured
+    /// line inside the cell is the correct placement, and naming it once keeps the entry
+    /// fields, the toggles and the buttons aligned to the same rule.
+    fn text_line(&self, cell: Rect, font: &crate::core::Font, context: &RenderContext) -> Rect {
+        let height = context.measure_text("M", font).height.max(1);
+        let y = cell.y + ((cell.height as i32 - height as i32) / 2).max(0);
+        Rect::new(cell.x, y, cell.width, height)
+    }
 }
 
 impl Widget for FindReplaceDialog {
@@ -410,45 +424,55 @@ impl Draw for FindReplaceDialog {
         self.replace_row_rect = replace_row;
 
         // ── Find row: label + input + toggles + buttons ──
+        //
+        // The row's fixed budget — a 40 px label, an input, four 24 px toggles and two 24 px
+        // arrows, each separated by `GAP` — comes to 40 + 6*6 + 96 + 48 + 6 = 226 px. A
+        // 240 px control leaves only the input room to absorb the remainder, so the arrows
+        // used to be placed at x=240 and x=270, entirely outside the dialog. The input is
+        // therefore clamped to the space that is actually left before the buttons: each
+        // fixed-width control is laid out from the row's right edge inwards, so the input
+        // takes up the slack instead of the last two buttons leaving the frame.
+        //
+        // `trailing` is every column to the right of the input — four toggles, two arrows
+        // and the six gaps between them — and it is subtracted from the row while the input
+        // keeps only what is left. There is deliberately **no minimum width on the input**: a
+        // floor of 40 px was enough to push the two arrow buttons 10 px and 40 px past the
+        // row's right edge at the census rectangle, so the floor lets the last fixed columns
+        // leave the frame. The input is the one flexible column here and it is the one that
+        // absorbs a narrow dialog; the arrows are the affordances, so they keep their width.
+        //
+        // The subtraction is floored at zero *before* the cast: casting a negative remainder
+        // to `u32` wraps it to ~4.29e9, which is how this row reported a right edge of
+        // `4294967296` in the SVG.
+        let label_width = 40u32;
+        let trailing = GAP * 6 + BTN_SIZE as i32 * 4 + 24 + GAP + 24;
+        let input_width = (find_row.width as i32 - label_width as i32 - trailing).max(0) as u32;
         let mut x = find_row.x;
 
-        // "Find:" label
-        let label_width = 40u32;
+        // "Find:" label. Bounded by the label column, so it truncates there rather than
+        // running into the input it names.
         let label_rect = Rect::new(x, find_row.y, label_width, find_row.height);
         let font = crate::core::Font::simple("sans-serif", 12.0);
-        context.draw_text(
-            Point::new(label_rect.x + 2, label_rect.y + label_rect.height as i32 / 2 + 4),
-            "Find:",
-            &font,
-            ink,
-            HorizontalAlignment::Left,
-        );
+        let label_line = self.text_line(label_rect, &font, context);
+        context.draw_text_fitted(label_line, "Find:", &font, ink, HorizontalAlignment::Left);
         x += label_width as i32 + GAP;
 
         // Find text input background
-        let input_width =
-            ((find_row.width as i32 - label_width as i32 - GAP * 6 - BTN_SIZE as i32 * 4 - 40)
-                as u32)
-                .max(60);
         let input_rect = Rect::new(x, find_row.y, input_width, find_row.height);
         context.fill_rect(input_rect, field);
         context.draw_rect_stroke(input_rect, border, 1);
         let display_text = if self.find_text.is_empty() { "" } else { &self.find_text };
-        context.draw_text(
-            Point::new(input_rect.x + 2, input_rect.y + input_rect.height as i32 / 2 + 4),
-            display_text,
-            &font,
-            ink,
-            HorizontalAlignment::Left,
-        );
+        let input_line = self.text_line(input_rect, &font, context);
+        context.draw_text_fitted(input_line, display_text, &font, ink, HorizontalAlignment::Left);
         x = input_rect.x + input_rect.width as i32 + GAP;
 
         // Match Case toggle
         let mc_rect = Rect::new(x, find_row.y, BTN_SIZE, find_row.height);
         let mc_color = if self.match_case { accent } else { field.blend(&ink, 0.15) };
         context.fill_rect(mc_rect, mc_color);
-        context.draw_text(
-            Point::new(mc_rect.x + 2, mc_rect.y + mc_rect.height as i32 / 2 + 4),
+        let mc_line = self.text_line(mc_rect, &font, context);
+        context.draw_text_fitted(
+            mc_line,
             "Aa",
             &font,
             if self.match_case { accent_ink } else { ink },
@@ -460,8 +484,9 @@ impl Draw for FindReplaceDialog {
         let ww_rect = Rect::new(x, find_row.y, BTN_SIZE, find_row.height);
         let ww_color = if self.whole_word { accent } else { field.blend(&ink, 0.15) };
         context.fill_rect(ww_rect, ww_color);
-        context.draw_text(
-            Point::new(ww_rect.x + 1, ww_rect.y + ww_rect.height as i32 / 2 + 4),
+        let ww_line = self.text_line(ww_rect, &font, context);
+        context.draw_text_fitted(
+            ww_line,
             "W",
             &font,
             if self.whole_word { accent_ink } else { ink },
@@ -473,8 +498,9 @@ impl Draw for FindReplaceDialog {
         let rx_rect = Rect::new(x, find_row.y, BTN_SIZE, find_row.height);
         let rx_color = if self.use_regex { accent } else { field.blend(&ink, 0.15) };
         context.fill_rect(rx_rect, rx_color);
-        context.draw_text(
-            Point::new(rx_rect.x + 1, rx_rect.y + rx_rect.height as i32 / 2 + 4),
+        let rx_line = self.text_line(rx_rect, &font, context);
+        context.draw_text_fitted(
+            rx_line,
             ".*",
             &font,
             if self.use_regex { accent_ink } else { ink },
@@ -486,8 +512,9 @@ impl Draw for FindReplaceDialog {
         let ha_rect = Rect::new(x, find_row.y, BTN_SIZE, find_row.height);
         let ha_color = if self.highlight_all { accent } else { field.blend(&ink, 0.15) };
         context.fill_rect(ha_rect, ha_color);
-        context.draw_text(
-            Point::new(ha_rect.x + 1, ha_rect.y + ha_rect.height as i32 / 2 + 4),
+        let ha_line = self.text_line(ha_rect, &font, context);
+        context.draw_text_fitted(
+            ha_line,
             "H",
             &font,
             if self.highlight_all { accent_ink } else { ink },
@@ -498,78 +525,53 @@ impl Draw for FindReplaceDialog {
         // Find Previous button
         let fp_rect = Rect::new(x, find_row.y, 24, find_row.height);
         context.fill_rect(fp_rect, muted);
-        context.draw_text(
-            Point::new(fp_rect.x + 2, fp_rect.y + fp_rect.height as i32 / 2 + 4),
-            "\u{25B2}",
-            &font,
-            muted_ink,
-            HorizontalAlignment::Left,
-        );
+        let fp_line = self.text_line(fp_rect, &font, context);
+        context.draw_text_fitted(fp_line, "\u{25B2}", &font, muted_ink, HorizontalAlignment::Left);
         x += 24 + GAP;
 
         // Find Next button
         let fn_rect = Rect::new(x, find_row.y, 24, find_row.height);
         context.fill_rect(fn_rect, accent);
-        context.draw_text(
-            Point::new(fn_rect.x + 2, fn_rect.y + fn_rect.height as i32 / 2 + 4),
-            "\u{25BC}",
-            &font,
-            accent_ink,
-            HorizontalAlignment::Left,
-        );
+        let fn_line = self.text_line(fn_rect, &font, context);
+        context.draw_text_fitted(fn_line, "\u{25BC}", &font, accent_ink, HorizontalAlignment::Left);
 
         // ── Replace row: label + input + buttons ──
+        // The replace row carried the same underflow and the same absent minimum: the
+        // remainder here is small but still positive at 240 px, so the visible defect was the
+        // Replace All button 30 px past the right edge rather than a wrapped width. Flooring
+        // in `i32` keeps a narrower row from producing the same ~4.29e9 px input the find row
+        // did, and the input is allowed to reach zero so the two trailing buttons stay inside.
+        let r_input_width =
+            (replace_row.width as i32 - label_width as i32 - GAP * 3 - 28 - 24).max(0) as u32;
         let mut x2 = replace_row.x;
 
         // "Replace:" label
         let rl_rect = Rect::new(x2, replace_row.y, label_width, replace_row.height);
-        context.draw_text(
-            Point::new(rl_rect.x + 2, rl_rect.y + rl_rect.height as i32 / 2 + 4),
-            "Rpl:",
-            &font,
-            ink,
-            HorizontalAlignment::Left,
-        );
+        let rl_line = self.text_line(rl_rect, &font, context);
+        context.draw_text_fitted(rl_line, "Rpl:", &font, ink, HorizontalAlignment::Left);
         x2 += label_width as i32 + GAP;
 
         // Replace text input background
-        let r_input_width =
-            ((replace_row.width as i32 - label_width as i32 - GAP * 3 - 48) as u32).max(60);
         let r_input_rect = Rect::new(x2, replace_row.y, r_input_width, replace_row.height);
         context.fill_rect(r_input_rect, field);
         context.draw_rect_stroke(r_input_rect, border, 1);
         let r_text = if self.replace_text.is_empty() { "" } else { &self.replace_text };
-        context.draw_text(
-            Point::new(r_input_rect.x + 2, r_input_rect.y + r_input_rect.height as i32 / 2 + 4),
-            r_text,
-            &font,
-            ink,
-            HorizontalAlignment::Left,
-        );
+        let r_input_line = self.text_line(r_input_rect, &font, context);
+        context.draw_text_fitted(r_input_line, r_text, &font, ink, HorizontalAlignment::Left);
         x2 = r_input_rect.x + r_input_rect.width as i32 + GAP;
 
         // Replace button
         let rep_rect = Rect::new(x2, replace_row.y, 24, replace_row.height);
         context.fill_rect(rep_rect, muted);
-        context.draw_text(
-            Point::new(rep_rect.x + 1, rep_rect.y + rep_rect.height as i32 / 2 + 4),
-            "R",
-            &font,
-            muted_ink,
-            HorizontalAlignment::Left,
-        );
+        let rep_line = self.text_line(rep_rect, &font, context);
+        context.draw_text_fitted(rep_line, "R", &font, muted_ink, HorizontalAlignment::Left);
         x2 += 28;
 
         // Replace All button
         let ra_rect = Rect::new(x2, replace_row.y, 24, replace_row.height);
         context.fill_rect(ra_rect, muted);
-        context.draw_text(
-            Point::new(ra_rect.x + 1, ra_rect.y + ra_rect.height as i32 / 2 + 4),
-            "RA",
-            &font,
-            muted_ink,
-            HorizontalAlignment::Left,
-        );
+        let ra_line = self.text_line(ra_rect, &font, context);
+        context.draw_text_fitted(ra_line, "RA", &font, muted_ink, HorizontalAlignment::Left);
     }
 }
 

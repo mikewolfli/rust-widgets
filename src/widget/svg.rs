@@ -47,9 +47,32 @@ pub fn render_to_svg<W: Draw + Widget>(widget: &mut W) -> String {
 /// let svg = render_widget_to_svg(&mut my_widget, Rect::new(0, 0, 100, 50));
 /// ```
 pub fn render_widget_to_svg<T: Draw + ?Sized>(widget: &mut T, geometry: Rect) -> String {
+    render_widget_to_svg_on(widget, geometry, crate::core::Color::WHITE)
+}
+
+/// Renders any widget to an SVG string, composited over `backdrop`.
+///
+/// # Why the backdrop is a parameter
+///
+/// A control is not obliged to paint a background: a `Label`, a `Separator` and several
+/// others are **transparent by design**, because in a real window the surface behind them is
+/// whatever their parent painted. Always filling the frame with `WHITE` therefore produced a
+/// misleading picture for exactly those controls — the exporter applied the *dark* theme to a
+/// label and then laid its near-white ink on white, so `<name>.svg` showed a blank rectangle
+/// and `<name>.light.svg` showed the same control looking correct. The snapshot was wrong, not
+/// the control.
+///
+/// Passing the active theme's background puts a transparent control on the surface it would
+/// actually sit on, which is the picture a reviewer needs and the one P5's element bounds are
+/// already measured against.
+pub fn render_widget_to_svg_on<T: Draw + ?Sized>(
+    widget: &mut T,
+    geometry: Rect,
+    backdrop: crate::core::Color,
+) -> String {
     let size = Size::new(geometry.width, geometry.height);
     let mut backend = SvgPaintBackend::new(size);
-    backend.begin_frame(crate::core::Color::WHITE);
+    backend.begin_frame(backdrop);
     let mut ctx = RenderContext::new(&mut backend);
     widget.draw(&mut ctx);
     backend.end_frame();

@@ -290,10 +290,15 @@ impl Draw for Snackbar {
         context.fill_rect(bar, bar_background);
         context.draw_rect(bar, bar_border);
 
+        // Both labels are centred on their own band. The origins were fixed offsets
+        // (`+ 16` and `+ 13`) written for one font size: a 14 px line in the 26 px bar spans
+        // 16..30, four pixels past the bar's bottom edge, and the action label likewise.
+        let message_font = Font::default();
+        let message_h = context.measure_text("M", &message_font).height;
         context.draw_text(
-            Point::new(bar.x + 10, bar.y + 16),
+            Point::new(bar.x + 10, bar.y + (bar.height as i32 - message_h as i32) / 2),
             &self.message,
-            &Font::default(),
+            &message_font,
             bar_text,
             HorizontalAlignment::Left,
         );
@@ -302,12 +307,17 @@ impl Draw for Snackbar {
             context.fill_rect(action_rect, action_background);
             context.draw_rect(action_rect, action_border);
             if let Some(label) = &self.action_label {
-                context.draw_text(
-                    Point::new(action_rect.x + 10, action_rect.y + 13),
+                context.draw_text_fitted(
+                    Rect::new(
+                        action_rect.x + 4,
+                        action_rect.y + (action_rect.height as i32 - message_h as i32) / 2,
+                        action_rect.width.saturating_sub(8),
+                        message_h,
+                    ),
                     label,
-                    &Font::default(),
+                    &message_font,
                     action_text,
-                    HorizontalAlignment::Left,
+                    HorizontalAlignment::Center,
                 );
             }
         }

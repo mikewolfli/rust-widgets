@@ -253,15 +253,18 @@ impl Draw for ImageGallery {
             context.fill_rect(rect, bg);
             let font = Font::default();
             let text = "No images in gallery";
+            // Fitted to the control's width: 20 characters at 14 px is wider than a
+            // gallery laid out in a narrow pane, and the label used to be placed from the
+            // box centre outward, so half of it fell outside.
             let metrics = context.measure_text(text, &font);
-            let text_x = rect.x + (rect.width as i32 - metrics.width as i32) / 2;
-            let text_y = rect.y + rect.height as i32 / 2 + metrics.ascent as i32 / 2;
-            context.draw_text(
-                Point::new(text_x, text_y),
+            let text_y = rect.y + (rect.height as i32 - metrics.height as i32) / 2;
+            let line = Rect::new(rect.x, text_y, rect.width, metrics.height);
+            context.draw_text_fitted(
+                line,
                 text,
                 &font,
                 Color::rgba(160, 160, 160, 220),
-                HorizontalAlignment::Left,
+                HorizontalAlignment::Center,
             );
             return;
         }

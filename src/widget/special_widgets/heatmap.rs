@@ -373,8 +373,23 @@ impl Heatmap {
 /// Left/top gutter reserved for the row and column labels, in pixels.
 const LABEL_GUTTER: i32 = 56;
 
-/// Height of the legend strip, in pixels.
-const LEGEND_HEIGHT: i32 = 18;
+/// Height of the legend band, in pixels: the colour ramp **plus** the row of endpoint
+/// numbers below it.
+///
+/// The band has to hold two stacked things. The ramp is `RAMP_HEIGHT` tall and is centred in
+/// the band, and the numbers take one 10 px line box underneath it. At the previous value of
+/// `18` the two did not both fit: the numbers' line box ended one pixel below the band's own
+/// bottom edge, which put the control's last row of text on the frame's final pixel and over
+/// it in the SVG output (`heatmap: [56,116..70,130]`). `8 + 2 + 10` is the arithmetic the
+/// contents actually need, so the reservation is derived from the parts rather than guessed.
+const LEGEND_HEIGHT: i32 = RAMP_HEIGHT + RAMP_GAP + LEGEND_LABEL_HEIGHT;
+
+/// Height of the legend's colour ramp, in pixels.
+const RAMP_HEIGHT: i32 = 8;
+/// Gap between the ramp and the endpoint numbers below it.
+const RAMP_GAP: i32 = 2;
+/// Height of the endpoint-number line box: the 10 pt label font's own line height.
+const LEGEND_LABEL_HEIGHT: i32 = 10;
 
 /// Pads `row` to `columns` cells with empty cells.
 fn pad_row(mut row: Vec<HeatmapCell>, columns: usize) -> Vec<HeatmapCell> {
@@ -667,28 +682,43 @@ impl Heatmap {
         let rows = self.row_count();
         let columns = self.column_count();
         let cell_width = grid.width as i32 / columns.max(1) as i32;
+        let font_height = context.measure_text("M", font).height as i32;
         for row in 0..rows {
             let y = grid.y + row as i32 * cell_height + cell_height / 2;
-            context.draw_text(
-                Point::new(grid.x - LABEL_GUTTER, y),
+            // The row gutter is exactly `LABEL_GUTTER` wide and the label starts at its
+            // left edge, so the room available is the gutter itself — not the distance to
+            // the grid, which is the same number and would drift if the two ever stopped
+            // being equal.
+            context.draw_text_fitted(
+                Rect::new(grid.x - LABEL_GUTTER, y, LABEL_GUTTER as u32, font_height.max(1) as u32),
                 &self.row_labels[row],
                 font,
                 text_color,
                 HorizontalAlignment::Left,
             );
         }
+        let full = self.geometry();
         for column in 0..columns {
             // Centred on the cell so the label cannot be read as belonging to its
-            // neighbour, which is what left-aligning in a narrow cell does.
-            let label = &self.column_labels[column];
-            let estimated_width = label.chars().count() as i32 * 6;
-            let x = grid.x + column as i32 * cell_width + (cell_width - estimated_width) / 2;
-            context.draw_text(
-                Point::new(x.max(grid.x), grid.y - 14),
-                label,
+            // neighbour, which is what left-aligning in a narrow cell does. The box is the
+            // cell itself, so a label wider than its column is fitted to the column rather
+            // than centring on the cell and running into (or past) the one beside it.
+            let cell_x = grid.x + column as i32 * cell_width;
+            let width = if column + 1 == columns {
+                grid.width as i32 - column as i32 * cell_width
+            } else {
+                cell_width
+            };
+            // The labels sit in the gutter above the grid, whose top is `grid.y`; the box
+            // is clamped to the control so the first row of text cannot start above it.
+            let top = (grid.y - font_height).max(full.y);
+            let height = (grid.y - top).max(1) as u32;
+            context.draw_text_fitted(
+                Rect::new(cell_x, top, width.max(1) as u32, height),
+                &self.column_labels[column],
                 font,
                 text_color,
-                HorizontalAlignment::Left,
+                HorizontalAlignment::Center,
             );
         }
     }
@@ -706,8 +736,8 @@ impl Heatmap {
         font: &Font,
         text_color: Color,
     ) {
-        let strip_height = 8i32;
-        let y = rect.y + rect.height as i32 - LEGEND_HEIGHT + (LEGEND_HEIGHT - strip_height) / 2;
+        let strip_height = RAMP_HEIGHT;
+        let y = rect.y + rect.height as i32 - LEGEND_HEIGHT + RAMP_GAP / 2;
         let strip_x = grid.x;
         let strip_width = grid.width as i32;
         if strip_width <= 0 {
@@ -729,21 +759,36 @@ impl Heatmap {
         let Some((low, high)) = self.scale_range() else {
             return;
         };
-        context.draw_text(
-            Point::new(strip_x, y + strip_height + 1),
+        // The two endpoint numbers go *inside* the legend band, on the row below the ramp.
+        //
+        // The original origin was `strip_bottom + 1`, which is past `LEGEND_HEIGHT` by that
+        // pixel plus the whole text height, so the numbers were laid out underneath the
+        // reservation and ran off the bottom of the control — the raster backends clipped them
+        // and the SVG one showed them leaving the picture.
+        let label_height = context.measure_text("0", font).height;
+        let band_top = rect.y + rect.height as i32 - LEGEND_HEIGHT;
+        // The numbers take the band's own last line box. Anchoring at `band_bottom -
+        // label_height` assumed a baseline convention — the renderer's origin is the glyph's
+        // **top** edge, so that origin put the glyph's last row on the control's final pixel
+        // row and the line box escaped below it. Subtracting the line box *again* places the
+        // glyph's bottom edge on the band's bottom edge.
+        let band_bottom = band_top + LEGEND_HEIGHT;
+        let label_top = (band_bottom - label_height as i32).max(band_top);
+        let label_band_height = label_height.max(1);
+        context.draw_text_fitted(
+            Rect::new(strip_x, label_top, strip_width.max(1) as u32, label_band_height),
             &format_endpoint(low),
             font,
             text_color,
             HorizontalAlignment::Left,
         );
         let high_text = format_endpoint(high);
-        let estimated = high_text.chars().count() as i32 * 6;
-        context.draw_text(
-            Point::new(strip_x + strip_width - estimated, y + strip_height + 1),
+        context.draw_text_fitted(
+            Rect::new(strip_x, label_top, strip_width.max(1) as u32, label_band_height),
             &high_text,
             font,
             text_color,
-            HorizontalAlignment::Left,
+            HorizontalAlignment::Right,
         );
     }
 }

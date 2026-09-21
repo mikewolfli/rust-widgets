@@ -335,15 +335,20 @@ impl Draw for AnimatedImage {
             context.fill_rounded_rect(rect, 4, base_bg);
             let font = crate::core::Font::default();
             let text = "No frames loaded";
+            // Centred on the vertical midline and **fitted** to the control's width. The
+            // label is 16 characters at 14 px, so it is wider than a control narrower than
+            // 224 px; without the fit it ran past the panel and, in the SVG snapshot, past
+            // the picture. The glyph origin is the glyph's top (`ascent` is inside the line
+            // box, not above it), so half the height is the right centring offset.
             let metrics = context.measure_text(text, &font);
-            let text_x = rect.x + (rect.width as i32 - metrics.width as i32) / 2;
-            let text_y = rect.y + rect.height as i32 / 2 + metrics.ascent as i32 / 2;
-            context.draw_text(
-                Point::new(text_x, text_y),
+            let text_y = rect.y + (rect.height as i32 - metrics.height as i32) / 2;
+            let line = Rect::new(rect.x, text_y, rect.width, metrics.height);
+            context.draw_text_fitted(
+                line,
                 text,
                 &font,
                 placeholder_text,
-                HorizontalAlignment::Left,
+                HorizontalAlignment::Center,
             );
             return;
         }

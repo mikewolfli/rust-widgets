@@ -15,6 +15,18 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+/// Padding between the title's own box and the band that erases the border behind it.
+///
+/// Named rather than written as `10`/`20` in two places: the band's left edge and its
+/// width were derived from the same number with different signs, which is how a band
+/// twice as wide as intended was easy to leave behind.
+const TITLE_PADDING: i32 = 10;
+
+/// Height of the title's band, in pixels. The band is what hides the border behind the
+/// label; `2` is the frame's own drawn border thickness, so the two cannot mismatch.
+const BORDER_WIDTH: u32 = 2;
+
 /// Group box widget.
 pub struct GroupBox {
     base: BaseWidget,
@@ -92,6 +104,23 @@ impl GroupBox {
         self.registry = Some(registry);
     }
     /// Returns title rectangle.
+    /// The rectangle the title occupies, **inside** the frame.
+    ///
+    /// # Why the title sits on the border rather than above it
+    ///
+    /// The title was previously centred on the top edge (`y - text_height / 2`),
+    /// which put three quarters of every glyph above the widget. The software
+    /// rasteriser paints a glyph *downward* from its origin, so the pixels landed on
+    /// rows `-8..+8`: over half of the title — `Sample` reads as `Sampl` — fell outside
+    /// the widget's own rectangle. The software backend draws into a rectangular buffer,
+    /// so those rows were silently clipped and the frame *looked* right; the SVG backend
+    /// emits absolute coordinates with no canvas bound, so the same defect showed up as
+    /// text above the picture. Neither reading was the truth, and the two disagreed.
+    ///
+    /// The title is therefore banded **inside** the frame, its centre line on the top
+    /// border. That keeps the classic group-box look (the title interrupts the border)
+    /// while making every painted pixel fall within the widget, which is the property
+    /// both backends then agree on.
     fn title_rect(&self) -> Rect {
         let rect = self.geometry();
         let text_width = self.cached_title_width.unwrap_or_else(|| {
@@ -105,7 +134,9 @@ impl GroupBox {
             Alignment::Right => rect.x + rect.width as i32 - text_width as i32 - 10,
             Alignment::Top | Alignment::Bottom => rect.x + 10,
         };
-        Rect::new(x, rect.y - text_height / 2, text_width, text_height as u32)
+        // Clamped so a tall glyph cannot start above the frame: the origin is the
+        // glyph's top, so `rect.y` is the highest row any title pixel can occupy.
+        Rect::new(x, (rect.y + text_height / 2).max(rect.y), text_width, text_height as u32)
     }
     /// Returns checkbox rectangle if checkable.
     fn checkbox_rect(&self) -> Option<Rect> {
@@ -262,13 +293,19 @@ impl Draw for GroupBox {
         let style = self.style();
         // Draw border
         context.draw_rect(rect, style.border_color.unwrap_or(Color::rgb(200, 200, 200)));
-        // Draw title background to hide border
-        let title_bg_width = title_rect.width + 20;
-        let title_bg_x = title_rect.x - 10;
-        context.fill_rect(
-            Rect::new(title_bg_x, rect.y, title_bg_width, 2),
-            style.background_color.unwrap_or(Color::rgb(255, 255, 255)),
-        );
+        // Draw title background to hide the border behind the title. The band is widened
+        // by `TITLE_PADDING` on both sides, so it is clipped to the frame: a band that ran
+        // past `rect.right()` would paint over the sibling to the right of this group.
+        let title_bg_left = (title_rect.x - TITLE_PADDING).max(rect.x);
+        let title_bg_right = (title_rect.x + title_rect.width as i32 + TITLE_PADDING)
+            .min(rect.x + rect.width as i32);
+        let title_bg_width = (title_bg_right - title_bg_left).max(0) as u32;
+        if title_bg_width > 0 {
+            context.fill_rect(
+                Rect::new(title_bg_left, rect.y, title_bg_width, BORDER_WIDTH),
+                style.background_color.unwrap_or(Color::rgb(255, 255, 255)),
+            );
+        }
         // Draw checkbox if checkable
         if self.checkable {
             if let Some(checkbox_rect) = self.checkbox_rect() {
@@ -301,7 +338,8 @@ impl Draw for GroupBox {
                 }
             }
         }
-        // Draw title text
+        // Draw title text. The separator is drawn first and the label on top of it, so
+        // the label's own glyph pixels are what the eye reads at the join.
         if !self.title.is_empty() {
             let text_color = if self.base.is_enabled() {
                 style.text_color.unwrap_or(Color::rgb(0, 0, 0))

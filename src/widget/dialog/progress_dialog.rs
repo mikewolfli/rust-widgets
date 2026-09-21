@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Progress dialog widget.
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
@@ -360,19 +360,38 @@ impl Draw for ProgressDialog {
 
         context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), surface);
         context.draw_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), border);
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, 28), title_bar);
-        context.draw_text(
-            Point::new(rect.x + 8, rect.y + 14),
+        // Every label is fitted to the band it belongs to: the title to the title bar, the
+        // label to its own row, and the button caption to the button. None of them was
+        // bounded before, so a long caption ran past the frame — the raster backends clip
+        // that away and the SVG snapshot showed it as drawing outside the picture.
+        const TITLE_BAR_HEIGHT: u32 = 28;
+        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, TITLE_BAR_HEIGHT), title_bar);
+        let title_font = Font::default();
+        let title_metrics = context.measure_text(&self.title, &title_font);
+        context.draw_text_fitted(
+            Rect::new(
+                rect.x + 8,
+                rect.y + ((TITLE_BAR_HEIGHT as i32 - title_metrics.height as i32) / 2).max(0),
+                rect.width.saturating_sub(16),
+                title_metrics.height.max(1),
+            ),
             &self.title,
-            &Font::default(),
+            &title_font,
             ink,
             HorizontalAlignment::Left,
         );
         // Label
-        context.draw_text(
-            Point::new(rect.x + 10, rect.y + 48),
+        let label_font = Font::default();
+        let label_metrics = context.measure_text(&self.label_text, &label_font);
+        context.draw_text_fitted(
+            Rect::new(
+                rect.x + 10,
+                rect.y + 48,
+                rect.width.saturating_sub(20),
+                label_metrics.height.max(1),
+            ),
             &self.label_text,
-            &Font::default(),
+            &label_font,
             ink,
             HorizontalAlignment::Left,
         );
@@ -390,42 +409,43 @@ impl Draw for ProgressDialog {
                 progress_fill,
             );
         }
-        // Percentage text
+        // Percentage text. Centred on the bar rather than merely *starting* at the bar's
+        // midpoint — the old `bar_x + bar_w/2` origin made the caption occupy only its
+        // right half and, at 100%, run up to `bar_w/2 + 42` past the bar.
         let pct = (self.progress_fraction() * 100.0) as i32;
-        context.draw_text(
-            Point::new(rect.x + 10 + (bar_w as i32 / 2), bar_y + (bar_h as i32 / 2)),
-            &format!("{pct}%"),
-            &Font::default(),
+        let pct_font = Font::default();
+        let pct_text = format!("{pct}%");
+        let pct_metrics = context.measure_text(&pct_text, &pct_font);
+        let bar_rect = Rect::new(rect.x + 10, bar_y, bar_w, bar_h);
+        context.draw_text_fitted(
+            Rect::new(
+                bar_rect.x,
+                bar_y + ((bar_h as i32 - pct_metrics.height as i32) / 2).max(0),
+                bar_rect.width,
+                pct_metrics.height.max(1),
+            ),
+            &pct_text,
+            &pct_font,
             ink,
-            HorizontalAlignment::Left,
+            HorizontalAlignment::Center,
         );
-        // Cancel button
-        let btn_y = rect.y as f32 + rect.height as f32 - 40.0;
-        let btn_w = 80;
-        context.fill_rect(
-            Rect::new(
-                rect.x + rect.width as i32 / 2 - btn_w / 2,
-                btn_y as i32,
-                btn_w as u32,
-                28u32,
-            ),
-            button_fill,
-        );
-        context.draw_rect(
-            Rect::new(
-                rect.x + rect.width as i32 / 2 - btn_w / 2,
-                btn_y as i32,
-                btn_w as u32,
-                28u32,
-            ),
-            border,
-        );
-        context.draw_text(
-            Point::new(rect.x + rect.width as i32 / 2, (btn_y + 14.0) as i32),
+        // Cancel button. The button is centred, but its caption was drawn from the
+        // dialog's midpoint with a left origin, so the text started in the middle of the
+        // button and left the frame on its right — twice the button's own overflow. The
+        // caption and its 80 px button are therefore one rectangle, with the label centred
+        // and fitted inside it.
+        let btn_y = (rect.y as f32 + rect.height as f32 - 40.0) as i32;
+        const BTN_W: i32 = 80;
+        let btn_x = (rect.x + rect.width as i32 / 2 - BTN_W / 2).max(rect.x);
+        let btn_rect = Rect::new(btn_x, btn_y, BTN_W as u32, 28);
+        context.fill_rect(btn_rect, button_fill);
+        context.draw_rect(btn_rect, border);
+        context.draw_text_fitted(
+            btn_rect,
             &self.cancel_button_text,
             &Font::default(),
             ink,
-            HorizontalAlignment::Left,
+            HorizontalAlignment::Center,
         );
     }
 }

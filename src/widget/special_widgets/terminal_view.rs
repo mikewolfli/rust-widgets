@@ -3,7 +3,7 @@
 
 //! TerminalView widget.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -240,24 +240,37 @@ impl Draw for TerminalView {
         context.fill_rect(rect, background);
         context.draw_rect(rect, border);
 
-        let max_lines = ((rect.height.saturating_sub(28)) / 14) as usize;
+        // The prompt row is anchored to the control's bottom edge, but it has to be a
+        // *whole* row: the origin is the glyph's top-left, so `y = height - 10` placed the
+        // line's top 10 px above the edge and let the glyphs paint 4 px below it. Reserving
+        // one line height plus a margin keeps the prompt inside the frame, and it also
+        // subtracts that row from the output area below so the two cannot overlap.
+        let prompt_font = Font::default();
+        let prompt_line_height = context.measure_text("M", &prompt_font).height.max(1);
+        let prompt_row_height = prompt_line_height + 6;
+        let body_height = rect.height.saturating_sub(prompt_row_height);
+
+        let max_lines = (body_height.saturating_sub(16) / prompt_line_height) as usize;
         let start = self.lines.len().saturating_sub(max_lines);
         for (idx, line) in self.lines.iter().skip(start).enumerate() {
-            let y = rect.y + 16 + idx as i32 * 14;
-            context.draw_text(
-                Point::new(rect.x + 8, y),
+            let y = rect.y + 16 + idx as i32 * prompt_line_height as i32;
+            let line_bounds =
+                Rect::new(rect.x + 8, y, rect.width.saturating_sub(16), prompt_line_height);
+            context.draw_text_fitted(
+                line_bounds,
                 line,
-                &Font::default(),
+                &prompt_font,
                 output_color,
                 HorizontalAlignment::Left,
             );
         }
 
-        let prompt_y = rect.y + rect.height as i32 - 10;
-        context.draw_text(
-            Point::new(rect.x + 8, prompt_y),
-            &format!("> {}", self.input_line),
-            &Font::default(),
+        let prompt_y = (rect.y + rect.height as i32 - prompt_row_height as i32 + 3).max(rect.y);
+        let prompt_text = format!("> {}", self.input_line);
+        context.draw_text_fitted(
+            Rect::new(rect.x + 8, prompt_y, rect.width.saturating_sub(16), prompt_line_height),
+            &prompt_text,
+            &prompt_font,
             prompt_color,
             HorizontalAlignment::Left,
         );

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Input dialog widget.
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
@@ -522,29 +522,45 @@ impl Draw for InputDialog {
         context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), surface);
         context.draw_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), border);
         // Title bar: a separate region from the dialog surface, in the theme's accent
-        // rather than the literal blue it carried before.
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, 28), accent);
-        context.draw_text(
-            Point::new(rect.x + 8, rect.y + 14),
+        // rather than the literal blue it carried before. The label is fitted to the bar,
+        // so a long title truncates at the bar's edge instead of running past the frame.
+        const TITLE_BAR_HEIGHT: u32 = 28;
+        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, TITLE_BAR_HEIGHT), accent);
+        let title_font = Font::default();
+        let title_metrics = context.measure_text(&self.title, &title_font);
+        context.draw_text_fitted(
+            Rect::new(
+                rect.x + 8,
+                rect.y + ((TITLE_BAR_HEIGHT as i32 - title_metrics.height as i32) / 2).max(0),
+                rect.width.saturating_sub(16),
+                title_metrics.height.max(1),
+            ),
             &self.title,
-            &Font::default(),
+            &title_font,
             accent_ink,
             HorizontalAlignment::Left,
         );
-        // Label
-        context.draw_text(
-            Point::new(rect.x + 10, rect.y + 48),
+        // Label. Its box is the row above the entry field, which is what bounds a label
+        // longer than the dialog instead of the dialog's own width.
+        let label_font = Font::default();
+        let label_metrics = context.measure_text(&self.label_text, &label_font);
+        context.draw_text_fitted(
+            Rect::new(
+                rect.x + 10,
+                rect.y + 48,
+                rect.width.saturating_sub(20),
+                label_metrics.height.max(1),
+            ),
             &self.label_text,
-            &Font::default(),
+            &label_font,
             ink,
             HorizontalAlignment::Left,
         );
         // Input field
         let input_y = rect.y + 60;
-        context
-            .fill_rect(Rect::new(rect.x + 10, input_y, rect.width.saturating_sub(20), 26), field);
-        context
-            .draw_rect(Rect::new(rect.x + 10, input_y, rect.width.saturating_sub(20), 26), border);
+        let input_band = Rect::new(rect.x + 10, input_y, rect.width.saturating_sub(20), 26);
+        context.fill_rect(input_band, field);
+        context.draw_rect(input_band, border);
         let display_text = match self.mode {
             InputMode::Text => self.text_value.clone(),
             InputMode::Integer => self.int_value.to_string(),
@@ -553,35 +569,50 @@ impl Draw for InputDialog {
             }
             InputMode::Item => self.current_item_text().unwrap_or("").to_string(),
         };
-        context.draw_text(
-            Point::new(rect.x + 14, input_y + 13),
+        // The `Rect::new` above already narrows to zero rather than going negative; the
+        // `saturating_sub` repetitions that used to spell this out are gone because the
+        // band is named once and reused for the field's fill, its border and its text.
+        let input_font = Font::default();
+        let input_metrics = context.measure_text(&display_text, &input_font);
+        context.draw_text_fitted(
+            Rect::new(
+                input_band.x + 4,
+                input_y + ((26 - input_metrics.height as i32) / 2).max(0),
+                input_band.width.saturating_sub(8),
+                input_metrics.height.max(1),
+            ),
             &display_text,
-            &Font::default(),
+            &input_font,
             ink,
             HorizontalAlignment::Left,
         );
-        // OK/Cancel
-        let btn_y = rect.y as f32 + rect.height as f32 - 40.0;
-        context
-            .fill_rect(Rect::new(rect.x + rect.width as i32 - 176, btn_y as i32, 80, 28), accent);
-        context.draw_text(
-            Point::new(rect.x + rect.width as i32 - 136, (btn_y + 14.0) as i32),
+        // OK/Cancel. The pair is right-aligned inside the frame and floored at its left
+        // edge, so a control narrower than the two 80 px buttons keeps them on screen
+        // rather than starting the OK label at a negative x. The labels are centred in
+        // their buttons and fitted to them.
+        let btn_y = (rect.y as f32 + rect.height as f32 - 40.0) as i32;
+        const BTN_W: i32 = 80;
+        const BTN_STEP: i32 = 88;
+        let cancel_x = (rect.x + rect.width as i32 - BTN_STEP).max(rect.x);
+        let ok_x = (cancel_x - BTN_STEP).max(rect.x);
+        let ok_rect = Rect::new(ok_x, btn_y, BTN_W as u32, 28);
+        context.fill_rect(ok_rect, accent);
+        context.draw_text_fitted(
+            ok_rect,
             &tr!("common.button.ok"),
             &Font::default(),
             accent_ink,
-            HorizontalAlignment::Left,
+            HorizontalAlignment::Center,
         );
-        context.fill_rect(
-            Rect::new(rect.x + rect.width as i32 - 88, btn_y as i32, 80, 28),
-            surface.blend(&ink, 0.1),
-        );
-        context.draw_rect(Rect::new(rect.x + rect.width as i32 - 88, btn_y as i32, 80, 28), border);
-        context.draw_text(
-            Point::new(rect.x + rect.width as i32 - 48, (btn_y + 14.0) as i32),
+        let cancel_rect = Rect::new(cancel_x, btn_y, BTN_W as u32, 28);
+        context.fill_rect(cancel_rect, surface.blend(&ink, 0.1));
+        context.draw_rect(cancel_rect, border);
+        context.draw_text_fitted(
+            cancel_rect,
             &tr!("common.button.cancel"),
             &Font::default(),
             ink,
-            HorizontalAlignment::Left,
+            HorizontalAlignment::Center,
         );
     }
 }

@@ -57,7 +57,7 @@ capability matrix
 is generated from source and gated for drift in CI.
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.5.1-blue)]()
+[![version](https://img.shields.io/badge/version-2.5.2-blue)]()
 [![tests](https://img.shields.io/badge/tests-5500%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
@@ -82,8 +82,31 @@ pixel. 2.5.1 closes that gap in five layers:
 Three build configurations that were **already broken** before this release now build:
 `--features mini`, `--features embedded`, and `--features "windows desktop-runtime controls-native
 controls-custom"` (78 compile errors at the previous tag). All five profiles are 0 errors, 0 warnings,
-and `clippy -D warnings` is clean. See [`CHANGELOG.md`](CHANGELOG.md) and
-[`docs/log/log-20260921-3.md`](docs/log/log-20260921-3.md) for per-change evidence, including the
+and `clippy -D warnings` is clean.
+
+**Verified in 2.5.2 (current):** the fifth rendering judgement. The four above are all measured from a
+**raster**, and a raster is bounded by the surface it was rendered into — so a control that paints
+*outside its own rectangle* produces a normal-looking census, with the escaped pixels simply clipped
+away. The SVG snapshots carry absolute coordinates and no bound, so the same defect shows up there as
+drawing leaving the picture. **Two backends disagreeing about where the ink is, is the defect.**
+
+`P5` now renders each control through the SVG backend and requires every element it emits to lie
+inside the control. It found **68 controls** with real defects, all fixed, reducing to six root causes:
+
+- **two coordinate spaces mixed** (a title rectangle built in parent space and painted as child space);
+- **an estimate and a measurement that disagreed** (`TabBar` laid out from byte length, drew at 14 pt);
+- **a line box read as a baseline** — `ascent` is *inside* the line box, so `+ ascent` centring moved
+  eight controls' text down half a line and off the bottom;
+- **half-widths left out of the arithmetic** — strokes, discs and drop shadows;
+- **text with no width bound at all** (around forty call sites), now routed through one new entry
+  point, `RenderContext::draw_text_fitted`, which takes the rectangle the text belongs in;
+- **`map_view` painting hardcoded light chrome** while registered as "map content" — it draws no map,
+  so a map in a dark window was a white rectangle no theme could change.
+
+`P5`'s own first version was audited the same way and **25 of its 68 findings were the check's fault**
+(a text-width model that charged one em per character, and a `stroke-width` default read as a
+half-width). Both are corrected. See [`CHANGELOG.md`](CHANGELOG.md) and
+[`docs/log/log-20260921-4.md`](docs/log/log-20260921-4.md) for per-change evidence, including the
 reverse-injection record for every assertion.
 
 <p align="center">

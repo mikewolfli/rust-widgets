@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! File dialog widget.
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -418,55 +418,100 @@ impl Draw for FileDialog {
         context.draw_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), border);
         // Title bar: a separate region from the dialog surface, in the theme's accent
         // rather than the literal blue it carried before, so the bar follows the palette
-        // the rest of the application is using.
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, 28), accent);
-        context.draw_text(
-            Point::new(rect.x + 8, rect.y + 14),
+        // the rest of the application is using. The label is fitted to the bar, so a long
+        // title truncates at the bar's edge instead of running past the frame.
+        const TITLE_BAR_HEIGHT: u32 = 28;
+        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, TITLE_BAR_HEIGHT), accent);
+        let title_font = Font::default();
+        let title_metrics = context.measure_text(&self.title, &title_font);
+        context.draw_text_fitted(
+            Rect::new(
+                rect.x + 8,
+                rect.y + ((TITLE_BAR_HEIGHT as i32 - title_metrics.height as i32) / 2).max(0),
+                rect.width.saturating_sub(16),
+                title_metrics.height.max(1),
+            ),
             &self.title,
-            &Font::default(),
+            &title_font,
             accent_ink,
             HorizontalAlignment::Left,
         );
-        // File list area
+        // File list area. The list is clamped to the space between the title bar and the
+        // button row, so a short dialog cannot produce a negative-height list that in turn
+        // pushes the selected-file strip and the buttons below the frame.
+        let btn_h = 28i32;
+        let button_top = (rect.y + rect.height as i32 - btn_h - 12).max(rect.y);
         let list_y = rect.y + 38;
-        let list_h = rect.height.saturating_sub(120);
-        context.fill_rect(
-            Rect::new(rect.x + 10, list_y, rect.width.saturating_sub(20), list_h),
-            field,
-        );
-        context.draw_rect(
-            Rect::new(rect.x + 10, list_y, rect.width.saturating_sub(20), list_h),
-            border,
-        );
-        context.draw_text(
-            Point::new(rect.x + 16, list_y + 20),
-            &tr!("dialog.file_dialog.file_list_placeholder"),
-            &Font::default(),
+        let list_h = (button_top - 34 - list_y).max(0) as u32;
+        let list_rect = Rect::new(rect.x + 10, list_y, rect.width.saturating_sub(20), list_h);
+        context.fill_rect(list_rect, field);
+        context.draw_rect(list_rect, border);
+        // The placeholder lives inside the list it describes, so it truncates at the
+        // list's edge rather than at a coordinate chosen for a wider default size.
+        let placeholder = tr!("dialog.file_dialog.file_list_placeholder");
+        let placeholder_font = Font::default();
+        let placeholder_metrics = context.measure_text(&placeholder, &placeholder_font);
+        context.draw_text_fitted(
+            Rect::new(
+                list_rect.x + 6,
+                list_rect.y + 6,
+                list_rect.width.saturating_sub(12),
+                placeholder_metrics.height.max(1),
+            ),
+            &placeholder,
+            &placeholder_font,
             ink.blend(&field, 0.5),
             HorizontalAlignment::Left,
         );
-        // Selected files display
-        let sel_y = list_y + list_h as i32 + 8;
-        context.draw_text(
-            Point::new(rect.x + 10, sel_y + 10),
-            &tr!("dialog.file_dialog.file_name"),
-            &Font::default(),
+        // Selected files display: a 70 px label column followed by the file-name field.
+        // The strip is placed above the button row rather than eight pixels below the
+        // list, which is what used to let it collide with — and overlap — the buttons when
+        // the list had been squeezed to nothing.
+        let sel_h = 22i32;
+        let sel_y = (button_top - sel_h - 10).max(list_y + list_h as i32 + 4);
+        let sel_label = tr!("dialog.file_dialog.file_name");
+        let sel_label_font = Font::default();
+        let sel_label_metrics = context.measure_text(&sel_label, &sel_label_font);
+        context.draw_text_fitted(
+            Rect::new(
+                rect.x + 10,
+                (sel_y + (sel_h - sel_label_metrics.height as i32) / 2).max(sel_y),
+                66,
+                sel_label_metrics.height.max(1),
+            ),
+            &sel_label,
+            &sel_label_font,
             ink,
             HorizontalAlignment::Left,
         );
         let fname = self.selected_file().unwrap_or("");
-        context.fill_rect(Rect::new(rect.x + 80, sel_y, rect.width.saturating_sub(90), 22), field);
-        context.draw_rect(Rect::new(rect.x + 80, sel_y, rect.width.saturating_sub(90), 22), border);
-        context.draw_text(
-            Point::new(rect.x + 84, sel_y + 11),
+        let fname_rect = Rect::new(rect.x + 80, sel_y, rect.width.saturating_sub(90), sel_h as u32);
+        context.fill_rect(fname_rect, field);
+        context.draw_rect(fname_rect, border);
+        let fname_font = Font::default();
+        let fname_metrics = context.measure_text(fname, &fname_font);
+        context.draw_text_fitted(
+            Rect::new(
+                fname_rect.x + 4,
+                fname_rect.y + ((sel_h - fname_metrics.height as i32) / 2).max(0),
+                fname_rect.width.saturating_sub(8),
+                fname_metrics.height.max(1),
+            ),
             fname,
-            &Font::default(),
+            &fname_font,
             ink,
             HorizontalAlignment::Left,
         );
-        // OK/Cancel buttons
-        let btn_y = rect.y as f32 + rect.height as f32 - 40.0;
-        let btn_w = 80;
+        // OK/Cancel buttons. The pair is right-aligned inside the frame and floored at its
+        // left edge, so a control narrower than the two 80 px buttons keeps them on screen
+        // rather than starting the Open label at a negative x. The labels are centred in
+        // their buttons and fitted to them, so a truncating locale cannot spill out of the
+        // button it belongs to.
+        let btn_y = button_top;
+        const BTN_W: i32 = 80;
+        const BTN_STEP: i32 = 88;
+        let cancel_x = (rect.x + rect.width as i32 - BTN_STEP).max(rect.x);
+        let ok_x = (cancel_x - BTN_STEP).max(rect.x);
         let ok_label = if self.mode == FileDialogMode::SaveFile {
             tr!("common.button.save")
         } else {
@@ -474,29 +519,24 @@ impl Draw for FileDialog {
         };
         // The accept button is the dialog's call to action: the theme's accent, with its
         // contrast colour as the label — the same pairing `WidgetRole::Primary` uses.
-        context.fill_rect(
-            Rect::new(rect.x + rect.width as i32 - 176, btn_y as i32, btn_w, 28),
-            accent,
-        );
-        context.draw_text(
-            Point::new(rect.x + rect.width as i32 - 136, (btn_y + 14.0) as i32),
+        let ok_rect = Rect::new(ok_x, btn_y, BTN_W as u32, btn_h as u32);
+        context.fill_rect(ok_rect, accent);
+        context.draw_text_fitted(
+            ok_rect,
             &ok_label,
             &Font::default(),
             accent_ink,
-            HorizontalAlignment::Left,
+            HorizontalAlignment::Center,
         );
-        context.fill_rect(
-            Rect::new(rect.x + rect.width as i32 - 88, btn_y as i32, btn_w, 28),
-            surface.blend(&ink, 0.1),
-        );
-        context
-            .draw_rect(Rect::new(rect.x + rect.width as i32 - 88, btn_y as i32, btn_w, 28), border);
-        context.draw_text(
-            Point::new(rect.x + rect.width as i32 - 48, (btn_y + 14.0) as i32),
+        let cancel_rect = Rect::new(cancel_x, btn_y, BTN_W as u32, btn_h as u32);
+        context.fill_rect(cancel_rect, surface.blend(&ink, 0.1));
+        context.draw_rect(cancel_rect, border);
+        context.draw_text_fitted(
+            cancel_rect,
             &tr!("common.button.cancel"),
             &Font::default(),
             ink,
-            HorizontalAlignment::Left,
+            HorizontalAlignment::Center,
         );
     }
 }

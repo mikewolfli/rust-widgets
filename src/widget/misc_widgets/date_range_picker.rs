@@ -9,7 +9,9 @@
 //! A `range_changed` signal is emitted whenever the selection changes.
 
 use super::date_utils::{days_in_month, parse_iso_date, DAY_NAMES, MONTH_NAMES};
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+#[cfg(test)]
+use crate::core::Point;
+use crate::core::{Color, Font, HorizontalAlignment, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -186,6 +188,64 @@ impl DateRangePicker {
             date == start
         }
     }
+
+    /// The calendar grid's geometry for the current month and rectangle.
+    ///
+    /// Shared by the draw and the hit test, because a click must land in the cell that is
+    /// visibly under it: the two used to derive the grid independently from the same
+    /// literals, so any change to one silently desynchronised the other.
+    ///
+    /// The cell size is derived from the room the grid actually has rather than being a
+    /// fixed 28 px. A month can need five or six week rows, so a fixed cell walked the last
+    /// row — and the labels in it — past the control's bottom edge, where the raster
+    /// backends clipped it and the SVG snapshot showed it leaving the picture. The nominal
+    /// size is kept as the *maximum*, so a roomy control is unchanged.
+    fn grid_layout(&self) -> GridLayout {
+        let rect = self.geometry();
+        let total_days = self.days_in_display_month() as usize;
+        let first_dow = self.first_day_of_week() as usize;
+        let rows = ((first_dow + total_days).div_ceil(7) as u32).max(1);
+        let grid_left = rect.x + GRID_LEFT_INSET;
+        let grid_top = rect.y + HEADER_HEIGHT as i32 + DAY_HEADER_HEIGHT as i32;
+        let available_height = (rect.y + rect.height as i32 - grid_top).max(1) as u32;
+        // `rows` rows of `cell_size` with `CELL_SPACING` between them must fit, so the gaps
+        // are subtracted before the division. A floor of 1 keeps a degenerate box from
+        // producing a zero-sized cell the label would then be fitted into nothing.
+        let gaps = CELL_SPACING * (rows - 1);
+        let cell_size = (available_height.saturating_sub(gaps) / rows).clamp(1, NOMINAL_CELL);
+        GridLayout {
+            grid_left,
+            grid_top,
+            cell_size,
+            total_cell: cell_size + CELL_SPACING,
+            total_cells: first_dow + total_days,
+        }
+    }
+}
+
+/// Reserved height of the month/year header band.
+const HEADER_HEIGHT: u32 = 40;
+/// Reserved height of the weekday row.
+const DAY_HEADER_HEIGHT: u32 = 20;
+/// Left inset of the grid from the control's edge.
+const GRID_LEFT_INSET: i32 = 4;
+/// Gap between calendar cells.
+const CELL_SPACING: u32 = 2;
+/// The largest a calendar cell is allowed to be.
+const NOMINAL_CELL: u32 = 28;
+
+/// The calendar grid's resolved geometry.
+struct GridLayout {
+    /// Absolute x of the first column.
+    grid_left: i32,
+    /// Absolute y of the first week row.
+    grid_top: i32,
+    /// Edge length of one day cell.
+    cell_size: u32,
+    /// Column pitch: the cell plus its gap.
+    total_cell: u32,
+    /// Cells to draw, including the leading blanks of the first week.
+    total_cells: usize,
 }
 
 /// Converts a date to a single ordinal number for easy comparison.
@@ -315,44 +375,62 @@ impl Draw for DateRangePicker {
 
         context.fill_rect(rect, bg_color);
 
-        // Layout parameters
-        let header_height = 40u32;
-        let day_header_height = 20u32;
-        let cell_size = 28u32;
-        let cell_spacing = 2u32;
-        let total_cell = cell_size + cell_spacing;
-        let grid_left = rect.x + 4;
-        let grid_top = rect.y + header_height as i32 + day_header_height as i32;
+        // Layout parameters, resolved from the month and the rectangle. See
+        // [`DateRangePicker::grid_layout`] for why the cell size is not a constant.
+        let layout = self.grid_layout();
+        let grid_left = layout.grid_left;
+        let grid_top = layout.grid_top;
+        let cell_size = layout.cell_size;
+        let total_cell = layout.total_cell;
 
         // ── Month/Year header ──
+        //
+        // The label is fitted to the header band and centred **inside** it. The previous
+        // origin added `ascent` on top of a `y` that was already past the band, so the glyph
+        // box (which starts at the origin and extends down a full line) began near the band's
+        // bottom: the header read as sitting on the grid, and the last day row was pushed off
+        // the control entirely. `ascent` is *inside* the line box, not above it — the render
+        // origin is the glyph's top edge.
+        let header_band = Rect::new(rect.x + 20, rect.y + 6, rect.width.saturating_sub(40), 18);
         let header_font = Font::new("sans-serif", 14.0, true, false);
         let header_text = format!("{} {}", self.month_name(), self.display_year);
-        let header_metrics = context.measure_text(&header_text, &header_font);
-        let header_x = rect.x + (rect.width as i32 - header_metrics.width as i32) / 2;
-        let header_y = rect.y + 14 + header_metrics.ascent as i32;
-        context.draw_text(
-            Point::new(header_x, header_y),
+        context.draw_text_fitted(
+            header_band,
             &header_text,
             &header_font,
             text_color,
-            HorizontalAlignment::Left,
+            HorizontalAlignment::Center,
         );
 
-        // Navigation arrows
+        // Navigation arrows, each in its own strip at the band's ends so they cannot collide
+        // with a long month name.
+        //
+        // The glyphs are the filled triangles the rest of the toolkit navigates with
+        // (`calendar`, `image_gallery`) rather than `<`/`>`. Those two are the only
+        // characters in the registry that a serializer must escape: the SVG backend emits
+        // `&gt;`, and a bounds reader that counts the *source* text as the advance then
+        // measures five glyphs where one was drawn — which is what reported this arrow at
+        // `[224,8..253,20]`. A glyph that needs no escaping is the honest fix, since the
+        // drawn extent and the emitted text then agree.
+        //
+        // Both strips are anchored to the control's edges and the glyph is inset inside its
+        // strip, so the drawn extent is bounded by the rectangle rather than by the glyph's
+        // advance.
         let nav_font = Font::new("sans-serif", 12.0, true, false);
-        context.draw_text(
-            Point::new(rect.x + 8, rect.y + 16),
-            "<",
+        let nav_height = context.measure_text("◀", &nav_font).height;
+        context.draw_text_fitted(
+            Rect::new(rect.x + 6, rect.y + 8, 14, nav_height),
+            "◀",
             &nav_font,
             text_color,
-            HorizontalAlignment::Left,
+            HorizontalAlignment::Center,
         );
-        context.draw_text(
-            Point::new(rect.x + rect.width as i32 - 16, rect.y + 16),
-            ">",
+        context.draw_text_fitted(
+            Rect::new(rect.x + rect.width as i32 - 20, rect.y + 8, 14, nav_height),
+            "▶",
             &nav_font,
             text_color,
-            HorizontalAlignment::Left,
+            HorizontalAlignment::Center,
         );
 
         // ── Day-of-week header ──
@@ -360,23 +438,25 @@ impl Draw for DateRangePicker {
         // The weekday row is secondary chrome: derived from the resolved text colour
         // so it stays legible against either surface.
         let dow_color = surface.blend(&text_color, 0.55);
+        // Each weekday label is fitted inside its own column. `cell_x + 6` with a centred
+        // cell put the last column's label past the grid's right edge; deriving the column
+        // from `cell_size` and centring inside it keeps every label within its own cell.
+        let dow_height = context.measure_text("M", &dow_font).height;
         for (i, day_name) in DAY_NAMES.iter().enumerate() {
             let cell_x = grid_left + (i as u32 * total_cell) as i32;
-            let cell_y = grid_top - day_header_height as i32;
-            context.draw_text(
-                Point::new(cell_x + 6, cell_y + 14),
+            let cell_y = grid_top - DAY_HEADER_HEIGHT as i32;
+            context.draw_text_fitted(
+                Rect::new(cell_x, cell_y + 4, cell_size, dow_height),
                 day_name,
                 &dow_font,
                 dow_color,
-                HorizontalAlignment::Left,
+                HorizontalAlignment::Center,
             );
         }
 
         // ── Calendar grid ──
         let day_font = Font::new("sans-serif", 10.0, false, false);
-        let total_days = self.days_in_display_month() as usize;
-        let first_dow = self.first_day_of_week() as usize;
-        let total_cells = first_dow + total_days;
+        let total_cells = layout.total_cells;
 
         for cell_idx in 0..total_cells {
             let Some(date) = self.date_at_cell(cell_idx) else {
@@ -414,13 +494,13 @@ impl Draw for DateRangePicker {
                 context.fill_rounded_rect(cell_rect, 4, today_color);
             }
 
-            // Draw day number
+            // Draw day number, fitted inside its own cell and centred on it. The origin is
+            // the glyph's top edge, so the vertical centre is half the *line box* — the old
+            // `(cell - height)/2 + ascent` began the glyph box half a line below the cell's
+            // middle, which walked the bottom row past the control's edge.
             let day_text = day.to_string();
             let day_metrics = context.measure_text(&day_text, &day_font);
-            let day_x = cell_x + (cell_size as i32 - day_metrics.width as i32) / 2;
-            let day_y = cell_y
-                + (cell_size as i32 - day_metrics.height as i32) / 2
-                + day_metrics.ascent as i32;
+            let day_y = cell_y + (cell_size as i32 - day_metrics.height as i32) / 2;
 
             let day_color = if !is_enabled {
                 surface.blend(&text_color, 0.35)
@@ -433,12 +513,12 @@ impl Draw for DateRangePicker {
             } else {
                 text_color
             };
-            context.draw_text(
-                Point::new(day_x, day_y),
+            context.draw_text_fitted(
+                Rect::new(cell_x, day_y, cell_size, day_metrics.height),
                 &day_text,
                 &day_font,
                 day_color,
-                HorizontalAlignment::Left,
+                HorizontalAlignment::Center,
             );
         }
     }
@@ -457,18 +537,15 @@ impl EventHandler for DateRangePicker {
                 return;
             }
 
-            let header_height = 40u32;
-            let day_header_height = 20u32;
-            let cell_size = 28u32;
-            let cell_spacing = 2u32;
-            let total_cell = cell_size + cell_spacing;
-            let grid_left = rect.x + 4;
-            let grid_top = rect.y + header_height as i32 + day_header_height as i32;
+            // The same grid the draw uses, so a click lands in the cell under the pointer.
+            let layout = self.grid_layout();
+            let (grid_left, grid_top) = (layout.grid_left, layout.grid_top);
+            let total_cell = layout.total_cell;
 
             // Check header clicks for navigation
-            let header_rect_left = Rect::new(rect.x + 4, rect.y + 4, 20, header_height);
+            let header_rect_left = Rect::new(rect.x + 4, rect.y + 4, 20, HEADER_HEIGHT);
             let header_rect_right =
-                Rect::new(rect.x + rect.width as i32 - 24, rect.y + 4, 20, header_height);
+                Rect::new(rect.x + rect.width as i32 - 24, rect.y + 4, 20, HEADER_HEIGHT);
 
             if header_rect_left.contains_point(*pos) {
                 self.previous_month();
@@ -497,6 +574,11 @@ impl EventHandler for DateRangePicker {
             }
 
             let cell_idx = (row as usize) * 7 + (col as usize);
+            if cell_idx >= layout.total_cells {
+                // A click in the blank tail of the last week belongs to no date; treating it
+                // as a selection would invent one.
+                return;
+            }
             let Some(clicked_date) = self.date_at_cell(cell_idx) else {
                 return;
             };

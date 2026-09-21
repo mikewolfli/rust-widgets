@@ -44,7 +44,7 @@
 
 use rust_widgets::theme::{theme_test_guard, AppearanceMode};
 use rust_widgets::widget::census::{install_preset_appearances, CENSUS_RECT, CENSUS_TEXT};
-use rust_widgets::widget::svg::render_widget_to_svg;
+use rust_widgets::widget::svg::render_widget_to_svg_on;
 use rust_widgets::widget::{draw_bridge::draw_of, WidgetFactory};
 use std::fs;
 use std::path::Path;
@@ -95,7 +95,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 continue;
             };
 
-            let body = render_widget_to_svg(drawable, CENSUS_RECT);
+            // A control that paints no background of its own (a `Label`, a `Separator`) is
+            // composited over the surface it would really sit on — the active theme's own
+            // background. Filling the frame with a fixed white made exactly those controls
+            // unreadable in the snapshot: the dark theme's near-white ink on white showed as a
+            // blank rectangle while the light snapshot of the same control looked fine. The
+            // difference between the two files was an artefact of the exporter, not of the
+            // control, and the snapshots exist to show the control.
+            let backdrop = rust_widgets::theme::global_theme_manager()
+                .current_theme()
+                .map(|active| active.colors.background)
+                .unwrap_or(rust_widgets::core::Color::WHITE);
+            let body = render_widget_to_svg_on(drawable, CENSUS_RECT, backdrop);
             let document = decorate(&body, name, appearance);
             fs::write(dir.join(format!("{name}{suffix}.svg")), document)?;
             written += 1;

@@ -243,10 +243,117 @@ impl Meter {
             / (self.max - self.min) as f32
     }
 
+    /// The colour of the needle and the pivot, derived from the accent.
+    ///
+    /// The needle is the control's value indicator: it points at a reading, exactly as the
+    /// value arc's fill does, so it takes the accent token rather than the text colour.
+    /// `text_color` resolves to black in both appearances, so an indicator drawn in it is
+    /// identical in light and dark — which is the theme-blindness this control was reported
+    /// for. The blend darkens it enough to stay readable where it crosses the arc.
+    fn needle_color(accent: &Color) -> Color {
+        accent.blend(&Color::BLACK, 0.45)
+    }
+
+    /// The colour of the tick marks and their labels, derived from the accent.
+    ///
+    /// A lighter blend than the needle's, so the ticks read as secondary marks against it
+    /// while still following the appearance.
+    fn tick_color(accent: &Color) -> Color {
+        accent.blend(&Color::BLACK, 0.35)
+    }
+
     /// The value a normalized position represents, for tick labels.
     fn value_at_fraction(&self, fraction: f32) -> u32 {
         let span = (self.max - self.min) as f32;
         (self.min as f32 + span * fraction).round() as u32
+    }
+
+    /// The angular step between the ring's polyline vertices, in radians.
+    ///
+    /// Shared by every arc on the ring because the *vertices* are what make two
+    /// overlapping strokes coincide; six degrees is fine enough that the chords are
+    /// indistinguishable from a true arc at the radii this control draws at.
+    const SEGMENT: f32 = std::f32::consts::PI / 30.0;
+
+    /// The height reserved at the bottom of the control for the reading.
+    ///
+    /// Both the arc's fit and the reading's own placement derive their geometry from
+    /// this, so the two cannot disagree about how much room the reading has: a margin
+    /// written out twice is a margin that drifts in one of the two places.
+    fn reading_band() -> i32 {
+        24
+    }
+
+    /// Strokes the gauge's whole 270° sweep.
+    ///
+    /// The sweep is emitted as one stroked polyline through the circle's points rather
+    /// than as a `DrawArc` path. The SVG backend writes an arc as its two end points plus
+    /// a radius, and a bounds reader can only infer the drawn extent from that: inflating
+    /// each end point by the whole radius is the conservative reading, and for this 270°
+    /// sweep that inference reports the track at `[103,-35..215,99]` — outside the control
+    /// on three sides — even though the true curve fits. A polyline has no implied
+    /// geometry: every vertex is a point the backend is given, so the drawn extent and the
+    /// reported extent are the same set of coordinates.
+    fn draw_gauge_arc(
+        context: &mut RenderContext,
+        center: Point,
+        radius: u32,
+        arc_start_deg: f32,
+        arc_sweep_deg: f32,
+        offset: f32,
+        color: Color,
+    ) {
+        let start = deg_to_rad(arc_start_deg + offset);
+        let end = deg_to_rad(arc_start_deg + arc_sweep_deg + offset);
+        Self::drag_sweep(context, center, radius, start, end, color);
+    }
+
+    /// Strokes the arc from `start_angle` to `end_angle` as a polyline on the circle.
+    ///
+    /// The vertex count follows the swept angle, so a narrow threshold band costs a couple
+    /// of segments while the 270° track stays smooth. Six degrees per segment is
+    /// indistinguishable from a true arc at the radii this control draws at.
+    fn drag_sweep(
+        context: &mut RenderContext,
+        center: Point,
+        radius: u32,
+        start_angle: f32,
+        end_angle: f32,
+        color: Color,
+    ) {
+        let sweep = end_angle - start_angle;
+        if sweep.abs() < 0.001 {
+            return;
+        }
+        let segments = (sweep.abs() / Self::SEGMENT).ceil().max(1.0) as u32;
+        let step = sweep / segments as f32;
+        let points = (0..=segments)
+            .map(|segment| {
+                let angle = start_angle + step * segment as f32;
+                Point::new(
+                    center.x + (radius as f32 * angle.cos()).round() as i32,
+                    center.y + (radius as f32 * angle.sin()).round() as i32,
+                )
+            })
+            .collect();
+        context.execute_command(RenderCommand::DrawPath {
+            points,
+            closed: false,
+            color,
+            filled: false,
+            width: 1,
+        });
+    }
+
+    /// Snaps `angle` onto the vertex grid that starts at `origin`.
+    ///
+    /// Every arc on the ring is drawn from this one grid, so a stroke that covers another
+    /// passes through the *same* vertices and covers it exactly, rather than leaving a
+    /// hairline of the under-colour between two polylines that approximated the same arc
+    /// at different angles.
+    fn snap_to_grid(angle: f32, origin: f32) -> f32 {
+        let steps = ((angle - origin) / Self::SEGMENT).round();
+        origin + steps * Self::SEGMENT
     }
 }
 
@@ -363,51 +470,111 @@ impl Draw for Meter {
             return;
         }
 
-        let center = Point::new(rect.x + rect.width as i32 / 2, rect.y + rect.height as i32 / 2);
-
-        // Radius is half the smaller dimension minus padding.
-        let radius = rect.width.min(rect.height).saturating_sub(8) / 2;
-        if radius < 10 {
-            return;
-        }
+        // Vertical band the arc may occupy.
+        //
+        // The reading is written below the pivot, so one of the two has to give when the
+        // box is short. Reserving the reading's band up front lets the answer be "the arc
+        // shrinks" rather than "half the arc is drawn outside the control and a raster
+        // backend clips it away silently". A tall box reserves the whole band; a short one
+        // caps it at half the height, because otherwise there would be no arc left to
+        // shrink and the control would paint nothing at all (P1). The reading itself is
+        // then dropped by its own fit test below rather than being drawn off the edge.
+        let reading_reserve = Meter::reading_band();
+        let arc_band_height =
+            (rect.height as i32 - reading_reserve.min(rect.height as i32 / 2)).max(1);
 
         // Arc angles: 270° sweep starting from 135° (top-right quadrant).
         // The offset of -90° converts from "0 = top" to "0 = 3 o'clock".
+        //
+        // The 270° sweep is stroked as a chord chain of fixed angular step, and the
+        // strokes land on the same step grid: a band's ends are snapped to it, and the
+        // value arc is drawn with the same step and phase. Two chains that share the grid
+        // produce *identical* chords wherever their ranges overlap, so the value arc
+        // covers a band fully instead of leaving a sub-pixel sliver of the band's colour
+        // along a chord that was drawn at a slightly different angle.
         let arc_start_deg = 135.0_f32;
         let arc_sweep_deg = 270.0_f32;
         let offset = -90.0_f32;
-
         let start_angle = deg_to_rad(arc_start_deg + offset);
-        let end_angle = deg_to_rad(arc_start_deg + arc_sweep_deg + offset);
         let value_angle =
             deg_to_rad(arc_start_deg + arc_sweep_deg * self.normalized_value() + offset);
 
+        // Radius and centre fitted to the sweep's own bounding box.
+        //
+        // A 270° sweep starting at 45° passes through both the top and bottom cardinal
+        // points, so it spans the full `2 * radius` vertically; the gap is the
+        // 270°..45° quadrant on the right, which is why only the left half is reached
+        // horizontally (`radius` to the left of the centre, never to the right). Sizing
+        // the radius by the height while centring the ring on the rectangle therefore put
+        // the top of the arc a full radius above the centre — past the control's top edge
+        // — and the leftmost point a full radius left of it.
+        //
+        // The fit derives the radius from the band the arc may occupy and then places the
+        // centre from the radius, so the centre sits half a diameter below the band's top
+        // and half a radius right of its left edge. The `- 8` and the `+ 4` are the ring's
+        // breathing room, so the painted stroke does not sit flush against the border.
+        //
+        // A stroke is centred on its chord and so paints half its width outside the ring
+        // the radius describes; the `- 1` shrinks the radius by that half-width once, and
+        // every stroke on the ring uses the result.
+        let radius =
+            (rect.width / 2).min(arc_band_height as u32 / 2).saturating_sub(8).saturating_sub(1);
+        if radius < 10 {
+            return;
+        }
+        let center = Point::new(rect.x + radius as i32 + 4, rect.y + 4 + radius as i32);
+
         // Resolve colors from style.
         //
-        // `track_color` and `tick_color` used to be literals, so the un-filled part of
-        // the gauge and its tick marks stayed light in a dark theme. The track is the
-        // well the value arc travels in — that is the theme's background — and the
-        // ticks and their labels are marks the control paints over it, so `text_color`
-        // (falling back to `foreground_color`) is what keeps them legible on a dark
-        // surface. The threshold bands are deliberately *not* themed: a caller assigns
-        // each band its own colour to encode a range, so those are data, not chrome.
-        let style = self.style();
-        let track_color = style.background_color.unwrap_or(Color::rgb(230, 230, 230));
-        let value_arc_color = style.background_color.unwrap_or(Color::rgb(0, 120, 215));
-        let needle_color = style.text_color.unwrap_or(Color::rgb(60, 60, 60));
-        let tick_color = style.text_color.unwrap_or(Color::rgb(160, 160, 160));
+        // The track is the well the value arc travels in and the value arc is progress
+        // through it, so they are two different marks and cannot share one source. Both
+        // used to read `style.background_color`, which made them identical whenever a style
+        // set a background — a gauge whose filled and unfilled halves are the same colour
+        // reads as no progress at all.
+        //
+        // The needle, the pivot and the tick marks are the control's *value indicator*, not
+        // text: they are drawn over the ring to point at a reading, which is the same job
+        // the arc's fill does. They therefore take the accent the role classification
+        // already assigns this control (`WidgetRole::Accent`), falling back to the theme's
+        // accent token and then to the text colour for a build with no theme at all. Using
+        // `text_color` for them was why the census read this control as theme-blind with
+        // the default style: the resolved text colour is black in *both* appearances, and
+        // the many needle-and-tick pixels then outnumbered the one accent-coloured ring.
+        //
+        // The threshold bands are deliberately *not* themed: a caller assigns each band its
+        // own colour to encode a range, so those are data, not chrome.
+        let style = self.style().clone();
+        let theme = crate::style::resolved_theme_style("meter");
+        let accent = style
+            .background_color
+            .or_else(|| crate::style::semantic_color(crate::style::SemanticColor::Info))
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::rgb(0, 120, 215));
+        let track_color = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .map(|resolved| resolved.blend(&Color::WHITE, 0.55))
+            .unwrap_or(Color::rgb(230, 230, 230));
+        let value_arc_color = accent;
+        // The needle, pivot and ticks read the accent too, darkened for contrast against
+        // the arc they sit on. `text_color` is not usable here: the theme resolves it to
+        // black in both appearances, so an indicator drawn in it is identical in light and
+        // dark — which is precisely the theme-blindness this control was reported for. The
+        // accent is the token the `Accent` role already gives this control, and the blend
+        // keeps the indicator readable where it crosses the value arc.
+        let needle_color = Meter::needle_color(&accent);
+        let tick_color = Meter::tick_color(&accent);
 
         // Draw the background track arc (270° sweep, light gray).
-        if (end_angle - start_angle).abs() > 0.001 {
-            context.execute_command(RenderCommand::DrawArc {
-                center,
-                radius,
-                start_angle,
-                end_angle,
-                color: track_color,
-                filled: false,
-            });
-        }
+        Self::draw_gauge_arc(
+            context,
+            center,
+            radius,
+            arc_start_deg,
+            arc_sweep_deg,
+            offset,
+            track_color,
+        );
 
         // Threshold bands, drawn over the track and under the value arc.
         //
@@ -415,35 +582,36 @@ impl Draw for Meter {
         // and the value arc shows progress on top. Drawing the bands first means a
         // band never hides how far the needle's arc has reached.
         for band in &self.thresholds {
-            let band_start =
-                deg_to_rad(arc_start_deg + arc_sweep_deg * self.normalized(band.from) + offset);
-            let band_end =
-                deg_to_rad(arc_start_deg + arc_sweep_deg * self.normalized(band.to) + offset);
-            // Half a degree of width for a zero-length band, so a single-value
-            // threshold is still visible instead of collapsing to nothing.
+            let band_start = Self::snap_to_grid(
+                deg_to_rad(arc_start_deg + arc_sweep_deg * self.normalized(band.from) + offset),
+                start_angle,
+            );
+            let band_end = Self::snap_to_grid(
+                deg_to_rad(arc_start_deg + arc_sweep_deg * self.normalized(band.to) + offset),
+                start_angle,
+            );
+            // A band whose ends land on the same vertex is not a range, so there is
+            // nothing to draw between them.
             if (band_end - band_start).abs() < 0.001 {
                 continue;
             }
-            context.execute_command(RenderCommand::DrawArc {
-                center,
-                radius,
-                start_angle: band_start,
-                end_angle: band_end,
-                color: band.color,
-                filled: false,
-            });
+            // Each band is a sub-range of the same sweep, so it is stroked by the same
+            // polyline builder and crosses the sweep's cardinal points without
+            // special-casing. Its ends are snapped onto the shared vertex grid first, so
+            // the value arc drawn over it later passes through the same points and covers
+            // it exactly instead of leaving a hairline of the band's colour along a vertex
+            // drawn at a marginally different angle.
+            Self::drag_sweep(context, center, radius, band_start, band_end, band.color);
         }
 
         // Draw the value arc (colored arc from start to value position).
-        if self.value > self.min && (value_angle - start_angle).abs() > 0.001 {
-            context.execute_command(RenderCommand::DrawArc {
-                center,
-                radius,
-                start_angle,
-                end_angle: value_angle,
-                color: value_arc_color,
-                filled: false,
-            });
+        //
+        // Its angle range is clipped to the value rather than its radius re-fitted, which is
+        // what keeps it concentric with the track it is drawn over; its end is snapped onto the
+        // same grid for the reason at the bands above.
+        let value_end = Self::snap_to_grid(value_angle, start_angle);
+        if self.value > self.min && (value_end - start_angle).abs() > 0.001 {
+            Self::drag_sweep(context, center, radius, start_angle, value_end, value_arc_color);
         }
 
         // Draw tick marks at regular intervals along the arc.
@@ -493,7 +661,10 @@ impl Draw for Meter {
         }
 
         // Draw the needle line from center outward to the value angle.
-        let needle_length = radius.saturating_sub(8).max(1);
+        //
+        // The pivot disc below reaches 4 px in every direction, so the spoke stops one
+        // px short of the tracked ring and the disc's edge stays inside it.
+        let needle_length = radius.saturating_sub(5).max(1);
         let needle_x = center.x + (needle_length as f32 * value_angle.cos()) as i32;
         let needle_y = center.y + (needle_length as f32 * value_angle.sin()) as i32;
         context.draw_line_stroke(center, Point::new(needle_x, needle_y), needle_color, 2);
@@ -504,18 +675,18 @@ impl Draw for Meter {
         // The reading itself, below the pivot, so the needle can be read exactly
         // rather than only approximately.
         //
-        // Only drawn when it fits: at small geometries the text would overlap the
-        // arc, and a clipped reading is worse than none. The `+ 24` reserves the
-        // room the text needs vertically.
+        // Only drawn when the band reserved for it — by the same helper the arc's fit
+        // uses — lies wholly inside the control. A reading whose glyph box runs past the
+        // bottom edge is precisely the defect a raster backend hides and an SVG one
+        // shows, so "it fits" is answered against the rectangle rather than the arc.
         let text = self.value_text();
         let value_font = Font::simple("Sans", 12.0);
         let metrics = context.measure_text(&text, &value_font);
-        if rect.height as i32 >= radius as i32 + 24 {
+        let band_top = rect.y + rect.height as i32 - reading_reserve;
+        let value_y = band_top + (reading_reserve - metrics.height as i32) / 2;
+        if value_y >= rect.y && value_y + metrics.height as i32 <= rect.y + rect.height as i32 {
             context.draw_text(
-                Point::new(
-                    center.x - metrics.width as i32 / 2,
-                    center.y + (radius as i32 / 2) + metrics.ascent as i32,
-                ),
+                Point::new(center.x - metrics.width as i32 / 2, value_y),
                 &text,
                 &value_font,
                 needle_color,
@@ -762,11 +933,19 @@ mod tests {
         with.set_show_tick_labels(true);
         let labelled = render(&mut with, size);
 
-        // Labels are drawn in the tick colour (160,160,160); with labels off, that
-        // colour appears only on the short tick strokes, so switching them on must
-        // add a substantial number of such pixels.
-        let bare_ticks = count_near(&bare, (160, 160, 160));
-        let labelled_ticks = count_near(&labelled, (160, 160, 160));
+        // Labels are drawn in the control's tick colour, which is the accent darkened — a
+        // themed value, so the expectation is derived from the same helper the draw uses
+        // rather than from a literal that would silently stop matching. With labels off,
+        // that colour appears only on the short tick strokes, so switching them on must add
+        // a substantial number of such pixels.
+        let tick_rgb = {
+            let accent = crate::style::semantic_color(crate::style::SemanticColor::Info)
+                .unwrap_or(Color::rgb(0, 120, 215));
+            let color = Meter::tick_color(&accent);
+            (color.r, color.g, color.b)
+        };
+        let bare_ticks = count_near(&bare, tick_rgb);
+        let labelled_ticks = count_near(&labelled, tick_rgb);
         assert!(
             labelled_ticks > bare_ticks,
             "tick labels must paint text: {bare_ticks} -> {labelled_ticks}"
@@ -871,8 +1050,12 @@ mod tests {
             0,
             "a band behind the needle is covered by the value arc"
         );
-        // The reading itself is painted.
-        assert!(count_near(&rgba, (60, 60, 60)) > 0);
+        // The reading itself is painted, in the same themed gauge colour the needle uses.
+        let needle = Meter::needle_color(
+            &crate::style::semantic_color(crate::style::SemanticColor::Info)
+                .unwrap_or(Color::rgb(0, 120, 215)),
+        );
+        assert!(count_near(&rgba, (needle.r, needle.g, needle.b)) > 0);
     }
 
     #[test]

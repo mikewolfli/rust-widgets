@@ -3,7 +3,9 @@
 
 //! MediaPlayer widget.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+#[cfg(test)]
+use crate::core::Point;
+use crate::core::{Color, Font, HorizontalAlignment, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -400,17 +402,21 @@ impl Draw for MediaPlayer {
         let vol = if self.muted { "Muted".to_string() } else { format!("Vol {}", self.volume) };
         let fs = if self.fullscreen { "Fullscreen" } else { "Window" };
 
-        context.draw_text(
-            Point::new(rect.x + 10, rect.y + 18),
+        // Both lines are fitted to the control's width. The title comes from a file name,
+        // which has no length limit, and the status line is three joined words; neither was
+        // bounded, so a long file name simply kept going past the player's right edge.
+        let font = Font::default();
+        context.draw_text_fitted(
+            Rect::new(rect.x + 10, rect.y + 6, rect.width.saturating_sub(20), 16),
             title,
-            &Font::default(),
+            &font,
             Color::rgb(232, 237, 245),
             HorizontalAlignment::Left,
         );
-        context.draw_text(
-            Point::new(rect.x + 10, rect.y + 36),
+        context.draw_text_fitted(
+            Rect::new(rect.x + 10, rect.y + 24, rect.width.saturating_sub(20), 16),
             &format!("{state} | {vol} | {fs}"),
-            &Font::default(),
+            &font,
             Color::rgb(190, 202, 220),
             HorizontalAlignment::Left,
         );

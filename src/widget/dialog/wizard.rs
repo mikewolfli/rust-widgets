@@ -195,6 +195,58 @@ impl WizardDialog {
     fn do_cancel(&mut self) {
         self.cancelled.emit();
     }
+
+    /// Height of the step-indicator band, in logical pixels.
+    const STEP_INDICATOR_HEIGHT: u32 = 50;
+    /// Height of a navigation button, in logical pixels.
+    const NAV_BUTTON_HEIGHT: u32 = 36;
+    /// Gap below the navigation separator before the button row.
+    const NAV_ROW_GAP: i32 = 6;
+    /// Outer margin at each end of the navigation row.
+    const NAV_MARGIN: i32 = 8;
+    /// Gap between two adjacent navigation buttons.
+    const NAV_GAP: i32 = 4;
+    /// Widest a navigation button may become, so three of them stay distinguishable.
+    const NAV_MAX_BUTTON_WIDTH: u32 = 80;
+
+    /// The three navigation buttons, in visual order: `[Cancel, Back, Next]`.
+    ///
+    /// # Why this is one function rather than two
+    ///
+    /// The row is both painted and hit-tested, and those two callers used to compute it
+    /// independently: `draw` derived a 72 px column from the space actually available and
+    /// placed the trio at `8 / 80 / 160`, while `handle_event` kept the older fixed 80 px
+    /// column at `8 / 60 / 152`. Two of the three buttons therefore did not respond where
+    /// they appeared — `Back` was painted 20 px right of its own hit box, `Next` 8 px right
+    /// of its — and `Cancel` was painted 72 px wide but clickable 80 px.
+    ///
+    /// Deriving both from this function is the fix: a button cannot drift from its own
+    /// click target if there is only one rectangle.
+    ///
+    /// # Placement
+    ///
+    /// `Cancel` is pinned to the left margin, `Next` to the right, and `Back` is centred
+    /// between them. The width is taken from the space that is left over rather than fixed,
+    /// because preserving 80 px while forcing the origins apart pushed the last button past
+    /// the right edge (the row reached `x = 248` in a 240 px control).
+    fn nav_button_rects(&self, rect: Rect) -> [Rect; 3] {
+        let content_height =
+            rect.height.saturating_sub(Self::STEP_INDICATOR_HEIGHT + Self::NAV_BUTTON_HEIGHT + 12);
+        let nav_sep_y = rect.y + Self::STEP_INDICATOR_HEIGHT as i32 + content_height as i32;
+        let btn_y = nav_sep_y + Self::NAV_ROW_GAP;
+
+        let span = rect.width as i32;
+        let btn_w = ((span - Self::NAV_MARGIN * 2 - Self::NAV_GAP * 2) / 3)
+            .clamp(1, Self::NAV_MAX_BUTTON_WIDTH as i32) as u32;
+        let cancel_x = rect.x + Self::NAV_MARGIN;
+        let next_x = (rect.x + span - btn_w as i32 - Self::NAV_MARGIN).max(cancel_x + btn_w as i32);
+        let back_x = ((cancel_x + next_x) / 2 - btn_w as i32 / 2).max(cancel_x + btn_w as i32);
+        [
+            Rect::new(cancel_x, btn_y, btn_w, Self::NAV_BUTTON_HEIGHT),
+            Rect::new(back_x, btn_y, btn_w, Self::NAV_BUTTON_HEIGHT),
+            Rect::new(next_x, btn_y, btn_w, Self::NAV_BUTTON_HEIGHT),
+        ]
+    }
 }
 
 impl Widget for WizardDialog {
@@ -343,7 +395,22 @@ impl Draw for WizardDialog {
         let button_ink = button_fill.contrast_color();
         // The accent drives the wizard's progress affordances; the button fill is the
         // fallback when the theme declines to resolve one.
-        let primary = theme.as_ref().and_then(|t| t.background_color).unwrap_or(button_fill);
+        // The filled navigation button is an **affordance**, so it reads the theme's action
+        // colour. The previous version took it from `background_color`, which is the wrong
+        // token twice over: `wizard_dialog` classifies as `WidgetRole::Surface`, so that
+        // token resolves to the *dialog's own fill*, and the three buttons then differed only
+        // by the 0.12 blend the plain pads use. In dark the primary button came out grey
+        // (139,139,139) instead of an accent, and on the last step a *different* token
+        // (`success`) took over — so `Next` and `Finish` were two unrelated palettes rather
+        // than one affordance in two states.
+        //
+        // `primary` is read from the theme directly, the same way `fab` reads it: an action
+        // colour is what the token is for, and no state override exists for it.
+        let primary = crate::style::theme_manager()
+            .current_theme()
+            .map(|active| active.colors.primary)
+            .or_else(|| style.background_color.filter(|resolved| *resolved != window_fill))
+            .unwrap_or_else(|| surface.blend(&ink, 0.5));
         let primary_ink = primary.contrast_color();
         // "Completed" is a *state*, so its green comes from the theme's semantic token
         // instead of the literal it used to carry. `semantic_color` takes and releases the
@@ -354,11 +421,26 @@ impl Draw for WizardDialog {
         // Background
         context.fill_rect(rect, surface);
 
-        let step_indicator_height = 50u32;
-        let nav_button_height = 36u32;
+        // The wizard's chrome needs 98 px before any content exists: the 50 px step
+        // indicator, the 48 px navigation band and a separator. A shorter control used to
+        // get a content band that `saturating_sub` had reduced to zero, and the navigation
+        // row at `content_y + 0 + 6` then drew *on top of* the indicator — three labelled
+        // buttons 78 px into a 120 px box, with their 36 px height reaching past y = 114.
+        // The two bands are stacked from the top with the navigation band's height reserved,
+        // so the content band is what shrinks; and when the frame itself is shorter than the
+        // chrome, only the indicator is drawn, because a truncated step indicator still
+        // reads as a wizard while an overlapping button row does not.
+        let step_indicator_height = Self::STEP_INDICATOR_HEIGHT;
+        let nav_button_height = Self::NAV_BUTTON_HEIGHT;
         let nav_area_height = nav_button_height + 12; // 12 padding
+        let chrome_height = step_indicator_height + nav_area_height;
+        let has_nav = rect.height >= chrome_height;
         let content_y = rect.y + step_indicator_height as i32;
-        let content_height = rect.height.saturating_sub(step_indicator_height + nav_area_height);
+        let content_height = if has_nav {
+            rect.height - chrome_height
+        } else {
+            step_indicator_height.min(rect.height)
+        };
 
         // ── Step Indicator ──────────────────────────────────────────────
         if !self.steps.is_empty() {
@@ -386,23 +468,45 @@ impl Draw for WizardDialog {
                     (surface.blend(&ink, 0.15), ink)
                 };
 
-                // Draw circle
+                // Draw circle. The step indicator is the wizard's primary chrome, so it is
+                // skipped — not clipped — when the frame is too short to hold it: a circle
+                // that is still painted while the boxes below it are omitted reads as a
+                // rendering fault rather than as a small dialog.
+                if rect.height < step_indicator_height {
+                    break;
+                }
                 context.fill_circle_aa(Point::new(cx, cy), circle_radius, circle_color);
 
-                // Step number inside circle
+                // Step number inside circle. Centred on the circle rather than offset by a
+                // fixed `-4 / -6` written for a one-digit label: the offset put a two-digit
+                // step to the right of centre, and the label was never fitted at all.
                 let label = format!("{}", i + 1);
                 let label_font = Font::bold("Arial", 11.0);
-                let label_x = cx - 4;
-                let label_y = cy - 6;
-                context.draw_text(
-                    Point::new(label_x, label_y),
+                let label_metrics = context.measure_text(&label, &label_font);
+                let label_box = Rect::new(
+                    cx - circle_radius as i32,
+                    cy - circle_radius as i32,
+                    circle_radius * 2,
+                    circle_radius * 2,
+                );
+                context.draw_text_fitted(
+                    Rect::new(
+                        label_box.x,
+                        (label_box.y + (label_box.height as i32 - label_metrics.height as i32) / 2)
+                            .max(label_box.y),
+                        label_box.width,
+                        label_metrics.height.max(1),
+                    ),
                     &label,
                     &label_font,
                     text_color,
-                    HorizontalAlignment::Left,
+                    HorizontalAlignment::Center,
                 );
 
-                // Step title below circle
+                // Step title below circle. Bounded by the step's own cell, so a long title
+                // truncates inside its column instead of over the neighbouring step; the
+                // former byte-slice truncation also panicked on a multi-byte character
+                // boundary, which a fitted draw cannot.
                 let title_font = if is_active {
                     Font::bold("Arial", 9.0)
                 } else {
@@ -415,21 +519,19 @@ impl Draw for WizardDialog {
                 } else {
                     ink
                 };
-                let title_x = cx - (spacing as i32 / 2) + 2;
+                let title_metrics = context.measure_text("M", &title_font);
                 let title_y = cy + circle_radius as i32 + 2;
-                // Truncate title text to fit
-                let max_title_len = (spacing / 8).max(4) as usize;
-                let display_title = if self.steps[i].title.len() > max_title_len {
-                    format!("{}..", &self.steps[i].title[..max_title_len.saturating_sub(2)])
-                } else {
-                    self.steps[i].title.clone()
-                };
-                context.draw_text(
-                    Point::new(title_x, title_y),
-                    &display_title,
+                context.draw_text_fitted(
+                    Rect::new(
+                        cx - (spacing as i32 / 2),
+                        title_y,
+                        spacing,
+                        title_metrics.height.max(1),
+                    ),
+                    &self.steps[i].title,
                     &title_font,
                     title_color,
-                    HorizontalAlignment::Left,
+                    HorizontalAlignment::Center,
                 );
 
                 // Connect steps with lines
@@ -445,10 +547,18 @@ impl Draw for WizardDialog {
                 }
             }
         } else {
-            // No steps — draw placeholder
+            // No steps — draw placeholder. Confined to the band above the separator, which
+            // is also where the navigation row begins when the frame is short.
             let empty_font = Font::new("Arial", 14.0, false, false);
-            context.draw_text(
-                Point::new(rect.x + 10, rect.y + step_indicator_height as i32 / 2 - 6),
+            let empty_metrics = context.measure_text("No steps configured", &empty_font);
+            context.draw_text_fitted(
+                Rect::new(
+                    rect.x + 10,
+                    (rect.y + (step_indicator_height as i32 - empty_metrics.height as i32) / 2)
+                        .max(rect.y),
+                    rect.width.saturating_sub(20),
+                    empty_metrics.height.max(1),
+                ),
                 "No steps configured",
                 &empty_font,
                 ink.blend(&surface, 0.45),
@@ -458,22 +568,32 @@ impl Draw for WizardDialog {
 
         // ── Step indicator separator line ───────────────────────────────
         let sep_y = rect.y + step_indicator_height as i32;
-        context.draw_line(
-            Point::new(rect.x, sep_y),
-            Point::new(rect.x + rect.width as i32, sep_y),
-            border,
-        );
+        if sep_y <= rect.y + rect.height as i32 {
+            context.draw_line(
+                Point::new(rect.x, sep_y),
+                Point::new(rect.x + rect.width as i32, sep_y),
+                border,
+            );
+        }
 
         // ── Content Area ────────────────────────────────────────────────
+        // The well is the region between the indicator and the navigation band. When the
+        // frame is too short to hold both it is painted behind the buttons rather than
+        // claiming a band of its own, so the two never overlap.
+        let content_rect = Rect::new(rect.x, content_y, rect.width, content_height);
+        context.fill_rect(content_rect, content_fill);
         if !self.steps.is_empty() {
-            // Content background
-            let content_rect = Rect::new(rect.x, content_y, rect.width, content_height);
-            context.fill_rect(content_rect, content_fill);
-
             // Step title in content area
             let title_font = Font::bold("Arial", 16.0);
-            context.draw_text(
-                Point::new(rect.x + 12, content_y + 8),
+            let title_metrics =
+                context.measure_text(&self.steps[self.current_step].title, &title_font);
+            context.draw_text_fitted(
+                Rect::new(
+                    rect.x + 12,
+                    content_rect.y + 8,
+                    rect.width.saturating_sub(24),
+                    title_metrics.height.max(1),
+                ),
                 &self.steps[self.current_step].title,
                 &title_font,
                 ink,
@@ -483,8 +603,14 @@ impl Draw for WizardDialog {
             // Optional label
             if self.steps[self.current_step].optional {
                 let opt_font = Font::new("Arial", 11.0, false, true);
-                context.draw_text(
-                    Point::new(rect.x + 12, content_y + 30),
+                let opt_metrics = context.measure_text("(Optional step)", &opt_font);
+                context.draw_text_fitted(
+                    Rect::new(
+                        rect.x + 12,
+                        content_rect.y + 30,
+                        rect.width.saturating_sub(24),
+                        opt_metrics.height.max(1),
+                    ),
                     "(Optional step)",
                     &opt_font,
                     ink.blend(&surface, 0.45),
@@ -492,23 +618,37 @@ impl Draw for WizardDialog {
                 );
             }
 
-            // Current step info
+            // Current step info. Anchored to the well's own bottom edge, so it follows the
+            // band rather than a fixed offset from the frame that the button row shares.
             let info_font = Font::new("Arial", 11.0, false, false);
             let info_text = format!("Step {} of {}", self.current_step + 1, self.steps.len());
-            context.draw_text(
-                Point::new(rect.x + 12, content_y + content_height as i32 - 16),
+            let info_metrics = context.measure_text(&info_text, &info_font);
+            let info_y = (content_rect.y + content_rect.height as i32 - info_metrics.height as i32)
+                .max(content_rect.y);
+            context.draw_text_fitted(
+                Rect::new(
+                    rect.x + 12,
+                    info_y,
+                    rect.width.saturating_sub(24),
+                    info_metrics.height.max(1),
+                ),
                 &info_text,
                 &info_font,
                 ink.blend(&surface, 0.45),
                 HorizontalAlignment::Left,
             );
         } else {
-            // Empty content area
-            let content_rect = Rect::new(rect.x, content_y, rect.width, content_height);
-            context.fill_rect(content_rect, content_fill);
+            // Empty content area. Drawn inside the well's two rows so a 120 px wizard no
+            // longer stacks this above the first navigation button.
             let empty_font = Font::new("Arial", 14.0, false, false);
-            context.draw_text(
-                Point::new(rect.x + 12, content_y + 8),
+            let empty_metrics = context.measure_text("Add steps to begin", &empty_font);
+            context.draw_text_fitted(
+                Rect::new(
+                    rect.x + 12,
+                    (content_rect.y + 8).min(content_rect.y + content_rect.height as i32),
+                    rect.width.saturating_sub(24),
+                    empty_metrics.height.max(1),
+                ),
                 "Add steps to begin",
                 &empty_font,
                 ink.blend(&surface, 0.45),
@@ -517,6 +657,11 @@ impl Draw for WizardDialog {
         }
 
         // ── Navigation buttons separator ────────────────────────────────
+        // Nothing below this line is drawn when the frame is too short to hold the band,
+        // because the row would otherwise hang over the content well it is meant to follow.
+        if !has_nav {
+            return;
+        }
         let nav_sep_y = content_y + content_height as i32;
         context.draw_line(
             Point::new(rect.x, nav_sep_y),
@@ -525,62 +670,98 @@ impl Draw for WizardDialog {
         );
 
         // ── Navigation Buttons ──────────────────────────────────────────
-        let nav_y = nav_sep_y + 6;
-        let btn_w = 80u32;
-        let btn_h = nav_button_height;
-        let btn_y = nav_y;
+        // The three buttons come from **one** layout function, which the event handler also
+        // calls. They used to be computed twice — here from a 72 px column and in
+        // `handle_event` from a fixed 80 px one placed 20 px and 8 px elsewhere. The painted
+        // `Back` therefore sat 20 px right of where it could be clicked, and the painted
+        // `Next` 8 px right of its own hit box: two of the three buttons did not respond
+        // where they appeared. Order alone was never the problem; **two layouts for one row**
+        // was, so there is now one.
+        let nav = self.nav_button_rects(rect);
+        let (cancel_btn, back_btn, next_btn) = (nav[0], nav[1], nav[2]);
+        // A label is one line box tall and the renderer's origin is its **top** edge, so
+        // centring means offsetting by half the *difference*. Passing the button rect
+        // unchanged put every label on the button's top edge with 24 px of empty pad below
+        // it, which is what made the row look wrong even where the colours were right.
+        let nav_font = Font::new("Arial", 12.0, false, false);
+        let nav_text_height = context.measure_text("M", &nav_font).height.max(1);
+        let label_of = |button: Rect| {
+            Rect::new(
+                button.x,
+                button.y + (button.height as i32 - nav_text_height as i32) / 2,
+                button.width,
+                nav_text_height,
+            )
+        };
 
         // Cancel button (left side)
-        let cancel_btn = Rect::new(rect.x + 8, btn_y, btn_w, btn_h);
         context.fill_rounded_rect(cancel_btn, 4, button_fill);
         context.draw_rounded_rect_stroke(cancel_btn, 4, border, 1);
-        context.draw_text(
-            Point::new(cancel_btn.x + 14, cancel_btn.y + 10),
+        context.draw_text_fitted(
+            label_of(cancel_btn),
             "Cancel",
-            &Font::new("Arial", 12.0, false, false),
+            &nav_font,
             button_ink,
-            HorizontalAlignment::Left,
+            HorizontalAlignment::Center,
         );
 
         // Back button
+        //
+        // # Why the disabled state is now derived from *one* colour
+        //
+        // A disabled button was painted by dimming the fill and the label independently:
+        // the fill was `button_fill.blend(ink, 0.5)` and the label `ink.blend(surface, 0.45)`.
+        // Neither is wrong on its own, but together they landed on the same grey — fill
+        // `139,139,139`, label `137,137,137`, a difference of two levels per channel — so the
+        // `Back` button rendered as an **unlabelled grey block**. That is not a subtle contrast
+        // problem; a button with no visible caption reads as an empty control, which is how it
+        // was reported.
+        //
+        // Two independent dimming formulas for one button cannot be kept in agreement by
+        // inspection, so the disabled button now takes the *same* pair of functions the
+        // enabled one does: the fill is derived from the button's own base colour, and the
+        // label is that fill's own `contrast_color()`. Contrast is therefore correct by
+        // construction in every appearance, not by two constants happening to round apart.
         let back_enabled = !self.is_first() && !self.steps.is_empty();
-        let back_btn =
-            Rect::new(rect.x + rect.width as i32 - 2 * btn_w as i32 - 20, btn_y, btn_w, btn_h);
-        // A disabled control dims toward its own ink rather than to a fixed light grey, which
-        // is what previously made the disabled state ignore the appearance entirely.
-        let back_color = if !back_enabled { button_fill.blend(&ink, 0.5) } else { button_fill };
+        let back_color = if back_enabled { button_fill } else { button_fill.blend(&surface, 0.55) };
+        let back_text_color = if back_enabled {
+            button_ink
+        } else {
+            back_color.contrast_color().blend(&surface, 0.35)
+        };
         context.fill_rounded_rect(back_btn, 4, back_color);
         context.draw_rounded_rect_stroke(back_btn, 4, border, 1);
-        context.draw_text(
-            Point::new(back_btn.x + 18, back_btn.y + 10),
+        context.draw_text_fitted(
+            label_of(back_btn),
             "Back",
-            &Font::new("Arial", 12.0, false, false),
-            if !back_enabled { ink.blend(&surface, 0.45) } else { button_ink },
-            HorizontalAlignment::Left,
+            &nav_font,
+            back_text_color,
+            HorizontalAlignment::Center,
         );
 
-        // Next/Finish button
-        let next_btn =
-            Rect::new(rect.x + rect.width as i32 - btn_w as i32 - 8, btn_y, btn_w, btn_h);
+        // Next/Finish button. It is one affordance in two states, so both states read the
+        // same action token; only the label changes. Deriving the last step's fill from
+        // `success` made `Next` and `Finish` look like two different controls.
+        //
+        // The disabled label is the same `contrast_color()` path as the enabled one, dimmed a
+        // step toward the surface. The previous `ink.blend(surface, 0.45)` was a *fixed* grey
+        // that ignored what it was being painted on, so on the accent fill it was whatever
+        // that formula produced rather than something legible.
         let is_last_step = self.is_last();
         let btn_text = if is_last_step { "Finish" } else { "Next" };
-        let btn_color = if !is_enabled {
-            primary.blend(&ink, 0.5)
-        } else if is_last_step {
-            complete
+        let btn_color = if is_enabled { primary } else { primary.blend(&surface, 0.55) };
+        let btn_text_color = if is_enabled {
+            primary.contrast_color()
         } else {
-            primary
+            btn_color.contrast_color().blend(&surface, 0.35)
         };
         context.fill_rounded_rect(next_btn, 4, btn_color);
-        let btn_text_color =
-            if !is_enabled { ink.blend(&surface, 0.45) } else { btn_color.contrast_color() };
-        let text_x = if is_last_step { next_btn.x + 14 } else { next_btn.x + 20 };
-        context.draw_text(
-            Point::new(text_x, next_btn.y + 10),
+        context.draw_text_fitted(
+            label_of(next_btn),
             btn_text,
             &Font::bold("Arial", 12.0),
             btn_text_color,
-            HorizontalAlignment::Left,
+            HorizontalAlignment::Center,
         );
     }
 }
@@ -593,41 +774,16 @@ impl EventHandler for WizardDialog {
         match event {
             Event::MousePress { pos, button: _ } | Event::MouseRelease { pos, button: _ } => {
                 let rect = self.geometry();
-                let step_indicator_height = 50u32;
-                let nav_button_height = 36u32;
-                let nav_area_height = nav_button_height + 12;
-                let content_height =
-                    rect.height.saturating_sub(step_indicator_height + nav_area_height);
-                let content_y = rect.y + step_indicator_height as i32;
-                let nav_sep_y = content_y + content_height as i32;
-                let nav_y = nav_sep_y + 6;
-                let btn_w = 80u32;
-                let btn_h = nav_button_height;
-                let btn_y = nav_y;
-
-                // Cancel button
-                let cancel_btn = Rect::new(rect.x + 8, btn_y, btn_w, btn_h);
-                if cancel_btn.contains_point(*pos) {
+                let nav = self.nav_button_rects(rect);
+                if nav[0].contains_point(*pos) {
                     self.do_cancel();
                     return;
                 }
-
-                // Back button
-                let back_btn = Rect::new(
-                    rect.x + rect.width as i32 - 2 * btn_w as i32 - 20,
-                    btn_y,
-                    btn_w,
-                    btn_h,
-                );
-                if back_btn.contains_point(*pos) && !self.is_first() && !self.steps.is_empty() {
+                if nav[1].contains_point(*pos) && !self.is_first() && !self.steps.is_empty() {
                     self.previous();
                     return;
                 }
-
-                // Next/Finish button
-                let next_btn =
-                    Rect::new(rect.x + rect.width as i32 - btn_w as i32 - 8, btn_y, btn_w, btn_h);
-                if next_btn.contains_point(*pos) && !self.steps.is_empty() {
+                if nav[2].contains_point(*pos) && !self.steps.is_empty() {
                     if self.is_last() {
                         self.do_finish();
                     } else {

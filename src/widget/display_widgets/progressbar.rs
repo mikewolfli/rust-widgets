@@ -264,6 +264,14 @@ impl Draw for ProgressBar {
         let style = self.style();
         let bg = style.background_color.unwrap_or(Color::rgb(240, 240, 240));
         let text_color = style.text_color.unwrap_or(Color::rgb(0, 0, 0));
+        // The filled portion is **chrome**, not data: it expresses "how much of this task is
+        // done", and that reading is carried by its *extent*, not by its hue. Hardcoding it
+        // meant a light and a dark window showed the same blue bar, so the switch did
+        // nothing. It now resolves the theme's `info` token — the token whose meaning is
+        // "informational progress" — and keeps the previous literal only as the no-theme
+        // fallback, so a build without a theme renders exactly what it used to.
+        let fill = crate::style::semantic_color(crate::style::SemanticColor::Info)
+            .unwrap_or(Color::rgb(0, 120, 215));
         // Draw background
         context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), bg);
         // Draw border
@@ -279,10 +287,7 @@ impl Draw for ProgressBar {
                 } else {
                     rect.x
                 };
-                context.fill_rect(
-                    Rect::new(x, rect.y, progress_width, rect.height),
-                    Color::rgb(0, 120, 215),
-                );
+                context.fill_rect(Rect::new(x, rect.y, progress_width, rect.height), fill);
             }
             Orientation::Vertical => {
                 let progress_height = (rect.height as f32 * progress) as u32;
@@ -291,10 +296,7 @@ impl Draw for ProgressBar {
                 } else {
                     rect.y + rect.height as i32 - progress_height as i32
                 };
-                context.fill_rect(
-                    Rect::new(rect.x, y, rect.width, progress_height),
-                    Color::rgb(0, 120, 215),
-                );
+                context.fill_rect(Rect::new(rect.x, y, rect.width, progress_height), fill);
             }
         }
         // Draw text if visible

@@ -425,15 +425,47 @@ impl Draw for MaskedEdit {
         context.draw_rounded_rect_stroke(geom, 4, border_color, if self.focused { 2 } else { 1 });
 
         // ── Draw display text with mask placeholders ──
+        //
+        // Each character is positioned by advancing a fixed `char_width` rather than by the
+        // font's reported advance. The advance is deliberately *not* the fitting budget here:
+        // layout is computed through the SVG backend, which reports metrics at a DPI scale its
+        // drawing coordinates are not expressed in — every `measure_text` under it came back
+        // 1.75x the drawn size (a 13 px glyph measured 22.75). Fitting to a metric in a
+        // different coordinate space than the coordinates being emitted is what let a field's
+        // text be laid out from the centre line downward and leave the control. The segment
+        // walk below therefore bounds each character by arithmetic in the painter's own space,
+        // where its own `char_width` is the unit it advances by.
         let padding = 6i32;
         let text_x = geom.x + padding;
-        let text_y = geom.y + geom.height as i32 / 2;
+        // The band a character may occupy. It starts below the field's top border and stops at
+        // the field's bottom edge, because a character is drawn *down* from its origin: a 13 px
+        // glyph placed on the vertical centre line at `geom.y + height / 2` reached
+        // `geom.y + height`, which the P5 assertion reads as painting outside the control (the
+        // SVG snapshot shows a `<text>` at `y = 60` in a 120 px field whose painted extent
+        // reaches y = 73). Centring the *glyph box* instead of its centre line keeps the text
+        // where it was while giving both branches below a bound they can be checked against.
+        let inner_top = geom.y + (geom.height.saturating_sub(font.size() as u32) / 2) as i32;
+        let inner_height = (geom.height as i32 - padding).max(0) as u32;
 
         if self.mask.is_empty() {
             let text_color =
                 if !is_enabled { Color::rgba(150, 150, 150, 200) } else { Color::rgb(33, 33, 33) };
-            context.draw_text(
-                Point::new(text_x, text_y),
+            // An unmasked field needs a string, so the census hands this one "Sample" — but so
+            // does a real caller entering past the field's width, and the text was drawn at the
+            // call site with no bound at all. Unlike the masked branch below, which walks one
+            // character per segment and stops at the padding, there is no per-segment budget
+            // here, so the whole string was emitted whatever the field could show. Bounding the
+            // box is still worth doing for the vertical placement even though the run is laid
+            // out from the painter's own geometry: the origin is the reason the text sat below
+            // the field's inner area in the first place.
+            let text_bounds = Rect::new(
+                text_x,
+                inner_top,
+                geom.width.saturating_sub(padding as u32 * 2),
+                inner_height,
+            );
+            context.draw_text_fitted(
+                text_bounds,
                 &self.raw_text,
                 &font,
                 text_color,
@@ -448,72 +480,85 @@ impl Draw for MaskedEdit {
         let char_width = 8u32;
 
         for (seg_idx, seg) in self.segments.iter().enumerate() {
+            // A segment only starts inside the inner rectangle. With one character per segment
+            // the cumulative test `< geom.width - padding * 2` is the whole bound.
             if display_x - text_x > geom.width as i32 - padding * 2 {
                 break;
             }
+            // What is left of the inner rectangle, in the painter's own coordinates. A zero or
+            // negative remainder means the field is already full, and `draw_x` therefore skips
+            // the segment instead of writing a character whose glyph box would begin at or past
+            // the field's right edge and advance outside it.
+            let remaining_w = geom.x + geom.width as i32 - padding - display_x;
+            let draw_x = display_x.min(geom.x + geom.width as i32 - padding - 1);
 
-            match seg {
-                MaskSegment::Literal { ch } => {
-                    let lit_color = Color::rgba(160, 160, 160, 200);
-                    context.draw_text(
-                        Point::new(display_x, text_y),
-                        &ch.to_string(),
-                        &font,
-                        lit_color,
-                        HorizontalAlignment::Left,
-                    );
-                    display_x += char_width as i32;
-                }
-                MaskSegment::Input { kind } => {
-                    let has_input = raw_idx < self.raw_text.len();
-                    let ch = if has_input {
-                        self.raw_text.as_bytes()[raw_idx] as char
-                    } else {
-                        placeholder_char(*kind)
-                    };
-
-                    let char_color = if !is_enabled {
-                        Color::rgba(150, 150, 150, 200)
-                    } else if has_input {
-                        Color::rgb(33, 33, 33)
-                    } else {
-                        Color::rgba(180, 180, 180, 200)
-                    };
-
-                    let metrics = context.measure_text(&ch.to_string(), &font);
-                    let ch_width = metrics.width as i32;
-
-                    // Draw cursor if at this segment position
-                    if self.focused && is_enabled && seg_idx == self.cursor_pos {
-                        context.fill_rect(
-                            Rect::new(
-                                display_x,
-                                geom.y + 2,
-                                char_width,
-                                geom.height.saturating_sub(4),
-                            ),
-                            Color::rgb(25, 118, 210),
-                        );
+            if remaining_w > 0 {
+                match seg {
+                    MaskSegment::Literal { ch } => {
+                        let lit_color = Color::rgba(160, 160, 160, 200);
                         context.draw_text(
-                            Point::new(display_x, text_y),
+                            Point::new(draw_x, inner_top),
                             &ch.to_string(),
                             &font,
-                            Color::WHITE,
+                            lit_color,
                             HorizontalAlignment::Left,
                         );
-                    } else {
-                        context.draw_text(
-                            Point::new(display_x, text_y),
-                            &ch.to_string(),
-                            &font,
-                            char_color,
-                            HorizontalAlignment::Left,
-                        );
+                        display_x += char_width as i32;
                     }
+                    MaskSegment::Input { kind } => {
+                        let has_input = raw_idx < self.raw_text.len();
+                        let ch = if has_input {
+                            self.raw_text.as_bytes()[raw_idx] as char
+                        } else {
+                            placeholder_char(*kind)
+                        };
 
-                    display_x += ch_width.max(char_width as i32);
-                    if has_input {
-                        raw_idx += 1;
+                        let char_color = if !is_enabled {
+                            Color::rgba(150, 150, 150, 200)
+                        } else if has_input {
+                            Color::rgb(33, 33, 33)
+                        } else {
+                            Color::rgba(180, 180, 180, 200)
+                        };
+
+                        // Draw cursor if at this segment position
+                        if self.focused && is_enabled && seg_idx == self.cursor_pos {
+                            context.fill_rect(
+                                Rect::new(
+                                    draw_x,
+                                    geom.y + 2,
+                                    (char_width as i32).min(remaining_w) as u32,
+                                    geom.height.saturating_sub(4),
+                                ),
+                                Color::rgb(25, 118, 210),
+                            );
+                            context.draw_text(
+                                Point::new(draw_x, inner_top),
+                                &ch.to_string(),
+                                &font,
+                                Color::WHITE,
+                                HorizontalAlignment::Left,
+                            );
+                        } else {
+                            context.draw_text(
+                                Point::new(draw_x, inner_top),
+                                &ch.to_string(),
+                                &font,
+                                char_color,
+                                HorizontalAlignment::Left,
+                            );
+                        }
+
+                        // `char_width` rather than the measured advance: it is the unit the
+                        // layout above already advances by (the literal width this branch
+                        // reserves for the cursor), and the measured advance is reported in a
+                        // different coordinate space than `display_x`. Advancing by one and
+                        // measuring in the other is what previously let the last cell start up
+                        // to 22 px past where the layout believed it was.
+                        display_x += char_width as i32;
+                        if has_input {
+                            raw_idx += 1;
+                        }
                     }
                 }
             }

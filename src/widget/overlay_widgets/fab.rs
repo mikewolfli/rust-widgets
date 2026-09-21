@@ -158,7 +158,15 @@ impl Draw for FAB {
         // Compute button center and radius
         let cx = rect.x + (rect.width as i32) / 2;
         let cy = rect.y + (rect.height as i32) / 2;
-        let base_radius = rect.width.min(rect.height) / 2;
+        // The shadow is the same circle, offset down-right, so the *painted* extent is the
+        // radius plus that offset on the bottom and right. A radius of `min(w, h) / 2` filled
+        // the box exactly, which left the offset circle sticking out on two sides: the SVG
+        // snapshot showed the shadow hanging past the control while the raster backend clipped
+        // it. The radius is therefore reduced by the largest offset used (the unpressed one,
+        // since the pressed state shrinks the circle anyway), keeping the shadow inside too.
+        let max_shadow_offset = (3.0 * dpi).ceil() as u32;
+        let base_radius =
+            (rect.width.min(rect.height) / 2).saturating_sub(max_shadow_offset / 2 + 1);
 
         // When pressed, shrink by ~10% for press animation
         let (radius, shadow_offset) = if self.pressed && is_enabled {
@@ -215,7 +223,11 @@ impl Draw for FAB {
         // Draw filled circle
         context.fill_circle_aa(center, radius, fill_color);
 
-        // Draw icon text centered in the button
+        // Draw icon text centred on the button. The glyph origin is the glyph's **top-left**,
+        // so the vertical centre is half the line box; adding `ascent` on top of an
+        // already-centred y pushed the icon half a line below the circle's middle. The label
+        // is fitted to the circle's inner square so a long one is truncated rather than
+        // painted out of the button.
         if !self.icon_text.is_empty() {
             // Use a default monospace-like font at a size proportional to button
             let font_size = if self.mini {
@@ -227,15 +239,22 @@ impl Draw for FAB {
             let font = Font::new("sans-serif", font_size, false, false);
 
             let metrics = context.measure_text(&self.icon_text, &font);
-            let text_x = cx - (metrics.width as i32) / 2;
-            let text_y = cy - (metrics.height as i32) / 2 + (metrics.ascent as i32);
-
-            context.draw_text(
-                Point::new(text_x, text_y),
+            let text_y = cy - (metrics.height as i32) / 2;
+            // The inscribed square of a circle of radius `r` has a half-side of `r / sqrt(2)`,
+            // which is the widest label that stays inside the disc at any rotation.
+            let half_side = (radius as f32 / core::f32::consts::SQRT_2) as i32;
+            let band = Rect::new(
+                (cx - half_side).max(rect.x),
+                text_y.max(rect.y),
+                (half_side * 2).max(0) as u32,
+                metrics.height,
+            );
+            context.draw_text_fitted(
+                band,
                 &self.icon_text,
                 &font,
                 icon_color,
-                HorizontalAlignment::Left,
+                HorizontalAlignment::Center,
             );
         }
     }

@@ -413,10 +413,19 @@ impl Draw for CommandPalette {
 
         let header = Rect::new(rect.x, rect.y, rect.width, self.row_height);
         context.fill_rect(header, header_background);
-        context.draw_text(
-            Point::new(rect.x + 8, rect.y + self.row_height as i32 / 2),
+        // Centred inside the header row by half the line box: the origin is the glyph's **top**
+        // edge, so the row's midline put a 14 px query at 12..26 in a 24 px row.
+        let query_font = Font::default();
+        let query_h = context.measure_text("M", &query_font).height;
+        context.draw_text_fitted(
+            Rect::new(
+                header.x + 8,
+                header.y + (header.height as i32 - query_h as i32) / 2,
+                header.width.saturating_sub(16),
+                query_h,
+            ),
             &format!("> {}", self.query),
-            &Font::default(),
+            &query_font,
             text_color,
             HorizontalAlignment::Left,
         );

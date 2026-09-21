@@ -286,11 +286,12 @@ impl Draw for Badge {
         // Draw pill background
         context.fill_rounded_rect(pill_rect, corner_radius, bg_color);
 
-        // Draw text centered on the pill
+        // Draw text centred on the pill. The glyph origin is the glyph's **top** edge, so
+        // centring is half the difference between the pill and the line box — the extra
+        // `+ ascent` that used to be here pushed the label half a line down, out through the
+        // pill's bottom edge (`sample` sat at y = 63..74 in a box ending at 69).
         let text_x = pill_rect.x + ((pill_rect.width as i32 - text_width as i32) / 2).max(0);
-        let text_y = pill_rect.y
-            + ((pill_rect.height as i32 - glyph_height as i32) / 2).max(0)
-            + metrics.ascent as i32;
+        let text_y = pill_rect.y + ((pill_rect.height as i32 - glyph_height as i32) / 2).max(0);
 
         context.draw_text(
             Point::new(text_x, text_y),

@@ -4,7 +4,7 @@ This chapter provides a comprehensive, module-by-module reference for the
 entire `rust_widgets` public API. Use this as a quick lookup when you need to
 find the right type, function, or trait for your task.
 
-The library version documented here is **2.5.0**. Code examples assume
+The library version documented here is **2.5.2**. Code examples assume
 `use rust_widgets::*;` or explicit paths as shown.
 
 ---
@@ -518,7 +518,7 @@ pub trait Draw {
 
 ### Widget Kind Enum
 
-`WidgetKind` enumerates every widget type in the system (179 in a device profile). Selected variants:
+`WidgetKind` enumerates every widget type in the system (180 in a device profile). Selected variants:
 
 - `Button`, `CheckBox`, `RadioButton`, `Label`
 - `LineEdit`, `TextArea`, `ComboBox`, `ListBox`, `SpinBox`, `Dropdown`

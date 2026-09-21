@@ -32,7 +32,7 @@ cargo run --no-default-features --features mini     --example embedded_host
 ```toml
 # 你自己二進位的 Cargo.toml
 [dependencies]
-rust_widgets = { version = "2.4", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "2.5.2", default-features = false, features = ["embedded"] }
 ```
 
 適合裝置的 release profile —— 優先體積而非速度，並用 `panic = "abort"`，因為沒有 unwinder：

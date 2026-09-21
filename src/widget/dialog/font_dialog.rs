@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Font dialog widget.
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -248,25 +248,47 @@ impl Draw for FontDialog {
         context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), surface);
         context.draw_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), border);
         // Title bar: a separate region from the dialog surface, in the theme's accent
-        // rather than the literal blue it carried before.
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, 28), accent);
-        context.draw_text(
-            Point::new(rect.x + 8, rect.y + 14),
-            &tr!("dialog.font.select_font"),
-            &Font::default(),
+        // rather than the literal blue it carried before. The label is fitted to the bar,
+        // so a truncating locale cannot run the title past the frame.
+        const TITLE_BAR_HEIGHT: u32 = 28;
+        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, TITLE_BAR_HEIGHT), accent);
+        let title_font = Font::default();
+        let title_label = tr!("dialog.font.select_font");
+        let title_metrics = context.measure_text(&title_label, &title_font);
+        context.draw_text_fitted(
+            Rect::new(
+                rect.x + 8,
+                rect.y + ((TITLE_BAR_HEIGHT as i32 - title_metrics.height as i32) / 2).max(0),
+                rect.width.saturating_sub(16),
+                title_metrics.height.max(1),
+            ),
+            &title_label,
+            &title_font,
             accent_ink,
             HorizontalAlignment::Left,
         );
+        // The columns share the space left after the button row is reserved, so a third
+        // of an already-short dialog cannot reach below the buttons. `col_w` is derived
+        // from that clamped height rather than from the dialog's own, which is what made
+        // the last column's label leave the frame.
+        let btn_h = 28i32;
+        let button_top = (rect.y + rect.height as i32 - btn_h - 12).max(rect.y);
+        let col_area = (button_top - 46 - (rect.y + 38)).max(0) as u32;
         let col_w = (rect.width / 3).saturating_sub(6);
         let list_y = rect.y + 38;
-        let list_h = rect.height.saturating_sub(120);
+        let list_h = col_area.saturating_sub(28);
+        // Header labels live in a 12 px strip above the columns. That strip is narrower
+        // than a 14 px font's line box on purpose: the label's top edge is flush with the
+        // column's own top edge, and `draw_text_fitted` clamps to the box's left/right
+        // edges, which is the dimension that overflowed.
+        let header_h = 12u32;
         // Family, Style, Size columns
         let col_labels =
             [tr!("dialog.font.font_family"), tr!("dialog.font.style"), tr!("dialog.font.size")];
         for (i, label) in col_labels.iter().enumerate() {
             let col_x = rect.x as f32 + 4.0 + i as f32 * (col_w as f32 + 4.0);
-            context.draw_text(
-                Point::new(col_x as i32, list_y - 10),
+            context.draw_text_fitted(
+                Rect::new(col_x as i32, list_y - 10, col_w, header_h),
                 label.as_str(),
                 &Font::default(),
                 ink,
@@ -280,35 +302,48 @@ impl Draw for FontDialog {
         let bw = rect.width.saturating_sub(8);
         context.fill_rect(Rect::new(rect.x + 4, prev_y, bw, 36), field);
         context.draw_rect(Rect::new(rect.x + 4, prev_y, bw, 36), border);
-        context.draw_text(
-            Point::new(rect.x + 10, prev_y + 18),
+        // The sample is fitted to the preview well, so a caller-selected font larger than
+        // the well is truncated there instead of marching out of the dialog.
+        let preview_font = self.current_font.clone();
+        let preview_metrics = context.measure_text("AaBbYyZz 0123", &preview_font);
+        context.draw_text_fitted(
+            Rect::new(
+                rect.x + 10,
+                prev_y + ((36 - preview_metrics.height as i32) / 2).max(0),
+                rect.width.saturating_sub(20),
+                preview_metrics.height.max(1),
+            ),
             "AaBbYyZz 0123",
-            &self.current_font,
+            &preview_font,
             ink,
             HorizontalAlignment::Left,
         );
-        // OK/Cancel
-        let btn_y = rect.y as f32 + rect.height as f32 - 40.0;
-        context
-            .fill_rect(Rect::new(rect.x + rect.width as i32 - 176, btn_y as i32, 80, 28), accent);
-        context.draw_text(
-            Point::new(rect.x + rect.width as i32 - 136, (btn_y + 14.0) as i32),
+        // OK/Cancel. Right-aligned inside the frame and floored at its left edge, so a
+        // control narrower than the two 80 px buttons keeps them on screen; the labels are
+        // centred in their buttons and fitted to them.
+        let btn_y = button_top;
+        const BTN_W: i32 = 80;
+        const BTN_STEP: i32 = 88;
+        let cancel_x = (rect.x + rect.width as i32 - BTN_STEP).max(rect.x);
+        let ok_x = (cancel_x - BTN_STEP).max(rect.x);
+        let ok_rect = Rect::new(ok_x, btn_y, BTN_W as u32, btn_h as u32);
+        context.fill_rect(ok_rect, accent);
+        context.draw_text_fitted(
+            ok_rect,
             &tr!("dialog.ok"),
             &Font::default(),
             accent_ink,
-            HorizontalAlignment::Left,
+            HorizontalAlignment::Center,
         );
-        context.fill_rect(
-            Rect::new(rect.x + rect.width as i32 - 88, btn_y as i32, 80, 28),
-            surface.blend(&ink, 0.1),
-        );
-        context.draw_rect(Rect::new(rect.x + rect.width as i32 - 88, btn_y as i32, 80, 28), border);
-        context.draw_text(
-            Point::new(rect.x + rect.width as i32 - 48, (btn_y + 14.0) as i32),
+        let cancel_rect = Rect::new(cancel_x, btn_y, BTN_W as u32, btn_h as u32);
+        context.fill_rect(cancel_rect, surface.blend(&ink, 0.1));
+        context.draw_rect(cancel_rect, border);
+        context.draw_text_fitted(
+            cancel_rect,
             &tr!("dialog.cancel"),
             &Font::default(),
             ink,
-            HorizontalAlignment::Left,
+            HorizontalAlignment::Center,
         );
     }
 }

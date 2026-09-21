@@ -39,6 +39,10 @@ const BAR_HEIGHT: u32 = 4;
 const BAR_MARGIN: u32 = 24;
 /// Vertical gap between the title and the progress bar.
 const TITLE_GAP: u32 = 24;
+/// Gap between the logo band and the title below it.
+const SECTION_GAP: i32 = 12;
+/// Line advance from the title to the subtitle when one is set.
+const BODY_GAP: i32 = TITLE_GAP as i32 - 2;
 
 /// Splash screen with a title, an optional logo block, and optional progress.
 ///
@@ -311,9 +315,8 @@ impl Draw for SplashScreen {
         // behind it. A resolved surface equal to the theme's background is therefore
         // re-derived one step toward the ink, the same distinction `Colors::input_background`
         // draws for a field.
-        let themed_background = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.background);
+        let themed_background =
+            crate::style::theme_manager().current_theme().map(|active| active.colors.background);
         let surface = match themed_background {
             Some(window_fill) if surface == window_fill => {
                 let ink = style
@@ -346,19 +349,24 @@ impl Draw for SplashScreen {
         context.fill_rect(rect, surface);
 
         let centre_x = rect.x + (rect.width / 2) as i32;
-        let mut text_y = rect.y + (rect.height as i32 / 2) - 24;
 
-        // The logo is a placeholder block, not an asset lookup: this control has no
-        // image pipeline, and drawing a block makes the reserved space visible so a
-        // host can see what it must supply rather than a control that just looks
-        // empty.
+        // The stack (logo, title, subtitle) is centred as a whole, and the logo is only
+        // drawn when there is room for it **plus** the text that follows.
+        //
+        // The logo used to be placed at `text_y - logo - 16` while `text_y` was itself
+        // derived from the box's centre, so at the sizes this control is actually given the
+        // logo started at `y = -20` — above its own top edge, and in the SVG snapshot above
+        // the picture. It was not merely misplaced: the text that the logo was supposed to
+        // sit above was pushed to the middle of the box regardless, so an empty frame would
+        // have looked *correct* while the logo was the only thing out of place.
         let logo = 48.min(rect.width).min(rect.height / 3);
-        if logo >= 16 {
-            context.fill_rect(
-                Rect::new(centre_x - logo as i32 / 2, text_y - logo as i32 - 16, logo, logo),
-                accent,
-            );
-            text_y += 8;
+        let logo_band = if logo >= 16 { logo as i32 + SECTION_GAP } else { 0 };
+        let text_block = TITLE_GAP as i32 + if self.subtitle.is_empty() { 0 } else { BODY_GAP };
+        let stack_top = rect.y + ((rect.height as i32 - logo_band - text_block) / 2).max(0);
+        let text_y = stack_top + logo_band;
+
+        if logo_band > 0 {
+            context.fill_rect(Rect::new(centre_x - logo as i32 / 2, stack_top, logo, logo), accent);
         }
 
         context.draw_text(
@@ -371,7 +379,7 @@ impl Draw for SplashScreen {
 
         if !self.subtitle.is_empty() {
             context.draw_text(
-                Point::new(centre_x, text_y + TITLE_GAP as i32 - 2),
+                Point::new(centre_x, text_y + BODY_GAP),
                 &self.subtitle,
                 &Font::default(),
                 muted_ink,
@@ -388,12 +396,21 @@ impl Draw for SplashScreen {
             }
         }
 
+        // The skip affordance's label is centred vertically by its own glyph box: the
+        // renderer's origin is the glyph's top-left, so half the font height is the right
+        // offset — `(height + 12) / 2` assumed a 12 px baseline convention the renderer does
+        // not use, which pushed the label below the button.
         if let Some(skip) = self.skip_rect() {
             context.draw_rect(skip, border);
+            let skip_font = Font::default();
+            let label_height = context.measure_text("Skip", &skip_font).height as i32;
             context.draw_text(
-                Point::new(skip.x + skip.width as i32 / 2, skip.y + (skip.height as i32 + 12) / 2),
+                Point::new(
+                    skip.x + skip.width as i32 / 2,
+                    skip.y + (skip.height as i32 - label_height) / 2,
+                ),
                 "Skip",
-                &Font::default(),
+                &skip_font,
                 muted_ink,
                 HorizontalAlignment::Center,
             );

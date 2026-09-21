@@ -548,10 +548,16 @@ impl EmojiPicker {
         } else {
             (self.search.clone(), Color::rgb(40, 44, 52))
         };
+        // The origin is the glyph's **top** edge, so the label is centred by half the
+        // difference between the field and the line box. The fixed `+ 20` was written for
+        // one font size: at 12 px the glyph box spans 20..32 in a 30 px field, so its bottom
+        // two rows were painted over the separator line below.
+        let font = Font::simple("Sans", 12.0);
+        let text_h = context.measure_text("M", &font).height;
         context.draw_text(
-            Point::new(rect.x + 28, rect.y + 20),
+            Point::new(rect.x + 28, rect.y + (rect.height as i32 - text_h as i32) / 2),
             &text,
-            &Font::simple("Sans", 12.0),
+            &font,
             color,
             HorizontalAlignment::Left,
         );

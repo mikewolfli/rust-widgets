@@ -36,7 +36,7 @@ hardware-adaptive rendering, and deep platform integration — all through a
 clean, idiomatic Rust API.
 
 > The snippet below is illustrative of the intended API shape. For code that
-> compiles against 2.5.0, start from [`chapters/getting-started.md`](chapters/getting-started.md),
+> compiles against 2.5.2, start from [`chapters/getting-started.md`](chapters/getting-started.md),
 > which is verified against the current crate.
 
 ```rust
@@ -59,7 +59,7 @@ fn main() {
 
 ## Key Features
 
-### Rich Widget Library — 179 Widget Kinds
+### Rich Widget Library — 180 Widget Kinds
 
 180 built-in widget kinds span every common UI need, and **all of them are
 self-drawn and therefore available on every platform**:
@@ -202,7 +202,7 @@ handling, WebChannel communication, and context menu customization.
 
 | | |
 |---|---|
-| **Version** | 2.5.0 |
+| **Version** | 2.5.2 |
 | **License** | [MIT](https://github.com/mikewolfli/rust-widgets/blob/main/LICENSE) |
 | **Repository** | [github.com/mikewolfli/rust-widgets](https://github.com/mikewolfli/rust-widgets) |
 | **Tests** | 5300+ |

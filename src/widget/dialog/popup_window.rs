@@ -232,10 +232,21 @@ impl Draw for PopupWindow {
             Point::new(rect.x + rect.width as i32, rect.y + bar_height as i32),
             border,
         );
-        context.draw_text(
-            Point::new(rect.x + 8, rect.y + (bar_height / 2) as i32),
+        // The title is centred inside the bar. The origin is the glyph's **top** edge, so the
+        // offset is half the difference between the bar and the line box; using the bar's own
+        // midline put the glyph's top *at* the centre, leaving a 14 px title spanning 12..26 in
+        // a 24 px bar — two pixels over the separator below it.
+        let title_font = Font::default();
+        let title_h = context.measure_text("M", &title_font).height;
+        context.draw_text_fitted(
+            Rect::new(
+                rect.x + 8,
+                rect.y + (bar_height as i32 - title_h as i32) / 2,
+                rect.width.saturating_sub(16),
+                title_h,
+            ),
             &self.title,
-            &Font::default(),
+            &title_font,
             ink,
             HorizontalAlignment::Left,
         );

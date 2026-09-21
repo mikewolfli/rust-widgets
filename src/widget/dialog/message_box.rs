@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Message box dialog widget.
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
@@ -524,58 +524,112 @@ impl Draw for MessageBox {
         let primary = theme.as_ref().and_then(|t| t.background_color).unwrap_or(button_fill);
         let primary_ink = primary.contrast_color();
 
+        // A dialog is a normal widget: every element it emits has to stay inside its own
+        // rectangle. None of these labels was bounded, so a long title, message or button
+        // word ran past the frame — the raster backends clip that away, but the SVG
+        // backend emits absolute coordinates and showed the overflow as drawing outside
+        // the picture. Each label is fitted to the band it belongs to instead.
+        let font = Font::default();
+
         // Dialog background.
         context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), surface);
         context.draw_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), border);
-        // Title bar.
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, 28u32), title_bar);
-        context.draw_text(
-            Point::new(rect.x + 8, rect.y + 14),
+        // Title bar. The band is the label's own box, so the fit is measured against the
+        // bar rather than against the dialog: a title longer than the bar truncates at the
+        // bar's edge instead of leaving the control.
+        const TITLE_BAR_HEIGHT: u32 = 28;
+        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, TITLE_BAR_HEIGHT), title_bar);
+        let title_font = Font::default();
+        let title_metrics = context.measure_text(&self.title, &title_font);
+        context.draw_text_fitted(
+            Rect::new(
+                rect.x + 8,
+                rect.y + ((TITLE_BAR_HEIGHT as i32 - title_metrics.height as i32) / 2).max(0),
+                rect.width.saturating_sub(16),
+                title_metrics.height.max(1),
+            ),
             &self.title,
-            &Font::default(),
+            &title_font,
             ink,
             HorizontalAlignment::Left,
         );
-        // Icon
+
+        // Icon and message share one band: the icon is a glyph at the left, the message
+        // starts after it (or at the frame's own margin when there is no icon). The gutter
+        // that separates them used to be an absolute `rect.x + 60` written for a wide
+        // dialog; deriving it from the icon's measured advance keeps the two from
+        // overlapping when the icon is a wide scalar and the dialog is narrow.
+        let message_top = rect.y + 60;
         let icon_sym = self.icon_symbol();
-        if !icon_sym.is_empty() {
-            context.draw_text(
-                Point::new(rect.x + 20, rect.y + 60),
+        let gutter = if icon_sym.is_empty() {
+            12
+        } else {
+            let icon_font = Font::default();
+            let icon_metrics = context.measure_text(icon_sym, &icon_font);
+            let icon_left = 20.min(rect.width as i32);
+            let icon_right = icon_left + icon_metrics.width as i32;
+            let body_left = icon_right.max(icon_left) + 8;
+            context.draw_text_fitted(
+                Rect::new(
+                    rect.x + icon_left,
+                    message_top,
+                    (body_left - icon_left) as u32,
+                    icon_metrics.height.max(1),
+                ),
                 icon_sym,
-                &Font::default(),
+                &icon_font,
                 self.icon_color(),
                 HorizontalAlignment::Left,
             );
-        }
-        // Message text
-        let text_x = if self.icon == MessageBoxIcon::NoIcon { rect.x + 12 } else { rect.x + 60 };
-        context.draw_text(
-            Point::new(text_x, rect.y + 60),
+            body_left
+        };
+        // The message must stop before the button row, whose top edge is at `button_top`.
+        let btn_h = 28i32;
+        let button_top = (rect.y + rect.height as i32 - btn_h - 12).max(rect.y);
+        let message_bounds = Rect::new(
+            rect.x + gutter,
+            message_top,
+            (rect.width as i32 - gutter - 8).max(0) as u32,
+            (button_top - message_top).max(1) as u32,
+        );
+        let message_font = Font::default();
+        let message_metrics = context.measure_text(&self.text, &message_font);
+        context.draw_text_fitted(
+            Rect::new(
+                message_bounds.x,
+                message_bounds.y,
+                message_bounds.width,
+                message_metrics.height.max(1),
+            ),
             &self.text,
-            &Font::default(),
+            &message_font,
             ink,
             HorizontalAlignment::Left,
         );
-        // Buttons
-        let btn_h = 28f32;
-        let btn_w = 80f32;
-        let btn_y = rect.y as f32 + rect.height as f32 - btn_h - 12.0;
-        let total_btn_w = self.buttons.len() as f32 * (btn_w + 8.0);
-        let mut btn_x = rect.x as f32 + rect.width as f32 - total_btn_w;
+
+        // Buttons, right-aligned as a row. The row is laid out inside the frame, so the
+        // `…max(rect.x)` floor keeps a row of wide buttons from starting left of the
+        // dialog when the control is narrower than the buttons it wants.
+        let btn_w = 80i32;
+        let btn_y = button_top;
+        let total_btn_w = self.buttons.len() as i32 * (btn_w + 8);
+        let mut btn_x = rect.x + rect.width as i32 - total_btn_w;
+        btn_x = btn_x.max(rect.x);
         for btn in &self.buttons {
             let is_default = self.default_button == Some(*btn);
             let bg = if is_default { primary } else { button_fill };
             let fg = if is_default { primary_ink } else { ink };
-            context.fill_rect(Rect::from_f32(btn_x, btn_y, btn_w, btn_h), bg);
-            context.draw_rect(Rect::from_f32(btn_x, btn_y, btn_w, btn_h), border);
-            context.draw_text(
-                Point::from_f32(btn_x + btn_w / 2.0, btn_y + btn_h / 2.0),
+            let btn_rect = Rect::new(btn_x, btn_y, btn_w as u32, btn_h as u32);
+            context.fill_rect(btn_rect, bg);
+            context.draw_rect(btn_rect, border);
+            context.draw_text_fitted(
+                btn_rect,
                 &btn.translated_label(),
-                &Font::default(),
+                &font,
                 fg,
-                HorizontalAlignment::Left,
+                HorizontalAlignment::Center,
             );
-            btn_x += btn_w + 8.0;
+            btn_x += btn_w + 8;
         }
     }
 }
@@ -583,7 +637,7 @@ impl Draw for MessageBox {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::Rect;
+    use crate::core::{Point, Rect};
     use crate::event::Event;
     use crate::widget::svg::render_to_svg;
     use std::sync::{Arc, Mutex};

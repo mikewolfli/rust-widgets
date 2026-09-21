@@ -443,7 +443,15 @@ impl Draw for Pagination {
         let background = style.background_color.unwrap_or(Color::WHITE);
         let text_color = style.text_color.unwrap_or(Color::BLACK);
         let selected_background = style.border_color.unwrap_or(Color::rgb(60, 90, 160));
-        let font = Font::simple("Sans", (rect.height as f32 * 0.4).max(8.0));
+        // The glyph size is capped by the bar's own height, not just scaled by it.
+        //
+        // The rasteriser paints a glyph **downward** from its origin, so a 48 px font in a
+        // 22 px bar reserved the full 48 px: the labels overlapped and the rows below them
+        // were painted (and clipped) outside the control. A page number only has to be
+        // readable inside its cell, and `height - 8` is the tallest size that stays there.
+        let font_size =
+            (rect.height as f32 * 0.4).max(8.0).min(rect.height.saturating_sub(8).max(8) as f32);
+        let font = Font::simple("Sans", font_size);
 
         context.fill_rect(rect, background);
 
@@ -476,16 +484,14 @@ impl Draw for Pagination {
             } else {
                 text_color
             };
-            context.draw_text(
-                Point::new(
-                    cell_rect.x + (cell_rect.width as i32) / 2,
-                    cell_rect.y + (cell_rect.height as i32) / 2,
-                ),
-                &label,
-                &font,
-                color,
-                HorizontalAlignment::Center,
+            // The origin is the glyph's top-left, so the vertical centre is reached by
+            // subtracting half the line box rather than by passing the cell's midline.
+            let text_width = context.measure_text(&label, &font).width as i32;
+            let origin = Point::new(
+                cell_rect.x + (cell_rect.width as i32 - text_width) / 2,
+                cell_rect.y + (cell_rect.height as i32 - font_size as i32) / 2,
             );
+            context.draw_text(origin, &label, &font, color, HorizontalAlignment::Left);
         }
 
         context.draw_rect(rect, style.border_color.unwrap_or(Color::rgb(210, 210, 210)));

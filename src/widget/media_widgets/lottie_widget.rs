@@ -1065,15 +1065,18 @@ impl Draw for LottieWidget {
             context.fill_rounded_rect(rect, 4, base_bg);
             let font = Font::default();
             let text = "No Lottie animation loaded";
+            // Centred on the vertical midline and fitted to the control's width: the label
+            // is 25 characters at 14 px, wider than most controls it is drawn into, and
+            // without the fit it ran past the panel and out of the SVG snapshot.
             let metrics = context.measure_text(text, &font);
-            let text_x = rect.x + (rect.width as i32 - metrics.width as i32) / 2;
-            let text_y = rect.y + rect.height as i32 / 2 + metrics.ascent as i32 / 2;
-            context.draw_text(
-                Point::new(text_x, text_y),
+            let text_y = rect.y + (rect.height as i32 - metrics.height as i32) / 2;
+            let line = Rect::new(rect.x, text_y, rect.width, metrics.height);
+            context.draw_text_fitted(
+                line,
                 text,
                 &font,
                 placeholder_text,
-                HorizontalAlignment::Left,
+                HorizontalAlignment::Center,
             );
             return;
         }

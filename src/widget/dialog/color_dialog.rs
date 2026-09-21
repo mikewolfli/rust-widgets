@@ -318,11 +318,24 @@ impl Draw for ColorDialog {
 
         context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), surface);
         context.draw_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), border);
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, 28), title_bar);
-        context.draw_text(
-            Point::new(rect.x + 8, rect.y + 14),
+        // Every label below is fitted to the band it sits in. None of them was bounded, so
+        // the two ends of the dialog carried absolute origins written for its 400 px size
+        // hint — at the census rectangle the preview label ran to x=379 and the Cancel label
+        // to x=360, both past the 240 px frame. The fit makes the label's own rectangle the
+        // authority instead of the size the control was designed at.
+        const TITLE_BAR_HEIGHT: u32 = 28;
+        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, TITLE_BAR_HEIGHT), title_bar);
+        let title_font = Font::default();
+        let title_metrics = context.measure_text(&tr!("color_dialog.title"), &title_font);
+        context.draw_text_fitted(
+            Rect::new(
+                rect.x + 8,
+                rect.y + ((TITLE_BAR_HEIGHT as i32 - title_metrics.height as i32) / 2).max(0),
+                rect.width.saturating_sub(16),
+                title_metrics.height.max(1),
+            ),
             &tr!("color_dialog.title"),
-            &Font::default(),
+            &title_font,
             ink,
             HorizontalAlignment::Left,
         );
@@ -338,39 +351,53 @@ impl Draw for ColorDialog {
         let preview_y = rect.y as f32 + rect.height as f32 - 80.0;
         context.fill_rect(Rect::new(rect.x + 10, preview_y as i32, 60, 30), self.current_color);
         context.draw_rect(Rect::new(rect.x + 10, preview_y as i32, 60, 30), border);
-        context.draw_text(
-            Point::new(rect.x + 80, (preview_y + 15.0) as i32),
-            &format!("{} {}", tr!("color_dialog.current_color"), self.current_color.to_hex_rgba()),
-            &Font::default(),
+        // The hex readout sits in the strip between the swatch and the panel's right
+        // margin, so a long hex string truncates there rather than running under the
+        // buttons.
+        let preview_font = Font::default();
+        let preview_text =
+            format!("{} {}", tr!("color_dialog.current_color"), self.current_color.to_hex_rgba());
+        let preview_metrics = context.measure_text(&preview_text, &preview_font);
+        context.draw_text_fitted(
+            Rect::new(
+                rect.x + 80,
+                (preview_y + 15.0) as i32,
+                (rect.width as i32 - 80 - 8).max(0) as u32,
+                preview_metrics.height.max(1),
+            ),
+            &preview_text,
+            &preview_font,
             ink,
             HorizontalAlignment::Left,
         );
-        // OK/Cancel buttons
+        // OK/Cancel buttons. The row is right-aligned inside the frame and floored at the
+        // panel's left edge, so a narrow control squeezes the buttons inwards instead of
+        // placing the first one at a negative x. They are laid out on a shared step so the
+        // label fit can be derived from the slot each button occupies.
         let btn_y = rect.y as f32 + rect.height as f32 - 40.0;
-        let btn_w = 80;
-        context.fill_rect(
-            Rect::new(rect.x + rect.width as i32 - 176, btn_y as i32, btn_w, 28),
-            theme.as_ref().and_then(|t| t.background_color).unwrap_or(button_fill),
-        );
-        context.draw_text(
-            Point::new(rect.x + rect.width as i32 - 136, (btn_y + 14.0) as i32),
+        const BTN_W: i32 = 80;
+        const BTN_STEP: i32 = 88;
+        let cancel_x = (rect.x + rect.width as i32 - BTN_STEP).max(rect.x);
+        let ok_x = (cancel_x - BTN_STEP).max(rect.x);
+        let accent = theme.as_ref().and_then(|t| t.background_color).unwrap_or(button_fill);
+        let ok_rect = Rect::new(ok_x, btn_y as i32, BTN_W as u32, 28);
+        context.fill_rect(ok_rect, accent);
+        context.draw_text_fitted(
+            ok_rect,
             &tr!("common.button.ok"),
             &Font::default(),
-            theme.as_ref().and_then(|t| t.background_color).unwrap_or(button_fill).contrast_color(),
-            HorizontalAlignment::Left,
+            accent.contrast_color(),
+            HorizontalAlignment::Center,
         );
-        context.fill_rect(
-            Rect::new(rect.x + rect.width as i32 - 88, btn_y as i32, btn_w, 28),
-            theme.as_ref().and_then(|t| t.background_color).unwrap_or(button_fill),
-        );
-        context
-            .draw_rect(Rect::new(rect.x + rect.width as i32 - 88, btn_y as i32, btn_w, 28), border);
-        context.draw_text(
-            Point::new(rect.x + rect.width as i32 - 48, (btn_y + 14.0) as i32),
+        let cancel_rect = Rect::new(cancel_x, btn_y as i32, BTN_W as u32, 28);
+        context.fill_rect(cancel_rect, accent);
+        context.draw_rect(cancel_rect, border);
+        context.draw_text_fitted(
+            cancel_rect,
             &tr!("common.button.cancel"),
             &Font::default(),
             ink,
-            HorizontalAlignment::Left,
+            HorizontalAlignment::Center,
         );
     }
 }

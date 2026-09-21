@@ -454,11 +454,21 @@ struct PlotArea {
     top_y: i32,
 }
 
+/// Distance from the plot baseline down to the top of the axis label row.
+const LABEL_ROW_TOP: i32 = 12;
+/// Line-box height of an axis label, in pixels. The label font is 10 pt, and the renderer's
+/// line box is one em, so the two agree by construction.
+const LABEL_ROW_HEIGHT: i32 = 10;
+
 impl PlotArea {
     /// Derives the plot area from the control's rectangle.
     fn of(rect: Rect) -> Self {
         const PADDING: i32 = 8;
-        const BOTTOM_MARGIN: i32 = 20;
+        // The bottom margin has to cover the axis label row, which starts 12 px below the
+        // baseline and is one 10 px line box tall. It was 20, so the row's bottom edge landed
+        // exactly on the control's last pixel and any extra (a taller font, a scaled DPI)
+        // pushed it past. `12 + 10` states the reservation in the same units the label uses.
+        const BOTTOM_MARGIN: i32 = LABEL_ROW_TOP + LABEL_ROW_HEIGHT;
         let left = rect.x.saturating_add(PADDING);
         let right = rect.x.saturating_add(rect.width as i32).saturating_sub(PADDING);
         let baseline_y = rect.y.saturating_add(rect.height as i32).saturating_sub(BOTTOM_MARGIN);
@@ -499,7 +509,17 @@ impl PlotArea {
 /// Draws a label under `x`, truncated to a fixed budget so a long label cannot
 /// run into its neighbour. The truncation marker is part of the visible text, so
 /// it is counted in the budget rather than appended past it.
-fn draw_truncated_label(context: &mut RenderContext, x: i32, baseline_y: i32, label: &str) {
+///
+/// `right_bound` is the widget's own right edge: the label is centred on its tick, so a
+/// tick near the edge would otherwise start inside and finish outside. Clamping the origin
+/// is what keeps the axis row inside the control at any width.
+fn draw_truncated_label(
+    context: &mut RenderContext,
+    x: i32,
+    baseline_y: i32,
+    label: &str,
+    right_bound: i32,
+) {
     use crate::core::{Color, Font};
     const BUDGET: usize = 6;
     if label.is_empty() {
@@ -511,11 +531,25 @@ fn draw_truncated_label(context: &mut RenderContext, x: i32, baseline_y: i32, la
     } else {
         label.to_string()
     };
+    let font = Font::simple("Sans", 10.0);
+    let width = context.measure_text(&text, &font).width as i32;
+    let origin_x = (x - width / 2).min(right_bound - width).max(0);
+    // Axis chrome, derived from the active surface. The literal `80,80,80` is a light chart's
+    // label colour and rendered at 1.8:1 on the dark appearance's `18,18,18` surface — the
+    // category names were effectively invisible while the chart itself looked correct.
+    let surface = crate::style::theme_manager()
+        .current_theme()
+        .map(|active| active.colors.background)
+        .unwrap_or(Color::rgb(255, 255, 255));
+    let ink = crate::style::theme_manager()
+        .current_theme()
+        .map(|active| active.colors.foreground)
+        .unwrap_or(Color::rgb(0, 0, 0));
     context.draw_text(
-        crate::core::Point { x: x.saturating_sub(6), y: baseline_y + 12 },
+        crate::core::Point { x: origin_x, y: baseline_y + LABEL_ROW_TOP },
         &text,
-        &Font::simple("Sans", 10.0),
-        Color::rgb(80, 80, 80),
+        &font,
+        surface.blend(&ink, 0.70),
         HorizontalAlignment::Left,
     );
 }
@@ -593,7 +627,13 @@ impl ChartWidget {
             if series_index == 0 {
                 if let Some(label) = self.labels.get(i) {
                     let label_x = slot_x + slot / 2;
-                    draw_truncated_label(context, label_x, area.baseline_y, label);
+                    draw_truncated_label(
+                        context,
+                        label_x,
+                        area.baseline_y,
+                        label,
+                        rect.x + rect.width as i32,
+                    );
                 }
             }
         }
@@ -624,7 +664,13 @@ impl ChartWidget {
             context.fill_circle(*point, 3, color);
             if series_index == 0 {
                 if let Some(label) = self.labels.get(i) {
-                    draw_truncated_label(context, point.x, area.baseline_y, label);
+                    draw_truncated_label(
+                        context,
+                        point.x,
+                        area.baseline_y,
+                        label,
+                        rect.x + rect.width as i32,
+                    );
                 }
             }
         }
@@ -684,7 +730,13 @@ impl ChartWidget {
         if series_index == 0 {
             for (i, point) in points.iter().enumerate() {
                 if let Some(label) = self.labels.get(i) {
-                    draw_truncated_label(context, point.x, area.baseline_y, label);
+                    draw_truncated_label(
+                        context,
+                        point.x,
+                        area.baseline_y,
+                        label,
+                        rect.x + rect.width as i32,
+                    );
                 }
             }
         }
@@ -747,7 +799,13 @@ impl ChartWidget {
                 );
             }
             if let Some(label) = self.labels.get(i) {
-                draw_truncated_label(context, x + bar_width / 2, area.baseline_y, label);
+                draw_truncated_label(
+                    context,
+                    x + bar_width / 2,
+                    area.baseline_y,
+                    label,
+                    rect.x + rect.width as i32,
+                );
             }
         }
     }
@@ -789,7 +847,13 @@ impl ChartWidget {
             if let Some(label) = self.labels.get(i) {
                 // The label sits at the stage's left edge, which for a narrow stage
                 // is inside the bar; centred text would be unreadable there.
-                draw_truncated_label(context, x + 2, y + stage_height - 4, label);
+                draw_truncated_label(
+                    context,
+                    x + 2,
+                    y + stage_height - 4,
+                    label,
+                    rect.x + rect.width as i32,
+                );
             }
         }
     }
@@ -863,7 +927,13 @@ impl ChartWidget {
         for i in 0..bar_count {
             if let Some(label) = self.labels.get(i) {
                 let x = area.left + (i as i32) * slot + slot / 2;
-                draw_truncated_label(context, x, area.baseline_y, label);
+                draw_truncated_label(
+                    context,
+                    x,
+                    area.baseline_y,
+                    label,
+                    rect.x + rect.width as i32,
+                );
             }
         }
     }
@@ -936,7 +1006,13 @@ impl ChartWidget {
                 crate::core::Color::rgb(255, 255, 255),
             );
             if let Some(label) = self.labels.get(i) {
-                draw_truncated_label(context, cx, area.baseline_y, label);
+                draw_truncated_label(
+                    context,
+                    cx,
+                    area.baseline_y,
+                    label,
+                    rect.x + rect.width as i32,
+                );
             }
         }
     }
@@ -1013,7 +1089,13 @@ impl ChartWidget {
             context.fill_circle(Point { x, y }, 3, color);
             if series_index == 0 {
                 if let Some(label) = self.labels.get(i) {
-                    draw_truncated_label(context, x, area.baseline_y, label);
+                    draw_truncated_label(
+                        context,
+                        x,
+                        area.baseline_y,
+                        label,
+                        rect.x + rect.width as i32,
+                    );
                 }
             }
         }
@@ -1417,5 +1499,4 @@ mod tests {
         chart.set_data(vec![1.0; 8]);
         assert_eq!(chart.hovered_index(), Some(in_range), "an in-range hover is kept");
     }
-
 }

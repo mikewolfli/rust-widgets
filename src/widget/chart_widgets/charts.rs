@@ -37,6 +37,12 @@ pub struct CartesianLayout {
     plot_h: f32,
     legend_x: f32,
     legend_y: f32,
+    /// Height of the band below the plot reserved for x-tick labels.
+    ///
+    /// Carried on the layout rather than recomputed at each label's call site: the band is
+    /// what lets [`draw_x_ticks`] clamp its row **inside** the widget instead of drawing it
+    /// at a fixed offset that assumed the margins were big enough.
+    tick_label_height: f32,
 }
 
 impl CartesianLayout {
@@ -69,7 +75,42 @@ impl CartesianLayout {
     pub fn legend_y(&self) -> f32 {
         self.legend_y
     }
+
+    /// Height of the x-tick label band below the plot area, in device pixels.
+    pub fn tick_label_height(&self) -> f32 {
+        self.tick_label_height
+    }
 }
+/// The axis colours — tick, label and gridline — for the active appearance.
+///
+/// # Why these are derived rather than written
+///
+/// All four cartesian styles (`chart`, `bar_chart`, `line_chart` and the adapter path) drew
+/// their axes from three fixed greys: a mid-grey axis line, a dark-grey tick label and a
+/// near-white gridline. That is a light chart's palette. On the dark appearance the tick labels
+/// rendered at **2.3:1** against the surface — technically present, practically unreadable — and
+/// the gridlines, being the lightest element on screen, read as the most important thing in the
+/// picture. Both inversions come from the same mistake: an appearance decision written as a
+/// literal.
+///
+/// The three are now steps along the surface-to-ink axis, so the relationship between them
+/// (labels strongest, gridlines faintest) is preserved on either surface. Only the *chrome* is
+/// derived — a series colour is still whatever the caller supplied, because it identifies data
+/// rather than framing it (rule #108, class ③).
+fn axis_chrome() -> (Color, Color, Color) {
+    // The plot sits on the chart's own surface; fall back to a light one when no theme is
+    // active, which is where the previous literals came from.
+    let surface = crate::style::theme_manager()
+        .current_theme()
+        .map(|active| active.colors.background)
+        .unwrap_or(Color { r: 255, g: 255, b: 255, a: 255 });
+    let ink = crate::style::theme_manager()
+        .current_theme()
+        .map(|active| active.colors.foreground)
+        .unwrap_or(Color { r: 0, g: 0, b: 0, a: 255 });
+    (surface.blend(&ink, 0.45), surface.blend(&ink, 0.70), surface.blend(&ink, 0.16))
+}
+
 /// Computes the plot and legend placement for a chart occupying `rect`.
 ///
 /// The margins are fixed constants chosen to fit axis labels and a legend
@@ -94,6 +135,10 @@ pub fn compute_cartesian_layout(
     let plot_y = rect.y as f32 + top_margin;
     let plot_w = (rect.width as f32 - left_margin - right_margin).max(1.0);
     let plot_h = (rect.height as f32 - top_margin - bottom_margin).max(1.0);
+    // The x-tick row starts 16 px below the plot and needs 12 px of line box. Telling the
+    // layout that constant is what lets [`draw_x_ticks`] clamp its row inside the widget
+    // instead of writing `+ 16.0` at the draw site and hoping the margin covered it.
+    let tick_label_height = 12.0;
     CartesianLayout {
         plot_x,
         plot_y,
@@ -101,6 +146,7 @@ pub fn compute_cartesian_layout(
         plot_h,
         legend_x: plot_x + plot_w + 16.0,
         legend_y: plot_y + 8.0,
+        tick_label_height,
     }
 }
 /// Draws the x and y axis lines for a cartesian chart.
@@ -141,9 +187,10 @@ pub fn draw_y_ticks(
     draw_grid: bool,
 ) {
     let tick_count = tick_count.max(2);
-    let axis_color = Color { r: 150, g: 150, b: 150, a: 255 };
-    let label_color = Color { r: 80, g: 80, b: 80, a: 255 };
-    let grid_color = Color { r: 210, g: 210, b: 210, a: 255 };
+    // See `axis_chrome`: these three greys were written for a *light* chart, so on the dark
+    // appearance the tick labels (`80,80,80` on an `18,18,18` surface) sat at 2.3:1 -- barely
+    // legible -- while the near-white gridlines were the brightest thing in the picture.
+    let (axis_color, label_color, grid_color) = axis_chrome();
     for tick in 0..=tick_count {
         let t = tick as f32 / tick_count as f32;
         let y = layout.plot_y + layout.plot_h - t * layout.plot_h;
@@ -185,9 +232,10 @@ pub fn draw_x_ticks(
     draw_grid: bool,
 ) {
     let tick_count = tick_count.max(2);
-    let axis_color = Color { r: 150, g: 150, b: 150, a: 255 };
-    let label_color = Color { r: 80, g: 80, b: 80, a: 255 };
-    let grid_color = Color { r: 210, g: 210, b: 210, a: 255 };
+    // See `axis_chrome`: these three greys were written for a *light* chart, so on the dark
+    // appearance the tick labels (`80,80,80` on an `18,18,18` surface) sat at 2.3:1 -- barely
+    // legible -- while the near-white gridlines were the brightest thing in the picture.
+    let (axis_color, label_color, grid_color) = axis_chrome();
     for tick in 0..=tick_count {
         let t = tick as f32 / tick_count as f32;
         let x = layout.plot_x + t * layout.plot_w;
@@ -206,12 +254,20 @@ pub fn draw_x_ticks(
             axis_color,
         );
         let value = min_x + (max_x - min_x) * t as f64;
-        context.draw_text(
-            &format!("{value:.1}"),
-            Point::from_f32(x - 12.0, layout.plot_y + layout.plot_h + 16.0),
-            10.0,
-            label_color,
-        );
+        // The label is centred on its tick and clamped inside the **plot area's** own width.
+        //
+        // Two problems are fixed together here. The origin was `x - 12`, a fixed half-width
+        // guess, so a value of `1000.0` (36 px wide) stuck out past the widget's right edge
+        // while a narrow one floated left of its tick. And nothing bounded the band
+        // vertically: `plot_y + plot_h + 16` is below the plot by construction, so a plot
+        // that fills its control drew the axis row outside the control. Clamping both to the
+        // layout means the row is inside the rectangle the layout reserved for it.
+        let label = format!("{value:.1}");
+        let label_width = (label.chars().count() as f32 * 10.0 * 0.6).max(10.0);
+        let label_x = (x - label_width / 2.0).clamp(layout.plot_x, layout.plot_x + layout.plot_w);
+        let label_y = (layout.plot_y + layout.plot_h + 16.0)
+            .min(layout.plot_y + layout.plot_h + layout.tick_label_height());
+        context.draw_text(&label, Point::from_f32(label_x, label_y), 10.0, label_color);
     }
 }
 /// Draws the series legend to the right of the plot area.

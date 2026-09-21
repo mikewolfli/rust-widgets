@@ -243,22 +243,31 @@ impl Draw for ImePreedit {
         // widget's constructed default is dropped in favour of that foreground rather than a
         // fixed black the theme cannot override.
         let text_color = self.effective_text_color(ink);
-        // Draw the preedit text
-        context.draw_text(
-            Point::new(rect.x, rect.y),
+        // Draw the preedit text, fitted to the control's own width.
+        //
+        // The composition string is authored by the input method, so the control neither
+        // chooses nor bounds its length: a long candidate run advanced `font.size()` pixels
+        // per character straight past the control's right edge. Drawing it at the origin
+        // clipped it on the raster backends but left it in the SVG snapshot as text leaving
+        // the picture, and the underline below was sized from the *unfitted* string, so the
+        // rule that marks the composition pointed somewhere the text no longer reached.
+        // `draw_text_fitted` returns what it drew, which is what keeps the underline under
+        // the glyphs that are actually on screen.
+        let fitted = context.draw_text_fitted(
+            rect,
             &self.text,
             &self.font,
             text_color,
             HorizontalAlignment::Left,
         );
 
-        // Draw composition underline below the text
-        // Estimate text width based on character count × approximate font size
+        // Draw composition underline below the text. The advance is measured from the drawn
+        // string rather than estimated as `len() × font.size()`: the two differ once the text
+        // is truncated, and the estimate also overstated every non-ASCII cluster.
         let font_size = self.font.size() as i32;
-        let char_width = font_size.max(8);
-        let text_width = (self.text.len() as i32) * char_width;
+        let text_width = context.measure_text(&fitted, &self.font).width as i32;
         let underline_y = rect.y + font_size + 2;
-        let underline_x_end = rect.x + text_width.min(rect.width as i32);
+        let underline_x_end = (rect.x + text_width).min(rect.x + rect.width as i32);
 
         // The underline marks the composition as uncommitted, so it carries the theme's primary
         // when the caller has not chosen one of its own.

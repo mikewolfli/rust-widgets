@@ -4,7 +4,7 @@
 //! Standalone TabBar widget — decoupled from TabWidget, draws a row/column of tabs.
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-use crate::render::{RenderContext, TextMetrics};
+use crate::render::RenderContext;
 use crate::signal::Signal1;
 
 use crate::widget::capability::coercion::{expect_bool, expect_usize};
@@ -21,6 +21,27 @@ const TAB_MAX_WIDTH: u32 = 200;
 const TAB_SPACING: i32 = 2;
 const CLOSE_SIZE: i32 = 12;
 const CLOSE_PADDING: i32 = 5;
+
+/// Font size every tab label is drawn at, in points (see [`TabBar::draw_tab`]).
+const TAB_FONT_SIZE: f32 = 14.0;
+
+/// Space reserved either side of a tab's label inside its own box.
+///
+/// The label starts [`TAB_TEXT_INSET`] from the tab's left edge and the same distance is
+/// kept free on the right; the width reservation has to cover both, or the last glyph
+/// would sit against the border.
+const TAB_TEXT_INSET: u32 = 6;
+const TAB_TEXT_PADDING: u32 = TAB_TEXT_INSET * 2;
+
+/// The advance the renderer will give a label before the first `draw` has measured it.
+///
+/// Mirrors `RenderContext`'s own clustered-advance heuristic — one cluster per `char`,
+/// each advancing by the font size — so layout and painting agree even on the very first
+/// frame. Counting bytes here instead is what made a CJK title measure four times its
+/// drawn width.
+fn estimate_text_width(text: &str, font_size: f32) -> u32 {
+    (text.chars().count() as f32 * font_size).round() as u32
+}
 
 /// A single tab in a `TabBar`.
 pub struct TabBarTab {
@@ -94,6 +115,14 @@ pub struct TabBar {
     dragging_from: Option<usize>,
     tab_min_width: u32,
     tab_max_width: u32,
+    /// Per-tab label widths, measured by the renderer on the last `draw`.
+    ///
+    /// `RenderContext` is the only component that knows the font metrics the backend
+    /// will actually use, so the width a tab reserves has to come from there rather
+    /// than from a private estimate. Caching it in `draw` (the same shape `GroupBox`
+    /// uses for its title) makes hit testing, layout and painting agree *after* the
+    /// first frame, and [`estimate_text_width`] only has to carry the first one.
+    measured_title_widths: Vec<u32>,
     /// Emitted when the current tab index changes.
     pub current_changed: Signal1<usize>,
     /// Emitted when a tab close is requested (closable tabs only).
@@ -117,6 +146,7 @@ impl TabBar {
             dragging_from: None,
             tab_min_width: TAB_MIN_WIDTH,
             tab_max_width: TAB_MAX_WIDTH,
+            measured_title_widths: Vec::new(),
             current_changed: Signal1::new(),
             tab_close_requested: Signal1::new(),
             tab_moved: Signal1::new(),
@@ -439,10 +469,25 @@ impl TabBar {
 
     /// Computes the width of a tab, taking into account whether a close button
     /// is rendered and clamping to the configured min/max.
+    ///
+    /// # Why the estimate cannot be "characters x 8"
+    ///
+    /// The estimate used to be `text.len() * 8`, which is wrong twice over: `len()`
+    /// counts **bytes**, so a two-character CJK title measured 48 px; and the advance
+    /// it should predict is the one the *renderer* will use, which is 12 px per glyph
+    /// (`Font::simple("Arial", 14.0)` in [`Self::draw_tab`]). A title that measured
+    /// wider here than it drew there left the label running past its own tab; one that
+    /// measured narrower wasted the tab.
+    ///
+    /// The fallback therefore mirrors `RenderContext`'s own heuristic — one cluster per
+    /// `char`, each advancing by the font size — rather than inventing a second one. It
+    /// is only reached before the first `draw`, because `draw_tab` records the measured
+    /// width in [`Self::measured_title_widths`] from then on.
     fn compute_tab_width(&self, index: usize) -> u32 {
         let text = self.tabs[index].title.as_str();
-        let metrics = self.measure_text_approx(text);
-        let mut w = metrics.width + 12; // horizontal padding
+        let measured = self.measured_title_widths.get(index).copied();
+        let text_width = measured.unwrap_or_else(|| estimate_text_width(text, TAB_FONT_SIZE));
+        let mut w = text_width + TAB_TEXT_PADDING; // horizontal padding
         if self.closable {
             w += (CLOSE_SIZE + CLOSE_PADDING) as u32;
         }
@@ -450,15 +495,7 @@ impl TabBar {
     }
 
     /// Roughly measure text width (fallback if no RenderContext handy).
-    fn measure_text_approx(&self, text: &str) -> TextMetrics {
-        // Approximate: each character ~8 logical pixels wide, line height = font size.
-        let char_width = 8;
-        let width = (text.len() as u32).saturating_mul(char_width);
-        let height = 16;
-        TextMetrics { width, height, ascent: 12, descent: 4 }
-    }
-
-    /// Returns the index of the tab at the given point, or None.
+    /// The index of the tab at the given point, or None.
     fn tab_at_position(&self, pos: Point) -> Option<usize> {
         for i in 0..self.tabs.len() {
             if let Some(r) = self.tab_rect(i) {
@@ -577,13 +614,17 @@ impl TabBar {
         let text_color =
             if !is_enabled { text_color.blend(&disabled_tab, 0.5) } else { text_color };
 
-        // Draw tab title.
-        let text_x = tab_rect.x + 6;
-        let text_y = tab_rect.y + tab_rect.height as i32 / 2;
+        // Draw tab title. The origin is the glyph's **top** edge, so the vertical centre is
+        // half the difference between the tab and the line box. Passing the tab's midline
+        // (which is what `tab_rect.height / 2` is) put the glyph box's *top* at the centre,
+        // so a 14 px label in a 24 px tab spanned 12..26 and crossed the tab's bottom edge.
+        let text_x = tab_rect.x + TAB_TEXT_INSET as i32;
+        let title_height = context.measure_text("M", &Font::simple("Arial", TAB_FONT_SIZE)).height;
+        let text_y = tab_rect.y + (tab_rect.height as i32 - title_height as i32) / 2;
         context.draw_text(
             Point::new(text_x, text_y),
             &tab.title,
-            &Font::default(),
+            &Font::simple("Arial", TAB_FONT_SIZE),
             text_color,
             HorizontalAlignment::Left,
         );
@@ -802,6 +843,16 @@ impl EventHandler for TabBar {
 // ---------------------------------------------------------------------------
 impl Draw for TabBar {
     fn draw(&mut self, context: &mut RenderContext) {
+        // Measure every label once, up front, for the whole strip. A tab's width depends
+        // on its own label, so measuring while drawing would leave tab `n` laid out from
+        // the estimate and tab `n+1` from a real metric — a strip whose later tabs are a
+        // different size from its first.
+        self.measured_title_widths.clear();
+        for tab in &self.tabs {
+            let width =
+                context.measure_text(&tab.title, &Font::simple("Arial", TAB_FONT_SIZE)).width;
+            self.measured_title_widths.push(width);
+        }
         for i in 0..self.tabs.len() {
             if let Some(tr) = self.tab_rect(i) {
                 self.draw_tab(context, i, tr);

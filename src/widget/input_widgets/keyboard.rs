@@ -539,26 +539,35 @@ impl Draw for Keyboard {
                 // Draw label centered in the key.
                 let label = self.key_display_label(key);
                 if !label.is_empty() {
-                    let text_metrics = context.measure_text(&label, &default_font);
-                    let text_w = text_metrics.width.max(1);
-                    let text_h = text_metrics.height.max(1);
-                    let text_x = (key_rect.x as f32 + key_rect.width as f32 / 2.0
-                        - text_w as f32 / 2.0) as i32;
-                    let text_y = (key_rect.y as f32 + key_rect.height as f32 / 2.0
-                        - text_h as f32 / 2.0) as i32;
-                    // The latched shift key is filled with the primary, so its label is drawn in
-                    // whatever contrasts with that fill rather than in the board's ink.
+                    // The fit box is the key's own interior, not a synthetically enlarged one:
+                    // `draw_text_fitted` insets by `TEXT_FIT_MARGIN` at each end, so a key
+                    // narrower than 2*margin yields an empty interior and the label is
+                    // dropped rather than squeezed out. That is the only fitting rule that
+                    // satisfies P5 on every key, because the average key at the census
+                    // rectangle is narrower than "Shift".
+                    let inner = Rect::new(
+                        key_rect.x + 2,
+                        key_rect.y + 2,
+                        key_rect.width.saturating_sub(4),
+                        key_rect.height.saturating_sub(4),
+                    );
+                    // The label is centred both ways. The horizontal `… - text_w / 2` origin
+                    // rounded down to a **negative** x for a label wider than its key — the
+                    // 36 px Shift key drew "Shift" at x = -3 — and the vertical term only
+                    // subtracted half the line height, so the glyph box sat below centre.
+                    // `draw_text_fitted` with `Center` derives the origin from the fitted
+                    // string *inside* the key, so neither can leave it.
                     let key_text = if key.key_code == 16 && self.shift {
                         shift_bg.contrast_color()
                     } else {
                         text_color
                     };
-                    context.draw_text(
-                        Point::new(text_x, text_y),
+                    context.draw_text_fitted(
+                        inner,
                         &label,
                         &default_font,
                         key_text,
-                        HorizontalAlignment::Left,
+                        HorizontalAlignment::Center,
                     );
                 }
 

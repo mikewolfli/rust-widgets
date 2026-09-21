@@ -985,6 +985,14 @@ impl CodeEditor {
         } else {
             String::new()
         };
+        // The status row is a **single band**: the label and the caret position are laid
+        // out against the same rectangle and fitted inside it, so a long language name or
+        // a wide selection count shortens instead of running off the editor's edge. The two
+        // used to be placed from opposite edges of the whole width with no bound at all,
+        // which is why `Plain Text  1 lines` and `Ln 1, Col 1` both ended up painted past
+        // the control.
+        let status_band = Rect::new(rect.x + 8, top + 5, rect.width.saturating_sub(20), 16);
+        let font = Font::default();
         let left_label = format!(
             "{}  {} lines{}{}",
             self.language_name(),
@@ -992,30 +1000,47 @@ impl CodeEditor {
             fold_note,
             caret_note
         );
-        context.draw_text(
-            Point::new(rect.x + 8, top + 18),
+        let caret_rect = {
+            let right_label = if selected > 0 {
+                format!(
+                    "{} selected   Ln {}, Col {}",
+                    selected,
+                    self.cursor.head.line + 1,
+                    self.cursor.head.column + 1
+                )
+            } else {
+                format!("Ln {}, Col {}", self.cursor.head.line + 1, self.cursor.head.column + 1)
+            };
+            let width = context.measure_text(&right_label, &font).width;
+            // The caret label keeps its own strip at the right; the left label is fitted
+            // into what is left, which is the information order a reader expects (where the
+            // cursor is matters more than how many lines the file has).
+            let strip = Rect::new(
+                (status_band.x + status_band.width as i32 - width as i32).max(status_band.x),
+                status_band.y,
+                width.min(status_band.width),
+                status_band.height,
+            );
+            context.draw_text_fitted(
+                strip,
+                &right_label,
+                &font,
+                chrome.dim_ink,
+                HorizontalAlignment::Right,
+            );
+            Rect::new(
+                status_band.x,
+                status_band.y,
+                (strip.x - status_band.x).max(0) as u32,
+                status_band.height,
+            )
+        };
+        context.draw_text_fitted(
+            caret_rect,
             &left_label,
-            &Font::default(),
+            &font,
             chrome.dim_ink,
             HorizontalAlignment::Left,
-        );
-
-        let right_label = if selected > 0 {
-            format!(
-                "{} selected   Ln {}, Col {}",
-                selected,
-                self.cursor.head.line + 1,
-                self.cursor.head.column + 1
-            )
-        } else {
-            format!("Ln {}, Col {}", self.cursor.head.line + 1, self.cursor.head.column + 1)
-        };
-        context.draw_text(
-            Point::new(rect.x + rect.width as i32 - 12, top + 18),
-            &right_label,
-            &Font::default(),
-            chrome.dim_ink,
-            HorizontalAlignment::Right,
         );
 
         // The diagnostic tally is a summary of severity counts, so it reads the dimmest
@@ -1026,10 +1051,11 @@ impl CodeEditor {
             self.marker_count(MarkerSeverity::Warning),
             self.marker_count(MarkerSeverity::Info)
         );
-        context.draw_text(
-            Point::new(rect.x + rect.width as i32 - 12, top + 5),
+        let tally = Rect::new(status_band.x, top + 5, status_band.width, 12);
+        context.draw_text_fitted(
+            tally,
             &diagnostics,
-            &Font::default(),
+            &font,
             chrome.dim_ink,
             HorizontalAlignment::Right,
         );

@@ -339,7 +339,13 @@ impl Draw for ToolButton {
         let themed_border = theme.as_ref().and_then(|resolved| resolved.border_color);
         // `tool_button` is absent from the role table, so it resolves as `Surface` and its
         // background is the resolved surface fill. A caller that set a colour still wins.
-        let base = Color::rgb(240, 240, 240);
+        //
+        // The surface literal is the *last* step, not the whole answer: it used to be read
+        // unconditionally, which left `themed_bg` resolved and then discarded — the four
+        // state fills were therefore constant across appearances and the census reported
+        // the control as theme-blind. Reading the resolved surface here is what makes the
+        // states move when the theme does.
+        let base = style.background_color.or(themed_bg).unwrap_or(Color::rgb(240, 240, 240));
         let accent = themed_border.unwrap_or(Color::rgb(0, 120, 215));
         // The interaction states are **derived from the base**, not collapsed into one
         // colour, so the four states stay distinguishable on any theme: a press is a step

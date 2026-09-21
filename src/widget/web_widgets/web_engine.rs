@@ -12,7 +12,7 @@
 //! `crate::web::SimpleJsEngine`) and returns the actual result or error.
 //! Without that feature, evaluation reports `Err` instead of faking success.
 
-use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Rect};
 use crate::event::{Event, EventHandler};
 use crate::signal::Signal1;
 use crate::widget::capability::coercion::expect_string;
@@ -819,22 +819,44 @@ impl Draw for WebEngineView {
 
         ctx.fill_rect(g, page);
         ctx.draw_rect(g, border);
-        // Draw URL bar
+        // Draw URL bar. The label is centred inside the bar's own height: the origin is the
+        // glyph's **top** edge, so `+ 20` in a 28 px bar left a 14 px URL spanning 20..34 —
+        // six pixels past the bar and over the content it frames.
         let bar = Rect::new(g.x, g.y, g.width, 28);
         ctx.fill_rect(bar, page.blend(&ink, 0.10));
-        ctx.draw_text(
-            Point::new(g.x + 4, g.y + 20),
+        let url_font = Font::default_ui();
+        let url_h = ctx.measure_text("M", &url_font).height;
+        ctx.draw_text_fitted(
+            Rect::new(
+                bar.x + 4,
+                bar.y + (bar.height as i32 - url_h as i32) / 2,
+                bar.width.saturating_sub(8),
+                url_h,
+            ),
             self.url(),
-            &Font::default_ui(),
+            &url_font,
             ink.blend(&page, 0.35),
             HorizontalAlignment::Left,
         );
         // Content area hint
         if self.is_loading() {
-            ctx.draw_text(
-                Point::new(g.x + 4, g.y + g.height as i32 / 2),
+            let hint_font = Font::default_ui();
+            let hint_h = ctx.measure_text("M", &hint_font).height;
+            let content = Rect::new(
+                g.x,
+                g.y + bar.height as i32,
+                g.width,
+                g.height.saturating_sub(bar.height),
+            );
+            ctx.draw_text_fitted(
+                Rect::new(
+                    content.x + 4,
+                    content.y + (content.height as i32 - hint_h as i32) / 2,
+                    content.width.saturating_sub(8),
+                    hint_h,
+                ),
                 "Loading...",
-                &Font::default_ui(),
+                &hint_font,
                 secondary,
                 HorizontalAlignment::Left,
             );

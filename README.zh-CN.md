@@ -130,7 +130,7 @@ Arc、Spinner、Roller、Dropdown、TextArea、Keyboard、Switch。
 （`docs/plans/platform_capability_matrix.md`）由源码机械派生，并在 CI 中设有防脱节门禁。
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.5.1-blue)]()
+[![version](https://img.shields.io/badge/version-2.5.2-blue)]()
 [![tests](https://img.shields.io/badge/tests-5500%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
@@ -150,8 +150,28 @@ Arc、Spinner、Roller、Dropdown、TextArea、Keyboard、Switch。
 另外，**三个本已损坏**的构建配置现在能构建了：`--features mini`、`--features embedded`、
 以及 `--features "windows desktop-runtime controls-native controls-custom"`（上一个版本上有 78 个编译错误）。
 五个档位均 0 error、0 warning，`clippy -D warnings` 干净。
+
+**2.5.2（当前版本）实测：第五条渲染判据。** 上面四条都是读**栅格**，而栅格**有边界**——
+一个「画到自己矩形之外」的控件会得到一个**看起来完全正常**的普查结果：越界像素被裁掉，框内像素照常计数。
+而 SVG 快照带**绝对坐标、无边界**，同一个缺陷在那里就是**画出了画面**。
+**两个后端对「墨在哪里」给出不同答案，这本身就是缺陷。**
+
+`P5` 现在把每个控件走 SVG 后端渲染，要求它发出的每个元素都落在控件矩形内。
+一次抓出 **68 个控件**的真实缺陷并全部修复，归为六个根因：
+
+- **两套坐标系混用**（标题矩形在父空间算出、却按本地空间绘制）；
+- **估算与度量不一致**（`TabBar` 用字节长度布局、用 14 pt 绘制）；
+- **把行盒的 `ascent` 当成基线之上**——它在行盒**之内**，于是八个控件的 `+ ascent` 居中把文字下移半行、推出底边；
+- **大元素的半宽算漏**——描边、圆盘、投影；
+- **文本完全没有宽度约束**（约四十处），现在统一走一个新的入口
+  `RenderContext::draw_text_fitted`，它接收文本应处的**矩形**；
+- **`map_view` 硬编码浅色 chrome** 却被登记为「地图内容」——它根本不画地图，
+  所以暗色窗口里的地图是一块任何主题都改不动的白板。
+
+`P5` 的**第一版判据本身**也经过同样审计：它报出的 68 项里有 **25 项是判据自己的错**
+（文本宽度按「1 em/字符」估算、把 `stroke-width` 缺省值当成半宽），两处均已修正。
 详见 [`CHANGELOG.md`](CHANGELOG.md)、
-[`docs/log/log-20260921-3.md`](docs/log/log-20260921-3.md)（含每条断言的反向注入证据）。
+[`docs/log/log-20260921-4.md`](docs/log/log-20260921-4.md)（含每条断言的反向注入证据）。
 
 <p align="center">
   <a href="README.md">

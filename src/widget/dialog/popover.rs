@@ -315,14 +315,26 @@ impl Draw for Popover {
         let border = if visible { border } else { window_fill.blend(&border, 0.45) };
 
         // ── Draw shadow ──
+        //
+        // The shadow is offset down-right, so at a geometry whose right or bottom edge is
+        // already reached by the card it would paint past the control: the census reported
+        // the shadow rect at `[12,2..242,122]` on a 240×120 box. It only makes sense where
+        // there is room for it, so it is dropped when the offset would leave the control
+        // rather than being clamped — a half-shadow along one edge reads as a rendering
+        // fault, whereas no shadow at rest reads as the flat card it is.
         let shadow_offset = 2i32;
-        let shadow_rect = Rect::new(
-            body_rect.x + shadow_offset,
-            body_rect.y + shadow_offset,
-            body_rect.width,
-            body_rect.height,
-        );
-        context.fill_rounded_rect(shadow_rect, CORNER_RADIUS, Color::rgba(0, 0, 0, 40));
+        let shadow_fits = body_rect.x + shadow_offset + body_rect.width as i32
+            <= rect.x + rect.width as i32
+            && body_rect.y + shadow_offset + body_rect.height as i32 <= rect.y + rect.height as i32;
+        if shadow_fits {
+            let shadow_rect = Rect::new(
+                body_rect.x + shadow_offset,
+                body_rect.y + shadow_offset,
+                body_rect.width,
+                body_rect.height,
+            );
+            context.fill_rounded_rect(shadow_rect, CORNER_RADIUS, Color::rgba(0, 0, 0, 40));
+        }
 
         // ── Draw popover body ──
         context.fill_rounded_rect(body_rect, CORNER_RADIUS, card);
@@ -345,17 +357,17 @@ impl Draw for Popover {
         );
         let font = Font::simple("sans-serif", 13.0);
         let label = if self.content.is_some() { "Popover" } else { "Popover (empty)" };
-        let metrics = context.measure_text(label, &font);
-        let text_x = content_rect.x + (content_rect.width as i32 - metrics.width as i32) / 2;
-        let text_y = content_rect.y
-            + (content_rect.height as i32 - metrics.height as i32) / 2
-            + metrics.ascent as i32;
-        context.draw_text(
-            Point::new(text_x.max(content_rect.x), text_y.max(content_rect.y)),
+        // The label is centred on the content box but fitted first, because the box is
+        // 224 px wide at the census geometry and `Popover (empty)` is wider than that: a
+        // centred label shorter than its box stays centred, and one that does not fit is
+        // truncated inside the box instead of being centred from an over-wide origin that
+        // starts inside the card and finishes past its right edge.
+        context.draw_text_fitted(
+            content_rect,
             label,
             &font,
             muted_ink,
-            HorizontalAlignment::Left,
+            HorizontalAlignment::Center,
         );
     }
 }

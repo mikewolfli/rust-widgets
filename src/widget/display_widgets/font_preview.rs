@@ -191,8 +191,14 @@ impl Draw for FontPreview {
         // Draw background
         context.fill_rect(rect, Color::WHITE);
 
-        let mut y = rect.y + 10;
-        let margin = 10;
+        let mut y: u32 = (rect.y + 10) as u32;
+        let margin = 10u32;
+        // Every string in this panel is a *sample* of the configured font, not a label:
+        // a pangram is 43 characters whatever the widget is wide, and at the default 24 pt
+        // it advances ten times the control's width. The budget is therefore the panel's own
+        // inner width, shared by all three runs so the info line, the preview and the sample
+        // rows are truncated by the same rule instead of each drifting past the right edge.
+        let text_w = rect.width.saturating_sub(margin * 2);
 
         // --- Font family name and style info ---
         let info_font = Font::new("sans-serif", 12.0, false, false);
@@ -203,8 +209,12 @@ impl Draw for FontPreview {
             if self.bold { ", Bold" } else { "" },
             if self.italic { ", Italic" } else { "" },
         );
-        context.draw_text(
-            Point::new(rect.x + margin, y),
+        // Fitted to the panel's inner width: the info line carries the family, the size and
+        // any style suffix, so it grows with the caller's own inputs and can outrun the panel
+        // just as the samples can. It painted in the same grey as a sample row, so the two
+        // overflows were indistinguishable in the snapshot.
+        context.draw_text_fitted(
+            Rect::new(rect.x + margin as i32, y as i32, text_w, info_font.size() as u32),
             &info_text,
             &info_font,
             Color::rgba(100, 100, 100, 255),
@@ -212,26 +222,31 @@ impl Draw for FontPreview {
         );
 
         let line_height = 18;
-        y += line_height + 8;
+        y += line_height as u32 + 8;
 
         // --- Preview text at configured size ---
         if !self.preview_text.is_empty() {
+            // Truncate the sample rather than shrink the type: the preview's whole purpose is
+            // to show the family at `font_size`, and a font that silently rendered smaller
+            // than the size the panel's own info line reports would be a worse lie than an
+            // ellipsis. Fitting is therefore the correct fix here, not scaling.
             let preview_font = self.build_font(self.font_size);
-            context.draw_text(
-                Point::new(rect.x + margin, y),
+            context.draw_text_fitted(
+                Rect::new(rect.x + margin as i32, y as i32, text_w, preview_font.size() as u32),
                 &self.preview_text,
                 &preview_font,
                 Color::BLACK,
                 HorizontalAlignment::Left,
             );
-            y += (self.font_size * 1.4) as i32;
+            y += (self.font_size * 1.4) as u32;
         }
 
         // --- Separator line ---
         y += 4;
+        let baseline_y = rect.y as u32 + y;
         context.draw_line(
-            Point::new(rect.x + margin, y),
-            Point::new(rect.x + rect.width as i32 - margin, y),
+            Point::new(rect.x + margin as i32, baseline_y as i32),
+            Point::new(rect.x + rect.width as i32 - margin as i32, baseline_y as i32),
             Color::rgba(200, 200, 200, 255),
         );
         y += 10;
@@ -239,11 +254,13 @@ impl Draw for FontPreview {
         // --- Sample texts ---
         let sample_font = self.build_font(14.0);
         for text in &self.sample_texts {
-            if y + 20 > rect.y + rect.height as i32 {
+            if rect.y as u32 + y + 20 > rect.y as u32 + rect.height {
                 break; // Don't draw past the widget boundary
             }
-            context.draw_text(
-                Point::new(rect.x + margin, y),
+            // The alphabet and the pangram are longer than any panel this widget is sized
+            // for, so each row is fitted to the same inner width as the preview above it.
+            context.draw_text_fitted(
+                Rect::new(rect.x + margin as i32, y as i32, text_w, sample_font.size() as u32),
                 text,
                 &sample_font,
                 Color::rgba(60, 60, 60, 255),

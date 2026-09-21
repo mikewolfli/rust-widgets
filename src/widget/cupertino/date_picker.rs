@@ -357,10 +357,11 @@ impl Draw for CupertinoDatePicker {
                 let item_y = rect.y + (row as u32 * row_height) as i32;
 
                 let metrics = context.measure_text(text, &font);
-                let text_x = col_x + (col_width as i32 - metrics.width as i32) / 2;
-                let text_y = item_y
-                    + (row_height as i32 - metrics.height as i32) / 2
-                    + metrics.ascent as i32;
+                // Centred inside the row's own band. The old origin added `ascent` on top of
+                // an already-centred y, so the glyph box (which starts at the origin and runs
+                // a full line down) began half a line low — the fifth row was pushed past the
+                // control and only its top edge was ever painted.
+                let text_y = item_y + (row_height as i32 - metrics.height as i32) / 2;
 
                 let text_color = if !is_enabled {
                     disabled_text
@@ -370,12 +371,12 @@ impl Draw for CupertinoDatePicker {
                     muted
                 };
 
-                context.draw_text(
-                    Point::new(text_x, text_y),
+                context.draw_text_fitted(
+                    Rect::new(col_x, text_y, col_width, metrics.height),
                     text,
                     &font,
                     text_color,
-                    HorizontalAlignment::Left,
+                    HorizontalAlignment::Center,
                 );
             }
 

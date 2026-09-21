@@ -315,12 +315,21 @@ impl Draw for SearchBox {
         // — Text / Placeholder —
         let default_font = crate::core::Font::default();
         let font = self.font().unwrap_or(&default_font);
+        // The typed text is the control's ink, so it follows the theme; the previous literal
+        // `30,30,30` was written for a light field and rendered at 1.7:1 once the field's own
+        // background resolved to a dark surface. The placeholder stays dimmer than the ink on
+        // purpose (it is a hint, not a value), but it is derived from the ink now rather than
+        // being a second fixed grey that could not match either appearance.
+        let ink = crate::style::theme_manager()
+            .current_theme()
+            .map(|active| active.colors.foreground)
+            .unwrap_or(Color::rgba(30, 30, 30, 230));
         let text_color = if !is_enabled {
-            Color::rgba(160, 160, 160, 180)
+            ink.blend(&Color::WHITE, 0.45)
         } else if !self.text.is_empty() {
-            Color::rgba(30, 30, 30, 230)
+            ink
         } else {
-            Color::rgba(160, 160, 160, 200)
+            ink.blend(&Color::WHITE, 0.55)
         };
         let display_text = if self.text.is_empty() { &self.placeholder } else { &self.text };
         let text_origin =

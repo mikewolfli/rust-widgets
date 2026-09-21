@@ -350,6 +350,23 @@ impl PieChart {
     }
 }
 
+/// Nudges a text box of `width`×`height` at `(x, y)` back inside `rect`.
+///
+/// The returned box is the caller's own measured size, moved so it lies within `rect`.
+/// A box larger than the control cannot be made to fit by moving, so it is pinned to the
+/// control's origin and left for `draw_text_fitted` to fit to the room that remains: the
+/// fitting step is the one place that answers "too wide to fit", and duplicating that
+/// judgement here would let the two disagree.
+///
+/// The labels are anchored outside the pie's ring, so on the downward slices the anchor
+/// lands below the control; clamping is what keeps the glyph box inside the rectangle the
+/// raster backends clip to.
+fn label_box(x: i32, y: i32, width: i32, height: i32, rect: Rect) -> Rect {
+    let max_x = (rect.x + rect.width as i32 - width).max(rect.x);
+    let max_y = (rect.y + rect.height as i32 - height).max(rect.y);
+    Rect::new(x.clamp(rect.x, max_x), y.clamp(rect.y, max_y), width as u32, height as u32)
+}
+
 impl Widget for PieChart {
     fn base(&self) -> &BaseWidget {
         &self.base
@@ -417,6 +434,20 @@ impl Draw for PieChart {
 
         let label_font = Font::new("sans-serif", 10.0, false, false);
         let pct_font = Font::new("sans-serif", 9.0, false, false);
+        // Chart chrome, derived from the active surface: `DARK_GRAY` was a light-chart literal
+        // and rendered at 1.8:1 on the dark appearance's surface. The *slice* colours are
+        // untouched — those identify the data (rule #108 ③).
+        let slice_label_color = {
+            let surface = crate::style::theme_manager()
+                .current_theme()
+                .map(|active| active.colors.background)
+                .unwrap_or(Color::WHITE);
+            let ink = crate::style::theme_manager()
+                .current_theme()
+                .map(|active| active.colors.foreground)
+                .unwrap_or(Color::BLACK);
+            surface.blend(&ink, 0.75)
+        };
 
         // Draw sectors
         let mut start_angle = -std::f32::consts::FRAC_PI_2; // Start at 12 o'clock
@@ -446,19 +477,35 @@ impl Draw for PieChart {
 
             // Draw labels and percentages
             if is_enabled {
-                // Position label at midpoint of the arc, slightly outside
+                // Position label at midpoint of the arc, slightly outside.
+                //
+                // The label box is the room between the arc and the control's edge, and
+                // the text is fitted into it. The anchor sits a fixed distance outside the
+                // ring, so on the downward slices it lands near the bottom edge: centring
+                // an unfitted label there put half its glyph box below the control, which
+                // the census caught as `[96,129..102,139]` on a 120 px-high box.
                 let label_radius = outer_radius + 12.0;
                 let label_pos = Self::point_on_circle(exploded_center, label_radius, mid_angle);
 
                 if self.show_labels {
                     let metrics = context.measure_text(&slice.label, &label_font);
                     let label_x = label_pos.x - metrics.width as i32 / 2;
-                    let label_y = label_pos.y + metrics.height as i32 / 2;
-                    context.draw_text(
-                        Point::new(label_x, label_y),
+                    let label_y = label_pos.y - metrics.height as i32 / 2;
+                    let bounds = label_box(
+                        label_x,
+                        label_y,
+                        metrics.width as i32,
+                        metrics.height as i32,
+                        rect,
+                    );
+                    context.draw_text_fitted(
+                        bounds,
                         &slice.label,
                         &label_font,
-                        Color::DARK_GRAY,
+                        // The slice label is chart chrome, so it follows the surface it is
+                        // drawn on. `DARK_GRAY` was a light-chart literal: it rendered at
+                        // 1.8:1 against the dark appearance's surface — invisible.
+                        slice_label_color,
                         HorizontalAlignment::Left,
                     );
                 }
@@ -476,9 +523,16 @@ impl Draw for PieChart {
                     let pct_pos = Self::point_on_circle(exploded_center, pct_radius, mid_angle);
                     let pct_metrics = context.measure_text(&pct_text, &pct_font);
                     let pct_x = pct_pos.x - pct_metrics.width as i32 / 2;
-                    let pct_y = pct_pos.y + pct_metrics.height as i32 / 2;
-                    context.draw_text(
-                        Point::new(pct_x, pct_y),
+                    let pct_y = pct_pos.y - pct_metrics.height as i32 / 2;
+                    let bounds = label_box(
+                        pct_x,
+                        pct_y,
+                        pct_metrics.width as i32,
+                        pct_metrics.height as i32,
+                        rect,
+                    );
+                    context.draw_text_fitted(
+                        bounds,
                         &pct_text,
                         &pct_font,
                         Color::WHITE,

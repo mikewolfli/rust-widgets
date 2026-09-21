@@ -372,10 +372,29 @@ impl Draw for ColorPicker {
             Color::rgb(40, 48, 63),
         );
 
-        context.draw_text(
-            Point::new(rect.x + 8, rect.y + rect.height as i32 - 12),
-            &self.hex_rgba(),
-            &Font::default(),
+        // The hex readout is fitted to the room the swatch row leaves above it.
+        //
+        // Its origin used to be `rect_bottom - 12`, which is *inside* the glyph box: the
+        // renderer paints downward a full line height from the origin, so a 14 px font
+        // starting 12 px above the bottom edge finished 2 px past it. The row's top and
+        // bottom are now derived from the same swatch position and the font's own measured
+        // height, so the text sits wholly inside the control at any geometry — and in a
+        // very short one the fit step truncates it rather than letting it leave the box.
+        let hex_font = Font::default();
+        let hex_text = self.hex_rgba();
+        let hex_height = context.measure_text(&hex_text, &hex_font).height as i32;
+        let swatch_top = rect.y + rect.height as i32 - 28;
+        let hex_top = (swatch_top - hex_height).max(rect.y);
+        let hex_band = Rect::new(
+            rect.x + 8,
+            hex_top,
+            rect.width.saturating_sub(16),
+            (rect.y + rect.height as i32 - hex_top).max(1) as u32,
+        );
+        context.draw_text_fitted(
+            hex_band,
+            &hex_text,
+            &hex_font,
             Color::rgb(53, 66, 84),
             HorizontalAlignment::Left,
         );

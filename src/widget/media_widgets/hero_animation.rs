@@ -240,17 +240,29 @@ impl Draw for HeroAnimation {
             // No widgets configured: draw placeholder. The message is this widget's own
             // chrome — a hint about missing configuration — so it follows the theme.
             let font = crate::core::Font::default();
-            let text = "HeroAnimation\nSet source & target";
-            let metrics = context.measure_text(text, &font);
-            let text_x = rect.x + (rect.width as i32 - metrics.width as i32) / 2;
-            let text_y = rect.y + rect.height as i32 / 2;
-            context.draw_text(
-                Point::new(text_x, text_y),
-                text,
-                &font,
-                ink,
-                HorizontalAlignment::Left,
-            );
+            // Two lines, each fitted to the control's width, and each centred on the vertical
+            // midline as a pair. The previous single call passed a two-line string with one
+            // origin: the renderer draws **one** row per call, so the origin was computed
+            // from the *combined* width of both lines and the `\n` was painted as a missing
+            // glyph. That is why the label started at a negative x and the second line never
+            // appeared.
+            let lines = ["HeroAnimation", "Set source & target"];
+            let metrics = context.measure_text("Hg", &font);
+            let first_y = rect.y + (rect.height as i32 - metrics.height as i32 * 2) / 2;
+            for (index, line) in lines.iter().enumerate() {
+                context.draw_text_fitted(
+                    Rect::new(
+                        rect.x,
+                        first_y + index as i32 * metrics.height as i32,
+                        rect.width,
+                        metrics.height,
+                    ),
+                    line,
+                    &font,
+                    ink,
+                    HorizontalAlignment::Center,
+                );
+            }
             return;
         }
 
@@ -311,41 +323,20 @@ impl Draw for HeroAnimation {
 
         // Draw source/target labels. These are the endpoint colours of the transition shown
         // above — "source blue" and "target green" — so like those they are data, and the
-        // label must match the colour it names rather than the theme's.
-        if let (Some(_), None) = (src, tgt) {
-            context.draw_text(
-                Point::new(rect.x + 4, rect.y + 14),
-                "Source",
-                &font,
-                Color::rgba(33, 118, 210, 200),
-                HorizontalAlignment::Left,
-            );
-        } else if let (None, Some(_)) = (src, tgt) {
-            context.draw_text(
-                Point::new(rect.x + 4, rect.y + 14),
-                "Target",
-                &font,
-                Color::rgba(76, 175, 80, 200),
-                HorizontalAlignment::Left,
-            );
-        } else if src.is_some() && tgt.is_some() {
-            if t < 0.5 {
-                context.draw_text(
-                    Point::new(rect.x + 4, rect.y + 14),
-                    "Source → Target",
-                    &font,
-                    Color::rgba(33, 118, 210, 200),
-                    HorizontalAlignment::Left,
-                );
-            } else {
-                context.draw_text(
-                    Point::new(rect.x + 4, rect.y + 14),
-                    "Source → Target",
-                    &font,
-                    Color::rgba(76, 175, 80, 200),
-                    HorizontalAlignment::Left,
-                );
+        // label must match the colour it names rather than the theme's. The label strip is
+        // bounded by the control, so a narrow hero truncates it rather than overhanging.
+        let label_band = Rect::new(rect.x + 4, rect.y + 4, rect.width.saturating_sub(8), 14);
+        let label = match (src.is_some(), tgt.is_some()) {
+            (true, false) => Some(("Source", Color::rgba(33, 118, 210, 200))),
+            (false, true) => Some(("Target", Color::rgba(76, 175, 80, 200))),
+            (true, true) if t < 0.5 => {
+                Some(("Source \u{2192} Target", Color::rgba(33, 118, 210, 200)))
             }
+            (true, true) => Some(("Source \u{2192} Target", Color::rgba(76, 175, 80, 200))),
+            (false, false) => None,
+        };
+        if let Some((text, color)) = label {
+            context.draw_text_fitted(label_band, text, &font, color, HorizontalAlignment::Left);
         }
     }
 }

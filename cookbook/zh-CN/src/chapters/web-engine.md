@@ -80,9 +80,21 @@ new_view.reload();  // 无操作——不会重新加载 about:blank
 assert!(!new_view.is_loading());
 ```
 
-## Web引擎 — 完整浏览器引擎
+## Web引擎 — 页面模型，而非渲染引擎
 
-`WebEngineViewEnhanced` 提供完整的浏览器引擎，包含额外的信号
+> **本库不渲染网页。** `WebEngineViewEnhanced` 建模一个页面 —— URL 导航、历史、Cookie、
+> 隐私设置、JavaScript 求值 —— 并绘制围绕该模型的外壳。**任何平台**上都没有针对
+> HTML/CSS 的排版与绘制管线。请查询它，而不是想当然：
+>
+> ```rust
+> assert!(!engine.has_real_engine());   // 本构建下为 false，且如实如此
+> ```
+>
+> `has_real_engine()` 转发到平台的 `supports_web_engine()`，后者目前在所有平台均为 `false`。
+> 没有渲染引擎的构建仍然得到一个完全可用的控件：导航状态、设置与信号都正常，加载立即完成。
+> 它无法做到的，是把网页显示给你看。
+
+`WebEngineViewEnhanced` 提供页面模型，包含额外的信号
 和设置：
 
 ```rust
@@ -907,8 +919,8 @@ impl Browser {
 
 | 组件 | 用途 |
 |-----------|---------|
-| `WebViewEnhanced` | 嵌入式网页内容 widget（WidgetKind::WebView） |
-| `WebEngineViewEnhanced` | 完整浏览器引擎 widget，带额外信号 |
+| `WebViewEnhanced` | 嵌入式网页内容 widget，仅页面模型（WidgetKind::WebView） |
+| `WebEngineViewEnhanced` | 带额外信号的页面模型；**不渲染 HTML/CSS** —— 见 `has_real_engine()` |
 | `WebViewCore` | 共享实现（URL、标题、加载状态、进度） |
 | `SessionHistory` | 后退/前进导航栈 |
 | `NavigationHistory` | 带时间戳的导航记录，支持截断 |

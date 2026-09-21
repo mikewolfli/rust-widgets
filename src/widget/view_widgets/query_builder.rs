@@ -722,20 +722,37 @@ impl QueryBuilder {
             FilterConjunction::Or => chrome.or_chip(),
         };
         context.fill_rounded_rect(chip, 10, chip_color);
-        context.draw_text(
-            Point::new(chip.x + 10, chip.y + 14),
+        // Each label is centred on its own box by half the line box. The fixed offsets
+        // (`chip.y + 14`, `rect.y + 21`, `add.y + 14`) were written for one font: the origin is
+        // the glyph's **top** edge, so an 11 px chip label spanned 21..32 in a 20 px chip and
+        // ran five pixels past it, and the 14 px `+` spanned 21..35 in the same 20 px button.
+        let chip_font = Font::simple("Sans", 11.0);
+        let chip_text_h = context.measure_text("M", &chip_font).height;
+        context.draw_text_fitted(
+            Rect::new(
+                chip.x + 6,
+                chip.y + (chip.height as i32 - chip_text_h as i32) / 2,
+                chip.width.saturating_sub(12),
+                chip_text_h,
+            ),
             self.conjunction.as_str().to_uppercase().as_str(),
-            &Font::simple("Sans", 11.0),
+            &chip_font,
             // The label sits on the chip, so it takes the chip's own contrast
             // colour rather than a literal white.
             chip_color.contrast_color(),
-            HorizontalAlignment::Left,
+            HorizontalAlignment::Center,
         );
 
-        context.draw_text(
-            Point::new(chip.x + chip.width as i32 + 10, rect.y + 21),
-            &format!("{} condition(s)", self.rows.len()),
-            &Font::simple("Sans", 11.0),
+        let count_text = format!("{} condition(s)", self.rows.len());
+        context.draw_text_fitted(
+            Rect::new(
+                chip.x + chip.width as i32 + 10,
+                rect.y + (HEADER_HEIGHT as i32 - chip_text_h as i32) / 2,
+                (rect.width as i32 - (chip.x + chip.width as i32 + 10) - 38).max(1) as u32,
+                chip_text_h,
+            ),
+            &count_text,
+            &chip_font,
             chrome.placeholder_text(),
             HorizontalAlignment::Left,
         );
@@ -743,12 +760,19 @@ impl QueryBuilder {
         // The add button, at the right.
         let add = Rect::new(rect.x + rect.width as i32 - 30, rect.y + 7, 22, 20);
         context.fill_rounded_rect(add, 4, chrome.button());
-        context.draw_text(
-            Point::new(add.x + 7, add.y + 14),
+        let add_font = Font::simple("Sans", 14.0);
+        let add_text_h = context.measure_text("+", &add_font).height;
+        context.draw_text_fitted(
+            Rect::new(
+                add.x,
+                add.y + (add.height as i32 - add_text_h as i32) / 2,
+                add.width,
+                add_text_h,
+            ),
             "+",
-            &Font::simple("Sans", 14.0),
+            &add_font,
             chrome.text(),
-            HorizontalAlignment::Left,
+            HorizontalAlignment::Center,
         );
     }
 

@@ -31,6 +31,13 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
+/// Radius of the highlight disc drawn on the last sample, in logical pixels.
+///
+/// Named because the plot's inset has to allow for it: a disc of radius `r` centred on the
+/// final point reaches `r` px beyond that point, so the point itself must be inset by `r`
+/// for the disc to stay inside the control.
+const SPARKLINE_DOT_RADIUS: u32 = 3;
+
 /// A compact inline sparkline chart widget.
 ///
 /// Draws a mini line chart without axes. Only the line itself and an optional
@@ -228,26 +235,36 @@ impl Draw for Sparkline {
 
         let (y_min, y_max) = self.resolve_y_range();
 
-        let x0 = rect.x;
-        let x1 = rect.x + rect.width as i32 - 1;
-        let y_bottom = rect.y + rect.height as i32 - 1;
-
         // Map data values to pixel coordinates
         let n = self.data.len();
+        // The plot is inset by half the stroke (and by the highlight dot's radius when one is
+        // drawn) so the *painted* extent stays inside the control. A 1 px stroke centred on
+        // `rect.x` reaches half a pixel outside it, and the dot is a radius-3 disc centred on
+        // the last sample — at the right edge half of it was painted past the control, which
+        // the raster backend clipped and the SVG snapshot showed hanging out.
+        let stroke_w = self.stroke_width as u32;
+        let dot_radius = if self.show_last_point { SPARKLINE_DOT_RADIUS } else { 0 };
+        let half_stroke = (stroke_w.max(1) as i32 + 1) / 2;
+        let inset = half_stroke.max(dot_radius as i32);
+        let inset = inset.min(rect.width as i32 / 2).min(rect.height as i32 / 2);
+        let x0 = rect.x + inset;
+        let x1 = rect.x + rect.width as i32 - 1 - inset;
+        let y_top = rect.y + inset;
+        let y_bottom = rect.y + rect.height as i32 - 1 - inset;
+        let plot_height = (y_bottom - y_top).max(1) as f64;
         let mapped: Vec<Point> = self
             .data
             .iter()
             .enumerate()
             .map(|(i, val)| {
                 let px = if n > 1 { x0 + (x1 - x0) * i as i32 / (n - 1) as i32 } else { x0 };
-                let py = y_bottom - ((val - y_min) / (y_max - y_min) * rect.height as f64) as i32;
-                Point::new(px, py)
+                let py = y_bottom - ((val - y_min) / (y_max - y_min) * plot_height) as i32;
+                Point::new(px, py.max(y_top))
             })
             .collect();
 
         // ── Draw line segments ──
-        let stroke_w = self.stroke_width as u32;
-        for i in 0..mapped.len() - 1 {
+        for i in 0..mapped.len().saturating_sub(1) {
             context.draw_line_stroke_aa(mapped[i], mapped[i + 1], line_color, stroke_w.max(1));
         }
 
@@ -256,7 +273,7 @@ impl Draw for Sparkline {
             let dot_color =
                 if is_enabled { self.last_point_color } else { Color::DISABLED_FOREGROUND };
             let last = mapped[mapped.len() - 1];
-            context.fill_circle(last, 3, dot_color);
+            context.fill_circle(last, dot_radius, dot_color);
         }
     }
 }

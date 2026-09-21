@@ -607,11 +607,20 @@ impl Draw for DockWidget {
         context.fill_rect(title_bar, title_bar_color);
         // Draw title bar border
         context.draw_rect(title_bar, border);
-        // Draw title text
-        context.draw_text(
-            Point::new(title_bar.x + 5, title_bar.y + title_bar.height as i32 / 2),
+        // Draw title text. The origin is the glyph's **top** edge, so the title is centred by
+        // half the difference between the bar and the line box. Using the bar's midline put a
+        // 14 px title at 12..26 in a 24 px bar — two pixels onto the border below it.
+        let title_font = Font::default();
+        let title_h = context.measure_text("M", &title_font).height;
+        context.draw_text_fitted(
+            Rect::new(
+                title_bar.x + 5,
+                title_bar.y + (title_bar.height as i32 - title_h as i32) / 2,
+                title_bar.width.saturating_sub(10),
+                title_h,
+            ),
             &self.title,
-            &Font::default(),
+            &title_font,
             if self.base.is_enabled() { ink } else { ink.blend(&title_bar_color, 0.5) },
             HorizontalAlignment::Left,
         );

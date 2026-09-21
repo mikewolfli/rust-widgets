@@ -584,14 +584,16 @@ impl Draw for QuoteBoard {
         );
         for (column, (start, width)) in self.columns.iter().zip(ranges.iter()) {
             let text_x = if column.is_numeric() { start + width - 8 } else { start + 8 };
-            let alignment = if column.is_numeric() {
-                HorizontalAlignment::Right
-            } else {
-                HorizontalAlignment::Left
-            };
-            let _ = alignment;
+            // The label is clamped inside its own column. Without this a title wider than
+            // its slot was drawn from `start - overflow`, which for the first column is a
+            // **negative** x: `Symbol` (42 px into a 48 px slot) started at -34 and left
+            // the pane entirely. A clipped label reads as truncated; an escaped one reads
+            // as a corrupted picture, and the two are not equally honest.
+            let label_x = (text_x - estimate_width(column.title()))
+                .max(self.base.geometry().x)
+                .min(self.base.geometry().x + self.base.geometry().width as i32);
             context.draw_text(
-                Point { x: text_x - estimate_width(column.title()), y: geometry.y + 5 },
+                Point { x: label_x, y: geometry.y + 5 },
                 column.title(),
                 &Font::simple("Sans", 11.0),
                 header_text,

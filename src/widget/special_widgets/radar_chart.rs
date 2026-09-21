@@ -71,6 +71,19 @@ const PALETTE: [Color; 6] = [
     Color::rgb(0, 172, 193),
 ];
 
+/// Nudges a text box of `width`×`height` at `(x, y)` back inside `rect`.
+///
+/// The returned box is the caller's own measured size, moved so it lies within `rect`.
+/// A box larger than the control cannot be made to fit by moving, so it is pinned to the
+/// control's origin and left for `draw_text_fitted` to fit to the room that remains:
+/// the fitting step is the one place that answers "too wide to fit", and duplicating
+/// that judgement here would let the two disagree.
+fn label_box(x: i32, y: i32, width: i32, height: i32, rect: Rect) -> Rect {
+    let max_x = (rect.x + rect.width as i32 - width).max(rect.x);
+    let max_y = (rect.y + rect.height as i32 - height).max(rect.y);
+    Rect::new(x.clamp(rect.x, max_x), y.clamp(rect.y, max_y), width as u32, height as u32)
+}
+
 /// A radar (spider) chart: several series measured against shared dimension axes.
 ///
 /// # Data model
@@ -429,10 +442,10 @@ impl Draw for RadarChart {
 }
 
 impl RadarChart {
-    /// Draws the \"no data\" caption.
+    /// Draws the "no data" caption.
     fn draw_placeholder(&self, context: &mut RenderContext, rect: Rect) {
-        context.draw_text(
-            Point { x: rect.x + 8, y: rect.y + rect.height as i32 / 2 },
+        context.draw_text_fitted(
+            rect,
             "No data",
             &Font::simple("Sans", 12.0),
             Color::rgb(180, 180, 180),
@@ -490,6 +503,7 @@ impl RadarChart {
         axis_count: usize,
     ) {
         const LABEL_GAP: u32 = 10;
+        let rect = self.base.geometry();
         let font = Font::simple("Sans", 10.0);
         let label_radius = radius + LABEL_GAP;
         for axis in 0..axis_count {
@@ -500,13 +514,21 @@ impl RadarChart {
             let anchor_x = center.x + (label_radius as f32 * angle.cos()) as i32;
             let anchor_y = center.y + (label_radius as f32 * angle.sin()) as i32;
             let metrics = context.measure_text(label, &font);
-            // Centre the text on the anchor horizontally, and on the spoke's
-            // vertical position. Centring is what keeps a label from drifting into
-            // its neighbour on a many-axis chart.
+            // Centre the text on the anchor horizontally and on the spoke's vertical
+            // position, then clamp the *fitted* box into the control.
+            //
+            // The anchor sits outside the outermost ring, so on the upward-pointing
+            // spokes it lands above the control and on the downward ones below it; a
+            // label centred there had half its glyph box outside the widget. Fitting the
+            // text to the room the clamp leaves is what keeps a long axis name both inside
+            // the control and readable, rather than being clipped away by the raster
+            // backend and running off the picture in the SVG one.
             let text_x = anchor_x - metrics.width as i32 / 2;
             let text_y = anchor_y + metrics.ascent as i32 / 2;
-            context.draw_text(
-                Point { x: text_x, y: text_y },
+            let bounds =
+                label_box(text_x, text_y, metrics.width as i32, metrics.height as i32, rect);
+            context.draw_text_fitted(
+                bounds,
                 label,
                 &font,
                 Color::rgb(90, 90, 90),
@@ -573,8 +595,14 @@ impl RadarChart {
         for index in 0..self.series.len() {
             context.fill_rect(Rect::new(x, y, SWATCH, SWATCH), Self::series_color(index));
             let label = format!("Series {}", index + 1);
-            context.draw_text(
-                Point { x: x + SWATCH as i32 + 6, y: y + SWATCH as i32 },
+            // The legend strip is fixed at 90 px on the right, so the text is fitted to
+            // what remains of it beside the swatch: an unfitted `Series 12` ran past the
+            // control's right edge and only the raster backends hid it.
+            let text_x = x + SWATCH as i32 + 6;
+            let row =
+                Rect::new(text_x, y, (rect.x + rect.width as i32 - text_x).max(0) as u32, SWATCH);
+            context.draw_text_fitted(
+                row,
                 &label,
                 &font,
                 Color::rgb(70, 70, 70),

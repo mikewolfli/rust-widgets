@@ -27,12 +27,28 @@
 # ── Charts: series identity ────────────────────────────────────────────────────
 # A multi-series chart distinguishes series 1..N by a palette. Which colour maps
 # to which series carries no theme meaning: it is the data's identity.
-line_chart series-palette true A series colour identifies which line is which, not a semantic role; it is data, not chrome.
+#
+# `line_chart` was listed here until round 61, when its axis chrome was moved off three
+# fixed light greys and onto the active theme. Its *dominant* colour is now the themed
+# axis rather than the series stroke, so the exemption no longer excused anything and the
+# check required its removal. The series palettes themselves are unchanged and still data;
+# only the dominant colour moved, which is the judgement this table encodes.
 bar_chart series-palette true A series colour identifies which bar group is which; the value it encodes is the data.
 pie_chart series-palette true A pie slice colour identifies the category, and the category is the data.
 radar_chart series-palette true A series colour identifies which axis polygon is which; it is data.
 chart series-palette true A series colour identifies which data series is which; the series identity is the data.
-mini_chart series-palette true A sparkline-scale chart's stroke colour encodes its series; it carries no chrome role.
+
+# ── Removed on evidence (BLUE20 round 60) ─────────────────────────────────────
+# `mini_chart` and `meter` were listed here in round 59. Both were re-measured and
+# their dominant colour now differs between light and dark: `mini_chart` paints a
+# themed card behind its series line, and `meter` paints a themed track, ticks and
+# needle around its caller-supplied threshold bands. The parts that are still data
+# (the series stroke, the band colours) no longer dominate the render, so the
+# exemption had become a licence that excused nothing — and a stale licence is a
+# hole: it would wave through a future regression. `check_control_rendering.sh`
+# now fails on an exemption whose control has started following the appearance.
+# The data-ness of the stroke/bands themselves is unchanged; only the *dominant*
+# colour moved, which is the judgement this table encodes.
 
 # ── K-line / market data: direction encoding ──────────────────────────────────
 # Red and green here encode price direction. They are information: swapping them
@@ -50,15 +66,29 @@ color_picker hue-wheel true The hue wheel's colours are the value being picked; 
 
 # ── Meters / gauges: thresholds ───────────────────────────────────────────────
 # A meter's colour bands are thresholds the caller sets. They describe the value
-# range, so they are data.
-meter threshold-bands true The meter's bands encode caller-configured thresholds; the thresholds are data, not chrome.
+# range, so they are data. The *chrome* around them (track, ticks, needle, labels)
+# follows the theme and now dominates the render, so `meter` is not listed here —
+# see the "Removed on evidence" note above the chart section.
 
+# ── Removed on evidence (BLUE20 round 61) ─────────────────────────────────────
+# `map_view` was listed here as `map-content`. The entry was written on the assumption
+# that the control's palette *was* the map's, but the control has no tile pipeline at
+# all: what it painted was four hardcoded light colours — pane, border, grid and status
+# line — so a map inside a dark window was a white rectangle that no theme could change.
+# Those four are chrome (they frame geographic content rather than being it), so they now
+# resolve the theme, and the row was removed because the check rejects an exemption whose
+# control has started following the appearance. The parts that really are data are
+# unchanged and stay unexempted because they never dominated the render: the tile grid's
+# step and the marker colours, which encode place and selection.
+#
 # ── Visualisers: the signal/content is the subject ────────────────────────────
+#
+# `map_view` is deliberately absent from this section even though a map *is* content:
+# the control draws no map content, only the frame around where it would go.
 audio_visualizer signal-gradient true The visualiser's colours encode the signal being played; recolouring by appearance would misrepresent it.
 video_player video-surface true The video surface is the decoded frame, not chrome; it is content.
 camera_preview video-surface true The preview surface is the camera frame, not chrome; it is content.
 image_gallery bitmap-content true The gallery shows images; their colours are the content.
-map_view map-content true The map tiles/layers are geographic content; their palette is the map's, not the theme's.
 media_player video-surface true The player surface shows the media being played; that is content.
 font_preview glyph-samples true The glyph samples show the font's own appearance; that is the datum.
 emoji_picker emoji-glyphs true The emoji glyphs are the content being picked, not chrome.

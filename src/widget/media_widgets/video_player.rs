@@ -317,17 +317,18 @@ impl Draw for VideoPlayer {
         let font = Font::default();
 
         if self.source.is_empty() {
-            // Empty state.
+            // Empty state. Fitted to the control's width so a narrow player truncates the
+            // label instead of drawing it past its own edge.
             let text = "No video loaded";
             let metrics = context.measure_text(text, &font);
-            let text_x = rect.x + (rect.width as i32 - metrics.width as i32) / 2;
-            let text_y = rect.y + rect.height as i32 / 2 + metrics.ascent as i32 / 2;
-            context.draw_text(
-                Point::new(text_x, text_y),
+            let text_y = rect.y + (rect.height as i32 - metrics.height as i32) / 2;
+            let line = Rect::new(rect.x, text_y, rect.width, metrics.height);
+            context.draw_text_fitted(
+                line,
                 text,
                 &font,
                 Color::rgba(180, 180, 180, 220),
-                HorizontalAlignment::Left,
+                HorizontalAlignment::Center,
             );
             return;
         }

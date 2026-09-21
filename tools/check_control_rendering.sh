@@ -33,6 +33,16 @@
 #   P2  its dominant colour is not its background
 #   P3  light dominant ≠ dark dominant, unless the control is data-exempt
 #   P4  the four semantic tokens are consumed, and each moves with the appearance
+#   P5  every element it emitted lies inside its own rectangle
+#
+# P5 is measured through the **SVG** backend, and that is the point of it: P1-P4 all read
+# a raster, and a raster is bounded by the surface it was rendered into, so a control that
+# paints outside its own box produces a perfectly normal census — the escaped pixels are
+# clipped away and the rest are counted. The SVG stream carries absolute coordinates and
+# no bound, so the same defect appears there as drawing that leaves the picture. Two
+# backends disagreeing about where the ink is *is* the defect: whichever one clips it,
+# the other shows it. `group_box` shipped a title sitting at `y = -8` (over half of it
+# above the frame) while every raster assertion passed.
 #
 # The traversal is by **canonical name**, from `WidgetFactory::widget_names()`.
 # 13 `WidgetKind`s are shared by 2–5 controls each, so a kind sweep would silently
@@ -62,7 +72,7 @@ cd "$ROOT_DIR"
 
 STEP_BUDGET="${RW_GATE_TIMEOUT:-900}"
 
-echo "[1/3] census: rendering every published control in light and dark"
+echo "[1/4] census: rendering every published control in light and dark"
 if ! rw_run_bounded "$STEP_BUDGET" cargo test \
     --no-default-features --features desktop \
     --test control_rendering_census_test -- --nocapture > /tmp/rw_rendering_census.log 2>&1; then
@@ -70,9 +80,9 @@ if ! rw_run_bounded "$STEP_BUDGET" cargo test \
     sed -n '1,120p' /tmp/rw_rendering_census.log
     exit 1
 fi
-echo "  PASS  control_rendering_census_test (P1/P2/P3/P4)"
+echo "  PASS  control_rendering_census_test (P1/P2/P3/P4/P5)"
 
-echo "[2/3] baseline: every published control has a row in the golden table"
+echo "[2/4] baseline: every published control has a row in the golden table"
 BASELINE="tools/control_rendering_baseline.txt"
 if [ ! -f "$BASELINE" ]; then
     echo "  FAIL  $BASELINE is missing; regenerate with:"
@@ -131,6 +141,28 @@ if [ -n "$STALE" ]; then
 fi
 echo "  PASS  exemptions justified: $(awk '!/^#/ && NF>0' "$EXEMPT" | wc -l)"
 
+# Second direction: an exemption is a licence to paint the *same* colour in both
+# appearances, and a licence that is no longer needed is a hole. Once a control's
+# chrome follows the theme, keeping it in this table means a future regression
+# (someone hardcoding its chrome again) would be waved through. So an exempted
+# control that now differs between appearances is a finding, exactly like a
+# `KNOWN_THEME_BLIND` entry whose control has been fixed.
+CENSUS_JSON="$(cargo run --no-default-features --features desktop \
+    --example control_rendering_census 2>/dev/null)"
+NO_LONGER_BLIND="$(awk '!/^#/ && NF>0 {print $1}' "$EXEMPT" | sort -u | while read -r name; do
+    [ -z "$name" ] && continue
+    printf '%s\n' "$CENSUS_JSON" | awk -v n="$name" '
+        NF>0 && $1==n && $(NF-1)=="yes" {found=1}
+        END {exit found ? 0 : 1}'
+    if [ $? -eq 0 ]; then echo "$name"; fi
+done)"
+if [ -n "$NO_LONGER_BLIND" ]; then
+    echo "  FAIL  these exemptions are no longer needed — the control now follows the"
+    echo "        appearance, so the exemption would excuse a future regression:"
+    printf '%s\n' "$NO_LONGER_BLIND"
+    exit 1
+fi
+
 # The P2 (surface-coincidence) table is validated the same way: every entry needs a
 # reason, so an exemption cannot be added as a bare name.
 SURFACE_EXEMPT="tools/control_surface_coincidence_exemptions.txt"
@@ -145,6 +177,22 @@ if [ -n "$BAD_SURFACE" ]; then
     exit 1
 fi
 echo "  PASS  P2 surface-coincidence exemptions justified: $(awk '!/^#/ && NF>0' "$SURFACE_EXEMPT" | wc -l)"
+
+# The P5 (overflow) table is validated the same way. P5 is the only judgement whose whole
+# subject is geometry, and an exemption from it is the strongest licence in the file — it
+# says "this control may paint outside itself" — so a bare name is never enough.
+OVERFLOW_EXEMPT="tools/control_overflow_exemptions.txt"
+if [ ! -f "$OVERFLOW_EXEMPT" ]; then
+    echo "  FAIL  $OVERFLOW_EXEMPT is missing"
+    exit 1
+fi
+BAD_OVERFLOW="$(awk '!/^#/ && NF>0 && NF < 4 {print NR": "$0}' "$OVERFLOW_EXEMPT" || true)"
+if [ -n "$BAD_OVERFLOW" ]; then
+    echo "  FAIL  these P5 exemptions lack a reason (need: name what-overflows flag reason):"
+    printf '%s\n' "$BAD_OVERFLOW"
+    exit 1
+fi
+echo "  PASS  P5 overflow exemptions justified: $(awk '!/^#/ && NF>0' "$OVERFLOW_EXEMPT" | wc -l)"
 
 echo "[4/4] semantic tokens: each of the four has a control that reads it"
 if ! rw_run_bounded 120 "$PYTHON" tools/semantic_color_census.py > /tmp/rw_semantic_census.log 2>&1; then

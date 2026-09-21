@@ -80,9 +80,21 @@ new_view.reload();  // 無作用——不會重新載入 about:blank
 assert!(!new_view.is_loading());
 ```
 
-## WebEngine——完整瀏覽器引擎
+## WebEngine——頁面模型，而非渲染引擎
 
-`WebEngineViewEnhanced` 提供完整的瀏覽器引擎，並附帶額外的信號
+> **本函式庫不渲染網頁。** `WebEngineViewEnhanced` 建模一個頁面 —— URL 導覽、歷史、Cookie、
+> 隱私設定、JavaScript 求值 —— 並繪製圍繞該模型的外殼。**任何平台**上都沒有針對
+> HTML/CSS 的排版與繪製管線。請查詢它，而不是想當然：
+>
+> ```rust
+> assert!(!engine.has_real_engine());   // 本建置下為 false，且如實如此
+> ```
+>
+> `has_real_engine()` 轉發到平台的 `supports_web_engine()`，後者目前在所有平台均為 `false`。
+> 沒有渲染引擎的建置仍然得到一個完全可用的控件：導覽狀態、設定與信號都正常，載入立即完成。
+> 它無法做到的，是把網頁顯示給你看。
+
+`WebEngineViewEnhanced` 提供頁面模型，並附帶額外的信號
 與設定：
 
 ```rust
@@ -908,8 +920,8 @@ impl Browser {
 
 | 元件 | 用途 |
 |------|------|
-| `WebViewEnhanced` | 嵌入式網頁內容 widget（WidgetKind::WebView） |
-| `WebEngineViewEnhanced` | 完整瀏覽器引擎 widget，附帶額外信號 |
+| `WebViewEnhanced` | 嵌入式網頁內容 widget，僅頁面模型（WidgetKind::WebView） |
+| `WebEngineViewEnhanced` | 帶額外信號的頁面模型；**不渲染 HTML/CSS** —— 見 `has_real_engine()` |
 | `WebViewCore` | 共用實作（URL、標題、載入狀態、進度） |
 | `SessionHistory` | 上一頁／下一頁導航堆疊 |
 | `NavigationHistory` | 附帶時間戳記的導航記錄，支援截斷 |

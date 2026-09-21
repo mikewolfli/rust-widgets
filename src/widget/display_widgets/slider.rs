@@ -59,6 +59,14 @@ pub enum TickPosition {
     TicksBothSides,
 }
 
+/// Edge length of the draggable handle, in logical pixels.
+///
+/// Named once because two places have to agree about it: `draw` centres the handle on the
+/// position `value_to_pixel_pos` returns, and that function has to keep half a handle inside
+/// each end. While the size was a literal in the draw path only, the travel range assumed a
+/// zero-width handle and the minimum value's handle hung off the control.
+const SLIDER_SIZE: f32 = 16.0;
+
 /// Formats a [`TickPosition`] as its published token.
 ///
 /// Local rather than imported from `capability::access` (or `coercion`) for the
@@ -277,17 +285,29 @@ impl Slider {
     fn value_to_pixel_pos(&self, value: i32) -> f32 {
         let rect = self.geometry();
         let clamped = ordered_clamp_i32(value, self.minimum, self.maximum);
+        // The handle is `SLIDER_SIZE` wide and is *centred* on the position this returns, so
+        // the travel range has to stop half a handle short of each end. Using the full width
+        // put the minimum value's handle centre on `rect.x`, i.e. half of the handle outside
+        // the control; the raster backend clipped it and the SVG snapshot showed it hanging
+        // off the left edge, which is how the defect was found.
+        let inset = SLIDER_SIZE / 2.0;
+        let travel = match self.orientation {
+            Orientation::Horizontal => (rect.width as f32 - inset * 2.0).max(0.0),
+            Orientation::Vertical => (rect.height as f32 - inset * 2.0).max(0.0),
+        };
         let range = (self.maximum - self.minimum) as f32;
         if range == 0.0 {
             return match self.orientation {
-                Orientation::Horizontal => rect.x as f32,
+                Orientation::Horizontal => rect.x as f32 + inset,
                 Orientation::Vertical => rect.y as f32 + rect.height as f32 / 2.0,
             };
         }
         let relative = (clamped - self.minimum) as f32 / range;
         match self.orientation {
-            Orientation::Horizontal => rect.x as f32 + rect.width as f32 * relative,
-            Orientation::Vertical => rect.y as f32 + rect.height as f32 * (1.0 - relative), // Invert Y axis
+            Orientation::Horizontal => rect.x as f32 + inset + travel * relative,
+            Orientation::Vertical => {
+                rect.y as f32 + inset + travel * (1.0 - relative) // Invert Y axis
+            }
         }
     }
 }
@@ -602,7 +622,7 @@ impl Draw for Slider {
         // Draw base widget
         let rect = self.geometry();
         let slider_pos = self.value_to_pixel_pos(self.value);
-        let slider_size = 16;
+        let slider_size = SLIDER_SIZE;
 
         // Chrome colours resolve the explicit style first, then the theme's resolved style for
         // this control, and only then fall back to a literal. The groove read `style` already,
@@ -693,9 +713,9 @@ impl Draw for Slider {
                 // Draw slider handle
                 context.fill_rect(
                     Rect::from_f32(
-                        slider_pos - slider_size as f32 / 2.0,
+                        slider_pos - SLIDER_SIZE / 2.0,
                         rect.y as f32,
-                        slider_size as f32,
+                        slider_size,
                         rect.height as f32,
                     ),
                     handle_color,
@@ -704,9 +724,9 @@ impl Draw for Slider {
                 if let Some(border_color) = style.border_color.filter(|c| *c != handle_color) {
                     context.draw_rect(
                         Rect::from_f32(
-                            slider_pos - slider_size as f32 / 2.0,
+                            slider_pos - SLIDER_SIZE / 2.0,
                             rect.y as f32,
-                            slider_size as f32,
+                            slider_size,
                             rect.height as f32,
                         ),
                         border_color,
@@ -714,9 +734,9 @@ impl Draw for Slider {
                 } else {
                     context.draw_rect(
                         Rect::from_f32(
-                            slider_pos - slider_size as f32 / 2.0,
+                            slider_pos - SLIDER_SIZE / 2.0,
                             rect.y as f32,
-                            slider_size as f32,
+                            slider_size,
                             rect.height as f32,
                         ),
                         handle_border,
@@ -773,9 +793,9 @@ impl Draw for Slider {
                 context.fill_rect(
                     Rect::from_f32(
                         rect.x as f32,
-                        slider_pos - slider_size as f32 / 2.0,
+                        slider_pos - SLIDER_SIZE / 2.0,
                         rect.width as f32,
-                        slider_size as f32,
+                        slider_size,
                     ),
                     handle_color,
                 );
@@ -784,9 +804,9 @@ impl Draw for Slider {
                     context.draw_rect(
                         Rect::from_f32(
                             rect.x as f32,
-                            slider_pos - slider_size as f32 / 2.0,
+                            slider_pos - SLIDER_SIZE / 2.0,
                             rect.width as f32,
-                            slider_size as f32,
+                            slider_size,
                         ),
                         border_color,
                     );
@@ -794,9 +814,9 @@ impl Draw for Slider {
                     context.draw_rect(
                         Rect::from_f32(
                             rect.x as f32,
-                            slider_pos - slider_size as f32 / 2.0,
+                            slider_pos - SLIDER_SIZE / 2.0,
                             rect.width as f32,
-                            slider_size as f32,
+                            slider_size,
                         ),
                         handle_border,
                     );

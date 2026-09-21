@@ -452,8 +452,8 @@ impl Draw for ShortcutEditor {
         } else {
             format!("Filter: {}", self.filter_text)
         };
-        context.draw_text(
-            Point::new(rect.x + margin, y),
+        context.draw_text_fitted(
+            Rect::new(rect.x + margin, y, rect.width.saturating_sub((margin * 2) as u32), 16),
             &filter_label,
             &filter_font,
             if self.filter_text.is_empty() { placeholder } else { ink },

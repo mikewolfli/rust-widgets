@@ -5,6 +5,133 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 2.5.2 (2026-09-21) — The Fifth Rendering Judgement: Every Control Now Has to Paint Inside Itself
+
+Backward compatible: no public signature was removed and no existing behaviour was changed. The one
+file removed is a leftover diagnostic example whose imports only resolved on a device profile.
+
+---
+
+### 1. Why a fifth judgement was needed
+
+The four judgements added in 2.5.1 are all measured from a **raster**, and a raster is bounded by the
+surface it was rendered into. A control that paints *outside* its own rectangle therefore produces a
+perfectly normal census: the escaped pixels are clipped away, the rest are counted, and nothing looks
+wrong. The SVG snapshots are the opposite — absolute coordinates and no bound at all — so the same
+defect appears there as drawing that leaves the picture.
+
+**Two backends disagreeing about where the ink is, is the defect.** `group_box` shipped a title whose
+text sat at `y = -8`, more than half of it above its own frame, while every raster assertion passed.
+
+So `P5` renders each control through the SVG backend and requires every element it emits — `rect`,
+`circle`, `line`, `text`, `path` — to lie inside the control's rectangle. It found **68 controls** with
+real appearance defects, and they reduce to a handful of root causes:
+
+* **Two coordinate spaces mixed.** `group_box`/`panel` built their title rectangle in *parent* space and
+  painted it as *child* space, moving the glyph box half a line down (and therefore half of every title
+  outside the frame). `splash_screen` placed its logo block above a box whose height it had taken from
+  the wrong reference, putting the logo at `y = -20`.
+* **An estimate and a measurement that disagreed.** `TabBar` laid tabs out from `text.len() * 8`
+  (bytes!) but drew with a 14 pt font, so a two-character CJK title measured four times its drawn width.
+  The estimate now mirrors the renderer's own advance model, and the real metrics are measured before
+  the first tab is placed.
+* **A line box read as a baseline.** `TextMetrics::ascent` is *inside* the line box, not above it, but
+  eight controls centred text with `y + (box - height) / 2 + ascent` — which moves the glyph down by
+  almost a full line. This alone pushed the last row of the date pickers, the last line of `empty_state`
+  and the status rows of `code_editor`/`terminal_view` clean out of their controls.
+* **Half-widths left out of the arithmetic.** A stroke is centred on its chord, a disc extends `r` in
+  every direction, and a drop shadow is offset: `line`/`divider` painted outside their box by half a
+  thickness, `slider`'s handle sat half outside the track at its minimum, `sparkline`'s last-point dot
+  hung over the edge, and `fab`/`popover` grew past their frame once the shadow was added.
+* **Text with no width bound at all.** A glyph advances `font.size()` pixels, so a 14 pt label advances
+  14 px per character and a long one simply carried on past the control. Around forty call sites did
+  this. They now go through one new entry point, `RenderContext::draw_text_fitted`, which takes the
+  **rectangle** the text belongs in — every call site already had that rectangle in hand, and passing
+  it makes "forgot to bound the text" impossible by construction.
+
+### 2. Two defects in the judgement itself, fixed the same round
+
+A gate that is wrong in the strict direction wastes as much time as one that passes everything, and an
+earlier round had already shipped one of each. So `P5`'s first version was audited against every
+violation it reported, and **25 of the 68 findings turned out to be the check's fault**:
+
+* it estimated text width as one em per character, where the renderer charges a full em only for wide
+  scalars and **0.6 em for everything else** — reporting a 106 px title as 182 px and demanding that
+  forty controls truncate text that fits perfectly well;
+* it treated the default `stroke-width` as a *half*-width, so **any** element flush with `x = 0` was
+  reported as an escape.
+
+Both are corrected. The advance model is now mirrored from the renderer rather than re-invented.
+
+### 3. `map_view` stopped being exempt from the theme
+
+`map_view` was registered in the data-colour table as `map-content`, on the assumption that its palette
+*was* the map's. It draws no map at all — the control has no tile pipeline — so what it actually painted
+was four hardcoded light colours, and a map inside a dark window was a white rectangle no theme could
+change. Those four are chrome (they frame geographic content rather than being it) and now resolve the
+theme; the parts that really are data (the grid step, the marker colours, which encode place and
+selection) are unchanged. The stale exemption was removed, and the gate reported it as stale itself.
+
+### 4. A second pass: labels that hugged an edge, and one button that was two colours
+
+`snapshots/svg/` is only worth committing if somebody reads it, and reading it found more:
+
+* **`wizard_dialog`.** Its three navigation buttons were laid out **twice** — once in `draw` from
+  a 72 px column and once in `handle_event` from a fixed 80 px one placed 20 px and 8 px elsewhere.
+  Two of the three did not respond where they appeared. There is now one `nav_button_rects`
+  function for both, so a button cannot drift from its own click target. Every label was also
+  hugging the top of its 36 px button instead of centring, and the filled button read
+  `background_color` — which for a `Surface`-role control is *the dialog's own fill* — so it came
+  out grey; on the last step a second token (`success`) took over, making one affordance look like
+  two controls. It now reads the theme's `primary`, which is what an action colour is for.
+* **A systematic case of the same mistake.** The renderer's text origin is the glyph's **top-left**
+  and it paints *downward*, but `TextMetrics::ascent` was read as though it were space *above* the
+  line box. So the idiom `centre + ascent` — and its `centre`-only cousin — pushed labels half a
+  line down in **`tab_bar`, `menu`, `badge`, `snackbar`, `emoji_picker`, `dock_widget`,
+  `command_palette`, `input_dialog`/`dialog`, `popup_window`, `web_engine`, `query_builder`,
+  `number_picker`** and made the `heatmap` legend's reserved band one line too short. All are fixed,
+  and the arithmetic is now expressed as `box.y + (box.height - line_box) / 2` so the mistake has
+  nowhere to hide.
+* **`heatmap`'s legend band** was `18` px while its contents (8 px ramp + 2 px gap + 10 px line)
+  needed 20. The reservation is now *derived* from the parts instead of guessed, which is why the
+  numbers no longer sit on the control's last row.
+
+### 5. The cookbook had drifted two releases behind
+
+`cookbook/` was still pinned at **2.5.0** in all three languages, and two chapters carried pins that
+would not resolve at all (`version = "1.0"` and `version = "2.4"`). English also still said **179**
+widget kinds where the registry has 180. All three languages are now on **2.5.2** with consistent
+counts, and the web-engine chapter no longer calls `WebEngineViewEnhanced` a "full browser engine" —
+it is a page model with no HTML/CSS pipeline, which is what `has_real_engine()` says. All three
+mdbook builds pass.
+
+> The cookbook had no gate watching it, which is why it drifted. The version now appears in eight
+documentation files across four trees; a check that they agree would have caught this the moment
+`Cargo.toml` moved.
+
+### Measured facts
+
+| Quantity | Value |
+|---|---|
+| Controls covered by the rendering census | **188** |
+| Judgements asserted (`P1`–`P5`) | **5** |
+| Controls with an appearance defect found by `P5` | **68** |
+| Of those, findings that were the *check's* fault and were corrected | **25** |
+| Root causes the 68 reduce to | **6** |
+| Additional label-placement defects found by reading the snapshots | **13 controls** |
+| `P5` overflow exemptions | **0** (empty by evidence, not by assumption) |
+| Data-colour exemptions after removing the stale `map_view` row | **18** |
+| SVG snapshots regenerated | **376** (188 × 2 appearances) |
+| Cookbook version pins brought forward (2.5.0 / 1.0 / 2.4 → 2.5.2) | **48** across 3 languages |
+| Library tests | **5279 passed, 0 failed** |
+| Profiles built clean (`--all-targets`) | **5 / 5** (`desktop`, `tablet`, `mobile`, `mini`, `embedded`) |
+| `clippy -D warnings` | **clean** |
+
+### Upgrading
+
+Nothing to do. `draw_text_fitted` is additive, the exemption tables only lost a row that had gone
+stale, and the SVG snapshots are generated artifacts that regenerate byte-for-byte.
+
 ## 2.5.1 (2026-09-21) — A Control's Rendering Became a Verified Dimension, the WebEngine Stopped Claiming What It Could Not Do, and Three Broken Builds Were Fixed
 
 Backward compatible: no public signature was removed and no existing behaviour changed. The one

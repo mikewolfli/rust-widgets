@@ -81,9 +81,23 @@ new_view.reload();  // No-op — won't reload about:blank
 assert!(!new_view.is_loading());
 ```
 
-## WebEngine — Full Browser Engine
+## WebEngine — Page Model, Not a Rendering Engine
 
-`WebEngineViewEnhanced` provides the full browser engine with additional signals
+> **This library does not render web pages.** `WebEngineViewEnhanced` models a page — URL
+> navigation, history, cookies, privacy settings, and JavaScript evaluation — and paints the
+> chrome around that model. It has no layout or paint pipeline for HTML/CSS, on any platform.
+> Ask it, rather than assuming:
+>
+> ```rust
+> assert!(!engine.has_real_engine());   // false in this build, and honest about it
+> ```
+>
+> `has_real_engine()` forwards to the platform's `supports_web_engine()`, which is `false`
+> everywhere today. A build without a rendering engine still gets a fully usable control:
+> navigation state, settings and signals all behave, and loads complete immediately. What it
+> cannot do is show you the page.
+
+`WebEngineViewEnhanced` provides the page model with additional signals
 and settings:
 
 ```rust
@@ -910,8 +924,8 @@ impl Browser {
 
 | Component | Purpose |
 |-----------|---------|
-| `WebViewEnhanced` | Embedded web content widget (WidgetKind::WebView) |
-| `WebEngineViewEnhanced` | Full browser engine widget with extra signals |
+| `WebViewEnhanced` | Embedded web-content widget, page model only (WidgetKind::WebView) |
+| `WebEngineViewEnhanced` | Page model with extra signals; **no HTML/CSS rendering** — see `has_real_engine()` |
 | `WebViewCore` | Shared implementation (URL, title, loading state, progress) |
 | `SessionHistory` | Back/forward navigation stacks |
 | `NavigationHistory` | Timestamped navigation entries with truncation |

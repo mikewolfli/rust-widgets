@@ -243,8 +243,45 @@ impl Draw for EmptyState {
             };
 
         // ── Icon ──
-        let icon_size = 48;
-        let icon_y = rect.y + SECTION_GAP;
+        //
+        // The stack is centred as a whole rather than started from a fixed top gap. The
+        // fixed gap made the content taller than the control at the sizes a control is
+        // actually given (48 + 20 + 14 + button against a 120 px box), so the message ran
+        // past the bottom edge and the action button overlapped it. Centring means a tall
+        // empty state fills the box and a short one sits in the middle, and it is the
+        // layout the control's name implies.
+        let icon_size: i32 = 48;
+        let title_font_size: i32 = 20;
+        let message_font_size: i32 = 14;
+        // Row pitch, and the count that follows from it. The comment above the block records
+        // why the pitch is not the capacity: a line's *glyph box* is a full `line_height`
+        // tall, only four of the fourteen rows are covered by the gap, and the first line
+        // starts at its top edge with no leading above it. So the count has to be derived
+        // from the line height and the layout's fixed offsets, not from the pitch — the old
+        // `height / line_step` read a 34 px band as "two lines fit" and drew the second line
+        // four pixels below the control's bottom edge.
+        //
+        // `message_top_offset` is the distance from the box's top edge to the first line's
+        // top edge: the fixed header (icon + gaps + title) divided the same way, plus the six
+        // pixels between the title and the message.
+        let message_font = Font::with_weight("Sans", message_font_size as f32, 400, false);
+        let line_height = context.measure_text("M", &message_font).height.max(1) as i32;
+        let line_step = line_height + 4;
+        let message_top_offset = (icon_size + SECTION_GAP + title_font_size + 6).max(0);
+        let message_band = (rect.height as i32 - message_top_offset).max(0);
+        // `1 + (band - line_height) / step` is the number of whole lines that fit when the
+        // first one consumes `line_height` and each subsequent one `line_step`.
+        let message_line_capacity = (1 + (message_band - line_height) / line_step).max(0) as usize;
+        let action_extra =
+            if self.action_text.is_empty() { 0 } else { ACTION_BUTTON_HEIGHT as i32 + SECTION_GAP };
+        // The stack is measured from the band the message may use, so
+        // `icon_size + gap + title + 6 + the centred band` is exactly the control's height.
+        // A tall box therefore fills it, while a short one starts its first row inside the
+        // frame via the `max(rect.y)` floor below.
+        let stack_height = message_top_offset + message_band.max(line_height) + action_extra;
+        // `(rect.height - stack_height) / 2` is negative for a short box, which pushes the
+        // stack above the top edge; `max(rect.y)` keeps the first row inside instead.
+        let icon_y = (rect.y + (rect.height as i32 - stack_height) / 2).max(rect.y);
         // The icon is the palest ink on the surface; disabled fades it further.
         let icon_color =
             if is_enabled { ink.blend(&surface, 0.35) } else { ink.blend(&surface, 0.75) };
@@ -252,7 +289,6 @@ impl Draw for EmptyState {
         draw_centered(context, icon_y + icon_size, &self.icon, &icon_font, icon_color);
 
         // ── Title ──
-        let title_font_size = 20;
         let title_y = icon_y + icon_size + SECTION_GAP;
         let title_color = if is_enabled { ink } else { ink.blend(&surface, 0.65) };
         let title_font = Font::with_weight("Sans", title_font_size as f32, 600, false);
@@ -267,19 +303,24 @@ impl Draw for EmptyState {
         );
 
         // ── Message ──
-        let message_font_size = 14;
         let message_y = title_y + title_font_size + 6;
         // The message is the title's ink, one step closer to the surface.
         let message_color =
             if is_enabled { ink.blend(&surface, 0.25) } else { ink.blend(&surface, 0.7) };
-        let message_font = Font::with_weight("Sans", message_font_size as f32, 400, false);
 
-        // Wrap message text if it's wider than the available width
+        // Wrap message text if it's wider than the available width, then draw only the
+        // lines the band can hold. The wrap itself was never the defect — the message was
+        // being *drawn* one step past its last measured row — so the fix is the capacity
+        // above plus this explicit stop, which keeps the block inside the control on a
+        // short box and leaves the normal case unchanged.
         let available_width = rect.width.max(50) - 20;
         let wrapped_lines =
             wrap_text(context, &self.message, &message_font, available_width as usize);
         for (i, line) in wrapped_lines.iter().enumerate() {
-            let line_y = message_y + i as i32 * (message_font_size + 4);
+            if i >= message_line_capacity {
+                break;
+            }
+            let line_y = message_y + i as i32 * line_step;
             let line_metrics = context.measure_text(line, &message_font);
             let line_origin = Point::new(center_x - (line_metrics.width as i32 / 2), line_y);
             context.draw_text(

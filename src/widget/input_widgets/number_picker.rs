@@ -510,9 +510,18 @@ impl Draw for NumberPicker {
         // Neighbouring values, fading away from the centre. Drawing them is what
         // makes the control read as a wheel rather than a text field.
         let visible = self.visible_rows();
+        // The glyph box, not the row's centre line, is what has to fit. The guard used to
+        // compare `row_center` against the frame, which admits a row whose centre is just
+        // inside while its 15 px label reaches half a line above (or below) it: the top
+        // neighbour of the centre row was drawn at `y = -3` and the bottom one past the
+        // frame's last pixel. Testing the box the text actually occupies is what the
+        // assertion measures, so it is what the loop must test too.
+        let text_h = context.measure_text("M", &font).height as i32;
+        let frame_bottom = rect.y + rect.height as i32;
         for offset in -visible..=visible {
             let row_center = centre + (offset as i32) * row_h as i32;
-            if row_center < rect.y || row_center > rect.y + rect.height as i32 {
+            let text_top = row_center - text_h / 2;
+            if text_top < rect.y || text_top + text_h > frame_bottom {
                 continue;
             }
             let value = self.value_at_offset(offset);
@@ -527,8 +536,12 @@ impl Draw for NumberPicker {
                 text_color
             };
             let label = if faded { value.to_string() } else { format!("{value}{}", self.suffix) };
-            context.draw_text(
-                Point::new(rect.x + (rect.width as i32) / 2, row_center),
+            // The row's centre is where the glyph *box* centres, not where its top edge goes:
+            // the renderer paints downward from the origin, so using `row_center` directly put
+            // a 14 px value in a 15 px row spanning `centre .. centre + 14` — half a row below
+            // the band it belongs to.
+            context.draw_text_fitted(
+                Rect::new(rect.x, text_top, rect.width, text_h.max(1) as u32),
                 &label,
                 &font,
                 color,

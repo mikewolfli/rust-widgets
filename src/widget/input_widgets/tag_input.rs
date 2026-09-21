@@ -516,9 +516,15 @@ impl Draw for TagInput {
         } else {
             &self.input_buffer
         };
-        let text_origin = Point::new(input_x + 4, chip_y + TAG_HEIGHT / 2);
-        context.draw_text(
-            text_origin,
+        // The placeholder and the typed text are fitted to the input area, and the caret is
+        // positioned from the **fitted** text's measured width. `input_buffer.len() * 7`
+        // was wrong twice: `len()` counts bytes, so a CJK tag moved the caret four times too
+        // far, and the advance the renderer uses is the font size, not 7. A caret that
+        // disagrees with the glyphs beside it is a visible defect on its own.
+        let input_band =
+            Rect::new(input_x + 4, chip_y, input_rect.width.saturating_sub(8), TAG_HEIGHT as u32);
+        let drawn = context.draw_text_fitted(
+            input_band,
             display_text,
             &default_font,
             input_text_color,
@@ -527,9 +533,12 @@ impl Draw for TagInput {
 
         // ── Cursor (when focused and input is active) ──
         if self.focused && is_enabled {
-            let cursor_x = input_x + 4 + (self.input_buffer.len() as i32 * 7);
+            let cursor_x = input_x + 4 + context.measure_text(&drawn, &default_font).width as i32;
             let cursor_y1 = chip_y + 3;
             let cursor_y2 = chip_y + TAG_HEIGHT - 3;
+            // Clamped to the input box: a caret at the far right of a full buffer belongs on
+            // the last pixel of the field, not past its edge.
+            let cursor_x = cursor_x.min(input_rect.x + input_rect.width as i32 - 1);
             context.draw_line(
                 Point::new(cursor_x, cursor_y1),
                 Point::new(cursor_x, cursor_y2),

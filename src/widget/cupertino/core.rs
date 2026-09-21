@@ -653,104 +653,133 @@ impl Draw for CupertinoAlertDialog {
         let scrim = panel.blend(&background, 0.62);
 
         // ── Dialog background ──
-        let dialog_width = (rect.width as i32).min(320) as u32;
+        //
+        // A modal panel is drawn *inside* the control's own rectangle. The `min(320)` width
+        // and the fixed 200 px height were written for the 400x300 a caller normally gives a
+        // dialog; at the census rectangle the panel centred its own 200 px around a 120 px
+        // box, so its top landed 40 px above the control and the button row below it — and
+        // the header separators — left the frame entirely. Clamping the panel to the box it
+        // is painted in is what makes the control self-contained at any size.
+        let dialog_width = rect.width.min(320);
         let dialog_x = rect.x + (rect.width as i32 - dialog_width as i32) / 2;
-        let dialog_height = 200u32;
+        let dialog_height = rect.height.min(200);
         let dialog_y = rect.y + (rect.height as i32 - dialog_height as i32) / 2;
         let dialog_rect = crate::core::Rect::new(dialog_x, dialog_y, dialog_width, dialog_height);
 
         // ── Backdrop, then panel ──
         context.fill_rect(rect, scrim);
+        if dialog_width == 0 || dialog_height == 0 {
+            return;
+        }
         context.fill_rounded_rect(dialog_rect, 14, panel);
 
         // ── Title ──
+        // The title sits at 24 % of the panel's height, so it keeps its position while the
+        // panel is squeezed. It is fitted to the panel instead of measured at its full
+        // width: a title wider than the dialog used to start at a negative x (its origin is
+        // centred from its *unfitted* width) and run out of both sides.
         let title_font = crate::core::Font::new("sans-serif", 17.0, true, false);
         if !self.title.is_empty() {
-            let title_metrics = context.measure_text(&self.title, &title_font);
-            let title_x = dialog_x + (dialog_width as i32 - title_metrics.width as i32) / 2;
-            let title_y = dialog_y + 24 + title_metrics.height as i32 / 2;
-            context.draw_text(
-                Point::new(title_x, title_y),
+            let title_metrics = context.measure_text("M", &title_font);
+            let title_y = dialog_rect.y + ((dialog_height as i32 * 24) / 100).max(0);
+            context.draw_text_fitted(
+                Rect::new(
+                    dialog_rect.x + 12,
+                    title_y,
+                    dialog_width.saturating_sub(24),
+                    title_metrics.height.max(1),
+                ),
                 &self.title,
                 &title_font,
                 ink,
-                HorizontalAlignment::Left,
+                HorizontalAlignment::Center,
             );
         }
 
         // ── Message ──
         let msg_font = crate::core::Font::new("sans-serif", 14.0, false, false);
         if !self.message.is_empty() {
-            let msg_metrics = context.measure_text(&self.message, &msg_font);
-            let msg_x = dialog_x + (dialog_width as i32 - msg_metrics.width as i32) / 2;
-            let msg_y = dialog_y + 56 + msg_metrics.height as i32 / 2;
-            context.draw_text(
-                Point::new(msg_x, msg_y),
+            let msg_metrics = context.measure_text("M", &msg_font);
+            let msg_y = dialog_rect.y + ((dialog_height as i32 * 46) / 100).max(0);
+            context.draw_text_fitted(
+                Rect::new(
+                    dialog_rect.x + 12,
+                    msg_y,
+                    dialog_width.saturating_sub(24),
+                    msg_metrics.height.max(1),
+                ),
                 &self.message,
                 &msg_font,
                 ink,
-                HorizontalAlignment::Left,
+                HorizontalAlignment::Center,
             );
         }
 
         // ── Divider line above buttons ──
-        let divider_y = dialog_y + dialog_height as i32 - 48;
+        // Expressed as a fraction of the panel's height for the same reason: the fixed
+        // `height - 48` offset described a 200 px panel and moved the divider out of a
+        // shorter one.
+        let button_row_height = (dialog_height as i32 / 3).clamp(0, dialog_height as i32);
+        let divider_y = dialog_rect.y + dialog_height as i32 - button_row_height;
         context.draw_line(
-            Point::new(dialog_x, divider_y),
-            Point::new(dialog_x + dialog_width as i32, divider_y),
+            Point::new(dialog_rect.x, divider_y),
+            Point::new(dialog_rect.x + dialog_width as i32, divider_y),
             separator,
         );
 
         // ── Buttons ──
         let button_font = crate::core::Font::new("sans-serif", 17.0, false, false);
+        let button_metrics = context.measure_text("M", &button_font);
         let has_cancel = !self.cancel_text.is_empty();
+
+        // The button row is the strip between the divider and the panel's bottom edge, so
+        // its cells are derived from that strip rather than from a fixed 12 px offset. The
+        // strip is floored at the measured line height and its vertical divider is clamped
+        // to the panel's own bottom, which is what a two-button row needed and a shorter one
+        // never got.
+        let button_top = divider_y;
+        let button_bottom = dialog_rect.y + dialog_height as i32;
+        let label_height = button_metrics.height.max(1) as i32;
+        let label_y =
+            (button_top + (button_bottom - button_top - label_height) / 2).max(button_top);
+        let cell_width = if has_cancel { dialog_width as i32 / 2 } else { dialog_width as i32 };
 
         if has_cancel {
             // Two buttons: cancel on left, confirm on right
             // Vertical divider between them
-            let mid_x = dialog_x + dialog_width as i32 / 2;
+            let mid_x = dialog_rect.x + dialog_width as i32 / 2;
             context.draw_line(
                 Point::new(mid_x, divider_y),
-                Point::new(mid_x, dialog_y + dialog_height as i32),
+                Point::new(mid_x, button_bottom),
                 separator,
             );
 
-            // Cancel button
-            let cancel_metrics = context.measure_text(&self.cancel_text, &button_font);
-            let cancel_x = dialog_x + (dialog_width as i32 / 2 - cancel_metrics.width as i32) / 2;
-            let cancel_y = divider_y + 12 + cancel_metrics.height as i32 / 2;
-            context.draw_text(
-                Point::new(cancel_x, cancel_y),
+            // Cancel button. Centred inside its own half of the row, which is both where the
+            // user reads it and the box that keeps its label inside the panel.
+            context.draw_text_fitted(
+                Rect::new(dialog_rect.x, label_y, cell_width.max(0) as u32, label_height as u32),
                 &self.cancel_text,
                 &button_font,
                 action,
-                HorizontalAlignment::Left,
+                HorizontalAlignment::Center,
             );
 
             // Confirm button
-            let confirm_metrics = context.measure_text(&self.confirm_text, &button_font);
-            let confirm_x = dialog_x
-                + dialog_width as i32 / 2
-                + (dialog_width as i32 / 2 - confirm_metrics.width as i32) / 2;
-            let confirm_y = divider_y + 12 + confirm_metrics.height as i32 / 2;
-            context.draw_text(
-                Point::new(confirm_x, confirm_y),
+            context.draw_text_fitted(
+                Rect::new(mid_x, label_y, cell_width.max(0) as u32, label_height as u32),
                 &self.confirm_text,
                 &button_font,
                 action,
-                HorizontalAlignment::Left,
+                HorizontalAlignment::Center,
             );
         } else {
             // Single confirm button centered
-            let confirm_metrics = context.measure_text(&self.confirm_text, &button_font);
-            let confirm_x = dialog_x + (dialog_width as i32 - confirm_metrics.width as i32) / 2;
-            let confirm_y = divider_y + 12 + confirm_metrics.height as i32 / 2;
-            context.draw_text(
-                Point::new(confirm_x, confirm_y),
+            context.draw_text_fitted(
+                Rect::new(dialog_rect.x, label_y, dialog_width, label_height as u32),
                 &self.confirm_text,
                 &button_font,
                 action,
-                HorizontalAlignment::Left,
+                HorizontalAlignment::Center,
             );
         }
     }

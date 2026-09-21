@@ -298,8 +298,42 @@ impl EventHandler for MapView {
 impl Draw for MapView {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::rgb(235, 243, 250));
-        context.draw_rect(rect, Color::rgb(168, 184, 201));
+
+        // The pane, its border, the grid and the status line are **chrome** — they frame the
+        // geographic content rather than being it — so they resolve the theme instead of
+        // four literals. The previous literals were all light, which is why a map in a dark
+        // window was a white rectangle: the control could not follow the appearance at all.
+        // The tile grid and the markers keep their own colours, because those encode place
+        // and selection (rule #108 ③).
+        let style = self.base.style().clone();
+        let theme = crate::style::resolved_theme_style("map_view");
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::rgb(45, 58, 74));
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or(Color::rgb(168, 184, 201));
+        // A pane whose resolved fill is the window's own would be indistinguishable from the
+        // frame behind it, so a surface equal to the theme background is stepped toward the
+        // ink — the same distinction `splash_screen` makes.
+        let window_fill =
+            crate::style::theme_manager().current_theme().map(|active| active.colors.background);
+        let surface = match window_fill {
+            Some(window_fill) if window_fill == ink => ink.blend(&border, 0.5),
+            _ => style
+                .background_color
+                .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+                .unwrap_or(Color::rgb(235, 243, 250)),
+        };
+        let surface = match window_fill {
+            Some(window_fill) if surface == window_fill => window_fill.blend(&ink, 0.08),
+            _ => surface,
+        };
+        let grid = surface.blend(&ink, 0.12);
+        context.fill_rect(rect, surface);
+        context.draw_rect(rect, border);
 
         // Draw coarse map grid for pan/zoom visual feedback.
         let step = (40.0 * self.zoom.clamp(0.5, 2.0)) as i32;
@@ -309,7 +343,7 @@ impl Draw for MapView {
                 context.draw_line(
                     Point::new(x, rect.y),
                     Point::new(x, rect.y + rect.height as i32),
-                    Color::rgb(210, 220, 233),
+                    grid,
                 );
                 x += step;
             }
@@ -319,7 +353,7 @@ impl Draw for MapView {
                 context.draw_line(
                     Point::new(rect.x, y),
                     Point::new(rect.x + rect.width as i32, y),
-                    Color::rgb(210, 220, 233),
+                    grid,
                 );
                 y += step;
             }
@@ -328,26 +362,34 @@ impl Draw for MapView {
         for (index, marker) in self.markers.iter().enumerate() {
             let (sx, sy) = self.world_to_screen(marker.x, marker.y);
             let marker_rect = Rect::new((sx as i32) - 3, (sy as i32) - 3, 6, 6);
+            // A marker's colour is **data**: it distinguishes the selected place from the
+            // rest, and a theme colour would carry no such meaning.
             let color = if self.selected_marker == Some(index) {
                 Color::rgb(230, 88, 76)
             } else {
                 Color::rgb(59, 114, 190)
             };
             context.fill_rect(marker_rect, color);
-            context.draw_text(
-                Point::new((sx as i32) + 6, sy as i32),
-                &marker.label,
-                &Font::default(),
-                Color::rgb(33, 43, 56),
-                HorizontalAlignment::Left,
-            );
+            // A marker label is bounded by the pane: it is placed beside a point that may sit
+            // anywhere, so unbounded it could start inside and end past the edge.
+            let label_left = (sx as i32) + 6;
+            let label_width = (rect.x + rect.width as i32 - label_left).max(0) as u32;
+            if label_width > 0 {
+                context.draw_text_fitted(
+                    Rect::new(label_left, sy as i32 - 6, label_width, 14),
+                    &marker.label,
+                    &Font::default(),
+                    ink,
+                    HorizontalAlignment::Left,
+                );
+            }
         }
 
-        context.draw_text(
-            Point::new(rect.x + 8, rect.y + 16),
+        context.draw_text_fitted(
+            Rect::new(rect.x + 8, rect.y + 4, rect.width.saturating_sub(16), 14),
             &format!("Center ({:.1}, {:.1})  Zoom {:.2}x", self.center_x, self.center_y, self.zoom),
             &Font::default(),
-            Color::rgb(45, 58, 74),
+            ink,
             HorizontalAlignment::Left,
         );
     }

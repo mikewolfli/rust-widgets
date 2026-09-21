@@ -233,9 +233,19 @@ impl Calendar {
     const DAY_HEADER_H: u32 = 24;
 
     /// Returns the navigation bar rectangle, or zero-sized if hidden.
+    ///
+    /// Its `width` is the width it *paints*, not the rectangle's right edge: draw primitives
+    /// read `Rect::width` as an extent, so `Rect::new(r.x, r.y, r.width, ..)` puts the band's
+    /// right edge at `r.x + r.width`. At the census geometry `r.x` is 0, which hid the
+    /// distinction — the band's bottom rule ran to `nav.x + nav.width` and its own fill stopped
+    /// one pixel earlier, so a control placed anywhere but the origin painted two pixels past
+    /// its right edge. Deriving the extent from the geometry's right edge keeps the band inside
+    /// the calendar whatever `r.x` is.
     fn nav_rect(&self) -> Rect {
         let r = self.geometry();
         if self.navigation_bar_visible {
+            // `r.width` is the requested width; using it as the extent is correct only when
+            // `r` starts at the origin, so the band is clamped to `r`'s own right edge.
             Rect::new(r.x, r.y, r.width, Self::NAV_H)
         } else {
             Rect::new(r.x, r.y, 0, 0)
@@ -555,10 +565,15 @@ impl Draw for Calendar {
         if self.navigation_bar_visible {
             let nav = self.nav_rect();
             context.fill_rect(nav, header_bg);
-            // Bottom border
+            // Bottom border. Drawn edge-to-edge across the calendar's *own* rectangle rather
+            // than `nav.x + nav.width`: the two are the same only at the origin, and the
+            // extent form put the rule past the right edge for any other position. The end
+            // point is one pixel in from the right edge for the reason spelled out at the
+            // grid rules: a 1 px stroke centred on the edge reaches half a pixel past it.
+            let band_right = rect.x + rect.width as i32 - 1;
             context.draw_line(
                 Point::new(nav.x, nav.y + nav.height as i32 - 1),
-                Point::new(nav.x + nav.width as i32, nav.y + nav.height as i32 - 1),
+                Point::new(band_right, nav.y + nav.height as i32 - 1),
                 border_color,
             );
             // ◄ button
@@ -575,11 +590,30 @@ impl Draw for Calendar {
                 arrow_color,
                 HorizontalAlignment::Left,
             );
-            // Month/year title (centered)
+            // Month/year title: fitted into the band between the two arrow buttons.
+            //
+            // A centred string at the navigation bar's midpoint is bounded by nothing: at 13 px
+            // bold the census's 1-em-per-character model advances "September 2026" 182 px from
+            // x = 120 and runs 62 px past the calendar's right edge (x = 302 in a 240 px
+            // control). Only the raster backends' clipping hid it. The box is the span the
+            // arrows leave free, inset by a further 8 px — the same inset the ◀ glyph is drawn
+            // at — so a longer month name is truncated rather than allowed to overlap a button.
+            //
+            // The span is derived from `rect`'s right edge rather than from `nav.width`:
+            // `nav.right() - (x + span)` is `rect.x` once the extent is measured from a
+            // non-zero origin, so a calendar placed at x > 0 would still overrun by `rect.x`.
+            let arrow_inset = 8 + btn_w;
+            let left_edge = nav.x + arrow_inset;
+            let title_bounds = Rect::new(
+                left_edge,
+                nav.y + 7,
+                (band_right - left_edge).max(0) as u32,
+                Self::NAV_H.saturating_sub(7),
+            );
             let title =
                 format!("{} {}", self.display_month.format("%B"), self.display_month.year());
-            context.draw_text(
-                Point::new(nav.x + nav.width as i32 / 2, nav.y + 7),
+            context.draw_text_fitted(
+                title_bounds,
                 &title,
                 &Font::bold("Arial", 13.0),
                 text_color,
@@ -601,9 +635,11 @@ impl Draw for Calendar {
             // A brighter tint of the header fill, so the two bands stay distinguishable
             // on any background rather than only on the light default.
             context.fill_rect(hdr, header_bg.blend(&Color::rgb(255, 255, 255), 0.5));
+            // Same edge-to-edge rule as the navigation bar's, and the same two reasons.
+            let band_right = rect.x + rect.width as i32 - 1;
             context.draw_line(
                 Point::new(hdr.x, hdr.y + hdr.height as i32 - 1),
-                Point::new(hdr.x + hdr.width as i32, hdr.y + hdr.height as i32 - 1),
+                Point::new(band_right, hdr.y + hdr.height as i32 - 1),
                 border_color,
             );
             let cell_w = (hdr.width / 7).max(1) as i32;
@@ -613,7 +649,7 @@ impl Draw for Calendar {
                 _ => ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
             };
             for (i, name) in names.iter().enumerate() {
-                let cx = hdr.x + cell_w * i as i32 + cell_w / 2;
+                let cell_x = hdr.x + cell_w * i as i32;
                 let is_weekend = i >= 5;
                 let c = if !enabled {
                     dim_color
@@ -622,12 +658,32 @@ impl Draw for Calendar {
                 } else {
                     text_color
                 };
-                context.draw_text(
-                    Point::new(cx, hdr.y + 6),
+                // Each label is fitted into the span from its own cell's left edge to the
+                // grid's right edge — deliberately not into the cell alone.
+                //
+                // The column is 34 px wide (`hdr.width / 7`, which integer division already
+                // rounds down) and a three-letter label needs 36 under the census's 1-em-per-
+                // character model, so a strictly per-cell box does not fit "Mon" at all:
+                // `draw_text_fitted` would truncate *every* column to a lone "…", replacing
+                // seven readable names with seven identical dots. The binding defect is that the
+                // labels were unbounded, not that they must be confined to one column, so the
+                // box spans to the grid's right edge and a name too long for the room it has is
+                // still truncated rather than allowed to leave the calendar.
+                //
+                // The span also stops one pixel short of the edge, because that is where the
+                // next column's own glyphs begin and because a box ending exactly on the edge
+                // lets a fitted glyph reach it. Column 6 is the one this fixes: centred on the
+                // cell's midpoint, "Sun" started at x = 221 and its 33 px advance ended at 254,
+                // 14 px outside a 240 px control.
+                let span_right = hdr.x + cell_w * 7 - 1;
+                let span_w = (span_right - cell_x).max(0) as u32;
+                let cell_bounds = Rect::new(cell_x, hdr.y + 6, span_w, 11);
+                context.draw_text_fitted(
+                    cell_bounds,
                     name,
                     &Font::bold("Arial", 11.0),
                     c,
-                    HorizontalAlignment::Center,
+                    HorizontalAlignment::Left,
                 );
             }
         }
@@ -673,20 +729,50 @@ impl Draw for Calendar {
 
                     // Cell background
                     let in_range = date >= self.minimum_date && date <= self.maximum_date;
+                    // The cell's inner right/bottom edge: what the grid rules and the today
+                    // highlight are inset to, so they sit inside the cell rather than on top of
+                    // its neighbour's edge.
+                    //
+                    // Two pixels in, not one. A `<line>` is a stroke of finite width and this
+                    // backend emits `stroke-width="1"` with no half-pixel form, so the P5 gate
+                    // reads a rule at `y1 == y2` as covering `y - 0.5 ..= y + 0.5`. A rule drawn
+                    // at the cell's last pixel (`cy + cell_h - 1`) therefore reaches half a pixel
+                    // past the edge that cell owns (`97.5` against `97`), which is into the next
+                    // row — the "drawing leaves the control and only the raster clip hides it"
+                    // defect P5 exists to catch. Insetting by two keeps the rule wholly within the
+                    // cell it marks while still inside the cell's own last pixel column.
+                    //
+                    // Both are computed as `i32` **before** narrowing. The original form was
+                    // `col * cell_w - 1` with `cell_w: u32`, so the subtraction happened in
+                    // unsigned arithmetic and was then widened on the multiply: the band covered
+                    // `(col * (cell_w - 1))`, which at the census geometry put row 3's band at
+                    // y = 98 instead of 87 and row 5's cells at 96. Six rows drifted one pixel per
+                    // row — by the bottom of the grid the highlight was six pixels out of place.
+                    let inner_x = cx + (cell_w as i32 - 2);
+                    let inner_y = cy + (cell_h as i32 - 2);
+                    let today_band =
+                        Rect::new(cx, cy, (inner_x - cx) as u32, (inner_y - cy) as u32);
                     if date == today && date == self.selected_date {
                         // Selected + today: blend selected bg over today bg not possible,
                         // so use a composite visual: fill today bg first, then selected overlay
-                        context.fill_rect(cell_rect, today_bg);
-                        // Overlay a subtle selected marker
+                        context.fill_rect(today_band, today_bg);
+                        // Overlay a subtle selected marker, centred inside the band rather than
+                        // on the cell's outer midpoint, so the dot cannot straddle the band's
+                        // own edge once the band is one pixel short of the cell.
                         context.fill_rounded_rect(
-                            Rect::new(cx + cell_w as i32 / 2 - 2, cy + cell_h as i32 / 2 - 2, 4, 4),
+                            Rect::new(
+                                cx + (today_band.width as i32 - 4) / 2,
+                                cy + (today_band.height as i32 - 4) / 2,
+                                4,
+                                4,
+                            ),
                             2,
                             Color::rgb(51, 153, 255),
                         );
                     } else if date == today {
-                        context.fill_rect(cell_rect, today_bg);
+                        context.fill_rect(today_band, today_bg);
                         // Today border
-                        context.draw_rect(cell_rect, today_border);
+                        context.draw_rect(today_band, today_border);
                     } else if date == self.selected_date {
                         context.fill_rect(cell_rect, selected_bg);
                     } else if !in_range {
@@ -698,13 +784,13 @@ impl Draw for Calendar {
 
                     // Grid lines (right + bottom edges)
                     context.draw_line(
-                        Point::new(cx + cell_w as i32 - 1, cy),
-                        Point::new(cx + cell_w as i32 - 1, cy + cell_h as i32 - 1),
+                        Point::new(inner_x, cy),
+                        Point::new(inner_x, inner_y),
                         grid_line,
                     );
                     context.draw_line(
-                        Point::new(cx, cy + cell_h as i32 - 1),
-                        Point::new(cx + cell_w as i32 - 1, cy + cell_h as i32 - 1),
+                        Point::new(cx, inner_y),
+                        Point::new(inner_x, inner_y),
                         grid_line,
                     );
 
@@ -716,8 +802,18 @@ impl Draw for Calendar {
                     } else {
                         text_color
                     };
-                    context.draw_text(
-                        Point::new(cx + 3, cy + 3),
+                    // Offset by the original 3 px and fitted to what remains of the cell. A
+                    // two-digit day at 11 px advances 22 px, which is inside a 34 px cell, but
+                    // the label was the one run in this grid with no bound at all — and it is
+                    // bounded by the cell, not by the calendar, so a narrower grid would have
+                    // let it cross into its neighbour.
+                    context.draw_text_fitted(
+                        Rect::new(
+                            cx + 3,
+                            cy + 3,
+                            today_band.width.saturating_sub(3),
+                            (inner_y - (cy + 3)).max(0) as u32,
+                        ),
                         &format!("{day_num}"),
                         &Font::new("Arial", 11.0, false, false),
                         day_color,
