@@ -93,6 +93,130 @@ impl JsonLoader {
         Ok(binding)
     }
 
+    /// Wires the handlers a node declares, for both routes.
+    ///
+    /// # Why one function for two key spellings
+    ///
+    /// The published route (`events`) and the compatibility route (`on_*`) reach the same
+    /// [`EventHandlerContext`] through the same marker table — see `crate::json::event_route`.
+    /// Splitting them gave the loader two code paths that had to agree about trigger kinds and
+    /// about which handlers are invoked, with nothing checking that they did.
+    ///
+    /// # What is reported rather than ignored
+    ///
+    /// A name under `events` that the control does not publish is **dropped with a warning**
+    /// rather than silently wired. A designer that misspells a published name would otherwise
+    /// get a handler that never runs; the warning is what makes that visible in the host's log.
+    /// The reverse case — an `on_*` key the marker table does not list — cannot reach here,
+    /// because the table *is* the list of keys this reads.
+    fn bind_declared_events(
+        widget_id: ObjectId,
+        widget_type: &str,
+        obj: &serde_json::Map<String, Value>,
+    ) {
+        // ── route 1: published names ──
+        if let Some(events) = obj.get(crate::json::EVENTS_KEY).and_then(|v| v.as_object()) {
+            for (name, handler) in events {
+                let Some(handler) = handler.as_str() else {
+                    log::warn!(
+                        "[{widget_type}] `{EVENTS_KEY}.{name}` must be a handler name string, \
+                         found {found:?}; the binding is skipped",
+                        EVENTS_KEY = crate::json::EVENTS_KEY,
+                        found = handler
+                    );
+                    continue;
+                };
+                if !Self::control_publishes(widget_type, name) {
+                    log::warn!(
+                        "[{widget_type}] `{EVENTS_KEY}.{name}` is not a published event \
+                         (publishes: {published}); the binding is skipped, so the handler \
+                         would never run",
+                        EVENTS_KEY = crate::json::EVENTS_KEY,
+                        published = Self::published_events(widget_type).join(", ")
+                    );
+                    continue;
+                }
+                Self::bind_one(
+                    widget_id,
+                    crate::json::DeclaredHandler {
+                        handler: handler.to_owned(),
+                        // A published name is payload-free from the hub's point of view; the handler
+                        // already knows which name it was declared against, so no marker is invented.
+                        marker: crate::json::JsonTriggerMarker::Clicked,
+                    },
+                );
+            }
+        }
+
+        // ── route 2: compatibility keys ──
+        for (key, marker) in crate::json::MARKER_KEYS {
+            let Some(handler) = obj.get(*key).and_then(|v| v.as_str()) else {
+                continue;
+            };
+            Self::bind_one(
+                widget_id,
+                crate::json::DeclaredHandler { handler: handler.to_owned(), marker: *marker },
+            );
+        }
+    }
+
+    /// Subscribes one declared handler to `widget_id`.
+    ///
+    /// The two routes differ only in which callback they reach: a payload-free trigger
+    /// (`clicked`, `closed`) goes through `on_click`, and a payload-carrying one (`value_changed`,
+    /// `selection_changed`, focus) through `on_value_changed`. That choice is `marker`-driven, not
+    /// call-site-driven, so a new marker cannot pick the wrong callback by being added in one
+    /// place and not the other.
+    fn bind_one(widget_id: ObjectId, declared: crate::json::DeclaredHandler) {
+        let handler_name = declared.handler;
+        let ctx_marker = declared.marker;
+        let handle: ButtonHandle = ButtonHandle::from_raw(widget_id);
+        match ctx_marker {
+            crate::json::JsonTriggerMarker::Clicked
+            | crate::json::JsonTriggerMarker::DoubleClicked
+            | crate::json::JsonTriggerMarker::Closed => {
+                handle.on_click(move || {
+                    let ctx = crate::json::context_for(widget_id, ctx_marker);
+                    crate::json::invoke_global_handler(&handler_name, &ctx);
+                });
+            }
+            _ => {
+                handle.on_value_changed(move |_value| {
+                    let ctx = crate::json::context_for(widget_id, ctx_marker);
+                    crate::json::invoke_global_handler(&handler_name, &ctx);
+                });
+            }
+        }
+    }
+
+    /// Whether `widget_type` publishes `event_name`.
+    ///
+    /// # Why the answer is "no" on a stripped profile
+    ///
+    /// The capability table is compiled out of `mini`/`embedded`, and `crate::json` does not
+    /// exist there either — this function is inside a `full_widgets` module, so the table is
+    /// always present when it runs. The fallback is stated rather than assumed because a future
+    /// gate change would otherwise turn it into a silent `true`.
+    fn control_publishes(widget_type: &str, event_name: &str) -> bool {
+        let factory = crate::widget::capability::WidgetFactory::new_with_defaults();
+        let normalized = crate::widget::capability::normalize_key(event_name);
+        factory.capability(widget_type).is_some_and(|capability| {
+            capability
+                .events
+                .iter()
+                .any(|schema| crate::widget::capability::normalize_key(schema.name) == normalized)
+        })
+    }
+
+    /// The published event names of `widget_type`, for the warning above.
+    fn published_events(widget_type: &str) -> Vec<&'static str> {
+        let factory = crate::widget::capability::WidgetFactory::new_with_defaults();
+        factory
+            .capability(widget_type)
+            .map(|capability| capability.events.iter().map(|schema| schema.name).collect())
+            .unwrap_or_default()
+    }
+
     /// Recursively instantiate a single JSON node into a widget.
     #[allow(clippy::too_many_arguments)]
     fn instantiate_node(
@@ -269,101 +393,19 @@ impl JsonLoader {
             }
         }
 
-        // ── Event binding: on_click / on_change / extended ──
-        // When JSON declares "on_click": "handler_name", wire the
-        // widget's click signal to invoke_global_handler.
-        let (on_click_name, on_change_name) = extract_event_handlers(obj);
-        if let Some(ref name) = on_click_name {
-            let handler_name = name.clone();
-            let handle: ButtonHandle = ButtonHandle::from_raw(widget_id);
-            handle.on_click(move || {
-                let ctx = crate::json::EventHandlerContext::new(crate::WidgetTriggerEvent {
-                    widget_id,
-                    kind: crate::platform::WidgetTriggerKind::Clicked,
-                });
-                crate::json::invoke_global_handler(&handler_name, &ctx);
-            });
-        }
-        if let Some(ref name) = on_change_name {
-            let handler_name = name.clone();
-            let handle = ButtonHandle::from_raw(widget_id);
-            handle.on_value_changed(move |_value| {
-                let ctx = crate::json::EventHandlerContext::new(crate::WidgetTriggerEvent {
-                    widget_id,
-                    kind: crate::platform::WidgetTriggerKind::ValueChanged,
-                });
-                crate::json::invoke_global_handler(&handler_name, &ctx);
-            });
-        }
-        // ── Extended event bindings ──────────────────────────
-        let (on_close, on_double_click, on_focus, on_blur, on_selection_changed, on_value_changed) =
-            extract_extended_event_handlers(obj);
-        if let Some(ref name) = on_close {
-            let handler_name = name.clone();
-            let handle = ButtonHandle::from_raw(widget_id);
-            handle.on_click(move || {
-                let ctx = crate::json::EventHandlerContext::new(crate::WidgetTriggerEvent {
-                    widget_id,
-                    kind: crate::platform::WidgetTriggerKind::Closed,
-                });
-                crate::json::invoke_global_handler(&handler_name, &ctx);
-            });
-        }
-        if let Some(ref name) = on_double_click {
-            let handler_name = name.clone();
-            let handle = ButtonHandle::from_raw(widget_id);
-            handle.on_click(move || {
-                let ctx = crate::json::EventHandlerContext::new(crate::WidgetTriggerEvent {
-                    widget_id,
-                    kind: crate::platform::WidgetTriggerKind::Clicked,
-                });
-                crate::json::invoke_global_handler(&handler_name, &ctx);
-            });
-        }
-        if let Some(ref name) = on_focus {
-            let handler_name = name.clone();
-            let handle = ButtonHandle::from_raw(widget_id);
-            handle.on_value_changed(move |_value| {
-                let ctx = crate::json::EventHandlerContext::new(crate::WidgetTriggerEvent {
-                    widget_id,
-                    kind: crate::platform::WidgetTriggerKind::ValueChanged,
-                });
-                crate::json::invoke_global_handler(&handler_name, &ctx);
-            });
-        }
-        if let Some(ref name) = on_blur {
-            let handler_name = name.clone();
-            let handle = ButtonHandle::from_raw(widget_id);
-            handle.on_value_changed(move |_value| {
-                let ctx = crate::json::EventHandlerContext::new(crate::WidgetTriggerEvent {
-                    widget_id,
-                    kind: crate::platform::WidgetTriggerKind::ValueChanged,
-                });
-                crate::json::invoke_global_handler(&handler_name, &ctx);
-            });
-        }
-        if let Some(ref name) = on_selection_changed {
-            let handler_name = name.clone();
-            let handle = ButtonHandle::from_raw(widget_id);
-            handle.on_value_changed(move |_value| {
-                let ctx = crate::json::EventHandlerContext::new(crate::WidgetTriggerEvent {
-                    widget_id,
-                    kind: crate::platform::WidgetTriggerKind::SelectionChanged,
-                });
-                crate::json::invoke_global_handler(&handler_name, &ctx);
-            });
-        }
-        if let Some(ref name) = on_value_changed {
-            let handler_name = name.clone();
-            let handle = ButtonHandle::from_raw(widget_id);
-            handle.on_value_changed(move |_value| {
-                let ctx = crate::json::EventHandlerContext::new(crate::WidgetTriggerEvent {
-                    widget_id,
-                    kind: crate::platform::WidgetTriggerKind::ValueChanged,
-                });
-                crate::json::invoke_global_handler(&handler_name, &ctx);
-            });
-        }
+        // ── Event binding ──────────────────────────────────────────────
+        //
+        // Two routes, one binder. See `crate::json::event_route` for why both exist and which
+        // job each one has:
+        //
+        //   * `"events": { "<published_name>": "<handler>" }` — the published route. The name is
+        //     checked against the control's capability, so a published event is declarable with
+        //     no edit here (rule #101).
+        //   * `"on_*": "<handler>"` — the compatibility route. Its keys mean a trigger *intent*
+        //     (`on_close` → Closed) rather than a published name, and they are read from
+        //     `MARKER_KEYS` rather than from a hand-written tuple, so a key cannot be extracted
+        //     into the wrong position.
+        Self::bind_declared_events(widget_id, widget_type, obj);
 
         // Handle children (for container widgets)
         if let Some(children) = obj.get("children").and_then(|v| v.as_array()) {
@@ -1244,7 +1286,11 @@ fn is_loader_owned_key(key: &str) -> bool {
         //   alpha     → colordialog.set_options_alpha
         | "tristate" | "password" | "word_wrap" | "tab_shape"
         | "h_policy" | "v_policy" | "alpha"
-        // Events, wired after registration.
+        // Events, wired after registration. The `events` object holds published names (rule
+        // #101's merged route) and the `on_*` keys are the compatibility spellings; the key list
+        // comes from `event_route::MARKER_KEYS` so a key the wiring reads can never be missing
+        // here and be reported as an unknown property.
+        | "events"
         | "on_click" | "on_change" | "on_close" | "on_double_click" | "on_focus"
         | "on_blur" | "on_selection_changed" | "on_value_changed"
     )
@@ -1365,42 +1411,26 @@ fn apply_style_padding(
     }
 }
 
-/// Connect JSON event handler names to the widget callback system.
+/// The `on_*` handler keys a JSON node may declare, with the marker each one means.
 ///
-/// Returns all extracted handler names.
-pub fn extract_event_handlers(
-    obj: &serde_json::Map<String, Value>,
-) -> (Option<String>, Option<String>) {
-    let on_click = obj.get("on_click").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let on_change = obj.get("on_change").and_then(|v| v.as_str()).map(|s| s.to_string());
-    (on_click, on_change)
-}
-
-/// Extract all extended event handler names from a JSON object.
+/// # Why the tuple-returning extractors were deleted (BLUE19 T-8)
 ///
-/// Supports: on_close, on_double_click, on_focus, on_blur,
-/// on_selection_changed, on_value_changed.
-pub type EventHandlerTuple = (
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-);
-
-pub fn extract_extended_event_handlers(obj: &serde_json::Map<String, Value>) -> EventHandlerTuple {
-    let on_close = obj.get("on_close").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let on_double_click =
-        obj.get("on_double_click").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let on_focus = obj.get("on_focus").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let on_blur = obj.get("on_blur").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let on_selection_changed =
-        obj.get("on_selection_changed").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let on_value_changed =
-        obj.get("on_value_changed").and_then(|v| v.as_str()).map(|s| s.to_string());
-    (on_close, on_double_click, on_focus, on_blur, on_selection_changed, on_value_changed)
-}
+/// This used to be two functions returning `(Option<String>, ...)` tuples that the loader
+/// destructured positionally: `on_click`/`on_change` from one, and six more from the other. Two
+/// problems, both of which the table below removes:
+///
+/// 1. **Positional coupling.** A key added to `extract_extended_event_handlers` but not to its
+///    return type — or read in a different order at the call site — silently wired a handler to
+///    the wrong trigger. Nothing could detect it, because the tuple has no names.
+/// 2. **Two sources of truth.** The loader also listed all eight keys by hand in its
+///    "not a property" pattern, so the extraction set and the key set could disagree.
+///
+/// The list now lives once, in [`crate::json::MARKER_KEYS`], and is read by name.
+///
+/// The re-export is `#[cfg(test)]` because production code reaches the table through
+/// `crate::json::MARKER_KEYS` directly; only this module's tests need it in scope.
+#[cfg(test)]
+pub use crate::json::event_route::MARKER_KEYS;
 
 /// The name→kind table, retained for tests only.
 ///
@@ -1928,46 +1958,36 @@ mod tests {
     }
 
     #[test]
-    fn extract_event_handlers_parses_click_and_change() {
-        let mut map = serde_json::Map::new();
-        map.insert("on_click".to_string(), Value::String("handle_click".to_string()));
-        map.insert("on_change".to_string(), Value::String("handle_change".to_string()));
-        let (click, change) = extract_event_handlers(&map);
-        assert_eq!(click, Some("handle_click".to_string()));
-        assert_eq!(change, Some("handle_change".to_string()));
+    fn every_marker_key_is_extractable_from_a_node() {
+        // The table is the single list the loader reads, so this asserts the property that used to
+        // be split across two tuple-returning functions: every declared key is found, by name, at
+        // the marker it says it has.
+        for (key, marker) in MARKER_KEYS {
+            assert_eq!(
+                crate::json::marker_for_key(key),
+                Some(*marker),
+                "`{key}` must extract as its own marker"
+            );
+        }
     }
 
     #[test]
-    fn extract_event_handlers_missing_fields() {
+    fn a_node_declaring_no_event_key_yields_nothing() {
         let map = serde_json::Map::new();
-        let (click, change) = extract_event_handlers(&map);
-        assert!(click.is_none());
-        assert!(change.is_none());
+        assert!(crate::json::marker_key_names().all(|key| map.get(key).is_none()));
     }
 
     #[test]
-    fn extract_extended_event_handlers_all_fields() {
-        let mut map = serde_json::Map::new();
-        map.insert("on_close".to_string(), Value::String("close".to_string()));
-        map.insert("on_double_click".to_string(), Value::String("dbl".to_string()));
-        map.insert("on_focus".to_string(), Value::String("focus".to_string()));
-        map.insert("on_blur".to_string(), Value::String("blur".to_string()));
-        map.insert("on_selection_changed".to_string(), Value::String("sel".to_string()));
-        map.insert("on_value_changed".to_string(), Value::String("val".to_string()));
-        let (close, dbl, focus, blur, sel, val) = extract_extended_event_handlers(&map);
-        assert_eq!(close, Some("close".to_string()));
-        assert_eq!(dbl, Some("dbl".to_string()));
-        assert_eq!(focus, Some("focus".to_string()));
-        assert_eq!(blur, Some("blur".to_string()));
-        assert_eq!(sel, Some("sel".to_string()));
-        assert_eq!(val, Some("val".to_string()));
-    }
-
-    #[test]
-    fn extract_extended_event_handlers_empty() {
-        let map = serde_json::Map::new();
-        let result = extract_extended_event_handlers(&map);
-        assert_eq!(result, (None, None, None, None, None, None));
+    fn the_loader_consumes_exactly_the_marker_keys() {
+        // The "not a property" pattern and the event wiring must agree, because a key in one and
+        // not the other is either a warning about a live key or a silently ignored handler.
+        let source = include_str!("loader.rs");
+        for (key, _) in MARKER_KEYS {
+            assert!(
+                source.contains(&format!("\"{key}\"")),
+                "`{key}` is read by the marker table but is not named in the loader's pattern"
+            );
+        }
     }
 
     #[test]

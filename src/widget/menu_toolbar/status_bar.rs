@@ -58,21 +58,53 @@ impl StatusBar {
         self.size_grip_enabled
     }
     /// Show a temporary status message (timeout_ms is informational; actual timeout managed externally).
+    /// Shows a transient message for `_timeout_ms` milliseconds.
     ///
-    /// The `_timeout_ms` argument is accepted and **ignored**: the widget does
-    /// not schedule clearing, so a message stays until
+    /// The widget does not schedule clearing, so a message stays until
     /// [`StatusBar::clear_message`] or another `show_message` call. The caller
     /// owns the timeout. Emits `message_changed` but does not itself request a
     /// redraw.
+    ///
+    /// # Disabled contract
+    ///
+    /// A status message is user-visible text; a disabled status bar does not show it, so
+    /// announcing the change would report a transition the user never saw. The message is
+    /// still stored (the host owns the data) and the suppression is queryable through
+    /// [`StatusBar::message_changed_suppression_reason`].
     pub fn show_message(&mut self, message: impl Into<String>, _timeout_ms: u64) {
         self.message = message.into();
+        if !self.base.is_enabled() {
+            // See `message_changed_suppression_reason`.
+            return;
+        }
         self.message_changed.emit(self.message.clone());
     }
     /// Clears the transient message and emits `message_changed` with an empty
     /// string. The permanent message is untouched.
+    ///
+    /// Gated by `enabled` for the same reason as [`StatusBar::show_message`].
     pub fn clear_message(&mut self) {
         self.message.clear();
+        if !self.base.is_enabled() {
+            // See `message_changed_suppression_reason`.
+            return;
+        }
         self.message_changed.emit(String::new());
+    }
+
+    /// Reports why the next message change would **not** emit `message_changed`, or `None`
+    /// when the signal will fire.
+    ///
+    /// Without this, a host that wrote a message and observed no signal could not tell
+    /// "the status bar is disabled" from "the message was already what I wrote".
+    pub fn message_changed_suppression_reason(&self) -> Option<&'static str> {
+        if !self.base.is_enabled() {
+            return Some(
+                "message_changed suppressed: the status bar is disabled, so the message is \
+                 not user-visible",
+            );
+        }
+        None
     }
     /// Replaces the permanent message and requests a redraw.
     ///
@@ -274,5 +306,42 @@ mod tests {
         sb.show_message("Ready", 3000);
         let svg = crate::widget::svg::render_to_svg(&mut sb);
         assert!(svg.starts_with("<svg"));
+    }
+
+    // ── Enabled contract (BLUE19 T-5 follow-up) ───────────────────────────
+
+    #[test]
+    fn statusbar_disabled_does_not_announce_a_message_the_user_cannot_see() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let seen = Arc::new(AtomicUsize::new(0));
+        let mut sb = StatusBar::new(Rect::new(0, 0, 800, 24));
+        {
+            let seen = seen.clone();
+            sb.message_changed.connect(move |_| {
+                seen.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        sb.show_message("Ready", 0);
+        assert_eq!(seen.load(Ordering::SeqCst), 1, "the enabled path must reach a listener");
+        assert_eq!(sb.message(), "Ready");
+
+        sb.set_enabled(false);
+        sb.show_message("Hidden", 0);
+        assert_eq!(sb.message(), "Hidden", "the message is still stored; the host owns the data");
+        assert_eq!(
+            seen.load(Ordering::SeqCst),
+            1,
+            "a disabled status bar must not announce text the user cannot see"
+        );
+        assert!(sb.message_changed_suppression_reason().is_some());
+
+        sb.set_enabled(true);
+        assert!(sb.message_changed_suppression_reason().is_none());
+        sb.clear_message();
+        assert_eq!(seen.load(Ordering::SeqCst), 2, "re-enabling restores the signal");
+        assert_eq!(sb.message(), "");
     }
 }

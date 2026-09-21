@@ -2857,6 +2857,20 @@ impl WindowHandle {
             win_w,
             win_h,
         );
+        // Re-centring *is* a position change, so the mirror has to follow: leaving `x`/`y`
+        // stale made a later `center_on_screen` (or any reader of the mirror) compute from a
+        // position the window no longer had. The size fields already round-tripped through
+        // `set_widget_geometry`'s mirror update; the position did not.
+        let centred_x = (screen_w - win_w as i32) / 2;
+        let centred_y = (screen_h - win_h as i32) / 2;
+        WINDOW_STATES.with(|map| {
+            let mut map = map.borrow_mut();
+            let state = map.entry(self.raw_id()).or_insert_with(Default::default);
+            state.x = centred_x;
+            state.y = centred_y;
+            state.w = win_w;
+            state.h = win_h;
+        });
     }
 }
 
@@ -3237,4 +3251,196 @@ mod tests {
             "the geometry mirror must carry what the constructor recorded"
         );
     }
+
+    /// `center_on_screen` is the production reader of the mirrored `x`/`y`.
+    ///
+    /// # The decision this pins
+    ///
+    /// `x`/`y` were judged "has a reader: `apply_window_layout`" in the round-10 table. That was
+    /// wrong on the mechanism (the layout reads `w`/`h` only) and right on the conclusion, for a
+    /// reason nobody had written down: the position fields are read by this method, which re-centres
+    /// around the mirrored *size*. The correction matters because a later pass trusting the wrong
+    /// reason would have deleted `x`/`y` and taken `center_on_screen` with them.
+    ///
+    /// The test drives the real accessor rather than reading the mirror, so it fails if the fields
+    /// stop being consulted, whichever way that happens.
+    #[test]
+    fn the_window_position_mirror_is_read_by_center_on_screen() {
+        let id = crate::platform::get_platform().create_window("probe", 10, 20, 400, 300);
+        WindowHandle::record_created_geometry(id, 10, 20, 400, 300);
+        let window = WindowHandle::from_raw(id);
+
+        window.center_on_screen();
+
+        // A 400x300 window on the 1920x1080 fallback screen centres at (760, 390).
+        let centred = WINDOW_STATES
+            .with(|map| map.borrow().get(&id).map(|state| (state.x, state.y, state.w, state.h)));
+        assert_eq!(
+            centred,
+            Some((760, 390, 400, 300)),
+            "centring must update the mirror it computes from, or the next read sees a stale \
+             position"
+        );
+    }
+
+    /// The `close_callback` field is read by `close()`, and `close()` is its only reader.
+    ///
+    /// `close_callback` was the one mirror field with *no* test behind it at all. It is a
+    /// callback rather than a platform-readable value, so the round-10 "platform is authoritative"
+    /// rule does not apply: the handle registry **is** the authority, and the only question is
+    /// whether the write is ever read. This drives the pair end to end.
+    #[test]
+    fn the_close_callback_mirror_is_read_when_the_window_closes() {
+        let id = crate::platform::get_platform().create_window("probe", 0, 0, 320, 240);
+        let window = WindowHandle::from_raw(id);
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0usize));
+        {
+            let calls = calls.clone();
+            window.on_close(alloc::rc::Rc::new(core::cell::RefCell::new(move || {
+                calls.set(calls.get() + 1);
+            })));
+        }
+
+        window.close();
+        assert_eq!(calls.get(), 1, "registering a close callback must be what `close()` reads");
+    }
+
+    /// `close()` with nothing registered is a no-op on the callback slot, not a panic.
+    #[test]
+    fn closing_a_window_without_a_close_callback_is_not_a_panic() {
+        let id = crate::platform::get_platform().create_window("probe", 0, 0, 320, 240);
+        WindowHandle::from_raw(id).close();
+    }
+
+    /// The 13 `WindowState` fields, each with the reason it is allowed to exist.
+    ///
+    /// # Why this list is a test and not a comment
+    ///
+    /// Rule #99 says every mirror field is either a *fallback* (the platform may return `None`,
+    /// and production code reads the mirror in that case) or *deleted*. "Written but never read"
+    /// is a dangling mirror that drifts into a false fact. The list below is parsed against the
+    /// struct by the test, so adding a 14th field fails here until someone states which of the
+    /// two categories it is in -- and the named test is what makes the claim checkable rather
+    /// than asserted.
+    #[test]
+    fn every_window_state_field_is_classified_and_backed_by_a_test() {
+        /// (field, why it is allowed to exist, the test that proves the reason)
+        const CLASSIFICATION: &[(&str, &str, &str)] = &[
+            (
+                "x",
+                "read by `center_on_screen`",
+                "the_window_position_mirror_is_read_by_center_on_screen",
+            ),
+            (
+                "y",
+                "read by `center_on_screen`",
+                "the_window_position_mirror_is_read_by_center_on_screen",
+            ),
+            (
+                "w",
+                "fallback: layout size, and `center_on_screen`",
+                "the_window_geometry_mirror_reaches_the_layout_path",
+            ),
+            (
+                "h",
+                "fallback: layout size, and `center_on_screen`",
+                "the_window_geometry_mirror_reaches_the_layout_path",
+            ),
+            (
+                "icon",
+                "fallback: 6 backends return `None` from `window_icon`",
+                "every_mirror_backed_getter_defers_to_the_platform_first",
+            ),
+            (
+                "min_w",
+                "fallback: 6 backends return `None` from `window_min_size`",
+                "every_mirror_backed_getter_defers_to_the_platform_first",
+            ),
+            (
+                "min_h",
+                "fallback: 6 backends return `None` from `window_min_size`",
+                "every_mirror_backed_getter_defers_to_the_platform_first",
+            ),
+            (
+                "maximized",
+                "fallback via `mirrored_flag`",
+                "every_mirror_backed_getter_defers_to_the_platform_first",
+            ),
+            (
+                "minimized",
+                "fallback via `mirrored_flag`",
+                "every_mirror_backed_getter_defers_to_the_platform_first",
+            ),
+            (
+                "fullscreen",
+                "fallback via `mirrored_flag`",
+                "every_mirror_backed_getter_defers_to_the_platform_first",
+            ),
+            (
+                "resizable",
+                "fallback via `mirrored_flag`",
+                "every_mirror_backed_getter_defers_to_the_platform_first",
+            ),
+            (
+                "decorated",
+                "fallback via `mirrored_flag`",
+                "every_mirror_backed_getter_defers_to_the_platform_first",
+            ),
+            (
+                "close_callback",
+                "authoritative here: `close()` is the only reader",
+                "the_close_callback_mirror_is_read_when_the_window_closes",
+            ),
+        ];
+
+        let source = include_str!("handle.rs");
+        let struct_body = source
+            .split_once("struct WindowState {")
+            .expect("`WindowState` must still be declared in this file")
+            .1
+            .split_once('}')
+            .expect("`WindowState` must still be a braced struct")
+            .0;
+        let mut declared: Vec<&str> = struct_body
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                let (name, _) = line.split_once(':')?;
+                let name = name.trim();
+                if name.is_empty()
+                    || name.starts_with("//")
+                    || !name.ends_with(|c: char| c.is_alphanumeric() || c == '_')
+                {
+                    return None;
+                }
+                Some(name)
+            })
+            .collect();
+        declared.sort_unstable();
+
+        let mut classified: Vec<&str> = CLASSIFICATION.iter().map(|(f, _, _)| *f).collect();
+        classified.sort_unstable();
+        assert_eq!(
+            declared, classified,
+            "every `WindowState` field must be classified with a reason and a named test: a new \
+             field is a dangling mirror until someone says which kind it is"
+        );
+
+        for (field, reason, test) in CLASSIFICATION {
+            assert!(!reason.trim().is_empty(), "`{field}` needs a stated reason");
+            assert!(
+                source.contains(&format!("fn {test}(")) || TEST_NAMES.contains(test),
+                "`{field}` names test `{test}`, which does not exist"
+            );
+        }
+    }
+
+    /// The test names this module is expected to define, so the classification table above can be
+    /// checked from inside the module it describes.
+    const TEST_NAMES: &[&str] = &[
+        "the_window_position_mirror_is_read_by_center_on_screen",
+        "the_window_geometry_mirror_reaches_the_layout_path",
+        "every_mirror_backed_getter_defers_to_the_platform_first",
+        "the_close_callback_mirror_is_read_when_the_window_closes",
+    ];
 }

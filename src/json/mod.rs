@@ -97,12 +97,18 @@
 //! structures this module builds) is retired too.
 
 mod element;
+mod event_route;
 mod events;
 mod layout;
 mod loader;
 mod properties;
+pub mod project;
 
 pub use element::BoundJsonLayout;
+pub use event_route::{
+    context_for, is_marker_key, marker_for_key, marker_key_names, DeclaredHandler,
+    JsonEventBinding, JsonTriggerMarker, EVENTS_KEY, MARKER_KEYS,
+};
 pub use events::{
     clear_global_handlers, invoke_global_handler, register_global_handler, EventHandlerContext,
     EventHandlerMap,
@@ -111,8 +117,9 @@ pub use layout::{
     add_spacer_to_layout, add_widget_to_layout, apply_layout, create_layout_from_kind,
     parse_layout_kind, store_layout, ChildLayoutAttrs, DeclarativeLayoutKind,
 };
-pub use loader::{extract_event_handlers, load_layout_from_str, JsonLoader};
+pub use loader::{load_layout_from_str, JsonLoader};
 pub use properties::is_widget_property;
+pub use project::{JsonProject, ProjectNode, MAX_DEPTH as PROJECT_MAX_DEPTH};
 
 /// The capability registry used to resolve a JSON widget name to a constructor
 /// and to look up a property's declared value kind.

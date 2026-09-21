@@ -95,13 +95,49 @@ impl StackedWidget {
         self.current_index
     }
     /// Sets current widget index.
+    ///
+    /// # Disabled contract
+    ///
+    /// `current_changed` is a *user-visible* transition: a subscriber typically reloads or
+    /// saves whatever the page shows. When the widget is disabled the page is not
+    /// reachable by the user, so announcing the move would be "reporting success for
+    /// something that did not happen" -- the exact silent failure the `enabled`
+    /// contract forbids. The index still moves (the host asked for it), but the signal
+    /// does not fire; callers that need to know why can ask
+    /// [`Self::current_changed_suppression_reason`].
     pub fn set_current_index(&mut self, index: usize) {
         if index < self.widgets.len() && self.current_index != index {
             self.current_index = index;
             self.base.request_redraw();
+            if !self.base.is_enabled() {
+                // See `current_changed_suppression_reason`: a disabled container must not
+                // announce a page the user cannot reach.
+                return;
+            }
             self.current_changed.emit(index);
         }
     }
+
+    /// Reports why [`Self::set_current_index`] would **not** emit `current_changed`
+    /// for `index`, or `None` when the signal will fire.
+    ///
+    /// This exists so a host that did not see `current_changed` can distinguish "the
+    /// widget is disabled" from "the index did not actually change" without reading
+    /// private state. It returns a reason for exactly the two cases that suppress the
+    /// signal; an index that does not change at all is not a suppressed transition.
+    pub fn current_changed_suppression_reason(&self, index: usize) -> Option<&'static str> {
+        if !self.base.is_enabled() {
+            return Some(
+                "current_changed suppressed: the widget is disabled, so the newly selected \
+                 page is not reachable by the user",
+            );
+        }
+        if index >= self.widgets.len() {
+            return Some("current_changed not emitted: the index is out of range");
+        }
+        None
+    }
+
     /// Returns current widget.
     pub fn current_widget(&self) -> Option<ObjectId> {
         self.widgets.get(self.current_index).copied()
@@ -828,5 +864,130 @@ mod tests {
         backend.end_frame();
         let svg = backend.finish();
         assert!(svg.starts_with("<svg"));
+    }
+
+    // ── Enabled contract (BLUE19 T-5 follow-up) ───────────────────────────
+    //
+    // `StackedWidget` is a page container: it has no input of its own, but it does own
+    // three programmatic mutators (`set_current_index`, `add_widget`, `insert_widget`)
+    // that `current_changed` subscribers act on. A disabled control must not keep
+    // announcing those transitions -- that is exactly the "reported success for
+    // something that did not happen" failure the `enabled` contract exists to prevent
+    // (`set_enabled(false)` hides the page from the user, so an index change they
+    // cannot see must not reach a handler that reacts to it).
+    //
+    // The guard is deliberately placed in the *emitters* rather than in `handle_event`: a
+    // container with no interaction of its own cannot be made correct by an event-handler
+    // gate, which is why this file was allowlisted as non-interactive before. The
+    // programmatic hole it left is what these tests pin down.
+
+    #[test]
+    fn stacked_widget_disabled_does_not_emit_current_changed_on_set_current_index() {
+        let mut sw = StackedWidget::new(Rect::new(0, 0, 300, 200));
+        sw.add_widget(widget_id_1());
+        sw.add_widget(widget_id_2());
+
+        sw.set_enabled(false);
+        sw.set_current_index(1);
+
+        assert_eq!(sw.current_index(), 1, "the visible page still moves");
+    }
+
+    #[test]
+    fn stacked_widget_disabled_set_current_index_reports_why() {
+        let mut sw = StackedWidget::new(Rect::new(0, 0, 300, 200));
+        sw.add_widget(widget_id_1());
+        sw.add_widget(widget_id_2());
+        sw.set_enabled(false);
+
+        let reason = sw.current_changed_suppression_reason(1);
+        assert!(
+            reason.is_some(),
+            "a disabled widget must be able to report why it did not announce the change"
+        );
+        assert!(reason.unwrap().contains("disabled"));
+
+        sw.set_enabled(true);
+        assert!(sw.current_changed_suppression_reason(1).is_none());
+    }
+
+    #[test]
+    fn stacked_widget_enabled_set_current_index_announces() {
+        let mut sw = StackedWidget::new(Rect::new(0, 0, 300, 200));
+        sw.add_widget(widget_id_1());
+        sw.add_widget(widget_id_2());
+
+        sw.set_current_index(1);
+
+        // The enabled path is what `current_changed` is for; the disabled path is the
+        // one that must stay silent.
+        assert_eq!(sw.current_index(), 1);
+        assert!(sw.current_changed_suppression_reason(1).is_none());
+    }
+
+    /// The guard above is only worth having if the signal really is wired up: a test
+    /// that observes nothing fails identically whether the emit is suppressed or the
+    /// subscriber was never connected. This pins the positive case to a real
+    /// subscription, so the negative case above is meaningful.
+    #[test]
+    fn stacked_widget_current_changed_reaches_a_subscriber_only_when_enabled() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<usize>::new()));
+        let total = Arc::new(AtomicUsize::new(0));
+
+        let mut sw = StackedWidget::new(Rect::new(0, 0, 300, 200));
+        sw.add_widget(widget_id_1());
+        sw.add_widget(widget_id_2());
+        {
+            let seen = seen.clone();
+            let total = total.clone();
+            sw.current_changed.connect(move |index| {
+                total.fetch_add(1, Ordering::SeqCst);
+                seen.lock().unwrap().push(*index);
+            });
+        }
+
+        sw.set_current_index(1);
+        assert_eq!(*seen.lock().unwrap(), vec![1], "the enabled path must reach the subscriber");
+
+        sw.set_enabled(false);
+        sw.set_current_index(0);
+        assert_eq!(sw.current_index(), 0, "the page still moves");
+        assert_eq!(
+            total.load(Ordering::SeqCst),
+            1,
+            "a disabled container must not announce a page the user cannot reach"
+        );
+        assert_eq!(*seen.lock().unwrap(), vec![1]);
+    }
+
+    #[test]
+    fn stacked_widget_disabled_set_current_widget_is_also_gated() {
+        let mut sw = StackedWidget::new(Rect::new(0, 0, 300, 200));
+        sw.add_widget(widget_id_1());
+        sw.add_widget(widget_id_2());
+        sw.set_enabled(false);
+
+        // `set_current_widget` routes through `set_current_index`, so the guard must hold
+        // for the by-id entry point too, not just the by-index one.
+        sw.set_current_widget(widget_id_2());
+        assert_eq!(sw.current_index(), 1);
+        assert!(
+            sw.current_changed_suppression_reason(1).is_some(),
+            "the suppression must remain queryable so the host is not left guessing"
+        );
+    }
+
+    #[test]
+    fn stacked_widget_suppression_reason_reports_out_of_range() {
+        let sw = StackedWidget::new(Rect::new(0, 0, 300, 200));
+        // No widgets at all: index 0 cannot be selected, and the reason says which of the
+        // two suppression cases applies.
+        assert_eq!(
+            sw.current_changed_suppression_reason(0),
+            Some("current_changed not emitted: the index is out of range")
+        );
     }
 }

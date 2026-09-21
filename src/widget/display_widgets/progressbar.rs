@@ -13,9 +13,9 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::numeric::ordered_clamp_i32;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
-use crate::widget::numeric::{ordered_clamp_i32};
 /// Progress bar widget.
 pub struct ProgressBar {
     base: BaseWidget,
@@ -70,6 +70,8 @@ impl ProgressBar {
     }
     /// Sets both minimum and maximum in one call.
     /// This is a convenience writer; query bounds via `minimum()` and `maximum()`.
+    ///
+    /// Not gated by `enabled` for the same reason as [`ProgressBar::set_value`].
     pub fn set_range(&mut self, minimum: i32, maximum: i32) {
         self.minimum = minimum;
         self.maximum = maximum.max(minimum);
@@ -80,6 +82,11 @@ impl ProgressBar {
         self.value
     }
     /// Sets value, clamped to valid range.
+    ///
+    /// `value_changed` is deliberately not gated by `enabled`: it reports the value the
+    /// host just wrote, and a disabled progress bar is still a data display its host
+    /// reads. The `enabled` contract exists to stop a disabled control from acting on
+    /// *user* input, which this path never involves.
     pub fn set_value(&mut self, value: i32) {
         let clamped = ordered_clamp_i32(value, self.minimum, self.maximum);
         if self.value == clamped {

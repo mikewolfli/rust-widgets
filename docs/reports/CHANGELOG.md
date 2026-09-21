@@ -5,6 +5,298 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 2.5.1 (2026-09-21) — A Project Document Can Now Become Rust Source, and "It Compiles" Is a Gate
+
+Backward compatible. **No public signature was removed and no existing behaviour changed.** This
+round adds a second output mode to the designer — `rust_widgets::designer::generate`, which turns a
+project document into a compilable Rust function — plus the two gates that keep the claim honest.
+It is additive surface: mode 1 (`crate::json`) interprets the same document exactly as before, and
+nothing that already compiled changes shape.
+
+See [`docs/log/log-20260921-1.md`](docs/log/log-20260921-1.md) for per-change evidence.
+
+### Measured facts
+
+- `cargo test --no-default-features --features desktop` → **5462 passed / 0 failed**.
+- `cargo clippy --no-default-features --features desktop --all-targets -- -D warnings` → clean.
+- `cargo check --no-default-features --features <desktop|tablet|mobile|mini|embedded> --all-targets`
+  → **0 errors, 0 warnings** on all five.
+- `bash tools/check_generator_output_compiles.sh` → passes; a generated program is compiled for real
+  against `desktop`, `tablet`, `mobile`, `mini` and `embedded`. The gate takes **~33s**, down from
+  265s once the probe crates were made to share the workspace target directory and the injection step
+  stopped re-running all four cases.
+- `bash tools/check_mode_consistency.sh` → passes (6 tests), with reverse injection.
+- `bash tools/check_generator_reuses_wire_rules.sh` → passes, with reverse injection.
+- `bash tools/run_all_gates.sh` → **PASS=40 FAIL=1 TIMEOUT=0 SKIP=1**. The single FAIL is
+  `check_profiles.sh`, which needs MSVC's `lib.exe` on an `x86_64-pc-windows-msvc` target this Linux
+  host does not have — a host-tooling gap reproduced by stashing every change, so it is unrelated to
+  this round. The SKIP is `check_apple_native.sh`, which needs macOS.
+
+### A design document can now become Rust source, not only be interpreted
+
+Mode 1 already existed: `crate::json` reads a project document and builds the UI at run time, so
+editing the document costs no recompilation. That is the right shape for the design loop and the
+wrong shape for shipping. `rust_widgets::designer::generate` adds the other direction — it parses the
+same document (through `JsonProject::parse`, the *same* parsed-project type mode 1 reads, so the two
+modes cannot disagree about what a document means) and returns Rust source plus a `GenerationReport`.
+
+Both modes exist because they answer different questions, and for two profiles mode 2 is not an
+alternative but the **only possible output**: `crate::json` and `crate::view` are both compiled out
+of `mini` and `embedded`, and the `alloc_frugal` budget admits neither. A device running `mini`
+cannot run the generator either — it is the **target** of one — and that is stated plainly in the
+module rather than glossed: a designer runs on a desktop host, and `mini`/`embedded` receive the
+generated file.
+
+### Two templates, not one template with flags
+
+The generator emits one of two shapes, keyed by `TargetProfile`:
+
+| Target | Emitted shape |
+|---|---|
+| `desktop` / `tablet` / `mobile` | a `Node` tree plus a `ViewEngine::mount` call |
+| `mini` / `embedded` | imperative construction plus `add_child`, coordinates solved at generation time |
+
+The split is not stylistic. Sharing one template would mean every line carrying a conditional, and
+`create_button` and its family are gated behind `cfg(not(alloc_frugal))` — a mistake that way leaks
+`create_button` into a `mini` build, compiles fine on the desktop host, and fails only on the target.
+`TargetProfile::Default` covers three profiles rather than three values because the difference
+between them is device capability discovered at run time, not a difference in the API surface —
+collapsing them is what keeps a designer from maintaining three copies of one template.
+
+### A property of the output that a text assertion could not check: it compiles
+
+BLUE19's definition of done for this task does not accept "should work": the stripped template's
+output must compile for real under `--no-default-features --features mini` and `--features embedded`.
+`tools/check_generator_output_compiles.sh` writes the generated text into a throwaway crate, depends
+on this library with the target's feature set, and runs a real `cargo check` — for the stripped output
+under `mini` and `embedded`, and for the default output under `desktop`, `tablet` and `mobile`.
+
+This is the only check that can find the class of defect the requirement exists for, because every
+member of it **compiles fine on the desktop host**. Four were found this way during the work, one per
+run, and all four are now recorded in the generator and the gate:
+
+- a reference to `crate::view` from a stripped build, where the module does not exist;
+- a call into `widget::runtime` (which is `cfg(not(alloc_frugal))`) — the stripped template first
+  reached for `runtime::register` to obtain a control id, when a stripped target has no registry and
+  the id the control already owns is the only one to hand a parent;
+- `Button::new("Go", ..)`, where the constructor takes `String` and the stripped profile has `alloc`
+  but not the standard prelude, so a bare `&str` does not coerce;
+- `Slider::new(text, geometry)`, where the constructor takes geometry only, producing "unexpected
+  argument".
+
+This is why the gate is a compile rather than a `grep`: a test asserting that the output contains
+`add_child` would pass against code that never builds.
+
+### Mode consistency is a gate with reverse injection
+
+"The two modes agree" is not one testable claim, so it is asserted as three facts a user can observe,
+each able to fail on its own: **structure** (the same controls in the same parent/child arrangement),
+**properties** (the same names with the same values) and **declared handlers** (the same published
+events reachable). `tools/check_mode_consistency.sh` runs `tests/mode_consistency_test.rs`, which
+reads mode 1's tree from the loader and mode 2's from the **emitted text** — comparing the generator
+against the loader directly would compare mode 1 with its own input, so mode 2 is read back from the
+source it wrote.
+
+A compile check alone cannot catch this: a generator that emitted a **smaller, still-correct** tree
+would compile perfectly while losing a control the user drew. That is why the gate's second step is
+reverse injection: it makes the generator omit the last child of every node and **requires the gate to
+go red**, then restores the source and requires it green again. Injection is what makes the claim
+falsifiable rather than decorative.
+
+### The generator reuses the runtime's wire rules, and that has a gate too
+
+The generator does not restate the type-compatibility rules a wire must satisfy; it consults
+`WIRE_RULES`, the same table the runtime uses, exported through `is_wire_key` and
+`shared_wire_rule_count`. The failure mode this guards against is **not a missing call** — it is a
+*second table* that happens to agree today and drifts the first time a `PropertyValueKind` variant is
+added, at which point the designer accepts a wire the generated program rejects, and nothing in the
+generator's own tests shows it. `tools/check_generator_reuses_wire_rules.sh` checks that the
+generator names the table, then injects a local verdict and requires the gate to fail — so a
+generator that named the table and ignored it (decorative reuse) would not pass.
+
+### Capacity and layout are resolved at generation time
+
+Layout is solved before any control exists: the generator runs the real `crate::layout` engine at
+generation time and emits the resulting coordinates as literals, so the generated program carries no
+second layout engine that could drift from the runtime's. Capacity is checked the same way, and the
+bound is **per target** because it is a storage fact, not a policy: `mini`'s `BaseWidget::children` is
+a fixed-capacity `MiniVec` (`MINI_CHILD_CAPACITY = 64`) and exceeding it **silently drops** the extra
+children. A generated program that did so would look complete and be missing controls, so a container
+over capacity is **reported** in `GenerationReport::capacity_overflow`, not emitted. A heap-allocating
+target has a sanity bound (`DEFAULT_CHILD_CAPACITY = 4096`) rather than a storage limit, and the test
+asserts the report is empty there — reporting those would be noise.
+
+The same "reported, not silently dropped" contract covers everything the generator cannot express:
+`GenerationReport::unsupported` names each node it refused with a reason. A generator that quietly
+omitted a control would produce a program that looks right and is not.
+
+## 2.5.0 (2026-09-21) — Events Became a Typed Contract, and the Designer Can Now Round-Trip It
+
+Backward compatible. **No published event name was removed and `connect_event` keeps its
+behaviour.** `WidgetCapability.events` changes type in a way that is additive for consumers
+(`&'static [&'static str]` → `&'static [EventSchema]`, where each `EventSchema` carries the name
+it used to be), the JSON event route is merged without dropping a key any existing layout uses,
+and everything else is new surface — typed payloads, a designer manifest, one-call wiring, five
+gates — layered on top of the existing signals.
+
+See [`docs/log/log-20260920-3.md`](docs/log/log-20260920-3.md) for per-change evidence.
+
+### Measured facts
+
+- `cargo check --no-default-features --features <profile>` → **0 errors, 0 warnings** on all five
+  of `desktop`, `tablet`, `mobile`, `mini`, `embedded`.
+- `python3 tools/check_event_payload_types.py` → **187 controls covered, 326 published pairs**,
+  every declared payload matching the Rust type of its signal.
+- `bash tools/check_designer_manifest_roundtrip.sh` → **4 passed / 0 failed**.
+- `bash tools/check_event_signal_dyn.sh` → passes (3 converted controls resolve every name their
+  capability publishes).
+- `bash tools/check_json_event_route.sh` → passes: 8 compatibility keys declared, 326 published
+  events in the table, reverse injection detected.
+- `bash tools/check_enabled_is_honoured_containers.sh` → passes (6 container files with ungated
+  emitting mutators, 29 accepted with no emitting mutator or a written reason).
+
+### Events became a typed contract instead of a list of strings
+
+`WidgetCapability.events` was `&'static [&'static str]` — the library stated *that* a control
+emits `value_changed` but not *what arrives with it*. A designer reading that list can draw a
+wire it cannot label, and a manifest that describes a payload as a scalar when the signal
+carries a tuple is asserting something the control never does.
+
+The field is now `&'static [EventSchema]`, with the payload expressed as two orthogonal fields
+rather than one wider enum:
+
+```rust
+pub struct EventSchema {
+    pub name: &'static str,
+    pub payload: Option<PropertyValueKind>,   // what the value is; None = no payload
+    pub shape: Option<EventPayloadShape>,     // how the value is arranged; None = no payload
+}
+```
+
+Splitting the two is what lets the table be honest about the cases that motivated the change.
+`PaneLayoutChanged` carries `Vec<f32>`, `TabMoved` carries `(usize, usize)`, and
+`RichEdit::selection_changed` carries `Option<(usize, usize)>`. Folding those into
+`PropertyValueKind` leaves only two options, and both are wrong: combinatorial variants
+(`Tuple2UInt`, `ListFloat`, …), or a claim that discards a component — calling a pair of
+integers `UInt` loses the second half, calling it `String` loses the fact that both halves are
+numbers. So `shape` carries the arity and `payload` carries the element type, and the two
+never contradict each other. Across the **326** published pairs the measured distribution is
+`Scalar=192`, `-=91` (no payload), `Tuple2=16`, `OptionalScalar=10`, `Mixed=8`, `ListScalar=5`,
+`Tuple4=2`, `Tuple3=1`, `OptionalTuple2=1`; `payload` is `String=101`, `UInt=80`, `Bool=27`,
+`Int=13`, `Float=9`, `Color=4`, `Rect=1`.
+
+The same reasoning applies to the values that were *not* invented. Domain types (`Font`,
+`DateRange`, `BarcodeResult`, `Shortcut`, and the rest) are all carried as token strings with
+`payload = String`, because a designer that does not understand a domain object can still
+display it and forward it, whereas inventing a JSON encoding for each one would be
+manufacturing semantics the library does not have. `Color` and `Rect` are the exception: they
+already have `CapabilityValue` variants and stay on that existing pipeline.
+
+### The payload type is derived, not written down, and a gate re-derives it independently
+
+Three hundred and twenty-six hand-written payloads would be 326 opportunities to guess wrong,
+and a wrong declaration is worse than a missing one: the designer draws a connection that
+cannot be made. `tools/derive_event_payloads.py` therefore reads each payload off the
+**signal declaration itself** — struct name, then `pub <name>: SignalN<T>` or
+`pub fn <name>_signal()`, then `T` recursed through `Option`/`Vec`/tuples — and exits with an
+error if any step cannot resolve, rather than skipping. The published *names* are kept separate
+in `tools/event_published_census.txt` so the deriver can never take its own previous output as
+the source of names; that confusion is what let an empty table survive rounds, because "the
+derivation failed" and "this control publishes nothing" look identical.
+
+The gate `tools/check_event_payload_types.sh` is a **second independent reader**, not a
+comparison against the generator — comparing the table to the generator's output would be
+tautological, since any generator bug would appear on both sides. It parses the `EventSchema`
+rows actually declared in `src/widget/capability/event_payloads.rs`, re-derives each pair from
+the signals, and reports control, event and both answers on a mismatch, along with coverage in
+both directions. Reverse injection proves the gate can fail:
+`python3 tools/check_event_payload_types.py --inject=slider.value_changed` reports that the row
+claims `payload=Bool/shape=Scalar` while the signal `Signal1<i32>` is `payload=Int/shape=Scalar`
+and exits 1 — and the gate itself fails if an injection does **not** produce a failure, so a
+comparison that only ever prints `ok` cannot pass as a check.
+
+### The designer manifest round-trips byte-identically
+
+`capability_manifest_json(factory, control)` exports one control's capability description and
+`DesignerManifest::from_json` reads it back through an **independent parser**. Serialisation is
+hand-written rather than `serde`-derived, and the reason is a measured feature fact: `serde` is
+in the `desktop`, `tablet` and `mobile` feature lists but **not** in `mini` or `embedded`, so a
+`derive(Serialize)` on the capability layer would make that layer's data shape depend on the
+profile — and a second, `cfg`-gated description is exactly the duplication the project sets out
+to avoid. The handwritten encoder gives a stable field order and a diffable document.
+
+`tests/designer_manifest_roundtrip_test.rs` exports a control, loads it with the independent
+parser, exports again, and asserts the two strings are equal — for **every one of the 187
+controls, not a sample** — plus sentinels (`slider.value_changed` carries `"payload": "int"`
+and `slider_pressed` carries `"payload": null`) so that "two empty strings are equal" cannot
+pass. A byte-identical assertion is what makes the load half real: it is what rejected an
+ingenious-looking `Color` default written as `[1,2,3,4]` when the capability table actually
+stores `"#DCDCDCFF"`, and it caught a trailing comma the writer emitted before `}`.
+
+### One call wires every published event, and "is it wired?" is queryable
+
+`EventSignalBinder::forward_all(widget)` wires **every** event the control publishes in a single
+call, instead of one `connect_event` per name. Alone that is convenience; what makes it safe is
+`event_is_wired(widget, event_name)`, which answers a question `connect_event` cannot. Wiring
+18 of a control's 20 events is a silent failure: every call returns success, nothing is
+reported, and the two events that were missed simply never arrive.
+`tests/event_wiring_test.rs` covers the lifecycle directly — one call wires a unit event and a
+payload-carrying event, every published event of a converted control resolves, an unwired event
+reports unwired rather than succeeding, an unknown name reports false, a detached binder
+reports nothing wired, and a control with no events reports zero.
+
+`bash tools/check_event_signal_dyn.sh` covers the converted controls independently, resolving
+every published name of `button` (4), `check_box` (2) and `slider` (4) through the dynamic
+signal path.
+
+### The JSON event route was merged: one path had no gate at all
+
+`src/json/` held a second, independent event path of **eight hard-coded `on_*` keys**
+(`on_click`, `on_change`, `on_close`, `on_double_click`, `on_focus`, `on_blur`,
+`on_selection_changed`, `on_value_changed`) matched by hand in the loader. The two sets did not
+intersect in the way that matters: `on_click` is not a published name — `clicked` is — and
+adding a published event to a control never made it declarable in JSON. Nothing covered the
+path, so it could drift, and it had.
+
+A node can now declare handlers against the **published name**, resolved against the capability
+table:
+
+```json
+{ "button": { "text": "Go", "events": { "clicked": "on_go" } } }
+```
+
+The `on_*` keys are **kept**, and the reason is that they are not a second spelling of the same
+thing: `on_close` means the trigger intent `Closed`, `on_selection_changed` means
+`SelectionChanged`, and neither is a name the published table carries; `on_double_click`,
+`on_focus` and `on_blur` exist because a pointer-driven control routes them through a value
+callback the published signal cannot address. Each key now carries an explicit trigger marker
+in one table (`MARKER_KEYS`) rather than being extracted by two positional functions, and
+`tools/check_json_event_route.sh` asserts the boundary mechanically in both directions: every
+`on_*` key the loader reads must carry a stated marker, and every `events:` name must be one the
+capability table publishes. The eight keys and 326 published events are reported by the gate on
+every run, with a reverse injection proving it fails when the single key source is broken.
+
+### Mirror fields are individually classified, and containers honour `enabled`
+
+Every `WindowState` field is now either a documented fallback or has a **named test proving it
+is read** (`src/app/handle.rs`). "Written but never read" is a mirror that drifts into a false
+fact, and the classification is parsed against the struct by the test itself, so adding a 14th
+field fails until someone states which category it is in and names the test that backs the
+claim. The 13 fields split into platform-first fallbacks (six backends return `None` from
+`window_icon` and `window_min_size`; the flag mirrors use `mirrored_flag`), values read by
+`center_on_screen`, and `close_callback`, which is authoritative because `close()` is its only
+reader.
+
+The handler gate covered the entry point — a control that consumes input must consult
+`is_enabled()` — and had a structural blind spot at the exit: the container that owns a
+*programmatic* mutator. `StackedWidget` was allowlisted as "passive: its handler only
+delegates to the base", and the handler did delegate; but `set_current_index` emitted
+`current_changed` while the control was disabled, so a subscriber reloaded a page the user
+could not reach. `handle_event` was never on the path, so the existing gate could not see it.
+`tools/check_enabled_is_honoured_containers.sh` covers the exit point the way the handler gate
+covers the entry point: every programmatic signal this library emits from an allowlisted
+container file must be gated by `enabled`, be absent, or carry a written reason.
+
 ## 2.4.6 (2026-09-20) — Profile Combinations That Never Compiled, and Contracts the Code Did Not Keep
 
 Backward compatible. **No public signature was removed.** Two additions land in existing surfaces

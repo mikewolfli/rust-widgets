@@ -130,18 +130,16 @@ Arc、Spinner、Roller、Dropdown、TextArea、Keyboard、Switch。
 （`docs/plans/platform_capability_matrix.md`）由源码机械派生，并在 CI 中设有防脱节门禁。
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.4.6-blue)]()
+[![version](https://img.shields.io/badge/version-2.5.1-blue)]()
 [![tests](https://img.shields.io/badge/tests-5300%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
-**2.4.6 实测：** `desktop` 档 **5347** 个测试（5103 lib + 集成目标）全通过，共 31 个测试二进制、0 失败；五个档位全部 0 失败（`tablet` 5046、`mobile` 5077、`mini` 1575、`embedded` 1662）。
-`cargo clippy --all-targets` 在 `desktop` 档 0 warning；所有档位在本机构建均无 warning——
-包括 `tools/check_profiles.sh` 新增覆盖的 `mini` × 后端矩阵——并在
-`wasm32-unknown-unknown`、`aarch64-apple-ios`、`x86_64-pc-windows-gnu`、
-`aarch64-unknown-linux-ohos`、`aarch64-apple-darwin` 上全部通过。
+**2.5.1 实测：** 五个档位全部构建干净——`cargo check --no-default-features --features <desktop|tablet|mobile|mini|embedded>` 在五个档位上均为 0 error、0 warning。
+设计器的第二种输出模式落地：`rust_widgets::designer::generate` 把 JSON 工程稿变成**能在目标档位上编译通过**的 Rust 函数，
+由 `tools/check_generator_output_compiles.sh` 在 `desktop`、`tablet`、`mobile`、`mini`、`embedded` 上实跑验证（约 33s）。
 详见
 [`CHANGELOG.md`](CHANGELOG.md)（中文版见 [`docs/reports/CHANGELOG.md`](docs/reports/CHANGELOG.md)）及
-[`docs/log/log-20260920-2.md`](docs/log/log-20260920-2.md)。
+[`docs/log/log-20260921-1.md`](docs/log/log-20260921-1.md)。
 
 <p align="center">
   <a href="README.md">

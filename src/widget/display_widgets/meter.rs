@@ -30,9 +30,9 @@ use crate::widget::capability::coercion::{expect_bool, expect_string, expect_u32
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::numeric::ordered_clamp_u32;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
-use crate::widget::numeric::{ordered_clamp_u32};
 
 /// A colored band across part of the meter's range.
 ///
@@ -94,6 +94,11 @@ impl Meter {
     /// Sets the value, clamped between min and max.
     ///
     /// Emits `changed` signal when the value actually changes.
+    ///
+    /// `changed` is deliberately not gated by `enabled`: a readout's value transition is
+    /// driven by data, not by the user, so disabling the readout must not freeze the
+    /// signal its host uses to follow that data. See `Arc::set_value` for the full
+    /// reasoning.
     pub fn set_value(&mut self, v: u32) {
         let clamped = ordered_clamp_u32(v, self.min, self.max);
         if self.value == clamped {
@@ -107,6 +112,8 @@ impl Meter {
     /// Sets both minimum and maximum values in one call.
     ///
     /// The current value is re-clamped to the new range.
+    ///
+    /// Like [`Meter::set_value`], `changed` is deliberately not gated by `enabled`.
     pub fn set_range(&mut self, min: u32, max: u32) {
         self.min = min.min(max);
         self.max = max.max(min);

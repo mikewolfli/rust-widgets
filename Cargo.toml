@@ -1,6 +1,6 @@
 [package]
 name = "rust_widgets"
-version = "2.4.6"
+version = "2.5.1"
 edition = "2021"
 description = "Pure Rust cross-platform native GUI library with hardware-adaptive rendering, 179 widgets, touch/gesture support, i18n, and SVG-pipeline-accurate output"
 license = "MIT"

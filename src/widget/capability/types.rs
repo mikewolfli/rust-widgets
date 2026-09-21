@@ -65,6 +65,61 @@ pub enum CapabilityValue {
     Rect(crate::core::Rect),
 }
 
+impl CapabilityValue {
+    /// The text this value carries, or `None` when it is not a string.
+    ///
+    /// # Why this accessor had to be added (BLUE19 T-23)
+    ///
+    /// The generated code needs to read a `text`/`title` property out of a `Node`, and there was no
+    /// way to ask a `CapabilityValue` for its string: the enum's variants are public, so the only
+    /// route was a `match` at every call site. The T-23 round added this after a **compile failure**
+    /// in generated code that called `as_str` — the method the API reads as if it existed.
+    ///
+    /// It is deliberately **narrow**: `Int`/`UInt`/`Bool` return `None` rather than a formatted
+    /// string, because a caller that wants text out of a number is making a presentation decision
+    /// that belongs at the call site (and `WireCompatibility::Converted` already documents that a
+    /// number → text wire is a *conversion* rather than an identity).
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Self::String(text) => Some(text.as_str()),
+            _ => None,
+        }
+    }
+
+    /// The boolean this value carries, or `None` when it is not one.
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Self::Bool(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    /// The signed integer this value carries, or `None`.
+    ///
+    /// A `UInt` that fits returns `Some`, so a caller reading an index does not have to know which
+    /// variant the property was declared as. A `UInt` that does **not** fit returns `None` rather
+    /// than wrapping — a silent wrap would be a wrong value presented as a right one.
+    pub fn as_i64(&self) -> Option<i64> {
+        match self {
+            Self::Int(value) => Some(*value),
+            Self::UInt(value) => i64::try_from(*value).ok(),
+            _ => None,
+        }
+    }
+
+    /// The unsigned integer this value carries, or `None`.
+    ///
+    /// The mirror of [`Self::as_i64`]: a non-negative `Int` returns `Some`, a negative one returns
+    /// `None` because there is no unsigned value that means it.
+    pub fn as_u64(&self) -> Option<u64> {
+        match self {
+            Self::UInt(value) => Some(*value),
+            Self::Int(value) => u64::try_from(*value).ok(),
+            _ => None,
+        }
+    }
+}
+
 /// Why a capability-based property read or write did not happen.
 ///
 /// The distinction that matters to a caller is between *"you asked for something

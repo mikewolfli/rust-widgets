@@ -10,9 +10,9 @@ use crate::widget::capability::coercion::{expect_bool, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::numeric::ordered_clamp_u32;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
-use crate::widget::numeric::{ordered_clamp_u32};
 
 /// Arc widget for displaying circular progress or angular values.
 pub struct Arc {
@@ -91,6 +91,13 @@ impl Arc {
     /// Sets the value, clamped between min and max.
     ///
     /// Emits the `changed` signal when the value actually changes.
+    ///
+    /// `changed` is deliberately not gated by `enabled`: it reports a *value* transition
+    /// from `set_value`, not a user action. A host that disables a progress indicator and
+    /// keeps feeding it data still needs the signal to track the value, and a disabled
+    /// `Arc` accepts no pointer input anyway, so there is no user-driven path to silence
+    /// here (the round-52 `MiniCanvas` defect was the opposite: a disabled control
+    /// responding to presses).
     pub fn set_value(&mut self, value: u32) {
         let clamped = ordered_clamp_u32(value, self.min, self.max);
         if self.value == clamped {
@@ -114,6 +121,8 @@ impl Arc {
     /// Sets both minimum and maximum values in one call.
     ///
     /// The current value is re-clamped to the new range.
+    ///
+    /// Like [`Arc::set_value`], `changed` is deliberately not gated by `enabled`.
     pub fn set_range(&mut self, min: u32, max: u32) {
         self.min = min.min(max);
         self.max = max.max(min);

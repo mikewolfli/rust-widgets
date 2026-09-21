@@ -188,6 +188,11 @@ impl MaterialSnackbar {
     }
 
     /// Dismisses the snackbar. Emits the `dismissed` signal.
+    ///
+    /// `dismissed` is deliberately not gated by `enabled`: it reports the snackbar leaving
+    /// the screen (a timeout or a host decision), not a user action, and a host that
+    /// disabled the snackbar's interactions still needs to know it went away. Hiding the
+    /// snackbar does block the signal, which is the condition `dismiss` actually depends on.
     pub fn dismiss(&mut self) {
         if self.base.is_visible() {
             self.base.hide();
@@ -710,6 +715,11 @@ impl CupertinoSlider {
     ///
     /// Emits `value_changed` with the clamped value when it actually changes;
     /// re-applying the same clamped value is a no-op.
+    ///
+    /// `value_changed` is deliberately not gated by `enabled`: the pointer path over this
+    /// slider is gated in `handle_event` (the round-52 contract), so a disabled slider
+    /// already ignores the user; this writer is the *programmatic* path, and a host that
+    /// two-way-binds the value needs the signal even while the control is disabled.
     pub fn set_value(&mut self, value: f32) {
         let clamped = ordered_clamp(value, self.min, self.max);
         if self.value != clamped {
@@ -959,6 +969,10 @@ impl MaterialNavigationRail {
     }
 
     /// Sets the selected index. Clamped to valid range.
+    ///
+    /// `selected_changed` is deliberately not gated by `enabled`: selection here is driven
+    /// by the host (navigation state), and the disabled control already ignores presses, so
+    /// silencing the programmatic path would only desynchronise the host's state.
     pub fn set_selected(&mut self, index: usize) {
         if self.items.is_empty() {
             self.selected_index = 0;

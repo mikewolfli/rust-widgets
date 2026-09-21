@@ -474,6 +474,14 @@ pub use designer_manifest::{
     ManifestParseError,
 };
 
+/// The wire-type compatibility table a designer and the code generator share.
+///
+/// Compiled in every profile for the same reason as `designer_manifest`: it is pure data and
+/// predicates over `PropertyValueKind`, which exists everywhere. It walks no registry, so it does
+/// not need the capability table.
+pub mod wire_rules;
+pub use wire_rules::{compatibility, WireCompatibility, WireRule, WireTarget, WIRE_RULES};
+
 #[cfg(widgets_unstripped)]
 pub mod access;
 

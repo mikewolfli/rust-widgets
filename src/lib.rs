@@ -132,6 +132,13 @@ pub mod image;
 /// (BLUE15 rule #57).
 #[cfg(full_widgets)]
 pub mod json;
+/// Designer support: mode 2, generating Rust source from a project (BLUE19 T-23).
+///
+/// Gated with `crate::json` rather than with a device profile, because generating a program
+/// requires *parsing* the project, and the parser is `full_widgets`. A `mini`/`embedded` build is
+/// the **target** of a generation, not its host — BLUE19 §5.3.4.
+#[cfg(full_widgets)]
+pub mod designer;
 /// Layout managers.
 pub mod layout;
 /// Memory management utilities.

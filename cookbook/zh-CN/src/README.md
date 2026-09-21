@@ -21,7 +21,7 @@
 
 rust-widgets 让您只需一套 Rust 代码库，即可在各大平台上生成一致的界面。它包含了丰富的控件库、硬件自适应渲染以及深度平台集成——这一切都通过简洁、地道的 Rust API 实现。
 
-> 下文的代码片段仅用于说明预期的 API 形式。若需要能对 2.4.6 编译的代码，请从 [`chapters/getting-started.md`](chapters/getting-started.md) 开始，
+> 下文的代码片段仅用于说明预期的 API 形式。若需要能对 2.5.1 编译的代码，请从 [`chapters/getting-started.md`](chapters/getting-started.md) 开始，
 > 该文件已针对当前的 crate 验证过。
 
 ```rust
@@ -158,7 +158,7 @@ fn main() {
 
 | | |
 |---|---|
-| **版本** | 2.4.6 |
+| **版本** | 2.5.1 |
 | **许可证** | [MIT](https://github.com/mikewolfli/rust-widgets/blob/main/LICENSE) |
 | **仓库** | [github.com/mikewolfli/rust-widgets](https://github.com/mikewolfli/rust-widgets) |
 | **测试** | 5300+ |

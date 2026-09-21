@@ -82,7 +82,15 @@ impl Window {
     }
 
     /// Emits the window closed signal.
+    /// Hides the window and emits the `closed` signal.
+    ///
+    /// `closed` reports the *lifecycle fact* that the window was closed, not a user action
+    /// within the window: the close request may come from a title-bar button, from a
+    /// platform event, or from this programmatic call. A host that disabled the window's
+    /// contents still needs to run its teardown, so the signal is deliberately not gated by
+    /// `enabled` — suppressing it would leak the resources it exists to release.
     pub fn close(&mut self) {
+        self.hide();
         self.closed.emit();
     }
 }

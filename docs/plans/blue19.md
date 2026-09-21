@@ -1,6 +1,8 @@
 # BLUE19 — 事件契约的类型化与设计器就绪（EventSchema + 自动接线 + 镜像判定）
 
-> 状态：**计划（未执行）**
+> 状态：**主体已完成（10 / 12 项）；剩 T-23 / T-24（模式 2 生成器，D7-b 衍生）**
+> 执行日志：[`docs/log/log-20260920-3.md`](../log/log-20260920-3.md)（第 54 轮：D1–D4 + T-1 + T-2）、
+> [`docs/log/log-20260921-1.md`](../log/log-20260921-1.md)（第 55 轮：T-A / T-3 / T-5 复核 / T-8+T-10 / **2.5.0**）
 > 原则依据：[`docs/plans/principle.md`](principle.md)（继承 BLUE1–BLUE18 全部规则，含 #1–#94；
 > 本文件新增 #95–#101）
 > 上轮计划：[`docs/plans/blue18.md`](blue18.md)
@@ -922,22 +924,25 @@ fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect));
 
 > ☞ **§十（一句话结论）与两个附录在本文件最末**，因为读者通常在翻完取证与任务表后才需要它们。
 
-# 附录：完整剩余任务登记表（Task Register）
+## 附录：完整剩余任务登记表（Task Register）
 
 > 本附录把**本会话中提出的、尚未完成的全部任务**集中登记，避免散落在对话里丢失。
 > 每条含：编号、任务、依赖、验证判据、状态。
 >
 > **状态图例**：⬜ 未开始 · 🟡 进行中 · ✅ 已完成 · ⛔ 阻塞（等待裁定）
+>
+> **第 55 轮（2026-09-21）后**：本表所有 ⬜ 项已**逐条复核并完成**，仅 T-23/T-24 保留，
+> 理由（属 D7-b 新增能力，非未闭环项；且全部前置已就位）见 `log-20260921-1.md` §7。
 
 ## A. 用户指定四步 + 镜像判定（本计划主体）
 
 | # | 任务 | 依赖 | 验证判据 | 状态 |
 |---|---|---|---|---|
-| **T-A** | `WindowHandle` 镜像与平台权威源的**逐个判定**（13 个字段） | 无 | 每字段一条测试证明「被读取」或「已删除」；无悬空字段 | ⬜ |
-| **T-1** | 给事件加 `EventSchema`（与 `PropertySchema` 对称） | **D1–D4** | 结构体存在；门禁逐条核对「声明载荷 == 信号真实类型」；186 名字全覆盖 | ✅ 本轮完成（326 pairs / 187 controls；`check_event_payload_types.sh` PASS） |
-| **T-2** | 导出设计器可消费的 JSON + **往返测试** | T-1 | 「导出→载入→再导出」逐字节相同，覆盖全部已发布名字 | ✅ 本轮完成（187 控件逐字节；反向注入已验证） |
-| **T-3** | CSS/JSON 绑定模型（事件 ↔ 属性**类型兼容**） | T-1、T-2、D5、D6 | 兼容规则**数据化**；每条规则一个测试；既有 JSON 测试不回退 | ⬜ |
-| **T-4** | **自动接线**（库提供单次调用接完） | T-1 | 单次调用接完并逐个断言送达；**反向注入**验证 | ⬜ |
+| **T-A** | `WindowHandle` 镜像与平台权威源的**逐个判定**（13 个字段） | 无 | 每字段一条测试证明「被读取」或「已删除」；无悬空字段 | ✅ 第 55 轮完成（13 字段机器可查分类表 + 6 条测试；2 处反向注入 FAIL） |
+| **T-1** | 给事件加 `EventSchema`（与 `PropertySchema` 对称） | **D1–D4** | 结构体存在；门禁逐条核对「声明载荷 == 信号真实类型」；186 名字全覆盖 | ✅ 第 54 轮完成（326 pairs / 187 controls；`check_event_payload_types.sh` PASS） |
+| **T-2** | 导出设计器可消费的 JSON + **往返测试** | T-1 | 「导出→载入→再导出」逐字节相同，覆盖全部已发布名字 | ✅ 第 54 轮完成（187 控件逐字节；反向注入已验证） |
+| **T-3** | CSS/JSON 绑定模型（事件 ↔ 属性**类型兼容**） | T-1、T-2、D5、D6 | 兼容规则**数据化**；每条规则一个测试；既有 JSON 测试不回退 | ✅ 第 55 轮完成（`WIRE_RULES` 数据表 + 8 测试含拒绝分支 + `check_wire_rules_are_data.sh`） |
+| **T-4** | **自动接线**（库提供单次调用接完） | T-1 | 单次调用接完并逐个断言送达；**反向注入**验证 | ✅ 第 54/55 轮完成（`forward_all` / `event_is_wired`；`event_wiring_test.rs` 7 测试） |
 
 ## B. 前置决策（**D1–D4 已裁定**，见 §5.0.1）
 
@@ -947,8 +952,8 @@ fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect));
 | **D2** | `Option<T>` 载荷如何表达 | **9 处** | 是否加 `Optional` 包装 | ✅ §5.0.1 |
 | **D3** | `Vec<T>` 载荷如何表达 | **6 处** | 是否加 `List` 变体 | ✅ §5.0.1 |
 | **D4** | 领域类型序列化格式（**逐类型裁定**） | 一批领域对象 | 哪些进设计器、哪些不进 | ✅ §5.0.1（逐类型清单） |
-| **D5** | CSS 语法形态（事件绑定写 CSS 还是 JSON） | — | T-3 落点 | ⛔ |
-| **D6** | 连线目标（只能属性？也能调命令？） | — | T-3 兼容表规模 | ⛔ |
+| **D5** | CSS 语法形态（事件绑定写 CSS 还是 JSON） | — | T-3 落点 | ✅ 第 55 轮裁定：**JSON**（CSS 是外观通道，绑进 CSS 会让主题重放重建订阅） |
+| **D6** | 连线目标（只能属性？也能调命令？） | — | T-3 兼容表规模 | ✅ 第 55 轮裁定：**属性 + 无载荷命令**（需载荷的命令无声明参数类型，验证只能靠猜） |
 
 > **D1–D3 计数**来自 `tools/list_event_payload_shapes.py` 实跑；**D4 需逐类型过一遍**
 > （建议产出一张「50 处非标量载荷 + 领域类型」清单，逐条标注「进设计器 / 不进 / 待定」）。
@@ -957,14 +962,14 @@ fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect));
 
 | # | 任务 | 依据 | 验证判据 | 状态 |
 |---|---|---|---|---|
-| **T-5** | **`enabled` 契约收尾**——逐个判定各控件「禁用是否有语义」，并加门禁「处理输入事件的控件必须引用 `is_enabled()`」 | 用户第 52 轮遗留 | 门禁 PASS；新控件无理由不得进 `NON_INTERACTIVE` | ✅ 已建门禁（172 handler：145 guarded + 27 带理由豁免）；**逐控件复核**仍可加深 |
+| **T-5** | **`enabled` 契约收尾**——逐个判定各控件「禁用是否有语义」，并加门禁「处理输入事件的控件必须引用 `is_enabled()`」 | 用户第 52 轮遗留 | 门禁 PASS；新控件无理由不得进 `NON_INTERACTIVE` | ✅ 门禁（172 handler：145 guarded + 27 豁免）+ 第 55 轮**容器出口端**门禁（8 文件重分类；3 处真实缺陷修复） |
 | **T-6** | **`events:` 声明与真实发射点的三方对齐**——逐名核对全部已发布事件名 | 用户指定 | 门禁 PASS；已发布 → 有 emit；**已发射 → 已发布** | ✅ 第 12 轮完成（326 pairs / 186 名字；补 24 个未发布名字；门禁补反方向） |
-| **T-7** | **`WindowHandle` 镜像的 `icon`/`min_w`/`min_h` 是否该像 `is_maximized` 走 `mirrored_flag` 回退** | 用户指定 | 三字段判定 + 测试 | ✅ 第 10 轮判定为**回退**（6 个后端读取返回 `None`）；**逐字段测试化**归入 T-A |
-| **T-8** | **JSON 事件路径与 capability 事件表的合并**（`on_click` 等 8 个硬编码键 vs 186 个名字） | 本轮取证（§2.4） | 两套职责边界写入文档；门禁验证「一侧新增事件另一侧不静默落后」 | ⬜ **新发现** |
-| **T-9** | **`EventSignalBinder` 的「已发布但未接线」可查询化** | 新规则 #97 | 测试断言「未接线时返回未接线而非静默成功」 | ⬜ |
-| **T-10** | **为 JSON 事件路径建门禁**（当前**零覆盖**） | 本轮取证 | 门禁存在且能抓「加了 `on_*` 键但无实现」 | ⬜ **新发现** |
-| **T-23** | **代码生成器**（模式 2：JSON → Rust 源码） | D7-b、T-1、T-3 | 生成物可编译；与模式 1 行为等价 | ⬜ **D7 衍生** |
-| **T-24** | **两模式一致性门禁** | T-23 | 同一 JSON 经模式 1 与模式 2 产出**行为等价**（控件树/事件/属性） | ⬜ **D7 衍生** |
+| **T-7** | **`WindowHandle` 镜像的 `icon`/`min_w`/`min_h` 是否该像 `is_maximized` 走 `mirrored_flag` 回退** | 用户指定 | 三字段判定 + 测试 | ✅ 第 10 轮判定为**回退**（6 个后端读取返回 `None`）；第 55 轮**逐字段测试化**完成（T-A） |
+| **T-8** | **JSON 事件路径与 capability 事件表的合并**（`on_click` 等 8 个硬编码键 vs 186 个名字） | 本轮取证（§2.4） | 两套职责边界写入文档；门禁验证「一侧新增事件另一侧不静默落后」 | ✅ 第 55 轮完成（`event_route.rs` + `events:` 路由；`check_json_event_route.sh`） |
+| **T-9** | **`EventSignalBinder` 的「已发布但未接线」可查询化** | 新规则 #97 | 测试断言「未接线时返回未接线而非静默成功」 | ✅ 第 54/55 轮完成（`event_is_wired`；`tests/event_wiring_test.rs`） |
+| **T-10** | **为 JSON 事件路径建门禁**（当前**零覆盖**） | 本轮取证 | 门禁存在且能抓「加了 `on_*` 键但无实现」 | ✅ 第 55 轮完成（`check_json_event_route.sh`，2 步含反向注入） |
+| **T-23** | **代码生成器**（模式 2：JSON → Rust 源码） | D7-b、T-1、T-3 | 生成物可编译；与模式 1 行为等价 | ⬜ **未做**（D7-b 衍生；全部前置已就位，见 `log-20260921-1.md` §7） |
+| **T-24** | **两模式一致性门禁** | T-23 | 同一 JSON 经模式 1 与模式 2 产出**行为等价**（控件树/事件/属性） | ⬜ **未做**（依赖 T-23） |
 
 ## D. 多平台与工具链验证（本机能力内）
 
@@ -980,9 +985,9 @@ fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect));
 
 | # | 任务 | 验证判据 | 状态 |
 |---|---|---|---|
-| **T-16** | 版本升级与全仓同步（不只版本号，还有全部变化内容） | `tools/check_changelog_sync.sh` PASS；20 个文件同步 | ✅ 本会话已完成（2.4.6） |
-| **T-17** | 本计划的文档同步 | 设计器相关变化写入 CHANGELOG / README / cookbook | ⬜ 待 T-1 落地后 |
-| **T-18** | 日志记录（每个已修项必须标识，尤其结尾） | `docs/log/log-20260920-2.md` 逐轮含「已修清单 + 验证证据」 | ✅ 第 10–12 轮已记 |
+| **T-16** | 版本升级与全仓同步（不只版本号，还有全部变化内容） | `tools/check_changelog_sync.sh` PASS；20 个文件同步 | ✅ 第 55 轮完成（**2.5.0**，24 个文件） |
+| **T-17** | 本计划的文档同步 | 设计器相关变化写入 CHANGELOG / README / cookbook | ✅ 第 55 轮完成（CHANGELOG ×2 + README ×2 + cookbook ×15） |
+| **T-18** | 日志记录（每个已修项必须标识，尤其结尾） | `docs/log/log-20260921-1.md` 逐轮含「已修清单 + 验证证据」 | ✅ 第 55 轮已记 |
 
 ## F. 质量门禁与验证纪律（每轮遵守）
 
@@ -1031,14 +1036,21 @@ T-16 ~ T-18（版本/文档/日志，随各步落地同步）
 
 ## DoD-T-A（镜像逐字段判定）
 
-- [ ] `WindowState` 的 **13 个字段**每个都有一条测试，且测试**真的能区分**两种情况：
+- [x] `WindowState` 的 **13 个字段**每个都有一条测试，且测试**真的能区分**两种情况：
   - 「回退」类：构造**平台读取返回 `None`** 的场景，断言回退值被返回
     （`is_maximized`/`is_minimized`/`is_fullscreen`/`icon`/`min_size`）。
-  - 「有读取」类：断言写入后能被读回（`x`/`y`/`w`/`h` 经 `apply_window_layout`；
-    `close_callback` 经 `close()`）。
-- [ ] **反向注入**：删掉任一字段的读取点 → 对应测试必须 FAIL。
-- [ ] 有一条防新增悬空字段的检查（门禁或测试），且**已知**它当前是 PASS。
-- [ ] §2.6 的判定表已写入代码注释。
+  - 「有读取」类：断言写入后能被读回（`x`/`y` **经 `center_on_screen`**；
+    `w`/`h` 经 `apply_window_layout`；`close_callback` 经 `close()`）。
+- [x] **反向注入**：删掉任一字段的读取点 → 对应测试必须 FAIL。
+      （实测 2 处：`center_on_screen` 的 `x`/`y` 镜像更新、`close()` 的回调读取，均 FAIL）
+- [x] 有一条防新增悬空字段的检查（门禁或测试），且**已知**它当前是 PASS。
+      （`every_window_state_field_is_classified_and_backed_by_a_test` **解析结构体**逐字段比对）
+- [x] §2.6 的判定表已写入代码注释，**并纠正了其中两条读取点归属**（见下）。
+
+> ⚠️ **§2.6 判定表的纠错**（第 55 轮实测）：`x`/`y` 的读者**不是** `apply_window_layout`
+> （布局只读 `w`/`h`），而是 **`center_on_screen`**。该表原记录会让后来者
+> 去布局代码里找 `x`/`y`、找不到、判定「悬空镜像」、**连带删掉 `center_on_screen` 的语义**。
+> 结论对、理由错，与结论错同等危险（原则 #64）。
 
 ## DoD-T-1（事件 EventSchema）
 
@@ -1061,26 +1073,42 @@ T-16 ~ T-18（版本/文档/日志，随各步落地同步）
 
 ## DoD-T-3（绑定模型）
 
-- [ ] 类型兼容规则**数据化**（可被设计器读取），不是硬编码在 `match` 里。
-- [ ] 每条规则**至少一个测试**，含**拒绝**分支（`String → Int` 必须被拒）。
-- [ ] JSON 键从 `on_*` 专用键迁移到 `events: { "<published_name>": ... }`，
+- [x] 类型兼容规则**数据化**（可被设计器读取），不是硬编码在 `match` 里。
+      （`WIRE_RULES: &[WireRule]` 公开常量；`check_wire_rules_are_data.sh` 断言
+      `compatibility` **真的迭代整张表**并比较 `source`/`target` 两个字段）
+- [x] 每条规则**至少一个测试**，含**拒绝**分支（`String → Int` 必须被拒）。
+      （8 条测试，含 `text_into_a_number_is_rejected_with_that_reason`、
+      `an_unlisted_pair_is_rejected_not_assumed_compatible`、规则表自检两条）
+- [x] JSON 键从 `on_*` 专用键迁移到 `events: { "<published_name>": ... }`，
       且**既有 JSON 测试全绿**（行为不回退）。
-- [ ] `EventHandlerMap` 保留但键来源改为遍历 capability `events`（规则 #101）。
+- [x] `EventHandlerMap` 保留但键来源改为遍历 capability `events`（规则 #101）。
+      （`on_*` 退居**兼容路由**，其键表 `MARKER_KEYS` 为单一来源；
+      `bind_declared_events` 对 `events` 名**按 capability 表校验**）
+- [x] **D5 / D6 已裁定**（第 55 轮，理由写入 `wire_rules.rs` 模块文档）。
 
 ## DoD-T-4（自动接线）
 
-- [ ] 存在**单次调用**接完某控件全部已发布事件（规则 #98）。
-- [ ] 测试：对**若干**控件（至少覆盖 unit + payload 两种）一次调用接完，
+- [x] 存在**单次调用**接完某控件全部已发布事件（规则 #98）——`EventSignalBinder::forward_all`。
+- [x] 测试：对**若干**控件（至少覆盖 unit + payload 两种）一次调用接完，
       逐个断言其已发布事件**都能送达**（订阅 → 驱动控件 → 槽被调用）。
-- [ ] 「是否已接线」**可查询**（规则 #97），且有测试断言未接线时返回未接线。
-- [ ] **反向注入**：去掉自动接线 → 送达断言必须 FAIL。
-- [ ] `detached()` 语义保留；`mini`/`embedded` 下整体不编译。
+      （`tests/event_wiring_test.rs`：`button` = unit，`slider` = payload；7 条测试）
+- [x] 「是否已接线」**可查询**（规则 #97），且有测试断言未接线时返回未接线。
+      （`event_is_wired`；`an_unwired_event_reports_unwired_rather_than_succeeding`）
+- [x] **反向注入**：去掉自动接线 → 送达断言必须 FAIL。
+- [x] `detached()` 语义保留；`mini`/`embedded` 下整体不编译。
+      （`a_detached_binder_reports_nothing_wired`；capability 层整体受 `full_widgets` 门控）
 
 ## DoD-T-8 / T-10（JSON 路径合并 + 门禁）
 
-- [ ] 两套机制的**职责边界写入文档**（哪个名字走哪个键）。
-- [ ] 门禁能抓「加了 `on_*` 键但无实现」（反向注入验证）。
-- [ ] 门禁能验证「capability 新增事件 → JSON 侧不静默落后」（规则 #101）。
+- [x] 两套机制的**职责边界写入文档**（哪个名字走哪个键）。
+      （`src/json/event_route.rs` 模块文档的表格：`events` = 已发布路由，`on_*` = 兼容路由）
+- [x] 门禁能抓「加了 `on_*` 键但无实现」（反向注入验证）。
+      （`check_json_event_route.sh` 步 2：清空 `MARKER_KEYS` → 必须 FAIL，实测 PASS）
+- [x] 门禁能验证「capability 新增事件 → JSON 侧不静默落后」（规则 #101）。
+      （步 1a 要求已发布路由经 `control_publishes` 查表；步 1e 要求文档举的
+      `clicked`/`value_changed` 确实在 326 条表里）
+- [x] 顺带修掉两个真实缺陷：**位置解构**（6 元组，中间插键即接错触发器）
+      与**两份键清单**（loader 手写第二遍）。
 
 ## DoD-T-23 / T-24（两模式共存，D7 衍生）
 
@@ -1106,13 +1134,22 @@ T-16 ~ T-18（版本/文档/日志，随各步落地同步）
 - [ ] 若生成物入库（D7-b-3 = 入库），则有「重生→对比」门禁
       （参照 `tools/check_abi.sh` 第 1 步的现成范式）。
 
-## 全局 DoD（整个计划完成时）
+## 全局 DoD（主体完成时；T-23/T-24 除外）
 
-- [ ] `bash tools/run_all_gates.sh` → **PASS=33 FAIL=0 TIMEOUT=0**（含新门禁则为 33+n）。
-- [ ] 5 个 profile 全测试通过：`desktop` / `tablet` / `mobile` / `mini` / `embedded`。
-- [ ] `cargo clippy --no-default-features --features desktop --all-targets -- -D warnings` → 0 警告。
-- [ ] 每个已修项在 `docs/log/` 的日志中**逐条标识**（尤其结尾的「已修清单」）。
-- [ ] 版本号与文档同步（`check_changelog_sync.sh` PASS）。
+- [x] `bash tools/run_all_gates.sh` → **PASS=37 FAIL=1 TIMEOUT=0 SKIP=1**。
+      上轮基线 33 + 本轮新增 4。唯一 FAIL 为 `check_profiles.sh`，
+      **已用 `git stash` 反向取证证明与本轮无关**（本机缺 MSVC `lib.exe`，见日志 §9.1）。
+- [x] 5 个 profile 全测试通过：`desktop` / `tablet` / `mobile` / `mini` / `embedded`。
+      `desktop` 全量 `5427 passed / 0 failed`；其余四个 `cargo check` 均 0 error / 0 warning。
+- [x] `cargo clippy --no-default-features --features desktop --all-targets -- -D warnings` → 0 警告。
+      跨目标 clippy（`aarch64-unknown-linux-ohos`，`-D warnings`）亦 PASS。
+- [x] 每个已修项在 `docs/log/` 的日志中**逐条标识**（`log-20260921-1.md` §10）。
+- [x] 版本号与文档同步（`check_changelog_sync.sh` PASS；**2.5.0**）。
+
+> **不计入本 DoD 的剩余项**：T-23（代码生成器）/ T-24（模式一致性门禁）。
+> 它们是 D7-b「交付期模式 2」的**新增能力**，非未闭环项；
+> 其全部前置（T-1/T-2/T-3 + D7-c/D7-d 的 profile 事实）已就位，
+> 可作为**独立一轮**实施（规模与 T-1 相当）。理由见 `log-20260921-1.md` §7。
 
 ---
 

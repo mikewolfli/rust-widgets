@@ -57,19 +57,17 @@ capability matrix
 is generated from source and gated for drift in CI.
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.4.6-blue)]()
+[![version](https://img.shields.io/badge/version-2.5.1-blue)]()
 [![tests](https://img.shields.io/badge/tests-5300%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
-**Verified in 2.4.6:** `5103` lib tests plus the integration targets give `5347` tests on
-`desktop`, with 0 failures across all 31 test binaries and on all five device profiles
-(`tablet` 5046, `mobile` 5077, `mini` 1575, `embedded` 1662). `cargo clippy --all-targets` is
-warning-free on `desktop`, every profile builds clean on the host — including the `mini` ×
-backend matrix that `tools/check_profiles.sh` now covers — and on `wasm32-unknown-unknown`,
-`aarch64-apple-ios`, `x86_64-pc-windows-gnu`, `aarch64-unknown-linux-ohos` and
-`aarch64-apple-darwin`. See
+**Verified in 2.5.1:** every control profile builds clean — `cargo check --no-default-features
+--features <desktop|tablet|mobile|mini|embedded>` reports 0 errors and 0 warnings on all five.
+The designer's second output mode lands: `rust_widgets::designer::generate` turns a JSON project
+into a Rust function that **compiles on its target**, checked for real against `desktop`, `tablet`,
+`mobile`, `mini` and `embedded` by `tools/check_generator_output_compiles.sh` (~33s). See
 [`CHANGELOG.md`](CHANGELOG.md) and
-[`docs/log/log-20260920-1.md`](docs/log/log-20260920-1.md) for per-fix evidence.
+[`docs/log/log-20260921-1.md`](docs/log/log-20260921-1.md) for per-change evidence.
 
 <p align="center">
   <a href="README.zh-CN.md">

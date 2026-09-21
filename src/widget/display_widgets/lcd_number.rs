@@ -12,9 +12,9 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::numeric::ordered_clamp_f64;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
-use crate::widget::numeric::{ordered_clamp_f64};
 /// LCD number display mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LCDNumberMode {
@@ -124,6 +124,11 @@ impl LCDNumber {
     /// `overflow` signal is emitted, and [`LCDNumber::check_overflow`] reports
     /// `true` until the next in-range set clears it. When the clamped value is
     /// unchanged from the current value this is a no-op (no signal, no redraw).
+    ///
+    /// Both `overflow` and `value_changed` are deliberately not gated by `enabled`:
+    /// `overflow` is a *diagnostic* about data that arrived from outside the control, and
+    /// suppressing it while disabled would hide exactly the condition a host most needs to
+    /// see. This control handles no input of its own.
     pub fn set_value(&mut self, value: f64) {
         let out_of_range = value < self.min_value || value > self.max_value;
         let clamped = ordered_clamp_f64(value, self.min_value, self.max_value);
