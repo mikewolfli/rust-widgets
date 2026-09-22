@@ -741,17 +741,28 @@ impl Cascader {
 
         let text = self.display_text();
         let display = if text.is_empty() { "Select…".to_string() } else { text };
+        // A placeholder is dimmer than a real value, so an empty field cannot be
+        // mistaken for a field whose value happens to be that word. It is the *resolved
+        // ink* dimmed toward the field, not a fixed grey: the literal `150,154,162` did not
+        // move with the appearance at all, so it measured 2.48:1 on the light field and sat
+        // at the wrong end of the ramp on the dark one.
         let color = if self.display_text().is_empty() {
-            // A placeholder is dimmer than a real value, so an empty field cannot be
-            // mistaken for a field whose value happens to be that word.
-            Color::rgb(150, 154, 162)
+            // A placeholder reads as a hint rather than a value: the resolved ink dimmed
+            // toward the field, but still above the 4.5:1 floor, since a hint the user cannot
+            // read is not a hint. (The literal it replaced was a fixed grey that did not move
+            // with the appearance at all, and measured 2.48:1 on the light field.)
+            text_color.blend(&background, 0.35).legible_on(background, 4.5)
         } else {
             text_color
         };
+        // The origin is the glyph box's top edge, so the label is centred from the measured
+        // line box rather than from the fixed `21` that only fitted one font size.
+        let font = Font::simple("Sans", 12.0);
+        let text_h = context.measure_text(&display, &font).height as i32;
         context.draw_text(
-            Point::new(rect.x + 8, rect.y + 21),
+            Point::new(rect.x + 8, rect.y + (rect.height as i32 - text_h) / 2),
             &display,
-            &Font::simple("Sans", 12.0),
+            &font,
             color,
             HorizontalAlignment::Left,
         );

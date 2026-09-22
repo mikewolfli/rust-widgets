@@ -1110,8 +1110,10 @@ impl Draw for LottieWidget {
         // chrome, but the white counter ink and the chip's own alpha are kept as they were,
         // because they are the badge's legibility contract over the composition.
         context.fill_rounded_rect(pill_rect, 3, border_color);
+        // Glyph origin is the box's top edge, so it is already `cy`; the old `+ ascent`
+        // pushed the counter half a line down, out through the pill's bottom edge.
         context.draw_text(
-            Point::new(cx, cy + c_metrics.ascent as i32),
+            Point::new(cx, cy),
             &counter_text,
             &font,
             Color::WHITE,
@@ -1122,9 +1124,10 @@ impl Draw for LottieWidget {
         // green versus amber *is* the state encoding — "playing" versus "paused" — and a
         // theme would recolour both to whatever roles they happened to match.
         let status = if self.playing { "▶" } else { "⏸" };
-        let status_metrics = context.measure_text(status, &font);
+        // Origin is the glyph box's top edge, so the ascent term is dropped: adding it
+        // dropped the play/pause chip half a line below its top-left corner.
         context.draw_text(
-            Point::new(rect.x + 4, rect.y + 2 + status_metrics.ascent as i32),
+            Point::new(rect.x + 4, rect.y + 2),
             status,
             &font,
             if self.playing {

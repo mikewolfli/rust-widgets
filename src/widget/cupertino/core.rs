@@ -362,8 +362,10 @@ impl Draw for MaterialSnackbar {
             let metrics = context.measure_text(&self.message, &font);
 
             let text_x = bar_rect.x + 16;
-            let text_y = bar_rect.y + (bar_height as i32 / 2) + (metrics.ascent as i32 / 2)
-                - (metrics.descent as i32 / 2);
+            // Centre on the bar. The origin is the glyph box's top edge, so the offset is half
+            // the *line box*; the old ascent/descent pair claimed to centre but sat half a
+            // line low.
+            let text_y = bar_rect.y + (bar_height as i32 - metrics.height as i32) / 2;
 
             context.draw_text(
                 crate::core::Point::new(text_x, text_y),
@@ -380,8 +382,9 @@ impl Draw for MaterialSnackbar {
             let metrics = context.measure_text(&self.action_text, &action_font);
 
             let action_x = bar_rect.x + bar_rect.width as i32 - metrics.width as i32 - 16;
-            let action_y = bar_rect.y + (bar_height as i32 / 2) + (metrics.ascent as i32 / 2)
-                - (metrics.descent as i32 / 2);
+            // Same top-edge origin as the message: centre on the line box, not on the
+            // ascent/descent midpoint, which sat the action half a line low.
+            let action_y = bar_rect.y + (bar_height as i32 - metrics.height as i32) / 2;
 
             context.draw_text(
                 crate::core::Point::new(action_x, action_y),

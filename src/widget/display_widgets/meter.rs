@@ -249,17 +249,24 @@ impl Meter {
     /// value arc's fill does, so it takes the accent token rather than the text colour.
     /// `text_color` resolves to black in both appearances, so an indicator drawn in it is
     /// identical in light and dark — which is the theme-blindness this control was reported
-    /// for. The blend darkens it enough to stay readable where it crosses the arc.
-    fn needle_color(accent: &Color) -> Color {
-        accent.blend(&Color::BLACK, 0.45)
+    /// for.
+    ///
+    /// `surface` is the meter's own backdrop. The needle is pushed away from **it** rather than
+    /// toward a fixed black: blending toward black is a light-theme assumption written as
+    /// arithmetic, and on a dark surface it darkened the needle into the background, which is
+    /// why the gauge's own pointer measured 3.34:1 while pointing at nothing distinct.
+    fn needle_color_on(accent: &Color, surface: &Color) -> Color {
+        accent.legible_on(*surface, 4.5)
     }
 
     /// The colour of the tick marks and their labels, derived from the accent.
     ///
-    /// A lighter blend than the needle's, so the ticks read as secondary marks against it
-    /// while still following the appearance.
-    fn tick_color(accent: &Color) -> Color {
-        accent.blend(&Color::BLACK, 0.35)
+    /// `surface` is the meter's own backdrop: the mark is pushed away from **it**, not toward
+    /// a fixed black. Blending toward black is a light-theme assumption baked into arithmetic —
+    /// on a dark surface it darkens the mark into the background, which measured 3.34:1 here,
+    /// so the scale's own numbers were the least legible thing on the gauge.
+    fn tick_color_on(accent: &Color, surface: &Color) -> Color {
+        accent.legible_on(*surface, 4.5)
     }
 
     /// The value a normalized position represents, for tick labels.
@@ -556,14 +563,24 @@ impl Draw for Meter {
             .map(|resolved| resolved.blend(&Color::WHITE, 0.55))
             .unwrap_or(Color::rgb(230, 230, 230));
         let value_arc_color = accent;
-        // The needle, pivot and ticks read the accent too, darkened for contrast against
-        // the arc they sit on. `text_color` is not usable here: the theme resolves it to
-        // black in both appearances, so an indicator drawn in it is identical in light and
-        // dark — which is precisely the theme-blindness this control was reported for. The
-        // accent is the token the `Accent` role already gives this control, and the blend
-        // keeps the indicator readable where it crosses the value arc.
-        let needle_color = Meter::needle_color(&accent);
-        let tick_color = Meter::tick_color(&accent);
+        // The needle, pivot and ticks all have to stand out from the backdrop the meter draws on,
+        // so one derivation serves all three. `text_color` is not usable here: the theme resolves
+        // it to black in both appearances, so an indicator drawn in it is identical in light and
+        // dark — which is precisely the theme-blindness this control was reported for. The accent
+        // is the token the `Accent` role already gives this control, and pushing it clear of the
+        // surface keeps the indicator readable without assuming which way "clear" lies.
+        //
+        // The meter paints no panel of its own — the arcs sit on the control's backdrop — so the
+        // surface to measure against is the window fill.
+        let meter_surface = {
+            let manager = crate::style::theme_manager();
+            manager
+                .current_theme()
+                .map(|active| active.colors.background)
+                .unwrap_or(Color::rgb(240, 240, 240))
+        };
+        let needle_color = Meter::needle_color_on(&accent, &meter_surface);
+        let tick_color = Meter::tick_color_on(&accent, &meter_surface);
 
         // Draw the background track arc (270° sweep, light gray).
         Self::draw_gauge_arc(
@@ -649,8 +666,11 @@ impl Draw for Meter {
                     let metrics = context.measure_text(&text, &label_font);
                     let lx = center.x + (label_radius * tick_rad.cos()) as i32;
                     let ly = center.y + (label_radius * tick_rad.sin()) as i32;
+                    // Centred on the point the tick sits at: the glyph origin is the box's
+                    // top edge, so that is `ly - height/2` — the old `ly + ascent/2` left the
+                    // label half a line below its own tick.
                     context.draw_text(
-                        Point::new(lx - metrics.width as i32 / 2, ly + metrics.ascent as i32 / 2),
+                        Point::new(lx - metrics.width as i32 / 2, ly - metrics.height as i32 / 2),
                         &text,
                         &label_font,
                         tick_color,
@@ -941,7 +961,11 @@ mod tests {
         let tick_rgb = {
             let accent = crate::style::semantic_color(crate::style::SemanticColor::Info)
                 .unwrap_or(Color::rgb(0, 120, 215));
-            let color = Meter::tick_color(&accent);
+            let surface = crate::style::theme_manager()
+                .current_theme()
+                .map(|active| active.colors.background)
+                .unwrap_or(Color::rgb(240, 240, 240));
+            let color = Meter::tick_color_on(&accent, &surface);
             (color.r, color.g, color.b)
         };
         let bare_ticks = count_near(&bare, tick_rgb);
@@ -1051,9 +1075,13 @@ mod tests {
             "a band behind the needle is covered by the value arc"
         );
         // The reading itself is painted, in the same themed gauge colour the needle uses.
-        let needle = Meter::needle_color(
+        let needle = Meter::needle_color_on(
             &crate::style::semantic_color(crate::style::SemanticColor::Info)
                 .unwrap_or(Color::rgb(0, 120, 215)),
+            &crate::style::theme_manager()
+                .current_theme()
+                .map(|active| active.colors.background)
+                .unwrap_or(Color::rgb(240, 240, 240)),
         );
         assert!(count_near(&rgba, (needle.r, needle.g, needle.b)) > 0);
     }

@@ -292,12 +292,14 @@ impl Draw for RefreshControl {
                     accent,
                 );
 
-                // Draw "Loading..." text below
+                // Draw "Loading..." text below. The origin is the glyph box's top edge, so the
+                // label hangs from `center_y + 14` itself; the old `+ ascent` pushed it half a
+                // line further down, out past the indicator area.
                 let font = Font::simple("sans-serif", 11.0);
                 let label = "Loading...";
                 let metrics = context.measure_text(label, &font);
                 let text_x = center_x - (metrics.width as i32) / 2;
-                let text_y = center_y + 14 + metrics.ascent as i32;
+                let text_y = center_y + 14;
                 context.draw_text(
                     Point::new(text_x, text_y),
                     label,
@@ -331,13 +333,14 @@ impl Draw for RefreshControl {
                     arrow_color,
                 );
 
-                // Progress text
+                // Progress text. Top edge origin again, so the descent from the arrow is the
+                // 14px offset alone rather than 14 plus a full ascent.
                 if progress >= 1.0 {
                     let font = Font::simple("sans-serif", 11.0);
                     let label = "Release to refresh";
                     let metrics = context.measure_text(label, &font);
                     let text_x = center_x - (metrics.width as i32) / 2;
-                    let text_y = center_y + 14 + metrics.ascent as i32;
+                    let text_y = center_y + 14;
                     context.draw_text(
                         Point::new(text_x, text_y),
                         label,

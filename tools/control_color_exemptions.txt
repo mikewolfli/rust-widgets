@@ -36,7 +36,6 @@
 bar_chart series-palette true A series colour identifies which bar group is which; the value it encodes is the data.
 pie_chart series-palette true A pie slice colour identifies the category, and the category is the data.
 radar_chart series-palette true A series colour identifies which axis polygon is which; it is data.
-chart series-palette true A series colour identifies which data series is which; the series identity is the data.
 
 # ── Removed on evidence (BLUE20 round 60) ─────────────────────────────────────
 # `mini_chart` and `meter` were listed here in round 59. Both were re-measured and
@@ -90,7 +89,6 @@ video_player video-surface true The video surface is the decoded frame, not chro
 camera_preview video-surface true The preview surface is the camera frame, not chrome; it is content.
 media_player video-surface true The player surface shows the media being played; that is content.
 font_preview glyph-samples true The glyph samples show the font's own appearance; that is the datum.
-emoji_picker emoji-glyphs true The emoji glyphs are the content being picked, not chrome.
 
 # ── Removed on evidence (BLUE20 round 62) ───────────────────────────────────────
 # `image_gallery` was listed here as `bitmap-content`. It was re-measured and its
@@ -100,6 +98,25 @@ emoji_picker emoji-glyphs true The emoji glyphs are the content being picked, no
 # are still content; only the *dominant* colour moved, which is the judgement this table
 # encodes. The stale entry was reported by `check_control_rendering.sh` itself, which
 # fails on an exemption whose control has started following the appearance.
+#
+# `chart` was listed here as `series-palette`, and `emoji_picker` as `emoji-glyphs`. In
+# both the *datum* really is data — a series colour identifies the series, an emoji glyph
+# is the thing being picked — but the census measures the **dominant** colour, and what
+# dominated these two renders was not the datum: it was an untouchable panel.
+#
+#   * `chart` painted `fill_rect(rect, rgb(255,255,255))` and a `rgb(200,200,200)`
+#     border, while `draw_truncated_label` *did* read the theme — so on the dark
+#     appearance the axis labels used the dark theme's ink on a hardcoded white slab
+#     (2.52:1). The panel now resolves through `ChartWidget::panel_colors`, so panel and
+#     labels share one derivation.
+#   * `emoji_picker` was a wholesale set of light-theme literals (`252,252,254` panel,
+#     `244,245,248` field, `238,240,244` strip, `40,44,52` ink). Its light and dark
+#     renders differed **only** in the window behind them, so a dark-appearance picker was
+#     a white card. The shell now resolves through `EmojiPicker::chrome_colors`, and only
+#     the caller's glyphs are content.
+#
+# Both entries were reported by the gate itself on the next run, which is the behaviour
+# this table wants: an exemption is only valid while the exempted thing dominates.
 
 # ── Sparkline: the line is the whole control ───────────────────────────────
 # A sparkline IS its line. It paints no background, no border and no axis: the only

@@ -376,20 +376,29 @@ const LABEL_GUTTER: i32 = 56;
 /// Height of the legend band, in pixels: the colour ramp **plus** the row of endpoint
 /// numbers below it.
 ///
-/// The band has to hold two stacked things. The ramp is `RAMP_HEIGHT` tall and is centred in
-/// the band, and the numbers take one 10 px line box underneath it. At the previous value of
-/// `18` the two did not both fit: the numbers' line box ended one pixel below the band's own
-/// bottom edge, which put the control's last row of text on the frame's final pixel and over
-/// it in the SVG output (`heatmap: [56,116..70,130]`). `8 + 2 + 10` is the arithmetic the
-/// contents actually need, so the reservation is derived from the parts rather than guessed.
+/// The band has to hold two stacked things. The ramp is `RAMP_HEIGHT` tall, then `RAMP_GAP`,
+/// then the endpoint numbers occupy their own line box. The line box is measured at draw
+/// time (`Heatmap::legend_label_band`), so this constant is the *reservation* the layout
+/// makes and `LEGEND_LABEL_HEIGHT` is the minimum line box it assumes for it.
+///
+/// The two used to be equated while the labels are drawn at 14 px, so the numbers' glyph box
+/// was 4 px taller than the room reserved for it and its top 3 px landed on the ramp. The
+/// drawing code now places the numbers from the ramp's bottom edge rather than from the
+/// band's, so the two can no longer overlap; this value stays the layout's own reservation.
 const LEGEND_HEIGHT: i32 = RAMP_HEIGHT + RAMP_GAP + LEGEND_LABEL_HEIGHT;
 
 /// Height of the legend's colour ramp, in pixels.
 const RAMP_HEIGHT: i32 = 8;
 /// Gap between the ramp and the endpoint numbers below it.
 const RAMP_GAP: i32 = 2;
-/// Height of the endpoint-number line box: the 10 pt label font's own line height.
-const LEGEND_LABEL_HEIGHT: i32 = 10;
+/// Fallback height of the endpoint-number line box.
+///
+/// The numbers are drawn in the control's own font, whose default line box is 14 px, so the
+/// reservation is 14 and not 10. Reserving 10 for a 14 px glyph box is what let the higher
+/// endpoint's top rows land on the ramp. The drawing code derives the row's position from
+/// the ramp's bottom edge, so this value only sizes the *reservation* the grid leaves for the
+/// legend, never the placement of the numbers themselves.
+const LEGEND_LABEL_HEIGHT: i32 = 14;
 
 /// Pads `row` to `columns` cells with empty cells.
 fn pad_row(mut row: Vec<HeatmapCell>, columns: usize) -> Vec<HeatmapCell> {
@@ -737,7 +746,12 @@ impl Heatmap {
         text_color: Color,
     ) {
         let strip_height = RAMP_HEIGHT;
-        let y = rect.y + rect.height as i32 - LEGEND_HEIGHT + RAMP_GAP / 2;
+        // The legend band is stacked from its own top edge in the order it is read: ramp,
+        // then gap, then the endpoint numbers. Every offset is derived from the band's top
+        // plus the sizes of the parts above it, so the stack cannot drift out of the band
+        // when a part's size changes.
+        let band_top = rect.y + rect.height as i32 - LEGEND_HEIGHT;
+        let y = band_top;
         let strip_x = grid.x;
         let strip_width = grid.width as i32;
         if strip_width <= 0 {
@@ -759,21 +773,17 @@ impl Heatmap {
         let Some((low, high)) = self.scale_range() else {
             return;
         };
-        // The two endpoint numbers go *inside* the legend band, on the row below the ramp.
+        // The two endpoint numbers take the row below the ramp.
         //
-        // The original origin was `strip_bottom + 1`, which is past `LEGEND_HEIGHT` by that
-        // pixel plus the whole text height, so the numbers were laid out underneath the
-        // reservation and ran off the bottom of the control — the raster backends clipped them
-        // and the SVG one showed them leaving the picture.
+        // Two shapes of this were wrong before. Anchoring at `strip_bottom + 1` laid the
+        // row *past* the reservation so it ran off the control. Anchoring at
+        // `band_bottom - label_height` tied it to the band's bottom, and since the labels are
+        // drawn at 14 px while the reservation assumed 10, the origin moved up into the ramp:
+        // the higher endpoint sat on the ramp colour beneath it and measured 1.15:1. Placing
+        // the row after the ramp's own bottom edge makes the two adjacent by construction,
+        // and `LEGEND_HEIGHT` reserves the line box the font actually has.
         let label_height = context.measure_text("0", font).height;
-        let band_top = rect.y + rect.height as i32 - LEGEND_HEIGHT;
-        // The numbers take the band's own last line box. Anchoring at `band_bottom -
-        // label_height` assumed a baseline convention — the renderer's origin is the glyph's
-        // **top** edge, so that origin put the glyph's last row on the control's final pixel
-        // row and the line box escaped below it. Subtracting the line box *again* places the
-        // glyph's bottom edge on the band's bottom edge.
-        let band_bottom = band_top + LEGEND_HEIGHT;
-        let label_top = (band_bottom - label_height as i32).max(band_top);
+        let label_top = y + strip_height + RAMP_GAP;
         let label_band_height = label_height.max(1);
         context.draw_text_fitted(
             Rect::new(strip_x, label_top, strip_width.max(1) as u32, label_band_height),

@@ -223,7 +223,10 @@ impl Draw for CupertinoNavigationBar {
             if !self.title.is_empty() {
                 let metrics = context.measure_text(&self.title, &title_font);
                 let title_x = rect.x + 16;
-                let title_y = rect.y + (rect.height as i32 / 2) + (metrics.ascent as i32 / 2);
+                // Centre the large title on the bar. The origin is the glyph box's top edge,
+                // so the offset is half the *line box*; the `ascent / 2` term began the glyph
+                // box half a line below the middle.
+                let title_y = rect.y + (rect.height as i32 - metrics.height as i32) / 2;
                 context.draw_text(
                     Point::new(title_x, title_y),
                     &self.title,
@@ -238,8 +241,10 @@ impl Draw for CupertinoNavigationBar {
             if !self.title.is_empty() {
                 let metrics = context.measure_text(&self.title, &title_font);
                 let title_x = rect.x + (rect.width as i32 - metrics.width as i32) / 2;
-                let title_y =
-                    rect.y + 22 + (metrics.ascent as i32 / 2) - (metrics.descent as i32 / 2);
+                // Top-aligned on the compact bar's 22 px row: the origin is the glyph box's
+                // top edge, so it is simply `rect.y + 22`; the ascent/descent pair claimed to
+                // centre but sat the title half a line down.
+                let title_y = rect.y + 22;
                 context.draw_text(
                     Point::new(title_x, title_y),
                     &self.title,
@@ -261,7 +266,9 @@ impl Draw for CupertinoNavigationBar {
 
             let arrow_metrics = context.measure_text(arrow_symbol, &arrow_font);
             let arrow_x = rect.x + 8;
-            let arrow_y = rect.y + 22 + (arrow_metrics.ascent as i32 / 2);
+            // Top-aligned on the same 22 px compact row as the title; the glyph origin is the
+            // top edge, so the removed `ascent / 2` had pushed the arrow half a line down.
+            let arrow_y = rect.y + 22;
 
             // Draw arrow
             context.draw_text(
@@ -274,9 +281,10 @@ impl Draw for CupertinoNavigationBar {
 
             // Draw text label next to arrow
             if !self.back_button_text.is_empty() {
-                let label_metrics = context.measure_text(&self.back_button_text, &label_font);
                 let label_x = arrow_x + arrow_metrics.width as i32 + 4;
-                let label_y = rect.y + 22 + (label_metrics.ascent as i32 / 2);
+                // Reads as a small title and shares the compact row's top edge with the title
+                // and the arrow; no ascent term, which had pushed it half a line down.
+                let label_y = rect.y + 22;
                 context.draw_text(
                     Point::new(label_x, label_y),
                     &self.back_button_text,

@@ -512,41 +512,81 @@ impl Draw for EmojiPicker {
         if rect.width == 0 || rect.height == 0 {
             return;
         }
-        context.fill_rect(rect, Color::rgb(252, 252, 254));
-        context.draw_rect(rect, Color::rgb(210, 212, 218));
-        self.draw_search(context);
-        self.draw_tabs(context);
+        // The picker's shell is chrome — panel, search field, tab strip, and their inks — and
+        // resolves through the theme like every other control's. It used to be a set of
+        // hardcoded light-theme literals, so the light and dark renders were byte-identical
+        // apart from the window behind them: a dark-appearance picker was a white card. Only
+        // the glyph cells are content (the caller's symbols), and those are drawn in the
+        // resolved ink rather than a fixed colour.
+        let (panel, ink, border, field, strip) = self.chrome_colors();
+        context.fill_rect(rect, panel);
+        context.draw_rect(rect, border);
+        self.draw_search(context, field, ink);
+        self.draw_tabs(context, strip, ink, panel);
         let visible: Vec<EmojiGlyph> = self.visible_glyphs().into_iter().cloned().collect();
-        self.draw_grid(context, &visible);
+        self.draw_grid(context, &visible, ink);
     }
 }
 
 impl EmojiPicker {
+    /// The shell's colours, resolved once so the four painters cannot disagree.
+    ///
+    /// Caller's style first, then the theme's resolved style for `emoji_picker`, then a
+    /// literal. The derived steps (field, strip, borders, dim ink) come from the resolved
+    /// panel and ink rather than from literals of their own, which is what makes one
+    /// appearance swap reach every band.
+    fn chrome_colors(&self) -> (Color, Color, Color, Color, Color) {
+        let style = self.base.style().clone();
+        let theme = crate::style::resolved_theme_style("emoji_picker");
+        let panel = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::rgb(252, 252, 254));
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or_else(|| panel.contrast_color());
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .unwrap_or_else(|| panel.blend(&ink, 0.18));
+        // The search field and the tab strip are bands *of* the panel, so each is one step
+        // toward the ink: a step toward the ink is always visible in either appearance,
+        // whereas a literal near-white is only visible on a light panel.
+        let field = panel.blend(&ink, 0.05);
+        let strip = panel.blend(&ink, 0.08);
+        (panel, ink, border, field, strip)
+    }
+
     /// Draws the search box.
-    fn draw_search(&self, context: &mut RenderContext) {
+    fn draw_search(&self, context: &mut RenderContext, field: Color, ink: Color) {
         let rect = self.search_rect();
-        context.fill_rect(rect, Color::rgb(244, 245, 248));
+        context.fill_rect(rect, field);
         context.draw_line_stroke(
             Point::new(rect.x, rect.y + rect.height as i32),
             Point::new(rect.x + rect.width as i32, rect.y + rect.height as i32),
-            Color::rgb(214, 216, 222),
+            ink.blend(&field, 0.7),
             1,
         );
-        // A magnifier glyph, drawn as geometry so it needs no font support.
+        // A magnifier glyph, drawn as geometry so it needs no font support. It is chrome, so
+        // it follows the resolved ink rather than a fixed grey.
+        let glyph_ink = ink.blend(&field, 0.45);
         let cx = rect.x + 14;
         let cy = rect.y + rect.height as i32 / 2;
-        context.draw_circle_stroke(Point::new(cx, cy - 1), 5, Color::rgb(150, 154, 162), 1);
+        context.draw_circle_stroke(Point::new(cx, cy - 1), 5, glyph_ink, 1);
         context.draw_line_stroke(
             Point::new(cx + 4, cy + 3),
             Point::new(cx + 8, cy + 7),
-            Color::rgb(150, 154, 162),
+            glyph_ink,
             1,
         );
 
         let (text, color) = if self.search.is_empty() {
-            ("Search".to_string(), Color::rgb(160, 164, 172))
+            // A placeholder is supposed to recede, so it is the resolved ink dimmed toward
+            // the field rather than a fixed grey chosen for one appearance.
+            ("Search".to_string(), ink.blend(&field, 0.45))
         } else {
-            (self.search.clone(), Color::rgb(40, 44, 52))
+            (self.search.clone(), ink)
         };
         // The origin is the glyph's **top** edge, so the label is centred by half the
         // difference between the field and the line box. The fixed `+ 20` was written for
@@ -564,10 +604,10 @@ impl EmojiPicker {
     }
 
     /// Draws the category tab strip.
-    fn draw_tabs(&self, context: &mut RenderContext) {
+    fn draw_tabs(&self, context: &mut RenderContext, strip_bg: Color, ink: Color, panel: Color) {
         let rect = self.geometry();
         let strip = Rect::new(rect.x, rect.y + SEARCH_HEIGHT as i32, rect.width, TAB_HEIGHT);
-        context.fill_rect(strip, Color::rgb(238, 240, 244));
+        context.fill_rect(strip, strip_bg);
         let tabs = self.tabs();
         for (index, tab) in tabs.iter().enumerate() {
             let tab_rect = Rect::new(
@@ -582,14 +622,19 @@ impl EmojiPicker {
             }
             let active = index == self.active_tab;
             if active {
-                context.fill_rect(tab_rect, Color::rgb(255, 255, 255));
+                // The active tab is a raised face of its own strip, so it takes the panel
+                // colour one step lighter than the strip in either appearance.
+                context.fill_rect(tab_rect, panel);
                 context.draw_line_stroke(
                     Point::new(tab_rect.x, tab_rect.y + TAB_HEIGHT as i32 - 2),
                     Point::new(
                         tab_rect.x + tab_rect.width as i32,
                         tab_rect.y + TAB_HEIGHT as i32 - 2,
                     ),
-                    Color::rgb(66, 133, 244),
+                    crate::style::theme_manager()
+                        .current_theme()
+                        .map(|active| active.colors.primary)
+                        .unwrap_or_else(|| ink.legible_on(panel, 3.0)),
                     2,
                 );
             }
@@ -597,7 +642,9 @@ impl EmojiPicker {
             // reserved identifier, which is not meant to be read.
             let label =
                 if tab == Self::RECENT_CATEGORY { "Recent".to_string() } else { tab.clone() };
-            let color = if active { Color::rgb(40, 44, 52) } else { Color::rgb(120, 124, 132) };
+            // The inactive tabs are secondary by design, so they are the ink dimmed toward
+            // the strip rather than a second literal.
+            let color = if active { ink } else { ink.blend(&strip_bg, 0.45) };
             context.draw_text(
                 Point::new(tab_rect.x + 8, tab_rect.y + 17),
                 &label,
@@ -609,14 +656,15 @@ impl EmojiPicker {
     }
 
     /// Draws the glyph grid.
-    fn draw_grid(&self, context: &mut RenderContext, visible: &[EmojiGlyph]) {
+    fn draw_grid(&self, context: &mut RenderContext, visible: &[EmojiGlyph], ink: Color) {
         if visible.is_empty() {
             let rect = self.geometry();
+            // The placeholder recedes by alpha, not by being a second literal grey.
             context.draw_text(
                 Point::new(rect.x + 10, rect.y + (SEARCH_HEIGHT + TAB_HEIGHT) as i32 + 20),
                 "No glyphs",
                 &Font::simple("Sans", 11.0),
-                Color::rgb(160, 164, 172),
+                ink.with_alpha(150),
                 HorizontalAlignment::Left,
             );
             return;
@@ -633,17 +681,26 @@ impl EmojiPicker {
             }
             let selected = self.cursor == Some(index);
             if selected {
-                context.fill_rounded_rect(cell, 4, Color::rgb(226, 236, 254));
+                // The cursor cell is a selection, so it reads the theme's primary token
+                // rather than a literal blue.
+                let accent = crate::style::theme_manager()
+                    .current_theme()
+                    .map(|active| active.colors.primary)
+                    .unwrap_or_else(|| ink.legible_on(Color::rgb(252, 252, 254), 3.0));
+                context.fill_rounded_rect(cell, 4, accent.with_alpha(48));
             }
             let metrics = context.measure_text(&glyph.symbol, &Font::simple("Sans", 16.0));
             context.draw_text(
                 Point::new(
                     cell.x + (cell.width as i32 - metrics.width as i32) / 2,
-                    cell.y + (cell.height as i32 + metrics.ascent as i32) / 2,
+                    // The origin is the glyph box's top edge, so centring is half the
+                    // difference of the line boxes; the old `(cell + ascent)/2` form began
+                    // the box a full ascent below the cell's middle.
+                    cell.y + (cell.height as i32 - metrics.height as i32) / 2,
                 ),
                 &glyph.symbol,
                 &Font::simple("Sans", 16.0),
-                Color::rgb(40, 44, 52),
+                ink,
                 HorizontalAlignment::Left,
             );
         }

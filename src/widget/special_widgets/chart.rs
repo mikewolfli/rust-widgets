@@ -383,7 +383,6 @@ fn expect_chart_type(value: CapabilityValue) -> Result<ChartType, CapabilityAcce
 impl Draw for ChartWidget {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.base.geometry();
-        use crate::core::Color;
         use crate::core::Font;
         // The plot panel is a surface, so it resolves like every other control's: the
         // caller's style first, then the theme's resolved style for this control, then a
@@ -393,7 +392,7 @@ impl Draw for ChartWidget {
         // dark theme's ink onto that white slab: `rgb(163,163,163)` on white, 2.52:1. The panel
         // and its chrome now come from one derivation, so they cannot disagree.
         let style = self.base.style().clone();
-        let (surface, ink) = Self::panel_colors();
+        let (surface, ink) = Self::panel_colors_with(Some(&style));
         let border = style
             .border_color
             .or_else(|| crate::style::resolved_theme_style("chart").and_then(|t| t.border_color))
@@ -533,7 +532,7 @@ fn draw_truncated_label(
     label: &str,
     right_bound: i32,
 ) {
-    use crate::core::{Color, Font};
+    use crate::core::Font;
     const BUDGET: usize = 6;
     if label.is_empty() {
         return;
@@ -572,15 +571,28 @@ impl ChartWidget {
     /// Factored out because the panel fill and the axis labels are painted in two different
     /// functions: when each derived its own colour they drifted, and on the dark appearance
     /// the labels used the theme's ink while the panel stayed hardcoded white.
-    pub(crate) fn panel_colors() -> (crate::core::Color, crate::core::Color) {
+    ///
+    /// `style` is the caller's override for this widget, when the caller is the paint path
+    /// that has one; the axis labels pass `None` and take the theme's own answer, because
+    /// they are reading a panel the caller already decided the colour of.
+    pub(crate) fn panel_colors_with(
+        style: Option<&crate::style::WidgetStyle>,
+    ) -> (crate::core::Color, crate::core::Color) {
         let theme = crate::style::resolved_theme_style("chart");
-        let surface = theme
-            .as_ref()
-            .and_then(|t| t.background_color)
+        let surface = style
+            .and_then(|s| s.background_color)
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
             .unwrap_or(crate::core::Color::rgb(255, 255, 255));
-        let ink =
-            theme.as_ref().and_then(|t| t.text_color).unwrap_or_else(|| surface.contrast_color());
+        let ink = style
+            .and_then(|s| s.text_color)
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or_else(|| surface.contrast_color());
         (surface, ink)
+    }
+
+    /// The plot panel's surface and ink when no caller override is in hand.
+    pub(crate) fn panel_colors() -> (crate::core::Color, crate::core::Color) {
+        Self::panel_colors_with(None)
     }
 
     /// The palette every renderer draws from.

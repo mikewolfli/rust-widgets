@@ -288,9 +288,21 @@ impl Draw for CupertinoDatePicker {
         // variants for the text and arrows, a low-alpha one for the band. The band is painted
         // with `fill_rounded_rect`, which alpha-blends, so a translucent accent really does
         // tint the wheel behind it here (unlike `fill_rect`, which overwrites).
-        let selected_text = accent.contrast_color().blend(&accent, 0.80);
+        //
+        // The selected row's ink is therefore chosen against the surface it is really painted
+        // on — the band composited over the wheel — and not against `accent`. Choosing it from
+        // the accent (and then blending 80% of the way back to the accent) made the label and
+        // its backdrop the same hue at the same lightness: `rgb(204,122,0)` on the light
+        // theme's `rgb(243,222,192)` band measured 2.52:1. `Color::blend` is the same alpha
+        // composite the renderer performs, so this predicts the painted colour exactly.
+        let band_alpha = 50.0 / 255.0;
+        let banded_surface = wheel.blend(&accent.with_alpha(255), band_alpha);
+        let selected_text = banded_surface.contrast_color();
         let band = Color::rgba(accent.r, accent.g, accent.b, 50);
-        let arrow = accent.blend(&ink, 0.35);
+        // The up/down arrows say "there are more values this way", so they are held legible on
+        // the wheel while keeping the accent's hue — the plain 35% blend measured 3.68:1 on the
+        // light wheel, so the only cue that the list continues was the faintest mark in it.
+        let arrow = accent.blend(&ink, 0.35).legible_on(wheel, 4.5);
         // The disabled treatment of each of the three, so the appearance agrees with the
         // control's refusal to accept a pick.
         let disabled_text = muted.blend(&wheel, 0.35);
@@ -368,7 +380,14 @@ impl Draw for CupertinoDatePicker {
                 } else if is_selected {
                     selected_text
                 } else {
-                    muted
+                    // The neighbouring rows are *read*: a wheel's whole purpose is to show the
+                    // values next to the selected one. They are secondary relative to the
+                    // selection, not faint to the point of unreadable — the theme's `muted`
+                    // token measured 2.07:1 on the light appearance's wheel, below even the 3:1
+                    // large-text floor, so the rows a user is scrolling towards were the ones
+                    // they could not read. Pushed clear while staying below the selection's
+                    // contrast, which is what makes the selection still read as selected.
+                    muted.legible_on(wheel, 4.5)
                 };
 
                 context.draw_text_fitted(

@@ -419,8 +419,10 @@ impl Draw for AnimatedImage {
             // chrome, but the white counter ink and the chip's own alpha are kept as they
             // were, because they are the badge's legibility contract over the frame.
             context.fill_rounded_rect(pill_rect, 3, border_color);
+            // Glyph origin is the box's top edge, so it is already `cy`; the old
+            // `+ ascent` pushed the counter half a line down, out through the pill.
             context.draw_text(
-                Point::new(cx, cy + metrics.ascent as i32),
+                Point::new(cx, cy),
                 &counter_text,
                 &font,
                 Color::WHITE,

@@ -553,7 +553,7 @@
   <rect x="167" y="75" width="7" height="1" fill="rgba(66,133,244,1.00)" />
   <rect x="170" y="76" width="3" height="1" fill="rgba(66,133,244,1.00)" />
   <text x="175" y="16" dominant-baseline="text-before-edge" font-family="sans-serif" font-size="10" font-style="normal" font-weight="400" fill="rgba(173,173,173,1.00)">…</text>
-  <text x="142" y="37" dominant-baseline="text-before-edge" font-family="sans-serif" font-size="9" font-style="normal" font-weight="400" fill="rgba(255,255,255,1.00)">3…</text>
+  <text x="142" y="37" dominant-baseline="text-before-edge" font-family="sans-serif" font-size="9" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">3…</text>
   <rect x="122" y="61" width="1" height="1" fill="rgba(219,68,55,1.00)" />
   <rect x="124" y="62" width="2" height="1" fill="rgba(219,68,55,1.00)" />
   <rect x="127" y="63" width="2" height="1" fill="rgba(219,68,55,1.00)" />
@@ -1587,8 +1587,8 @@
   <rect x="106" y="57" width="5" height="1" fill="rgba(219,68,55,1.00)" />
   <rect x="111" y="58" width="3" height="1" fill="rgba(219,68,55,1.00)" />
   <rect x="115" y="59" width="2" height="1" fill="rgba(219,68,55,1.00)" />
-  <text x="99" y="110" dominant-baseline="text-before-edge" font-family="sans-serif" font-size="10" font-style="normal" font-weight="400" fill="rgba(173,173,173,1.00)">…</text>
-  <text x="105" y="87" dominant-baseline="text-before-edge" font-family="sans-serif" font-size="9" font-style="normal" font-weight="400" fill="rgba(255,255,255,1.00)">5…</text>
+  <text x="99" y="110" dominant-baseline="text-before-edge" font-family="sans-serif" font-size="10" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">…</text>
+  <text x="105" y="87" dominant-baseline="text-before-edge" font-family="sans-serif" font-size="9" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">5…</text>
   <rect x="69" y="38" width="2" height="1" fill="rgba(244,180,0,1.00)" />
   <rect x="68" y="39" width="5" height="1" fill="rgba(244,180,0,1.00)" />
   <rect x="68" y="40" width="8" height="1" fill="rgba(244,180,0,1.00)" />
@@ -2075,6 +2075,6 @@
   <rect x="119" y="54" width="1" height="1" fill="rgba(244,180,0,1.00)" />
   <rect x="119" y="55" width="1" height="1" fill="rgba(244,180,0,1.00)" />
   <text x="81" y="0" dominant-baseline="text-before-edge" font-family="sans-serif" font-size="10" font-style="normal" font-weight="400" fill="rgba(173,173,173,1.00)">…</text>
-  <text x="96" y="29" dominant-baseline="text-before-edge" font-family="sans-serif" font-size="9" font-style="normal" font-weight="400" fill="rgba(255,255,255,1.00)">2…</text>
+  <text x="96" y="29" dominant-baseline="text-before-edge" font-family="sans-serif" font-size="9" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">2…</text>
   <circle cx="120" cy="60" r="56" fill="none" stroke="rgba(111,111,111,1.00)" stroke-width="1" />
 </svg>

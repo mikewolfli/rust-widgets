@@ -74,7 +74,7 @@
   <circle cx="174" cy="21" r="8" fill="rgba(60,251,60,1.00)" />
   <circle cx="174" cy="21" r="8" fill="none" stroke="rgba(240,240,240,1.00)" stroke-width="2" />
   <text x="4" y="12" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(60,60,251,1.00)">CP1: (0.25, 0.10)</text>
-  <text x="4" y="26" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(60,251,60,1.00)">CP2: (0.75, 0.90)</text>
+  <text x="4" y="26" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(30,126,30,1.00)">CP2: (0.75, 0.90)</text>
   <circle cx="12" cy="108" r="4" fill="rgba(96,96,96,1.00)" />
   <circle cx="228" cy="12" r="4" fill="rgba(96,96,96,1.00)" />
   <rect x="0" y="0" width="240" height="120" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />

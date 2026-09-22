@@ -20,6 +20,14 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
+/// The inactive viewfinder's fill.
+///
+/// The off-state viewport is the placeholder for a video surface, so it is a near-black that
+/// does not follow the appearance — that is the `video-surface` exemption's subject. It is a
+/// named constant because the "Camera Off" label is chrome drawn on it and must stay legible
+/// against it, so both must read the same value.
+const EMPTY_VIEWFINDER: Color = Color::rgba(50, 50, 60, 255);
+
 /// Camera preview widget — draws a simulated camera viewfinder area with controls.
 ///
 /// Renders a self-drawn camera viewfinder and optional control overlay buttons.
@@ -305,8 +313,9 @@ impl Draw for CameraPreview {
             let dot_rect = Rect::new(rect.x + 6, rect.y + 6, dot_size, dot_size);
             context.fill_rect(dot_rect, Color::rgba(0, 255, 0, 255));
         } else {
-            // Draw inactive camera view — dark gray with camera icon placeholder
-            context.fill_rect(rect, Color::rgba(50, 50, 60, 255));
+            // Draw inactive camera view — dark gray with camera icon placeholder. The colour is
+            // named because the label over it is derived from it, so the two cannot drift.
+            context.fill_rect(rect, EMPTY_VIEWFINDER);
 
             // Draw a simple camera icon placeholder (rounded rectangle shape)
             let icon_w = 48u32;
@@ -326,12 +335,17 @@ impl Draw for CameraPreview {
             let flash_rect = Rect::new(icon_x + icon_w as i32 - 10, icon_y + 4, 6, 6);
             context.fill_rounded_rect(flash_rect, 3, Color::rgba(200, 200, 200, 150));
 
-            // "Camera Off" label
+            // "Camera Off" label. The viewport's near-black is the *content* placeholder — that
+            // is what the `video-surface` exemption covers — but this label is chrome: it states
+            // the state rather than being the frame, so it is held legible against the surface it
+            // is painted on. The literal `rgba(150,150,160,200)` composited to `128,128,138` on
+            // that `50,50,60` and measured 3.24:1, under the 4.5:1 body-text floor.
+            let empty_surface = EMPTY_VIEWFINDER;
             context.draw_text(
                 Point::new(rect.x + w / 2 - 30, rect.y + h / 2 + 20),
                 "Camera Off",
                 &normal_font,
-                Color::rgba(150, 150, 160, 200),
+                empty_surface.contrast_color().with_alpha(200),
                 HorizontalAlignment::Left,
             );
 

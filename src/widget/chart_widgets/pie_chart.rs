@@ -361,10 +361,20 @@ impl PieChart {
 /// The labels are anchored outside the pie's ring, so on the downward slices the anchor
 /// lands below the control; clamping is what keeps the glyph box inside the rectangle the
 /// raster backends clip to.
-fn label_box(x: i32, y: i32, width: i32, height: i32, rect: Rect) -> Rect {
+/// Puts a label's box back inside `rect` when it does not fit, reporting whether it had to.
+///
+/// The flag matters to the *caller*: a label placed outside the pie sits on the chart's own
+/// panel and takes the panel's ink, but one that had to be pulled inside the control lands on
+/// a **slice**, where the panel ink is the wrong colour. Returning the flag lets the caller
+/// pick the ink for the surface the label actually ended up on, instead of assuming the
+/// placement it asked for.
+fn label_box(x: i32, y: i32, width: i32, height: i32, rect: Rect) -> (Rect, bool) {
     let max_x = (rect.x + rect.width as i32 - width).max(rect.x);
     let max_y = (rect.y + rect.height as i32 - height).max(rect.y);
-    Rect::new(x.clamp(rect.x, max_x), y.clamp(rect.y, max_y), width as u32, height as u32)
+    let clamped_x = x.clamp(rect.x, max_x);
+    let clamped_y = y.clamp(rect.y, max_y);
+    let moved = clamped_x != x || clamped_y != y;
+    (Rect::new(clamped_x, clamped_y, width as u32, height as u32), moved)
 }
 
 impl Widget for PieChart {
@@ -482,21 +492,25 @@ impl Draw for PieChart {
                     let metrics = context.measure_text(&slice.label, &label_font);
                     let label_x = label_pos.x - metrics.width as i32 / 2;
                     let label_y = label_pos.y - metrics.height as i32 / 2;
-                    let bounds = label_box(
+                    let (bounds, clamped) = label_box(
                         label_x,
                         label_y,
                         metrics.width as i32,
                         metrics.height as i32,
                         rect,
                     );
+                    // The anchor is deliberately outside the pie, so the panel's chrome ink is
+                    // the right colour — unless the control is too small for that and the box was
+                    // pulled back inside, which lands the label on a slice. There the ink has to
+                    // come from the slice, or the label is drawn panel-on-slice (measured 1.91:1
+                    // on the dark appearance and 2.57:1 on the light one).
+                    let ink =
+                        if clamped { slice_color.contrast_color() } else { slice_label_color };
                     context.draw_text_fitted(
                         bounds,
                         &slice.label,
                         &label_font,
-                        // The slice label is chart chrome, so it follows the surface it is
-                        // drawn on. `DARK_GRAY` was a light-chart literal: it rendered at
-                        // 1.8:1 against the dark appearance's surface — invisible.
-                        slice_label_color,
+                        ink,
                         HorizontalAlignment::Left,
                     );
                 }
@@ -515,18 +529,25 @@ impl Draw for PieChart {
                     let pct_metrics = context.measure_text(&pct_text, &pct_font);
                     let pct_x = pct_pos.x - pct_metrics.width as i32 / 2;
                     let pct_y = pct_pos.y - pct_metrics.height as i32 / 2;
-                    let bounds = label_box(
+                    let (bounds, _clamped) = label_box(
                         pct_x,
                         pct_y,
                         pct_metrics.width as i32,
                         pct_metrics.height as i32,
                         rect,
                     );
+                    // The percentage is drawn *inside* the sector, so its ink is chosen from
+                    // the slice's own fill rather than being a fixed white. A literal white is
+                    // only legible on the darker half of a palette: on the light appearance's
+                    // `rgb(244,180,0)` slice it measured 1.85:1, so the number that explains
+                    // the slice was the least readable thing on it. The slice colour is still
+                    // data and is untouched — only the ink over it is decided per slice, which
+                    // is how a chart keeps both the encoding and the label.
                     context.draw_text_fitted(
                         bounds,
                         &pct_text,
                         &pct_font,
-                        Color::WHITE,
+                        slice_color.contrast_color(),
                         HorizontalAlignment::Left,
                     );
                 }

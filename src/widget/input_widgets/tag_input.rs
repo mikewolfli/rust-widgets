@@ -457,7 +457,12 @@ impl Draw for TagInput {
             // theme's accent is light.
             let text_color = chip_bg.contrast_color();
             let text_x = current_x + TAG_PADDING;
-            let text_origin = Point::new(text_x, chip_y + TAG_HEIGHT / 2);
+            // The origin is the glyph box's top edge, so the row's centre is half the
+            // difference of the line boxes — `chip_y + TAG_HEIGHT/2` began the box half a
+            // line below the chip's middle.
+            let tag_metrics = context.measure_text(tag, &default_font);
+            let text_origin =
+                Point::new(text_x, chip_y + (TAG_HEIGHT - tag_metrics.height as i32) / 2);
             context.draw_text(
                 text_origin,
                 tag,
@@ -466,9 +471,11 @@ impl Draw for TagInput {
                 HorizontalAlignment::Left,
             );
 
-            // Close button circle
+            // Close button circle. It is the chip's *contrast* colour rather than white: on a
+            // light-accent theme a white circle on the chip is a low-contrast disc, and the
+            // "remove this" affordance has to read on whatever accent the theme supplies.
             let close_center = self.tag_close_center(current_x, chip_width, chip_y);
-            let close_bg = Color::rgba(255, 255, 255, 200);
+            let close_bg = text_color;
             context.fill_circle(close_center, TAG_CLOSE_RADIUS as u32, close_bg);
 
             // X mark (two diagonal lines)
@@ -493,21 +500,35 @@ impl Draw for TagInput {
         let input_width = (rect.width as i32 - input_x - TAG_PADDING).max(MIN_INPUT_WIDTH);
         let input_rect = Rect::new(input_x, chip_y, input_width as u32, TAG_HEIGHT as u32);
 
-        // Input background (slightly inset)
+        // Input background (slightly inset).
+        //
+        // The field is a band *of* the tag box, so it is one step from the resolved background
+        // rather than a white wash: the literal `rgba(255,255,255,180)` was a light-theme
+        // assumption written as a colour, and on the dark appearance it bleached the box's own
+        // panel. The same mistake on the inks made the placeholder — which is the only thing
+        // the field shows when it is empty — measure 1.25:1 against the field it sits on.
+        let base_ink = self
+            .style()
+            .text_color
+            .or_else(|| themed.as_ref().and_then(|resolved| resolved.text_color))
+            .unwrap_or_else(|| bg_color.contrast_color());
         let input_bg = if !is_enabled {
-            Color::rgba(240, 240, 240, 100)
+            bg_color.blend(&base_ink, 0.04)
         } else {
-            Color::rgba(255, 255, 255, 180)
+            bg_color.blend(&base_ink, 0.08)
         };
         context.fill_rounded_rect(input_rect, 4, input_bg);
 
-        // Input text
+        // Input text. The typed text is the field's ink; the placeholder is that same ink
+        // dimmed, and both are pushed clear of the field so neither can disappear into it.
+        let typed_color = base_ink.legible_on(input_bg, 4.5);
+        let hint_color = typed_color.blend(&input_bg, 0.35).legible_on(input_bg, 4.5);
         let input_text_color = if !is_enabled {
-            Color::rgba(160, 160, 160, 180)
+            typed_color.blend(&input_bg, 0.6)
         } else if !self.input_buffer.is_empty() {
-            Color::rgba(30, 30, 30, 230)
+            typed_color
         } else {
-            Color::rgba(160, 160, 160, 200)
+            hint_color
         };
         let display_text = if self.input_buffer.is_empty() && self.tags.is_empty() {
             self.placeholder.as_str()

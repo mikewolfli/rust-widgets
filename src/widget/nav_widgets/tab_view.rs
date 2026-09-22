@@ -255,9 +255,9 @@ impl Draw for TabView {
 
             let metrics = context.measure_text(&display_text, &font);
             let text_x = tab_x + (tab_width as i32 - metrics.width as i32) / 2;
-            let text_y = rect.y
-                + (tab_bar_height as i32 - metrics.height as i32) / 2
-                + metrics.ascent as i32;
+            // The origin is the glyph box's top edge, so centring in the 40px tab bar is half
+            // the *line box*; the old `+ ascent` dropped the title half a line too far.
+            let text_y = rect.y + (tab_bar_height as i32 - metrics.height as i32) / 2;
             context.draw_text(
                 Point::new(text_x.max(tab_x), text_y),
                 &display_text,

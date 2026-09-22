@@ -712,7 +712,9 @@ impl Draw for RiveWidget {
         let name_text = format!("Rive: {}", self.animation_name);
         let name_metrics = context.measure_text(&name_text, &font);
         let name_x = rect.x + 4;
-        let name_y = rect.y + 2 + name_metrics.ascent as i32;
+        // Origin is the glyph box's top edge, so it is the same `+ 2` the backdrop uses;
+        // the removed `+ ascent` had pushed the label half a line down inside its own pill.
+        let name_y = rect.y + 2;
         let name_bg = Rect::new(
             name_x - 2,
             rect.y + 1,
@@ -732,7 +734,9 @@ impl Draw for RiveWidget {
         let progress_text = format!("{:.0}%", self.animation_progress * 100.0);
         let p_metrics = context.measure_text(&progress_text, &font);
         let px = rect.x + rect.width as i32 - p_metrics.width as i32 - 6;
-        let py = rect.y + 2 + p_metrics.ascent as i32;
+        // Same top-edge origin as the name label: no ascent term, or the percentage sits
+        // half a line low in its pill.
+        let py = rect.y + 2;
         let p_bg =
             Rect::new(px - 2, rect.y + 1, p_metrics.width as u32 + 8, p_metrics.height as u32 + 4);
         context.fill_rounded_rect(p_bg, 3, trough_color);
@@ -765,9 +769,11 @@ impl Draw for RiveWidget {
             let input_text = format!("Inputs: {}", self.state_machine_inputs.len());
             let input_metrics = context.measure_text(&input_text, &font);
             let input_x = rect.x + rect.width as i32 - input_metrics.width as i32 - 6;
+            // `input_y` is the intended *top* edge, not a baseline, so the ascent term is
+            // dropped; subtracting it had pulled the label half a line up off that edge.
             let input_y = rect.y + rect.height as i32 - 6;
             context.draw_text(
-                Point::new(input_x, input_y - input_metrics.ascent as i32),
+                Point::new(input_x, input_y),
                 &input_text,
                 &font,
                 Color::rgba(120, 80, 160, 180),

@@ -108,6 +108,30 @@ panes), `tool_box` filled its content area with the window fill (byte-identical 
 completeness conditions — `child_if`, `child_if_else`, `children_if`, `children_keyed` — because a
 `Node` could express a list but not a condition.
 
+The same round closed the judgement **`P5` could not make**. A text origin is the glyph box's top
+edge, so `+ metrics.ascent` in it is always a placement error — it starts the box half a line low when
+centring and a full ascent low when top-aligning. Round 61 fixed the eight instances whose glyph box
+escaped its *control*; the ones that stayed inside were invisible to every gate, and about forty
+survived across twenty-odd files (mis-centred labels in `app_bar`, `video_player`, `number_picker`,
+`search_bar`, `bottom_navigation_bar`, `modal_bottom_sheet`, `navigation_drawer`, `tab_view` and more).
+All fixed, and **`tools/check_text_origin_is_a_top_edge.sh`** now makes the class unrepresentable — it
+resolves each draw call's arguments back to their `let` definitions and fails on any `ascent` term. It
+was reverse-injected to prove it fails, and an early version that read only the call's own arguments
+stayed green against that injection: **a gate that cannot fail is not a gate.**
+
+Theme-blindness was measured rather than asserted. Three controls satisfied "light ≠ dark" only
+because *some* pixel moved while the panel that dominates the render did not — `chart` was a
+hardcoded white slab under dark-theme axis labels (**2.52:1**), and `emoji_picker` and `color_picker`
+were light-theme panels whose only difference between appearances was the window behind them. Each
+now resolves its chrome through the theme, and the gate itself reported all three now-stale data-colour
+exemptions for removal. One shared primitive, `Color::legible_on(surface, min_ratio)`, replaced the
+private "keep the hue, guarantee the ratio" helper in `terminal_view` and is now used at about fifteen
+more sites instead of blending a colour a fixed fraction toward another.
+
+The evidence tool went from **131** occurrences below 4.5:1 to **28**, the worst from **1.13:1** to
+**4.04:1** — nothing left is below the large-text floor, and every remainder is deliberate secondary
+text.
+
 **Verified in 2.5.2:** the fifth rendering judgement. The four above are all measured from a
 **raster**, and a raster is bounded by the surface it was rendered into — so a control that paints
 *outside its own rectangle* produces a normal-looking census, with the escaped pixels simply clipped

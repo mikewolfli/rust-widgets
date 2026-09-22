@@ -991,11 +991,13 @@ impl Carousel {
         }
 
         // ── Title text (centered) ───────────────────────────────
+        // The glyph origin is the box's top edge, so centring is half the difference of the
+        // line boxes; the old `h/2 - height/2 + ascent` began the box a full ascent below the
+        // page's middle.
         let font = crate::core::Font::with_weight("Arial", 18.0, 600, false);
         let metrics = context.measure_text(&title, &font);
         let text_x = page_rect.x + (page_rect.width as i32 - metrics.width as i32) / 2;
-        let text_y = page_rect.y + (page_rect.height as i32 / 2) - (metrics.height as i32 / 2)
-            + metrics.ascent as i32;
+        let text_y = page_rect.y + (page_rect.height as i32 - metrics.height as i32) / 2;
         let text_color = if !is_enabled { mark.blend(&panel, 0.35) } else { mark };
         context.draw_text(
             Point::new(text_x, text_y),
@@ -1059,15 +1061,13 @@ impl Carousel {
                 // A stacked counter on the side edge reads bottom-to-top, which is
                 // not worth the readability cost of a rotated glyph run; centred on
                 // the strip's axis is the readable choice for a narrow band.
-                (
-                    cross_center - metrics.width as i32 / 2,
-                    strip_center - metrics.height as i32 / 2 + metrics.ascent as i32,
-                )
+                //
+                // No ascent term on either arm: the origin is the box's top edge, so
+                // centring is half the line box — the old `+ ascent` sat the counter a
+                // full line below the strip's axis.
+                (cross_center - metrics.width as i32 / 2, strip_center - metrics.height as i32 / 2)
             } else {
-                (
-                    strip_center - metrics.width as i32 / 2,
-                    cross_center - metrics.height as i32 / 2 + metrics.ascent as i32,
-                )
+                (strip_center - metrics.width as i32 / 2, cross_center - metrics.height as i32 / 2)
             };
             context.draw_text(
                 Point::new(text_x, text_y),

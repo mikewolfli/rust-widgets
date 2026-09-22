@@ -309,8 +309,10 @@ impl Draw for ImageGallery {
             let name_metrics = context.measure_text(display_name, &font);
             let name_x =
                 preview_rect.x + (preview_rect.width as i32 - name_metrics.width as i32) / 2;
+            // The origin is the glyph box's *top* edge, so the label reads as centred on the
+            // band at one third of the preview rather than half a line below its middle.
             let name_y =
-                preview_rect.y + preview_rect.height as i32 / 3 + name_metrics.ascent as i32 / 2;
+                preview_rect.y + preview_rect.height as i32 / 3 - name_metrics.height as i32 / 2;
             context.draw_text(
                 Point::new(name_x, name_y),
                 display_name,
@@ -323,8 +325,10 @@ impl Draw for ImageGallery {
             let dim_text = format!("{}x{}", image.width, image.height);
             let dim_metrics = context.measure_text(&dim_text, &font);
             let dim_x = preview_rect.x + (preview_rect.width as i32 - dim_metrics.width as i32) / 2;
+            // Same as the filename above: half a *line box* about the band, not half an
+            // ascent below it.
             let dim_y =
-                preview_rect.y + preview_rect.height as i32 * 2 / 3 + dim_metrics.ascent as i32 / 2;
+                preview_rect.y + preview_rect.height as i32 * 2 / 3 - dim_metrics.height as i32 / 2;
             context.draw_text(
                 Point::new(dim_x, dim_y),
                 &dim_text,
@@ -338,10 +342,12 @@ impl Draw for ImageGallery {
             let index_metrics = context.measure_text(&index_text, &font);
             let index_x =
                 preview_rect.x + preview_rect.width as i32 - index_metrics.width as i32 - 8;
-            let index_y = preview_rect.y + 4 + index_metrics.ascent as i32;
             let pill_w = index_metrics.width as u32 + 8;
             let pill_h = index_metrics.height as u32 + 4;
             let pill_rect = Rect::new(index_x - 4, preview_rect.y + 2, pill_w, pill_h);
+            // Centre the glyph box on the pill: the origin is the box's top edge, so the old
+            // `+ ascent` drew the number half a line under the pill's middle.
+            let index_y = pill_rect.y + (pill_rect.height as i32 - index_metrics.height as i32) / 2;
             context.fill_rounded_rect(pill_rect, 3, Color::rgba(0, 0, 0, 70));
             context.draw_text(
                 Point::new(index_x, index_y),
@@ -356,9 +362,11 @@ impl Draw for ImageGallery {
                 let arrow_left = "◀";
                 let arrow_metrics = context.measure_text(arrow_left, &font);
                 let arrow_x = preview_rect.x + 8;
-                let arrow_y = preview_rect.y
-                    + preview_rect.height as i32 / 2
-                    + arrow_metrics.ascent as i32 / 2;
+                // The origin is the glyph box's top edge, so centring on the preview's middle
+                // means subtracting half the line box — the old `+ ascent/2` pushed the arrow
+                // half a line down.
+                let arrow_y =
+                    preview_rect.y + (preview_rect.height as i32 - arrow_metrics.height as i32) / 2;
                 context.draw_text(
                     Point::new(arrow_x, arrow_y),
                     arrow_left,
@@ -373,9 +381,9 @@ impl Draw for ImageGallery {
                 let arrow_metrics = context.measure_text(arrow_right, &font);
                 let arrow_x =
                     preview_rect.x + preview_rect.width as i32 - arrow_metrics.width as i32 - 8;
-                let arrow_y = preview_rect.y
-                    + preview_rect.height as i32 / 2
-                    + arrow_metrics.ascent as i32 / 2;
+                // Far arrow: same centring, origin at the glyph box's top edge.
+                let arrow_y =
+                    preview_rect.y + (preview_rect.height as i32 - arrow_metrics.height as i32) / 2;
                 context.draw_text(
                     Point::new(arrow_x, arrow_y),
                     arrow_right,
@@ -452,8 +460,10 @@ impl Draw for ImageGallery {
                     let label_metrics = context.measure_text(&label_text, &font);
                     let label_x =
                         thumb_x + (self.thumbnail_size as i32 - label_metrics.width as i32) / 2;
-                    let label_y =
-                        thumb_y + self.thumbnail_size as i32 + 2 + label_metrics.ascent as i32;
+                    // Top-aligned caption under the thumbnail, not a centred box: the origin
+                    // is already the glyph box's top edge, so the declared-baseline `+ ascent`
+                    // only dropped the caption on top of the row below it.
+                    let label_y = thumb_y + self.thumbnail_size as i32 + 2;
                     context.draw_text(
                         Point::new(label_x, label_y),
                         &label_text,
@@ -498,17 +508,15 @@ impl EventHandler for ImageGallery {
                             let arrow_metrics =
                                 context::private::measure_text_static(&font, arrow_left);
                             let arrow_x = preview_rect.x + 8;
+                            // Must match the draw site exactly: the centred arrow sits at
+                            // `middle - height/2`, and the old `+ ascent/2` target left this
+                            // hit box half a line under the glyphs.
                             let arrow_y = preview_rect.y
-                                + preview_height as i32 / 2
-                                + arrow_metrics.ascent as i32 / 2;
+                                + (preview_height as i32 - arrow_metrics.height as i32) / 2;
                             let arrow_w = arrow_metrics.width as i32 + 8;
                             let arrow_h = arrow_metrics.height as i32 + 8;
-                            let arrow_rect = Rect::new(
-                                arrow_x - 4,
-                                arrow_y - arrow_metrics.ascent as i32 - 4,
-                                arrow_w as u32,
-                                arrow_h as u32,
-                            );
+                            let arrow_rect =
+                                Rect::new(arrow_x - 4, arrow_y - 4, arrow_w as u32, arrow_h as u32);
                             if arrow_rect.contains_point(*pos) {
                                 self.previous_image();
                                 return;
@@ -522,17 +530,13 @@ impl EventHandler for ImageGallery {
                             let arrow_x = preview_rect.x + preview_rect.width as i32
                                 - arrow_metrics.width as i32
                                 - 8;
+                            // Far arrow: mirrors the draw site's centred origin.
                             let arrow_y = preview_rect.y
-                                + preview_height as i32 / 2
-                                + arrow_metrics.ascent as i32 / 2;
+                                + (preview_height as i32 - arrow_metrics.height as i32) / 2;
                             let arrow_w = arrow_metrics.width as i32 + 8;
                             let arrow_h = arrow_metrics.height as i32 + 8;
-                            let arrow_rect = Rect::new(
-                                arrow_x - 4,
-                                arrow_y - arrow_metrics.ascent as i32 - 4,
-                                arrow_w as u32,
-                                arrow_h as u32,
-                            );
+                            let arrow_rect =
+                                Rect::new(arrow_x - 4, arrow_y - 4, arrow_w as u32, arrow_h as u32);
                             if arrow_rect.contains_point(*pos) {
                                 self.next_image();
                                 return;

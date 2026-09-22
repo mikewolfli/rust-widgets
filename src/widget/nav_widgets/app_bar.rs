@@ -198,10 +198,12 @@ impl Draw for AppBar {
             let back_font = Font::new("sans-serif", action_font_size + 2.0, false, false);
             let back_text = "←";
             let metrics = context.measure_text(back_text, &back_font);
-            // Left margin: ~12px, back arrow centered vertically
+            // Left margin: ~12px, back arrow centered vertically. The glyph origin is the
+            // box's top edge, so centring is half the difference of the line boxes — the
+            // `bar/2 + ascent/2 - descent/2` form that used to be here began the glyph box
+            // roughly a third of a line below the bar's middle.
             let back_x = rect.x + 12;
-            let back_y = rect.y + (bar_height as i32 / 2) + (metrics.ascent as i32 / 2)
-                - (metrics.descent as i32 / 2);
+            let back_y = rect.y + (bar_height as i32 - metrics.height as i32) / 2;
             context.draw_text(
                 Point::new(back_x, back_y),
                 back_text,
@@ -229,8 +231,7 @@ impl Draw for AppBar {
                 // Center
                 rect.x + (rect.width as i32 / 2) - (title_width / 2)
             };
-            let title_y = rect.y + (bar_height as i32 / 2) + (metrics.ascent as i32 / 2)
-                - (metrics.descent as i32 / 2);
+            let title_y = rect.y + (bar_height as i32 - metrics.height as i32) / 2;
 
             context.draw_text(
                 Point::new(title_x, title_y),
@@ -248,8 +249,7 @@ impl Draw for AppBar {
 
             // Right margin: ~16px
             let action_x = rect.x + rect.width as i32 - metrics.width as i32 - 16;
-            let action_y = rect.y + (bar_height as i32 / 2) + (metrics.ascent as i32 / 2)
-                - (metrics.descent as i32 / 2);
+            let action_y = rect.y + (bar_height as i32 - metrics.height as i32) / 2;
 
             // The action is the bar's one accented affordance: when the app bar is
             // enabled it is tinted toward the resolved ink so it reads as an action

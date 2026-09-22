@@ -5,10 +5,11 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
-## 2.5.3 (2026-09-22) — Both Backends Now Agree About Where Text Is, and the Declarative Layer Gains Conditions
+## 2.5.3 (2026-09-22) — Both Backends Now Agree About Where Text Is, and an `ascent` in a Text Origin Is Now Impossible
 
 Backward compatible: no public signature was removed. The additions are new builder methods on
-`Node`, one new audit tool, and colour/geometry corrections inside existing controls.
+`Node`, one new `Color` method, one new gate and one new audit tool, plus colour and geometry
+corrections inside existing controls.
 
 ---
 
@@ -127,6 +128,118 @@ contrast ratio. It is deliberately **not** a gate — a disabled label and a wat
 to be faint — it is the fact generator that says which of 188 controls deserve a look. This round
 used it to go from **131** sub-4.5:1 occurrences to **113**, with every one of the worst cases fixed
 and the remainder classified as data colours or intentional secondary text.
+
+### 9. A text origin is a top edge, so an `ascent` term in it is always wrong
+
+The judgement that round 61's `P5` could not make. `draw_text`'s `origin` is the glyph box's top-left
+edge — the rasteriser blits downward from it and the SVG backend pairs it with
+`dominant-baseline="text-before-edge"` — which makes `+ metrics.ascent` a *placement error* in every
+context. It fails two ways: a centred label written `(box - height) / 2 + ascent` starts half a line
+low, and a top-aligned label written `top + ascent` starts a full ascent below the edge its layout
+chose.
+
+Round 61 fixed the eight instances whose glyph box escaped its **control**, because that is what `P5`
+measures. The instances that stayed inside their control were invisible to every gate, and roughly
+forty survived across twenty-odd files — mis-centred labels in `app_bar`, `video_player`,
+`number_picker`, `search_bar`, `bottom_navigation_bar`, `adaptive_scaffold`, `modal_bottom_sheet`,
+`navigation_drawer`, `segmented_button`, `tab_view`, `image_gallery`, `cupertino/nav_bar`,
+`cupertino/segmented_control`, `lottie_widget`, `rive_widget`, `animated_image`, `radar_chart`,
+`swipe_to_dismiss`, `refresh_control` and `avatar`, plus `+ ascii * 0.78`-style hand-tuned baselines in
+`code_editor` and `heatmap`.
+
+All fixed, and a new source-level gate makes the class unrepresentable going forward:
+
+* **`tools/check_text_origin_is_a_top_edge.sh`** (with `check_text_origin_is_a_top_edge.py`) scans every
+  `draw_text`/`draw_text_fitted` call, resolves the identifiers in its arguments back to their `let`
+  definitions, and fails if any of them mentions `ascent`. It is registered in `run_all_gates.sh`
+  automatically (the runner globs `tools/check_*.sh`). It was **reverse-injected** to prove it fails: an
+  early version inspected only the call's own arguments and stayed green against an injected defect,
+  because the origin is usually computed one line above; resolving the definitions is the fix for that
+  false green.
+
+### 10. One shared legibility primitive, used everywhere instead of three private copies
+
+`Color::legible_on(surface, min_ratio)` already existed — it keeps a colour's hue and pushes its
+lightness away from `surface` until the ratio is met, returning `contrast_color()` in the worst case.
+What this round changed is that it becomes the *rule* rather than one control's local helper: the
+private `nudge_apart` in `terminal_view` is now a named call site delegating to it, and about fifteen
+more sites across `markdown_editor`, `bezier_curve_editor`, `pie_chart`, `meter`, `cupertino/date_picker`,
+`shortcut_editor`, `file_dialog`, `query_builder`, `cascader`, `tag_input`, `chart` and `code_editor`
+now go through it instead of blending a colour a fixed fraction of the way toward something. The
+repeated need *is* the evidence the abstraction removes real duplication rather than being speculative
+(principle #51).
+
+### 11. Controls that were a light-theme rectangle on a dark theme
+
+Three controls satisfied the appearance-change judgement only because *some* pixel moved, while the
+panel that dominates the render did not:
+
+* **`chart`** painted `fill_rect(rect, rgb(255,255,255))` and a `rgb(200,200,200)` border while
+  `draw_truncated_label` *did* read the theme — so on the dark appearance the axis labels were the dark
+  theme's ink on a hardcoded white slab (**2.52:1**). Panel and labels now share one derivation
+  (`ChartWidget::panel_colors`).
+* **`emoji_picker`** was a wholesale set of light-theme literals (`252,252,254` panel, `244,245,248`
+  field, `238,240,244` strip, `40,44,52` ink); its light and dark renders differed **only** in the
+  window behind them. The shell now resolves through `EmojiPicker::chrome_colors`, and only the
+  caller's glyphs are content.
+* **`color_picker`** was the same, over its spectrum. The panel, its rails and the hex readout are now
+  theme-derived; the spectrum itself is untouched, because it is the value being picked.
+
+All three then had their now-stale data-colour exemptions **reported by the gate itself** and removed —
+which is the behaviour that table wants: an exemption is only valid while the exempted thing dominates.
+
+### 12. Selection bands, dimmed ink and fixed-direction blends
+
+A cluster of controls derived the ink for a selected row from the *token the band was built from*
+rather than from the band the glyph is painted on, and blended "secondary" ink toward a fixed colour:
+
+| Control | Defect | Result |
+|---|---|---|
+| `pagination` | current-page label used the bar's own background to "invert" | 2.35:1 → `selected.contrast_color()` |
+| `roller` | selection label blended 92 % back toward a *light* surface | 2.14:1 → `selected.contrast_color()` |
+| `number_picker` | centre value used the picker's surface ink on the band; neighbours blended 45 % toward a fixed target | 2.94:1 / 3.73:1 → `contrast_color()` / bounded dim |
+| `mobile_date_picker` | selected number was the accent *token* on an accent-derived band | 1.88:1 → `highlight.contrast_color()` |
+| `cupertino_date_picker` | selected text derived from `accent` while the band is the accent over the *wheel*; wheel rows used the raw `muted` token | 2.52:1 / 2.07:1 → band composite `contrast_color()` / `legible_on` |
+| `tooltip` | label chosen against the *undimmed* bubble, then drawn on the dimmed one | 2.78:1 → derived after dimming |
+| `meter` | needle and ticks blended toward a literal black | 3.34:1 on dark → pushed away from the surface |
+| `pie_chart` | percentages in a fixed white on the slice; slice labels kept panel ink when the box was clamped onto the slice | 1.85:1 → per-slice `contrast_color()` |
+| `code_editor` | `Plain`/`Identifier`/`Operator` spans took the palette's light preset instead of the resolved ink; status bar `dim_ink` derived against the surface but painted on the chrome band | 1.38:1 / 2.99:1 → resolved ink / legible on the band |
+| `tag_input` | input field, caret and close button were fixed light-theme literals | 1.25:1 → theme-derived |
+| `cascader`, `shortcut_editor`, `file_dialog`, `query_builder`, `image_gallery` placeholders | fixed-fraction "secondary" blends | 2.48–3.90:1 → bounded by the text floor |
+
+### 13. Layout arithmetic that only fitted one font size
+
+Three controls reserved a fixed pixel height for a line box and then drew a larger font into it, which
+is how a number ends up on top of the ramp it belongs under:
+
+* **`heatmap`** reserved 10 px for the legend's endpoint numbers while drawing them at 14 px, so the
+  higher endpoint's top rows landed on the ramp colour (**1.15:1**). The reservation is now the line box
+  the font actually has, and the labels are positioned from the ramp's bottom edge rather than from the
+  band's, so the two are adjacent by construction.
+* **`color_picker`** reserved 44 px for a bottom stack that needed the readout's own 14 px line, so the
+  hex readout was drawn over the spectrum's bottom edge. The stack is now derived from its parts.
+* **`tag_input`**'s chip label used the chip's midpoint as its origin, and **`tooltip`**'s label added a
+  full `ascent` below a top-aligned position — both are the origin-model error of §9 in a place the
+  gate's `draw_text` scan does not reach (a raw arithmetic expression rather than a named local).
+
+### 14. The text-contrast audit, measured
+
+`tools/audit_text_contrast.py` over the committed snapshots, before and after this round:
+
+| | occurrences below 4.5:1 | worst case |
+|---|---|---|
+| at the start of the round | **131** | 1.13:1 |
+| after §1–§8 (round 62's first half) | 110 | 1.15:1 |
+| after this half of the round | **28** | 4.04:1 |
+
+Every remaining occurrence is between 4.04:1 and 4.5:1 and is deliberate secondary text (status bars,
+empty-state hints, non-selected wheel rows, star glyphs). No occurrence is below 4.0:1, so nothing is
+below the large-text floor and nothing is unreadable.
+
+The tool itself gained one correction: its containment test is now **half-open** on the bottom and
+right edges. A fill and the label below it routinely share a boundary pixel, and the closed test
+attributed the label to the fill *above* it — which reported a correctly placed readout as 2.65:1
+against a colour it no longer touches.
 
 ## 2.5.2 (2026-09-21) — The Fifth Rendering Judgement: Every Control Now Has to Paint Inside Itself
 

@@ -401,14 +401,19 @@ impl Draw for BezierCurveEditor {
             Point::new(rect.x + 4, rect.y + 12),
             &cp1_label,
             &font,
-            cp1_color,
+            // The labels name which control point is which, so the hue is information and stays
+            // — but it has to be *readable* on the surface, which the handle's own colour is not:
+            // the handle is a disc with a contrasting outline, so its fill only has to be visible
+            // as a shape, whereas `rgb(5,5,196)` as text on the dark surface measured 1.63:1 and
+            // the green measured 1.22:1 on the light one. Same hue, guaranteed ratio.
+            cp1_color.legible_on(surface, 4.5),
             HorizontalAlignment::Left,
         );
         context.draw_text(
             Point::new(rect.x + 4, rect.y + 26),
             &cp2_label,
             &font,
-            cp2_color,
+            cp2_color.legible_on(surface, 4.5),
             HorizontalAlignment::Left,
         );
 

@@ -127,24 +127,45 @@ impl ColorPicker {
         self.presets.len()
     }
 
+    /// Height of the bottom chrome stack below the palette: the hex readout's line box, the
+    /// preset swatch row, and the margins around them.
+    ///
+    /// Derived from the parts rather than being one literal, because `44` was too small for
+    /// them: it did not account for the readout's own 14 px line, so the palette extended to
+    /// within 6 px of the swatch row and the readout was drawn straight over the palette's
+    /// bottom edge (the census measured `#FF0000FF` in `225,225,225` on the palette's
+    /// `255,64,64`, 2.65:1). The palette is a spectrum, so text over any of it is wrong
+    /// regardless of the ratio.
+    const BOTTOM_STACK: u32 = READOUT_LINE + PRESET_ROW + MARGIN * 3;
+
     fn palette_rect(&self) -> Rect {
         let rect = self.geometry();
         Rect::new(
             rect.x + 8,
             rect.y + 8,
             rect.width.saturating_sub(48),
-            rect.height.saturating_sub(44),
+            rect.height.saturating_sub(Self::BOTTOM_STACK + 8),
         )
     }
 
     fn hue_rect(&self) -> Rect {
         let rect = self.geometry();
-        Rect::new(rect.x + rect.width as i32 - 34, rect.y + 8, 12, rect.height.saturating_sub(44))
+        Rect::new(
+            rect.x + rect.width as i32 - 34,
+            rect.y + 8,
+            12,
+            rect.height.saturating_sub(Self::BOTTOM_STACK + 8),
+        )
     }
 
     fn alpha_rect(&self) -> Rect {
         let rect = self.geometry();
-        Rect::new(rect.x + rect.width as i32 - 18, rect.y + 8, 10, rect.height.saturating_sub(44))
+        Rect::new(
+            rect.x + rect.width as i32 - 18,
+            rect.y + 8,
+            10,
+            rect.height.saturating_sub(Self::BOTTOM_STACK + 8),
+        )
     }
 
     fn preset_rect(&self, index: usize) -> Option<Rect> {
@@ -153,7 +174,7 @@ impl ColorPicker {
         }
         let rect = self.geometry();
         let x = rect.x + 8 + (index as i32) * 22;
-        let y = rect.y + rect.height as i32 - 28;
+        let y = rect.y + rect.height as i32 - (PRESET_ROW + MARGIN) as i32;
         Some(Rect::new(x, y, 18, 18))
     }
 
@@ -337,69 +358,101 @@ impl EventHandler for ColorPicker {
 impl Draw for ColorPicker {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::rgb(247, 249, 252));
-        context.draw_rect(rect, Color::rgb(186, 195, 208));
+        // The picker's frame and its guide rails are chrome and resolve through the theme; the
+        // **spectrum** inside them is the value being picked and stays the caller's data (that is
+        // what the `hue-wheel` exemption is about). Every literal below used to be a light-theme
+        // grey, so the panel did not move with the appearance at all and a dark-theme picker was
+        // a white card.
+        let style = self.style().clone();
+        let theme = crate::style::resolved_theme_style("color_picker");
+        let panel = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::rgb(247, 249, 252));
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or_else(|| panel.contrast_color());
+        // The rails frame a spectrum whose own brightness varies along its length, so they are
+        // held at a fixed ± step from the panel rather than derived from the spectrum.
+        let frame = panel.blend(&ink, 0.22);
+        let rail = panel.blend(&ink, 0.10);
+
+        context.fill_rect(rect, panel);
+        context.draw_rect(rect, frame);
 
         let palette = self.palette_rect();
         let base_hue = hsv_to_color(self.hue, 255, 255, 255);
         context.fill_rect(palette, base_hue.blend(&Color::WHITE, 0.25));
-        context.draw_rect(palette, Color::rgb(142, 153, 170));
+        context.draw_rect(palette, panel.blend(&ink, 0.40));
 
         let hue_rect = self.hue_rect();
-        context.fill_rect(hue_rect, Color::rgb(210, 214, 223));
-        context.draw_rect(hue_rect, Color::rgb(138, 147, 161));
+        context.fill_rect(hue_rect, rail);
+        context.draw_rect(hue_rect, panel.blend(&ink, 0.35));
 
         if self.show_alpha {
             let alpha_rect = self.alpha_rect();
-            context.fill_rect(alpha_rect, Color::rgb(226, 229, 236));
-            context.draw_rect(alpha_rect, Color::rgb(150, 159, 172));
+            context.fill_rect(alpha_rect, rail);
+            context.draw_rect(alpha_rect, panel.blend(&ink, 0.30));
         }
 
         for (index, color) in self.presets.iter().enumerate() {
             let Some(preset_rect) = self.preset_rect(index) else {
                 continue;
             };
+            // The preset swatch IS a colour value, so it is passed through; only its outline is
+            // chrome, and it is chosen against the swatch so a dark preset still has an edge.
             context.fill_rect(preset_rect, *color);
-            context.draw_rect(preset_rect, Color::rgb(107, 116, 131));
+            context.draw_rect(preset_rect, color.contrast_color().with_alpha(90));
         }
 
-        context.fill_rect(
-            Rect::new(rect.x + rect.width as i32 - 70, rect.y + rect.height as i32 - 28, 56, 18),
-            self.color,
+        // The current-value swatch: its outline is its own contrast colour rather than a fixed
+        // dark grey, which only outlined light swatches.
+        let swatch_rect = Rect::new(
+            rect.x + rect.width as i32 - 70,
+            rect.y + rect.height as i32 - (PRESET_ROW + MARGIN) as i32,
+            56,
+            PRESET_ROW,
         );
-        context.draw_rect(
-            Rect::new(rect.x + rect.width as i32 - 70, rect.y + rect.height as i32 - 28, 56, 18),
-            Color::rgb(40, 48, 63),
-        );
+        context.fill_rect(swatch_rect, self.color);
+        context.draw_rect(swatch_rect, self.color.contrast_color().with_alpha(120));
 
-        // The hex readout is fitted to the room the swatch row leaves above it.
-        //
-        // Its origin used to be `rect_bottom - 12`, which is *inside* the glyph box: the
-        // renderer paints downward a full line height from the origin, so a 14 px font
-        // starting 12 px above the bottom edge finished 2 px past it. The row's top and
-        // bottom are now derived from the same swatch position and the font's own measured
-        // height, so the text sits wholly inside the control at any geometry — and in a
-        // very short one the fit step truncates it rather than letting it leave the box.
+        // The hex readout takes the row immediately below the palette, which the palette's own
+        // rectangle now leaves for it.
         let hex_font = Font::default();
         let hex_text = self.hex_rgba();
         let hex_height = context.measure_text(&hex_text, &hex_font).height as i32;
-        let swatch_top = rect.y + rect.height as i32 - 28;
-        let hex_top = (swatch_top - hex_height).max(rect.y);
+        let palette = self.palette_rect();
         let hex_band = Rect::new(
             rect.x + 8,
-            hex_top,
+            palette.y + palette.height as i32,
             rect.width.saturating_sub(16),
-            (rect.y + rect.height as i32 - hex_top).max(1) as u32,
+            hex_height.max(1) as u32,
         );
         context.draw_text_fitted(
             hex_band,
             &hex_text,
             &hex_font,
-            Color::rgb(53, 66, 84),
+            // The readout is chrome sitting on the panel, so it is the resolved ink rather than
+            // a literal that was tuned for one appearance.
+            ink.legible_on(panel, 4.5),
             HorizontalAlignment::Left,
         );
     }
 }
+
+/// Height of the bottom chrome stack below the palette: the hex readout's line box, the
+/// preset swatch row, and the margins around them.
+///
+/// Derived from the parts rather than being one literal, because `44` was too small for
+/// them: it did not account for the readout's own 14 px line, so the palette extended to
+/// within 6 px of the swatch row and the readout was drawn straight over the palette's
+/// bottom edge (the census measured `#FF0000FF` in `225,225,225` on the palette's
+/// `255,64,64`, 2.65:1). The palette is a spectrum, so text over any of it is wrong
+/// regardless of the ratio.
+const READOUT_LINE: u32 = 14;
+const PRESET_ROW: u32 = 18;
+const MARGIN: u32 = 4;
 
 fn hsv_to_color(h: u8, s: u8, v: u8, a: u8) -> Color {
     let hf = (h as f32 / 255.0) * 360.0;

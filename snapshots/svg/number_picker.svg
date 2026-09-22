@@ -4,7 +4,7 @@
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
   <rect x="0" y="46" width="240" height="28" fill="rgba(130,130,130,1.00)" />
-  <text x="115" y="25" dominant-baseline="text-before-edge" font-family="Sans" font-size="15.400001" font-style="normal" font-weight="400" fill="rgba(111,111,111,1.00)">1</text>
-  <text x="115" y="53" dominant-baseline="text-before-edge" font-family="Sans" font-size="15.400001" font-style="normal" font-weight="400" fill="rgba(225,225,225,1.00)">0</text>
+  <text x="115" y="25" dominant-baseline="text-before-edge" font-family="Sans" font-size="15.400001" font-style="normal" font-weight="400" fill="rgba(225,225,225,0.75)">1</text>
+  <text x="115" y="53" dominant-baseline="text-before-edge" font-family="Sans" font-size="15.400001" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">0</text>
   <rect x="0" y="0" width="240" height="120" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
 </svg>

@@ -283,7 +283,9 @@ impl Draw for NavigationDrawer {
         let header_text = "Navigation";
         let metrics = context.measure_text(header_text, &font);
         let header_text_x = rect.x + 16;
-        let header_text_y = rect.y + (header_height as i32 / 2) + (metrics.ascent as i32 / 2);
+        // The origin is the glyph box's top edge, so centring on the header is half the line
+        // box; the old `+ ascent/2` sat the title half a line below the header's middle.
+        let header_text_y = rect.y + (header_height as i32 - metrics.height as i32) / 2;
         context.draw_text(
             Point::new(header_text_x, header_text_y),
             header_text,
@@ -312,9 +314,10 @@ impl Draw for NavigationDrawer {
                 context.fill_rect(item_rect, panel);
             }
 
-            // Vertical center position for text
-            let text_center_y =
-                y_offset + (item_height as i32 / 2) + (item_metrics.ascent as i32 / 2);
+            // Vertical center position for text: the origin is the glyph box's top edge, so
+            // the centre of the 48px row is `y_offset + (row - line box)/2`. The old
+            // `row/2 + ascent/2` sat the icon and label half a line below the row's middle.
+            let text_center_y = y_offset + (item_height as i32 - item_metrics.height as i32) / 2;
 
             // Draw icon
             let icon_x = rect.x + 16;

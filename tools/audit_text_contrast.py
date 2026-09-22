@@ -106,7 +106,12 @@ def element_contains(tag: str, x: float, y: float) -> bool:
         return False
     left, top = float(rx.group(1)), float(ry.group(1))
     width, height = float(rw.group(1)), float(rh.group(1))
-    return left <= x <= left + width and top <= y <= top + height
+    # Half-open on the bottom and right edges. A fill and the element below it routinely share
+    # a boundary pixel (a palette ending at y=76, a label starting at y=76), and a closed test
+    # attributes the label to the fill *above* it — which reported a correctly placed readout
+    # as 2.65:1 against a colour it no longer touches. The element that starts at `y` is the
+    # one whose surface the glyph sits on.
+    return left <= x < left + width and top <= y < top + height
 
 
 def audit(path: pathlib.Path) -> list[tuple[float, str, tuple[int, int, int], tuple[int, int, int]]]:

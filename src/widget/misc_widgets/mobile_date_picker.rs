@@ -213,10 +213,16 @@ impl Draw for MobileDatePicker {
             .or_else(|| theme.as_ref().and_then(|t| t.border_color))
             .unwrap_or_else(|| drum.blend(&secondary, 0.40));
         let highlight = primary.blend(&drum, 0.72);
-        // The numbers: the selected row carries the theme's primary ink, the other rows are
-        // de-emphasised steps of the separator colour, and a disabled picker recedes from the drum
-        // — none of them a fixed grey a dark theme would swallow.
-        let selected_ink = if is_enabled { primary } else { drum.blend(&disabled, 0.55) };
+        // The numbers: the selected row sits **on the highlight bar**, so its ink has to be
+        // chosen against that bar rather than being the token the bar was built from. Deriving
+        // both from `primary` made the pair nearly the same colour — on the light theme the
+        // selected `rgb(33,150,243)` on the bar's `rgb(172,205,231)` measured 1.88:1, so the
+        // selected value was the least readable row in a picker whose whole job is to show
+        // which value is selected. The other rows are de-emphasised steps of the separator
+        // colour, and a disabled picker recedes from the drum — none of them a fixed grey a
+        // dark theme would swallow.
+        let selected_ink =
+            if is_enabled { highlight.contrast_color() } else { drum.blend(&disabled, 0.55) };
         let row_ink = if is_enabled { ink.blend(&drum, 0.45) } else { drum.blend(&disabled, 0.50) };
         let arrow_color = if is_enabled { ink.blend(&drum, 0.20) } else { row_ink };
 

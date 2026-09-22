@@ -5,7 +5,7 @@
   <rect x="0" y="0" width="240" height="120" fill="rgba(240,240,240,1.00)" />
   <text x="25" y="36" dominant-baseline="text-before-edge" font-family="Sans" font-size="48" font-style="normal" font-weight="400" fill="rgba(96,96,96,1.00)">‹</text>
   <rect x="80" y="0" width="80" height="120" fill="rgba(158,158,158,1.00)" />
-  <text x="105" y="36" dominant-baseline="text-before-edge" font-family="Sans" font-size="48" font-style="normal" font-weight="400" fill="rgba(240,240,240,1.00)">1</text>
+  <text x="105" y="36" dominant-baseline="text-before-edge" font-family="Sans" font-size="48" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">1</text>
   <text x="185" y="36" dominant-baseline="text-before-edge" font-family="Sans" font-size="48" font-style="normal" font-weight="400" fill="rgba(96,96,96,1.00)">›</text>
   <rect x="0" y="0" width="240" height="120" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
 </svg>

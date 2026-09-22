@@ -433,11 +433,14 @@ impl Draw for ShortcutEditor {
             .or_else(|| theme.as_ref().and_then(|t| t.border_color))
             .unwrap_or_else(|| panel.blend(&secondary, 0.40));
         // The placeholder grey, the muted key colour and the category header are all de-emphasised
-        // steps of the control's own ink, so each is legible on either appearance rather than being
-        // a fixed grey a dark theme would swallow.
-        let placeholder = ink.blend(&panel, 0.45);
-        let muted_ink = ink.blend(&panel, 0.30);
-        let header_ink = ink.blend(&panel, 0.15);
+        // steps of the control's own ink. "De-emphasised" is a *relation* to the panel, not a
+        // fraction of the way to it: a fixed fraction is a lightness assumption, and `0.45`
+        // measured 3.45:1 here, i.e. the hint that tells a user what the field is for could not
+        // be read. Each step is dimmed and then held to a floor that its role justifies — the
+        // hint and the muted text are read as text, the header is a label.
+        let placeholder = ink.blend(&panel, 0.45).legible_on(panel, 4.5);
+        let muted_ink = ink.blend(&panel, 0.30).legible_on(panel, 4.5);
+        let header_ink = ink.blend(&panel, 0.15).legible_on(panel, 4.5);
 
         // Draw background
         context.fill_rect(rect, panel);

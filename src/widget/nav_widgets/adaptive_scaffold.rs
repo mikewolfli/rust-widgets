@@ -340,7 +340,10 @@ impl AdaptiveScaffold {
 
             // Icon
             let icon_x = tab_rect.x + (tab_rect.width as i32 - icon_metrics.width as i32) / 2;
-            let icon_y = content_y + icon_metrics.ascent as i32;
+            // `content_y` is the *top* of the icon+label stack and the glyph origin is itself
+            // the box's top edge, so the ascent term that used to be added here pushed the
+            // icon a full line down and the label with it, walking the pair out of the bar.
+            let icon_y = content_y;
             context.draw_text(
                 Point::new(icon_x, icon_y),
                 &item.icon,
@@ -351,7 +354,7 @@ impl AdaptiveScaffold {
 
             // Label
             let label_x = tab_rect.x + (tab_rect.width as i32 - label_metrics.width as i32) / 2;
-            let label_y = content_y + icon_metrics.height as i32 + 4 + label_metrics.ascent as i32;
+            let label_y = content_y + icon_metrics.height as i32 + 4;
             context.draw_text(
                 Point::new(label_x, label_y),
                 &item.label,

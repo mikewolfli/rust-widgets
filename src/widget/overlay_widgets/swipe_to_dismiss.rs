@@ -223,13 +223,14 @@ impl Draw for SwipeToDismiss {
                 .unwrap_or(Color::rgba(255, 59, 48, 255));
             context.fill_rect(bg_rect, destructive);
 
-            // Action text centered in revealed area
+            // Action text centered in revealed area. The origin is the glyph box's *top*
+            // edge, so centring is half the line box: the old `+ ascent/2 - descent/2` pair
+            // only approximated a baseline-relative centre and sat the label half a line low.
             if !self.action_text.is_empty() {
                 let font = Font::new("sans-serif", 16.0, false, false);
                 let metrics = context.measure_text(&self.action_text, &font);
                 let text_x = bg_rect.x + (bg_rect.width as i32 - metrics.width as i32) / 2;
-                let text_y = bg_rect.y + (bg_rect.height as i32 / 2) + (metrics.ascent as i32 / 2)
-                    - (metrics.descent as i32 / 2);
+                let text_y = bg_rect.y + (bg_rect.height as i32 - metrics.height as i32) / 2;
                 context.draw_text(
                     Point::new(text_x, text_y),
                     &self.action_text,

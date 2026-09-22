@@ -143,7 +143,13 @@ impl EditorChrome {
             scrollbar_thumb: surface.blend(&ink, 0.22),
             separator: surface.blend(&ink, 0.12),
             ink,
-            dim_ink: ink.blend(&surface, 0.45),
+            // The secondary ink is used on both the document surface and the chrome bands (tab
+            // strip, status bar, find bar), and it has to be readable on whichever it lands on.
+            // Blending the ink halfway to the *surface* produced `rgb(155,155,155)` on the dark
+            // appearance while the status bar behind it is `rgb(78,78,78)` — 2.99:1, under even
+            // the 3:1 large-text floor. Deriving it against the chrome band, which is the
+            // lighter of the two backdrops, keeps it secondary while clearing the floor on both.
+            dim_ink: ink.legible_on(chrome_background, 4.5).blend(&chrome_background, 0.30),
             accent,
             active_line: surface.blend(&ink, 0.04),
             indent_guide: surface.blend(&ink, 0.1),
@@ -354,8 +360,12 @@ impl CodeEditor {
             if row >= self.scroll_visual_row {
                 let y = top + ((row - self.scroll_visual_row) as f32 * row_height).round() as i32;
                 if self.config.show_line_numbers {
+                    // Centred on the row by the line box, not by a hand-tuned fraction of the
+                    // row height: `row_height * 0.78` was an ascent for one particular font
+                    // and row size, so the numbers drifted off centre whenever either moved.
+                    let number_box = context.measure_text("0", &Font::default()).height as i32;
                     context.draw_text(
-                        Point::new(rect.x + fold_width, y + (row_height * 0.78) as i32),
+                        Point::new(rect.x + fold_width, y + (row_height as i32 - number_box) / 2),
                         &format!("{}", line + 1),
                         &Font::default(),
                         if line == self.cursor.head.line { chrome.ink } else { chrome.dim_ink },
@@ -371,11 +381,30 @@ impl CodeEditor {
                 } else {
                     "."
                 };
+                // The non-foldable marker is a glyph, so it is a faint *ink* rather than the
+                // `separator` colour. That colour is tuned for hairlines: as a text fill it
+                // measured 1.22:1 on the light appearance, i.e. an invisible glyph — and an
+                // affordance nobody can see is the same as no affordance, which is what this
+                // marker exists to avoid (it says "there is no fold here", making the `v`/`>`
+                // beside it meaningful). `dim_ink` is the palette's readable-secondary step, so
+                // the marker uses it too: `whitespace_mark` (`surface ＋ ink` at 0.25) measured
+                // 1.64:1 on the light appearance, which is the right weight for decorating the
+                // gap between two words and the wrong weight for a state indicator. Held to the
+                // text floor, not the 3:1 UI floor: this is a glyph a user reads as text.
+                let marker_ink = if foldable {
+                    chrome.dim_ink
+                } else {
+                    chrome.whitespace_mark.legible_on(chrome.surface, 4.5)
+                };
+                // The origin is the glyph box's top edge, so the row is centred by half the
+                // line box; the `* 0.78` that used to be here was a hand-tuned ascent for one
+                // font size, and it moved with the font rather than with the row.
+                let line_box = context.measure_text("M", &Font::default()).height as i32;
                 context.draw_text(
-                    Point::new(rect.x + 2, y + (row_height * 0.78) as i32),
+                    Point::new(rect.x + 2, y + (row_height as i32 - line_box) / 2),
                     marker,
                     &Font::default(),
-                    if foldable { chrome.dim_ink } else { chrome.separator },
+                    marker_ink,
                     HorizontalAlignment::Left,
                 );
                 // Severity dot; the top-most severity wins.

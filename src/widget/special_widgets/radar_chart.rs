@@ -524,7 +524,9 @@ impl RadarChart {
             // the control and readable, rather than being clipped away by the raster
             // backend and running off the picture in the SVG one.
             let text_x = anchor_x - metrics.width as i32 / 2;
-            let text_y = anchor_y + metrics.ascent as i32 / 2;
+            // Origin is the glyph box's top edge, so centring on the spoke is half the line
+            // box; the removed `+ ascent / 2` sat the label half a line low on the anchor.
+            let text_y = anchor_y - metrics.height as i32 / 2;
             let bounds =
                 label_box(text_x, text_y, metrics.width as i32, metrics.height as i32, rect);
             context.draw_text_fitted(

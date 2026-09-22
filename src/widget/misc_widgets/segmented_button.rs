@@ -377,9 +377,9 @@ impl Draw for SegmentedButton {
 
             let metrics = context.measure_text(&segment.text, &font);
             let text_x = seg_rect.x + (seg_width as i32 - metrics.width as i32) / 2;
-            let text_y = seg_rect.y
-                + (rect.height as i32 - metrics.height as i32) / 2
-                + metrics.ascent as i32;
+            // The origin is the glyph box's top edge, so centring on the segment is half the
+            // *line box*; the old `+ ascent` began the box half a line below the middle.
+            let text_y = seg_rect.y + (rect.height as i32 - metrics.height as i32) / 2;
 
             if !segment.text.is_empty() {
                 context.draw_text(

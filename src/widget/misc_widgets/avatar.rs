@@ -250,10 +250,12 @@ impl Draw for Avatar {
 
             let metrics = context.measure_text(&self.text, &font);
             let text_width = metrics.width as i32;
-            let text_height = metrics.ascent as i32 + metrics.descent as i32;
 
+            // The origin is the glyph box's *top* edge, so centring is half the line box:
+            // the old `(size - ascent - descent)/2 + ascent` started the box half a line below
+            // the disc's middle and clipped the initials against the bottom edge.
             let text_x = rect.x + (rect.width as i32 - text_width) / 2;
-            let text_y = rect.y + (rect.height as i32 - text_height) / 2 + metrics.ascent as i32;
+            let text_y = rect.y + (rect.height as i32 - metrics.height as i32) / 2;
 
             context.draw_text(
                 Point::new(text_x.max(rect.x), text_y.max(rect.y)),

@@ -652,8 +652,14 @@ impl QueryBuilderChrome {
     }
 
     /// Placeholder and secondary labels.
+    /// The builder's de-emphasised ink: dimmed toward the surface, then held to the text floor.
+    ///
+    /// The fixed 45% blend measured 3.90:1 on the light surface and 4.04:1 on the dark one. It
+    /// carries the empty-state hint *and* the live condition count, both of which are read as
+    /// text — an empty builder has nothing else on screen to explain itself — so "secondary"
+    /// must not mean "below the floor".
     fn placeholder_text(&self) -> Color {
-        self.text_color.blend(&self.background, 0.45)
+        self.text_color.blend(&self.background, 0.45).legible_on(self.background, 4.5)
     }
 
     /// The header strip, a step away from the builder body.

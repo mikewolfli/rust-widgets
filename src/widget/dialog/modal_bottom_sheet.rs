@@ -353,14 +353,17 @@ impl Draw for ModalBottomSheet {
         let handle_rect = Rect::new(handle_x, handle_y, handle_width, handle_height);
         context.fill_rounded_rect(handle_rect, handle_height / 2, ink.blend(&sheet_fill, 0.35));
 
-        // 4. Title
+        // 4. Title. `title_y` already names the top of the title row, and the glyph origin is
+        // the box's top edge, so no ascent belongs here — the one that used to be added began
+        // the title half a line below its own row, and the content area below then started
+        // from `title_y + height`, which only looked right because both ends shared the error.
         let title_y = handle_y + handle_height as i32 + 12;
         let title_font = Font::simple("sans-serif", 16.0);
         let title_metrics = context.measure_text(&self.title, &title_font);
         if !self.title.is_empty() {
             let title_x = rect.x + (rect.width as i32 - title_metrics.width as i32) / 2;
             context.draw_text(
-                Point::new(title_x.max(rect.x), title_y + title_metrics.ascent as i32),
+                Point::new(title_x.max(rect.x), title_y),
                 &self.title,
                 &title_font,
                 ink,

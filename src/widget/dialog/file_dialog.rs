@@ -460,7 +460,10 @@ impl Draw for FileDialog {
             ),
             &placeholder,
             &placeholder_font,
-            ink.blend(&field, 0.5),
+            // Dimmed toward the field, then held to the text floor: a fixed 50% blend measured
+            // 3.65:1 on the light field, so the line explaining what the empty list is for was
+            // itself hard to read.
+            ink.blend(&field, 0.5).legible_on(field, 4.5),
             HorizontalAlignment::Left,
         );
         // Selected files display: a 70 px label column followed by the file-name field.

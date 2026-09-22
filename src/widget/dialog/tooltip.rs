@@ -386,9 +386,17 @@ impl Draw for Tooltip {
                 }
             }
         };
-        // The text sits on the bubble, so it resolves from the bubble rather than from the
-        // style: on a bubble that is already the foreground colour, an inherited text colour
-        // would be invisible.
+        // A tooltip that is not showing is drawn as a dimmed bubble rather than omitted, so
+        // the control has a rendered body in every state instead of vanishing at rest.
+        let bubble = if self.visible { bubble } else { window_fill.blend(&bubble, 0.45) };
+
+        // The label is chosen against the **bubble actually painted**, which is why this is
+        // computed after the dimming step and not before it. Deriving it from the undimmed
+        // bubble was wrong in exactly the hidden state: the at-rest bubble is the near-black
+        // `rgb(40,40,40)` dimmed 45% toward a light window, i.e. `rgb(150,150,150)`, while the
+        // ink had already been decided as the near-black bubble's white — measuring 2.78:1 on
+        // the surface it was really painted on. Deriving from the final fill makes the pairing
+        // correct in both states by construction.
         let text_color = bubble.contrast_color();
 
         let font = Font::simple("sans-serif", self.font_size);
@@ -414,16 +422,19 @@ impl Draw for Tooltip {
         let bg_rect = Rect::new(bg_x, bg_y, total_width, total_height);
         let corner_radius = 4u32;
 
-        // A tooltip that is not showing is drawn as a dimmed bubble rather than omitted, so
-        // the control has a rendered body in every state instead of vanishing at rest.
-        let bubble = if self.visible { bubble } else { window_fill.blend(&bubble, 0.45) };
-
         // Draw rounded rectangle background
         context.fill_rounded_rect(bg_rect, corner_radius, bubble);
 
-        // Draw text centered within the padded area
+        // Draw text at the padded top-left of the bubble.
+        //
+        // No `ascent` is added: `draw_text`'s origin is the glyph box's **top edge** (the
+        // backend pairs it with `dominant-baseline="text-before-edge"` so both backends agree),
+        // so a top-aligned label belongs at `bubble.y + padding` exactly. Adding `ascent`
+        // pushed the 12 px glyph box to `padding + 10 .. padding + 22`, i.e. `16..28` in a
+        // bubble whose natural height is 24 — the label hung 4 px out of its own bubble. The
+        // census geometry is 120 px tall, which is the only reason no bound assertion saw it.
         let text_x = bg_rect.x + self.padding;
-        let text_y = bg_rect.y + self.padding + metrics.ascent as i32;
+        let text_y = bg_rect.y + self.padding;
 
         context.draw_text(
             Point::new(text_x, text_y),

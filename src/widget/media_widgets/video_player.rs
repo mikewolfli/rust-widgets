@@ -338,7 +338,9 @@ impl Draw for VideoPlayer {
             let play_icon = "▶";
             let icon_metrics = context.measure_text(play_icon, &font);
             let icon_x = rect.x + (rect.width as i32 - icon_metrics.width as i32) / 2;
-            let icon_y = rect.y + rect.height as i32 / 2 + icon_metrics.ascent as i32 / 2;
+            // Origin is the glyph box's top edge, so the centre is half the difference of
+            // the *line boxes*; `+ ascent` began the box half a line low.
+            let icon_y = rect.y + (rect.height as i32 - icon_metrics.height as i32) / 2;
             context.draw_text(
                 Point::new(icon_x, icon_y),
                 play_icon,
@@ -362,9 +364,7 @@ impl Draw for VideoPlayer {
         let btn_text = if self.is_playing { "⏸" } else { "▶" };
         let btn_metrics = context.measure_text(btn_text, &font);
         let btn_x = rect.x + 8;
-        let btn_y = control_bar_y
-            + (control_bar_height as i32 - btn_metrics.height as i32) / 2
-            + btn_metrics.ascent as i32;
+        let btn_y = control_bar_y + (control_bar_height as i32 - btn_metrics.height as i32) / 2;
         context.draw_text(
             Point::new(btn_x, btn_y),
             btn_text,
@@ -398,9 +398,7 @@ impl Draw for VideoPlayer {
         );
         let time_metrics = context.measure_text(&time_text, &font);
         let time_x = seek_bar_full.x + seek_bar_full.width as i32 + 4;
-        let time_y = control_bar_y
-            + (control_bar_height as i32 - time_metrics.height as i32) / 2
-            + time_metrics.ascent as i32;
+        let time_y = control_bar_y + (control_bar_height as i32 - time_metrics.height as i32) / 2;
         context.draw_text(
             Point::new(time_x, time_y),
             &time_text,
@@ -419,9 +417,7 @@ impl Draw for VideoPlayer {
         };
         let vol_metrics = context.measure_text(vol_text, &font);
         let vol_x = rect.x + rect.width as i32 - vol_metrics.width as i32 - 8;
-        let vol_y = control_bar_y
-            + (control_bar_height as i32 - vol_metrics.height as i32) / 2
-            + vol_metrics.ascent as i32;
+        let vol_y = control_bar_y + (control_bar_height as i32 - vol_metrics.height as i32) / 2;
         context.draw_text(
             Point::new(vol_x, vol_y),
             vol_text,
@@ -435,9 +431,8 @@ impl Draw for VideoPlayer {
             let rate_text = format!("{:.1}x", self.playback_rate);
             let rate_metrics = context.measure_text(&rate_text, &font);
             let rate_x = vol_x - rate_metrics.width as i32 - 8;
-            let rate_y = control_bar_y
-                + (control_bar_height as i32 - rate_metrics.height as i32) / 2
-                + rate_metrics.ascent as i32;
+            let rate_y =
+                control_bar_y + (control_bar_height as i32 - rate_metrics.height as i32) / 2;
             context.draw_text(
                 Point::new(rate_x, rate_y),
                 &rate_text,
@@ -451,9 +446,7 @@ impl Draw for VideoPlayer {
         let fs_text = "⛶";
         let fs_metrics = context.measure_text(fs_text, &font);
         let fs_x = vol_x - fs_metrics.width as i32 - 24;
-        let fs_y = control_bar_y
-            + (control_bar_height as i32 - fs_metrics.height as i32) / 2
-            + fs_metrics.ascent as i32;
+        let fs_y = control_bar_y + (control_bar_height as i32 - fs_metrics.height as i32) / 2;
         context.draw_text(
             Point::new(fs_x, fs_y),
             fs_text,

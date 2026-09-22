@@ -260,8 +260,10 @@ impl Draw for SearchBar {
             let cancel_text = "Cancel";
             let metrics = context.measure_text(cancel_text, &cancel_font);
             let text_x = cancel_x + (cancel_width as i32 - metrics.width as i32) / 2;
-            let text_y =
-                rect.y + (rect.height as i32 - metrics.height as i32) / 2 + metrics.ascent as i32;
+            // Centre the label on the cancel area. The origin is the glyph box's top edge, so
+            // half the *line box* is the correct offset; the `+ ascent` began the glyph box
+            // half a line below the middle.
+            let text_y = rect.y + (rect.height as i32 - metrics.height as i32) / 2;
             context.draw_text(
                 Point::new(text_x, text_y),
                 cancel_text,

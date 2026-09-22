@@ -244,8 +244,10 @@ impl Draw for CupertinoSegmentedControl {
             let metrics = context.measure_text(seg, &font);
             let seg_x = rect.x + (i as i32) * seg_w;
             let text_x = seg_x + (seg_w - metrics.width as i32) / 2;
-            let text_y = rect.y + (rect.height as i32 / 2) + (metrics.ascent as i32 / 2)
-                - (metrics.descent as i32 / 2);
+            // Centre the label in its segment. The origin is the glyph box's top edge, so the
+            // offset is half the *line box*; the old ascent/descent pair began the glyph box
+            // half a line below the segment's middle.
+            let text_y = rect.y + (rect.height as i32 - metrics.height as i32) / 2;
             // The label must contrast with what it is painted on — the accent highlight for
             // the selected segment, the track for the rest — so the two are chosen against
             // their own backdrop instead of both assuming a light one.
