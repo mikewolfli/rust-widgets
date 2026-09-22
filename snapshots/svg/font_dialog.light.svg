@@ -15,9 +15,9 @@
   <text x="163" y="30" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">dialog.…</text>
   <rect x="160" y="46" width="74" height="46" fill="rgba(212,212,212,1.00)" />
   <rect x="160" y="46" width="74" height="46" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
-  <rect x="64" y="92" width="80" height="28" fill="rgba(33,150,243,1.00)" />
-  <text x="66" y="99" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">dialog.ok</text>
-  <rect x="152" y="92" width="80" height="28" fill="rgba(203,203,203,1.00)" />
-  <rect x="152" y="92" width="80" height="28" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
-  <text x="154" y="99" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">dialog.c…</text>
+  <rect x="74" y="92" width="80" height="28" fill="rgba(33,150,243,1.00)" />
+  <text x="76" y="99" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">dialog.ok</text>
+  <rect x="160" y="92" width="80" height="28" fill="rgba(203,203,203,1.00)" />
+  <rect x="160" y="92" width="80" height="28" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
+  <text x="162" y="99" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">dialog.c…</text>
 </svg>

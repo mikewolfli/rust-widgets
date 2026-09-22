@@ -1,16 +1,80 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+//! Font combo box — a text field whose trailing indicator opens a family list.
+//!
+//! # Why the indicator drives the value's right inset
+//!
+//! The indicator is the field's trailing chrome, and the value's box must *yield* to it.
+//! QML's `ComboBox.qml` writes this as `rightPadding: padding + indicator.width`, and the
+//! reason is that a fixed text inset and a fixed indicator inset are two unrelated
+//! derivations from the *same* edge. The value used to be written at `g.x + 4` with no bound
+//! while the indicator was placed from `g.width - 14`, so a long family name — `Noto Sans
+//! CJK JP` in a narrow format bar — was painted underneath the arrow.
+
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 
 use crate::signal::{GenericSignal, Signal1};
+use crate::style::EdgeOffsets;
 use crate::widget::capability::coercion::{expect_bool, expect_i64};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+/// The field's own horizontal content inset: 4.
+///
+/// The value was written at `g.x + 4`, which is this number — named so the hint and the paint
+/// read the same fact rather than one of them carrying a bare literal.
+const FONT_FIELD_PADDING: i32 = 4;
+
+/// Space between the indicator's leading edge and the end of the value's box: 2.
+const INDICATOR_LEADING_GAP: u32 = 2;
+
+/// The indicator's box and the box the value may occupy, derived together.
+///
+/// # Why the two are computed together
+///
+/// The `▼` and the family name beside it are one row, and the name must *yield* to the
+/// indicator rather than be clipped by an inset chosen independently of it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct FontFieldGeometry {
+    /// The indicator's bounding box at the field's trailing edge.
+    indicator_box: Rect,
+    /// The rectangle the family name may occupy.
+    value_box: Rect,
+}
+
+impl FontFieldGeometry {
+    /// Derives both boxes from the band the control paints and `line_height`.
+    fn for_band(band: Rect, line_height: u32) -> Self {
+        let indicator_width = dimensions::BUTTON_ICON_SIZE.min(band.width);
+        let height = line_height.min(band.height);
+        let indicator_x = band.x
+            + band.width.saturating_sub(indicator_width + dimensions::TEXT_FIELD_PADDING_H) as i32;
+        let indicator_box = Rect::new(
+            indicator_x,
+            band.y + (band.height.saturating_sub(height) / 2) as i32,
+            indicator_width,
+            height,
+        );
+        // The value's box stops one gap before the indicator. `min` with the leading inset keeps
+        // a squeezed field from describing an inverted rectangle: a field with no room for a name
+        // draws none rather than one outside itself.
+        let value_right = indicator_box.x.saturating_sub(INDICATOR_LEADING_GAP as i32);
+        let value_left = (band.x + FONT_FIELD_PADDING).min(value_right);
+        let value_box = Rect::new(
+            value_left,
+            band.y,
+            value_right.saturating_sub(value_left) as u32,
+            band.height,
+        );
+        Self { indicator_box, value_box }
+    }
+}
 /// Font combo box widget for font selection.
 ///
 /// Holds a list of font family names and an index into it. The index uses `-1`
@@ -63,6 +127,24 @@ pub struct FontComboBox {
     pub popup_hidden: GenericSignal,
 }
 impl FontComboBox {
+    /// The band the control actually paints: full width, one field tall, centred.
+    ///
+    /// # Why the field is not the control's rectangle
+    ///
+    /// A font combo box is a text field with an indicator in it, and
+    /// [`dimensions::TEXT_FIELD_MIN_HEIGHT`] is what every field in this crate occupies. The
+    /// 240x120 census cell drew a 240x120 slab, so the font chooser and the `line_edit` beside
+    /// it in a format bar were different objects. The band is the single derivation the fill,
+    /// the border, the indicator and the value's box all read.
+    fn field_band(&self) -> Rect {
+        ControlMetrics::full_width_band(self.geometry(), dimensions::TEXT_FIELD_MIN_HEIGHT)
+    }
+
+    /// The indicator's box and the value's box, derived from the band and one line height.
+    fn field_geometry(&self, line_height: u32) -> FontFieldGeometry {
+        FontFieldGeometry::for_band(self.field_band(), line_height)
+    }
+
     /// Creates an empty, non-editable combo box with no selection
     /// ([`FontComboBox::current_index`] `-1`), the default font, and a maximum
     /// of 10 visible popup items (the popup starts closed).
@@ -271,7 +353,25 @@ impl Widget for FontComboBox {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(200, 28)
+        // Derived through the same metric the band is drawn from, so the reported size and the
+        // painted box cannot describe two different controls. The width was a bare `200` and the
+        // height `28` while `draw` painted the whole given rectangle — 120 px tall in the
+        // census cell, i.e. four times the height this reports.
+        let side_air = (dimensions::TEXT_FIELD_MIN_HEIGHT / 2).saturating_sub(8);
+        let trailing =
+            (FONT_FIELD_PADDING as u32) + dimensions::BUTTON_ICON_SIZE + INDICATOR_LEADING_GAP;
+        let padding = EdgeOffsets {
+            top: side_air,
+            right: trailing,
+            bottom: side_air,
+            left: FONT_FIELD_PADDING as u32,
+        };
+        let floor = Size::new(
+            FONT_FIELD_PADDING as u32 + dimensions::BUTTON_ICON_SIZE + trailing,
+            dimensions::TEXT_FIELD_MIN_HEIGHT,
+        );
+        let hint = ControlMetrics::implicit_size(Size::new(0, 0), padding, floor);
+        Size::new(hint.width, self.field_band().height.max(floor.height))
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -440,7 +540,16 @@ impl EventHandler for FontComboBox {
 
 impl Draw for FontComboBox {
     fn draw(&mut self, ctx: &mut RenderContext) {
-        let g = self.geometry();
+        // ── The field actually painted ──
+        //
+        // `geometry()` is the area the control was *given*; the **field** of a font combo box is
+        // a text field, and a field is a fixed-height band. The expanded popup below it is a
+        // menu rather than part of the field, so it still hangs from the control's own bottom
+        // edge, which is a separate derivation and is left as one.
+        let g = self.field_band();
+        if g.width == 0 || g.height == 0 {
+            return;
+        }
 
         // Chrome colours resolve the explicit style first, then the theme's resolved style for
         // this control, and only then fall back to a literal. Every colour below used to be a
@@ -499,28 +608,42 @@ impl Draw for FontComboBox {
 
         ctx.fill_rect(g, field);
         ctx.draw_rect(g, border);
-        // Draw drop-down arrow indicator
-        let arrow_right_x = g.x + g.width as i32 - 14;
-        let arrow_y = g.y + g.height as i32 / 2;
+        // The indicator's box and the value's box come from **one** derivation, so the family
+        // name yields to the indicator instead of being written at an unconstrained offset.
+        let value_font = Font::default_ui();
+        let field_line = ctx.text_line(g, &value_font);
+        let geometry = self.field_geometry(field_line.height);
+        // Draw drop-down arrow indicator inside its own derived box, vertically centred on the
+        // value's own line box rather than on the field's raw midpoint.
+        let arrow_indicator_line = ctx.text_line(geometry.indicator_box, &value_font);
+        let arrow_center_y = arrow_indicator_line.y + arrow_indicator_line.height as i32 / 2;
+        let arrow_center_x = geometry.indicator_box.x + geometry.indicator_box.width as i32 / 2;
         ctx.draw_line(
-            Point::new(arrow_right_x - 3, arrow_y - 2),
-            Point::new(arrow_right_x, arrow_y + 2),
+            Point::new(arrow_center_x - 3, arrow_center_y - 2),
+            Point::new(arrow_center_x, arrow_center_y + 2),
             arrow_color,
         );
         ctx.draw_line(
-            Point::new(arrow_right_x, arrow_y + 2),
-            Point::new(arrow_right_x + 3, arrow_y - 2),
+            Point::new(arrow_center_x, arrow_center_y + 2),
+            Point::new(arrow_center_x + 3, arrow_center_y - 2),
             arrow_color,
         );
         let font_name = self.current_font().family().to_string();
         // The field's own line box. A glyph origin is the box's top-left edge, so the old
         // `g.y + g.height / 2 + 5` put that edge on the field's middle line and drew the
         // selected family half a line low.
-        let value_line = ctx.text_line(g, &Font::default_ui());
-        ctx.draw_text(
-            Point::new(g.x + 4, value_line.y),
+        let value_line = ctx.text_line(geometry.value_box, &value_font);
+        // Fitted, so a long family name is elided rather than drawn under the indicator — the box
+        // it is given is the one the indicator left.
+        ctx.draw_text_fitted(
+            Rect::new(
+                geometry.value_box.x,
+                value_line.y,
+                geometry.value_box.width,
+                value_line.height,
+            ),
             &font_name,
-            &Font::default_ui(),
+            &value_font,
             ink,
             HorizontalAlignment::Left,
         );
@@ -801,5 +924,52 @@ mod tests {
         c.add_font("Helvetica".to_string());
         c.handle_event(&Event::MouseRelease { pos: inside, button: 3 });
         assert_eq!(c.current_index(), -1);
+    }
+
+    /// The family name's box ends where the indicator's box begins, at every control width.
+    ///
+    /// # What this pins
+    ///
+    /// BLUE22 §B.6 rule 4: a sub-part's box is derived from its sibling, so the name *yields*
+    /// to the indicator. The name used to be written at `g.x + 4` with no upper bound while
+    /// the indicator sat at `g.x + g.width - 14`, so a long family such as
+    /// `Noto Sans CJK JP` in a narrow format bar was drawn underneath the arrow.
+    #[test]
+    fn the_family_name_box_ends_where_the_indicator_begins() {
+        let trailing =
+            FONT_FIELD_PADDING as u32 + dimensions::BUTTON_ICON_SIZE + INDICATOR_LEADING_GAP;
+        for width in [0u32, 20, 64, 240, 400] {
+            let c = FontComboBox::new(Rect::new(0, 0, width, 120));
+            let geometry = c.field_geometry(14);
+            let band = c.field_band();
+            assert_eq!(
+                geometry.value_box.x
+                    + geometry.value_box.width as i32
+                    + INDICATOR_LEADING_GAP as i32,
+                geometry.indicator_box.x,
+                "the name must stop one gap short of the indicator at width {width}"
+            );
+            assert!(
+                geometry.indicator_box.x + geometry.indicator_box.width as i32
+                    <= band.x + band.width as i32,
+                "the indicator must stay inside the band at width {width}"
+            );
+            if width < trailing {
+                assert_eq!(
+                    geometry.value_box.width, 0,
+                    "a band too narrow for its own chrome holds no name at width {width}"
+                );
+            }
+        }
+    }
+
+    /// The reported height is the band that is painted.
+    #[test]
+    fn the_reported_height_is_the_band_that_is_painted() {
+        let c = FontComboBox::new(Rect::new(0, 0, 240, 120));
+        let band = c.field_band();
+        assert_eq!(band.height, dimensions::TEXT_FIELD_MIN_HEIGHT);
+        assert_eq!(c.size_hint().height, band.height);
+        assert_eq!(band.y, (120 - dimensions::TEXT_FIELD_MIN_HEIGHT as i32) / 2);
     }
 }

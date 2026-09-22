@@ -182,7 +182,7 @@ Snackbar、底部面板）；导航、媒体，以及 Material 没有对应物�
 
 ## 语言绑定
 
-`C ABI` 位于 `src/bindings/`，通过 `rw_*` 符号暴露每个控件，并提供基于能力的属性与事件模型。C、C++、
+`C ABI` 位于 `src/bindings/`，通过 **130 个 `rw_*` 函数**暴露每个控件，并提供基于能力的属性与事件模型。C、C++、
 Python 与 Java（JNI）绑定都在 CI 中运行；生成的头文件由 `tools/check_abi.sh` 检查漂移。
 
 见 [`cookbook/zh-CN/src/chapters/language-bindings.md`](cookbook/zh-CN/src/chapters/language-bindings.md)。

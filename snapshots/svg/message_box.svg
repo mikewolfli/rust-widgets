@@ -6,7 +6,7 @@
   <rect x="0" y="0" width="240" height="120" rx="28" ry="28" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
   <rect x="0" y="0" width="240" height="28" fill="rgba(46,46,46,1.00)" />
   <text x="15" y="53" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(225,225,225,1.00)">Sample</text>
-  <rect x="152" y="92" width="80" height="28" fill="rgba(18,18,18,1.00)" />
-  <rect x="152" y="92" width="80" height="28" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
-  <text x="154" y="99" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(255,255,255,1.00)">common.b…</text>
+  <rect x="160" y="92" width="80" height="28" fill="rgba(18,18,18,1.00)" />
+  <rect x="160" y="92" width="80" height="28" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
+  <text x="162" y="99" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(255,255,255,1.00)">common.b…</text>
 </svg>

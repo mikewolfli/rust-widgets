@@ -6,6 +6,10 @@
 > - Qt Quick Controls 2：`/home/mikeli/workspace/qtdeclarative`（`src/quickcontrols/basic/*.qml` 为最可复制的一档）
 > - Flutter：`/home/mikeli/workspace/flutter`（`packages/flutter/lib/src/material/*.dart`）
 > 目标版本：**2.6.1 → 2.7.0**
+>
+> **📌 执行进度：[附录 F](#附录-f--执行进度与未完成项2026-09-23-第-67-轮实跑取证)**。
+> 已交付到 2.6.1（P0-1 / P0-1b / P0-2 / P0-3 / P0-4 / P0-5..P0-10 / P2-2 已完成），
+> **未完成的主体是「组合控件由布局组装」（F-1 / F-2），施工细则见 F.2.2**。
 
 ---
 
@@ -867,3 +871,136 @@ rightPadding: padding + (mirrored ? down.width : up.width)
 4. **RTL 只做到「方向敏感控件」层**。不做全量 `LayoutMirroring`（见 §5.1）。
 5. **不引入新依赖**。所有机制都是「几行代码 + 常量」，QML 的 Basic 风格本身就是纯 QML 无图片实现，
    说明这套东西不需要额外依赖。
+
+---
+
+# 附录 F — 执行进度与未完成项（2026-09-23 第 67 轮实跑取证）
+
+> 执行记录全文见 [`../log/log-20260923-1.md`](../log/log-20260923-1.md)。
+> 本节只记「已完成 / 未完成」两个清单，未完成项按优先级排序，供后续轮次直接接续。
+
+## F.1 已完成（有独立判据，勿重复劳动）
+
+| 计划条目 | 状态 | 判据 |
+|---|---|---|
+| **P0-1 度量体系** | ✅ | 新增 `src/widget/metrics.rs`（`ControlMetrics` + `dimensions` 常量表）；单测断言「5px 文字 ⇒ `64×40`」 |
+| **P0-1b 尺寸通道** | ✅ | 新增 `src/layout/hints.rs`（`AxisHints`/`Hints`/`LayoutParams`/`ChildInfo`）；`Layout::arrange` 默认转发 `update`；`FlexLayout::arrange` 仅凭 hint 排布且与旧路径**几何逐字节相同** |
+| **P0-1c 组合装配（部分）** | ✅ | `LayoutParams`（`fill` 与 `min` 分离）；`painted_box` 在 8 个对话框落地；`spacing` 语义分离 |
+| **P0-2 绘制盒（11 控件 + 全仓）** | ✅ | 174 个控件的绘制盒由 `ControlMetrics` 推导；快照逐个人眼可判「更小更居中」 |
+| **P0-3 四层 padding 级联** | ✅ | `PaddingSpec`（side→axis→uniform）；单测「写 `left` 只改左」 |
+| **P0-4 `spacing` 语义** | ✅ | `WidgetStyle::spacing`；checkbox/radio 的 indicator↔label 间距读它，**兄弟间距仍归布局** |
+| **P0-5 `visual_focus`** | ✅ | `FocusReason` 随 `FocusGained` 载荷传递；`draws_focus_ring()` 对 `Pointer` 返回 false |
+| **P0-6 / P0-7 点击契约** | ✅ | 四段契约 + `canceled` + `grabbed`（`pressed` 与「手势归属」分离）；拖出再拖回可恢复 |
+| **P0-8 状态独立 + 过渡原语** | ✅ | 新增 `style::Transition` + `TransitionTempo`；switch 的 `visualPosition`（`travel`）与逻辑值分离 |
+| **P0-9 幂等 setter** | ✅ | checkbox/radio/switch 均已有「同值不发信号」守卫 |
+| **P0-10 `Colors` 扩面** | ✅ | +7 角色（全部带 serde 默认值）+ `impl Default for Colors`；两个预设改用 `..Colors::default()` |
+| **P2-2 动效 token 化** | ✅ | `floating_label` 的硬编码 150ms 改为 `theme.motion`；新门禁 `check_transition_durations_are_tokens` |
+| **§6.7 门禁（2/5）** | ✅ | `check_click_requires_release_inside`（找到 `fab` + 2 处登记缺陷）+ `check_transition_durations_are_tokens`（找到 `floating_label`）；均经反向注入证明可失败 |
+| **版本与文档** | ✅ | 2.6.1；CHANGELOG 双份逐字节一致；两个 README 新增 3 节；cookbook 三语 48 处 pin 同步；新增 `examples/readme_check.rs` 使 README 代码块**被编译** |
+
+**量化结果**：
+
+| 指标 | 前 | 后 |
+|---|---|---|
+| 零尺寸元素（不可见） | 3 | **0** |
+| 空 `<text>` 元素 | 6 | **0** |
+| 把 chrome 拉伸到全画布的控件 | ~65 | **0** |
+| 文本贴顶（y≈0，应为 53） | 16+ | **0** |
+| 编译失败的 profile | 2（mini/embedded） | **0** |
+| 全量测试 | 5386 | **5513** |
+| 门禁 | 56 | **58**（`PASS=58 FAIL=0 TIMEOUT=0 NOT-RUN=0 SKIP=1`） |
+
+## F.2 未完成项（按优先级）
+
+### F.2.1 P0 级（计划的核心目标，尚未铺开）
+
+| # | 条目 | 计划出处 | 现状取证 | 施工要点 |
+|---|---|---|---|---|
+| **F-1** | **§B.8 组合控件逐个改造（11 个）** | §B.8 | `grep -rl "BoxLayout::new\|FlexLayout::new\|GridLayout::new" src/widget/` → **0 命中**，即组合控件**仍无一使用真实布局**；它们已改用共享几何 helper（这解决了「外观」），但「由布局组装」这层未接 | 见 F.2.2 |
+| **F-2** | **§B.7 三个样板控件** | §B.7 | 未做 | `button_with_icon` / `spin_box` / `dialog_with_actions`：先各写一个，验证 §B.6 的 10 条规范；**`spin_box` 起手**，因为其 `leftPadding = padding + up.width`（`SpinBox.qml:20-21`）是本计划最有价值的一条洞察的载体 |
+| **F-3** | **§B.6 规则 10「提示变化主动通知布局」** | §B.6-10 | 未做 | 需要「脏」标记 + 宿主帧末消费；`arrange` 已可读到 hint，但**内容变了尺寸不会重排** |
+
+### F.2.2 F-1 的施工细则（后续轮次可直接照做）
+
+计划 §B.8 的 11 个控件，按**性价比排序**（先做「兄弟尺寸驱动」收益最大且最易验证的）：
+
+| 优先 | 控件 | 现状缺陷 | 目标推导（§B.9） |
+|---|---|---|---|
+| 1 | `spin_box` / `number_picker` | 值文本与 +/− 按钮列各自写死（`spinbox.rs:123` 的注释自己记录了「值画在 x=4，按钮列从 x=200 起」） | `text_area = content_box − button_column_width`，即**文本区让位于按钮列**（`SpinBox.qml:20-21`） |
+| 2 | `split_button` | 主面 + 箭头手算 | `HBox` + `floor(64×40)`；箭头列宽由箭头自身尺寸推导 |
+| 3 | `combo_box` 族（`combobox`/`editable_combo_box`/`multi_select_combo_box`/`font_combo_box`） | 指示器 padding 写死 | `trailing_padding = padding + indicator_width + spacing`（镜像时交换） |
+| 4 | `group_box` | 标题占位手算 | `top_padding = padding + label_height + spacing`（`GroupBox.qml:20`） |
+| 5 | `menu` / `menu_item` | check/arrow 两段 padding 写死 | `left_padding = padding + indicator_width + spacing`；`right_padding = padding + arrow_width + spacing`（`MenuItem.qml:25-28`） |
+| 6 | `tool_bar` | 项位置用步长字面量 | 逐项累加「各自宽度 + `TOOLBAR_SPACING`」 |
+| 7 | `status_bar` | 末段位置硬编码 | 各段按自身文本宽度 + spacing 累加，末段右锚 |
+| 8 | `tab_widget` / `tab_view` | tab 宽手算 | `label_width + TAB_TEXT_PADDING`，夹在 `TAB_MIN_WIDTH..TAB_MAX_WIDTH`，间距 `TAB_SPACING` |
+| 9 | `dialog` / `message_box` 的按钮行 | 按钮 x 写死 | 右对齐：从内容盒右缘反向累加各按钮宽度 + spacing |
+| 10 | `scroll_area` | 条的位置手算 | `Stack` + `Absolute`（条叠在内容上） |
+| 11 | `list_view` / `grid_table` | 行高手算 | `UniformGridLayout`（已有） |
+
+**共同判据**：每个控件加一条单测断言「**子控件变宽（或字号变大）后，相邻段的起点随之移动**」——
+这是 §B.9 的机械表述，也是唯一能钉住「留白由兄弟推导」的判据。
+`cargo test --lib --no-default-features --features desktop <widget>` 必须全过。
+
+### F.2.3 P1 级（计划列出但本轮未做）
+
+| # | 条目 | 计划出处 | 说明 |
+|---|---|---|---|
+| **F-4** | **RTL 铺开**：`progress_bar` / `range_slider` / `tab_bar` / `app_bar` / `scroll_bar` / `menu` 方向键 | P1-2 | `TextDirection` 类型已存在且 `slider` 已接（BLUE21 第 65 轮）；其余**未接**。判据：每个控件一条「镜像后取值/绘制都反向、且往返一致」的测试——注意 §4.3 的教训：**两个方向的映射必须共用同一个 inset** |
+| **F-5** | **a11y 三态填充** | P1-3 | `A11yState.checked/mixed` 结构已在（BLUE21 第 65 轮），`accessible_value` 已建；**但只有 10 处控件填充**。需让 `checkbox`/`switch`/`radio` 上报三态 |
+| **F-6** | **契约加厚** | P1-4 | `auto_complete_edit` 只读 `suggestion_count`；`drop_zone` 只有 1/5 反馈态；`rating`/`shortcut_editor` 契约过薄 |
+| **F-7** | **E6 分组/片段原语** | P1-5 | 三处注释声称 `spacer` 不产出控件，实际报 `UnknownWidgetType` 并**丢子树** ⇒ `engine` 丢子树 |
+| **F-8** | **`stepper` 命名裁定** | P1-6 | 本仓 `stepper` = 数值微调器，Flutter `Stepper` = 分步向导 ⇒ **缺一整个控件**。二选一：改名 or 补向导控件，**不留悬空** |
+
+### F.2.4 P2 级
+
+| # | 条目 | 计划出处 | 说明 |
+|---|---|---|---|
+| **F-9** | 主题装饰 token 的消费者 | P2-1 | 7 个角色已在 `Colors` 里，但只有 `outline` 被焦点环消费。需让卡片/面板/模态遮罩/吐司真正读 `scrim`/`surface_container*`/`inverse_*` |
+| **F-10** | `Font::letter_spacing` / `line_height`（2× 文本缩放的前置） | P2-3 | **未做** |
+| **F-11** | 另立计划：声明式原语（portal/生命周期/上下文/错误边界）、`code_editor` 语法配色 | P2-4 | BLUE21 已明确「另立计划」 |
+| **F-12** | A.4.1 文本输入的**装饰槽模型**（`prefix`/`suffix`/`helper`/`error`/`counter`） | BLUE21 A.4.1 | 整块未做 |
+
+### F.2.5 门禁与工程债
+
+| # | 条目 | 现状 | 说明 |
+|---|---|---|---|
+| **F-13** | §6.7 剩余 3 条门禁 | 未做 | `check_implicit_size_uses_metrics`（控件自己算绝对尺寸而不走 `ControlMetrics`）、`check_spacing_is_not_sibling_layout`（`spacing` 被用于兄弟间距）、`check_focus_ring_respects_reason`（无条件画焦点环）。**每条都必须配反向注入** |
+| **F-14** | `check_mechanism_has_a_consumer` 的陈旧债 | **预存在失败项** | 一条陈旧的 `AnimationDriver` 债表条目。本轮未动（不属 blue22 范围），但门禁报它，需处理或更新债表 |
+| **F-15** | `tests/mounted_control_follows_window_test.rs` | **预存在失败** | `RejectedByBackend("cocoa")`，需真实 macOS 窗口服务器会话。已在干净 HEAD 树上复现 ⇒ **非本轮引入**，但需在能提供窗口会话的 CI 上验证 |
+| **F-16** | `check_android_cross.sh` | **host-limited skip** | 需要 Android NDK/SDK，本机跳过。非缺陷 |
+| **F-17** | `spacing` 的消费者只有 checkbox/radio | 部分 | 计划 §6.7 要求「`spacing` 不得出现在兄弟布局」——需先有门禁再判断是否所有控件都遵守 |
+
+## F.3 本轮确立、后续必须遵守的教训
+
+1. **🚫 绝不用 `git checkout` 清理工作区**（多代理并行时尤其）。
+   第 67 轮发生过一次：`git checkout` 把 12 个已完成的 `src/` 文件整体回退，
+   而**未跟踪的新文件（`metrics.rs`/`hints.rs`）幸存** ⇒ 编译仍过、测试仍绿，
+   **缺陷完全静默**。清理快照只能逐文件重新导出。
+   （记录于 `log-20260923-1.md` §9）
+
+2. **并行代理必须有互斥写域**。第 67 轮两个代理被派了重叠目录，
+   是上述回退的隐患来源。
+
+3. **门禁的正则也是判据**。`check_control_has_tests.py` 只认字面 `#[cfg(test)]`，
+   于是 `#[cfg(all(test, full_widgets))]` 的模块被读成「不存在」，
+   **有测试的控件被报成无测试**（假红）。修法是放宽为「`test` 必须在合取里」。
+   该门禁的注释自己已记录过它的**假绿**版本（179/179 而 `Toast` 无测试），
+   说明**假红与假绿是同一缺陷的两个方向**。
+
+4. **timeout 机制本身要有判据**。`run_all_gates.sh` 的「跑死」不是缺 timeout，
+   而是三个具体缺陷：per-gate 预算 1800s 过长（58×1800 = 最坏 29 小时）、
+   缺整轮预算、以及 **`rw_kill_tree` 只杀 pid 导致 `cargo` 持 target-dir 锁
+   ⇒ 下一个门禁阻塞在锁上**（**超时反而制造挂死**）。
+   现在：per-gate 900s、整轮 2700s、`pkill -P` 递归杀后代、未跑到的门禁报 `NOT-RUN`
+   （**既不算 PASS 也不算 FAIL**）。两者均可用 `RW_GATE_TIMEOUT` / `RW_RUN_TIMEOUT` 覆盖。
+
+5. **README 是产物，产物要有判据**。新增 `examples/readme_check.rs` 后，
+   它立刻抓到我自己的一个错误断言（把交叉轴 `Stretch` 说成「不被拉高」）。
+   **同步文档不只是「改到看起来对」**。
+
+## F.4 一句话结论
+
+**「控件不再把自己当成容器」** —— 单控件层面本计划的目标已达成（174 个控件的绘制盒
+由度量体系推导，零尺寸与空文本元素归零，五个 profile 全部编译干净）。
+**「组合控件由布局组装」**（F-1/F-2）是本计划剩下的主体，施工细则已备于 F.2.2。

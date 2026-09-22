@@ -62,22 +62,53 @@ rw_have_gnu_timeout() {
 
 # Kill a process and everything it spawned.
 #
-# The process group is signalled first (`kill -- -PID`, valid because the child
-# is started with `setsid`/`set -m` semantics below): a bare `kill PID` reaps
-# the shell wrapper while `cargo`/`rustc` children keep running and holding the
-# target-dir lock, so the next gate in the run blocks on that lock — a hang that
-# would be *caused* by the timeout rather than prevented by it.
+# # Why killing the pid alone is not enough
+#
+# A gate is a bash script that shells out to `cargo`, which forks `rustc`. A bare
+# `kill PID` reaps the script while `cargo`/`rustc` keep running and keep holding
+# the **target-directory lock**. The next gate then blocks on that lock for the
+# remainder of *its* budget — a hang caused by the timeout rather than prevented
+# by it. Since the whole point of the bound is that one wedged gate must not take
+# the run with it, the grandchildren have to go too.
+#
+# Three mechanisms, strongest first:
+#
+#   1. GNU `timeout` (when present) already handles this, and `rw_run_bounded`
+#      prefers it. Nothing here runs in that case.
+#   2. `pkill -P` walks the child's own process tree, which is what a macOS bash
+#      3.2 host needs: it has no job-control process groups to signal, so
+#      `kill -- -PGID` is unavailable and the descendants must be named
+#      individually. `pkill` is part of the BSD base system.
+#   3. The process group as a last resort, for a host that does group children.
 rw_kill_tree() {
   local pid="$1"
-  # `-PID` addresses the process group (the child was started under `set -m`
-  # above). Fall back to the bare pid for a host that did not group it.
+  # (2) Descendants first, deepest-listed order from pkill: killing the leaves
+  # before the root avoids the root re-parenting them to init, where they would
+  # become unreachable from this pid and keep the lock forever.
+  if command -v pkill >/dev/null 2>&1; then
+    pkill -TERM -P "$pid" 2>/dev/null || true
+  fi
+  # (3) Then the process group, then the pid itself.
   kill -TERM "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+
   local i=0
   while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 20 ]; do
     sleep 0.25
     i=$((i + 1))
   done
+
+  # Escalate on anything still alive after the grace period, descendants included.
+  if command -v pkill >/dev/null 2>&1; then
+    pkill -KILL -P "$pid" 2>/dev/null || true
+  fi
   kill -KILL "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+
+  # A `cargo` that survived even that would wedge the next gate on the target-dir
+  # lock. Report it loudly rather than letting the failure reappear as an
+  # unexplained slow gate: this is the one case the bound could not handle.
+  if command -v pgrep >/dev/null 2>&1 && pgrep -P "$pid" >/dev/null 2>&1; then
+    echo "rw_kill_tree: pid $pid still has children after SIGKILL; the next gate may block on a build lock" >&2
+  fi
 }
 
 # rw_run_bounded <seconds> <command> [args…]

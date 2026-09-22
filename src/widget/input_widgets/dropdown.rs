@@ -8,14 +8,16 @@
 //! a `changed` signal and collapses the list.
 
 use crate::compat::{String, ToString, Vec};
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
+use crate::style::EdgeOffsets;
 use crate::widget::capability::coercion::{expect_bool, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -23,6 +25,64 @@ use crate::{impl_widget_property_hooks, property_names_of};
 const ITEM_HEIGHT: u32 = 20;
 /// Padding between the button text and the widget edges.
 const PADDING: i32 = 4;
+
+/// Width of the indicator cell at the field's trailing edge.
+///
+/// It was the literal `12` at the draw site while the value was written at `geo.x + PADDING`
+/// with no bound, so the two were independent derivations from the same field width and a
+/// long selection ran under the arrow. Naming it is what lets the value's box be derived
+/// from it instead of from a second numeral.
+const INDICATOR_WIDTH: i32 = 12;
+
+/// Space between the indicator's leading edge and the end of the value's box: 2.
+///
+/// Half of [`PADDING`], written as a literal because `Ord::max` is not available in a
+/// `const` expression on this toolchain; the relation is documented rather than computed so
+/// the constant table stays where a reader can find it.
+const INDICATOR_LEADING_GAP: i32 = 2;
+
+/// The indicator's box and the box the value may occupy, derived together.
+///
+/// # Why the two are computed together
+///
+/// A `▼` and the label beside it are one row: the label must *yield* to the indicator rather
+/// than be clipped by an inset that was chosen independently of it. QML states the same
+/// relation as `rightPadding: padding + indicator.width`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct FieldGeometry {
+    /// The indicator cell at the field's trailing edge.
+    indicator_box: Rect,
+    /// The rectangle the selected label may occupy.
+    label_box: Rect,
+}
+
+impl FieldGeometry {
+    /// Derives both boxes from the band the control paints and `line_height`.
+    fn for_band(band: Rect, line_height: u32) -> Self {
+        let indicator_width = INDICATOR_WIDTH.min(band.width as i32);
+        let height = line_height.min(band.height);
+        let indicator_x = band.x + band.width as i32 - PADDING - indicator_width;
+        // Keep the cell inside the band when the field is narrower than its own padding: a
+        // field with no room for its chrome shows no indicator rather than one outside itself.
+        let indicator_x =
+            indicator_x.min(band.x + band.width.saturating_sub(indicator_width as u32) as i32);
+        let indicator_box = Rect::new(
+            indicator_x.max(band.x),
+            band.y + (band.height.saturating_sub(height) / 2) as i32,
+            indicator_width.max(0) as u32,
+            height,
+        );
+        let label_right = indicator_box.x.saturating_sub(INDICATOR_LEADING_GAP);
+        let label_left = (band.x + PADDING).min(label_right);
+        let label_box = Rect::new(
+            label_left,
+            band.y,
+            label_right.saturating_sub(label_left) as u32,
+            band.height,
+        );
+        Self { indicator_box, label_box }
+    }
+}
 
 /// Dropdown widget for selecting from a list of options.
 ///
@@ -122,6 +182,25 @@ impl Dropdown {
 
     // ─── helpers ────────────────────────────────────────────────────────
 
+    /// The band the collapsed field actually occupies: full width, one field tall, centred.
+    ///
+    /// # Why the field is not the control's rectangle
+    ///
+    /// A dropdown is a text field with an indicator in it, and
+    /// [`dimensions::TEXT_FIELD_MIN_HEIGHT`] is what every field in this crate occupies. The
+    /// 240x120 census cell drew a 240x120 slab, so the collapsed field and the `line_edit`
+    /// beside it were different objects. The band is the single derivation the fill, the
+    /// border, the label and the indicator all read — and the expanded list still hangs from
+    /// the control's own bottom edge, because the list is not part of the field.
+    fn field_band(&self) -> Rect {
+        ControlMetrics::full_width_band(self.geometry(), dimensions::TEXT_FIELD_MIN_HEIGHT)
+    }
+
+    /// The indicator's cell and the label's box, derived from the band and one line height.
+    fn field_geometry(&self, line_height: u32) -> FieldGeometry {
+        FieldGeometry::for_band(self.field_band(), line_height)
+    }
+
     /// Compute the bounding `Rect` of the n-th list item in screen coordinates.
     /// Only meaningful when `expanded == true`.
     fn item_rect(&self, index: usize) -> Rect {
@@ -149,8 +228,30 @@ impl Widget for Dropdown {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        let max_text_w = self.items.iter().map(|s| s.len() as u32).max().unwrap_or(6) * 8 + 30; // + dropdown arrow area
-        crate::core::Size::new(max_text_w.max(80), 24)
+        // Derived through the same metric the band is drawn from, so the reported size and the
+        // painted box cannot describe two different controls. The width was the bare expression
+        // `max_text_w * 8 + 30` and the height a flat `24`, while `draw` painted the whole given
+        // rectangle — 120 px tall in the census cell.
+        let widest = self.items.iter().map(|s| s.len() as u32).max().unwrap_or(6) * 8;
+        let side_air = (dimensions::TEXT_FIELD_MIN_HEIGHT / 2).saturating_sub(8);
+        let trailing = (PADDING.max(0) as u32)
+            + INDICATOR_WIDTH.max(0) as u32
+            + INDICATOR_LEADING_GAP.max(0) as u32;
+        let padding = EdgeOffsets {
+            top: side_air,
+            right: trailing,
+            bottom: side_air,
+            left: PADDING.max(0) as u32,
+        };
+        let floor = Size::new(
+            PADDING.max(0) as u32 + INDICATOR_WIDTH.max(0) as u32 + trailing,
+            dimensions::TEXT_FIELD_MIN_HEIGHT,
+        );
+        let hint = ControlMetrics::implicit_size(Size::new(widest, 0), padding, floor);
+        // The height is the band's, not a second numeral: this is what makes "the reported size
+        // and the drawn box agree" checkable rather than merely intended. A `select` with no
+        // items is still a field, so the height does not depend on the list.
+        Size::new(hint.width, self.field_band().height.max(floor.height))
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -292,7 +393,16 @@ impl EventHandler for Dropdown {
 
 impl Draw for Dropdown {
     fn draw(&mut self, context: &mut RenderContext) {
-        let geo = self.geometry();
+        // ── The collapsed field actually painted ──
+        //
+        // `geometry()` is the area the control was *given*; the **button** part of a dropdown
+        // is a text field and a field is a fixed-height band. The expanded list below it is a
+        // popup rather than part of the field, so it still hangs from the control's own bottom
+        // edge, which is a separate derivation and is left as one.
+        let geo = self.field_band();
+        if geo.width == 0 || geo.height == 0 {
+            return;
+        }
 
         // ── style-derived colours ───────────────────────────────────────
         let bg = self.style().background_color.unwrap_or(Color::rgb(255, 255, 255));
@@ -309,49 +419,47 @@ impl Draw for Dropdown {
         // Border
         context.draw_rect(geo, border);
 
-        // Arrow indicator (▼)
-        let arrow = "▼";
-        let arrow_x = geo.x + geo.width as i32 - PADDING - 12;
-
-        // Text (selected item or placeholder)
-        let label_x = geo.x + PADDING;
-        // Both labels on the collapsed row sit on the field's own line box. A glyph origin is
+        // The indicator's cell and the label's box come from one derivation, so the selection
+        // yields to the indicator instead of being written at an unconstrained offset.
+        // Both labels on the collapsed row sit on the field's own line box: a glyph origin is
         // the box's top-left edge, so the old `geo.y + geo.height / 2` put that edge on the
-        // field's middle line and drew the value and the arrow half a line low.
+        // field's middle line and drew the value and the indicator half a line low.
         let field_line = context.text_line(geo, &Font::default());
-        let label_y = field_line.y;
+        let geometry = self.field_geometry(field_line.height);
+        let indicator = "▼";
+        let label_line = context.text_line(geometry.label_box, &Font::default());
+        let indicator_line = context.text_line(geometry.indicator_box, &Font::default());
 
-        if let Some(text) = self.selected_text() {
-            context.draw_text(
-                Point::new(label_x, label_y),
-                text,
-                &Font::default(),
-                text_color,
-                HorizontalAlignment::Left,
-            );
-            context.draw_text(
-                Point::new(arrow_x, label_y),
-                arrow,
-                &Font::default(),
-                text_color,
-                HorizontalAlignment::Left,
-            );
-        } else {
-            context.draw_text(
-                Point::new(label_x, label_y),
-                "(Select)",
-                &Font::default(),
-                placeholder_color,
-                HorizontalAlignment::Left,
-            );
-            context.draw_text(
-                Point::new(arrow_x, label_y),
-                arrow,
-                &Font::default(),
-                placeholder_color,
-                HorizontalAlignment::Left,
-            );
-        }
+        let (label, color) = match self.selected_text() {
+            Some(text) => (text, text_color),
+            None => ("(Select)", placeholder_color),
+        };
+        // Fitted, so a selection longer than the field is elided rather than drawn under the
+        // indicator — the box it is given is the one the indicator left.
+        context.draw_text_fitted(
+            Rect::new(
+                geometry.label_box.x,
+                label_line.y,
+                geometry.label_box.width,
+                label_line.height,
+            ),
+            label,
+            &Font::default(),
+            color,
+            HorizontalAlignment::Left,
+        );
+        context.draw_text_fitted(
+            Rect::new(
+                geometry.indicator_box.x,
+                indicator_line.y,
+                geometry.indicator_box.width,
+                indicator_line.height,
+            ),
+            indicator,
+            &Font::default(),
+            color,
+            HorizontalAlignment::Left,
+        );
 
         // ── Expanded list ───────────────────────────────────────────────
         if !self.expanded || self.items.is_empty() {
@@ -644,5 +752,51 @@ mod tests {
     fn dropdown_selected_text_none_when_empty() {
         let dd = Dropdown::new(Vec::new(), Rect::new(0, 0, 100, 24));
         assert!(dd.selected_text().is_none());
+    }
+
+    /// The label's box ends where the indicator's cell begins, at every control width.
+    ///
+    /// # What this pins
+    ///
+    /// BLUE22 §B.6 rule 4: a sub-part's box is derived from its sibling, so the selection
+    /// *yields* to the indicator. The label used to be written at `geo.x + PADDING` with no
+    /// upper bound while the indicator sat at `geo.x + geo.width - PADDING - 12`, so a long
+    /// selection ran underneath the arrow.
+    #[test]
+    fn the_label_box_ends_where_the_indicator_begins() {
+        let trailing = PADDING.max(0) as u32
+            + INDICATOR_WIDTH.max(0) as u32
+            + INDICATOR_LEADING_GAP.max(0) as u32;
+        for width in [0u32, 20, 64, 240, 400] {
+            let dd = Dropdown::new(vec!["Sample".to_string()], Rect::new(0, 0, width, 120));
+            let geometry = dd.field_geometry(14);
+            let band = dd.field_band();
+            assert_eq!(
+                geometry.label_box.x + geometry.label_box.width as i32 + INDICATOR_LEADING_GAP,
+                geometry.indicator_box.x,
+                "the label must stop one gap short of the indicator at width {width}"
+            );
+            assert!(
+                geometry.indicator_box.x + geometry.indicator_box.width as i32
+                    <= band.x + band.width as i32,
+                "the indicator must stay inside the band at width {width}"
+            );
+            if width < trailing {
+                assert_eq!(
+                    geometry.label_box.width, 0,
+                    "a band too narrow for its own chrome holds no label at width {width}"
+                );
+            }
+        }
+    }
+
+    /// The reported height is the band that is painted.
+    #[test]
+    fn the_reported_height_is_the_band_that_is_painted() {
+        let dd = Dropdown::new(Vec::new(), Rect::new(0, 0, 240, 120));
+        let band = dd.field_band();
+        assert_eq!(band.height, dimensions::TEXT_FIELD_MIN_HEIGHT);
+        assert_eq!(dd.size_hint().height, band.height);
+        assert_eq!(band.y, (120 - dimensions::TEXT_FIELD_MIN_HEIGHT as i32) / 2);
     }
 }

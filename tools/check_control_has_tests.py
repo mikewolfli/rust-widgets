@@ -83,7 +83,15 @@ def test_bodies() -> dict[str, str]:
         if str(path) in EXCLUDED:
             continue
         text = path.read_text(encoding="utf-8")
-        for match in re.finditer(r"#\[cfg\(test\)\]", text):
+        # A test module may carry extra profile gates alongside `test`, because some
+        # tests need a module that only exists in a build with a device profile —
+        # `crate::theme` and `crate::widget::census` are both `cfg(device_profile)` /
+        # `cfg(full_widgets)`, so a test that drives the theme cannot compile under
+        # `mini`. Matching the literal `#[cfg(test)]` would read such a module as
+        # absent and report a tested control as untested, which is the vacuous answer
+        # in the other direction. So the attribute is matched together with any extra
+        # conjuncts, and only `test` is required to be among them.
+        for match in re.finditer(r"#\[cfg\(([^\]]*\btest\b[^\]]*)\)\]", text):
             # Take from the attribute to the end of the file: a test module is the last
             # thing in every file in this crate, and taking a fixed window would cut
             # long modules short while a brace count would need to know whether the
@@ -97,7 +105,9 @@ def test_bodies() -> dict[str, str]:
     # it the gate would push controls back towards one file each.
     for path in list(pathlib.Path("src").rglob("*.rs")):
         text = path.read_text(encoding="utf-8")
-        for declared in re.findall(r"#\[cfg\(test\)\]\s*mod\s+(\w+)\s*;", text):
+        for declared in re.findall(
+            r"#\[cfg\([^\]]*\btest\b[^\]]*\)\]\s*mod\s+(\w+)\s*;", text
+        ):
             sibling = path.parent / f"{declared}.rs"
             if sibling.exists():
                 bodies[str(path)] = bodies.get(str(path), "") + sibling.read_text(

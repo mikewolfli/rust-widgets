@@ -618,7 +618,7 @@ impl Layout for FlexLayout {
         }
     }
 
-    /// Lays the row out from the children's own hints.
+    /// Lays the items out from the children's own hints.
     ///
     /// # What this replaces
     ///
@@ -634,35 +634,46 @@ impl Layout for FlexLayout {
     /// says how big it wants to be, `fillWidth` says whether it may absorb the leftover.
     /// A child that declares neither is laid out at its preferred size and no more, which
     /// is the behaviour a caller reading only `size_hint` expects.
+    ///
+    /// # Why the boxes are placed here rather than by a second packing pass
+    ///
+    /// The order the children were handed over **is** the order they were built in: a caller
+    /// that says `[ok, cancel]` means `ok` then `cancel`, left to right. The hint channel is
+    /// the one path a caller can take, so it is also the one path where that intent is known,
+    /// and it must not be laundered through a temporary layout that rebuilds its item list and
+    /// loses which child was which.
+    ///
+    /// Margins are paid out of the room a child may occupy, on the child's own sides: its
+    /// leading margin separates it from whatever is before it and its trailing margin from
+    /// whatever follows. That makes an inter-element gap the caller's own declaration — the
+    /// `padding`/`spacing` split — instead of something every call site has to re-derive, and
+    /// it is why this path can honour `justify_content` as well: the leftover room is what
+    /// remains after the margins, not after the content alone.
     fn arrange(&self, rect: Rect, children: &[ChildInfo], out: &mut dyn FnMut(ObjectId, Rect)) {
-        // The layout's own item list still decides *which* children it manages and in
-        // what order; a child that is not in it is not laid out, exactly as `update` does.
-        // The hints are attached by id, so a caller can hand over every child it has
-        // without first pruning the list to match.
-        let mut sizes: Vec<Size> = Vec::with_capacity(self.items.len());
-        for item in &self.items {
-            let size = match item.widget_id.and_then(|id| ChildInfo::find(children, id)) {
-                Some(info) => {
-                    // RTL/vertical: `hints` is already axis-labelled, so no direction
-                    // check is needed to read the right axis — that is the whole point of
-                    // `Hints` carrying both axes rather than one number.
-                    let mut preferred = info.hints.preferred();
-                    // A child's own margins come out of the room it may occupy, so the
-                    // gap between two children is the layout's `gap` *plus* the pair's
-                    // margins — the caller's padding rather than the layout's.
-                    preferred.width =
-                        preferred.width.saturating_add(info.params.margins.horizontal_total());
-                    preferred.height =
-                        preferred.height.saturating_add(info.params.margins.vertical_total());
-                    preferred
-                }
-                // No hint supplied for this child: keep whatever size the caller last
-                // handed in, so a partially-migrated caller does not lose the children it
-                // has not converted yet.
-                None => self.child_sizes.get(sizes.len()).copied().unwrap_or(Size::new(0, 0)),
-            };
-            sizes.push(size);
+        if self.items.is_empty() {
+            return;
         }
+        // Which entry belongs to which item, resolved once so the two are never indexed by
+        // position into two lists that could disagree. An item with no widget id (a spacer) or
+        // with no `ChildInfo` gets `None` and keeps whatever size the caller last handed in,
+        // so a partially-migrated caller does not lose the children it has not converted yet.
+        let described: Vec<Option<ChildInfo>> = self
+            .items
+            .iter()
+            .map(|item| item.widget_id.and_then(|id| ChildInfo::find(children, id).copied()))
+            .collect();
+        // The room each child *wants including its own margins* — the same sum
+        // [`FlexLayout::update`] would have been handed through `set_child_sizes`.
+        let sizes: Vec<Size> = described
+            .iter()
+            .enumerate()
+            .map(|(index, info)| match info {
+                // The stored size already carries the margins this path adds back below, so it
+                // is added only for a child the caller described.
+                Some(info) => info.bounds(),
+                None => self.child_sizes.get(index).copied().unwrap_or(Size::new(0, 0)),
+            })
+            .collect();
 
         let content_rect = Rect::new(
             rect.x + self.padding,
@@ -670,19 +681,138 @@ impl Layout for FlexLayout {
             rect.width.saturating_sub(2 * self.padding as u32),
             rect.height.saturating_sub(2 * self.padding as u32),
         );
+        if content_rect.width == 0 || content_rect.height == 0 {
+            return;
+        }
 
-        // The same solver the legacy path uses, driven by the hints collected above.
+        let is_row = self.is_row();
+        let (available_main, origin_main, cross_origin, available_cross) = if is_row {
+            (content_rect.width as i32, content_rect.x, content_rect.y, content_rect.height as i32)
+        } else {
+            (content_rect.height as i32, content_rect.y, content_rect.x, content_rect.width as i32)
+        };
+
+        // The leftover room is what the justification distributes.
         //
-        // The sizes go through a *temporary* layout rather than mutating `self`: `arrange`
-        // takes `&self`, and a layout that had to be mutated before asking it a question
-        // could not be shared between two children or held behind a `&` — which is the
-        // shape the old `set_child_sizes(&mut self)` forced on every caller.
-        let solver = FlexLayout { child_sizes: sizes, ..self.clone() };
-        let results = solver.compute_rects(content_rect, None);
-        for (widget_id, child_rect) in results {
-            if let Some(wid) = widget_id {
-                out(wid, child_rect);
+        // The sizes themselves come from `update`'s own solver, **not** from the hints directly.
+        // That is deliberate and it is the whole of this method's compatibility contract: a
+        // caller that adopts the hint channel must get the geometry it already had, and the
+        // solver is where `fill`/`stretch` grow, where `flex_shrink` compresses, and where the
+        // minimum is floored. Re-deriving sizes here would make the two entry points two
+        // algorithms — which is exactly what the "the channel is not a second layout" test
+        // exists to forbid, and how adopting the channel would silently change every existing
+        // layout.
+        let inset = |index: usize| -> (i32, i32, i32, i32) {
+            match described[index] {
+                Some(info) => (
+                    info.params.margins.left as i32,
+                    info.params.margins.top as i32,
+                    info.params.margins.right as i32,
+                    info.params.margins.bottom as i32,
+                ),
+                None => (0, 0, 0, 0),
             }
+        };
+        let outer_cross = |index: usize| -> i32 {
+            let size = sizes[index];
+            if is_row {
+                size.height as i32
+            } else {
+                size.width as i32
+            }
+        };
+        // The solver is driven by the outer sizes (each child's box plus its margins), and it
+        // reports what each *item*'s box may be. The margins come back out below, so a margin is
+        // room the child's box never takes: it is the declaration that the box sits a gap away
+        // from its neighbour, not that the box is wider.
+        //
+        // The interior gaps are the caller's margins, and the solver's own `gap` is `self.gap`,
+        // so a caller that also sets the layout's `gap` gets both — the same double spacing the
+        // crate has always allowed, and the reason the assembly rules put inter-element space on
+        // one of the two and not both.
+        let solver = FlexLayout { child_sizes: sizes.clone(), ..self.clone() };
+        let (solved_main, _total_grow, _total_main) =
+            solver.compute_main_sizes(available_main, self.gap);
+        // The leftover is measured against what the solver produced rather than against the
+        // children's request: when the solver shrank them, the row really does fill the parent
+        // and there is nothing left to justify.
+        let consumed: i32 = (0..solved_main.len())
+            .map(|index| solved_main[index] + if index > 0 { inset(index).0 } else { 0 })
+            .sum::<i32>()
+            + self.gap * (solved_main.len().saturating_sub(1)) as i32;
+        let leftover = (available_main - consumed).max(0);
+        let first_offset = match self.justify_content {
+            JustifyContent::FlexStart => 0,
+            JustifyContent::FlexEnd => leftover,
+            JustifyContent::Center => leftover / 2,
+            // `SpaceBetween` puts the leftover *between* the children and none at the edges; the
+            // two "space around" variants add half a unit at each edge and a full unit between,
+            // which is why their inter-item term is twice their edge term.
+            JustifyContent::SpaceBetween => 0,
+            JustifyContent::SpaceAround => leftover / (2 * solved_main.len().max(1) as i32),
+            JustifyContent::SpaceEvenly => leftover / (solved_main.len().max(1) as i32 + 1),
+        };
+        let inter_extra = match self.justify_content {
+            JustifyContent::SpaceBetween if solved_main.len() > 1 => {
+                leftover / (solved_main.len() as i32 - 1)
+            }
+            JustifyContent::SpaceAround if !solved_main.is_empty() => {
+                leftover / solved_main.len() as i32
+            }
+            JustifyContent::SpaceEvenly if !solved_main.is_empty() => {
+                leftover / (solved_main.len() as i32 + 1)
+            }
+            _ => 0,
+        };
+
+        let mut cursor = origin_main + first_offset;
+        for index in 0..sizes.len() {
+            let (left, top, right, bottom) = inset(index);
+            // The solver reports the *whole* box, margins included, so the child's drawn extent
+            // is that minus its own margins. Nothing grows here: a child that should absorb room
+            // said so through `fill`, and `update`'s solver already paid it.
+            let solved = solved_main.get(index).copied().unwrap_or(0);
+            let main_len = (solved - left - right).max(0);
+            let cross_len = (outer_cross(index) - top - bottom).min(available_cross).max(0);
+            // Cross-axis alignment inside the child's own inset box. `Stretch` is the default and
+            // the only mode the previous implementation expressed, and it stays the answer for a
+            // child that declared no alignment of its own.
+            let (cross_start, cross_len) =
+                match self.items[index].align_self.unwrap_or(self.align_items) {
+                    AlignItems::Stretch => (0, cross_len),
+                    AlignItems::FlexStart => (0, outer_cross(index) - top - bottom),
+                    AlignItems::FlexEnd => {
+                        (available_cross - cross_len, outer_cross(index) - top - bottom)
+                    }
+                    AlignItems::Center => {
+                        ((available_cross - cross_len) / 2, outer_cross(index) - top - bottom)
+                    }
+                    AlignItems::Baseline => (0, outer_cross(index) - top - bottom),
+                };
+            let cross_start = cross_start.max(0);
+
+            // The child's box sits at its cursor plus its own leading margin, so a margin is
+            // space the child does not draw in — which is what makes it a *gap* rather than a
+            // padding of the child's own chrome.
+            let child_rect = if is_row {
+                Rect::new(
+                    cursor + left,
+                    cross_origin + cross_start + top,
+                    main_len.max(0) as u32,
+                    cross_len.max(0) as u32,
+                )
+            } else {
+                Rect::new(
+                    cross_origin + cross_start + left,
+                    cursor + top,
+                    cross_len.max(0) as u32,
+                    main_len.max(0) as u32,
+                )
+            };
+            if let Some(widget_id) = self.items[index].widget_id {
+                out(widget_id, child_rect);
+            }
+            cursor += solved + self.gap + inter_extra;
         }
     }
 

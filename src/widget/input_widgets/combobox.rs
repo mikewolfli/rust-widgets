@@ -1,19 +1,109 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! Combo box widget.
+//! Combo box widget — a text field with a drop-down indicator (BLUE13 R2.4).
+//!
+//! # Why the indicator drives the value's padding
+//!
+//! The indicator is part of the control's trailing chrome, and the value's box must *yield*
+//! to it: QML's `ComboBox.qml` states this as `rightPadding: padding + indicator.width`, and
+//! the reason is that a fixed text inset and a fixed indicator inset are two unrelated
+//! derivations from the *same* edge. A wider indicator — or a larger font measuring one —
+//! then overlaps the value instead of pushing it. The previous form could not express that
+//! at all: the value's width was `rect.width - (PADDING + ARROW_SIZE + PADDING)` and the
+//! indicator sat at `rect.x + rect.width - PADDING - ARROW_SIZE`, two spellings of one fact
+//! in two different orders.
 use crate::compat::{String, ToString, Vec};
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 
+use crate::style::EdgeOffsets;
 use crate::widget::capability::coercion::{expect_bool, expect_string, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+/// Space between the indicator's leading edge and the end of the value's box.
+///
+/// Half the field's own horizontal padding, so the gap between the value and the indicator is
+/// visibly tighter than the gap between the value and the field's edge — the reading every
+/// toolkit uses, and a *relation* rather than a third independent numeral.
+const INDICATOR_LEADING_GAP: u32 = dimensions::TEXT_FIELD_PADDING_H / 2;
+
+/// The box the drop-down indicator occupies, and the space the value leaves for it.
+///
+/// # Why one derivation and not two arithmetic expressions
+///
+/// The indicator's box, the value's right inset and the value's available width were three
+/// separate computations in `draw`, all spelled from the same two numerals (`PADDING = 4`,
+/// `ARROW_SIZE = 8`) in three different orders, and none of them was reachable from a test.
+/// Making both boxes outputs of one function is what makes "the value yields to the
+/// indicator" a property the suite can assert instead of a coincidence.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct IndicatorGeometry {
+    /// The triangle's bounding box.
+    box_rect: Rect,
+    /// The rectangle the value text may occupy.
+    text_box: Rect,
+}
+
+impl IndicatorGeometry {
+    /// Derives both boxes from the band the control paints and `line_height`.
+    ///
+    /// `line_height` is a parameter rather than measured here, for the same reason
+    /// `CheckBox::indicator_rect` takes one: the indicator must sit on the *value's* line box,
+    /// and only the caller knows which font the value is drawn in. Deriving the two from the
+    /// band's midpoint instead is how a glyph ends up half a line from the text it labels.
+    fn for_band(band: Rect, line_height: u32) -> Self {
+        let indicator_width = dimensions::BUTTON_ICON_SIZE.min(band.width);
+        let height = line_height.min(band.height);
+        // The indicator is inset from the band's trailing edge by the field's own padding, so
+        // it lines up with the value's leading inset. That symmetry is the whole reason the
+        // box is derived from the band rather than from the control's rectangle.
+        let box_x = band.x
+            + band.width.saturating_sub(indicator_width + dimensions::TEXT_FIELD_PADDING_H) as i32;
+        let box_rect = Rect::new(
+            box_x,
+            band.y + (band.height.saturating_sub(height) / 2) as i32,
+            indicator_width,
+            height,
+        );
+        // The value's box stops one gap before the indicator, so a label that grew cannot be
+        // painted underneath it and a narrow control cannot produce a negative width.
+        let text_right = box_rect.x.saturating_sub(INDICATOR_LEADING_GAP as i32);
+        // In a band too narrow to hold its own leading inset the content box would start at
+        // `band.x` and end *before* it, i.e. an inverted rectangle — a drawing instruction
+        // that paints to the left of the control. It collapses to zero width at the band's
+        // leading edge instead, which is the same reading `ControlMetrics::content_box`
+        // gives to oversized padding: a squeezed field has no room for a value rather than a
+        // value drawn outside itself.
+        let text_left = (band.x + dimensions::TEXT_FIELD_PADDING_H as i32).min(text_right);
+        let text_box =
+            Rect::new(text_left, band.y, text_right.saturating_sub(text_left) as u32, band.height);
+        Self { box_rect, text_box }
+    }
+
+    /// The triangle's three points, derived from its own box.
+    ///
+    /// The points were previously computed as three loose `y` values around the field's
+    /// middle line with the half-width spelled inline, which made the shape a fourth
+    /// expression of the same fact and left it unclamped when the field was short.
+    fn points(&self) -> [Point; 3] {
+        let b = self.box_rect;
+        let mid_y = b.y + b.height as i32 / 2;
+        let half_height = b.height as i32 / 4;
+        [
+            Point::new(b.x, mid_y - half_height),
+            Point::new(b.x + b.width as i32, mid_y - half_height),
+            Point::new(b.x + b.width as i32 / 2, mid_y + half_height),
+        ]
+    }
+}
 /// Combo box widget.
 pub struct ComboBox {
     base: BaseWidget,
@@ -34,6 +124,25 @@ pub struct ComboBox {
     pub activated: Signal1<usize>,
 }
 impl ComboBox {
+    /// The band the control actually paints: full width, one field tall, centred.
+    ///
+    /// # Why the control is not its own rectangle
+    ///
+    /// A combo box is a text field with an indicator in it, and
+    /// [`dimensions::TEXT_FIELD_MIN_HEIGHT`] is what every field in this crate occupies. The
+    /// 240x120 census cell drew a 240x120 slab, so a combo box and the `line_edit` beside it
+    /// in the same form were different objects even though a user reads them as one. The band
+    /// is the single derivation the fill, the border, the indicator and the value's box all
+    /// read.
+    fn field_band(&self) -> Rect {
+        ControlMetrics::full_width_band(self.geometry(), dimensions::TEXT_FIELD_MIN_HEIGHT)
+    }
+
+    /// The indicator's box and the value's box, derived from the band and one line height.
+    fn indicator_geometry(&self, line_height: u32) -> IndicatorGeometry {
+        IndicatorGeometry::for_band(self.field_band(), line_height)
+    }
+
     /// Creates an empty combo box with geometry.
     pub fn new(geometry: Rect) -> Self {
         Self {
@@ -206,9 +315,33 @@ impl Widget for ComboBox {
     }
 
     fn size_hint(&self) -> Size {
-        // Find widest item
-        let max_w = self.items().iter().map(|s| s.len() as u32).max().unwrap_or(8) * 8 + 30; // + dropdown arrow
-        Size::new(max_w.max(80), 24)
+        // Find widest item.
+        //
+        // The measured width is the item's own content width and is handed to
+        // `ControlMetrics::implicit_size` as content, with the field's padding-plus-indicator
+        // requirement supplying the floor. The width was previously `max_w * 8 + 30` and the
+        // height a flat `24` — neither had any relation to the 120 px slab `draw` painted, nor
+        // to the 48 px band it paints now.
+        let widest = self.items().iter().map(|s| s.len() as u32).max().unwrap_or(8) * 8;
+        let side_air = (dimensions::TEXT_FIELD_MIN_HEIGHT / 2).saturating_sub(8);
+        let trailing =
+            dimensions::TEXT_FIELD_PADDING_H + dimensions::BUTTON_ICON_SIZE + INDICATOR_LEADING_GAP;
+        let padding = EdgeOffsets {
+            top: side_air,
+            right: trailing,
+            bottom: side_air,
+            left: dimensions::TEXT_FIELD_PADDING_H,
+        };
+        // The floor: a field wide enough to hold its own leading inset, the indicator and the
+        // indicator's gap, at the height every entry control in the crate shares.
+        let floor = Size::new(
+            dimensions::TEXT_FIELD_PADDING_H + dimensions::BUTTON_ICON_SIZE + trailing,
+            dimensions::TEXT_FIELD_MIN_HEIGHT,
+        );
+        let hint = ControlMetrics::implicit_size(Size::new(widest, 0), padding, floor);
+        // The height is the band's, not a second numeral: this is what makes "the reported
+        // size and the drawn box agree" checkable rather than merely intended.
+        Size::new(hint.width, self.field_band().height.max(floor.height))
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -344,59 +477,57 @@ impl EventHandler for ComboBox {
 }
 impl Draw for ComboBox {
     fn draw(&mut self, context: &mut RenderContext) {
-        let rect = self.geometry();
         let style = self.style();
-        const PADDING: i32 = 4;
-        const ARROW_SIZE: i32 = 8;
+
+        // ── The band actually painted ──
+        //
+        // `geometry()` is the area the control was *given*; a combo box is a text field, and a
+        // field is a fixed-height band. Painting the given rectangle made a 240x120 census cell
+        // a 240x120 surface, and the value and the indicator were then positioned against an
+        // edge that was itself not the field's.
+        let band = self.field_band();
+        if band.width == 0 || band.height == 0 {
+            return;
+        }
 
         // Draw background
         let bg = style.background_color.unwrap_or(Color::rgb(255, 255, 255));
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), bg);
+        context.fill_rect(band, bg);
         // Draw border
         if let Some(border_color) = style.border_color {
-            context.draw_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), border_color);
+            context.draw_rect(band, border_color);
         }
 
         let default_font = crate::core::Font::default();
         let font = style.font.as_ref().unwrap_or(&default_font);
-        // One line box for both the current value and the arrow, so the two cannot end up at
+        // One line box for both the current value and the indicator, so the two cannot end up at
         // different heights. The previous form used the control's middle for the text origin
         // — which is the glyph box's top edge, so the value sat half a line low — and the same
-        // point for the arrow, which is why they agreed with each other while both being wrong.
-        let line = context.text_line(rect, font);
-        let mid_y = line.y + line.height as i32 / 2;
+        // point for the indicator, which is why they agreed with each other while both being
+        // wrong.
+        let line = context.text_line(band, font);
+        // The indicator's box and the value's box come from one derivation, so the value
+        // yields to the indicator instead of being clipped by a second, unrelated inset.
+        let geometry = self.indicator_geometry(line.height);
 
-        // Draw dropdown arrow, vertically centred on the same line box as the value.
+        // Draw dropdown indicator, on the same line box as the value.
         let arrow_color = style.text_color.unwrap_or(Color::rgb(100, 100, 100));
-        let arrow_x = rect.x + rect.width as i32 - PADDING - ARROW_SIZE;
-        let arrow_top = mid_y - ARROW_SIZE / 2;
-        let arrow_bottom = mid_y + ARROW_SIZE / 2;
-        context.draw_line(
-            Point::new(arrow_x, arrow_top),
-            Point::new(arrow_x + ARROW_SIZE, arrow_top),
-            arrow_color,
-        );
-        context.draw_line(
-            Point::new(arrow_x + ARROW_SIZE, arrow_top),
-            Point::new(arrow_x + ARROW_SIZE / 2, arrow_bottom),
-            arrow_color,
-        );
-        context.draw_line(
-            Point::new(arrow_x + ARROW_SIZE / 2, arrow_bottom),
-            Point::new(arrow_x, arrow_top),
-            arrow_color,
-        );
+        let [apex_left, apex_right, tip] = geometry.points();
+        context.draw_line(apex_left, apex_right, arrow_color);
+        context.draw_line(apex_right, tip, arrow_color);
+        context.draw_line(tip, apex_left, arrow_color);
 
-        // Draw current text, or the placeholder when the list is empty. Bounded to end before
-        // the arrow so a long value cannot run under it.
+        // Draw current text, or the placeholder when the list is empty. Bounded to the box the
+        // indicator left, so a long value is fitted rather than run under the indicator.
         let text_color = style.text_color.unwrap_or(Color::rgb(0, 0, 0));
-        let text_box = Rect::new(
-            rect.x + PADDING,
-            line.y,
-            rect.width.saturating_sub((PADDING + ARROW_SIZE + PADDING) as u32),
-            line.height,
-        );
         let current_text = self.current_text();
+        let value_line = context.text_line(geometry.text_box, font);
+        let text_box = Rect::new(
+            geometry.text_box.x,
+            value_line.y,
+            geometry.text_box.width,
+            value_line.height,
+        );
         if !current_text.is_empty() {
             context.draw_text_fitted(
                 text_box,
@@ -615,5 +746,78 @@ mod tests {
         let _ = &cb.current_index_changed;
         let _ = &cb.current_text_changed;
         let _ = &cb.activated;
+    }
+
+    /// The value's box ends where the indicator's box begins, at every control width.
+    ///
+    /// # What this pins
+    ///
+    /// BLUE22 §B.6 rule 4: a sub-part's box is derived from its sibling, so the value *yields*
+    /// to the indicator. Both boxes used to be computed from the same two numerals in two
+    /// different orders — the value's width was `width - (PADDING + ARROW_SIZE + PADDING)`
+    /// while the indicator sat at `width - PADDING - ARROW_SIZE` — so the two agreed only by
+    /// coincidence and neither could be read from a test.
+    #[test]
+    fn the_value_box_ends_where_the_indicator_begins() {
+        for width in [0u32, 20, 64, 240, 400] {
+            let cb = ComboBox::new(Rect::new(0, 0, width, 120));
+            let geometry = cb.indicator_geometry(14);
+            let band = cb.field_band();
+            assert_eq!(
+                geometry.text_box.x + geometry.text_box.width as i32 + INDICATOR_LEADING_GAP as i32,
+                geometry.box_rect.x,
+                "the value must stop one gap short of the indicator at width {width}"
+            );
+            assert!(
+                geometry.box_rect.x + geometry.box_rect.width as i32 <= band.x + band.width as i32,
+                "the indicator must stay inside the band at width {width}"
+            );
+        }
+    }
+
+    /// The reported height is the band that is painted.
+    #[test]
+    fn the_reported_height_is_the_band_that_is_painted() {
+        let cb = ComboBox::new(Rect::new(0, 0, 240, 120));
+        let band = cb.field_band();
+        assert_eq!(band.height, dimensions::TEXT_FIELD_MIN_HEIGHT);
+        assert_eq!(cb.size_hint().height, band.height);
+        assert_eq!(band.width, 240, "a field spans its width");
+        assert_eq!(band.y, (120 - dimensions::TEXT_FIELD_MIN_HEIGHT as i32) / 2);
+    }
+
+    /// The indicator is laid out on the value's own line box, not on the band's midpoint.
+    #[test]
+    fn the_indicator_follows_the_line_box_it_shares_with_the_value() {
+        let cb = ComboBox::new(Rect::new(0, 0, 240, 120));
+        for line_height in [4u32, 14, 32] {
+            let geometry = cb.indicator_geometry(line_height);
+            assert_eq!(
+                geometry.box_rect.height, line_height,
+                "the indicator's box is the line at height {line_height}"
+            );
+            assert_eq!(
+                geometry.box_rect.y + geometry.box_rect.height as i32 / 2,
+                cb.field_band().y + cb.field_band().height as i32 / 2,
+                "the indicator must sit on the band's middle line at line height {line_height}"
+            );
+        }
+    }
+
+    /// The triangle is drawn from its own box, so its points cannot leave it.
+    #[test]
+    fn the_indicator_points_stay_inside_the_indicator_box() {
+        let cb = ComboBox::new(Rect::new(0, 0, 240, 120));
+        let geometry = cb.indicator_geometry(14);
+        let b = geometry.box_rect;
+        for point in geometry.points() {
+            assert!(
+                point.x >= b.x
+                    && point.x <= b.x + b.width as i32
+                    && point.y >= b.y
+                    && point.y <= b.y + b.height as i32,
+                "{point:?} escaped the indicator box {b:?}"
+            );
+        }
     }
 }

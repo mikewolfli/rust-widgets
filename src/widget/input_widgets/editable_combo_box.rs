@@ -7,20 +7,84 @@
 //! either type a custom value directly or select from the provided items.
 //! A `text_changed` signal is emitted when the text field content changes,
 //! and an `item_selected` signal is emitted when a dropdown item is clicked.
+//!
+//! # Why the indicator drives the value's right inset
+//!
+//! The indicator is the control's trailing chrome, and the value's box must *yield* to it:
+//! QML's `ComboBox.qml` writes this as `rightPadding: padding + indicator.width`, and the
+//! reason is that a fixed text inset and a fixed indicator inset are two unrelated
+//! derivations from the *same* edge. A wider indicator, a theme that swaps the glyph for a
+//! larger one, or a bigger font measuring it then overlaps the value instead of pushing it.
+//! The previous form could not express the relation at all — the value was written at
+//! `rect.x + 6` with no bound and the indicator placed independently at
+//! `rect.x + rect.width - 20`.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::style::EdgeOffsets;
 use crate::undo::{TextSnapshotCommand, UndoStack};
 use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
+
+/// Space between the indicator's leading edge and the end of the value's box.
+///
+/// Half the field's own horizontal padding, so the gap between the value and the indicator
+/// is tighter than the gap between the value and the field's edge — a relation, not a third
+/// independent numeral.
+const INDICATOR_LEADING_GAP: u32 = dimensions::TEXT_FIELD_PADDING_H / 2;
+
+/// The indicator's box and the box the value may occupy, derived together.
+///
+/// # Why one derivation and not two arithmetic expressions
+///
+/// The value's inset and the indicator's position were two independent computations from the
+/// same field width, so neither could be read from a test and neither constrained the other.
+/// Making both outputs of one function is what lets the suite assert that the value yields to
+/// the indicator rather than merely observing that it usually appears to.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct EditGeometry {
+    /// The indicator glyph's bounding box.
+    box_rect: Rect,
+    /// The rectangle the typed value may occupy.
+    text_box: Rect,
+}
+
+impl EditGeometry {
+    /// Derives both boxes from the band the control paints and `line_height`.
+    ///
+    /// `line_height` is a parameter rather than measured here, for the same reason
+    /// `CheckBox::indicator_rect` takes one: both boxes sit on the *value's* line box and only
+    /// the caller knows which font that is.
+    fn for_band(band: Rect, line_height: u32) -> Self {
+        let indicator_width = dimensions::BUTTON_ICON_SIZE.min(band.width);
+        let height = line_height.min(band.height);
+        let box_rect = Rect::new(
+            band.x
+                + band.width.saturating_sub(indicator_width + dimensions::TEXT_FIELD_PADDING_H)
+                    as i32,
+            band.y + (band.height.saturating_sub(height) / 2) as i32,
+            indicator_width,
+            height,
+        );
+        // The value's box stops one gap before the indicator. `min` with the leading inset
+        // keeps a squeezed field from describing an inverted rectangle: a field with no room
+        // for a value draws no value rather than one outside itself.
+        let text_right = box_rect.x.saturating_sub(INDICATOR_LEADING_GAP as i32);
+        let text_left = (band.x + dimensions::TEXT_FIELD_PADDING_H as i32).min(text_right);
+        let text_box =
+            Rect::new(text_left, band.y, text_right.saturating_sub(text_left) as u32, band.height);
+        Self { box_rect, text_box }
+    }
+}
 
 /// A combo box that allows both typing custom values and selecting from a list.
 ///
@@ -42,6 +106,23 @@ pub struct EditableComboBox {
 }
 
 impl EditableComboBox {
+    /// The band the control actually paints: full width, one field tall, centred.
+    ///
+    /// # Why the control is not its own rectangle
+    ///
+    /// An editable combo box is a text field, and [`dimensions::TEXT_FIELD_MIN_HEIGHT`] is
+    /// what every field in this crate occupies. The 240x120 census cell drew a 240x120
+    /// rounded box whose value was then positioned `padding + 13` down from an edge that was
+    /// itself not the field's.
+    fn field_band(&self) -> Rect {
+        ControlMetrics::full_width_band(self.geometry(), dimensions::TEXT_FIELD_MIN_HEIGHT)
+    }
+
+    /// The indicator's box and the value's box, derived from the band and one line height.
+    fn indicator_geometry(&self, line_height: u32) -> EditGeometry {
+        EditGeometry::for_band(self.field_band(), line_height)
+    }
+
     /// Creates a new EditableComboBox widget with the given geometry.
     pub fn new(geometry: Rect) -> Self {
         Self {
@@ -222,7 +303,28 @@ impl Widget for EditableComboBox {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(200, 28)
+        // Derived through the same metric the band is drawn from, so the reported size and the
+        // painted box cannot describe two different controls. The width was a bare `200` while
+        // `draw` painted the whole given rectangle — neither had a relation to the other.
+        let side_air = (dimensions::TEXT_FIELD_MIN_HEIGHT / 2).saturating_sub(8);
+        let trailing =
+            dimensions::TEXT_FIELD_PADDING_H + dimensions::BUTTON_ICON_SIZE + INDICATOR_LEADING_GAP;
+        let padding = EdgeOffsets {
+            top: side_air,
+            right: trailing,
+            bottom: side_air,
+            left: dimensions::TEXT_FIELD_PADDING_H,
+        };
+        // Content width: the text the caller typed, at a nominal advance per character. A
+        // hint has no `RenderContext` to measure with, and a hint a few pixels generous is
+        // the safe direction — the paint path *fits* the value into the box this produced.
+        let content = Size::new(self.text.len() as u32 * 8, 0);
+        let floor = Size::new(
+            dimensions::TEXT_FIELD_MIN_HEIGHT + trailing,
+            dimensions::TEXT_FIELD_MIN_HEIGHT,
+        );
+        let hint = ControlMetrics::implicit_size(content, padding, floor);
+        Size::new(hint.width, self.field_band().height.max(floor.height))
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -273,7 +375,16 @@ impl WidgetProperties for EditableComboBox {
 
 impl Draw for EditableComboBox {
     fn draw(&mut self, context: &mut RenderContext) {
-        let rect = self.geometry();
+        // ── The band actually painted ──
+        //
+        // `geometry()` is the area the control was *given*; an editable combo box is a text
+        // field, and a field is a fixed-height band. The fill, the border, the value and the
+        // indicator are all placed from this one box, so none of them can be measured against
+        // an edge the field does not have.
+        let rect = self.field_band();
+        if rect.width == 0 || rect.height == 0 {
+            return;
+        }
         let is_enabled = self.base.is_enabled();
 
         // Chrome colours resolve explicit style first, then the theme's resolved style
@@ -309,44 +420,49 @@ impl Draw for EditableComboBox {
         let border_color = border;
         context.draw_rounded_rect_stroke(rect, 4, border_color, 1);
 
-        // Draw text content
+        // Draw text content and the dropdown arrow from **one** derivation, so the value
+        // yields to the indicator instead of being written at an unconstrained offset.
         let font = Font::simple("sans-serif", 13.0);
-        let padding = 6i32;
-        let text_x = rect.x + padding;
-        let text_y = rect.y + padding + 13;
+        let line = context.text_line(rect, &font);
+        let geometry = self.indicator_geometry(line.height);
         let display_text = if self.text.is_empty() && !is_enabled { "" } else { &self.text };
         let text_color = if is_enabled { ink } else { ink.blend(&bg_color, 0.6) };
-        context.draw_text(
-            Point::new(text_x, text_y),
+        // The value is fitted into the box the indicator left, on that box's own line box: a
+        // glyph origin is the box's top edge, so the old `padding + 13` put a 13 px font's
+        // origin on the field's middle line and drew the value half a line low.
+        let value_line = context.text_line(geometry.text_box, &font);
+        context.draw_text_fitted(
+            Rect::new(
+                geometry.text_box.x,
+                value_line.y,
+                geometry.text_box.width,
+                value_line.height,
+            ),
             display_text,
             &font,
             text_color,
             HorizontalAlignment::Left,
         );
 
-        // Draw the dropdown arrow.
+        // Draw the dropdown indicator inside its own derived box.
         //
         // This glyph *is* the combo box's affordance — it is how a user knows the field opens —
         // so it is held to the text floor rather than dimmed by a fixed fraction. The old
         // `ink.blend(&bg_color, 0.45)` measured 3.45:1 on the dark field and 3.83:1 on the light
         // one, i.e. the control's one signifier was its least legible mark. It is still drawn
         // slightly quieter than the value, which is what keeps it reading as chrome.
-        let arrow_x = rect.x + rect.width as i32 - 20;
         let arrow_text = if self.expanded { "▲" } else { "▼" };
-        let arrow_metrics = context.measure_text(arrow_text, &font);
-        // Origin is the glyph box's top edge, so the field's centre is half the line box.
-        let arrow_y = rect.y + (rect.height as i32 - arrow_metrics.height as i32) / 2;
         let arrow_color = if is_enabled {
             ink.legible_on(bg_color, 4.5).blend(&bg_color, 0.15)
         } else {
             ink.blend(&bg_color, 0.7)
         };
-        context.draw_text(
-            Point::new(arrow_x, arrow_y),
+        context.draw_text_fitted(
+            geometry.box_rect,
             arrow_text,
             &font,
             arrow_color,
-            HorizontalAlignment::Left,
+            HorizontalAlignment::Center,
         );
 
         // Draw dropdown if expanded
@@ -660,5 +776,67 @@ mod tests {
 
         cb.select_index(1);
         assert_eq!(*captured.lock().unwrap(), Some(1));
+    }
+
+    /// The value's box ends where the indicator's box begins, at every control width.
+    ///
+    /// # What this pins
+    ///
+    /// BLUE22 §B.6 rule 4: a sub-part's box is derived from its sibling, so the value *yields*
+    /// to the indicator. The value used to be written at `rect.x + 6` with no upper bound
+    /// while the indicator sat at `rect.x + rect.width - 20`, so a longer value or a wider
+    /// indicator glyph put the two on top of each other.
+    /// The value's box ends where the indicator's box begins, at every control width.
+    ///
+    /// # What this pins
+    ///
+    /// BLUE22 §B.6 rule 4: a sub-part's box is derived from its sibling, so the value *yields*
+    /// to the indicator. The value used to be written at `rect.x + 6` with no upper bound
+    /// while the indicator sat at `rect.x + rect.width - 20`, so a longer value or a wider
+    /// indicator glyph put the two on top of each other.
+    ///
+    /// The widths below include two that are narrower than the leading inset plus the
+    /// indicator, because that is where a derivation that is only *described* as a relation
+    /// comes apart: the value's box must collapse rather than claim room the band does not
+    /// have.
+    #[test]
+    fn the_value_box_ends_where_the_indicator_begins() {
+        let trailing =
+            dimensions::TEXT_FIELD_PADDING_H + dimensions::BUTTON_ICON_SIZE + INDICATOR_LEADING_GAP;
+        for width in [0u32, 20, 64, 240, 400] {
+            let cb = EditableComboBox::new(Rect::new(0, 0, width, 120));
+            let geometry = cb.indicator_geometry(14);
+            let band = cb.field_band();
+            assert_eq!(
+                geometry.text_box.x + geometry.text_box.width as i32 + INDICATOR_LEADING_GAP as i32,
+                geometry.box_rect.x,
+                "the value must stop one gap short of the indicator at width {width}"
+            );
+            assert!(
+                geometry.box_rect.x + geometry.box_rect.width as i32 <= band.x + band.width as i32,
+                "the indicator must stay inside the band at width {width}"
+            );
+            if width < trailing {
+                assert_eq!(
+                    geometry.text_box.width, 0,
+                    "a band too narrow for its own chrome holds no value at width {width}"
+                );
+            } else {
+                assert!(
+                    geometry.text_box.width > 0,
+                    "a band with room must give the value some of it at width {width}"
+                );
+            }
+        }
+    }
+
+    /// The reported height is the band that is painted.
+    #[test]
+    fn the_reported_height_is_the_band_that_is_painted() {
+        let cb = EditableComboBox::new(Rect::new(0, 0, 240, 120));
+        let band = cb.field_band();
+        assert_eq!(band.height, dimensions::TEXT_FIELD_MIN_HEIGHT);
+        assert_eq!(cb.size_hint().height, band.height);
+        assert_eq!(band.y, (120 - dimensions::TEXT_FIELD_MIN_HEIGHT as i32) / 2);
     }
 }

@@ -488,7 +488,6 @@ impl Draw for FileDialog {
         // three from the frame is what keeps them from overlapping on a short dialog — each
         // was previously placed from an absolute offset written for a taller one.
         let button_band = ControlMetrics::bottom_band(rect, dimensions::DIALOG_BUTTON_HEIGHT);
-        let btn_h = button_band.height as i32;
         let button_top = button_band.y;
         // The list top is the title bar's bottom edge plus the frame's own padding.
         let list_y = rect.y + dimensions::DIALOG_TITLE_BAR_HEIGHT as i32 + LIST_TOP_GAP;
@@ -609,41 +608,29 @@ impl Draw for FileDialog {
                 context.draw_text_fitted(line, fname, &fname_font, ink, HorizontalAlignment::Left);
             }
         }
-        // OK/Cancel buttons. The pair is right-aligned inside the frame and floored at its
-        // left edge, so a control narrower than the two 80 px buttons keeps them on screen
-        // rather than starting the Open label at a negative x. The row itself is the frame's
-        // bottom band, and the labels are centred in their buttons and fitted to them, so a
-        // truncating locale cannot spill out of the button it belongs to.
-        let btn_w = 80i32.min(button_band.width as i32).max(1);
-        let btn_step = btn_w + 8;
-        let cancel_x = (rect.x + rect.width as i32 - btn_step).max(rect.x);
-        let ok_x = (cancel_x - btn_step).max(rect.x);
+        // OK/Cancel buttons. The pair is right-aligned inside the frame through the shared
+        // [`action_row_geometry`] derivation, so this dialog and the seven others that draw the
+        // same pair cannot disagree about the button width, the gap between them or where the
+        // row's left edge falls. The row is the frame's bottom band, and the labels are centred
+        // in their buttons and fitted to them, so a truncating locale cannot spill out of the
+        // button it belongs to.
         let ok_label = if self.mode == FileDialogMode::SaveFile {
             tr!("common.button.save")
         } else {
             tr!("common.button.open")
         };
+        let labels = vec![ok_label, tr!("common.button.cancel")];
+        let row = super::message_box::action_row_geometry(context, &labels, button_band, true);
+        let font = Font::default();
         // The accept button is the dialog's call to action: the theme's accent, with its
         // contrast colour as the label — the same pairing `WidgetRole::Primary` uses.
-        let ok_rect = Rect::new(ok_x, button_band.y, btn_w as u32, btn_h.max(1) as u32);
+        let ok_rect = row.buttons[0];
         context.fill_rect(ok_rect, accent);
-        context.draw_text_line(
-            ok_rect,
-            &ok_label,
-            &Font::default(),
-            accent_ink,
-            HorizontalAlignment::Center,
-        );
-        let cancel_rect = Rect::new(cancel_x, button_band.y, btn_w as u32, btn_h.max(1) as u32);
+        context.draw_text_line(ok_rect, &labels[0], &font, accent_ink, HorizontalAlignment::Center);
+        let cancel_rect = row.buttons[1];
         context.fill_rect(cancel_rect, surface.blend(&ink, 0.1));
         context.draw_rect(cancel_rect, border);
-        context.draw_text_line(
-            cancel_rect,
-            &tr!("common.button.cancel"),
-            &Font::default(),
-            ink,
-            HorizontalAlignment::Center,
-        );
+        context.draw_text_line(cancel_rect, &labels[1], &font, ink, HorizontalAlignment::Center);
     }
 }
 

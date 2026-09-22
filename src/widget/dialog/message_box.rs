@@ -2,13 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 //! Message box dialog widget.
-use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
+use crate::layout::hints::{ChildInfo, Hints, LayoutParams};
+use crate::layout::{FlexLayout, JustifyContent, Layout};
 use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
-use crate::style::SemanticColor;
+use crate::style::{EdgeOffsets, SemanticColor};
 use crate::tr;
 use crate::widget::capability::coercion::{
     expect_bool, expect_message_box_icon, expect_string, message_box_icon_to_str,
@@ -453,31 +455,85 @@ impl WidgetProperties for MessageBox {
 /// Escape — rather than a key enum. Escape does nothing if none of Cancel, No or
 /// Close is among the configured buttons, and Enter does nothing when
 /// [`MessageBox::default_button`] is `None`.
+///
+/// A primary press is resolved against the **same** button rects the draw path painted (see
+/// [`action_row_geometry`]), so the button a user sees under the pointer is the button that is
+/// activated. Before this the box answered only keys: it painted an OK button that could not be
+/// clicked, which is a control whose ink and whose hit region were two different things — the
+/// defect rule 5 of the assembly spec names, and the one this crate has already recorded twice
+/// (`tag_input`'s unreachable close button, `scroll_bar`'s non-inverse value mapping).
 impl EventHandler for MessageBox {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
         }
-        if let Event::KeyPress { key, .. } = event {
-            if *key == 13 {
-                // Enter → default button
-                if let Some(btn) = self.default_button {
-                    self.click_button(btn);
-                }
-            } else if *key == 27 {
-                // Escape → Cancel/No
-                if self.buttons.contains(&StandardButton::Cancel) {
-                    self.click_button(StandardButton::Cancel);
-                } else if self.buttons.contains(&StandardButton::No) {
-                    self.click_button(StandardButton::No);
-                } else if self.buttons.contains(&StandardButton::Close) {
-                    self.click_button(StandardButton::Close);
+        match event {
+            Event::MousePress { pos, button: 1 } => {
+                if let Some(index) = self.action_button_at(*pos) {
+                    if let Some(activated) = self.buttons.get(index).copied() {
+                        self.click_button(activated);
+                    }
                 }
             }
+            Event::KeyPress { key, .. } => {
+                if *key == 13 {
+                    // Enter → default button
+                    if let Some(btn) = self.default_button {
+                        self.click_button(btn);
+                    }
+                } else if *key == 27 {
+                    // Escape → Cancel/No
+                    if self.buttons.contains(&StandardButton::Cancel) {
+                        self.click_button(StandardButton::Cancel);
+                    } else if self.buttons.contains(&StandardButton::No) {
+                        self.click_button(StandardButton::No);
+                    } else if self.buttons.contains(&StandardButton::Close) {
+                        self.click_button(StandardButton::Close);
+                    }
+                }
+            }
+            _ => { /* Other events are not relevant */ }
         }
     }
 }
+/// The width the action buttons of every dialog in this module are given.
+///
+/// # Why this is a named constant and not a literal at each draw site
+///
+/// Eight dialogs declare an OK/Cancel pair, and before this each spelled the button's
+/// width itself (`80`, sometimes as `BTN_W`). One fact with eight spellings is what rule
+/// #101 forbids, and it is how the message box's row and the file dialog's row came to be
+/// measured differently against the same frame.
+///
+/// The button is **not** allowed to grow with its label: unlike a toolbar item, a dialog's
+/// action row is a fixed set of standard commands (`OK`, `Cancel`, `Yes to No`), and the
+/// platform convention — and Qt's `QDialogButtonBox` — is that they are all the same width
+/// so the row reads as one control. `draw_text_fitted` elides a locale whose translation is
+/// longer than the box, so a longer label loses characters rather than moving its siblings.
+pub(crate) const DIALOG_BUTTON_WIDTH: i32 = 80;
+
+/// The gap between two adjacent action buttons, and between the row and the content box's
+/// edge: [`dimensions::BUTTON_ICON_SPACING`], the same 6 px that separates a control's own
+/// parts elsewhere in this crate.
+///
+/// It is deliberately *not* `DIALOG_PADDING`: that is the frame's edge-to-content distance, and
+/// rule 4 of the assembly spec keeps "edge to content" and "element to element" apart. Using
+/// the frame padding for both made the row's right inset twice the gap between its buttons.
+pub(crate) const DIALOG_BUTTON_SPACING: u32 = dimensions::BUTTON_ICON_SPACING;
+
+/// The height of an action button's label: one line box.
+///
+/// Derived from the text layer rather than from [`dimensions::DIALOG_BUTTON_HEIGHT`], which is
+/// the *row* height other dialogs reserve. Presenting this through [`Hints::preferred`] is what
+/// lets the row's layout answer "how wide are you" from a real measurement, and it keeps a
+/// button's own height tied to the font it draws its label in.
+pub(crate) fn action_button_hints(context: &RenderContext, label: &str) -> Hints {
+    let font = Font::default();
+    let line = context.measure_text(label, &font).height.max(1);
+    Hints::fixed(DIALOG_BUTTON_WIDTH as u32, line)
+}
+
 impl MessageBox {
     /// The frame the message box actually paints: at most its intrinsic size, centred in
     /// the area it was given.
@@ -491,18 +547,77 @@ impl MessageBox {
     /// and centres what is left, and it clamps up to one pixel so a squeezed box stays
     /// visible. Every band below — the title strip, the icon/message row and the button row
     /// — is derived from this one rect.
-    fn frame_rect(&self) -> Rect {
-        ControlMetrics::painted_box(
-            self.base.geometry(),
-            Size::new(dimensions::DIALOG_MIN_WIDTH, dimensions::DIALOG_MIN_HEIGHT),
-        )
+    ///
+    /// # Why the width is also content-driven here
+    ///
+    /// `DIALOG_MIN_WIDTH` is a floor, not the intrinsic size: the layout below is asked for
+    /// the size of a row of buttons, and a row wider than 280 px grows the frame instead of
+    /// running past it. A dialog whose action row left its own frame was the defect the old
+    /// `rect.x + rect.width - count * (80 + 8)` derivation produced once a caller set a
+    /// longer label.
+    fn frame_rect(&self, context: &RenderContext) -> Rect {
+        ControlMetrics::painted_box(self.base.geometry(), self.intrinsic_size(context))
+    }
+
+    /// The box this dialog needs: the action row's own width and the floor, component-wise.
+    ///
+    /// This is Qt's `implicitWidth = max(implicitBackgroundWidth + inset,
+    /// implicitContentWidth + padding)` spelled with this crate's primitives, where the floor
+    /// is the background and the measured row is the content.
+    fn intrinsic_size(&self, context: &RenderContext) -> Size {
+        // The labels are the *translated* ones, because those are the strings the row draws —
+        // measuring the English `label()` while painting `translated_label()` is how a row
+        // sized for "OK" ends up eliding "Annuler".
+        let labels: Vec<String> =
+            self.buttons.iter().map(|button| button.translated_label()).collect();
+        let row = action_row_geometry(context, &labels, Rect::new(0, 0, 0, 0), false);
+        let row_height = dimensions::DIALOG_TITLE_BAR_HEIGHT.max(row.row.height);
+        let height = dimensions::DIALOG_TITLE_BAR_HEIGHT
+            .saturating_add(row_height)
+            .max(dimensions::DIALOG_MIN_HEIGHT);
+        Size::new(row.row.width.max(dimensions::DIALOG_MIN_WIDTH), height)
+    }
+
+    /// The index of the action button under `pos`, or `None`.
+    ///
+    /// # Why the band is reconstructed rather than stored
+    ///
+    /// The rects the buttons were painted in live only for the duration of a `draw`, and a
+    /// press is delivered by an event that has no render context of its own. Rebuilding the
+    /// band from the same derivations the draw used — `painted_box`, `top_band`,
+    /// `bottom_band` — is what keeps the press and the ink on one geometry: those helpers are
+    /// pure functions of the control's rectangle, so the same input gives the same band at any
+    /// time. A *cached* rect would be the other option and it is the worse one, because a cache
+    /// is a second copy of the truth that a geometry change can leave stale — which is
+    /// precisely how a hit region comes to disagree with the drawing it is meant to describe.
+    ///
+    /// The measurement only needs a backend to ask for the line height, and the band only needs
+    /// the control's rectangle, so the press path costs no state and no redraw.
+    fn action_button_at(&self, pos: Point) -> Option<usize> {
+        let backend_size =
+            Size::new(self.base.geometry().width.max(1), self.base.geometry().height.max(1));
+        let mut backend = crate::render::SoftwarePaintBackend::new(backend_size, 1.0);
+        let context = RenderContext::new(&mut backend);
+        let rect = self.frame_rect(&context);
+        // The band the buttons are drawn in: the strip the title bar leaves, minus the row the
+        // message occupies — the same two derivations `draw` uses, in the same order.
+        let body =
+            ControlMetrics::content_below_top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
+        let button_band = ControlMetrics::bottom_band(body, dimensions::DIALOG_BUTTON_HEIGHT);
+        // `place` is true exactly when the box has buttons, which is the same condition `draw`
+        // passes: a box with no buttons has no row to hit and `hit` on an empty row is `None`
+        // anyway, but the flag also keeps the two call sites reading the same way.
+        let labels: Vec<String> =
+            self.buttons.iter().map(|button| button.translated_label()).collect();
+        let place = !self.buttons.is_empty();
+        action_row_geometry(&context, &labels, button_band, place).hit(pos)
     }
 }
 
 impl Draw for MessageBox {
     fn draw(&mut self, context: &mut RenderContext) {
         // The **frame**, not the control's rectangle: see `frame_rect`.
-        let rect = self.frame_rect();
+        let rect = self.frame_rect(context);
         // Chrome colours resolve explicit style first, then the theme's resolved style for
         // this control, and only then a literal. The surface already read the style, but the
         // title bar and the buttons were literals, so a light/dark switch left them
@@ -624,12 +739,25 @@ impl Draw for MessageBox {
 
         // The button row is the bottom band; the message occupies what is left above it.
         let button_band = ControlMetrics::bottom_band(body, dimensions::DIALOG_BUTTON_HEIGHT);
+        // The row is computed **before** the message band, because the message band's own
+        // trailing edge is derived from the row. That is the `SpinBox.qml:20-21` relation — the
+        // text side's padding is the sibling column's width — and it is the whole reason
+        // [`ActionRowGeometry::leading_inset`] exists: the message must stop where the buttons
+        // begin, whatever the buttons' widths and their labels' translations turn out to be.
+        let labels: Vec<String> =
+            self.buttons.iter().map(|button| button.translated_label()).collect();
+        let row = action_row_geometry(context, &labels, button_band, !self.buttons.is_empty());
         let message_area =
             ControlMetrics::content_above_bottom_band(body, dimensions::DIALOG_BUTTON_HEIGHT);
+        // The message band ends where the row begins, measured from the row rather than from a
+        // literal written for one button count. `saturating_sub` because a row that fills the
+        // frame leaves the message no trailing room, which is a message that elides rather than
+        // one that runs under the buttons.
+        let message_right = (message_area.width as i32 - row.leading_inset as i32).max(0);
         let message_band = Rect::new(
             message_area.x + gutter,
             message_area.y,
-            (message_area.width as i32 - gutter).max(0) as u32,
+            (message_right - gutter).max(0) as u32,
             message_area.height,
         );
         // Guarded on the text being non-empty: an unguarded draw emits `<text …></text>`,
@@ -651,44 +779,248 @@ impl Draw for MessageBox {
             );
         }
 
-        // Buttons, right-aligned as a row. The row is laid out inside the frame, so the
-        // `…max(rect.x)` floor keeps a row of wide buttons from starting left of the dialog
-        // when the control is narrower than the buttons it wants. Each button is a fixed
-        // width, so a row that cannot fit is squeezed from the right rather than leaving the
-        // frame; the label is centred and fitted to its button.
-        let btn_w = 80i32.min(rect.width as i32).max(1);
-        let btn_y = button_band.y;
-        let btn_h = button_band.height.max(1);
-        let total_btn_w = self.buttons.len() as i32 * (btn_w + 8);
-        let mut btn_x = rect.x + rect.width as i32 - total_btn_w;
-        btn_x = btn_x.max(rect.x);
-        for btn in &self.buttons {
-            let is_default = self.default_button == Some(*btn);
+        // Buttons, right-aligned as a row.
+        //
+        // # Why this is not `rect.x + rect.width - count * (80 + 8)`
+        //
+        // The old form computed each button's x from a fixed 88 px stride measured back from
+        // the frame's right edge, and gave every button the same 80 px whatever its label
+        // said. Two defects followed and both were visible in the census snapshot: the row's
+        // total width was assumed rather than measured, so a row wider than the frame started
+        // left of the dialog and the `max(rect.x)` floor silently overlapped its neighbours; and
+        // a locale whose `Cancel` is twice as long elided its label from the middle of a
+        // button it did not fit. Rule 4 of the assembly spec is that a segment's size comes
+        // from its siblings, not from a literal — `SpinBox.qml:20-21` is the reference, where
+        // the text side's padding is the *button column's own width*.
+        //
+        // The row is therefore a real layout: it is handed the buttons' measured hints plus
+        // their inter-button margins, it computes each one's rect, and the *same* rects are what
+        // is painted here and what [`ActionRowGeometry::hit`] resolves a press against — so the
+        // ink and the hit test cannot disagree about where a button is.
+        // `body_line_h` records the line box the rows were measured against, so a later
+        // change to the reserved rows and this measurement cannot silently disagree.
+        debug_assert!(body_line_h > 0);
+        for (button, button_rect) in self.buttons.iter().zip(row.button_rects()) {
+            let is_default = self.default_button == Some(*button);
             let bg = if is_default { primary } else { button_fill };
             let fg = if is_default { primary_ink } else { ink };
-            let btn_rect = Rect::new(btn_x, btn_y, btn_w as u32, btn_h);
-            context.fill_rect(btn_rect, bg);
-            context.draw_rect(btn_rect, border);
+            context.fill_rect(*button_rect, bg);
+            context.draw_rect(*button_rect, border);
             context.draw_text_line(
-                btn_rect,
-                &btn.translated_label(),
+                *button_rect,
+                &button.translated_label(),
                 &font,
                 fg,
                 HorizontalAlignment::Center,
             );
-            btn_x += btn_w + 8;
         }
-        // `body_line_h` records the line box the rows were measured against, so a later
-        // change to the reserved rows and this measurement cannot silently disagree.
-        debug_assert!(body_line_h > 0);
     }
 }
+
+/// The action-button row a dialog paints, computed once and used by both the ink and the
+/// hit test.
+///
+/// # Why a type rather than three loose numbers
+///
+/// Every dialog needs the *same three facts* about its row — where the row starts, how wide it
+/// is and where each button sits — and a caller that takes one of them without the others is
+/// how a paint path and a hit test come to disagree about the same button. `buttons` is what
+/// both consumers index.
+pub(crate) struct ActionRowGeometry {
+    /// The row's rect: the union of the buttons, inset to the content edge and right-anchored.
+    pub row: Rect,
+    /// Each button's rect, in the caller's own order.
+    pub buttons: Vec<Rect>,
+    /// The width from the row's leading edge to the content box's: the *derived* left inset the
+    /// row leaves for whatever shares its band.
+    pub leading_inset: u32,
+}
+
+impl ActionRowGeometry {
+    /// The button rects as a slice.
+    pub fn button_rects(&self) -> &[Rect] {
+        &self.buttons
+    }
+
+    /// The button whose rect contains `pos`, if any.
+    ///
+    /// The hit test is deliberately a lookup in the rects the paint used rather than a second
+    /// derivation from the index: a press must resolve to the button the user can see, and a
+    /// separately computed region is how the two drift apart (this crate has recorded that
+    /// defect twice — `tag_input`'s unreachable close button and `scroll_bar`'s non-inverse
+    /// value mapping).
+    pub fn hit(&self, pos: Point) -> Option<usize> {
+        self.buttons.iter().position(|button| button.contains_point(pos))
+    }
+}
+
+/// Lays `labels` out as a right-aligned row of action buttons inside `band`.
+///
+/// # What the row derives from
+///
+/// Each button's width is [`DIALOG_BUTTON_WIDTH`] and each gap is [`DIALOG_BUTTON_SPACING`],
+/// both declared once so all eight dialogs that draw an OK/Cancel pair draw the same row. The
+/// buttons' *hints* are measured from the labels the caller is about to paint, which is what
+/// makes the row answer "how wide am I" truthfully instead of assuming a count.
+///
+/// # Why the row is anchored by its siblings
+///
+/// The row is placed by the running sum of the preceding buttons' widths plus the gaps between
+/// them, measured back from the content box's trailing edge. A stride literal (`i * 88`) is the
+/// defect this removes: it silently assumes every button is the same width *and* that the gaps
+/// are, so the first change to either moves every later button by a multiple of the error, and
+/// the row's own extent stops being a fact anything else can read — which is exactly what
+/// `leading_inset` here gives back to the caller.
+///
+/// When `place` is false the row is returned in *unplaced* coordinates: it keeps the total
+/// width a caller needs for an intrinsic-size calculation but does not pretend to know where a
+/// zero-extent band is.
+///
+/// # Why a `BoxLayout` and not three lines of arithmetic here
+///
+/// BLUE22 §B.6 rule 2 is that a composite's children are positioned by a `Layout`, not by
+/// `rect.x + k`. Doing the sum by hand would put a second placement rule next to the layouts'
+/// and would lose the layout's device scaling (`update_with_context` grows the row's gaps with
+/// the text-size preference) — the failure mode where a control's own padding scales with the
+/// font and its gaps do not.
+pub(crate) fn action_row_geometry(
+    context: &RenderContext,
+    labels: &[String],
+    band: Rect,
+    place: bool,
+) -> ActionRowGeometry {
+    if labels.is_empty() {
+        return ActionRowGeometry { row: band, buttons: Vec::new(), leading_inset: 0 };
+    }
+    // The buttons' own wishes, one per label. `Hints::fixed` rather than the widget's
+    // `size_hint` because an action button is a standard command of a standard width: it does
+    // not grow with its translation, it elides.
+    let children: Vec<ChildInfo> = labels
+        .iter()
+        .enumerate()
+        .map(|(index, label)| {
+            // The gap is `margins.left` on every button *after the first*, so the layout solves
+            // one button's rect and the spacing follows from the sibling order rather than from
+            // a separate term each call site must remember to add.
+            //
+            // Exactly one side carries it — the button's *leading* margin — because placing it on
+            // both sides of every child pays it twice: the trailing margin of one button and the
+            // leading margin of the next are adjacent, so a 6 px gap became 12 px between every
+            // pair, even though the two buttons' own edges were what the caller asked to be
+            // spaced. The first button carries no leading margin either: the row's own edge is
+            // its edge, and a margin there would be room the row reserves but never spends.
+            let leading = if index == 0 { 0 } else { DIALOG_BUTTON_SPACING };
+            ChildInfo::new(context_row_id(index), action_button_hints(context, label)).with_params(
+                // `EdgeOffsets::new` is `(top, right, bottom, left)`: the gap before a button is
+                // its *left* margin, which is the last argument.
+                LayoutParams::new().with_margins(EdgeOffsets::new(0, 0, 0, leading)),
+            )
+        })
+        .collect();
+    // The row is a real layout, handed the buttons by their measured hints. `justify_content`
+    // is `FlexEnd`, which is what makes the row **right-anchored to the content box**: the
+    // layout places the children at their preferred size — none of them sets `fill` — and puts
+    // all the leftover room *before* the first one. Nothing here computes an x, because the
+    // anchor is a property of the container: that is the only shape in which "right-aligned"
+    // cannot be forgotten at one of the eight dialogs that draw this row.
+    //
+    // `gap` is 0 and the spacing rides on each child's own margin instead, so the distance
+    // before a button is derived from the *button* rather than from an index comparison inside
+    // the layout. The first button carries no leading margin, which is what lets the row's
+    // leading edge be a button rather than a gap.
+    let mut layout = FlexLayout::with_params(
+        crate::layout::FlexDirection::Row,
+        crate::layout::FlexWrap::NoWrap,
+        JustifyContent::FlexEnd,
+        crate::layout::AlignItems::Stretch,
+        0,
+        0,
+    );
+    for child in &children {
+        layout.add_widget(child.id, child.params.stretch);
+    }
+    // The box the row is laid out in is exactly as wide as the children ask for, not the band
+    // the caller offered. A row of buttons is not made wider by the dialog around it being wide,
+    // and laying it out in a box wider than its own total is what let the previous
+    // stretch-based derivation blow every button up to the band's width. With the measure box
+    // and the row's own extent equal, the anchor places the row at the measure box's origin and
+    // the `shift` below is the *only* thing that moves it — one place, and not eight.
+    //
+    // The measured box is **not** clamped to the band. Clamping it would feed the layout a
+    // parent narrower than its children, which is precisely the case whose handling this
+    // function is replacing: the children would be laid out relative to a box that is not the
+    // one they were measured in. A row too wide for the band is instead handled where it can be
+    // described — see `shift`.
+    let row_extent = children
+        .iter()
+        .map(|child| child.bounds().width)
+        .fold(0u32, |total, width| total.saturating_add(width))
+        .max(1);
+    let measure = Rect::new(band.x, band.y, row_extent, band.height);
+    let mut placed: Vec<(ObjectId, Rect)> = Vec::with_capacity(children.len());
+    layout.arrange(measure, &children, &mut |id, rect| placed.push((id, rect)));
+    // Where the row lands inside the band it was offered: `band` is the room the caller has,
+    // `measure` is what the row needs, and the difference is anchored to the trailing edge —
+    // which is what "right-aligned" means, and why the buttons sit at the dialog's own right
+    // edge in every dialog that calls this rather than at an offset each one recomputes.
+    //
+    // A row *wider* than the band keeps its own width and is anchored to the band's leading
+    // edge (`shift` floors at zero). Squeezing it instead would make the buttons narrower than
+    // the labels they are about to draw, so every one of them would elide: a row of unreadable
+    // commands is a worse answer than a row that overhangs the panel it sits in, and the latter
+    // is what a dialog whose content is bigger than its frame already does everywhere else. The
+    // frame itself is sized from this row's own width (`intrinsic_size`), so in practice the
+    // overhang only arises when a host forces a smaller rectangle on the control.
+    let shift = if place { (band.width as i32 - row_extent as i32).max(0) } else { 0 };
+    let mut buttons = Vec::with_capacity(children.len());
+    for child in &children {
+        // A child the layout did not describe must not vanish from a row the caller indexes by
+        // position, so a missing rect falls back to the child's own measured bounds at the
+        // measure box's origin rather than to a zero rect (which would be an invisible button).
+        let rect =
+            placed.iter().find(|(id, _)| *id == child.id).map(|(_, rect)| *rect).unwrap_or_else(
+                || {
+                    let size = child.bounds();
+                    Rect::new(measure.x, band.y, size.width, band.height)
+                },
+            );
+        buttons.push(Rect::new(rect.x + shift, band.y, rect.width, band.height));
+    }
+    let first = buttons.first().copied().unwrap_or(band);
+    let last = buttons.last().copied().unwrap_or(band);
+    let row_left = first.x;
+    let row_right = last.x.saturating_add(last.width as i32);
+    let row = Rect::new(row_left, band.y, (row_right - row_left).max(0) as u32, band.height);
+    // What the row leaves *before* it: the padding this dialog's own content must carry so its
+    // title, message and icon cannot overlap the buttons that share their band. This is the
+    // `SpinBox.qml:20-21` relation — the text side's padding is the sibling column's width —
+    // and it is why the row reports it instead of leaving each call site to re-subtract.
+    let leading_inset = if place { (row_left - band.x).max(0) as u32 } else { 0 };
+    ActionRowGeometry { row, buttons, leading_inset }
+}
+
+/// The id the row's `index`-th button carries into the layout.
+///
+/// Derived from the index rather than from `ObjectId::new()` so the layout's output can be put
+/// back in the caller's order without a map: the caller indexes its own buttons by position and
+/// the row must answer in that same order.
+fn context_row_id(index: usize) -> ObjectId {
+    ROW_ID_BASE + index as u64
+}
+
+/// The slot-space origin the row's ids are handed out from.
+///
+/// A file-local base: the row's ids only have to be distinct from each other, because the row is
+/// placed in one call and the caller matches the result back by position. A high base keeps them
+/// from colliding with the ids a host hands the same layout in its own tree.
+const ROW_ID_BASE: u64 = 0x1000_0000_0000_0000;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{Point, Rect};
+    use crate::core::{Point, Rect, Size};
     use crate::event::Event;
+    use crate::render::SoftwarePaintBackend;
     use crate::widget::svg::render_to_svg;
     use std::sync::{Arc, Mutex};
 
@@ -739,6 +1071,114 @@ mod tests {
     #[test]
     fn translated_label_without_i18n_returns_the_key() {
         assert_eq!(StandardButton::Ok.translated_label(), "common.button.ok");
+    }
+
+    /// The action row is right-anchored to the content box's trailing edge, and every button
+    /// after the first is offset by the preceding button's own width plus one spacing.
+    ///
+    /// # What this pins
+    ///
+    /// It used to be pinned as "the row is `count * (80 + 8)` wide starting at the frame's right
+    /// edge", which a hardcoded row satisfies without ever measuring its buttons. The assertion
+    /// here is instead the *derivation*: the second button's offset from the first is a function
+    /// of the first button's width, so a change to either the spacing constant or the button
+    /// width moves the pair together rather than desynchronising the stride from the buttons.
+    #[test]
+    fn the_action_row_is_right_anchored_and_each_button_follows_its_sibling() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(240, 120), 1.0);
+        let ctx = RenderContext::new(&mut backend);
+        let labels = vec!["OK".to_string(), "Cancel".to_string()];
+        let band = Rect::new(0, 92, 240, 28);
+        let row = action_row_geometry(&ctx, &labels, band, true);
+        assert_eq!(row.buttons.len(), 2, "one rect per label");
+        // The last button ends at the content box's trailing edge: that is what "right-anchored"
+        // means, and it is the property a count-based stride only satisfies by coincidence.
+        let last = row.buttons[1];
+        assert_eq!(
+            last.x + last.width as i32,
+            band.x + band.width as i32,
+            "the row must be anchored to the band's trailing edge, not to a count-derived offset"
+        );
+        // The second button begins one spacing after the first ends.
+        let first = row.buttons[0];
+        assert_eq!(
+            last.x - (first.x + first.width as i32),
+            DIALOG_BUTTON_SPACING as i32,
+            "the gap between two buttons must be the declared spacing"
+        );
+        assert_eq!(
+            first.width, DIALOG_BUTTON_WIDTH as u32,
+            "a standard command keeps its declared width instead of growing into the band"
+        );
+        assert_eq!(
+            row.leading_inset,
+            (row.row.x - band.x) as u32,
+            "the inset a dialog's own content carries is measured from the band's leading edge"
+        );
+        assert_eq!(
+            band.x + row.leading_inset as i32,
+            row.row.x,
+            "the leading inset ends exactly where the row begins, so nothing can overlap it"
+        );
+        assert_eq!(
+            row.leading_inset + row.row.width,
+            band.width,
+            "the inset and the row tile the band, leaving no gap between them"
+        );
+    }
+
+    /// A row wider than the band keeps its own widths instead of squeezing every label.
+    ///
+    /// This replaces a test that pinned the old `max(rect.x)` clamp as "no button leaves the
+    /// band". That clamp did not achieve it — it moved the row's start while every button was
+    /// still stepped by a fixed 88 px, so the buttons overlapped each other *and* the last one
+    /// still ran past the frame's right edge. What is pinned now is the contract the helper
+    /// actually implements and documents: a row too wide for its band is anchored to the band's
+    /// leading edge and keeps the widths its labels were measured at, so nothing elides and no
+    /// button overlaps its neighbour. `intrinsic_size` sizes the frame from this same row, so a
+    /// dialog only meets this case when a host forces a smaller rectangle on it.
+    #[test]
+    fn a_row_wider_than_its_band_keeps_its_widths_and_its_leading_edge() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(240, 120), 1.0);
+        let ctx = RenderContext::new(&mut backend);
+        let labels: Vec<String> = (0..6).map(|i| format!("Button {i}")).collect();
+        let band = Rect::new(0, 92, 120, 28);
+        let row = action_row_geometry(&ctx, &labels, band, true);
+        assert_eq!(
+            row.row.x, band.x,
+            "an oversized row is anchored to the band's leading edge, not centred on it"
+        );
+        for (index, button) in row.button_rects().iter().enumerate() {
+            assert_eq!(
+                button.width, DIALOG_BUTTON_WIDTH as u32,
+                "a squeezed band must not shrink the buttons: an elided command is unreadable"
+            );
+            if index > 0 {
+                let previous = row.button_rects()[index - 1];
+                assert_eq!(
+                    button.x - (previous.x + previous.width as i32),
+                    DIALOG_BUTTON_SPACING as i32,
+                    "the gap between two buttons survives an oversized row"
+                );
+            }
+        }
+    }
+
+    /// A press resolves against the rects that were painted, not against a second derivation.
+    #[test]
+    fn a_press_hits_the_button_that_was_drawn_there() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(240, 120), 1.0);
+        let ctx = RenderContext::new(&mut backend);
+        let labels = vec!["OK".to_string(), "Cancel".to_string()];
+        let band = Rect::new(0, 92, 240, 28);
+        let row = action_row_geometry(&ctx, &labels, band, true);
+        for (index, button) in row.button_rects().iter().enumerate() {
+            let centre =
+                Point::new(button.x + button.width as i32 / 2, button.y + button.height as i32 / 2);
+            assert_eq!(row.hit(centre), Some(index), "the centre of {button:?} belongs to it");
+        }
+        // A point in the leftover room the row did not take belongs to no button.
+        assert_eq!(row.hit(Point::new(band.x + 1, band.y + band.height as i32 / 2)), None);
     }
 
     #[test]

@@ -38,6 +38,25 @@
 # A gate that exceeds its budget is reported as `TIMEOUT` and counted as a
 # failure of the *run*, not as a defect in the code under test — the two are
 # different claims and must not be conflated (principle #59.4).
+#
+# ---------------------------------------------------------------------------
+# Two budgets, because they answer two different questions
+# ---------------------------------------------------------------------------
+# A per-gate bound alone cannot make a *slow* run distinguishable from a *stuck*
+# one: a run where several gates are merely expensive looks, from the outside,
+# exactly like one where the first gate wedged. So there are two:
+#
+#   * `GATE_BUDGET` (900 s, `RW_GATE_TIMEOUT`) — "did this gate hang?"
+#   * `RUN_BUDGET` (2700 s, `RW_RUN_TIMEOUT`) — "is this run making progress?"
+#
+# When the run budget is exhausted the runner stops **starting** new gates and
+# prints every gate it did not reach. It never interrupts a gate in flight: that
+# gate has already produced a verdict, and cutting it short would report a real
+# result as a timeout. Both budgets are overridable from the environment, so a
+# genuinely cold tree can raise them without editing this file.
+#
+# A `NOT-RUN` gate is not a pass. It is a piece of the verification that did not
+# happen, and the summary counts it separately for exactly that reason.
 # ============================================================================
 
 set -uo pipefail
@@ -68,9 +87,31 @@ done
 
 # Per-gate budget. Larger than `RW_TIMEOUT_DEFAULT` because a gate may drive
 # several `cargo` invocations across profiles (check_profiles runs ~15), and a
-# cold target dir makes the first one expensive. Still bounded, so a hang is
-# capped well inside any CI job timeout.
-GATE_BUDGET="${RW_GATE_TIMEOUT:-1800}"
+# cold target dir makes the first one expensive.
+#
+# # Why this is 900 rather than 1800
+#
+# The budget bounds a *hang*, and 30 minutes is long enough that a wedged gate
+# still makes the aggregate run feel stuck: 58 gates each allowed 30 minutes is
+# a 29-hour worst case, which is indistinguishable from a hang from the outside.
+# The slowest gate measured on a warm cache is ~35 s and the slowest cold one is
+# ~4 minutes, so 900 s is still generous for a real gate while capping the
+# pathological case at 15 minutes and letting the run report `TIMEOUT` and move
+# on. A gate that genuinely needs more passes its own larger budget to
+# `rw_run_bounded` rather than raising this floor for everyone.
+GATE_BUDGET="${RW_GATE_TIMEOUT:-900}"
+
+# Whole-run budget, in seconds.
+#
+# # Why a run-level cap is not redundant with the per-gate one
+#
+# The per-gate bound answers "did this gate hang?". It cannot answer "is this
+# run making progress?" — a run where several gates are merely slow is
+# arithmetically identical, from the outside, to one where the first gate wedged.
+# This cap makes the difference observable: when it fires, the run stops and
+# names every gate it did not reach, so the remaining work is a *list* rather
+# than a wait. Default 45 minutes, which covers a fully cold run of all gates.
+RUN_BUDGET="${RW_RUN_TIMEOUT:-2700}"
 
 # Gates that cannot run on this host by design (they need a specific toolchain or
 # operating system). They are still executed; the classification below only
@@ -85,6 +126,22 @@ TIMED_OUT=0
 FAILED_GATES=()
 SKIPPED_GATES=()
 TIMEOUT_GATES=()
+NOT_RUN_GATES=()
+RUN_START_NS="$(date +%s)"
+
+# True once the whole-run budget has been consumed.
+#
+# Checked before each gate rather than enforced by killing an in-flight one: a
+# gate part-way through has already produced its own verdict, and interrupting it
+# would report a genuine result as a timeout. The cap therefore stops *starting*
+# new work, which is the decision that keeps the run's duration bounded while
+# every reported line remains true.
+run_budget_exhausted() {
+  local now elapsed
+  now="$(date +%s)"
+  elapsed=$((now - RUN_START_NS))
+  [ "$elapsed" -ge "$RUN_BUDGET" ]
+}
 
 # Announce every gate before it starts. The previous version printed only after
 # the gate returned, so a hang showed nothing at all: the last line was the
@@ -104,6 +161,16 @@ for gate in tools/check_*.sh; do
   fi
 
   announce "$name"
+
+  if run_budget_exhausted; then
+    # Reported, not dropped: a gate that never ran is a piece of the verification
+    # that did not happen, and silently omitting it is how "N gates, all PASS"
+    # comes to describe a run that covered half the gates.
+    NOT_RUN_GATES+=("$name")
+    printf '%-52s %-7s\n' "$name" "NOT-RUN"
+    continue
+  fi
+
   log_file="$(mktemp)"
   start_ns="$(date +%s)"
 
@@ -145,7 +212,15 @@ for gate in tools/check_*.sh; do
 done
 
 echo
-echo "gates: PASS=$PASS FAIL=$FAIL TIMEOUT=$TIMED_OUT SKIP(host-limited)=$SKIPPED"
+echo "gates: PASS=$PASS FAIL=$FAIL TIMEOUT=$TIMED_OUT NOT-RUN=${#NOT_RUN_GATES[@]} SKIP(host-limited)=$SKIPPED"
+
+if [[ "${#NOT_RUN_GATES[@]}" -gt 0 ]]; then
+  echo "not run — the ${RUN_BUDGET}s whole-run budget was exhausted first:"
+  for g in "${NOT_RUN_GATES[@]}"; do
+    echo "  - $g"
+  done
+  echo "  (re-run with: tools/run_all_gates.sh --summary --filter <name>)"
+fi
 
 if [[ "${#SKIPPED_GATES[@]}" -gt 0 ]]; then
   echo "skipped (needs a different host):"

@@ -2,6 +2,18 @@
 // SPDX-License-Identifier: MIT
 
 //! Group box widget.
+//!
+//! # The rule this control embodies
+//!
+//! BLUE22 §B.8 cites `GroupBox.qml:20`: `topPadding = padding + label_height + spacing`, i.e.
+//! the content area begins below the title **plus the gap that separates the two**. This
+//! control derived the same quantity as a bare literal `14` in `content_rect` while the title
+//! band was separately anchored to the frame's top edge, so "where the title is" and "where the
+//! content starts" were two numbers that happened to describe the same layout. Deriving the
+//! content's top edge from the title's own box and the named gap is what makes the two
+//! move together — a larger font or a taller title band pushes the content down instead of
+//! letting it overlap.
+
 use crate::compat::{Rc, RefCell, String, ToString};
 use crate::core::{Alignment, Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
@@ -13,6 +25,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -26,6 +39,23 @@ const TITLE_PADDING: i32 = 10;
 /// Height of the title's band, in pixels. The band is what hides the border behind the
 /// label; `2` is the frame's own drawn border thickness, so the two cannot mismatch.
 const BORDER_WIDTH: u32 = 2;
+
+/// The vertical gap between the title row and the content below it: 6.
+///
+/// This is the `spacing` of `GroupBox.qml:20`'s `topPadding = padding + label_height +
+/// spacing` — the distance between two adjacent *elements* of this control, as distinct from
+/// the frame's edge-to-content padding. It used to be folded into a single `top: 14` literal,
+/// which is why the title and the content could not be moved independently and why nothing
+/// recorded which part of the 14 was air and which was the label.
+const TITLE_CONTENT_SPACING: u32 = dimensions::BUTTON_ICON_SPACING;
+
+/// The frame's own edge-to-content padding: 4.
+///
+/// The `padding` of the same QML formula, kept separate from [`TITLE_CONTENT_SPACING`] for the
+/// reason rule 4 gives: padding is edge-to-content, spacing is element-to-element. The old
+/// `content_rect` used one `inset = 4` for both the horizontal and the vertical edges and let
+/// the title band stand in for the top one, so there was no place for a second value to live.
+const FRAME_PADDING: u32 = 4;
 
 /// Group box widget.
 pub struct GroupBox {
@@ -103,6 +133,13 @@ impl GroupBox {
     pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
         self.registry = Some(registry);
     }
+    /// The leading inset of the title's own box from the frame's edge: 10.
+    ///
+    /// Half of the frame's own padding plus the label's air, and deliberately *not*
+    /// [`FRAME_PADDING`]: the title is not content, it is chrome that interrupts the border, and
+    /// the classic group-box look has it start further in than the content below it.
+    const TITLE_INSET: i32 = TITLE_PADDING;
+
     /// Returns title rectangle.
     /// The rectangle the title occupies, **inside** the frame.
     ///
@@ -121,47 +158,90 @@ impl GroupBox {
     /// border. That keeps the classic group-box look (the title interrupts the border)
     /// while making every painted pixel fall within the widget, which is the property
     /// both backends then agree on.
+    ///
+    /// # Why the horizontal inset is a named constant
+    ///
+    /// The three alignment arms each spelled the inset as a literal `10` — three copies of one
+    /// fact, any of which could be edited alone. `Alignment::Top`/`Bottom` are not horizontal
+    /// positions at all, so they take the leading inset rather than pretending to place the
+    /// title; the previous `=> rect.x + 10` arm is now the documented leading case.
     fn title_rect(&self) -> Rect {
         let rect = self.geometry();
         let text_width = self.cached_title_width.unwrap_or_else(|| {
             // Fallback approximate measurement if draw() hasn't run yet.
             self.title.len() as u32 * 8
         });
-        let text_height = 16i32;
+        let text_height = self.title_band_height();
         let x = match self.alignment {
-            Alignment::Left => rect.x + 10,
-            Alignment::Center => rect.x + ((rect.width - text_width) / 2) as i32,
-            Alignment::Right => rect.x + rect.width as i32 - text_width as i32 - 10,
-            Alignment::Top | Alignment::Bottom => rect.x + 10,
+            Alignment::Left | Alignment::Top | Alignment::Bottom => rect.x + Self::TITLE_INSET,
+            Alignment::Center => rect.x + ((rect.width.saturating_sub(text_width)) / 2) as i32,
+            Alignment::Right => rect.x + rect.width as i32 - text_width as i32 - Self::TITLE_INSET,
         };
         // Clamped so a tall glyph cannot start above the frame: the origin is the
-        // glyph's top, so `rect.y` is the highest row any title pixel can occupy.
-        Rect::new(x, (rect.y + text_height / 2).max(rect.y), text_width, text_height as u32)
+        // glyph's top, so `rect.y` is the highest row any title pixel can occupy. The band's
+        // width is clamped to the frame for the same reason in the trailing direction — a
+        // title wider than the group would paint over its neighbour.
+        let width = text_width.min(rect.width.saturating_sub(Self::TITLE_INSET.max(0) as u32));
+        let x = x.min(rect.x + rect.width.saturating_sub(width) as i32);
+        Rect::new(x.max(rect.x), (rect.y + text_height as i32 / 2).max(rect.y), width, text_height)
     }
+
+    /// The height of one row of the control's own chrome: the title band.
+    ///
+    /// One line of the default font, which is what the title is drawn in and what the content
+    /// below it must yield to. Deriving it here (rather than using a `16` literal) is what lets
+    /// a larger font push the content down instead of overlapping the title.
+    fn title_band_height(&self) -> u32 {
+        Font::default().size().max(1.0) as u32
+    }
+
+    /// The top edge the frame's content begins at, below the title band and its gap.
+    ///
+    /// This is BLUE22 §B.8's `topPadding = padding + label_height + spacing`
+    /// (`GroupBox.qml:20`). The three terms are separately named because they are three
+    /// different facts: the frame's edge-to-content padding, the label's own height, and the
+    /// element-to-element gap. Summing them is what makes the content start exactly below the
+    /// title, so the pair cannot drift into an overlap.
+    fn content_top(&self) -> i32 {
+        let rect = self.geometry();
+        let offset = FRAME_PADDING + self.title_band_height() + TITLE_CONTENT_SPACING;
+        rect.y.saturating_add(offset as i32)
+    }
+
     /// Returns checkbox rectangle if checkable.
     fn checkbox_rect(&self) -> Option<Rect> {
         if !self.checkable {
             return None;
         }
         let title_rect = self.title_rect();
-        let checkbox_size: i32 = 12;
+        // The indicator's own size and its gap to the label come from the shared table, so a
+        // group box's checkbox matches the one a `CheckBox` draws in the same form rather than
+        // being a second, slightly different box.
+        let checkbox_size = dimensions::CHECKBOX_BOX.min(title_rect.height) as i32;
         Some(Rect::new(
-            title_rect.x - checkbox_size - 5,
+            title_rect.x - checkbox_size - dimensions::INDICATOR_TEXT_SPACING as i32,
             title_rect.y + (title_rect.height as i32 - checkbox_size) / 2,
-            checkbox_size as u32,
-            checkbox_size as u32,
+            checkbox_size.max(0) as u32,
+            checkbox_size.max(0) as u32,
         ))
     }
 
+    /// The area the group's children are clipped to and forwarded events from.
+    ///
+    /// Bounded by the title band above, the frame's own padding on the three other edges, and
+    /// the same padding below — so it is the frame's content box minus the title, and it can
+    /// never describe a negative extent when the control is squeezed.
     fn content_rect(&self) -> Rect {
         let rect = self.geometry();
-        let top = 14u32;
-        let inset = 4u32;
+        let top = self.content_top();
         Rect::new(
-            rect.x + inset as i32,
-            rect.y + top as i32,
-            rect.width.saturating_sub(inset * 2),
-            rect.height.saturating_sub(top + inset),
+            rect.x + FRAME_PADDING as i32,
+            top,
+            rect.width.saturating_sub(FRAME_PADDING * 2),
+            (rect.y + rect.height as i32)
+                .saturating_sub(top)
+                .saturating_sub(FRAME_PADDING as i32)
+                .max(0) as u32,
         )
     }
 }
@@ -176,7 +256,23 @@ impl Widget for GroupBox {
     }
 
     fn size_hint(&self) -> Size {
-        crate::core::Size::new(200, 150)
+        // A group box is a panel: it has no content of its own, so its size wish is the chrome
+        // floor plus room for one title, and nothing about it is content-driven. The floor is
+        // expressed through the same two constants the frame's own geometry is derived from,
+        // and the height through `content_top`, so the reported size cannot describe a frame
+        // narrower than its title band or shorter than its own padding.
+        let padding = crate::style::EdgeOffsets {
+            top: FRAME_PADDING + self.title_band_height() + TITLE_CONTENT_SPACING,
+            right: FRAME_PADDING,
+            bottom: FRAME_PADDING,
+            left: FRAME_PADDING,
+        };
+        let title = self.cached_title_width.unwrap_or_else(|| self.title.len() as u32 * 8);
+        let floor = Size::new(
+            title + padding.horizontal_total() + (Self::TITLE_INSET as u32) * 2,
+            self.content_top() as u32 + padding.bottom,
+        );
+        ControlMetrics::implicit_size(Size::new(0, 0), padding, floor)
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -295,14 +391,21 @@ impl Draw for GroupBox {
         context.draw_rect(rect, style.border_color.unwrap_or(Color::rgb(200, 200, 200)));
         // Draw title background to hide the border behind the title. The band is widened
         // by `TITLE_PADDING` on both sides, so it is clipped to the frame: a band that ran
-        // past `rect.right()` would paint over the sibling to the right of this group.
+        // past `rect.right()` would paint over the sibling to the right of this group. Its
+        // height is the title band's own, so the erasure covers exactly the row the label
+        // occupies rather than a fixed `BORDER_WIDTH` that a taller font would step past.
         let title_bg_left = (title_rect.x - TITLE_PADDING).max(rect.x);
         let title_bg_right = (title_rect.x + title_rect.width as i32 + TITLE_PADDING)
             .min(rect.x + rect.width as i32);
         let title_bg_width = (title_bg_right - title_bg_left).max(0) as u32;
         if title_bg_width > 0 {
             context.fill_rect(
-                Rect::new(title_bg_left, rect.y, title_bg_width, BORDER_WIDTH),
+                Rect::new(
+                    title_bg_left,
+                    rect.y,
+                    title_bg_width,
+                    BORDER_WIDTH.max(title_rect.height),
+                ),
                 style.background_color.unwrap_or(Color::rgb(255, 255, 255)),
             );
         }

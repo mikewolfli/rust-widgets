@@ -489,35 +489,22 @@ impl Draw for ColorDialog {
                 HorizontalAlignment::Left,
             );
         }
-        // OK/Cancel buttons. The row is right-aligned inside the frame and floored at the
-        // panel's left edge, so a narrow control squeezes the buttons inwards instead of
-        // placing the first one at a negative x. They are laid out on a shared step so the
-        // label fit can be derived from the slot each button occupies. The row's y comes
-        // from the same stack that fixes the preview band, so the rows cannot drift.
-        let btn_y = self.button_row_top();
-        const BTN_W: i32 = 80;
-        const BTN_STEP: i32 = 88;
-        let cancel_x = (rect.x + rect.width as i32 - BTN_STEP).max(rect.x);
-        let ok_x = (cancel_x - BTN_STEP).max(rect.x);
-        let ok_rect = Rect::new(ok_x, btn_y, BTN_W as u32, Self::BUTTON_HEIGHT as u32);
+        // OK/Cancel buttons. The row's y comes from the same stack that fixes the preview
+        // band, so the rows cannot drift; its x comes from the shared [`action_row_geometry`]
+        // derivation, so this dialog and the five others that draw the same pair cannot
+        // disagree about the button width, the gap between them, or where the row's left edge
+        // falls. The labels are centred in their buttons and fitted to them.
+        let band = Rect::new(rect.x, self.button_row_top(), rect.width, Self::BUTTON_HEIGHT as u32);
+        let labels = vec![tr!("common.button.ok"), tr!("common.button.cancel")];
+        let row = super::message_box::action_row_geometry(context, &labels, band, true);
+        let font = Font::default();
+        let ok_rect = row.buttons[0];
         context.fill_rect(ok_rect, accent);
-        context.draw_text_line(
-            ok_rect,
-            &tr!("common.button.ok"),
-            &Font::default(),
-            accent_ink,
-            HorizontalAlignment::Center,
-        );
-        let cancel_rect = Rect::new(cancel_x, btn_y, BTN_W as u32, Self::BUTTON_HEIGHT as u32);
+        context.draw_text_line(ok_rect, &labels[0], &font, accent_ink, HorizontalAlignment::Center);
+        let cancel_rect = row.buttons[1];
         context.fill_rect(cancel_rect, surface);
         context.draw_rect(cancel_rect, border);
-        context.draw_text_line(
-            cancel_rect,
-            &tr!("common.button.cancel"),
-            &Font::default(),
-            ink,
-            HorizontalAlignment::Center,
-        );
+        context.draw_text_line(cancel_rect, &labels[1], &font, ink, HorizontalAlignment::Center);
     }
 }
 

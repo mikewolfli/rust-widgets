@@ -271,6 +271,42 @@ impl ChildInfo {
     pub fn find(children: &[ChildInfo], id: ObjectId) -> Option<&ChildInfo> {
         children.iter().find(|child| child.id == id)
     }
+
+    /// The room this child is asking for on both axes: its preferred extent plus its own
+    /// margins.
+    ///
+    /// # Why this belongs on [`ChildInfo`]
+    ///
+    /// A composite that lays a small row out and then needs the row's own total width has to
+    /// add the children's sizes *and* their gaps back up. Doing that by hand means the caller
+    /// re-derives a rule the layout already applied, and the two spellings drift — the failure
+    /// mode rule #101 names. `FlexLayout::arrange` performs exactly this addition for each
+    /// child before handing the sizes to its solver; exposing it here lets a caller ask the
+    /// same question of the same entry instead of restating it.
+    ///
+    /// `pref` is the right term rather than `min`: a row that has room lays each child out at
+    /// its preferred size, and a caller sizing a *container* around such a row must not be told
+    /// the sum of the minima (which would under-report and clip the row it is meant to hold).
+    pub fn bounds(&self) -> Size {
+        let preferred = self.hints.preferred();
+        Size::new(
+            preferred.width.saturating_add(self.params.margins.horizontal_total()),
+            preferred.height.saturating_add(self.params.margins.vertical_total()),
+        )
+    }
+}
+
+/// The total room `children` ask for along an axis, including each child's own margins.
+///
+/// The split from [`total_preferred`] is the `padding`/`spacing` split rule 4 of the assembly
+/// spec draws: `total_preferred` answers "how much content is in here", this answers "how much
+/// room do the children occupy once their gaps are paid for". A composite that wants to size
+/// itself around its children wants the second.
+pub fn total_bounds(children: &[ChildInfo], vertical: bool) -> u32 {
+    children
+        .iter()
+        .map(|child| if vertical { child.bounds().height } else { child.bounds().width })
+        .sum()
 }
 
 /// The children's collective minimum and preferred extent along an axis.

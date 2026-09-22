@@ -2,10 +2,10 @@
 <!-- control: combo_box | appearance: dark -->
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
-  <rect x="0" y="0" width="240" height="120" fill="rgba(69,69,69,1.00)" />
-  <rect x="0" y="0" width="240" height="120" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
-  <line x1="228" y1="56" x2="236" y2="56" stroke="rgba(225,225,225,1.00)" stroke-width="1" />
-  <line x1="236" y1="56" x2="232" y2="64" stroke="rgba(225,225,225,1.00)" stroke-width="1" />
-  <line x1="232" y1="64" x2="228" y2="56" stroke="rgba(225,225,225,1.00)" stroke-width="1" />
-  <text x="7" y="53" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(225,225,225,1.00)">(Empty)</text>
+  <rect x="0" y="36" width="240" height="48" fill="rgba(69,69,69,1.00)" />
+  <rect x="0" y="36" width="240" height="48" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
+  <line x1="210" y1="57" x2="228" y2="57" stroke="rgba(225,225,225,1.00)" stroke-width="1" />
+  <line x1="228" y1="57" x2="219" y2="63" stroke="rgba(225,225,225,1.00)" stroke-width="1" />
+  <line x1="219" y1="63" x2="210" y2="57" stroke="rgba(225,225,225,1.00)" stroke-width="1" />
+  <text x="15" y="53" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(225,225,225,1.00)">(Empty)</text>
 </svg>

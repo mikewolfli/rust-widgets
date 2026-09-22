@@ -198,7 +198,7 @@ answers, not compile-time stubs.
 
 ## Language bindings
 
-The `C ABI` lives in `src/bindings/` and exposes every control through `rw_*` symbols with a
+The `C ABI` lives in `src/bindings/` and exposes every control through **130 `rw_*` functions** with a
 capability-based property and event model. C, C++, Python and Java (JNI) bindings are exercised in CI;
 the generated header is checked for drift by `tools/check_abi.sh`.
 

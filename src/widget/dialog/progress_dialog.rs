@@ -481,17 +481,23 @@ impl Draw for ProgressDialog {
                 HorizontalAlignment::Center,
             );
         }
-        // Cancel button: the frame's bottom band, centred horizontally and floored at the
-        // frame's left edge so a narrow dialog keeps it on screen. The caption and its
-        // button are one rectangle, with the label centred and fitted inside it.
-        let btn_w = 80i32.min(button_band.width as i32).max(1);
-        let btn_x = (rect.x + rect.width as i32 / 2 - btn_w / 2).max(rect.x);
-        let btn_rect = Rect::new(btn_x, button_band.y, btn_w as u32, button_band.height.max(1));
+        // Cancel button: the frame's bottom band, and its width from the shared
+        // [`action_row_geometry`] derivation — the same 80 px an OK button gets, so a progress
+        // dialog's single button is the same object as the action buttons in the five dialogs
+        // that draw a pair. It is centred rather than right-anchored because a lone dismiss
+        // action is the panel's own call to action, which is the one place the row is not
+        // trailing-anchored; the helper still owns the *size*, which is the part that was
+        // duplicated.
+        let labels = vec![self.cancel_button_text.clone()];
+        let row = super::message_box::action_row_geometry(context, &labels, button_band, false);
+        let btn_w = row.buttons[0].width;
+        let btn_x = (rect.x + rect.width as i32 / 2 - btn_w as i32 / 2).max(rect.x);
+        let btn_rect = Rect::new(btn_x, button_band.y, btn_w, button_band.height.max(1));
         context.fill_rect(btn_rect, button_fill);
         context.draw_rect(btn_rect, border);
         context.draw_text_line(
             btn_rect,
-            &self.cancel_button_text,
+            &labels[0],
             &Font::default(),
             ink,
             HorizontalAlignment::Center,

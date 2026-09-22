@@ -8,9 +8,9 @@
   <text x="11" y="7" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">color_dialog.title</text>
   <rect x="10" y="38" width="220" height="32" fill="rgba(200,200,200,1.00)" />
   <rect x="10" y="38" width="220" height="32" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
-  <rect x="64" y="80" width="80" height="28" fill="rgba(33,150,243,1.00)" />
-  <text x="66" y="87" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">common.b…</text>
-  <rect x="152" y="80" width="80" height="28" fill="rgba(226,226,226,1.00)" />
-  <rect x="152" y="80" width="80" height="28" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
-  <text x="154" y="87" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">common.b…</text>
+  <rect x="74" y="80" width="80" height="28" fill="rgba(33,150,243,1.00)" />
+  <text x="76" y="87" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">common.b…</text>
+  <rect x="160" y="80" width="80" height="28" fill="rgba(226,226,226,1.00)" />
+  <rect x="160" y="80" width="80" height="28" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
+  <text x="162" y="87" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">common.b…</text>
 </svg>

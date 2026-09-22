@@ -7,6 +7,8 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::style::EdgeOffsets;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 
 use crate::widget::capability::coercion::{expect_bool, expect_f64, expect_i64, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
@@ -20,6 +22,26 @@ use crate::{impl_widget_property_hooks, property_names_of};
 /// display grammar can print. A larger precision would render digits that are pure
 /// binary noise, which is worse than refusing the setting.
 pub const SPIN_BOX_MAX_DECIMALS: u32 = 9;
+
+/// Width of one step button in the spin box's trailing button column: 20.
+///
+/// Tiny by desktop standards and deliberately so — this is the value the control's drawing
+/// has always used, and the migration's contract is that the geometry becomes *derivable*
+/// without becoming *different*. [`dimensions::TOUCH_TARGET_MIN`] (48) would be the tappable
+/// floor a finger needs, but it is a project-wide metric change rather than a geometry fix,
+/// so it is recorded here instead of being made silently.
+const SPIN_BOX_BUTTON_WIDTH: u32 = 20;
+
+/// The buttons stacked in the trailing column, counted for the width derivation.
+const SPIN_BOX_BUTTONS: u32 = 2;
+
+/// Shape of the step arrows drawn inside the button column: 4 px of half-span, 5 px of drop.
+///
+/// One fact for both arrows: they carried five literals each (`4`, `4.0`, and three
+/// halved `2.0`s) whose relations were only correct because they happened to be written
+/// together, so changing the arrow's size meant finding all ten.
+const SPIN_BOX_ARROW_HALF_SPAN: f32 = 4.0;
+const SPIN_BOX_ARROW_DROP: f32 = 5.0;
 
 /// Spin box widget for numeric input.
 ///
@@ -74,6 +96,77 @@ pub struct SpinBox {
     pub editing_finished: GenericSignal,
 }
 impl SpinBox {
+    /// The band the whole control is painted in: full width, one text field tall, centred.
+    ///
+    /// # Why the control is not its own rectangle
+    ///
+    /// A spin box is a **field plus a step column**, and both are chrome of a fixed height:
+    /// [`dimensions::TEXT_FIELD_MIN_HEIGHT`] is what every field in this crate occupies. This
+    /// control used to be the one exception — the 240x120 census cell drew a 240x120 slab
+    /// whose buttons were **120 px tall** (`spin_box.svg` carried `rect x=200 width=20
+    /// height=120` twice) — so a spin box and the text field it sits beside in the same form
+    /// were different objects. The band is the single derivation the surface, the button
+    /// column, the value's line box and the hit test all read.
+    fn row_band(&self) -> Rect {
+        ControlMetrics::full_width_band(self.geometry(), dimensions::TEXT_FIELD_MIN_HEIGHT)
+    }
+
+    /// The trailing button column: the **remainder** of the band, not a fixed rectangle.
+    ///
+    /// # Why the column is derived from its width rather than from the band's edge
+    ///
+    /// This is BLUE22 §B.9's rule: a sub-part's box is derived from its siblings, so a
+    /// sub-part that grows *pushes* its neighbours rather than overlapping them. The buttons
+    /// were placed at `band.right() - button_width * 2` and the value's text at the field's
+    /// leading padding — two derivations from two different edges with no relation between
+    /// them, which is why a wider button or a larger font ran the value underneath the
+    /// buttons (`spin_box`'s value was drawn at x = 4 with the column starting at x = 200).
+    /// Taking the column as `band.width - editable_width` makes the text area and the column
+    /// **tile** the band, so neither can be laid over the other.
+    fn button_column(&self) -> Rect {
+        let band = self.row_band();
+        let column_width = SPIN_BOX_BUTTON_WIDTH.saturating_mul(SPIN_BOX_BUTTONS).min(band.width);
+        Rect::new(
+            band.x + band.width.saturating_sub(column_width) as i32,
+            band.y,
+            column_width,
+            band.height,
+        )
+    }
+
+    /// The box the user may type in: whatever the button column leaves.
+    ///
+    /// QML derives exactly this (`SpinBox.qml:20-21`'s `leftPadding: padding + down.width`) —
+    /// the text area *yields* to the button column, so the two cannot overlap at any font or
+    /// button size.
+    fn editable_rect(&self) -> Rect {
+        let band = self.row_band();
+        let column = self.button_column();
+        Rect::new(band.x, band.y, column.x.saturating_sub(band.x) as u32, band.height)
+    }
+
+    /// The upper/lower half of the button column that the *up* step owns.
+    fn up_button(&self) -> Rect {
+        let column = self.button_column();
+        let half = column.height / 2;
+        Rect::new(column.x, column.y, column.width, half)
+    }
+
+    /// The upper/lower half of the button column that the *down* step owns.
+    ///
+    /// Derived from the same column as [`Self::up_button`], so the two tile it: they were
+    /// two independent `+ height`/`+ height / 2` expressions in `draw` and a third spelling
+    /// in the hit test.
+    fn down_button(&self) -> Rect {
+        let column = self.button_column();
+        let half = column.height / 2;
+        Rect::new(
+            column.x,
+            column.y + column.height.saturating_sub(half) as i32,
+            column.width,
+            half,
+        )
+    }
     /// Creates a spin box with default range 0-99 and integer precision.
     pub fn new(geometry: Rect) -> Self {
         Self {
@@ -398,10 +491,35 @@ impl Widget for SpinBox {
 
     fn size_hint(&self) -> Size {
         // Width follows the *formatted* text, not the integer value: a spin box showing
-        // `1234.50` is six characters wider than one showing `1234`, and sizing off the
-        // integer form would clip the decimals it was explicitly asked to display.
-        let val_w = self.formatted_value().len() as u32 * 10 + 25;
-        Size::new(val_w.max(60), 24)
+        // `1234.50` is wider than one showing `1234`, and sizing off the integer form would
+        // clip the decimals it was explicitly asked to display.
+        //
+        // The text is a **content** width and is handed to `ControlMetrics::implicit_size`
+        // as such, with the step column expressed as the floor rather than added on top. That
+        // is the whole reason the metric exists: the number a layout is told and the box the
+        // control draws are then two readings of one formula. The two are deliberately not
+        // bit-identical here — a hint is measured with a nominal advance per character
+        // because `size_hint` has no `RenderContext` to measure with, while the paint path
+        // *fits* the value into the box this hint produced. A hint that is a few pixels
+        // generous is the safe direction; one that is short would elide the very digits the
+        // caller asked for.
+        let value = self.formatted_value();
+        let text_width = value.len() as u32 * 8;
+        let field_air = (dimensions::TEXT_FIELD_MIN_HEIGHT / 2).saturating_sub(8);
+        let padding = EdgeOffsets {
+            top: field_air,
+            right: dimensions::TEXT_FIELD_PADDING_H,
+            bottom: field_air,
+            left: dimensions::TEXT_FIELD_PADDING_H,
+        };
+        // The floor is the field's own height plus the step column the band tiles; every term
+        // is a value from the shared table, so the hint and the paint cannot disagree about
+        // how many pixels the buttons take.
+        let floor = Size::new(
+            dimensions::TEXT_FIELD_PADDING_H * 2 + SPIN_BOX_BUTTON_WIDTH * SPIN_BOX_BUTTONS,
+            dimensions::TEXT_FIELD_MIN_HEIGHT,
+        );
+        ControlMetrics::implicit_size(Size::new(text_width, 0), padding, floor)
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -546,14 +664,22 @@ impl WidgetProperties for SpinBox {
 }
 
 impl SpinBox {
-    /// Handle click/tap on increment/decrement buttons.
-    fn handle_button_click(&mut self, pos: &Point, rect: Rect, button_width: u32) {
-        if pos.x as f32 >= rect.x as f32 + rect.width as f32 - button_width as f32 * 2.0 {
-            if (pos.x as f32) < rect.x as f32 + rect.width as f32 - button_width as f32 {
-                self.step_down();
-            } else {
-                self.step_up();
-            }
+    /// Handle click/tap on the increment/decrement buttons.
+    ///
+    /// # Why this takes no rectangle or width
+    ///
+    /// It used to take both and re-derive the buttons as `rect.right() - button_width * 2`,
+    /// which was a **third** copy of the column's arithmetic (one in `draw`, one in the
+    /// event arm, one here) — three spellings that described the same two buttons and
+    /// agreed only while nobody edited one of them. The boxes now come from the same
+    /// accessors the paint path uses, and the caller passes only what it alone knows: where
+    /// the pointer landed.
+    fn handle_button_click(&mut self, pos: Point) {
+        if self.down_button().contains_point(pos) {
+            self.step_down();
+            self.base.clicked.emit();
+        } else if self.up_button().contains_point(pos) {
+            self.step_up();
             self.base.clicked.emit();
         }
     }
@@ -566,17 +692,13 @@ impl EventHandler for SpinBox {
         }
         match event {
             Event::MousePress { pos, button } => {
-                let rect = self.geometry();
-                let button_width = 20;
                 if *button == 1 {
-                    self.handle_button_click(pos, rect, button_width);
+                    self.handle_button_click(*pos);
                 }
             }
             #[cfg(feature = "touch")]
             Event::TouchBegin { pos, .. } => {
-                let rect = self.geometry();
-                let button_width = 20;
-                self.handle_button_click(pos, rect, button_width);
+                self.handle_button_click(*pos);
             }
             Event::KeyPress { key, modifiers: _ } => {
                 match *key {
@@ -610,12 +732,23 @@ impl EventHandler for SpinBox {
 }
 impl Draw for SpinBox {
     fn draw(&mut self, context: &mut RenderContext) {
-        // Draw base widget
-        let rect = self.geometry();
-        let padding = 4;
-        let button_width = 20;
-        let text_x = rect.x + padding;
-        let text_y = rect.y as f32 + rect.height as f32 / 2.0;
+        // ── The band actually painted ──
+        //
+        // Every measurement below is taken from one of the four derived boxes (`row_band`,
+        // `editable_rect`, `up_button`, `down_button`), so they cannot disagree about where
+        // the field is, how tall the buttons are or where the value may be written. The
+        // control's own rectangle decides *where* the band sits and nothing else.
+        let band = self.row_band();
+        // A band with no room left is not a spin box: the guard keeps the two buttons and
+        // the value from being emitted as zero-extent elements, which is the shape the SVG
+        // census reads as an invisible control.
+        if band.width == 0 || band.height == 0 {
+            return;
+        }
+        let editable = self.editable_rect();
+        let down_button = self.down_button();
+        let up_button = self.up_button();
+        let text_x = editable.x + dimensions::TEXT_FIELD_PADDING_H as i32;
         let style = self.style();
         let bg = style.background_color.unwrap_or(Color::rgb(255, 255, 255));
         let text_color = style.text_color.unwrap_or(Color::rgb(0, 0, 0));
@@ -630,78 +763,32 @@ impl Draw for SpinBox {
         let default_font = Font::default();
         let font = style.font.as_ref().unwrap_or(&default_font);
         // Draw background
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), bg);
+        context.fill_rect(band, bg);
         // Draw border
         if let Some(border_color) = style.border_color {
-            context.draw_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), border_color);
+            context.draw_rect(band, border_color);
         }
-        // Draw up/down buttons
-        let down_button_x_f = rect.x as f32 + rect.width as f32 - button_width as f32 * 2.0;
-        let up_button_x_f = rect.x as f32 + rect.width as f32 - button_width as f32;
-        let button_width_f = button_width as f32;
-        let rect_y_f = rect.y as f32;
-        let rect_height_f = rect.height as f32;
-        // Down button
-        context.fill_rect(
-            Rect::from_f32(down_button_x_f, rect_y_f, button_width_f, rect_height_f),
-            button_bg,
-        );
-        context.draw_rect(
-            Rect::from_f32(down_button_x_f, rect_y_f, button_width_f, rect_height_f),
-            button_border,
-        );
-        // Down arrow
-        let down_arrow_x_f = down_button_x_f + button_width_f / 2.0;
-        let down_arrow_y_f = rect_y_f + rect_height_f / 2.0;
-        let arrow_size = 4;
-        let arrow_size_f = arrow_size as f32;
-        context.draw_line(
-            Point::from_f32(down_arrow_x_f - arrow_size_f, down_arrow_y_f - arrow_size_f / 2.0),
-            Point::from_f32(down_arrow_x_f + arrow_size_f, down_arrow_y_f - arrow_size_f / 2.0),
-            arrow_color,
-        );
-        context.draw_line(
-            Point::from_f32(down_arrow_x_f + arrow_size_f, down_arrow_y_f + arrow_size_f / 2.0),
-            Point::from_f32(down_arrow_x_f, down_arrow_y_f + arrow_size_f / 2.0),
-            arrow_color,
-        );
-        context.draw_line(
-            Point::from_f32(down_arrow_x_f, down_arrow_y_f + arrow_size_f / 2.0),
-            Point::from_f32(down_arrow_x_f - arrow_size_f, down_arrow_y_f - arrow_size_f / 2.0),
-            arrow_color,
-        );
-        // Up button
-        context.fill_rect(
-            Rect::from_f32(up_button_x_f, rect_y_f, button_width_f, rect_height_f),
-            button_bg,
-        );
-        context.draw_rect(
-            Rect::from_f32(up_button_x_f, rect_y_f, button_width_f, rect_height_f),
-            button_border,
-        );
-        // Up arrow
-        let up_arrow_x_f = up_button_x_f + button_width_f / 2.0;
-        let up_arrow_y_f = rect_y_f + rect_height_f / 2.0;
-        context.draw_line(
-            Point::from_f32(up_arrow_x_f - arrow_size_f, up_arrow_y_f + arrow_size_f / 2.0),
-            Point::from_f32(up_arrow_x_f + arrow_size_f, up_arrow_y_f + arrow_size_f / 2.0),
-            arrow_color,
-        );
-        context.draw_line(
-            Point::from_f32(up_arrow_x_f + arrow_size_f, up_arrow_y_f + arrow_size_f / 2.0),
-            Point::from_f32(up_arrow_x_f, up_arrow_y_f - arrow_size_f / 2.0),
-            arrow_color,
-        );
-        context.draw_line(
-            Point::from_f32(up_arrow_x_f, up_arrow_y_f - arrow_size_f / 2.0),
-            Point::from_f32(up_arrow_x_f - arrow_size_f, up_arrow_y_f + arrow_size_f / 2.0),
-            arrow_color,
-        );
-        // Draw text
+        // Draw up/down buttons. Each is the half of the trailing column it owns, so the two
+        // are the same height whatever the band is, and neither can overlap the value.
+        context.fill_rect(down_button, button_bg);
+        context.draw_rect(down_button, button_border);
+        draw_step_arrow(context, down_button, false, arrow_color);
+        context.fill_rect(up_button, button_bg);
+        context.draw_rect(up_button, button_border);
+        draw_step_arrow(context, up_button, true, arrow_color);
+        // Draw text. The value is bounded to the **editable** box, so it is fitted into the
+        // space the button column left instead of being written from the field's leading
+        // padding and allowed to run under the buttons.
         let display_text = self.display_text();
         if !display_text.is_empty() {
-            context.draw_text(
-                Point::new(text_x, text_y as i32),
+            let line = context.text_line(editable, font);
+            context.draw_text_fitted(
+                Rect::new(
+                    text_x,
+                    line.y,
+                    editable.width.saturating_sub((text_x - editable.x) as u32),
+                    line.height,
+                ),
                 &display_text,
                 font,
                 text_color,
@@ -709,6 +796,30 @@ impl Draw for SpinBox {
             );
         }
     }
+}
+
+/// Draws one step arrow inside `button`, pointing up when `up` is set.
+///
+/// # Why the origin is the box's centre line, not its edge
+///
+/// The chevron is a **shape**, not text, so it is centred on the box rather than placed by
+/// a text origin — the five literals per arrow (`4`, and the three `4.0 / 2.0` halves) were
+/// each an independent offset from the button's midpoint, and none of them was named. The
+/// two shapes here are the same three-point chevron reflected about the midpoint, so the up
+/// and down arrows cannot disagree about the arrow's size or its drop.
+fn draw_step_arrow(context: &mut RenderContext, button: Rect, up: bool, color: Color) {
+    let cx = button.x as f32 + button.width as f32 / 2.0;
+    let cy = button.y as f32 + button.height as f32 / 2.0;
+    let span = SPIN_BOX_ARROW_HALF_SPAN;
+    // A downward chevron opens downward; an upward one is the same shape with the drop
+    // negated, so the two are one derivation read with a sign.
+    let drop = if up { -SPIN_BOX_ARROW_DROP } else { SPIN_BOX_ARROW_DROP };
+    let left = Point::from_f32(cx - span, cy - drop / 2.0);
+    let tip = Point::from_f32(cx, cy + drop / 2.0);
+    let right = Point::from_f32(cx + span, cy - drop / 2.0);
+    context.draw_line(left, tip, color);
+    context.draw_line(tip, right, color);
+    context.draw_line(right, left, color);
 }
 
 #[cfg(test)]
@@ -1082,17 +1193,149 @@ mod tests {
     }
 
     /// The width must follow the formatted text; sizing off the integer form clips
-    /// exactly the decimals the caller asked for.
+    /// exactly the decimals the caller asked to display.
+    ///
+    /// # What this pins, and why the range is widened first
+    ///
+    /// The box starts with the default `0..=99`, and `set_decimals` re-clamps the value to
+    /// that range — so the old form of this test (`set_value(1234)` then `set_decimals(2)`)
+    /// never measured `1234.00` at all: it measured `99` against `99.00`, whose two
+    /// characters are both under the hint's floor and therefore both produce the same width.
+    /// The comparison passed only because the pre-migration formula had no floor to reach.
+    /// The range is widened so the value survives the precision change and the assertion
+    /// measures the thing its message claims: the formatted text driving the width.
     #[test]
     fn spinbox_size_hint_accounts_for_decimals() {
         let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        sb.set_range(0, 1_000_000);
         sb.set_value(1234);
+        assert_eq!(sb.formatted_value(), "1234", "the value must survive the setup");
         let integer_width = sb.size_hint().width;
         sb.set_decimals(2);
+        assert_eq!(sb.formatted_value(), "1234.00", "two more digits than the integer form");
         assert!(
             sb.size_hint().width > integer_width,
             "a two-decimal box showing 1234.00 must be wider than one showing 1234"
         );
+    }
+
+    /// The reported size and the painted band are two readings of one formula.
+    ///
+    /// # Why this exists
+    ///
+    /// This is BLUE22 §B.6 rule 3: a composite's own `size_hint` must be derived through
+    /// `ControlMetrics::implicit_size` over a floor from the `dimensions` table, so the drawn
+    /// box and the reported size agree. Before the migration the hint was
+    /// `Size::new(val_w.max(60), 24)` — a free-standing literal — while `draw` painted
+    /// `geometry()`: the reported 24 px height and the 120 px slab on screen were two
+    /// different descriptions of the same control.
+    #[test]
+    fn the_reported_height_is_the_band_that_is_painted() {
+        let sb = SpinBox::new(Rect::new(0, 0, 240, 120));
+        let band = sb.row_band();
+        assert_eq!(
+            band.height,
+            dimensions::TEXT_FIELD_MIN_HEIGHT,
+            "the painted band is the field's own height, whatever rectangle the control was given"
+        );
+        assert_eq!(
+            sb.size_hint().height,
+            band.height,
+            "a layout must be told the height the control actually draws"
+        );
+        // Centred in the area it was given, not stretched across it.
+        assert_eq!(band.width, 240);
+        assert_eq!(band.y, (120 - dimensions::TEXT_FIELD_MIN_HEIGHT as i32) / 2);
+    }
+
+    /// The value can never be laid over the step column: the two tile the band.
+    ///
+    /// # Why this exists
+    ///
+    /// This is BLUE22 §B.9 — a sub-part's box is derived from its siblings. The buttons used
+    /// to sit at `geometry().right() - 20 * 2` while the text was written from the field's
+    /// leading edge with no upper bound, so a wider button or a larger font put the value
+    /// *underneath* the buttons. Deriving the editable box as "whatever the column leaves"
+    /// makes that overlap unrepresentable.
+    #[test]
+    fn the_value_box_ends_where_the_button_column_begins() {
+        for width in [0u32, 30, 64, 240, 400] {
+            let sb = SpinBox::new(Rect::new(0, 0, width, 120));
+            let editable = sb.editable_rect();
+            let column = sb.button_column();
+            assert_eq!(
+                editable.x + editable.width as i32,
+                column.x,
+                "the two boxes must share an edge at control width {width}"
+            );
+            assert_eq!(
+                editable.width + column.width,
+                sb.row_band().width,
+                "the two boxes must tile the band at control width {width}"
+            );
+            assert!(
+                column.x + column.width as i32 <= sb.row_band().x + sb.row_band().width as i32,
+                "the button column must stay inside the band at control width {width}"
+            );
+        }
+    }
+
+    /// The two step buttons tile the column and never overlap each other.
+    #[test]
+    fn the_step_buttons_tile_their_column() {
+        for height in [0u32, 10, 48, 120] {
+            let sb = SpinBox::new(Rect::new(0, 0, 200, height));
+            let up = sb.up_button();
+            let down = sb.down_button();
+            assert_eq!(up.x, down.x, "both buttons occupy the one column at height {height}");
+            assert_eq!(up.width, down.width);
+            assert_eq!(
+                up.y + up.height as i32,
+                down.y,
+                "the up button must end where the down button begins at height {height}"
+            );
+            assert_eq!(
+                up.height + down.height,
+                sb.button_column().height,
+                "the two buttons must tile the column at height {height}"
+            );
+        }
+    }
+
+    /// A press lands on the step the *pointed-at* button performs.
+    ///
+    /// The hit test used to re-derive the buttons from a `button_width` argument of its own,
+    /// so the clickable column and the painted one were two independent derivations of the
+    /// same edge. This drives the press through the same accessors the paint path uses.
+    #[test]
+    fn a_press_on_each_half_steps_in_the_direction_that_is_painted() {
+        let rect = Rect::new(0, 0, 200, 120);
+        let top = SpinBox::new(rect).up_button();
+        let bottom = SpinBox::new(rect).down_button();
+
+        let mut sb = SpinBox::new(rect);
+        sb.set_value(50);
+        sb.handle_event(&Event::MousePress { pos: Point::new(top.x + 1, top.y + 1), button: 1 });
+        assert_eq!(sb.value(), 51, "the upper half of the column must step up");
+
+        sb.handle_event(&Event::MousePress {
+            pos: Point::new(bottom.x + 1, bottom.y + 1),
+            button: 1,
+        });
+        assert_eq!(sb.value(), 50, "the lower half of the column must step down");
+    }
+
+    /// A press on the field itself is not a step.
+    #[test]
+    fn a_press_inside_the_value_box_does_not_step() {
+        let mut sb = SpinBox::new(Rect::new(0, 0, 200, 120));
+        sb.set_value(50);
+        let editable = sb.editable_rect();
+        sb.handle_event(&Event::MousePress {
+            pos: Point::new(editable.x + 1, editable.y + editable.height as i32 / 2),
+            button: 1,
+        });
+        assert_eq!(sb.value(), 50, "the text area is where the user types, not where they step");
     }
 
     /// Setting the precision re-rounds the value but must not claim the value changed:
