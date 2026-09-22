@@ -35,6 +35,12 @@ pub struct InplaceEditor {
     undo_stack: UndoStack,
     history_target: Rc<RefCell<String>>,
     restoring_history: bool,
+    /// The edit caret's blink state, advanced by [`InplaceEditor::tick`].
+    ///
+    /// It lives on the control because it is state that must survive between frames; the tempo and
+    /// the phase logic come from [`crate::style::CursorBlink`] so this control cannot drift from
+    /// every other caret in the crate.
+    cursor_blink: crate::style::CursorBlink,
     /// Emitted when the edit is accepted (Enter/Tab). Carries the final text.
     pub edit_accepted: Signal1<String>,
     /// Emitted when the edit is cancelled (Escape).
@@ -55,6 +61,7 @@ impl InplaceEditor {
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(text.to_string())),
             restoring_history: false,
+            cursor_blink: crate::style::CursorBlink::new(),
             edit_accepted: Signal1::new(),
             edit_cancelled: GenericSignal::new(),
         }
@@ -66,6 +73,10 @@ impl InplaceEditor {
             self.is_editing = true;
             self.original_text = self.text.clone();
             self.cursor_position = self.text.len();
+            // Entering edit mode is entering the state the caret blinks in, so the blink starts
+            // here rather than waiting for the host to notice — a caret that only began blinking on
+            // some later frame would sit frozen for however long that took.
+            self.cursor_blink.start();
             self.base.request_redraw();
         }
     }
@@ -77,6 +88,9 @@ impl InplaceEditor {
             return;
         }
         self.is_editing = false;
+        // Leaving edit mode stops the caret's animation, so a host driving frames from the control
+        // stops scheduling them. The caret is left visible, which is what a blurred field shows.
+        self.cursor_blink.stop();
         if accept {
             self.edit_accepted.emit(self.text.clone());
         } else {
@@ -84,6 +98,22 @@ impl InplaceEditor {
             self.edit_cancelled.emit();
         }
         self.base.request_redraw();
+    }
+
+    /// Advances the edit caret's blink by `delta_ms` and reports whether another frame is needed.
+    ///
+    /// The crate's `tick(delta_ms) -> bool` convention, and the reason the module's docs can claim
+    /// a blinking cursor: before this existed the caret was a solid line and nothing ever told the
+    /// host to draw another frame. A host calls this once per frame while it reports `true`.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        if !self.is_editing {
+            return false;
+        }
+        let running = self.cursor_blink.tick(delta_ms);
+        if running {
+            self.base.request_redraw();
+        }
+        running
     }
 
     /// Returns whether the editor is in edit mode.
@@ -364,13 +394,17 @@ impl Draw for InplaceEditor {
                 HorizontalAlignment::Left,
             );
 
-            // Draw cursor (blinking vertical line)
-            let cursor_x = text_x + self.cursor_position as i32 * 8;
-            context.draw_line(
-                Point::new(cursor_x, rect.y + self.padding),
-                Point::new(cursor_x, rect.y + rect.height as i32 - self.padding),
-                ink.with_alpha_f32(0.8),
-            );
+            // Draw the caret, but only during the visible half of its cycle. The state comes from
+            // the control's `CursorBlink`, which `tick` advances; drawing it unconditionally was
+            // the "blinking cursor" that never blinked.
+            if self.cursor_blink.is_visible() {
+                let cursor_x = text_x + self.cursor_position as i32 * 8;
+                context.draw_line(
+                    Point::new(cursor_x, rect.y + self.padding),
+                    Point::new(cursor_x, rect.y + rect.height as i32 - self.padding),
+                    ink.with_alpha_f32(0.8),
+                );
+            }
         } else {
             // Draw display mode
             context.fill_rect(rect, surface);
@@ -470,6 +504,27 @@ mod tests {
         assert!((ie.font_size() - 14.0).abs() < 0.01);
         assert_eq!(ie.padding(), 4);
         assert_eq!(ie.kind(), WidgetKind::InplaceEditor);
+    }
+
+    /// The edit caret blinks only in edit mode.
+    ///
+    /// The module has always documented a "blinking cursor", but the caret was a solid line and
+    /// nothing ever scheduled another frame. This pins the two halves of the lifecycle: display mode
+    /// owes no frame, edit mode keeps blinking, and finishing the edit stops it.
+    #[test]
+    fn the_edit_caret_blinks_only_in_edit_mode() {
+        let mut ie = InplaceEditor::new("Hello", Rect::new(0, 0, 200, 30));
+
+        assert!(!ie.tick(10_000), "display mode has no caret to animate");
+
+        ie.start_edit();
+        assert!(ie.tick(0), "entering edit mode starts the blink");
+        for _ in 0..10 {
+            assert!(ie.tick(500), "a blink is periodic and never settles");
+        }
+
+        ie.finish_edit(true);
+        assert!(!ie.tick(500), "leaving edit mode stops the blink");
     }
 
     #[test]

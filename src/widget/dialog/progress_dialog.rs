@@ -440,7 +440,7 @@ impl Draw for ProgressDialog {
         let btn_rect = Rect::new(btn_x, btn_y, BTN_W as u32, 28);
         context.fill_rect(btn_rect, button_fill);
         context.draw_rect(btn_rect, border);
-        context.draw_text_fitted(
+        context.draw_text_line(
             btn_rect,
             &self.cancel_button_text,
             &Font::default(),

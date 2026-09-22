@@ -25,7 +25,9 @@ use crate::signal::Signal1;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::special_widgets::finance::layout::PlotArea;
+use crate::widget::special_widgets::finance::layout::{
+    panel_colors, PanelColors, PlotArea, PANEL_MIN_CONTRAST,
+};
 use crate::widget::special_widgets::finance::types::Bar;
 use crate::widget::special_widgets::finance::types::PriceSeries;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -148,7 +150,16 @@ impl VolumeChart {
         // No bottom margin: a volume pane carries no index labels of its own, because
         // the price pane above already has them and a second copy would be misleading
         // about which rows they belong to.
-        PlotArea::with_margins(self.base.geometry(), 48, 8, 6, 6)
+        PlotArea::volume_pane(self.base.geometry())
+    }
+
+    /// The pane's chrome, resolved from this control's own style first and the theme second.
+    ///
+    /// Named rather than inlined because the empty state and the populated state are two
+    /// branches of one draw: taking the colours from two places is how a pane can end up with
+    /// a background that does not match the grid drawn on it.
+    fn chrome(&self) -> PanelColors {
+        panel_colors(Some(self.base.style()))
     }
 
     /// A volume bar's colour under the current policy.
@@ -223,22 +234,37 @@ impl Draw for VolumeChart {
         if area.rect.width == 0 || area.rect.height == 0 {
             return;
         }
-        context.fill_rect(area.rect, Color::rgb(18, 22, 28));
+        // The pane surface resolves the caller's style first and the theme second, so the
+        // histogram sits on the appearance's own surface. The bar colours below are the
+        // bar's direction and stay exactly as they are: they are data, not chrome.
+        let chrome = self.chrome();
+        context.fill_rect(area.rect, chrome.surface);
 
         let bars = self.series.bars();
-        if bars.is_empty() {
-            return;
-        }
         let max_volume = self.series.max_volume();
-        if max_volume <= 0.0 {
-            // Every volume is zero or unusable: there is no scale to draw against, and a
-            // zero-height bar for each would be invisible anyway.
+        // Empty, or every volume zero or unusable: there is no scale to draw against, and a
+        // zero-height bar for each would be invisible anyway. The pane still owes the reader
+        // its frame, so this is where the grid and the message go rather than a bare return
+        // that left a solid slab behind.
+        if bars.is_empty() || max_volume <= 0.0 {
+            draw_empty_pane(context, &area, chrome);
             return;
         }
         let usable_height = (area.rect.height as f64 * self.headroom).max(1.0);
         let index_axis = area.index_axis(bars.len());
         let body_width = index_axis.body_width();
         let baseline = area.bottom();
+
+        // The volume gridlines, drawn under the bars: without a scale a histogram is a row
+        // of coloured blocks whose relative heights cannot be read as quantities.
+        for step in 0..=3 {
+            let y = area.rect.y + area.rect.height as i32 * step / 3;
+            context.draw_line(
+                crate::core::Point { x: area.rect.x, y },
+                crate::core::Point { x: area.right(), y },
+                chrome.grid,
+            );
+        }
 
         for (index, bar) in bars.iter().enumerate() {
             if !bar.volume.is_finite() || bar.volume <= 0.0 {
@@ -267,6 +293,41 @@ impl Draw for VolumeChart {
             );
         }
     }
+}
+
+/// Draws a pane's frame and a `No data` message for a pane with nothing to plot.
+///
+/// # Why this is not a method on the control
+///
+/// It depends solely on the plot area and the resolved chrome — nothing about which series
+/// or which mode a pane holds — so making it a method would be four identical copies, one
+/// per control, which is the duplication the shared layout module exists to remove. It lives
+/// beside the derivation it consumes because the two have to agree: the message's colour is
+/// derived with [`PANEL_MIN_CONTRAST`] from the very surface passed in, so it cannot be
+/// painted in an ink that ignores the panel it lands on.
+pub(crate) fn draw_empty_pane(
+    context: &mut RenderContext,
+    area: &PlotArea,
+    chrome: crate::widget::special_widgets::finance::layout::PanelColors,
+) {
+    context.draw_rect(area.rect, chrome.grid);
+    // A hairline at mid-height, where a series with no data would plot, so the pane reads as
+    // "a scale with nothing on it" rather than as a filled rectangle.
+    let mid_y = area.rect.y + area.rect.height as i32 / 2;
+    context.draw_line(
+        crate::core::Point { x: area.rect.x, y: mid_y },
+        crate::core::Point { x: area.right(), y: mid_y },
+        chrome.grid,
+    );
+    let font = crate::core::Font::simple("Sans", 12.0);
+    let line = context.text_line(area.rect, &font);
+    context.draw_text_fitted(
+        line,
+        "No data",
+        &font,
+        chrome.ink.legible_on(chrome.surface, PANEL_MIN_CONTRAST).with_alpha(160),
+        crate::core::HorizontalAlignment::Center,
+    );
 }
 
 /// Test module for the volume pane.

@@ -535,16 +535,21 @@ impl Draw for SplitButton {
             border,
         );
 
+        // `draw_text`'s origin is the glyph box's top-left, so `primary_rect.y + height / 2` put
+        // that top edge on the middle line and drew the label half a line low. The line box
+        // centred in the trigger is the origin; the arrow glyph below shares its band's own.
+        let primary_line = context.text_line(primary_rect, &Font::default());
         context.draw_text(
-            Point::new(primary_rect.x + 8, primary_rect.y + primary_rect.height as i32 / 2),
+            Point::new(primary_rect.x + 8, primary_line.y),
             &self.text,
             &Font::default(),
             ink,
             HorizontalAlignment::Left,
         );
 
+        let arrow_line = context.text_line(arrow, &Font::default());
         context.draw_text(
-            Point::new(arrow.x + (arrow.width as i32 / 2) - 3, arrow.y + arrow.height as i32 / 2),
+            Point::new(arrow.x + (arrow.width as i32 / 2) - 3, arrow_line.y),
             "v",
             &Font::default(),
             ink.blend(&arrow_bg, 0.35),
@@ -566,11 +571,12 @@ impl Draw for SplitButton {
                 }
 
                 if let Some(action) = self.actions.get(index) {
+                    // A menu row's label is centred through the shared primitive, since the
+                    // glyph origin is a top edge and `action_rect.y + height / 2` placed it
+                    // half a line low.
+                    let action_line = context.text_line(action_rect, &Font::default());
                     context.draw_text(
-                        Point::new(
-                            action_rect.x + 8,
-                            action_rect.y + action_rect.height as i32 / 2,
-                        ),
+                        Point::new(action_rect.x + 8, action_line.y),
                         &action.label,
                         &Font::default(),
                         ink,

@@ -6,7 +6,7 @@
   <rect x="0" y="0" width="240" height="120" rx="6" ry="6" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
   <circle cx="16" cy="59" r="5" fill="none" stroke="rgba(140,140,140,0.86)" stroke-width="1" />
   <line x1="21" y1="64" x2="25" y2="68" stroke="rgba(140,140,140,0.86)" stroke-width="1" />
-  <text x="32" y="64" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">Sample</text>
+  <text x="32" y="53" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">Sample</text>
   <circle cx="224" cy="60" r="8" fill="rgba(180,180,180,0.78)" />
   <line x1="221" y1="57" x2="227" y2="63" stroke="rgba(255,255,255,1.00)" stroke-width="1" />
   <line x1="227" y1="57" x2="221" y2="63" stroke="rgba(255,255,255,1.00)" stroke-width="1" />

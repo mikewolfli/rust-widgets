@@ -176,54 +176,77 @@ impl Draw for StatusBar {
         // From the style, not a literal. This painted `Color::rgb(240, 240, 240)` and so
         // stayed light in a dark theme — a light band across the bottom of a dark window.
         // The literal survives only as the fallback for a style with no colour set.
-        context.fill_rect(rect, style.background_color.unwrap_or(Color::rgb(240, 240, 240)));
+        let band = style.background_color.unwrap_or(Color::rgb(240, 240, 240));
+        context.fill_rect(rect, band);
         context.draw_line(
             Point::new(rect.x, rect.y),
             Point::new(rect.x + rect.width as i32, rect.y),
-            style.border_color.unwrap_or(Color::rgb(200, 200, 200)),
+            style.border_color.unwrap_or_else(|| band.contrast_color().with_alpha(60)),
         );
-        // Temporary message (left side)
+
+        let font = Font::default();
+        // The band's own line box, shared by both messages and by the size grip, so
+        // everything on this strip sits on one baseline (the previous form put each text
+        // origin on the strip's middle line, half a line low, while the grip was computed
+        // from the bottom edge).
+        let line = context.text_line(rect, &font);
+
+        // Glue the strip's ink to the strip's own fill, rather than to a literal: the fill is
+        // what the theme resolved, so the ink follows it into either appearance.
+        let ink = style.text_color.unwrap_or_else(|| band.contrast_color());
+
+        // Temporary message (left side).
         if !self.message.is_empty() {
-            context.draw_text(
-                Point::new(rect.x + 6, rect.y + rect.height as i32 / 2),
+            context.draw_text_fitted(
+                Rect {
+                    x: rect.x + 6,
+                    y: line.y,
+                    width: rect.width.saturating_sub(12),
+                    height: line.height,
+                },
                 &self.message,
-                &Font::default(),
-                style.text_color.unwrap_or(Color::rgb(0, 0, 0)),
+                &font,
+                ink,
                 HorizontalAlignment::Left,
             );
         }
-        // Permanent message (right side, before size grip)
+        // Permanent message (right side, before size grip).
         if !self.permanent_message.is_empty() {
-            let right_x = if self.size_grip_enabled {
-                rect.x + rect.width as f32 as i32 - 20
-            } else {
-                rect.x + rect.width as f32 as i32 - 4
-            };
-            context.draw_text(
-                Point::new(right_x, rect.y + rect.height as i32 / 2),
+            let grip_width = if self.size_grip_enabled { 20 } else { 4 };
+            // Muted relative to the main message. The old form blended the ink *toward the
+            // band*, which on a dark appearance pulled light text 40% of the way toward a dark
+            // band — i.e. it lowered the contrast it was meant to preserve, and the light-mode
+            // fallback was a hardcoded `rgb(80,80,80)`, so the two branches disagreed about
+            // which appearance they were describing. Blending toward the *band* by a smaller
+            // amount, then asserting a legible ratio, is the same visual intent without the
+            // direction error.
+            let muted = ink.blend(&band, 0.25).legible_on(band, 4.5);
+            let reserved = (grip_width + 12) as u32;
+            context.draw_text_fitted(
+                Rect {
+                    x: rect.x + 6,
+                    y: line.y,
+                    width: rect.width.saturating_sub(reserved),
+                    height: line.height,
+                },
                 &self.permanent_message,
-                &Font::default(),
-                // Dimmed relative to the main message, but still derived from the style so
-                // it stays legible on a dark status bar rather than a fixed near-black.
-                style
-                    .text_color
-                    .map(|c| {
-                        c.blend(&style.background_color.unwrap_or(Color::rgb(240, 240, 240)), 0.4)
-                    })
-                    .unwrap_or(Color::rgb(80, 80, 80)),
-                HorizontalAlignment::Left,
+                &font,
+                muted,
+                HorizontalAlignment::Right,
             );
         }
-        // Size grip (bottom-right corner)
+        // Size grip (bottom-right corner).
         if self.size_grip_enabled {
-            let gx = rect.x + rect.width as f32 as i32 - 14;
-            let gy = rect.y + rect.height as f32 as i32 - 14;
+            let gx = rect.x + rect.width as i32 - 14;
+            let gy = rect.y + rect.height as i32 - 14;
+            let grip_ink =
+                style.border_color.unwrap_or_else(|| band.contrast_color().with_alpha(120));
             for i in 0..3 {
                 let offset = i * 4;
                 context.draw_line(
                     Point::new(gx + offset, gy + 12),
                     Point::new(gx + 12, gy + offset),
-                    Color::rgb(160, 160, 160),
+                    grip_ink,
                 );
             }
         }

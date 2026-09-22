@@ -22,6 +22,26 @@ fn editor_with(config: CodeEditorConfig) -> CodeEditor {
 
 // ── 1. Lifecycle & configuration ────────────────────────────────────────────
 
+/// The caret blinks in an editable buffer and is steady in a read-only one.
+///
+/// A caret that never changed was indistinguishable from a frozen marker, which is why the
+/// negative half of this test matters as much as the positive one: a read-only editor must not keep
+/// asking its host for frames to animate a caret it never draws.
+#[test]
+fn the_caret_blinks_when_editable_and_not_when_read_only() {
+    let mut editor = editor();
+
+    assert!(editor.tick(0), "an editable buffer blinks its caret");
+    assert!(editor.is_caret_visible(), "it starts visible");
+    assert!(editor.tick(500), "a blink is periodic and never settles");
+    assert!(!editor.is_caret_visible(), "the half-period boundary flips it");
+    assert!(editor.tick(500));
+    assert!(editor.is_caret_visible(), "and it flips back");
+
+    editor.set_read_only(true);
+    assert!(!editor.tick(500), "a read-only editor has no caret to animate");
+}
+
 #[test]
 fn default_state_is_an_empty_untitled_buffer() {
     let editor = editor();

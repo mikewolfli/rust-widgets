@@ -15,6 +15,22 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+/// Side of the indicator box, in logical pixels.
+///
+/// A **constant**, not a fraction of the control's rectangle: the indicator is a piece of the
+/// control's own chrome whose size is defined by the checkbox, while the rectangle it is laid
+/// out in belongs to whoever placed the control. Deriving one from the other meant the census
+/// render of a 240x120 cell drew a 120 px box, and a checkbox in a wide row drew one wider
+/// than its own label.
+const INDICATOR_SIZE: u32 = 18;
+
+/// Gap between the control's left edge and the indicator box.
+pub(crate) const INDICATOR_INSET: i32 = 2;
+
+/// Gap between the indicator box and the label.
+const INDICATOR_GAP: i32 = 6;
+
 /// Checkbox state.
 ///
 /// A three-valued state even though the checkbox is two-valued by default:
@@ -50,6 +66,63 @@ pub struct CheckBox {
     pub state_changed: Signal1<CheckState>,
 }
 impl CheckBox {
+    /// The indicator box, in control coordinates.
+    ///
+    /// Extracted so the **hit test and the drawing cannot disagree** about where the checkbox is.
+    /// They were previously independent: the draw derived the box from the measured line box, while
+    /// the hit test ignored the pointer entirely. Sharing one derivation is what lets the hit test
+    /// be narrowed to the control's own contents without risking a box drawn in one place and
+    /// clicked in another.
+    ///
+    /// `line_height` is passed in because the line box has to come from a `RenderContext`, which
+    /// the hit test does not have. A caller with a context measures; a caller without one (the
+    /// event path) uses the same font's nominal height, which is what the context would return.
+    fn indicator_rect(&self, line_height: u32, line_y: i32) -> Rect {
+        let rect = self.geometry();
+        let size = INDICATOR_SIZE.min(rect.height).min(rect.width);
+        Rect::new(
+            rect.x + INDICATOR_INSET,
+            line_y + (line_height as i32 - size as i32) / 2,
+            size,
+            size,
+        )
+    }
+
+    /// The region a press must land in to toggle this checkbox.
+    ///
+    /// The indicator plus the label beside it, **not** the whole rectangle the caller laid out. A
+    /// checkbox in a wide row used to toggle from a press on empty space far to the right of its
+    /// label, because its `MousePress` arm ignored the pointer position entirely.
+    ///
+    /// The region is then widened to the style's `touch_target` when one is set, which is the
+    /// platform's minimum-touch-size mechanism: on a phone the same small indicator needs a larger
+    /// reachable area than on a desktop with a mouse.
+    fn hit_area(&self) -> Rect {
+        let rect = self.geometry();
+        // The renderer's line height for the default font is one em, which is what
+        // `measure_text` returns; using the font size directly keeps this derivation identical to
+        // the draw path's without needing a context here.
+        let line_height = Font::default().size().max(1.0) as u32;
+        let line_y = rect.y + ((rect.height as i32 - line_height as i32) / 2).max(0);
+        let indicator = self.indicator_rect(line_height, line_y);
+        let contents = if self.text.is_empty() {
+            indicator
+        } else {
+            // Indicator through the end of the label, on the indicator's own row.
+            let label_width = self.text.chars().count() as u32 * (line_height * 3 / 5).max(1);
+            Rect::new(
+                indicator.x,
+                indicator.y,
+                indicator.width + INDICATOR_GAP as u32 + label_width,
+                indicator.height,
+            )
+        };
+        match self.style().touch_target {
+            Some(min_size) => contents.expand_to_touch_target(min_size),
+            None => contents,
+        }
+    }
+
     /// Creates an unchecked checkbox with geometry.
     pub fn new(geometry: Rect) -> Self {
         Self {
@@ -259,12 +332,30 @@ impl EventHandler for CheckBox {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
         match event {
-            Event::MousePress { pos: _, button } if *button == 1 && self.base.is_enabled() => {
-                self.toggle();
+            // **Hit test, not "anywhere in the rectangle".**
+            //
+            // This arm used to ignore `pos` entirely: a press *anywhere* inside the control's
+            // rectangle toggled it. That is a different statement from "the control's touch
+            // target is at least N points", and only the second one is what the platform's
+            // touch-target machinery means. The two were conflated because the rectangle a
+            // checkbox is given by a layout is usually close to its own indicator plus label —
+            // until it is not, and a press on empty space beside a checkbox in a wide row toggles
+            // it.
+            //
+            // The control now tests the **indicator and its label** through the shared expansion,
+            // which is the reading every toolkit uses: `QCheckBox` reacts to its own contents,
+            // and the minimum touch size widens that region rather than making the whole row
+            // live. A caller that wants the row to toggle should size the control to the row.
+            Event::MousePress { pos, button } if *button == 1 && self.base.is_enabled() => {
+                if self.hit_area().contains_point(*pos) {
+                    self.toggle();
+                }
             }
             #[cfg(feature = "touch")]
-            Event::TouchBegin { .. } if self.base.is_enabled() => {
-                self.toggle();
+            Event::TouchBegin { pos, .. } if self.base.is_enabled() => {
+                if self.hit_area().contains_point(*pos) {
+                    self.toggle();
+                }
             }
             Event::KeyPress { key, .. } if *key == 32 && self.base.is_enabled() => {
                 self.toggle();
@@ -278,87 +369,98 @@ impl Draw for CheckBox {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
         let style = self.style();
-        let checkbox_size = 16; // Standard checkbox size
-                                // Calculate checkbox rectangle
-        let checkbox_rect = Rect::new(
-            rect.x,
-            rect.y + (rect.height as i32 - checkbox_size) / 2,
-            checkbox_size as u32,
-            checkbox_size as u32,
-        );
         let enabled = self.base.is_enabled();
-        // Draw checkbox background
-        let bg_color = style.background_color.unwrap_or_else(|| {
-            if !enabled {
-                Color::rgb(240, 240, 240)
-            } else {
-                Color::rgb(255, 255, 255)
-            }
-        });
-        context.fill_rect(checkbox_rect, bg_color);
-        // Draw checkbox border
-        let border_color = style.border_color.unwrap_or_else(|| {
-            if !enabled {
-                Color::rgb(180, 180, 180)
-            } else {
-                Color::rgb(100, 100, 100)
-            }
-        });
+
+        // The indicator is a **fixed-size** box centred on the control's own line box, not a
+        // fraction of whatever rectangle the caller laid out. Deriving it from `rect` is what
+        // made a 240x120 census render a 120 px checkbox: the control drew its indicator at
+        // the scale of its container, so the same control looked like a different one from one
+        // layout to the next. The line box is the honest reference — it is what the label
+        // beside the box is aligned to, and it is measured rather than assumed, so a larger
+        // theme font grows the indicator with the text it accompanies.
+        let font = Font::default();
+        let line = context.text_line(rect, &font);
+        // The same derivation the hit test uses, so the box that is drawn is the box that responds.
+        let checkbox_rect = self.indicator_rect(line.height, line.y);
+
+        // The box must be visible against the surface it sits on. `style.background_color`
+        // reaches here already resolved by the theme's `Input` role, so the literal fallback
+        // only applies to a control whose style was never themed; the important part is that
+        // the fallback is derived from the resolved value rather than from an assumption about
+        // the appearance.
+        let surface = style.background_color.unwrap_or(Color::WHITE);
+        let field = if enabled { surface } else { surface.with_alpha(180) };
+        context.fill_rect(checkbox_rect, field);
+
+        let border_color = style.border_color.unwrap_or_else(|| field.contrast_color());
         context.draw_rect(checkbox_rect, border_color);
-        // Draw checkmark or partial check
         if self.state != CheckState::Unchecked {
-            let check_color = style.text_color.unwrap_or_else(|| {
-                if !enabled {
-                    Color::rgb(150, 150, 150)
-                } else {
-                    Color::rgb(0, 120, 215) // Blue checkmark
-                }
-            });
+            // The mark lands on the box's own fill, so its colour is that fill's contrast
+            // colour. A literal accent blue here would be unreadable whenever the field is
+            // dark, which is every dark appearance.
+            let check_color = style.text_color.unwrap_or_else(|| field.contrast_color());
             match self.state {
                 CheckState::Checked => {
-                    // Draw a compact check glyph.
-                    context.draw_text(
-                        Point {
-                            x: checkbox_rect.x + 3,
-                            y: checkbox_rect.y + checkbox_rect.height as i32 / 2,
-                        },
-                        "x",
-                        &Font::default(),
+                    // A compact tick drawn as two strokes, so it scales with the box instead
+                    // of being a glyph in an unrelated font's advance model.
+                    let x = checkbox_rect.x;
+                    let y = checkbox_rect.y;
+                    let size = checkbox_rect.width as i32;
+                    let thickness = (size / 8).max(1) as u32;
+                    let short = size * 3 / 8;
+                    let long = size * 5 / 8;
+                    let mid_drop = size * 5 / 8;
+                    context.draw_line_stroke(
+                        Point { x: x + size / 5, y: y + mid_drop },
+                        Point { x: x + short, y: y + size - size / 5 },
                         check_color,
-                        HorizontalAlignment::Left,
+                        thickness,
+                    );
+                    context.draw_line_stroke(
+                        Point { x: x + short, y: y + size - size / 5 },
+                        Point { x: x + long, y: y + size * 3 / 8 },
+                        check_color,
+                        thickness,
                     );
                 }
                 CheckState::PartiallyChecked => {
-                    // Draw partial check (minus sign)
+                    // The minus sign is centred on the box rather than offset from its middle
+                    // by a hand-tuned pixel, so it stays centred at every indicator size.
+                    let bar_h = (checkbox_rect.height / 8).max(1);
                     let partial_rect = Rect::new(
-                        checkbox_rect.x + 4,
-                        checkbox_rect.y + checkbox_rect.height as i32 / 2 - 1,
-                        checkbox_rect.width.saturating_sub(8),
-                        2,
+                        checkbox_rect.x + (checkbox_rect.width as i32 / 4),
+                        checkbox_rect.y + (checkbox_rect.height as i32 - bar_h as i32) / 2,
+                        checkbox_rect.width.saturating_sub(checkbox_rect.width / 2),
+                        bar_h,
                     );
                     context.fill_rect(partial_rect, check_color);
                 }
-                // No action needed for this transition
-                _ => {}
+                CheckState::Unchecked => {}
             }
         }
-        // Draw text next to the checkbox
+        // The label shares the indicator's line box, so the two cannot drift apart when the
+        // font or the control's height changes.
         if !self.text.is_empty() {
             let text_color = style.text_color.unwrap_or_else(|| {
-                if !enabled {
-                    Color::rgb(150, 150, 150)
+                if enabled {
+                    surface.contrast_color()
                 } else {
-                    Color::rgb(0, 0, 0)
+                    surface.contrast_color().with_alpha(150)
                 }
             });
-            let text_point = Point {
-                x: checkbox_rect.x + checkbox_rect.width as i32 + 4,
-                y: checkbox_rect.y + checkbox_rect.height as i32 / 2,
-            };
-            context.draw_text(
-                text_point,
+            context.draw_text_fitted(
+                Rect::new(
+                    checkbox_rect.x + checkbox_rect.width as i32 + INDICATOR_GAP,
+                    line.y,
+                    rect.width.saturating_sub(
+                        (checkbox_rect.x - rect.x) as u32
+                            + checkbox_rect.width
+                            + INDICATOR_GAP as u32,
+                    ),
+                    line.height,
+                ),
                 &self.text,
-                &Font::default(),
+                &font,
                 text_color,
                 HorizontalAlignment::Left,
             );
@@ -562,6 +664,63 @@ mod tests {
     }
 
     // ── 7. Disabling tristate resets Partial to Unchecked ──────────────────
+    #[test]
+    fn a_press_beside_the_label_does_not_toggle_the_checkbox() {
+        // The `MousePress` arm used to ignore `pos` entirely, so a press *anywhere* in the control's
+        // rectangle toggled it. A checkbox given a wide row by its layout therefore flipped when the
+        // user clicked empty space far to the right of its own label — a different statement from
+        // "the touch target is at least N points", and the wrong one.
+        let mut cb = CheckBox::new(Rect::new(0, 0, 240, 30));
+        cb.set_text("Label".to_string());
+        cb.handle_event(&Event::MousePress { pos: Point::new(230, 15), button: 1 });
+        assert_eq!(
+            cb.state(),
+            CheckState::Unchecked,
+            "a press on the empty part of the row must not toggle the checkbox"
+        );
+    }
+
+    #[test]
+    fn a_press_outside_the_control_still_hits_through_the_touch_target() {
+        // The other half of the same judgement, and the mechanism BLUE21 AR1 found unconnected: a
+        // control smaller than the platform's minimum touch size must still respond just outside
+        // its own rectangle. The checkbox is 18 px tall, so on a phone profile (48 px) a point a few
+        // pixels above it is inside the reachable target.
+        let mut cb = CheckBox::new(Rect::new(20, 20, 24, 18));
+        // Theming is what installs the touch target, so the test installs and applies one the way
+        // the runtime does before registering a control. Reading it off an un-themed control would
+        // assert the wrong precondition — the point of the mechanism is that the *platform* supplies
+        // the size.
+        {
+            let mut manager = crate::theme::global_theme_manager();
+            manager.register_theme(crate::theme::Theme::default());
+            manager.set_appearance(crate::theme::AppearanceMode::Light);
+        }
+        crate::theme::apply_active_theme(&mut cb);
+        let target = cb.style().touch_target.expect(
+            "a themed control must carry a touch target — that is what `role_base_style` writes",
+        );
+        assert!(
+            target.height > 18,
+            "the target must exceed the control's own height for this test to mean anything"
+        );
+        // One pixel above the control's top edge, inside the expansion.
+        cb.handle_event(&Event::MousePress { pos: Point::new(24, 19), button: 1 });
+        assert_eq!(
+            cb.state(),
+            CheckState::Checked,
+            "a press within the minimum touch target must reach the control"
+        );
+    }
+
+    #[test]
+    fn a_press_well_outside_the_touch_target_is_ignored() {
+        // The reverse direction, so the previous test cannot pass by accepting everything.
+        let mut cb = CheckBox::new(Rect::new(100, 100, 24, 18));
+        cb.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        assert_eq!(cb.state(), CheckState::Unchecked);
+    }
+
     #[test]
     fn test_disable_tristate_resets_partial() {
         let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));

@@ -90,7 +90,6 @@ const TAG_CLOSE_RADIUS: i32 = 7;
 const TAG_CHIP_RADIUS: u32 = 12;
 /// Minimum input area width.
 const MIN_INPUT_WIDTH: i32 = 60;
-/// Cursor blink interval in milliseconds.
 /// TagInput widget — a text input that creates tags/chips on Enter or comma.
 pub struct TagInput {
     base: BaseWidget,
@@ -98,6 +97,8 @@ pub struct TagInput {
     input_buffer: String,
     placeholder: String,
     focused: bool,
+    /// The input caret's blink state, advanced by [`TagInput::tick`].
+    cursor_blink: crate::style::CursorBlink,
     /// Emitted when the tags list changes, providing the full list of tags.
     pub tags_changed: Signal1<Vec<String>>,
     undo_stack: UndoStack,
@@ -113,6 +114,7 @@ impl TagInput {
             input_buffer: String::new(),
             placeholder: "Type and press Enter\u{2026}".to_string(),
             focused: false,
+            cursor_blink: crate::style::CursorBlink::new(),
             tags_changed: Signal1::new(),
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(TagInputState {
@@ -189,6 +191,13 @@ impl TagInput {
     pub fn set_focused(&mut self, focused: bool) {
         if self.focused != focused {
             self.focused = focused;
+            // The caret only blinks in a focused field, so the blink follows the same flag the
+            // draw pass reads rather than a second notion of "active" that could disagree.
+            if focused {
+                self.cursor_blink.start();
+            } else {
+                self.cursor_blink.stop();
+            }
             self.base.request_redraw();
             if focused {
                 self.base.focus_gained.emit();
@@ -196,6 +205,21 @@ impl TagInput {
                 self.base.focus_lost.emit();
             }
         }
+    }
+
+    /// Advances the input caret's blink by `delta_ms` and reports whether another frame is needed.
+    ///
+    /// The crate's `tick(delta_ms) -> bool` convention. Before it existed this control drew a solid
+    /// caret and advertised a `Cursor blink interval` constant that was not defined anywhere.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        if !self.focused {
+            return false;
+        }
+        let running = self.cursor_blink.tick(delta_ms);
+        if running {
+            self.base.request_redraw();
+        }
+        running
     }
 
     /// Commits the current input buffer as a tag and clears the buffer.
@@ -544,8 +568,15 @@ impl Draw for TagInput {
         // disagrees with the glyphs beside it is a visible defect on its own.
         let input_band =
             Rect::new(input_x + 4, chip_y, input_rect.width.saturating_sub(8), TAG_HEIGHT as u32);
+        // The placeholder/typed text goes in the input band's own line box, not at the band's
+        // top edge. `draw_text_fitted` aligns horizontally only — its origin is `bounds.y`
+        // unchanged — so handing it the chip-height band pinned the text to the top of the
+        // field: `tag_input.svg` put a 14 px line at `y = 4` inside a band running `4..28`.
+        // The chip labels in this same file already centred themselves correctly; the field
+        // was the one place that had not been brought in line.
+        let input_line = context.text_line(input_band, &default_font);
         let drawn = context.draw_text_fitted(
-            input_band,
+            input_line,
             display_text,
             &default_font,
             input_text_color,
@@ -553,10 +584,11 @@ impl Draw for TagInput {
         );
 
         // ── Cursor (when focused and input is active) ──
-        if self.focused && is_enabled {
+        if self.focused && is_enabled && self.cursor_blink.is_visible() {
             let cursor_x = input_x + 4 + context.measure_text(&drawn, &default_font).width as i32;
-            let cursor_y1 = chip_y + 3;
-            let cursor_y2 = chip_y + TAG_HEIGHT - 3;
+            // The caret spans the line box it follows, so it marks the same row the text does.
+            let cursor_y1 = input_line.y;
+            let cursor_y2 = input_line.y + input_line.height as i32;
             // Clamped to the input box: a caret at the far right of a full buffer belongs on
             // the last pixel of the field, not past its edge.
             let cursor_x = cursor_x.min(input_rect.x + input_rect.width as i32 - 1);

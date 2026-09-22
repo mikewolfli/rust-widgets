@@ -99,12 +99,25 @@ macro_rules! impl_properties_container {
         pub(crate) const TAB_WIDGET_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("tab_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("current_index", PropertyValueKind::UInt, true, true),
-            PropertySchema::new("closable", PropertyValueKind::Bool, false, false),
-            PropertySchema::new("movable", PropertyValueKind::Bool, false, false),
+            // `text`/`title` are declared because the control **answers** them. `TabWidget::set`
+            // applies them to the first tab and `get` reads that tab's title back, so the
+            // constructor's `text` parameter reaches a tab instead of being dropped. The schema
+            // has to say so: the schema and the contract disagreeing about which properties
+            // exist is itself the defect this table is checked for.
+            PropertySchema::new("text", PropertyValueKind::String, true, true),
+            PropertySchema::new("title", PropertyValueKind::String, true, true),
+            // These three used to be declared `false, false`, which was wrong in the
+            // harmful direction: the control's own contract refused them, so a host could
+            // not turn dragging on (`movable`), show close buttons (`closable`) or move the
+            // strip (`tab_position`) through the property API at all — and the `movable`
+            // field was consequently read by nothing. They are served now, so they are
+            // declared as the two-way properties they are.
+            PropertySchema::new("closable", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("movable", PropertyValueKind::Bool, true, true),
             PropertySchema::enumerated(
                 "tab_position",
-                false,
-                false,
+                true,
+                true,
                 &["north", "south", "west", "east"],
             ),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
@@ -148,12 +161,15 @@ macro_rules! impl_properties_container {
         pub(crate) const MDI_AREA_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("subwindow_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("active_subwindow", PropertyValueKind::UInt, true, false),
-            PropertySchema::enumerated(
-                "view_mode",
-                true,
-                false,
-                &["list", "icon", "details", "thumbnails"],
-            ),
+            // The reader's two tokens, not a copy of `list_view`'s four.
+            //
+            // This published `list` / `icon` / `details` / `thumbnails` while `MdiArea`'s
+            // reader answers `sub_window_view` / `tabbed`. The two are different properties
+            // that happened to share a name — an MDI host switches between sub-windows and tabs,
+            // it does not switch between list layouts — so the schema was describing the wrong
+            // control entirely. `MdiArea`'s own comment above its reader already said "the two
+            // the reader produces"; the table had not been brought in line.
+            PropertySchema::enumerated("view_mode", true, false, &["sub_window_view", "tabbed"]),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

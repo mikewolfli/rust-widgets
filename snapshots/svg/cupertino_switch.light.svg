@@ -2,7 +2,7 @@
 <!-- control: cupertino_switch | appearance: light -->
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(240,240,240,1.00)" />
-  <rect x="0" y="0" width="240" height="120" rx="60" ry="60" fill="rgba(240,240,240,1.00)" />
-  <rect x="2" y="2" width="116" height="116" rx="58" ry="58" fill="rgba(217,217,217,1.00)" />
-  <rect x="2" y="2" width="116" height="116" rx="58" ry="58" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
+  <rect x="94" y="44" width="52" height="32" rx="16" ry="16" fill="rgba(180,180,180,1.00)" />
+  <rect x="96" y="46" width="28" height="28" rx="14" ry="14" fill="rgba(217,217,217,1.00)" />
+  <rect x="96" y="46" width="28" height="28" rx="14" ry="14" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
 </svg>

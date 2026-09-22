@@ -88,19 +88,76 @@ use alloc::sync::Arc;
 /// The subscription list is kept so dropping the binder unsubscribes everything it added.
 /// Without it, a rebuilt control would gain a subscriber per rebuild — the leak a
 /// "connect and forget" binding produces.
-#[derive(Default)]
+///
+/// `Default` is written out rather than derived because the wiring ledger is a reference to
+/// shared process-wide state, which a derive cannot produce. A default binder is the same
+/// thing as [`EventSignalBinder::detached`]: nowhere to forward, nothing subscribed.
 pub struct EventSignalBinder {
     /// `Arc`, not `CustomSignalHub`, because the hub's state is a `Mutex` and it is
     /// therefore not `Clone`. A slot must own a handle to emit through, so the shared
     /// handle is an `Arc` — the same shape every other signal in this module uses.
     hub: Option<Arc<CustomSignalHub>>,
     forwards: alloc::vec::Vec<Forwarded>,
+    /// How many published events each control kind offered, and how many were wired.
+    ///
+    /// Process-wide rather than per-binder so the question can be asked after the binder
+    /// that did the wiring has gone out of scope — which is the situation a designer
+    /// asking "which of my wires will never fire" is actually in. Keyed by kind because
+    /// two instances of one control resolve the same set of names.
+    #[cfg(full_widgets)]
+    wiring_outcomes: &'static crate::compat::Mutex<
+        alloc::collections::BTreeMap<crate::widget::WidgetKind, WiringOutcome>,
+    >,
+}
+
+/// One control kind's wiring ledger: how many events it published, and how many of them
+/// `forward_all` was able to subscribe to.
+///
+/// The pair is what makes the shortfall readable. `wired` alone cannot answer the question
+/// a caller has ("is anything of mine dead?"), because the denominator lives in the
+/// capability table rather than in the return value.
+#[cfg(full_widgets)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WiringOutcome {
+    /// Events the capability publishes for this kind.
+    published: usize,
+    /// Events whose signal `event_signal_dyn` resolved.
+    wired: usize,
+}
+
+/// The process-wide wiring ledger.
+///
+/// A single table, not one per binder, because the question it answers is asked later than
+/// the wiring happens and the asker usually does not hold the binder that wired the control.
+/// It is keyed by `WidgetKind` rather than by `ObjectId`: the set of names a control can
+/// resolve is a property of its implementation, so two instances of one kind always agree.
+#[cfg(full_widgets)]
+fn wiring_outcomes() -> &'static crate::compat::Mutex<
+    alloc::collections::BTreeMap<crate::widget::WidgetKind, WiringOutcome>,
+> {
+    static TABLE: crate::compat::OnceLock<
+        crate::compat::Mutex<
+            alloc::collections::BTreeMap<crate::widget::WidgetKind, WiringOutcome>,
+        >,
+    > = crate::compat::OnceLock::new();
+    TABLE.get_or_init(|| crate::compat::Mutex::new(alloc::collections::BTreeMap::new()))
+}
+
+impl Default for EventSignalBinder {
+    fn default() -> Self {
+        Self::detached()
+    }
 }
 
 impl EventSignalBinder {
     /// Creates an empty binder that forwards into `hub`.
     pub fn new(hub: Arc<CustomSignalHub>) -> Self {
-        Self { hub: Some(hub), forwards: alloc::vec::Vec::new() }
+        Self {
+            hub: Some(hub),
+            forwards: alloc::vec::Vec::new(),
+            #[cfg(full_widgets)]
+            wiring_outcomes: wiring_outcomes(),
+        }
     }
 
     /// Creates a binder with nowhere to forward, so the forwarding calls are no-ops.
@@ -109,7 +166,12 @@ impl EventSignalBinder {
     /// forcing every caller to supply one — would make the hub a mandatory part of every
     /// constructor, which is the global state this design avoids.
     pub fn detached() -> Self {
-        Self { hub: None, forwards: alloc::vec::Vec::new() }
+        Self {
+            hub: None,
+            forwards: alloc::vec::Vec::new(),
+            #[cfg(full_widgets)]
+            wiring_outcomes: wiring_outcomes(),
+        }
     }
 
     /// Reports whether this binder forwards into a hub.
@@ -197,6 +259,16 @@ impl EventSignalBinder {
                     wired += 1;
                 }
             }
+            // Record the shortfall where a caller can read it back.
+            //
+            // The return value alone cannot carry this fact: a caller that wires a control and
+            // gets `3` has no way to know whether the capability published three names or thirty.
+            // "Subscribed successfully but will never fire" is then undetectable from the outside,
+            // which is the silent-failure shape BLUE19 #97 rules out. Remembering `published`
+            // alongside `wired` makes the gap *queryable* rather than merely countable by a
+            // caller who happened to have the capability table in hand.
+            let published = capability.events.len();
+            self.record_wiring_outcome(widget, published, wired);
             wired
         }
         #[cfg(not(full_widgets))]
@@ -204,6 +276,56 @@ impl EventSignalBinder {
             let _ = widget;
             0
         }
+    }
+
+    /// Remembers how many of a control's published events `forward_all` was able to wire.
+    ///
+    /// Keyed by the control's kind **and** the count, so [`Self::unwired_events_for`] can answer
+    /// "did this control publish more than was wired" without holding a reference to it. The
+    /// table is process-wide because wiring happens at mount time and the question is asked later
+    /// (a designer asking which of its wires will never fire); it is keyed by kind rather than by
+    /// `ObjectId` because two instances of one control have the same set of resolvable names.
+    #[cfg(full_widgets)]
+    fn record_wiring_outcome<W>(&self, widget: &W, published: usize, wired: usize)
+    where
+        W: crate::widget::Widget,
+    {
+        let kind = widget.kind();
+        if let Ok(mut table) = self.wiring_outcomes.lock() {
+            // `max` rather than overwrite: a later mount of a control that resolved fewer names
+            // must not erase the evidence that an earlier one could resolve more. The counts are
+            // properties of the code, not of the instance.
+            let entry = table.entry(kind).or_insert(WiringOutcome { published: 0, wired: 0 });
+            entry.published = entry.published.max(published);
+            entry.wired = entry.wired.max(wired);
+        }
+    }
+
+    /// How many of `widget`'s published events have **no** live subscription from this binder.
+    ///
+    /// `None` when the control has never been through [`Self::forward_all`], which is a different
+    /// answer from `Some(0)` — "not wired yet" and "fully wired" must not look alike.
+    ///
+    /// This is the query BLUE19 #97 requires: `connect_event` returning `Ok` proves only that a
+    /// name is valid, so without this a host cannot tell "this wire is live" from "this wire was
+    /// accepted and will never fire".
+    #[cfg(full_widgets)]
+    pub fn unwired_events_for<W>(&self, widget: &W) -> Option<usize>
+    where
+        W: crate::widget::Widget,
+    {
+        let table = self.wiring_outcomes.lock().ok()?;
+        let outcome = table.get(&widget.kind())?;
+        Some(outcome.published.saturating_sub(outcome.wired))
+    }
+
+    /// The stripped-profile form, which has no capability table to have wired against.
+    #[cfg(not(full_widgets))]
+    pub fn unwired_events_for<W>(&self, _widget: &W) -> Option<usize>
+    where
+        W: crate::widget::Widget,
+    {
+        None
     }
 
     /// Wires one published event of `widget`, reporting whether it was wired.

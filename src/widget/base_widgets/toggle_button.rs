@@ -283,11 +283,13 @@ impl Draw for ToggleButton {
             });
             let default_font = crate::core::Font::default();
             let font = style.font.as_ref().unwrap_or(&default_font);
-            context.draw_text(
-                crate::core::Point::new(
-                    rect.x + rect.width as i32 / 2,
-                    rect.y + rect.height as i32 / 2,
-                ),
+            // The label is centred in the button's own rectangle through the shared primitive:
+            // a glyph origin is the box's top-left, so the old `rect.y + rect.height / 2` put
+            // that edge on the middle line and drew the text half a line low.
+            let line = context.text_line(rect, font);
+            let text_band = crate::core::Rect::new(rect.x, line.y, rect.width, line.height);
+            context.draw_text_fitted(
+                text_band,
                 &self.text,
                 font,
                 text_color,
@@ -315,12 +317,12 @@ impl crate::event::EventHandler for ToggleButton {
             crate::event::Event::MousePress { pos, button } if *button == 1 => {
                 // Arm only for a press on the control; a press outside must not leave the latch
                 // set for a later release.
-                self.set_pressed(self.geometry().contains_point(*pos));
+                self.set_pressed(self.base.contains_point_with_touch_expansion(*pos));
             }
             crate::event::Event::MouseRelease { pos, button } if *button == 1 => {
                 // Commit only a press that this control armed, and only while the pointer is
                 // still over it — the same two conditions `Button` applies.
-                if self.pressed && self.geometry().contains_point(*pos) {
+                if self.pressed && self.base.contains_point_with_touch_expansion(*pos) {
                     self.toggle();
                 }
                 self.set_pressed(false);

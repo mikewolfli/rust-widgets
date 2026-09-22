@@ -378,8 +378,12 @@ impl Draw for DropdownMenu {
         } else {
             placeholder_color
         };
+        // `draw_text`'s origin is the glyph box's top-left, so `geom.y + geom.height / 2` put
+        // that top edge on the field's middle line and drew the label half a line low. The
+        // shared primitive returns the line box itself, centred in the field.
+        let line = context.text_line(geom, &font);
         context.draw_text(
-            Point::new(geom.x + PADDING, geom.y + geom.height as i32 / 2),
+            Point::new(geom.x + PADDING, line.y),
             &display_text,
             &font,
             text_color,
@@ -445,8 +449,12 @@ impl Draw for DropdownMenu {
                 // Item icon
                 if let Some(ref item_icon) = item.icon {
                     let icon_font = Font::simple("sans-serif", 13.0);
+                    // The icon and the label share the row, so both take their origin from the
+                    // line box centred in it rather than from the row's raw midpoint — that
+                    // midpoint is the glyph *top* edge, which sat both half a line low.
+                    let icon_line = context.text_line(ir, &icon_font);
                     context.draw_text(
-                        Point::new(item_x, ir.y + ir.height as i32 / 2),
+                        Point::new(item_x, icon_line.y),
                         item_icon,
                         &icon_font,
                         item_text_color,
@@ -456,8 +464,9 @@ impl Draw for DropdownMenu {
                 }
 
                 // Item label
+                let item_line = context.text_line(ir, &item_font);
                 context.draw_text(
-                    Point::new(item_x, ir.y + ir.height as i32 / 2),
+                    Point::new(item_x, item_line.y),
                     &item.label,
                     &item_font,
                     item_text_color,

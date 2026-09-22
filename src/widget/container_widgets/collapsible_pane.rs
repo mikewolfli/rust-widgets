@@ -333,15 +333,21 @@ impl Draw for CollapsiblePane {
         );
 
         // --- Draw expand/collapse arrow (▶ collapsed, ▼ expanded) ---
+        // The arrow and the title share one line box centred in the header, so the two read
+        // as a single row. Centring through the shared primitive replaces the previous
+        // `hdr.y + hdr.height / 2 - k`: the glyph origin is the box's top-left edge, so the
+        // hand-tuned constant was compensating for a defect rather than expressing the row.
+        let header_font = Font::default();
+        let header_line = context.text_line(hdr, &header_font);
         let arrow_x = hdr.x + 6;
-        let arrow_y = hdr.y + (hdr.height as i32 / 2) - 4;
+        let arrow_y = header_line.y;
         let arrow_color =
             if self.base.is_enabled() { text_color } else { text_color.blend(&header_bg, 0.5) };
         let arrow_char = if self.collapsed { "▶" } else { "▼" };
         context.draw_text(
             Point::from_f32(arrow_x as f32, arrow_y as f32),
             arrow_char,
-            &Font::default(),
+            &header_font,
             arrow_color,
             HorizontalAlignment::Left,
         );
@@ -349,13 +355,13 @@ impl Draw for CollapsiblePane {
         // --- Draw title text ---
         if !self.title.is_empty() {
             let text_x = hdr.x + 20;
-            let text_y = hdr.y + (hdr.height as i32 / 2) - 6;
+            let text_y = header_line.y;
             let title_color =
                 if self.base.is_enabled() { text_color } else { text_color.blend(&header_bg, 0.5) };
             context.draw_text(
                 Point::from_f32(text_x as f32, text_y as f32),
                 &self.title,
-                &Font::default(),
+                &header_font,
                 title_color,
                 HorizontalAlignment::Left,
             );

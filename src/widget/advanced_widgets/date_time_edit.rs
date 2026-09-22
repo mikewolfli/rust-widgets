@@ -18,7 +18,7 @@
 //! * [`DateTimeEdit::set_datetime`] rejects an invalid or out-of-range value
 //!   silently rather than clamping it.
 //! * Ordering is by date first, then by time.
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -557,10 +557,19 @@ impl Draw for DateTimeEdit {
         context.fill_rect(rect, surface);
         context.draw_rect(rect, border);
         let text = self.datetime.to_string();
-        context.draw_text(
-            Point { x: rect.x + 6, y: rect.y + (rect.height as i32 / 2) },
+        // Vertically centred through the shared primitive: `rect.y + height / 2` puts the
+        // glyph box's top edge on the field's middle line, so the value sat half a line low.
+        let font = Font::default();
+        let line = context.text_line(rect, &font);
+        context.draw_text_fitted(
+            Rect {
+                x: rect.x + 6,
+                y: line.y,
+                width: rect.width.saturating_sub(12),
+                height: line.height,
+            },
             &text,
-            &Font::default(),
+            &font,
             ink,
             HorizontalAlignment::Left,
         );
@@ -570,6 +579,7 @@ impl Draw for DateTimeEdit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::Point;
     use crate::widget::svg::render_to_svg;
     use std::sync::{Arc, Mutex};
 

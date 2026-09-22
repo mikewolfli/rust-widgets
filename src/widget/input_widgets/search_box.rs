@@ -332,8 +332,11 @@ impl Draw for SearchBox {
             ink.blend(&Color::WHITE, 0.55)
         };
         let display_text = if self.text.is_empty() { &self.placeholder } else { &self.text };
-        let text_origin =
-            Point::new(text_rect.x + 2, text_rect.y + text_rect.height as i32 / 2 + 4);
+        // The field's own line box. A glyph origin is the box's top-left edge, so the old
+        // `text_rect.y + text_rect.height / 2 + 4` put that edge on the field's middle line and
+        // drew the text half a line low.
+        let text_line = context.text_line(text_rect, font);
+        let text_origin = Point::new(text_rect.x + 2, text_line.y);
         context.draw_text(text_origin, display_text, font, text_color, HorizontalAlignment::Left);
 
         // — Clear button (X circle) —

@@ -86,9 +86,9 @@ pub use svg::SvgPaintBackend;
 pub use backend::{average_frame_time, current_fps, current_quality_level, set_quality_level};
 pub use backend::{
     default_software_render_config, last_auto_render_backend, set_default_software_render_config,
-    AutoRenderBackend, BackBuffer, BatchCommand, BatchId, BatchRenderer, PaintBackend,
+    text_line, AutoRenderBackend, BackBuffer, BatchCommand, BatchId, BatchRenderer, PaintBackend,
     RenderContext, RenderScene, SceneLayer, SoftwarePaintBackend, SoftwareRenderConfig,
-    SoftwareSurface,
+    SoftwareSurface, VerticalAlignment, TEXT_FIT_MARGIN,
 };
 
 #[cfg(all(test, feature = "desktop", widgets_unstripped))]

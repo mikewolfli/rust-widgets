@@ -350,8 +350,12 @@ impl Draw for MenuButton {
         let mut text_offset_x = geom.x + PADDING;
         if let Some(ref icon_str) = self.icon {
             let icon_font = Font::simple("sans-serif", 14.0);
+            // The icon is a glyph too, so its origin is a top edge: taking the button's raw
+            // midpoint as the origin drew it half a line low. The line box supplies the
+            // correctly centred top edge, and icon plus label share it.
+            let icon_line = context.text_line(geom, &icon_font);
             context.draw_text(
-                Point::new(text_offset_x, geom.y + geom.height as i32 / 2),
+                Point::new(text_offset_x, icon_line.y),
                 icon_str,
                 &icon_font,
                 if is_enabled { ink } else { disabled_ink },
@@ -362,9 +366,9 @@ impl Draw for MenuButton {
 
         // ── Draw button text ──
         let text_color = if !is_enabled { disabled_ink } else { ink };
-        let text_y = geom.y + geom.height as i32 / 2;
+        let line = context.text_line(geom, &font);
         context.draw_text(
-            Point::new(text_offset_x, text_y),
+            Point::new(text_offset_x, line.y),
             &self.text,
             &font,
             text_color,
@@ -426,8 +430,12 @@ impl Draw for MenuButton {
                 // Item icon
                 if let Some(ref item_icon) = item.icon {
                     let icon_font = Font::simple("sans-serif", 13.0);
+                    // The icon and the label occupy the same row, so both take their origin
+                    // from the line box centred in it: the row midpoint is the glyph top
+                    // edge, and using it drew them half a line low.
+                    let icon_line = context.text_line(item_rect, &icon_font);
                     context.draw_text(
-                        Point::new(item_x, item_rect.y + item_rect.height as i32 / 2),
+                        Point::new(item_x, icon_line.y),
                         item_icon,
                         &icon_font,
                         item_text_color,
@@ -436,8 +444,9 @@ impl Draw for MenuButton {
                     item_x += 20;
                 }
 
+                let item_line = context.text_line(item_rect, &item_font);
                 context.draw_text(
-                    Point::new(item_x, item_rect.y + item_rect.height as i32 / 2),
+                    Point::new(item_x, item_line.y),
                     &item.text,
                     &item_font,
                     item_text_color,
@@ -448,8 +457,11 @@ impl Draw for MenuButton {
                 if item.checked {
                     let check_x = item_rect.x + item_rect.width as i32 - PADDING - 12;
                     let check_font = Font::simple("sans-serif", 12.0);
+                    // The tick sits on the item's own line, so it is centred by the same
+                    // primitive rather than by the row's raw midpoint.
+                    let check_line = context.text_line(item_rect, &check_font);
                     context.draw_text(
-                        Point::new(check_x, item_rect.y + item_rect.height as i32 / 2),
+                        Point::new(check_x, check_line.y),
                         "\u{2713}",
                         &check_font,
                         accent.contrast_color(),

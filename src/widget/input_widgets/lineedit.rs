@@ -36,6 +36,11 @@ pub struct LineEdit {
     /// `crate::widget::runtime::focus_widget`). Without it the field had no way to
     /// know, and the caret was never drawn at all.
     focused: bool,
+    /// The caret's blink state, advanced by [`LineEdit::tick`].
+    ///
+    /// Borrowed from [`crate::style::CursorBlink`] rather than reimplemented, so this field's caret
+    /// keeps the tempo and phase logic of every other caret in the crate.
+    cursor_blink: crate::style::CursorBlink,
     /// Emitted after the widget's text changes: on edit commits, and after an
     /// undo/redo restores a snapshot. Not emitted when a programmatic
     /// `set_text` is given the text the field already holds.
@@ -77,6 +82,7 @@ impl LineEdit {
             history_target: Rc::new(RefCell::new(String::new())),
             restoring_history: false,
             focused: false,
+            cursor_blink: crate::style::CursorBlink::new(),
             text_changed: Signal1::new(),
             editing_finished: GenericSignal::new(),
             return_pressed: GenericSignal::new(),
@@ -100,7 +106,30 @@ impl LineEdit {
             return;
         }
         self.focused = focused;
+        // The caret blinks exactly while the field holds focus, so the blink state is driven from
+        // the same flag `draw` reads rather than from a parallel notion of "active".
+        if focused {
+            self.cursor_blink.start();
+        } else {
+            self.cursor_blink.stop();
+        }
         self.base.request_redraw();
+    }
+
+    /// Advances the caret's blink by `delta_ms` and reports whether another frame is needed.
+    ///
+    /// The crate's `tick(delta_ms) -> bool` convention: `true` while the caret is still cycling, so
+    /// a host schedules the next frame only for a field that is actually blinking. A blurred field
+    /// or a read-only one returns `false` immediately — a steady caret has no next frame.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        if !self.focused || self.read_only {
+            return false;
+        }
+        let running = self.cursor_blink.tick(delta_ms);
+        if running {
+            self.base.request_redraw();
+        }
+        running
     }
     /// Sets text and emits text_changed signal if different.
     pub fn set_text(&mut self, text: impl Into<String>) {
@@ -603,7 +632,6 @@ impl Draw for LineEdit {
         let style = self.style();
         let padding = 4;
         let text_x = rect.x + padding;
-        let text_y = rect.y as f32 + rect.height as f32 / 2.0;
         // Draw background
         let bg = style.background_color.unwrap_or(Color::rgb(255, 255, 255));
         context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), bg);
@@ -630,8 +658,12 @@ impl Draw for LineEdit {
             let text_color = style.text_color.unwrap_or(Color::rgb(0, 0, 0));
             let default_font = crate::core::Font::default();
             let font = style.font.as_ref().unwrap_or(&default_font);
+            // The field's own line box. A glyph origin is the box's top-left edge, so the
+            // previous `rect.y + rect.height / 2` placed that edge on the field's middle line
+            // and drew the value half a line low.
+            let value_line = context.text_line(rect, font);
             context.draw_text(
-                Point::new(text_x, text_y as i32),
+                Point::new(text_x, value_line.y),
                 display_text,
                 font,
                 text_color,
@@ -639,14 +671,29 @@ impl Draw for LineEdit {
             );
         }
         // Draw the caret for whichever field owns keyboard focus.
-        if self.focused && !self.read_only {
-            // The caret sits after the text drawn so far — measured with the same font
-            // the text was drawn with, so it tracks the character count rather than
-            // the pixel count. Before this, nothing was drawn at all: the field had no
-            // focus state to consult.
+        if self.focused && !self.read_only && self.cursor_blink.is_visible() {
             let default_font = crate::core::Font::default();
             let font = style.font.as_ref().unwrap_or(&default_font);
-            let caret_x = text_x + context.measure_text(display_text, font).width as i32;
+            // The caret sits at **`cursor_position`**, not at the end of the value.
+            //
+            // This measured the whole string, so the marker was always drawn after the last
+            // glyph however the control was positioned: with `text == "Sample"` and
+            // `cursor_position == 0`, the caret rendered past the `e`. The field answers
+            // `cursor_position`, `set_cursor_position` clamps it, and `backspace`/`delete`
+            // both act on it — so the cursor was the one thing in the field that ignored the
+            // very field that defines it, and every editing affordance appeared to work at the
+            // wrong end of the text.
+            //
+            // The slice is taken through `floor_char_boundary` because `cursor_position` indexes
+            // bytes and the value may be multi-byte; slicing mid-character would panic, which is
+            // why the import for it was already present in this file.
+            let caret_byte = floor_char_boundary(self.text.as_str(), self.cursor_position);
+            let prefix = &self.text[..caret_byte];
+            let caret_x = text_x + context.measure_text(prefix, font).width as i32;
+            // The marker is clipped to the field's inner box. A caret beyond the visible text
+            // (a value wider than the field) belongs at the last pixel a user can see, not
+            // outside the control.
+            let caret_x = caret_x.min(rect.x + rect.width as i32 - padding);
             // Inset so the caret does not touch the border.
             let caret_top = rect.y + 2;
             let caret_bottom = rect.y + rect.height as i32 - 2;
@@ -676,6 +723,32 @@ mod tests {
         assert_eq!(le.cursor_position(), 0);
         assert!(le.selection_start().is_none());
         assert!(!le.is_focused(), "a fresh field is not focused");
+    }
+
+    /// The caret blinks only while the field holds focus, and it stops asking for frames when it
+    /// does not.
+    ///
+    /// The caret was a solid line for the whole life of the field, so `tick` did not exist and a
+    /// host had no signal about whether more frames were owed. This pins the contract in both
+    /// directions: a blurred field is inert, and a focused one keeps reporting work until it
+    /// loses focus again.
+    #[test]
+    fn the_caret_blinks_while_focused_and_is_inert_while_blurred() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
+
+        // Blurred: no frames owed, whatever the delta.
+        assert!(!le.tick(10_000), "a blurred field owes no frame");
+
+        // Focused: it reports work, and keeps doing so because a blink never settles.
+        le.set_focused(true);
+        assert!(le.tick(0), "a focused field is blinking");
+        for _ in 0..10 {
+            assert!(le.tick(500), "a blink is periodic, so it never reports settled");
+        }
+
+        // A read-only field shows no caret, so it must not animate one either.
+        le.set_focused(false);
+        assert!(!le.tick(500));
     }
 
     /// The field must learn about focus from the events the runtime sends, since
@@ -936,6 +1009,56 @@ mod tests {
         let _text_changed = &le.text_changed;
         let _editing_finished = &le.editing_finished;
         let _return_pressed = &le.return_pressed;
+    }
+
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn the_caret_is_drawn_at_cursor_position_not_at_the_end() {
+        // The caret used to be measured against the **whole** value, so it was always drawn
+        // after the last glyph however the control was positioned: with `cursor_position = 0` it
+        // still sat past the `e` of "Sample". The field answers `cursor_position`, clamps it on
+        // every write, and acts on it in `backspace`/`delete`, so the marker was the one part of
+        // the field ignoring the field's own cursor.
+        //
+        // The assertion reads the drawn geometry out of the SVG, because the defect is entirely
+        // about where the ink lands — asserting the stored index would have passed before the fix
+        // too, which is why it survived.
+        fn caret_x(cursor_position: usize) -> i32 {
+            let mut field = LineEdit::new(Rect::new(0, 0, 200, 24));
+            field.set_text("Sample".to_string());
+            // `focus()` places the caret at the end for the autofocus case, so the requested
+            // position is applied *after* it — the same order a caller that positions a caret
+            // uses.
+            field.set_focused(true);
+            field.set_cursor_position(cursor_position);
+            let svg = crate::widget::svg::render_to_svg(&mut field);
+            // The caret is the only vertical line the control draws, emitted as a `<line>` with
+            // `x1 == x2`.
+            svg.lines()
+                .filter(|line| line.contains("<line"))
+                .find_map(|line| {
+                    let x1 = line.split("x1=\"").nth(1)?.split('"').next()?;
+                    let x2 = line.split("x2=\"").nth(1)?.split('"').next()?;
+                    if x1 != x2 {
+                        return None;
+                    }
+                    x1.parse::<i32>().ok()
+                })
+                .expect("a focused, editable field must draw its caret as a vertical line")
+        }
+
+        let at_start = caret_x(0);
+        let at_three = caret_x(3);
+        let at_end = caret_x(6);
+        assert_eq!(
+            at_start, 4,
+            "a caret at position 0 sits at the text origin (the field's padding inset)"
+        );
+        assert!(
+            at_start < at_three && at_three < at_end,
+            "the caret must advance with the cursor position, not jump to the end \
+             ({at_start}, {at_three}, {at_end})"
+        );
     }
 
     #[cfg(not(alloc_frugal))]

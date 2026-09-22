@@ -116,11 +116,12 @@ pub use crate::style::HighContrastMode;
 pub use manager::theme_test_guard;
 pub use manager::{
     global_high_contrast, global_theme_manager, resolved_theme_style, resolved_theme_style_for,
+    resolved_theme_style_for_state,
     semantic_color, set_global_high_contrast, SemanticColor, ThemeManager,
 };
 pub use types::{
-    AppearanceMode, Borders, Colors, Fonts, ShadowOverride, ShadowToken, Spacing, Theme,
-    ThemeOverrides, ThemeStyleToken, WidgetRole,
+    AppearanceMode, Borders, Colors, Fonts, Motion, ShadowOverride, ShadowToken, Spacing,
+    Theme, ThemeOverrides, ThemeStyleToken, WidgetRole,
 };
 
 #[cfg(test)]

@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Rect};
 use crate::event::Event;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
@@ -490,8 +490,16 @@ impl Draw for TreeTable {
                 if let Some(text) = self.item(row, col) {
                     let indent =
                         if col == 0 { self.row_depth(row).unwrap_or(0) as i32 * 14 } else { 0 };
-                    context.draw_text(
-                        Point::new(x + 4 + indent, y + row_h / 2),
+                    // The indented cell is the band: `y + row_h / 2` as a `draw_text` origin put
+                    // the glyph box's *top* edge on the row's middle line, drawing every label
+                    // half a line low. The band starts after the indent, so the tree's hierarchy
+                    // still reads while the line box is derived correctly. Fitting keeps a deep
+                    // node's value inside its column.
+                    let text_x = x + 4 + indent;
+                    let band =
+                        Rect::new(text_x, y, (x + col_w - text_x).max(0) as u32, self.row_height);
+                    context.draw_text_fitted(
+                        context.text_line(band, &Font::default()),
                         &text,
                         &Font::default(),
                         ink,

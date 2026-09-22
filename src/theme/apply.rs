@@ -77,7 +77,15 @@ pub(crate) fn apply_active_theme(widget: &mut dyn Widget) {
         return;
     }
 
-    let Some(theme_style) = crate::theme::resolved_theme_style(kind_name) else {
+    // The control's own interaction state, so a theme can describe `"button:hover"` and have it
+    // take effect. `resolve_style_for_state` was already implemented and already keyed on
+    // `"{kind}:{state}"`, but nothing supplied the state — the one argument in the middle was
+    // always `None`, so every state override a theme author could write was unreachable.
+    //
+    // Asking the control is what makes the chain complete: the state is a fact the control owns,
+    // and the theme is the consumer of it (the same division the touch target uses).
+    let state = widget.widget_state();
+    let Some(theme_style) = crate::theme::resolved_theme_style_for_state(kind_name, state) else {
         return;
     };
 
@@ -127,6 +135,60 @@ mod tests {
     /// Serialises the tests that switch the process-wide theme.
     fn guard() -> std::sync::MutexGuard<'static, ()> {
         theme::theme_test_guard()
+    }
+
+    /// A theme's `"<kind>:<state>"` override reaches a **live control**.
+    ///
+    /// # Why this test exists
+    ///
+    /// `ThemeManager::resolve_style_for_state` and the `"{kind}:{state}"` key format were both
+    /// implemented and both already tested at the manager level — and nothing in the control layer
+    /// could reach them, because every caller passed `None` for the state. A theme author could
+    /// write `"button:hover"`, the manager would resolve it correctly when asked directly, and no
+    /// control would ever be affected.
+    ///
+    /// So this test goes through the path a real control takes: it installs a theme carrying a
+    /// state override, disables a control, and asserts the override's colour arrives on the
+    /// control's own style. Asserting against the manager would have passed before the fix.
+    #[test]
+    fn a_state_override_reaches_the_control_itself() {
+        let _guard = guard();
+
+        // A theme whose only special feature is a `disabled` override for buttons.
+        let mut manager = global_theme_manager();
+        let mut theme = crate::theme::Theme::default();
+        theme.overrides.styles.insert(
+            "button:disabled".to_string(),
+            crate::theme::ThemeStyleToken {
+                background: Some(Color::rgba(7, 8, 9, 255)),
+                ..Default::default()
+            },
+        );
+        manager.register_theme(theme);
+        assert!(manager.set_theme("default"));
+        drop(manager);
+
+        let mut button = crate::widget::Button::new("ok".to_string(), Rect::new(0, 0, 10, 10));
+        button.set_enabled(false);
+
+        apply_active_theme(&mut button);
+
+        assert_eq!(
+            button.style().background_color,
+            Some(Color::rgba(7, 8, 9, 255)),
+            "the `button:disabled` override must reach the control, which is the state it reports"
+        );
+
+        // The reverse direction: an *enabled* control is in the resting state, so the disabled
+        // override must not reach it. Without this the test would pass on an implementation that
+        // applied every state override unconditionally.
+        let mut enabled = crate::widget::Button::new("ok".to_string(), Rect::new(0, 0, 10, 10));
+        apply_active_theme(&mut enabled);
+        assert_ne!(
+            enabled.style().background_color,
+            Some(Color::rgba(7, 8, 9, 255)),
+            "an enabled button is not in the disabled state, so that override must not apply"
+        );
     }
 
     #[test]

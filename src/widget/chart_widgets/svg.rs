@@ -78,6 +78,16 @@ impl ChartContext for SvgChartContext {
             svg_escape_text(text)
         ));
     }
+
+    fn text_line(&self, band: Rect, font_size: f32) -> Rect {
+        // This context has no renderer to measure with, so the line box is the
+        // font's own size — the same advance model `draw_text` assumes. The band's
+        // own top edge is deliberately not used: it would be the halved-height
+        // origin this method exists to replace.
+        let height = font_size.max(1.0).round().max(1.0) as u32;
+        let offset = ((band.height.saturating_sub(height)) / 2) as i32;
+        Rect { x: band.x, y: band.y + offset, width: band.width, height }
+    }
     fn draw_circle(&mut self, center: Point, radius: f32, color: Color) {
         self.elements.push(format!(
             "<circle cx=\"{}\" cy=\"{}\" r=\"{:.2}\" fill=\"{}\" fill-opacity=\"{:.3}\" stroke=\"none\" />",
@@ -200,6 +210,13 @@ impl ChartContext for MemoryChartContext {
     }
     fn draw_text(&mut self, text: &str, pos: Point, font_size: f32, _color: Color) {
         self.commands.push(format!("text:{text}@{},{}:{font_size}", pos.x, pos.y));
+    }
+    fn text_line(&self, band: Rect, font_size: f32) -> Rect {
+        // Mirrors [`SvgChartContext::text_line`]: the font's own size is the line
+        // height this in-memory context can know.
+        let height = font_size.max(1.0).round().max(1.0) as u32;
+        let offset = ((band.height.saturating_sub(height)) / 2) as i32;
+        Rect { x: band.x, y: band.y + offset, width: band.width, height }
     }
     fn draw_circle(&mut self, center: Point, radius: f32, _color: Color) {
         self.commands.push(format!("circle:{},{}:{radius}", center.x, center.y));

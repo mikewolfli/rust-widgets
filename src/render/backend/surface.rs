@@ -147,6 +147,79 @@ fn global_software_render_config() -> &'static Mutex<SoftwareRenderConfig> {
 /// the two places.
 pub const TEXT_FIT_MARGIN: u32 = 3;
 
+/// Where a single line of text sits inside the band it is drawn in.
+///
+/// # Why this is not [`HorizontalAlignment`]
+///
+/// The two axes have different owners. Horizontal placement is chosen *per label* (a title
+/// is centred, a value is right-aligned), so it is a per-call argument. Vertical placement
+/// is a property of **what the band is**: the box around one line of text in a row, a cell
+/// or a button is centred by construction, and a label that is top-aligned is one whose
+/// author has a reason. Splitting the two is what lets a caller state the common case
+/// (`Centered`) and get the arithmetic right, rather than re-deriving it — which is the
+/// defect this type exists to remove.
+///
+/// # The contract it encodes
+///
+/// `RenderContext`'s text origin is the glyph box's **top-left** (see
+/// [`RenderContext::draw_text`]). So "centred" is not `band.y + band.height / 2`; it is
+/// `band.y + (band.height - line_height) / 2`. The first form puts the box's *top edge* on
+/// the band's middle line and draws the whole label half a line low — the single most
+/// repeated placement error in this crate (76 sites across 40 files before this type
+/// existed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VerticalAlignment {
+    /// The line box's top edge coincides with the band's top edge.
+    Top,
+    /// The line box is centred in the band. The default, because a band named for a single
+    /// line of text is almost always meant to hold it centred.
+    #[default]
+    Center,
+    /// The line box's bottom edge coincides with the band's bottom edge.
+    Bottom,
+}
+
+/// The line box a single line of `font` occupies when placed in `band`.
+///
+/// Returns a rectangle with `band`'s horizontal extent and the measured line height of
+/// `font`, positioned vertically inside `band` according to `alignment`. Passing the result
+/// to [`RenderContext::draw_text_fitted`] (or [`RenderContext::draw_text`]) puts the glyphs
+/// where the author meant.
+///
+/// # Why an explicit function rather than a `draw_*` variant
+///
+/// The placement is needed *before* the draw call in most callers: a control that draws a
+/// label and a rule under it needs the line box to know where the rule goes, and one that
+/// draws a focus ring needs it to size the ring. Returning the box lets both read the same
+/// derivation instead of one of them recomputing it — and a recomputation is exactly how a
+/// label and the thing below it drift apart.
+///
+/// # Degenerate input
+///
+/// A band narrower than the line height, or one of zero height, clamps the offset to zero
+/// rather than going negative: a band that cannot fit a line still draws the line, at its
+/// top edge, which is the reading a caller can act on. Nothing here panics, and nothing
+/// divides by a value read from the caller, so a zero-sized band is a supported input.
+///
+/// ```ignore
+/// let line = text_line(cell, &font, context);
+/// context.draw_text_fitted(line, label, &font, ink, HorizontalAlignment::Left);
+/// ```
+pub fn text_line(
+    band: Rect,
+    font: &Font,
+    alignment: VerticalAlignment,
+    context: &RenderContext,
+) -> Rect {
+    let height = context.measure_text("M", font).height.max(1) as i32;
+    let offset = match alignment {
+        VerticalAlignment::Top => 0,
+        VerticalAlignment::Center => ((band.height as i32 - height) / 2).max(0),
+        VerticalAlignment::Bottom => (band.height as i32 - height).max(0),
+    };
+    Rect::new(band.x, band.y.saturating_add(offset), band.width, height as u32)
+}
+
 /// The longest prefix of `text` that advances at most `max_width` pixels in `font`.
 ///
 /// Returns `text` unchanged when it fits, an empty string when not even one cluster fits,
@@ -484,6 +557,24 @@ impl<'a> RenderContext<'a> {
         self.backend.measure_text(text, font)
     }
 
+    /// The line box a single line of `font` occupies, centred in `band`.
+    ///
+    /// The convenience form of [`text_line`] for the common case, and the entry point a
+    /// control should reach for instead of writing `band.y + band.height / 2` — that
+    /// expression places the glyph box's *top* edge on the band's middle line, which draws
+    /// the label half a line too low (see [`VerticalAlignment`]).
+    ///
+    /// Use [`Self::text_line_aligned`] when the line belongs at the top or bottom of the
+    /// band rather than centred.
+    pub fn text_line(&self, band: Rect, font: &Font) -> Rect {
+        text_line(band, font, VerticalAlignment::Center, self)
+    }
+
+    /// As [`Self::text_line`], with an explicit [`VerticalAlignment`].
+    pub fn text_line_aligned(&self, band: Rect, font: &Font, alignment: VerticalAlignment) -> Rect {
+        text_line(band, font, alignment, self)
+    }
+
     /// Draws `text` fitted inside `bounds`, truncating with an ellipsis when it is wider.
     ///
     /// # Why this exists as a context method
@@ -532,6 +623,31 @@ impl<'a> RenderContext<'a> {
         };
         self.draw_text(origin, &fitted, font, color, HorizontalAlignment::Left);
         fitted
+    }
+
+    /// Draws a single line of `text` fitted inside `bounds` and centred vertically in it.
+    ///
+    /// The vertical half of what [`Self::draw_text_fitted`] deliberately does not do. That
+    /// method's contract is *fit horizontally, align horizontally* — its origin is
+    /// `bounds.y` unchanged — so a caller that handed it a padded content box (a dialog's
+    /// button row, a keyboard's key cap, a popover's empty state) got a label pinned to the
+    /// box's top edge. Around twenty call sites read it as though it centred both ways; this
+    /// entry point is the one that does, and naming it separately keeps the fit/align
+    /// contract of the original intact for the callers that rely on it.
+    ///
+    /// `baseline.y` is ignored; the line box is derived from `bounds`. The horizontal half
+    /// behaves exactly as in [`Self::draw_text_fitted`], including the fit inset and the
+    /// truncation ellipsis.
+    pub fn draw_text_line(
+        &mut self,
+        bounds: Rect,
+        text: &str,
+        font: &Font,
+        color: Color,
+        alignment: HorizontalAlignment,
+    ) -> crate::compat::String {
+        let line = self.text_line(bounds, font);
+        self.draw_text_fitted(line, text, font, color, alignment)
     }
     /// Splits `text` into visual clusters (grapheme-like units) with per-cluster
     /// advances, as used for hit testing and caret placement.
@@ -826,6 +942,105 @@ mod tests {
     }
 
     // ── RenderContext ───────────────────────────────────────────────────
+
+    /// Builds a context over a throwaway surface, purely for measuring against.
+    fn measurement_context<'a>(backend: &'a mut SoftwarePaintBackend) -> RenderContext<'a> {
+        RenderContext::new(backend)
+    }
+
+    #[test]
+    fn text_line_centres_the_line_box_in_the_band() {
+        // The defect this primitive removes: `band.y + band.height / 2` places the glyph
+        // box's TOP edge on the band's middle line, which draws the label half a line low.
+        // Centring is `band.y + (band.height - line_height) / 2`.
+        let mut backend = SoftwarePaintBackend::new(Size::new(240, 120), 1.0);
+        let ctx = measurement_context(&mut backend);
+        let font = Font::default_ui();
+        let line_height = ctx.measure_text("M", &font).height as i32;
+        assert!(line_height > 0, "the measuring font must report a positive line height");
+
+        let band = Rect::new(0, 0, 240, 120);
+        let line = ctx.text_line(band, &font);
+        assert_eq!(line.y, (120 - line_height) / 2, "the line box is centred, not top-dropped");
+        assert_eq!(line.height, line_height as u32);
+        assert_eq!((line.x, line.width), (band.x, band.width), "horizontally unchanged");
+
+        // And it differs from the wrong expression, which is what makes the assertion
+        // meaningful rather than a restatement of the implementation.
+        assert_ne!(line.y, band.y + band.height as i32 / 2);
+    }
+
+    #[test]
+    fn text_line_honours_each_vertical_alignment() {
+        let mut backend = SoftwarePaintBackend::new(Size::new(240, 120), 1.0);
+        let ctx = measurement_context(&mut backend);
+        let font = Font::default_ui();
+        let line_height = ctx.measure_text("M", &font).height as i32;
+        let band = Rect::new(0, 10, 240, 120);
+
+        let top = ctx.text_line_aligned(band, &font, VerticalAlignment::Top);
+        assert_eq!(top.y, 10, "top alignment pins the line box to the band's top edge");
+
+        let bottom = ctx.text_line_aligned(band, &font, VerticalAlignment::Bottom);
+        assert_eq!(bottom.y, 10 + 120 - line_height);
+
+        let centre = ctx.text_line(band, &font);
+        assert_eq!(centre.y, 10 + (120 - line_height) / 2);
+        assert!(top.y < centre.y && centre.y < bottom.y, "the three orders must differ");
+    }
+
+    #[test]
+    fn text_line_survives_degenerate_bands() {
+        // A band that cannot hold a line, or has no extent at all, must not panic and must
+        // not hand back a negative origin: a negative `y` would be a drawing instruction
+        // outside the control, which is a defect rather than a graceful degradation.
+        let mut backend = SoftwarePaintBackend::new(Size::new(240, 120), 1.0);
+        let ctx = measurement_context(&mut backend);
+        let font = Font::default_ui();
+
+        for band in [
+            Rect::new(0, 0, 0, 0),
+            Rect::new(5, 5, 0, 0),
+            Rect::new(0, 0, 100, 1),
+            Rect::new(0, 120, 240, 0),
+            Rect::new(-30, -30, 10, 4),
+        ] {
+            let line = ctx.text_line(band, &font);
+            assert!(line.y >= band.y, "a clamped band never starts above itself: {band:?}");
+            assert_eq!(line.x, band.x);
+            assert_eq!(line.width, band.width);
+            assert!(line.height >= 1, "a zero-height line box would be un-drawable");
+        }
+    }
+
+    #[test]
+    fn draw_text_line_places_ink_at_the_top_of_a_taller_band() {
+        // The end-to-end reading of the contract: ink must land in the band's middle
+        // third, not along its top edge. A 120 px band with a 14 px font leaves `line.y`
+        // at 53, so row 54 is inside the glyph box and row 2 is not.
+        let mut backend = SoftwarePaintBackend::new(Size::new(240, 120), 1.0);
+        backend.begin_frame(Color::WHITE);
+        let font = Font::default_ui();
+        let band = Rect::new(0, 0, 240, 120);
+        let line_y;
+        {
+            let mut ctx = RenderContext::new(&mut backend);
+            line_y = ctx.text_line(band, &font).y;
+            ctx.draw_text_line(band, "MMMM", &font, Color::BLACK, HorizontalAlignment::Left);
+        }
+        backend.end_frame();
+
+        let rgba = backend.frame_rgba();
+        let stride = 240 * 4;
+        let row_has_ink = |y: usize| {
+            (0..240).any(|x| {
+                let idx = y * stride + x * 4;
+                rgba[idx] != 255 || rgba[idx + 1] != 255 || rgba[idx + 2] != 255
+            })
+        };
+        assert!(row_has_ink(line_y as usize + 1), "the line box row carries ink");
+        assert!(!row_has_ink(2), "the band's top edge must stay clear of a centred line");
+    }
 
     #[test]
     fn render_context_new_wraps_backend() {

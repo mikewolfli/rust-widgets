@@ -355,7 +355,17 @@ impl Layout for WrapLayout {
         context: &LayoutContext,
         widgets: &mut dyn FnMut(ObjectId, Rect),
     ) {
-        let scale = context.layout_scale;
+        // Spacing follows the **larger** of the layout scale and the text scale.
+        //
+        // `LayoutContext::font_scale` is the device's text-size preference, and the two are
+        // separate facts: a HiDPI screen needs more logical spacing, and a device whose text is set
+        // larger needs more room between controls even at the same DPI. Taking the maximum is the
+        // conservative reading — a control whose font grew but whose padding did not would have its
+        // text touching its own border, which is the defect the field exists to let a layout avoid.
+        //
+        // The field had no reader at all before this, so a 2x text preference grew the glyphs (via
+        // the theme's font token) and left every gap at its nominal size.
+        let scale = context.layout_scale.max(context.font_scale);
         let scaled_padding = (self.padding as f32 * scale) as i32;
 
         // Use scaled spacing inside the content rect by temporarily wrapping.
@@ -380,7 +390,15 @@ impl Layout for WrapLayout {
 
         let results = scaled.compute_rects(content);
         for (wid, child_rect) in results {
-            widgets(wid, child_rect);
+            // Same minimum-touch growth the flex and box layouts apply, so a wrapped row and a
+            // flowing row address their controls identically.
+            widgets(
+                wid,
+                crate::layout::types::grow_to_min_touch_size(
+                    child_rect,
+                    context.min_touch_size,
+                ),
+            );
         }
     }
 }
@@ -601,10 +619,19 @@ mod tests {
             rects.insert(id, rect);
         });
 
-        // Scale=2.0: padding=8, content starts at (8,8), width=200-16=184
-        // Item1 at (8,8), item2 at (8+30+16(spacing)=54, 8)
-        assert_eq!(rects.get(&1), Some(&Rect::new(8, 8, 30, 20)));
-        assert_eq!(rects.get(&2), Some(&Rect::new(54, 8, 30, 20)));
+        // Scale=2.0: padding=8, content starts at (8,8), width=200-16=184, and the items are
+        // laid at (8,8) and (54,8) at 30x20 — then each is grown to the context's 32x32 minimum
+        // touch target, centred on the slot it was given. Asserting the un-grown size would mean
+        // the layout ignoring `min_touch_size`, which no layout should.
+        let min = context.min_touch_size;
+        let first = rects.get(&1).copied().expect("item 1 was laid out");
+        let second = rects.get(&2).copied().expect("item 2 was laid out");
+        assert_eq!(first.width, min.width.max(30));
+        assert_eq!(first.height, min.height.max(20));
+        assert_eq!(first.x, 8 - (first.width as i32 - 30) / 2);
+        assert_eq!(first.y, 8 - (first.height as i32 - 20) / 2);
+        // The sibling keeps its own slot: growing one child must not shift the others.
+        assert_eq!(second.x, 54 - (second.width as i32 - 30) / 2);
     }
 
     #[test]

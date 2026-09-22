@@ -5,6 +5,180 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 2.6.0 (2026-09-22) — Every Label Sits Where It Belongs, and the Controls That Were Invisible Are Visible
+
+Backward compatible: no public signature was removed. The additions are one rendering primitive
+(`text_line`), one new source-level gate, one property on `floating_label` and one on `tab_widget`,
+plus corrections inside existing controls.
+
+---
+
+### 1. The largest single class of visual defect this crate had: 76 labels drawn half a line low
+
+`RenderContext`'s text origin is the glyph box's **top-left** edge, not its baseline. So the
+expression every author reaches for when they mean "centre this label in its band":
+
+```rust
+y = band.y + band.height / 2;          // ← puts the box's TOP edge on the middle line
+```
+
+does the opposite of centring. Centring is `band.y + (band.height - line_height) / 2`, which needs
+the renderer to have *measured* the line.
+
+That one shape appeared **76 times across 40-odd files**: buttons, checkboxes, radio buttons, combo
+boxes, date/time editors, status bars, banners, ratings, tool buttons, six dialog button rows,
+`mdi_area` window titles, the properties panel, five data tables, the menu bar, the toolbar, tab bands,
+keyboard key caps, tag input, popovers, toasts, chips, breadcrumbs, segmented controls, split buttons,
+ribbon bars, dropdown menus and the chart empty state.
+
+Every one of them passed every gate that existed. It is valid Rust, it compiles, the ink stays inside
+the control, and the SVG is well-formed. `tools/audit_text_y.py` could *see* the result but could not
+prove intent — it infers the band from neighbouring rectangles, which is why it is documented as an
+audit aid rather than a check.
+
+**The fix is one primitive plus a mechanical migration.** `RenderContext::text_line(band, font)`
+returns the line box a single line occupies, centred in `band`; `draw_text_line` is the one-call form.
+Both are pure additions, so the ~440 existing text call sites kept their behaviour until each was
+migrated deliberately. The audit's suspicious placements fell from **38 to 6**, and the six remaining
+were each examined and recorded as false positives (a decorative icon bottom-aligned in its own band,
+and three controls — `label`, `ime_preedit`, `swipe_to_dismiss` — that paint only text and so have no
+band of their own to centre in).
+
+**`tools/check_text_vertically_centred.py`** now makes the class unrepresentable. It asks the exact,
+source-local question — is a text origin derived by halving a height that is not the measured line
+height? — and it was **reverse-injected** to prove it fails: reintroducing the shape in `chip.rs`
+produced `failed: 1`, and it returned to `failed: 0` when reverted. It is wired into CI beside its
+sibling `check_text_origin_is_a_top_edge.sh`, which guards the same contract from the other side.
+
+### 2. Eight controls were invisible, and the gate that should have caught them was excused
+
+Each of these was drawn, and the user could not see it:
+
+| Control | Defect |
+|---|---|
+| `badge` | `style.background_color.or(themed_bg).unwrap_or(level.color())` — the middle arm was never `None` (the theme resolves *nowhere-to-go* as the window fill), so every severity colour was unreachable and the pill was filled with the window's own colour |
+| `scroll_bar` | the thumb and the trough read the **same** field, so the two rectangles were byte-identical |
+| `switch` | the ON state could never be green — the theme always writes `background_color` for this role, so the accent arm was dead |
+| `drop_zone` | no visible well in the idle state |
+| `signature_pad` | the pad's face *was* the window |
+| `otp_input` | 5 of 6 cells had no face at all |
+| `progress_bar` | the trough was the accent colour (a solid orange slab) and the percentage was hardcoded black on it |
+| `group_box` | the checkable indicator's tick was pure `rgb(0,0,0)` — on a dark appearance the least readable stroke in the control, and the very part the user toggles |
+
+**Four financial charts were also theme-blind by a single copied literal.** `candlestick_chart`,
+`volume_chart`, `depth_chart` and `indicator_chart` all filled their plot pane with
+`Color::rgb(18, 22, 28)`, so a light-appearance chart was a near-black slab under light-theme axis
+labels. The four snapshot pairs differed by only four lines each — a fact hidden until now because all
+four carried a **stale data-colour exemption** that the gate should have rejected.
+
+The panes now resolve through one shared derivation in `finance/layout.rs`, `indicator_chart` uses the
+same pane margins as the other three (its `x=52 w=180` was `x=48 w=184` for no reason, which the shared
+`IndexAxis` exists to prevent), and all four draw their axes and a `No data` message in the empty state
+instead of returning after the slab. The check then **reported the four stale exemptions for removal** —
+the behaviour the table is designed for — and they are gone. The price-direction and
+indicator-identity colours are unchanged: those really are data.
+
+### 3. Three dialogs whose content area had height zero
+
+`color_dialog`'s picker, `font_dialog`'s three list columns and `file_dialog`'s file list were all
+collapsed to 0 px (and 8 px in the last case), because each derived its height by subtracting a
+reserved band from a value that had *already* had that band removed — the minuend and the subtrahend
+measured different things. `color_dialog.svg` contained two `<rect … height="0">`; `font_dialog.svg`
+three. All three now stack downward from the elements actually drawn above and below them.
+
+The same class produced the **`meter`'s tick ring being 90° out of phase with its own arc** (the tick
+formula omitted the arc's `-90°` offset, so `meter.svg`'s first tick pointed 135° while the arc started
+at 45°) and its ticks varying in length (each end was rounded independently).
+
+### 4. `tab_widget` declared a feature it did not have, and one it had but never showed
+
+- `movable` was published, stored and read by nothing — `grep drag` in the file found zero hits. It is
+  **implemented**, not deleted: a press arms a drag session, moving past a neighbour reorders the tabs
+  live and emits the newly published `tab_moved(from, to)` signal. `set_movable(false)` cancels a live
+  drag. The signal's payload schema was generated rather than hand-written (`derive_event_payloads.py`).
+- The constructor built a tab widget with **zero tabs**, so `Draw`'s `for i in 0..self.tabs.len()` ran
+  zero times and the control was a bare content rectangle with no tab band at all — and because
+  `TabWidget::set` had no `text`/`title` arm, the factory's `text` argument was silently dropped. Two
+  tabs are now seeded (as `create_tab_bar` already did) and `text`/`title` are published, with matching
+  schema rows and defaults so the schema and the contract cannot disagree.
+- Tab widths were the literal `100`, so a two-character title reserved as much space as a nine-character
+  one and a long one was clipped at a fixed point. Widths are measured from the titles and clamped to
+  the same `[40, 200]` window `tab_bar` uses; when the tabs no longer fit, they share the strip equally
+  rather than the later ones being drawn outside the control.
+
+### 5. A control named for floating labels had no floating label
+
+`floating_label` publishes `text`/`placeholder`/`focused` but not `label`, and the shared `label()`
+helper took the **first** property that hit from `["text", "title", "message"]` — so the census's
+`Sample` landed in `text` and the caption was empty in every appearance. Its snapshot showed a plain label where the
+whole point of the control is the float.
+
+`label` is now published (with schema row and default), `label()` prefers the most descriptive property
+through one shared `widget_label_property_name` used by all three call sites, and a new
+`floating_label_behavior` property (`auto`/`always`/`never`) actually changes what is drawn: `always`
+floats the caption above the field even when unfocused, `never` keeps it inline, `auto` follows
+focus-or-content.
+
+### 6. Also corrected
+
+- **`tool_bar`** had six hardcoded chrome colours in one loop (its background had been fixed in an
+  earlier round, the items had not), including a checked fill that was *lighter* than its own hover fill,
+  and a vertical divider whose colour disagreed with the horizontal one beside it.
+- **`tool_bar` / `menu_bar`** item labels were positioned at the entry's **midpoint** and then drawn
+  `Left`, so a label began at the middle of its button and ran off its right edge (`menu_bar`'s four-
+  character titles overlapped their neighbour by 9.6 px).
+- **`masked_edit`** drew its body text at `rgb(33,33,33)` on a `rgb(69,69,69)` field — **1.35:1**.
+- **`mini_chart`** read its surface and ink only from its own style, never the theme, so it was
+  theme-blind whenever nothing had styled it; its grid was the brightest thing in the control on the
+  dark appearance.
+- **`date_edit` / `time_edit` / `date_time_edit` / `shortcut_editor` / `combo_box` / `status_bar` /
+  `banner` / `rating` / `action` / `breadcrumb` / `chip` / `heatmap` / `segmented_control` /
+  `split_button` / `dropdown_menu` / `menu_button` / `ribbon_bar` / `collapsible_pane` /
+  `masonry_layout` / `toolbox` / `line_edit` / `search_box` / `font_combo_box` / `dropdown` /
+  `code_editor` / `empty_state` / `image_view`** — the rest of the half-line migration.
+- **`tab_bar`** drew all three `TabShape` values identically (and its `Triangular` arm's comment
+  described work that was not done); it now draws three genuinely different shapes and gives the strip
+  an overflow rule so no tab escapes the control.
+- **`toolbox`** reduced its page to zero height at small sizes (`rect.height - 32 * n`) and let items
+  paint outside the control; the page now has a floor and the strip has a scroll offset.
+- **`dial`**'s `notches_visible` / `notch_target` were fully declared and read by nothing. The tick ring
+  is implemented, sharing the dial's own angle mapping so it cannot drift out of phase with the needle,
+  and the `notch_target` unit is now stated (pixels of arc, Qt's own semantic) instead of documented as
+  degrees while doing nothing.
+- **`badge`**'s dot was `min(w, h) / 2` — a 12 px dot in a 24 px cell and a 60 px disc in a 240×120 one.
+  It is a fixed-size marker now, like the checkbox's indicator and the switch's track.
+- **`bottom_sheet`**'s modal scrim **brightened** a dark backdrop (it blended toward the foreground, so
+  `rgba(121,121,121)` was laid over `rgba(18,18,18)`); it now darkens toward black, as every platform's
+  scrim does.
+- **`progress_circle`**'s arc defaulted to a hardcoded literal while `progress_bar`'s came from the
+  theme; both now read the same token, and the caller's explicit colour still wins.
+- **`color_dialog`** filled its OK and Cancel buttons with the *same* colour.
+- **`meter`**, **`otp_input`** (including an unreachable `else` branch), **`banner`**'s action labels,
+  **`status_bar`**'s message blending direction, **`tool_button`**'s label, **`rating`**'s stars,
+  **`command_link`**'s two-line stack, and **`bar_chart`**'s value labels.
+- **A theme race in the test suite** was found and fixed: `find_replace_dialog`'s appearance test held
+  the global theme guard only *inside* its render helper and then restored the appearance outside it,
+  so a concurrent test rendering while reading the theme could observe a half-switched state. Guarding
+  the whole test is what makes its restore atomic with respect to every other reader.
+
+---
+
+### Evidence
+
+| Command | Result |
+|---|---|
+| `cargo test --no-default-features --features desktop` | **5605 passed, 0 failed** |
+| `cargo clippy --no-default-features --features desktop --all-targets -- -D warnings` | clean |
+| `cargo check` on all five profiles (`desktop`/`tablet`/`mobile`/`mini`/`embedded`) | 0 errors, 0 warnings |
+| `bash tools/check_svg_snapshots.sh` | `checked=188 skipped=0 failed=0` |
+| `bash tools/check_control_rendering.sh` | `checked=188 skipped=0 failed=0` (P1–P5) |
+| `bash tools/check_text_vertically_centred.sh` | `failed: 0`, **reverse-injected to prove it fails** |
+| `bash tools/check_text_origin_is_a_top_edge.sh` | `failed: 0` |
+| `python3 tools/audit_text_y.py` | suspicious placements **38 → 6**, each remainder audited |
+| `python3 tools/audit_text_contrast.py` | 28 occurrences, unchanged; **nothing below the large-text floor** |
+
+The 376 committed snapshots were regenerated: the diff *is* the record of what moved.
+
 ## 2.5.3 (2026-09-22) — Both Backends Now Agree About Where Text Is, and an `ascent` in a Text Origin Is Now Impossible
 
 Backward compatible: no public signature was removed. The additions are new builder methods on

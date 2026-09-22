@@ -46,6 +46,56 @@ pub struct ColorDialog {
     pub rejected: GenericSignal,
 }
 impl ColorDialog {
+    /// Distance from the dialog's top edge to the picker's top edge: the title bar's
+    /// 28 px plus the 10 px margin the picker shares with the panel's left inset.
+    /// Shared by [`ColorDialog::picker_rect`] and `draw` so hit-testing and painting
+    /// cannot disagree about where the picker is.
+    const PICKER_TOP_OFFSET: i32 = 38;
+
+    /// Height of the preview swatch band, when the dialog is tall enough to show one.
+    const PREVIEW_HEIGHT: i32 = 30;
+
+    /// Height of the button row.
+    const BUTTON_HEIGHT: i32 = 28;
+
+    /// Gap between the picker's bottom edge and the rows below it.
+    const PICKER_GAP: i32 = 10;
+
+    /// Bottom margin below the button row.
+    const BOTTOM_MARGIN: i32 = 12;
+
+    /// The y of the button row's top edge — the line the picker's height stops at.
+    ///
+    /// Derived by stacking the rows below the picker upward from the dialog's bottom
+    /// edge, so the reserve is a *sum of the heights actually drawn* rather than a single
+    /// literal standing in for them. That is what keeps it in the same units as the
+    /// picker's own top offset: the old `rect.height.saturating_sub(120)` measured a bottom
+    /// reserve from a top offset, and at the 120 px box the renderer uses, the literal 120
+    /// was both the dialog's designed height *and* its current one, so the subtraction was
+    /// exactly 0 and the picker collapsed. Tying both edges to the elements that fix them
+    /// removes the coincidence of one size.
+    fn button_row_top(&self) -> i32 {
+        let rect = self.geometry();
+        rect.y + rect.height as i32 - Self::BOTTOM_MARGIN - Self::BUTTON_HEIGHT
+    }
+
+    /// The y of the preview band's top edge, or `None` when the dialog is too short to
+    /// hold one between the title bar and the button row.
+    ///
+    /// Returning an `Option` rather than a clamped coordinate is what lets the picker
+    /// take the whole space on a short dialog: a band that does not fit is dropped
+    /// instead of being squeezed into a negative height or overlapping the picker.
+    fn preview_row_top(&self) -> Option<i32> {
+        let rect = self.geometry();
+        let band_top = self.button_row_top() - Self::PICKER_GAP - Self::PREVIEW_HEIGHT;
+        // The band must clear the title bar's bottom and the picker's own minimum.
+        if band_top >= rect.y + Self::PICKER_TOP_OFFSET + Self::PICKER_GAP {
+            Some(band_top)
+        } else {
+            None
+        }
+    }
+
     /// Creates a dialog with the color `rgb(255, 255, 255)`, alpha options off,
     /// and modality on.
     ///
@@ -126,14 +176,29 @@ impl ColorDialog {
         self.current_color
     }
 
+    /// The band the colour picker may occupy, between the title bar's bottom edge
+    /// and the button row's top edge.
+    ///
+    /// The height is *stacked downward from what is already drawn* rather than
+    /// subtracted from the dialog's own height. The old
+    /// `rect.height.saturating_sub(120)` mixed two different units: it treated the
+    /// reserved lower stack as a distance below the picker's top, but the picker
+    /// does not start at the dialog's top — the title bar's 38 px sit above it. At
+    /// the dialog's designed 300 px the subtraction happened to leave room; at the
+    /// 120 px box the renderer actually uses the same literal 120 was both the
+    /// designed height and the current one, so the difference was exactly 0 and the
+    /// picker collapsed to a zero-height rectangle (`color_dialog.svg` carried two
+    /// `<rect ... height="0">`). Deriving the extent from the two edges the rest
+    /// of the dialog fixes is what makes the picker's height a consequence of the
+    /// layout instead of a coincidence of one size.
     fn picker_rect(&self) -> Rect {
         let rect = self.geometry();
-        Rect::new(
-            rect.x + 10,
-            rect.y + 38,
-            rect.width.saturating_sub(20),
-            rect.height.saturating_sub(120),
-        )
+        let picker_top = rect.y + Self::PICKER_TOP_OFFSET;
+        // The picker stops at the top of whichever row is drawn below it: the preview
+        // band when the dialog can hold one, otherwise the button row itself.
+        let below_top = self.preview_row_top().unwrap_or_else(|| self.button_row_top());
+        let height = (below_top - picker_top - Self::PICKER_GAP).max(0) as u32;
+        Rect::new(rect.x + 10, picker_top, rect.width.saturating_sub(20), height)
     }
 
     fn point_in_rect(pos: Point, rect: Rect) -> bool {
@@ -314,7 +379,20 @@ impl Draw for ColorDialog {
         // The title bar and the buttons are distinct bands on the panel, derived from it so
         // the three stay one visible step apart in either appearance.
         let title_bar = surface.blend(&ink, 0.08);
-        let button_fill = surface.blend(&ink, 0.12);
+        // The accept button takes the theme's **accent/primary token**, and the dismiss
+        // button takes the panel surface plus the border. Both used to be filled with a
+        // single colour — `theme.background_color`, which for this `Surface`-role control is
+        // the window fill — so the two buttons were byte-identical and only Cancel's stroke
+        // told them apart. The pair is the conventional one: a filled affirmative and an
+        // outlined negative. Same shape as `input_dialog.rs`.
+        let accent = {
+            let manager = crate::style::theme_manager();
+            manager
+                .current_theme()
+                .map(|active| active.colors.primary)
+                .unwrap_or_else(|| surface.blend(&ink, 0.12))
+        };
+        let accent_ink = accent.contrast_color();
 
         context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), surface);
         context.draw_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), border);
@@ -347,52 +425,60 @@ impl Draw for ColorDialog {
         let picker_rect = self.picker_rect();
         context.fill_rect(picker_rect, Color::rgb(200, 200, 200));
         context.draw_rect(picker_rect, border);
-        // Color preview
-        let preview_y = rect.y as f32 + rect.height as f32 - 80.0;
-        context.fill_rect(Rect::new(rect.x + 10, preview_y as i32, 60, 30), self.current_color);
-        context.draw_rect(Rect::new(rect.x + 10, preview_y as i32, 60, 30), border);
-        // The hex readout sits in the strip between the swatch and the panel's right
-        // margin, so a long hex string truncates there rather than running under the
-        // buttons.
+        // Color preview. Drawn only when a band's worth of room is left between the
+        // title bar and the button row; on a shorter dialog the picker takes that space
+        // instead, which is the trade the fit test in `preview_row_top` makes.
         let preview_font = Font::default();
         let preview_text =
             format!("{} {}", tr!("color_dialog.current_color"), self.current_color.to_hex_rgba());
         let preview_metrics = context.measure_text(&preview_text, &preview_font);
-        context.draw_text_fitted(
-            Rect::new(
-                rect.x + 80,
-                (preview_y + 15.0) as i32,
-                (rect.width as i32 - 80 - 8).max(0) as u32,
-                preview_metrics.height.max(1),
-            ),
-            &preview_text,
-            &preview_font,
-            ink,
-            HorizontalAlignment::Left,
-        );
+        if let Some(preview_y) = self.preview_row_top() {
+            let preview_rect = Rect::new(rect.x + 10, preview_y, 60, Self::PREVIEW_HEIGHT as u32);
+            context.fill_rect(preview_rect, self.current_color);
+            context.draw_rect(preview_rect, border);
+            // The hex readout sits in the strip between the swatch and the panel's right
+            // margin, so a long hex string truncates there rather than running under the
+            // buttons. It is centred in the 30 px swatch band: the glyph origin is the
+            // box's top-left, so the old `preview_y + 15` put the line's top edge on the
+            // swatch's middle line.
+            let band = Rect::new(rect.x + 80, preview_y, 60, Self::PREVIEW_HEIGHT as u32);
+            let line = context.text_line(band, &preview_font);
+            context.draw_text_fitted(
+                Rect::new(
+                    rect.x + 80,
+                    line.y,
+                    (rect.width as i32 - 80 - 8).max(0) as u32,
+                    preview_metrics.height.max(1),
+                ),
+                &preview_text,
+                &preview_font,
+                ink,
+                HorizontalAlignment::Left,
+            );
+        }
         // OK/Cancel buttons. The row is right-aligned inside the frame and floored at the
         // panel's left edge, so a narrow control squeezes the buttons inwards instead of
         // placing the first one at a negative x. They are laid out on a shared step so the
-        // label fit can be derived from the slot each button occupies.
-        let btn_y = rect.y as f32 + rect.height as f32 - 40.0;
+        // label fit can be derived from the slot each button occupies. The row's y comes
+        // from the same stack that fixes the preview band, so the rows cannot drift.
+        let btn_y = self.button_row_top();
         const BTN_W: i32 = 80;
         const BTN_STEP: i32 = 88;
         let cancel_x = (rect.x + rect.width as i32 - BTN_STEP).max(rect.x);
         let ok_x = (cancel_x - BTN_STEP).max(rect.x);
-        let accent = theme.as_ref().and_then(|t| t.background_color).unwrap_or(button_fill);
-        let ok_rect = Rect::new(ok_x, btn_y as i32, BTN_W as u32, 28);
+        let ok_rect = Rect::new(ok_x, btn_y, BTN_W as u32, Self::BUTTON_HEIGHT as u32);
         context.fill_rect(ok_rect, accent);
-        context.draw_text_fitted(
+        context.draw_text_line(
             ok_rect,
             &tr!("common.button.ok"),
             &Font::default(),
-            accent.contrast_color(),
+            accent_ink,
             HorizontalAlignment::Center,
         );
-        let cancel_rect = Rect::new(cancel_x, btn_y as i32, BTN_W as u32, 28);
-        context.fill_rect(cancel_rect, accent);
+        let cancel_rect = Rect::new(cancel_x, btn_y, BTN_W as u32, Self::BUTTON_HEIGHT as u32);
+        context.fill_rect(cancel_rect, surface);
         context.draw_rect(cancel_rect, border);
-        context.draw_text_fitted(
+        context.draw_text_line(
             cancel_rect,
             &tr!("common.button.cancel"),
             &Font::default(),

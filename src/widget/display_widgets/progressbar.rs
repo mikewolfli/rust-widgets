@@ -3,7 +3,7 @@
 
 //! Progress bar widget.
 use crate::compat::{format, String, ToString};
-use crate::core::{Color, Font, HorizontalAlignment, Orientation, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Orientation, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -261,49 +261,142 @@ impl Draw for ProgressBar {
         // Draw base widget
         let rect = self.geometry();
         let progress = self.progress();
-        let style = self.style();
-        let bg = style.background_color.unwrap_or(Color::rgb(240, 240, 240));
-        let text_color = style.text_color.unwrap_or(Color::rgb(0, 0, 0));
+        let style = self.style().clone();
+        // The track is the bar's *groove*: the empty run behind the fill. It used to be
+        // `style.background_color` with a light-grey literal fallback, but `progress_bar`
+        // classifies as `WidgetRole::Accent` and `role_colors` writes the theme's **accent**
+        // colour there. The groove therefore painted the same saturated orange as the fill
+        // would, so `progress_bar.svg` was a solid slab in which the value was invisible —
+        // the control's whole purpose. A groove must be low-emphasis, so it is *derived*
+        // from the resolved surface rather than read from a field that carries the accent.
+        // The same derivation, for the same reason, is in `range_slider.rs`.
+        let window_fill = {
+            let manager = crate::style::theme_manager();
+            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
+        };
+        let ink = style.text_color.unwrap_or_else(|| window_fill.contrast_color());
+        // A caller-set background is the groove; a theme-derived one is the window fill
+        // (or the accent) and is replaced by one visible step from the surface. The filter
+        // is on the **resolved** value, not only on the provenance, because a control whose
+        // role resolves to the window fill paints an invisible groove either way.
+        let groove_from_surface = window_fill.blend(&ink, 0.14);
+        let track_color = match if style.theme_derived { None } else { style.background_color } {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => groove_from_surface,
+        };
+        // The fill resolves the explicit style first, then the theme's own resolved style
+        // for this control — the accent — and only then the literal, so a build without a
+        // theme renders exactly what it used to.
+        //
         // The filled portion is **chrome**, not data: it expresses "how much of this task is
         // done", and that reading is carried by its *extent*, not by its hue. Hardcoding it
         // meant a light and a dark window showed the same blue bar, so the switch did
-        // nothing. It now resolves the theme's `info` token — the token whose meaning is
-        // "informational progress" — and keeps the previous literal only as the no-theme
-        // fallback, so a build without a theme renders exactly what it used to.
-        let fill = crate::style::semantic_color(crate::style::SemanticColor::Info)
+        // nothing.
+        let themed = crate::style::resolved_theme_style("progress_bar");
+        let fill = style
+            .background_color
+            .filter(|_| !style.theme_derived)
+            .or_else(|| themed.as_ref().and_then(|resolved| resolved.background_color))
+            .or_else(|| crate::style::semantic_color(crate::style::SemanticColor::Info))
             .unwrap_or(Color::rgb(0, 120, 215));
-        // Draw background
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), bg);
+        // The bar is a **fixed-height** rounded track centred in `rect`, not the whole of
+        // it. Using `rect.height` made a 240x120 census cell a 240x120 slab, which is a
+        // filled rectangle rather than a progress bar; Material's linear indicator is 4px
+        // tall with `height / 2` rounded ends. `rect` stays the widget's occupancy — its
+        // hit area and layout slot — and only the drawn chrome takes the constant.
+        const BAR_HEIGHT: u32 = 4;
+        let bar_height = rect.height.clamp(1, BAR_HEIGHT);
+        let bar_rect = Rect::new(
+            rect.x,
+            rect.y + (rect.height as i32 - bar_height as i32) / 2,
+            rect.width,
+            bar_height,
+        );
+        // How much of the run is filled, in pixels along the bar's own axis.
+        let filled_len = match self.orientation {
+            Orientation::Horizontal => (bar_rect.width as f32 * progress) as u32,
+            Orientation::Vertical => (bar_rect.height as f32 * progress) as u32,
+        }
+        .min(match self.orientation {
+            Orientation::Horizontal => bar_rect.width,
+            Orientation::Vertical => bar_rect.height,
+        });
+        // Draw background (the groove)
+        context.fill_rounded_rect(bar_rect, bar_height / 2, track_color);
         // Draw border
         if let Some(border_color) = style.border_color {
-            context.draw_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), border_color);
+            context.draw_rect(bar_rect, border_color);
         }
         // Draw progress bar
         match self.orientation {
             Orientation::Horizontal => {
-                let progress_width = (rect.width as f32 * progress) as u32;
                 let x = if self.inverted_appearance {
-                    rect.x + rect.width as i32 - progress_width as i32
+                    bar_rect.x + bar_rect.width as i32 - filled_len as i32
                 } else {
-                    rect.x
+                    bar_rect.x
                 };
-                context.fill_rect(Rect::new(x, rect.y, progress_width, rect.height), fill);
+                context.fill_rounded_rect(
+                    Rect::new(x, bar_rect.y, filled_len, bar_height),
+                    bar_height / 2,
+                    fill,
+                );
             }
             Orientation::Vertical => {
-                let progress_height = (rect.height as f32 * progress) as u32;
                 let y = if self.inverted_appearance {
-                    rect.y
+                    bar_rect.y
                 } else {
-                    rect.y + rect.height as i32 - progress_height as i32
+                    bar_rect.y + bar_rect.height as i32 - filled_len as i32
                 };
-                context.fill_rect(Rect::new(rect.x, y, rect.width, progress_height), fill);
+                context.fill_rounded_rect(
+                    Rect::new(bar_rect.x, y, bar_rect.width, filled_len),
+                    bar_height / 2,
+                    fill,
+                );
             }
         }
         // Draw text if visible
+        //
+        // The band is the whole control, not the 4px bar: a label centred on the bar alone
+        // would be clipped to four rows. `text_line` derives the glyph box from the band, so
+        // the label is centred rather than starting on the band's middle line.
+        //
+        // The ink is the contrast colour of the surface actually behind the label. The
+        // label is centred on the control, so the question is whether the filled run
+        // covers that centre: if it does, `fill.contrast_color()` is the legible choice;
+        // if it does not, the label sits on the groove and the groove's contrast colour is.
+        // It used to be a hardcoded `Color::rgb(0, 0, 0)`, which is 1.12:1 against the dark
+        // theme's background — the label was unreadable on exactly the appearance the
+        // census renders. Same rule, and the same mistake it removes, as `roller.rs`.
+        let text_color = if style.theme_derived || style.text_color.is_none() {
+            // The filled run, as a half-open interval along its own axis.
+            let (start, end) = match self.orientation {
+                Orientation::Horizontal if self.inverted_appearance => (
+                    bar_rect.x + bar_rect.width as i32 - filled_len as i32,
+                    bar_rect.x + bar_rect.width as i32,
+                ),
+                Orientation::Horizontal => (bar_rect.x, bar_rect.x + filled_len as i32),
+                Orientation::Vertical if !self.inverted_appearance => (
+                    bar_rect.y + bar_rect.height as i32 - filled_len as i32,
+                    bar_rect.y + bar_rect.height as i32,
+                ),
+                Orientation::Vertical => (bar_rect.y, bar_rect.y + filled_len as i32),
+            };
+            let label_centre = match self.orientation {
+                Orientation::Horizontal => rect.x + rect.width as i32 / 2,
+                Orientation::Vertical => rect.y + rect.height as i32 / 2,
+            };
+            if filled_len > 0 && label_centre >= start && label_centre < end {
+                fill.contrast_color()
+            } else {
+                track_color.contrast_color()
+            }
+        } else {
+            ink
+        };
         let text = self.format_text();
         if !text.is_empty() {
-            context.draw_text(
-                Point::new(rect.x + rect.width as i32 / 2, rect.y + rect.height as i32 / 2),
+            context.draw_text_line(
+                rect,
                 &text,
                 &Font::default(),
                 text_color,

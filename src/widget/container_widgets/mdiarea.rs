@@ -508,6 +508,19 @@ impl EventHandler for MdiArea {
         }
     }
 }
+/// Side of a sub-window's close button, in logical pixels.
+///
+/// A constant so the title's reserved width and the button's own geometry are derived from
+/// one number rather than two literals that have to be kept in step.
+const CLOSE_SIZE: i32 = 12;
+
+/// Width reserved at the trailing edge of a sub-window's title bar for the close button
+/// and its margins. Used to bound the title so the two cannot overlap.
+const CLOSE_SIZE_SUM: u32 = 22;
+
+/// Height of a sub-window's title bar, in logical pixels.
+const TITLE_BAR_HEIGHT: i32 = 24;
+
 impl Draw for MdiArea {
     fn draw(&mut self, context: &mut RenderContext) {
         // Chrome colours resolve the explicit style first, then the theme's resolved style for
@@ -621,26 +634,41 @@ impl Draw for MdiArea {
             let border_color = if is_active { primary } else { border };
             context.draw_rect(frame_rect, border_color);
             // Draw title bar
-            let title_bar_height = 24;
+            let title_bar_height = TITLE_BAR_HEIGHT;
             let title_bar_color = if is_active { primary } else { area.blend(&secondary, 0.55) };
             context.fill_rect(
                 Rect::new(frame_rect.x, frame_rect.y, frame_rect.width, title_bar_height as u32),
                 title_bar_color,
             );
-            // Draw title text
+            // Draw title text. Centred on the **title bar's own line box**, not on
+            // `title_bar_height / 2`: the latter put the glyph box's top edge on the bar's
+            // middle line, so a 14 px label occupied `12..26` inside a 24 px bar and the
+            // descenders crossed the bottom border. The close button below already used the
+            // correct `(bar - size) / 2` form — one bar, two rules — so both now share this
+            // line box.
+            let title_bar_rect =
+                Rect::new(frame_rect.x, frame_rect.y, frame_rect.width, title_bar_height as u32);
+            let title_font = Font::default();
+            let title_line = context.text_line(title_bar_rect, &title_font);
             let text_color = if is_active { primary.contrast_color() } else { ink };
-            context.draw_text(
-                Point::new(frame_rect.x + 5, frame_rect.y + title_bar_height / 2),
+            context.draw_text_fitted(
+                Rect {
+                    x: frame_rect.x + 5,
+                    y: title_line.y,
+                    // Bounded so a long document title cannot run under the close button.
+                    width: title_bar_rect.width.saturating_sub(5 + CLOSE_SIZE_SUM),
+                    height: title_line.height,
+                },
                 &subwindow.title,
-                &Font::default(),
+                &title_font,
                 text_color,
                 HorizontalAlignment::Left,
             );
             // Draw close button if closable
             if subwindow.closable {
-                let close_size = 12;
+                let close_size = CLOSE_SIZE;
                 let close_x = frame_rect.x + frame_rect.width as i32 - close_size - 5;
-                let close_y = frame_rect.y + (title_bar_height - close_size) / 2;
+                let close_y = title_line.y + (title_line.height as i32 - close_size) / 2;
                 let close_color = if is_active {
                     primary.contrast_color()
                 } else {

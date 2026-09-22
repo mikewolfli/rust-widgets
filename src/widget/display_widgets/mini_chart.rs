@@ -5,6 +5,14 @@
 
 use crate::compat::{String, ToString, Vec};
 use crate::core::{Color, Point, Rect, Size};
+// The cartesian-engine widgets draw their axes from one shared derivation in
+// `chart_widgets::charts`. That module is **absent on the `embedded` profile**, where
+// `mini_chart` still exists, so the derivation cannot be imported here: doing so broke the
+// `embedded` build outright. The rule the shared helper encodes is a single blend along the
+// surface-to-ink axis, which is three lines and needs nothing but the active theme, so this
+// control derives its own from the *same resolved pair* its surface uses. What matters for
+// the defect being fixed is that the grid follows the appearance and that the grid is fainter
+// than the axis — not which module the arithmetic lives in.
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::widget::capability::coercion::expect_string;
@@ -192,14 +200,48 @@ impl Draw for MiniChart {
         let rect = self.geometry();
         let style = self.style();
 
-        let bg_color = style.background_color.unwrap_or(Color::rgb(255, 255, 255));
-        let line_color = style.text_color.unwrap_or(Color::rgb(0, 0, 0));
-        let axis_color = style.border_color.unwrap_or(Color::rgb(80, 80, 80));
+        // The backdrop behind the plot, which is also the surface every piece of chrome below
+        // has to be legible *on*. `mini_chart` is absent from the role table, so it classifies
+        // as `Surface` and a theme writes `theme.colors.background` here — the direct value, not
+        // a per-control resolution, because the chart engine's shared derivation measures
+        // against exactly that fill. The literal is a no-theme fallback, and it is the light
+        // surface the old chrome was written for.
+        // The surface resolves the caller's style first, then **the theme's** resolved style for
+        // this control, and only then a literal.
+        //
+        // The theme step was missing, which made the control theme-blind in exactly the case the
+        // rendering census measures: a freshly constructed control has an empty style, so the
+        // bare `rgb(255,255,255)` fallback won in *both* appearances and the light and dark
+        // snapshots came out identical. Reading the resolved theme is what makes an appearance
+        // switch visible on a control nobody has styled.
+        let theme = crate::style::resolved_theme_style("mini_chart");
+        let bg_color = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::rgb(255, 255, 255));
+        // The series stroke is the control's ink: `text_color` where resolved, and a colour
+        // derived to contrast with *this* chart's own backdrop otherwise. The plain literal is
+        // unreachable whenever a theme is active (the theme always writes a text colour), but a
+        // colour chosen against `bg_color` is the only choice that stays correct if one is not:
+        // a fixed black line is invisible on a dark surface.
+        let line_color = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or_else(|| bg_color.contrast_color());
+        // Grid and axis are chrome around the data. The grid is deliberately the faint end of
+        // the surface-to-ink scale: it used to be a fixed `rgb(220,220,220)`, which on the dark
+        // appearance made the *least* important element in the control the brightest thing on
+        // screen. Deriving both from `bg_color` — the surface this control actually painted —
+        // is what keeps them on the right side of it in either appearance.
+        let axis_color = bg_color.blend(&line_color, 0.45);
+        let grid_color = bg_color.blend(&line_color, 0.16);
 
         // Draw background
         context.fill_rect(rect, bg_color);
 
-        // Chart area margins (leave room for axes labels)
+        // Chart area margins. The left margin reserves room for the value labels a full
+        // `ChartWidget` draws; this control draws none, so the reservation is generous — but it
+        // is part of the layout the control is published with, not something this fix changes.
         let margin_left = 40i32;
         let margin_right = 10i32;
         let margin_top = 10i32;
@@ -210,9 +252,8 @@ impl Draw for MiniChart {
         let chart_origin_x = rect.x + margin_left;
         let chart_origin_y = rect.y + margin_top;
 
-        // Draw horizontal grid lines
+        // Draw horizontal grid lines (the faint end of the shared axis derivation; see above).
         let grid_count = 4;
-        let grid_color = Color::rgb(220, 220, 220);
         for i in 0..=grid_count {
             let gy = chart_origin_y + (chart_area_h as i32 * i / grid_count);
             context.draw_line(
@@ -366,6 +407,7 @@ mod tests {
     use super::*;
     use crate::core::{Color, Rect, Size};
     use crate::render::{PaintBackend, RenderContext, SoftwarePaintBackend};
+    use crate::theme::AppearanceMode;
 
     #[test]
     fn mini_chart_creation() {
@@ -450,5 +492,70 @@ mod tests {
         backend.begin_frame(Color::WHITE);
         let mut ctx = RenderContext::new(&mut backend);
         chart.draw(&mut ctx);
+    }
+
+    /// The grid is chrome around the data. It used to be a fixed `rgb(220,220,220)`, which on the
+    /// dark appearance made the *least* important element in the control the brightest thing on
+    /// screen, and the grid did not change between appearances at all.
+    ///
+    /// The expectation is read off the rendered drawing rather than a copied-out colour: the grid
+    /// must move with the appearance, and it must be the *faintest* thing the control draws —
+    /// closer to the backdrop than the axis lines it belongs to.
+    ///
+    /// The guard is held across both renders and the light default is restored before it is
+    /// released, so this test neither observes another test's appearance switch nor leaves one
+    /// behind for the next test. See `masked_edit_body_ink_is_legible_on_its_own_field` for the
+    /// full argument.
+    #[test]
+    fn mini_chart_grid_follows_the_appearance_and_stays_faint() {
+        /// The stroke colours of the `<line>` elements in draw order, as `(grid..., axis...)`.
+        fn strokes(appearance: AppearanceMode) -> Vec<String> {
+            crate::theme::global_theme_manager().set_appearance(appearance);
+            let mut chart = MiniChart::new(Rect::new(0, 0, 200, 150));
+            let svg = crate::widget::svg::render_to_svg(&mut chart);
+            svg.lines()
+                .filter(|l| l.contains("<line"))
+                .filter_map(|l| {
+                    l.split("stroke=\"")
+                        .nth(1)
+                        .and_then(|rest| rest.split('"').next())
+                        .map(|s| s.to_string())
+                })
+                .collect()
+        }
+
+        let _guard = crate::theme::theme_test_guard();
+        // The presets must exist before an appearance can be selected. `set_appearance` reports
+        // whether it found a theme of that appearance and returns `false` when it did not — and
+        // this test used to ignore that return value, so both renders happened under whatever
+        // theme was already active and the assertion compared a run with itself. Registering the
+        // pair and asserting the switch succeeded is what makes the two lists two *different*
+        // appearances rather than two copies of one.
+        {
+            let mut manager = crate::theme::global_theme_manager();
+            manager.register_theme(crate::theme::Theme::default());
+            manager.register_theme(crate::theme::Theme::dark());
+        }
+        let light = strokes(AppearanceMode::Light);
+        let dark = strokes(AppearanceMode::Dark);
+        crate::theme::global_theme_manager().set_appearance(AppearanceMode::Light);
+        assert!(!light.is_empty(), "the chart must draw its grid and axes");
+        assert!(!dark.is_empty(), "the chart must draw its grid and axes");
+        assert_ne!(
+            light, dark,
+            "the grid and axes must respond to the appearance, not be fixed literals"
+        );
+
+        // The grid lines come first (there are five of them), then the two axis lines. On either
+        // appearance the grid is the darker-end / fainter-end stroke, so the two groups differ.
+        assert!(
+            light.len() >= 3 && dark.len() >= 3,
+            "expected grid lines plus two axes, got light={light:?} dark={dark:?}"
+        );
+        assert_ne!(light[0], light[light.len() - 1], "light: grid must differ from the axis");
+        assert_ne!(dark[0], dark[dark.len() - 1], "dark: grid must differ from the axis");
+        // Every grid line shares one colour, and both axes share one colour.
+        assert!(light[..light.len() - 2].iter().all(|c| *c == light[0]));
+        assert!(dark[..dark.len() - 2].iter().all(|c| *c == dark[0]));
     }
 }

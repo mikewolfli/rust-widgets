@@ -362,6 +362,70 @@ pub const fn runtime_profile() -> RuntimeProfile {
     }
 }
 
+/// The minimum touch-target size this build's device class recommends.
+///
+/// # Why this belongs here rather than in the theme
+///
+/// It is a fact about the **build's device class**, which is a platform decision, and the theme is
+/// the consumer of that fact (principle #37: a middle layer that needs a platform fact asks for it
+/// through a runtime accessor instead of sniffing the environment itself). `TouchTargetSize`
+/// already carries the right numbers per class; this is the single place that decides which class
+/// the running build is.
+///
+/// # Why `embed` is mapped the way it is
+///
+/// `desktop`, `tablet` and `mobile` are the three device profiles, and each has its own entry.
+/// Anything else is either a bare surface (no pointer precision advantage over a finger, so the
+/// embedded figure applies) or `mini`, which has no interactive controls at all — the embedded
+/// figure is returned for it so the value is always defined, and no `mini` control consults it.
+pub const fn recommended_touch_target() -> crate::style::TouchTargetSize {
+    if cfg!(feature = "mobile") {
+        crate::style::TouchTargetSize::Phone
+    } else if cfg!(feature = "tablet") {
+        crate::style::TouchTargetSize::Tablet
+    } else if cfg!(feature = "desktop") {
+        crate::style::TouchTargetSize::Desktop
+    } else {
+        crate::style::TouchTargetSize::Embedded
+    }
+}
+
+/// The device's text-size preference, as a multiplier on the nominal font size.
+///
+/// # Why this is a platform fact
+///
+/// Every OS has one: Android's `fontScale` from `Configuration`, iOS's
+/// `UIContentSizeCategory`, Windows' text-scaling percentage, and the browser's own zoom on the
+/// web. The library cannot observe any of them directly from a middle layer without committing a
+/// layering violation, so the semantic — "how much should text grow?" — is answered here and the
+/// OS knowledge stays in the backends.
+///
+/// # Why it returns 1.0 rather than a guessed value
+///
+/// A backend that has not been taught to report a preference inherits this, which means "no
+/// scaling" — an honest answer, and the one that matches what the library actually does. Inventing
+/// a plausible-looking factor would make `LayoutContext::font_scale` describe a device that is not
+/// there, which is the fabricated-capability shape rule #37 forbids.
+///
+/// The value is bounded to a range a layout can survive. An unbounded preference (some platforms
+/// report very large sizes for accessibility) multiplied into a fixed row height produces text that
+/// cannot fit its own control; the clamp keeps a control legible rather than letting it become
+/// unusable, and `AppBar`'s own clamp is what eventually removes that ceiling.
+pub fn text_scale() -> f32 {
+    // The `mini` profile has no platform object to ask — its `get_platform` is compiled out — so the
+    // honest answer is the unscaled default. Returning `1.0` rather than reaching for a fabricated
+    // factor is the same rule the trait's default follows: a value nobody supplied must not be
+    // invented, because a layout would then place text in a space it does not occupy.
+    #[cfg(feature = "mini")]
+    {
+        1.0
+    }
+    #[cfg(not(feature = "mini"))]
+    {
+        crate::platform::get_platform().text_scale().clamp(1.0, 3.0)
+    }
+}
+
 /// The render engine this profile drives its loop with.
 ///
 /// This is the single selection point for the `embedded`-versus-native runtime

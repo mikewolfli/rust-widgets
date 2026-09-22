@@ -357,18 +357,14 @@ impl Draw for Popover {
         );
         let font = Font::simple("sans-serif", 13.0);
         let label = if self.content.is_some() { "Popover" } else { "Popover (empty)" };
-        // The label is centred on the content box but fitted first, because the box is
-        // 224 px wide at the census geometry and `Popover (empty)` is wider than that: a
-        // centred label shorter than its box stays centred, and one that does not fit is
-        // truncated inside the box instead of being centred from an over-wide origin that
-        // starts inside the card and finishes past its right edge.
-        context.draw_text_fitted(
-            content_rect,
-            label,
-            &font,
-            muted_ink,
-            HorizontalAlignment::Center,
-        );
+        // The label is centred on the content box — **both ways**. `draw_text_fitted` aligns
+        // horizontally only, so passing the padded content box pinned the label to the card's
+        // top edge: `popover.svg` drew a 13 px line at `y = 8` inside a 120 px card. Deriving
+        // the line box first is what makes «centred» true on the vertical axis too, and the
+        // fit/ellipsis behaviour is unchanged (the box is 224 px wide at the census geometry
+        // and `Popover (empty)` is wider than that).
+        let line = context.text_line(content_rect, &font);
+        context.draw_text_fitted(line, label, &font, muted_ink, HorizontalAlignment::Center);
     }
 }
 
@@ -467,6 +463,15 @@ impl EventHandler for Popover {
 mod tests {
     use super::*;
     use crate::widget::svg::render_to_svg;
+
+    /// How far the empty-state placeholder's line box may sit from the card's middle and
+    /// still count as centred.
+    ///
+    /// The line box is derived from a measured line height, so its top edge lands on a whole
+    /// pixel that need not be the exact middle. One line's worth is generous enough to
+    /// absorb that rounding while still rejecting a top-edge origin, which is half the card
+    /// away.
+    const LINE_TOLERANCE: i32 = 8;
     /// A simple test widget used as content inside popover tests.
     struct TestContent {
         base: BaseWidget,
@@ -636,5 +641,39 @@ mod tests {
         open.show(Rect::new(100, 100, 50, 20));
         let shown = render_to_svg(&mut open);
         assert_ne!(svg, shown, "showing the popover must change what is painted");
+    }
+
+    /// The empty-state placeholder is centred in the card on **both** axes.
+    ///
+    /// It was pinned to the card's top edge while `draw_text_fitted` was being handed the
+    /// padded content box directly — that method aligns horizontally only, so its origin is
+    /// `bounds.y` unchanged. Deriving the line box with `context.text_line` first is what
+    /// centres it vertically, and this asserts the *result* rather than the call, so a
+    /// future change that reintroduces a bare `bounds.y` fails here.
+    #[test]
+    fn popover_empty_placeholder_is_centred_in_the_card() {
+        let rect = Rect::new(0, 0, 240, 120);
+        let mut popover = Popover::new(rect);
+        let svg = render_to_svg(&mut popover);
+
+        let y = svg
+            .lines()
+            .find(|line| line.contains("Popover (empty)"))
+            .and_then(|line| line.split(" y=\"").nth(1))
+            .and_then(|rest| rest.split('"').next())
+            .and_then(|value| value.parse::<i32>().ok())
+            .expect("the empty-state placeholder must be drawn");
+
+        // The card is inset by the arrow on the left and fills the control vertically, so
+        // the placeholder's line box should be near the control's vertical middle — not at
+        // its top edge. Half the control's height is the tolerance centre; a top-edge origin
+        // would be around the content padding (8), which this bound rejects.
+        let middle = rect.height as i32 / 2;
+        assert!(
+            (y - middle).abs() <= LINE_TOLERANCE,
+            "the empty-state placeholder must be vertically centred: y={y}, centre={middle}"
+        );
+        // And it must sit *below* the padding, which a top-edge origin would not.
+        assert!(y > 8, "a top-edge origin would pin the placeholder at y=8, got {y}");
     }
 }

@@ -351,11 +351,12 @@ impl Draw for Chip {
             };
             context.fill_rect(chip_rect, bg);
             context.draw_rect(chip_rect, border);
+            // The chip's label is centred through the shared primitive: `chip_rect.y +
+            // chip_rect.height / 2` is the glyph box's *top* edge on the chip's middle line,
+            // which drew the label half a line low.
+            let line = context.text_line(chip_rect, &Font::default());
             context.draw_text(
-                Point::new(
-                    chip_rect.x + self.chip_padding,
-                    chip_rect.y + chip_rect.height as i32 / 2,
-                ),
+                Point::new(chip_rect.x + self.chip_padding, line.y),
                 &item.label,
                 &Font::default(),
                 text_color,

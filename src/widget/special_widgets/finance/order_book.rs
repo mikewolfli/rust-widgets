@@ -503,7 +503,6 @@ impl WidgetProperties for OrderBookWidget {
                 // a bool — and only then learn the name is read-only. The declaration says
                 // `writable: false`, so `ReadOnlyProperty` is the one honest answer and it
                 // must not depend on what was passed.
-                let _ = value;
                 Err(CapabilityAccessError::ReadOnlyProperty)
             }
             _ => base_property_set(self, name, value),

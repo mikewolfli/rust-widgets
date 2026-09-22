@@ -95,6 +95,15 @@ impl ChartContext for ChartContextAdapter<'_, '_> {
         self.inner.draw_text(origin, text, &font, color, crate::core::HorizontalAlignment::Left);
     }
 
+    fn text_line(&self, band: Rect, font_size: f32) -> Rect {
+        // Delegated to the renderer's own primitive rather than re-derived here,
+        // so a chart label sits on exactly the row a widget label does. That
+        // method's line height is already a whole number of pixels, so widening
+        // it back to the engine's `f32` space is lossless.
+        let font = Font::simple("Sans", font_size);
+        self.inner.text_line(band, &font)
+    }
+
     fn draw_circle(&mut self, center: Point, radius: f32, color: Color) {
         let center = Point { x: Self::px(center.x as f32), y: Self::px(center.y as f32) };
         self.inner.fill_circle(center, Self::len(radius), color);

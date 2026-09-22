@@ -1087,6 +1087,10 @@ pub fn default_widget_property_default_value(
         WidgetKind::TabWidget => match property_name {
             "tab_count" => CapabilityValue::UInt(0),
             "current_index" => CapabilityValue::UInt(0),
+            // The first tab's title. A freshly constructed `TabWidget` has no tabs, so the
+            // default is the empty string — the same answer `TabWidget::get` gives for that
+            // state, which is what keeps the schema and the control in agreement.
+            "text" | "title" => CapabilityValue::String(String::new()),
             "closable" => CapabilityValue::Bool(false),
             "movable" => CapabilityValue::Bool(false),
             "tab_position" => CapabilityValue::String("north".to_string()),
@@ -1229,6 +1233,9 @@ pub fn default_widget_property_default_value(
         WidgetKind::QRCode => match property_name {
             "data" => CapabilityValue::String(String::new()),
             "size" => CapabilityValue::UInt(256),
+            // The constructor's own default. The two agreeing is asserted by
+            // `declared_defaults_are_published_properties`.
+            "quiet_zone" => CapabilityValue::UInt(2),
             _ => return None,
         },
         WidgetKind::MasonryLayout => match property_name {
@@ -1344,8 +1351,14 @@ pub fn default_widget_property_default_value(
         },
         WidgetKind::FloatingLabel => match property_name {
             "text" => CapabilityValue::String(String::new()),
+            // The caption the control floats. Its default is empty, the same as `text`:
+            // a field with no caption has no label, and inventing one would put words the
+            // caller never wrote into their UI.
+            "label" => CapabilityValue::String(String::new()),
             "placeholder" => CapabilityValue::String(String::new()),
             "focused" => CapabilityValue::Bool(false),
+            // Material's own default behaviour, and the one the `Default` impl picks.
+            "floating_label_behavior" => CapabilityValue::String("auto".to_string()),
             _ => return None,
         },
         WidgetKind::FontPreview => match property_name {

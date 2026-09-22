@@ -342,8 +342,12 @@ impl Draw for SegmentedControl {
                 } else {
                     ink
                 };
+                // The segment's label is centred through the shared primitive: a glyph origin
+                // is the top edge of its box, so `seg.y + seg.height / 2` drew the label half
+                // a line low rather than on the segment's middle.
+                let line = context.text_line(seg, &Font::default());
                 context.draw_text(
-                    Point::new(seg.x + 8, seg.y + seg.height as i32 / 2),
+                    Point::new(seg.x + 8, line.y),
                     &item.label,
                     &Font::default(),
                     label_color,

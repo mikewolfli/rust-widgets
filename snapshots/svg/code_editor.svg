@@ -16,7 +16,7 @@
   <clipPath id="clip_0"><rect x="40" y="28" width="162" height="64" /></clipPath>
   <g clip-path="url(#clip_0)">
   <rect x="0" y="28" width="240" height="16" fill="rgba(75,75,75,1.00)" />
-  <text x="40" y="40" dominant-baseline="text-before-edge" font-family="Menlo" font-size="13" font-style="normal" font-weight="400" fill="rgba(225,225,225,1.00)">Sample</text>
+  <text x="40" y="29" dominant-baseline="text-before-edge" font-family="Menlo" font-size="13" font-style="normal" font-weight="400" fill="rgba(225,225,225,1.00)">Sample</text>
   <rect x="40" y="28" width="2" height="16" fill="rgba(100,181,246,1.00)" />
   </g>
   <rect x="208" y="28" width="32" height="64" fill="rgba(71,71,71,1.00)" />

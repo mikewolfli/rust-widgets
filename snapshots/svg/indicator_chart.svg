@@ -2,5 +2,11 @@
 <!-- control: indicator_chart | appearance: dark -->
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
-  <rect x="52" y="8" width="180" height="104" fill="rgba(18,22,28,1.00)" />
+  <rect x="48" y="8" width="184" height="104" fill="rgba(37,37,37,1.00)" />
+  <line x1="48" y1="112" x2="232" y2="112" stroke="rgba(78,78,78,1.00)" stroke-width="1" />
+  <line x1="48" y1="77" x2="232" y2="77" stroke="rgba(78,78,78,1.00)" stroke-width="1" />
+  <line x1="48" y1="43" x2="232" y2="43" stroke="rgba(78,78,78,1.00)" stroke-width="1" />
+  <line x1="48" y1="8" x2="232" y2="8" stroke="rgba(78,78,78,1.00)" stroke-width="1" />
+  <rect x="48" y="8" width="184" height="104" fill="none" stroke="rgba(78,78,78,1.00)" stroke-width="1" />
+  <text x="116" y="54" dominant-baseline="text-before-edge" font-family="Sans" font-size="12" font-style="normal" font-weight="400" fill="rgba(225,225,225,0.63)">No data</text>
 </svg>

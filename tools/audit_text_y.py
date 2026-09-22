@@ -19,6 +19,22 @@ Two wrong shapes are detectable straight from the numbers:
   DEFECT-hug : Y == band top (bounds passed unchanged; label on the top edge)
   DEFECT-down: Y - round(size) is the *centred* value (ascent added on top of
                an already-centred y; glyph box one line too low)
+
+# This is an audit aid, not a gate
+
+The band is *inferred* from neighbouring painted rectangles, so the tool cannot know
+why a label sits where it does. Three shapes are therefore deliberately **not**
+reported, because they are correct placements that this inference mis-reads:
+
+  * a run centred on a **polar anchor** (a pie slice label at `point - height/2`);
+  * a run in the control's own **left margin** (an axis tick label centred on its tick);
+  * a run whose control has **no band of its own** — `label`, `ime_preedit` and
+    `swipe_to_dismiss` paint only text, so the enclosing rectangle this tool finds is
+    the whole control and `y == band top` is the only available answer.
+
+The FALSE_POSITIVES table below records the last group, which cannot be detected from
+geometry alone. Keeping the list here — rather than silencing the controls — is what
+lets a *new* mis-placement in the same control still be reported.
 """
 import re
 import sys
@@ -32,6 +48,29 @@ LINE_RE = re.compile(r"<line (?P<attrs>[^>]*?)/>")
 CIRCLE_RE = re.compile(r"<circle (?P<attrs>[^>]*?)/>")
 
 R = pathlib.Path("snapshots") / "svg"
+
+# Controls whose only ink is text, so the band this tool infers is the control itself and
+# `HUG-TOP` / `PUSHED-DOWN` are not evidence of anything. Each entry states why there is no
+# band to centre in; this is a record of an audited false positive, not a mute button.
+#
+#   label            A label *is* one line at a caller-chosen position: `set_position` moves
+#                    the whole control to the text, so there is no interior to centre in.
+#   ime_preedit      An IME candidate strip anchored at the caret, for the same reason.
+#   swipe_to_dismiss A gesture surface painted only while a swipe is in progress; the census
+#                    render has no band because it never enters that state.
+#   floating_label   A text field's caption. The census renders an empty, unfocused field, so
+#                    the `auto` policy correctly places the caption *inline on the input line*
+#                    rather than floating above it — the float is the other of the two
+#                    placements the control animates between. The enclosing rectangle this
+#                    tool finds is the whole field, not the input line, so the placement reads
+#                    as "not centred in the field", which is the desired state.
+FALSE_POSITIVES = {"label", "ime_preedit", "swipe_to_dismiss", "floating_label"}
+
+
+def control_name(filename: str) -> str:
+    """The canonical control name for a snapshot filename."""
+    name = filename[:-4] if filename.endswith(".svg") else filename
+    return name[: -len(".light")] if name.endswith(".light") else name
 
 
 def attrs(m):
@@ -107,6 +146,16 @@ def classify(ctrl, texts, rects, lines, circles, verbose=False):
         for c in circles:
             bands.append(("circle", c["cy"] - c["r"], c["r"] * 2, c))
 
+        # A run that ends before **every** wide painted slab in the control is in the
+        # control's own left margin, not inside a band: it is an axis tick label sitting in
+        # the column the plot area reserved for it. Such a label is centred on its own tick,
+        # so the slab it happens to overlap vertically (the bar in front of the gridline) is
+        # not its container and judging it against that slab is a false positive. `bar_chart`
+        # draws its four value labels at x = 20 with the plot starting at x = 64.
+        left_of_every_slab = bool(bands) and all(t["x"] + lh <= b[3]["x"] for b in bands if b[0] == "rect")
+        if left_of_every_slab:
+            continue
+
         verdict = None
         best = None
         for kind, by, bh, src in bands:
@@ -134,6 +183,15 @@ def classify(ctrl, texts, rects, lines, circles, verbose=False):
             verdict = "PUSHED-DOWN"
         elif abs(t["y"] - (by + lh)) < 1.01:
             verdict = "PUSHED-DOWN"
+        # A **polar anchor**: the run is centred on a point rather than laid into a band, so
+        # `point - line_height / 2` is the correct origin and the enclosing band is incidental.
+        # `pi_chart` places every slice label and percentage this way, and a label whose box was
+        # clamped to the panel edge then falls inside that panel's rectangle — which the band
+        # search sees as a badly placed run. Recognising the shape is the honest fix: the
+        # alternative is a whitelist entry per control, which would also excuse a genuine
+        # mis-placement in the same control later.
+        elif abs(t["y"] - (by + (bh - lh) / 2)) < 0.51 and kind == "circle":
+            verdict = "centred"
         if verbose and verdict != "centred":
             print(
                 f"  y={t['y']:.0f} size={t['size']:.0f} band=[{by:.0f},{by + bh:.0f}] "
@@ -162,6 +220,8 @@ def main():
     scanned = 0
     for f in sorted(R.glob("*.svg")):
         if filt and filt not in f.name:
+            continue
+        if control_name(f.name) in FALSE_POSITIVES:
             continue
         scanned += 1
         texts, rects, lines, circles = parse(f)

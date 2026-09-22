@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Tool button widget.
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -69,6 +69,18 @@ pub enum ToolButtonStyle {
 /// pressed, checked and hovered remain distinguishable on any appearance. The label is
 /// centred and fades toward the fill while the button is disabled. The icon path is stored
 /// but not decoded or painted by this widget.
+/// Horizontal padding between the button's edge and its label.
+const BUTTON_PADDING: i32 = 4;
+
+/// Width reserved at the trailing edge for the popup indicator arrow.
+const POPUP_ARROW_RESERVE: i32 = 12;
+
+/// Toolbar button widget.
+///
+/// A `ToolButton` is a compact icon-or-text button for a toolbar strip: it can be
+/// checkable, can carry a popup-menu indicator, and can opt into `auto_raise` so it
+/// stays flat until the pointer is over it. Chrome resolves the explicit style first,
+/// then the theme, so its fill, ink and accent all move with the active appearance.
 pub struct ToolButton {
     base: BaseWidget,
     text: String,
@@ -369,7 +381,7 @@ impl Draw for ToolButton {
         // A disabled label is the ink faded toward the fill behind it, which keeps it
         // readable-but-muted on a dark theme as well as a light one; the literal is only
         // the fallback for a control whose ink the theme does not supply.
-        let ink = style.text_color.or(themed_text).unwrap_or(Color::rgb(0, 0, 0));
+        let ink = style.text_color.or(themed_text).unwrap_or_else(|| bg.contrast_color());
         let fg = if !self.base.is_enabled() { ink.blend(&base, 0.45) } else { ink };
         let label = match self.button_style {
             ToolButtonStyle::TextOnly
@@ -381,32 +393,46 @@ impl Draw for ToolButton {
         // Popup arrow indicator
         let has_popup = self.popup_mode == ToolButtonPopupMode::MenuButtonPopup
             || self.popup_mode == ToolButtonPopupMode::InstantPopup;
-        let text_right = if has_popup {
-            rect.x as f32 + rect.width as f32 - 12.0
-        } else {
-            rect.x as f32 + rect.width as f32
-        };
-        context.draw_text(
-            Point::from_f32(
-                rect.x as f32 + (text_right - rect.x as f32) / 2.0,
-                rect.y as f32 + rect.height as f32 / 2.0,
-            ),
-            label,
-            &Font::default(),
-            fg,
-            HorizontalAlignment::Left,
-        );
+
+        let font = Font::default();
+        let line = context.text_line(rect, &font);
+        // The label is **centred in its own content box**. The previous form put the glyph
+        // origin — which is the box's top-left — at `rect.x + (content - rect.x) / 2`, i.e. the
+        // horizontal midpoint of the content, and then asked for `HorizontalAlignment::Left`.
+        // The result was a label that began at the middle of the button and ran off its right
+        // edge, with its top edge on the vertical midline: the signature of "computed a centre,
+        // drew from it as an origin".
+        {
+            let left = rect.x + BUTTON_PADDING;
+            let right = if has_popup {
+                rect.x + rect.width as i32 - POPUP_ARROW_RESERVE
+            } else {
+                rect.x + rect.width as i32 - BUTTON_PADDING
+            };
+            let width = (right - left).max(0) as u32;
+            context.draw_text_fitted(
+                Rect { x: left, y: line.y, width, height: line.height },
+                label,
+                &font,
+                fg,
+                HorizontalAlignment::Center,
+            );
+        }
 
         if has_popup {
-            context.draw_text(
-                Point::from_f32(
-                    rect.x as f32 + rect.width as f32 - 8.0,
-                    rect.y as f32 + rect.height as f32 - 6.0,
-                ),
+            // The arrow sits on the same line box as the label and is centred on it, instead
+            // of being pinned to a hardcoded 6 px above the button's bottom edge.
+            context.draw_text_fitted(
+                Rect {
+                    x: rect.x + rect.width as i32 - POPUP_ARROW_RESERVE,
+                    y: line.y,
+                    width: POPUP_ARROW_RESERVE as u32,
+                    height: line.height,
+                },
                 "▾",
-                &Font::default(),
+                &font,
                 fg,
-                HorizontalAlignment::Left,
+                HorizontalAlignment::Center,
             );
         }
     }

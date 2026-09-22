@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -448,8 +448,12 @@ impl Draw for VirtualTable {
                 );
                 context.draw_rect(cell_rect, cell_border);
                 if let Some(value) = cell {
-                    context.draw_text(
-                        Point::new(x + 4, y + self.row_height as i32 / 2),
+                    // The cell is the band. `y + row_height / 2` as a `draw_text` origin placed
+                    // the glyph box's *top* edge on the cell's middle line, so the value drew half
+                    // a line low; `text_line` derives the centred box. Fitting keeps a wide value
+                    // from spilling into the next column.
+                    context.draw_text_fitted(
+                        context.text_line(cell_rect, &Font::default()),
                         value,
                         &Font::default(),
                         ink,

@@ -723,16 +723,22 @@ impl Chart for PieChart {
     }
     fn draw(&self, rect: Rect, context: &mut dyn ChartContext) {
         // Draw title at the top
+        //
+        // Centred in the title band through the shared primitive: a glyph origin is the
+        // box's top-left edge, so the previous `rect.y + rect.height / 2` put that edge on
+        // the band's middle line and drew the title half a line low.
+        let title_font_size = 14.0;
+        let title_band = Rect { x: rect.x, y: rect.y, width: rect.width, height: 28 };
+        let title_line = context.text_line(title_band, title_font_size);
         context.draw_text(
             &self.title,
-            Point::new(rect.x + 8, rect.y + 16),
-            14.0,
+            Point::new(title_band.x + 8, title_line.y),
+            title_font_size,
             Color { r: 20, g: 20, b: 20, a: 255 },
         );
         let center =
             Point { x: rect.x + rect.width as i32 / 2, y: rect.y + rect.height as i32 / 2 };
         let radius = (rect.width.min(rect.height) as f64 / 2.5) as u32;
-        // Compute total sum across all visible series
         let total: f64 =
             self.series.iter().filter(|s| s.visible).flat_map(|s| &s.data).map(|d| d.y).sum();
         if total <= 0.0 {

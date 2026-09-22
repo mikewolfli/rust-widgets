@@ -315,18 +315,22 @@ impl Draw for Dropdown {
 
         // Text (selected item or placeholder)
         let label_x = geo.x + PADDING;
-        let label_cy = geo.y as f32 + geo.height as f32 / 2.0;
+        // Both labels on the collapsed row sit on the field's own line box. A glyph origin is
+        // the box's top-left edge, so the old `geo.y + geo.height / 2` put that edge on the
+        // field's middle line and drew the value and the arrow half a line low.
+        let field_line = context.text_line(geo, &Font::default());
+        let label_y = field_line.y;
 
         if let Some(text) = self.selected_text() {
             context.draw_text(
-                Point::new(label_x, label_cy as i32),
+                Point::new(label_x, label_y),
                 text,
                 &Font::default(),
                 text_color,
                 HorizontalAlignment::Left,
             );
             context.draw_text(
-                Point::new(arrow_x, label_cy as i32),
+                Point::new(arrow_x, label_y),
                 arrow,
                 &Font::default(),
                 text_color,
@@ -334,14 +338,14 @@ impl Draw for Dropdown {
             );
         } else {
             context.draw_text(
-                Point::new(label_x, label_cy as i32),
+                Point::new(label_x, label_y),
                 "(Select)",
                 &Font::default(),
                 placeholder_color,
                 HorizontalAlignment::Left,
             );
             context.draw_text(
-                Point::new(arrow_x, label_cy as i32),
+                Point::new(arrow_x, label_y),
                 arrow,
                 &Font::default(),
                 placeholder_color,
@@ -371,9 +375,11 @@ impl Draw for Dropdown {
             // Item text
             let item_color = if is_selected { highlight_text } else { text_color };
             let item_x = item_geo.x + PADDING;
-            let item_cy = item_geo.y as f32 + item_geo.height as f32 / 2.0;
+            // The row's own line box, for the same reason as the collapsed field above: a
+            // halved height here places the glyph box's top edge on the row's middle line.
+            let item_line = context.text_line(item_geo, &Font::default());
             context.draw_text(
-                Point::new(item_x, item_cy as i32),
+                Point::new(item_x, item_line.y),
                 &self.items[i],
                 &Font::default(),
                 item_color,

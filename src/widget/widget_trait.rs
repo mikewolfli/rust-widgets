@@ -201,8 +201,14 @@ pub trait Widget: EventHandler + Any {
         // Read the label through the property contract rather than a per-kind
         // table, so a control added later is announced correctly without editing
         // this method. A control with no contract simply skips to the fallback.
+        //
+        // The *choice* of property is `widget_label_property_name`'s, so the name
+        // announced here is the one the constructor helper writes and the backend
+        // reads — three call sites cannot drift about which spelling is the label.
         if let Some(props) = self.properties_dyn() {
-            for property in crate::control_backend::custom::LABEL_PROPERTY_NAMES {
+            if let Some(property) =
+                crate::control_backend::custom::widget_label_property_name(props)
+            {
                 if let Ok(crate::widget::capability::CapabilityValue::String(label)) =
                     props.get(property)
                 {
@@ -329,6 +335,36 @@ pub trait Widget: EventHandler + Any {
     /// backing all the style shorthand accessors on this trait.
     fn style(&self) -> &WidgetStyle {
         self.base().style()
+    }
+
+    /// The [`WidgetState`] this control is currently in.
+    ///
+    /// # Why this is on the trait and not on each control
+    ///
+    /// A theme may describe `"button:hover"`, and `THEME_STATE` keys were already being resolved by
+    /// `ThemeManager::resolve_style_for_state` — but nothing ever *asked* a control what state it was
+    /// in, so every such override was unreachable. The mechanism existed end to end except for the
+    /// one argument in the middle.
+    ///
+    /// The default here answers the two states every control shares (disabled, then resting), which
+    /// is enough for `"<kind>:disabled"` to work everywhere without each control implementing
+    /// anything. A control with richer state overrides this — a button adds hover and pressed, a
+    /// toggle adds checked.
+    ///
+    /// # Why a single state rather than a set
+    ///
+    /// Flutter models `WidgetState` as a `Set` because several states genuinely hold at once
+    /// (`focused | hovered`). Encoding that here would change this type's public shape, which rule
+    /// #21 forbids doing silently; the trait method is the additive step. A control that has several
+    /// states true at once reports the one with the strongest visual claim, in this order: disabled
+    /// (the control is inert), pressed (an active gesture), checked/selected (a persistent fact),
+    /// hovered, then resting.
+    fn widget_state(&self) -> crate::style::WidgetState {
+        if self.is_enabled() {
+            crate::style::WidgetState::Normal
+        } else {
+            crate::style::WidgetState::Disabled
+        }
     }
     /// Replaces the whole style record at once, overwriting every style field.
     /// Prefer the individual shorthand setters when only one property changes.

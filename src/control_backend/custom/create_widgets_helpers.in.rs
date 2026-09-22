@@ -117,9 +117,12 @@ macro_rules! impl_helpers {
         /// Writes the control's label, repainting it.
         ///
         /// Kinds disagree on the property's name — a `Button` exposes `text`, a
-        /// `Window`/`GroupBox` exposes `title`, a `StatusBar` exposes `message`.
-        /// Probing the known spellings keeps this accessor total without a `match`
-        /// on kind, which would be the kind of central table this refactor removes.
+        /// `Window`/`GroupBox` exposes `title`, a `StatusBar` exposes `message`, and a
+        /// `FloatingLabel` exposes `label` for the caption it floats. Probing the known
+        /// spellings in `LABEL_PROPERTY_NAMES` order keeps this accessor total without a
+        /// `match` on kind, which would be the kind of central table this refactor
+        /// removes. The first spelling is `label`, so a control that has a dedicated
+        /// caption property is written through it rather than through its content.
         fn set_widget_text(&self, widget_id: ObjectId, text: &str) {
             #[cfg(widgets_unstripped)]
             {
@@ -160,6 +163,10 @@ macro_rules! impl_helpers {
         }
 
         /// Reads the control's label, trying each known spelling.
+        ///
+        /// Mirrors [`Self::set_widget_text`], including its order: reading the same
+        /// control back must answer with the property it was written through, or a
+        /// caller would set a caption and read a different string.
         fn get_widget_text(&self, widget_id: ObjectId) -> String {
             #[cfg(widgets_unstripped)]
             {

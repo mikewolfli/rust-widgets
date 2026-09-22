@@ -192,7 +192,17 @@ impl Layout for BoxLayout {
         if self.items.is_empty() {
             return;
         }
-        let scale = context.layout_scale;
+        // Spacing follows the **larger** of the layout scale and the text scale.
+        //
+        // `LayoutContext::font_scale` is the device's text-size preference, and the two are
+        // separate facts: a HiDPI screen needs more logical spacing, and a device whose text is set
+        // larger needs more room between controls even at the same DPI. Taking the maximum is the
+        // conservative reading — a control whose font grew but whose padding did not would have its
+        // text touching its own border, which is the defect the field exists to let a layout avoid.
+        //
+        // The field had no reader at all before this, so a 2x text preference grew the glyphs (via
+        // the theme's font token) and left every gap at its nominal size.
+        let scale = context.layout_scale.max(context.font_scale);
         let scaled_spacing = (self.spacing as f32 * scale).round() as u32;
         let scaled_margin = (self.margin as f32 * scale).round() as u32;
         let gaps = (self.items.len().saturating_sub(1)) as u32;
@@ -222,7 +232,17 @@ impl Layout for BoxLayout {
                 ),
             };
             if let Some(widget_id) = item.widget_id {
-                widgets(widget_id, child_rect);
+                // Grown to the device class's minimum touch area, as the flex layout does — the two
+                // must agree or the same controls would be addressable in one container and not the
+                // other. The cursor advances by the *allocated* major length either way, so growing
+                // a child cannot push its siblings around.
+                widgets(
+                    widget_id,
+                    crate::layout::types::grow_to_min_touch_size(
+                        child_rect,
+                        context.min_touch_size,
+                    ),
+                );
             }
             match self.orientation {
                 Orientation::Horizontal => cursor_x += (major + scaled_spacing) as i32,

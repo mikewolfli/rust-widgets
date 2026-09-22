@@ -286,10 +286,12 @@ impl FindReplaceDialog {
     /// middle and the bottom half of every label hung out of the row. Centring the measured
     /// line inside the cell is the correct placement, and naming it once keeps the entry
     /// fields, the toggles and the buttons aligned to the same rule.
+    ///
+    /// The arithmetic now lives in [`crate::render::text_line`], which this delegates to: the
+    /// rule was correct here first and has since become the crate-wide primitive for it, so
+    /// keeping a second copy would be the drift this file's own comment warns about.
     fn text_line(&self, cell: Rect, font: &crate::core::Font, context: &RenderContext) -> Rect {
-        let height = context.measure_text("M", font).height.max(1);
-        let y = cell.y + ((cell.height as i32 - height as i32) / 2).max(0);
-        Rect::new(cell.x, y, cell.width, height)
+        context.text_line(cell, font)
     }
 }
 
@@ -867,16 +869,28 @@ mod tests {
     /// bar responds to a theme switch, so the property is asserted here, through the real
     /// `Draw` path, by rendering a shown instance in each appearance and comparing the
     /// output.
+    ///
+    /// # Why the guard covers the whole test, not just each render
+    ///
+    /// The appearance is process-wide, and `theme_test_guard` is the mutex that serialises
+    /// tests against it. This test used to take the guard *inside* its `frame` helper, release
+    /// it, and then restore the appearance after the assertion — outside any guard. The window
+    /// between the helper returning and that final write was unguarded, so a test in another
+    /// module that reads the global theme while rendering (for instance `meter`'s render
+    /// assertions) could observe a half-switched state and fail intermittently. Holding one
+    /// guard for the whole test is what makes "restore what I changed" atomic with respect to
+    /// every other reader.
     #[test]
     fn a_shown_find_bar_renders_differently_in_light_and_dark() {
+        let _guard = crate::theme::theme_test_guard();
+        {
+            let mut manager = crate::style::theme_manager();
+            manager.register_theme(crate::theme::Theme::default());
+            manager.register_theme(crate::theme::Theme::dark());
+        }
+
         fn frame(appearance: crate::style::AppearanceMode) -> String {
-            let _guard = crate::theme::theme_test_guard();
-            {
-                let mut manager = crate::style::theme_manager();
-                manager.register_theme(crate::theme::Theme::default());
-                manager.register_theme(crate::theme::Theme::dark());
-                manager.set_appearance(appearance);
-            }
+            crate::style::theme_manager().set_appearance(appearance);
             let mut dialog = FindReplaceDialog::new(Rect::new(0, 0, 240, 120));
             dialog.set_find_text("Sample");
             dialog.show();
@@ -891,6 +905,8 @@ mod tests {
             "a theme switch must change what a shown find bar paints; identical output \
              means the chrome is hardcoded"
         );
+        // Restored while the guard is still held, so no other reader can observe the light
+        // appearance this test selected.
         crate::style::theme_manager().set_appearance(crate::style::AppearanceMode::Light);
     }
 

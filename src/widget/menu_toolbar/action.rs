@@ -443,7 +443,12 @@ impl Draw for Action {
         }
 
         let font = Font::simple("sans-serif", 13.0);
-        let baseline = rect.y + rect.height as i32 / 2;
+        // One line box for the icon, the label, the check mark and the shortcut, all of which
+        // share this row. `rect.height / 2` was the row's middle used as a glyph origin, so
+        // every one of them sat half a line low (`action.svg` drew its 13 px label at y = 22 in
+        // a 45 px row, where 16 is the centred value).
+        let line = context.text_line(rect, &font);
+        let baseline = line.y;
         let mut x = rect.x + 8;
         if !self.icon_text.is_empty() {
             context.draw_text(

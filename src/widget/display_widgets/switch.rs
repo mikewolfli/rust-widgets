@@ -133,37 +133,57 @@ impl Draw for Switch {
 
         // Track dimensions
         //
-        // These are clamped *down* from the geometry, never up. The previous
-        // `rect.width.max(44)` painted a 44px track starting at `rect.x` whatever the
-        // geometry said, so a switch laid out 30px wide (well under the 50px
-        // `size_hint`, and reachable through the layout engine) overran its own rect by
-        // 14px and overlapped its neighbour. Nothing clips a widget to its geometry at
-        // this layer, so the overflow was visible. Deriving the track from the geometry
-        // keeps the control inside the rectangle it was given; `size_hint` is what asks
-        // the layout engine for a comfortable one.
-        let track_width = rect.width.max(1);
-        let track_height = rect.height.max(1).min(track_width / 2);
-        // A knob needs at least 1px of track to slide in; below that the track is
-        // drawn without a knob rather than as a negative-sized rect.
-        let knob_size = track_height.saturating_sub(4);
+        // The track is a **fixed-size** stadium centred inside `rect`, not a scaling of
+        // it. Deriving the track from the geometry made the *control* the track: a
+        // 240x120 census cell drew a 240x120 stadium with a 116x116 thumb, which is a
+        // picture of a switch-shaped rectangle rather than a switch. The geometry is the
+        // widget's *occupancy* — its hit area and its layout slot — and the drawn chrome
+        // is a separate, fixed proportion of it. That is the same split Flutter's
+        // `Switch` makes (a 52x32 track, a 14px thumb radius, 60px overall), and it is
+        // why `size_hint` can return a comfortable 50x28 without the drawn shape
+        // depending on the layout engine's answer.
+        //
+        // The values are still clamped *down* to the geometry, never up: a control laid
+        // out narrower than the nominal track must not paint outside the rectangle it was
+        // given, since nothing clips a widget at this layer. `rect` itself is untouched —
+        // `handle_event` hit-tests against `self.geometry()`, so the full rectangle stays
+        // the hit area and a press anywhere on it arms the switch.
+        const TRACK_WIDTH: u32 = 52;
+        const TRACK_HEIGHT: u32 = 32;
+        const THUMB_INSET: u32 = 2;
+        let track_width = rect.width.clamp(1, TRACK_WIDTH);
+        // A stadium's end caps have radius `height / 2`, so the only shape constraint is
+        // `height <= width` — clamping to `width / 2` (which is what this used to do) turned
+        // the nominal 52x32 into a 52x26 and made the thumb a quarter smaller than the
+        // 14px-radius disc the reference draws.
+        let track_height = rect.height.clamp(1, TRACK_HEIGHT).min(track_width);
+        // The thumb is a disc inset from the track's edge. `saturating_sub` keeps a
+        // degenerate track from producing a negative size; the `knob_size == 0` guard
+        // below then draws no thumb at all.
+        let knob_size = track_height.saturating_sub(THUMB_INSET * 2);
 
-        let track_x = rect.x;
+        let track_x = rect.x + (rect.width as i32 - track_width as i32) / 2;
         let track_y = rect.y + (rect.height as i32 - track_height as i32) / 2;
         let track_rect = Rect::new(track_x, track_y, track_width, track_height);
 
         // Draw track
         //
-        // The track colour resolves **theme first, literal last**. Before this the
-        // only source was `style.background_color`, which the theme does not set
-        // for the `Choice` role — so every switch fell through to the literals
-        // below and rendered identically in light and dark. `cupertino_switch` was
-        // the visible symptom: it delegates to this method, and because its factory
-        // name is not in the role table it also had no style background at all.
+        // The track colour resolves **caller first, then the semantic token, then the
+        // literal**. The rung that used to sit here — the theme's *resolved* background —
+        // was dead code: `switch` classifies as `WidgetRole::Choice`, and `role_colors` in
+        // `src/theme/manager.rs` writes `Some(input_background())` into that role's
+        // background unconditionally. So `themed_background` was always `Some`, and the
+        // accent rung below it (the `Success` token, which is what makes an ON switch
+        // *green*) could never be reached: every switch drew the theme's field grey, and
+        // `switch.svg` showed a grey track for both the ON and the OFF state.
         //
-        // Precedence: an explicit style wins, then the theme's resolved style, then
-        // the accent for the on state, then the literal.
+        // `theme_derived` is what separates the two things that `background_color` was
+        // conflating. When the theme authored the style the value belongs to the theme,
+        // not the caller, and the control is free to substitute a more meaningful token;
+        // when the caller set a colour it must win. Same rule, and the same mechanism, as
+        // `banner.rs`.
         let theme = crate::style::resolved_theme_style("switch");
-        let themed_background = theme.as_ref().and_then(|resolved| resolved.background_color);
+        let caller_background = if style.theme_derived { None } else { style.background_color };
         // A stripped device build has no theme module, so the semantic token cannot be read
         // and the literal below is the only rung. `#[cfg]` on the binding rather than on the
         // call keeps the binding's type identical in both profiles.
@@ -171,26 +191,40 @@ impl Draw for Switch {
         let themed_accent = crate::style::semantic_color(crate::style::SemanticColor::Success);
         #[cfg(not(device_profile))]
         let themed_accent: Option<Color> = None;
-        // A switch that resolved to the window's own background would be invisible
-        // against the surface it sits on, so the track steps one shade from the
-        // resolved ink when the two would collide.
+        // The OFF track is *chrome*, so it descends from the theme's own resolved
+        // background — the field grey `Choice` resolves to — stepping one shade toward the
+        // ink when that colour would be the window's own fill. A track painted in the
+        // window colour is invisible against the surface the switch sits on.
         #[cfg(device_profile)]
-        let themed_track = themed_background.filter(|background| {
-            let window = crate::style::theme_manager()
-                .current_theme()
-                .map(|active| active.colors.background);
-            window != Some(*background)
-        });
+        let themed_track = caller_background
+            .or_else(|| theme.as_ref().and_then(|resolved| resolved.background_color))
+            .map(|background| {
+                let window = crate::style::theme_manager()
+                    .current_theme()
+                    .map(|active| active.colors.background);
+                if window == Some(background) {
+                    let ink = crate::style::theme_manager()
+                        .current_theme()
+                        .map(|active| active.colors.foreground)
+                        .unwrap_or(Color::BLACK);
+                    background.blend(&ink, 0.14)
+                } else {
+                    background
+                }
+            });
         #[cfg(not(device_profile))]
-        let themed_track = themed_background;
+        let themed_track = caller_background;
 
         let track_color = if !is_enabled {
-            style.background_color.or(themed_track).unwrap_or(Color::rgba(200, 200, 200, 128))
+            caller_background.or(themed_track).unwrap_or(Color::rgba(200, 200, 200, 128))
         } else if self.checked {
-            style.background_color.or(themed_accent).unwrap_or(Color::rgba(52, 199, 89, 200))
+            // The ON state is the control's *meaning*, and its meaning is "success": it
+            // takes the semantic token rather than the theme's field grey. The literal
+            // stays as the no-theme fallback.
+            caller_background.or(themed_accent).unwrap_or(Color::rgba(52, 199, 89, 200))
         // iOS green
         } else {
-            style.background_color.or(themed_track).unwrap_or(Color::rgba(180, 180, 180, 200))
+            caller_background.or(themed_track).unwrap_or(Color::rgba(180, 180, 180, 200))
         };
         context.fill_rounded_rect(track_rect, track_height / 2, track_color);
 
@@ -199,11 +233,11 @@ impl Draw for Switch {
             return;
         }
         let knob_x = if self.checked {
-            track_x + track_width as i32 - knob_size as i32 - 2
+            track_x + track_width as i32 - knob_size as i32 - THUMB_INSET as i32
         } else {
-            track_x + 2
+            track_x + THUMB_INSET as i32
         };
-        let knob_y = track_y + 2;
+        let knob_y = track_y + THUMB_INSET as i32;
         let knob_rect = Rect::new(knob_x, knob_y, knob_size, knob_size);
 
         let knob_color = if !is_enabled {
@@ -254,13 +288,13 @@ impl EventHandler for Switch {
             Event::MousePress { pos, button: 1 } if enabled => {
                 // Arm only for a press that actually lands on the control; a press
                 // outside must not leave the latch armed for a later release.
-                self.pressed = self.geometry().contains_point(*pos);
+                self.pressed = self.base.contains_point_with_touch_expansion(*pos);
             }
             Event::MouseRelease { pos, button: 1 } if self.pressed => {
                 self.pressed = false;
                 // A release off the control cancels, matching the platform convention
                 // that dragging away from a toggle abandons the interaction.
-                if self.geometry().contains_point(*pos) {
+                if self.base.contains_point_with_touch_expansion(*pos) {
                     self.toggle();
                 }
             }
@@ -269,12 +303,12 @@ impl EventHandler for Switch {
             }
             #[cfg(feature = "touch")]
             Event::TouchBegin { pos, .. } if enabled => {
-                self.pressed = self.geometry().contains_point(*pos);
+                self.pressed = self.base.contains_point_with_touch_expansion(*pos);
             }
             #[cfg(feature = "touch")]
             Event::TouchEnd { pos, .. } if self.pressed => {
                 self.pressed = false;
-                if self.geometry().contains_point(*pos) {
+                if self.base.contains_point_with_touch_expansion(*pos) {
                     self.toggle();
                 }
             }

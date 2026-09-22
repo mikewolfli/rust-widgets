@@ -632,6 +632,15 @@ impl Draw for Meter {
         }
 
         // Draw tick marks at regular intervals along the arc.
+        //
+        // A tick's angle comes from the *same* mapping the arcs use —
+        // `deg_to_rad(angle + offset)` — rather than its own. The old
+        // `tick_angle_deg = arc_start_deg + tick_step * i` omitted the `offset`, so the
+        // ticks were 90° out of phase with the track and the value arc they annotate:
+        // the arc's first vertex is at (71,71) in `meter.svg` while tick 0 started from
+        // 135°, which is the top-left quadrant rather than the sweep's own start. Sharing
+        // the mapping is also what makes the tick's label land on the same ray as the tick
+        // it names.
         if self.tick_count >= 2 {
             let tick_outer = radius;
             let tick_inner = radius.saturating_sub(6).max(1);
@@ -642,13 +651,22 @@ impl Draw for Meter {
             let label_font = Font::simple("Sans", 9.0);
 
             for i in 0..self.tick_count {
-                let tick_angle_deg = arc_start_deg + tick_step * i as f32;
-                let tick_rad = deg_to_rad(tick_angle_deg + offset);
+                let tick_angle_deg = arc_start_deg + tick_step * i as f32 + offset;
+                // Both ends are placed from this one snapped angle, so a tick is a radial
+                // segment rather than two independently-placed points. Rounding each end
+                // from its own distance let truncation shorten a 45° tick to 5 px while a
+                // 90° one stayed 6 px — on a symmetric dial that reads as "one tick is
+                // short". Deriving the ends from the same centre and the same direction
+                // (and rounding the radius once, with `round()` rather than truncation)
+                // keeps every tick the same length in every direction.
+                let tick_rad = Self::snap_to_grid(deg_to_rad(tick_angle_deg), start_angle);
+                let dir_x = tick_rad.cos();
+                let dir_y = tick_rad.sin();
 
-                let outer_x = center.x + (tick_outer as f32 * tick_rad.cos()) as i32;
-                let outer_y = center.y + (tick_outer as f32 * tick_rad.sin()) as i32;
-                let inner_x = center.x + (tick_inner as f32 * tick_rad.cos()) as i32;
-                let inner_y = center.y + (tick_inner as f32 * tick_rad.sin()) as i32;
+                let outer_x = center.x + (tick_outer as f32 * dir_x).round() as i32;
+                let outer_y = center.y + (tick_outer as f32 * dir_y).round() as i32;
+                let inner_x = center.x + (tick_inner as f32 * dir_x).round() as i32;
+                let inner_y = center.y + (tick_inner as f32 * dir_y).round() as i32;
 
                 context.draw_line_stroke(
                     Point::new(inner_x, inner_y),
@@ -664,8 +682,8 @@ impl Draw for Meter {
                     let fraction = i as f32 / (self.tick_count - 1) as f32;
                     let text = format!("{}{}", self.value_at_fraction(fraction), self.unit);
                     let metrics = context.measure_text(&text, &label_font);
-                    let lx = center.x + (label_radius * tick_rad.cos()) as i32;
-                    let ly = center.y + (label_radius * tick_rad.sin()) as i32;
+                    let lx = center.x + (label_radius * dir_x).round() as i32;
+                    let ly = center.y + (label_radius * dir_y).round() as i32;
                     // Centred on the point the tick sits at: the glyph origin is the box's
                     // top edge, so that is `ly - height/2` — the old `ly + ascent/2` left the
                     // label half a line below its own tick.

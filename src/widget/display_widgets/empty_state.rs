@@ -344,10 +344,14 @@ impl Draw for EmptyState {
             let btn_text_color =
                 if !is_enabled { ink.blend(&surface, 0.6) } else { btn_bg.contrast_color() };
             let btn_font = Font::with_weight("Sans", 14.0, 600, false);
+            // Horizontal centring is measured; vertical centring comes from the shared line
+            // box. The previous `btn_rect.y + btn_rect.height / 2` put the glyph box's top edge
+            // on the button's middle line and drew the label half a line low.
             let btn_metrics = context.measure_text(&self.action_text, &btn_font);
+            let btn_line = context.text_line(btn_rect, &btn_font);
             let btn_origin = Point::new(
                 btn_rect.x + (btn_rect.width as i32 - btn_metrics.width as i32) / 2,
-                btn_rect.y + btn_rect.height as i32 / 2,
+                btn_line.y,
             );
             context.draw_text(
                 btn_origin,

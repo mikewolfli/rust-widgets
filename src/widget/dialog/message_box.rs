@@ -622,7 +622,7 @@ impl Draw for MessageBox {
             let btn_rect = Rect::new(btn_x, btn_y, btn_w as u32, btn_h as u32);
             context.fill_rect(btn_rect, bg);
             context.draw_rect(btn_rect, border);
-            context.draw_text_fitted(
+            context.draw_text_line(
                 btn_rect,
                 &btn.translated_label(),
                 &font,

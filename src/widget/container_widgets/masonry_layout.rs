@@ -196,7 +196,11 @@ impl Draw for MasonryLayout {
             // that card's own colour.
             let text_color = _item.color.contrast_color();
             let text_x = item_rect.x + 6;
-            let text_y = item_rect.y + (item_rect.height as i32 / 2) - 6;
+            // The cell's own line box, centred: a glyph origin is the box's top-left edge,
+            // so the previous `item_rect.y + item_rect.height / 2 - 6` put that edge on the
+            // cell's middle line — half a line low, offset by a hand-tuned constant.
+            let item_line = context.text_line(*item_rect, &font);
+            let text_y = item_line.y;
             context.draw_text(
                 crate::core::Point::new(text_x, text_y),
                 &_item.label,

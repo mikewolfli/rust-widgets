@@ -701,7 +701,15 @@ impl CodeEditor {
         // are converted to character offsets before intersecting the visible
         // segment.
         let spans = self.tokens_on_line(line);
-        let baseline = y + (row_height * 0.78).round() as i32;
+        // The row's glyph origin comes from the same line-box derivation the gutter uses, rather
+        // than from `row_height * 0.78`. That fraction was an ascent fitted to one font at one
+        // row height, so any row-height or font change moved the source text off centre — and it
+        // disagreed with the line numbers drawn beside it, which already centred themselves by
+        // measurement. Giving both the same band is what keeps a number and the line it numbers
+        // on one baseline.
+        let row_band =
+            Rect::new(left, y, (segment_end - segment_start) as u32, row_height.ceil() as u32);
+        let baseline = context.text_line(row_band, font).y;
         let mut cursor_char = segment_start;
         for span in spans {
             let start_char = byte_to_char_index(self, line, span.start);
@@ -853,13 +861,18 @@ impl CodeEditor {
         row_height: f32,
         chrome: &EditorChrome,
     ) {
-        // Secondary carets first so the primary caret paints on top.
+        // Secondary carets first so the primary caret paints on top. A collapsed secondary caret is
+        // the same blinking insertion point as the primary one, so it follows the same phase — two
+        // carets flickering out of step would look like a rendering fault.
         let all_carets = self.cursors();
         for caret in all_carets.carets().iter().copied() {
             if caret == self.cursor {
                 continue;
             }
             if caret.is_collapsed() {
+                if !self.caret_blink.is_visible() {
+                    continue;
+                }
                 let row = self.line_to_visual_row(caret.head.line);
                 let y = top
                     + ((row as f32 - self.scroll_visual_row as f32) * row_height).round() as i32;
@@ -872,16 +885,19 @@ impl CodeEditor {
                 context.fill_rect(rect, chrome.selection);
             }
         }
-        // Primary caret.
+        // Primary caret. A selection is not a caret, so the blink gates only the collapsed form: a
+        // selected range must stay fully visible in both halves of the cycle.
         if self.cursor.is_collapsed() {
-            let row = self.line_to_visual_row(self.cursor.head.line);
-            let y =
-                top + ((row as f32 - self.scroll_visual_row as f32) * row_height).round() as i32;
-            let x = left
-                + (((self.cursor.head.column.saturating_sub(self.scroll_column)) as f32)
-                    * self.cell_width())
-                .round() as i32;
-            context.fill_rect(Rect::new(x, y, 2, row_height.ceil() as u32), chrome.accent);
+            if self.caret_blink.is_visible() {
+                let row = self.line_to_visual_row(self.cursor.head.line);
+                let y = top
+                    + ((row as f32 - self.scroll_visual_row as f32) * row_height).round() as i32;
+                let x = left
+                    + (((self.cursor.head.column.saturating_sub(self.scroll_column)) as f32)
+                        * self.cell_width())
+                    .round() as i32;
+                context.fill_rect(Rect::new(x, y, 2, row_height.ceil() as u32), chrome.accent);
+            }
         } else {
             let (start, end) = self.cursor.bounds();
             if let Some(rect) = self.rect_for_range(start, end) {

@@ -31,7 +31,9 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::special_widgets::finance::indicators;
-use crate::widget::special_widgets::finance::layout::{IndexAxis, PlotArea, PriceAxis};
+use crate::widget::special_widgets::finance::layout::{
+    panel_colors, IndexAxis, PanelColors, PlotArea, PriceAxis, PANEL_MIN_CONTRAST,
+};
 use crate::widget::special_widgets::finance::types::Bar;
 use crate::widget::special_widgets::finance::types::PriceSeries;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -465,15 +467,57 @@ impl IndicatorChart {
                 Point { x: area.rect.x - 6 - width, y: y - 6 },
                 &text,
                 &Font::simple("Sans", 10.0),
-                Color::rgb(150, 160, 172),
+                self.chrome().ink.with_alpha(190),
                 HorizontalAlignment::Left,
             );
         }
     }
 
-    /// The plot area, leaving room for the value labels.
+    /// Draws the pane's frame and a `No data` message, for a series with nothing in it.
+    ///
+    /// The empty state used to be a bare slab: the pane filled its rectangle and returned,
+    /// so an indicator with no feed showed no axis, no reference level and no explanation.
+    /// The MACD zero line is drawn here as well as in the populated state because it is the
+    /// scale — zero is where the sign flips — and a reader has to see it to know what an
+    /// empty MACD pane is waiting to plot against.
+    fn draw_empty_state(&self, context: &mut RenderContext, area: &PlotArea) {
+        let chrome = self.chrome();
+        let price_axis = area.price_axis(-1.0, 1.0);
+        for step in 0..=3 {
+            let fraction = step as f64 / 3.0;
+            let value = price_axis.low + fraction * (price_axis.high - price_axis.low);
+            let y = price_axis.y_for(value);
+            context.draw_line(
+                Point { x: area.rect.x, y },
+                Point { x: area.right(), y },
+                chrome.grid,
+            );
+        }
+        context.draw_rect(area.rect, chrome.grid);
+        let font = Font::simple("Sans", 12.0);
+        let line = context.text_line(area.rect, &font);
+        context.draw_text_fitted(
+            line,
+            "No data",
+            &font,
+            // Same 4.5:1 floor the axis labels use, so the message is legible on whatever
+            // surface the appearance resolved rather than only on the panel it used to be.
+            chrome.ink.legible_on(chrome.surface, PANEL_MIN_CONTRAST).with_alpha(160),
+            HorizontalAlignment::Center,
+        );
+    }
+    ///
+    /// The shared indicator preset, not a hand-written margin list: this pane used to reserve
+    /// 52 px on the left while the K-line, volume and depth panes reserved 48, so the same
+    /// bar index was drawn four pixels apart in two panes that are stacked and read against
+    /// each other.
     fn plot_area(&self) -> PlotArea {
-        PlotArea::with_margins(self.base.geometry(), 52, 8, 8, 8)
+        PlotArea::indicator_pane(self.base.geometry())
+    }
+
+    /// The pane's chrome, resolved from this control's own style first and the theme second.
+    fn chrome(&self) -> PanelColors {
+        panel_colors(Some(self.base.style()))
     }
 }
 
@@ -530,8 +574,12 @@ impl Draw for IndicatorChart {
         if area.rect.width == 0 || area.rect.height == 0 {
             return;
         }
-        context.fill_rect(area.rect, Color::rgb(18, 22, 28));
+        // The pane surface resolves the caller's style first and the theme second. The
+        // indicator line colours below are which indicator is which: they are data.
+        let chrome = self.chrome();
+        context.fill_rect(area.rect, chrome.surface);
         if self.series.is_empty() {
+            self.draw_empty_state(context, &area);
             return;
         }
 
@@ -539,6 +587,19 @@ impl Draw for IndicatorChart {
         let (low, high) = self.axis_range(&series);
         let price_axis = area.price_axis(low, high);
         let index_axis = area.index_axis(self.series.len());
+
+        // The scale's gridlines, under everything: an oscillator is read against its bands
+        // and against zero, so a reading with no gridlines to line up with is a guess.
+        for step in 0..=3 {
+            let fraction = step as f64 / 3.0;
+            let value = price_axis.low + fraction * (price_axis.high - price_axis.low);
+            let y = price_axis.y_for(value);
+            context.draw_line(
+                Point { x: area.rect.x, y },
+                Point { x: area.right(), y },
+                chrome.grid,
+            );
+        }
 
         // The histogram first, so the lines are drawn over it.
         self.draw_histogram(context, &series, &index_axis, &price_axis);
@@ -568,13 +629,12 @@ impl Draw for IndicatorChart {
             );
             // The readings at that bar, one per drawn series.
             let mut text = alloc::string::String::new();
-            for (position, pane) in series.iter().enumerate() {
+            for pane in series.iter() {
                 if let Some(value) = pane.values.get(index).filter(|value| value.is_finite()) {
                     if !text.is_empty() {
                         text.push_str("  ");
                     }
                     text.push_str(&alloc::format!("{:.2}", value));
-                    let _ = position;
                 }
             }
             if !text.is_empty() {

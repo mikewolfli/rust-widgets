@@ -236,6 +236,56 @@ jobs:
             echo "::endgroup::"
           done
 
+      # The two halves of one contract: a text origin is the glyph box's TOP edge, not a
+      # baseline. `check_text_origin_is_a_top_edge` forbids an `ascent` term in that origin;
+      # `check_text_vertically_centred` forbids a halved band height. They are separate gates
+      # because they are separate mistakes with separate fixes, and together they are what
+      # makes "I thought this centred the text" fail at the source instead of in a snapshot a
+      # reviewer has to notice.
+      #
+      # The second gate closes the largest single class of visual defect this crate had: 76
+      # sites across 40-odd files drew every label half a line low, and all of them passed
+      # every gate that existed (valid Rust, compiles, ink stays inside the control,
+      # well-formed SVG). `tools/audit_text_y.py` sees the result but cannot prove intent, so
+      # it could never have been the check.
+      - name: Text placement gates
+        shell: bash
+        run: |
+          chmod +x tools/check_text_origin_is_a_top_edge.sh
+          chmod +x tools/check_text_vertically_centred.sh
+          ./tools/check_text_origin_is_a_top_edge.sh
+          ./tools/check_text_vertically_centred.sh
+
+      # The three gates below are the source-level half of the same round as the placement gates:
+      # each one closes a defect class that every previously-existing gate passed. All three read
+      # the source or the committed snapshots and need no build, so they are cheap here.
+      #
+      # `check_readable_flag_is_true_when_get_answers` — a schema row flagged `readable: false` is
+      # enforced by `WidgetFactory::read_property`, which answers `UnsupportedOnWidget` *before*
+      # asking the control. A row whose control has a `get` arm therefore hides a value the control
+      # holds, and when the same row is `writable: true` the value can be written and never read
+      # back. `candlestick_chart.overlay_count` was exactly that (`#16` / BLUE21 C3, P3-1d); the
+      # runtime sibling test is `a_readable_false_row_must_not_be_answered_by_its_control`.
+      #
+      # `check_mechanism_has_a_consumer` — an abstraction with no production consumer. Seven such
+      # islands existed at once and every other gate passed them, because they compile, are
+      # documented and have unit tests: `TouchTargetSize`, `contains_point_with_touch_expansion`,
+      # `resolve_style_for_state`, `LayoutContext::font_scale`, `min_touch_size`, and the whole of
+      # `src/style/animation.rs` (`#17` / BLUE21 P3-1g).
+      #
+      # `check_control_feature_visible_in_own_snapshot` — a control that demonstrates a feature
+      # must show it in its own snapshot. `floating_label` shipped with no label in its picture,
+      # `tab_widget` with zero tabs, `badge` with an invisible pill (`#107` / BLUE21 A.3.9, P3-1h).
+      - name: Control declaration and feature gates
+        shell: bash
+        run: |
+          chmod +x tools/check_readable_flag_is_true_when_get_answers.sh
+          chmod +x tools/check_mechanism_has_a_consumer.sh
+          chmod +x tools/check_control_feature_visible_in_own_snapshot.sh
+          ./tools/check_readable_flag_is_true_when_get_answers.sh
+          ./tools/check_mechanism_has_a_consumer.sh
+          ./tools/check_control_feature_visible_in_own_snapshot.sh
+
       - name: Cargo fmt check
         run: cargo fmt --all -- --check
 

@@ -11,8 +11,8 @@
   <rect x="10" y="60" width="220" height="26" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
   <text x="17" y="66" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(225,225,225,1.00)"></text>
   <rect x="64" y="80" width="80" height="28" fill="rgba(100,181,246,1.00)" />
-  <text x="66" y="80" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">common.b…</text>
+  <text x="66" y="87" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">common.b…</text>
   <rect x="152" y="80" width="80" height="28" fill="rgba(50,50,50,1.00)" />
   <rect x="152" y="80" width="80" height="28" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
-  <text x="154" y="80" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(225,225,225,1.00)">common.b…</text>
+  <text x="154" y="87" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(225,225,225,1.00)">common.b…</text>
 </svg>

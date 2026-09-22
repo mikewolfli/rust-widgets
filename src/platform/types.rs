@@ -440,6 +440,20 @@ pub trait Platform: Send + Sync {
     fn dpi_scale_factor(&self) -> f32 {
         1.0
     }
+    /// The host's text-size preference, as a multiplier on the nominal font size.
+    ///
+    /// A backend answers this from its own platform's setting — Android's `fontScale`, iOS's
+    /// `UIContentSizeCategory`, Windows' text-scaling percentage. The default of `1.0` means "this
+    /// backend does not report a preference", which is honest rather than fabricated: a layout that
+    /// assumed a scaling factor nobody supplied would place text in a space it does not occupy.
+    ///
+    /// # Why it is on this trait rather than read from the environment
+    ///
+    /// The value is OS knowledge. A middle layer that read it would have to know each platform's
+    /// spelling of the setting, which is exactly the layering rule #36 keeps inside the backends.
+    fn text_scale(&self) -> f32 {
+        1.0
+    }
     /// Initialises the backend, acquiring whatever host resources it needs.
     ///
     /// Called once before any widget is created. A backend that fails here has

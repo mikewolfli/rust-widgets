@@ -18,11 +18,17 @@ macro_rules! impl_properties_input {
             PropertySchema::new("single_step", PropertyValueKind::Int, true, true),
             PropertySchema::new("page_step", PropertyValueKind::Int, true, true),
             PropertySchema::enumerated("orientation", true, true, &["horizontal", "vertical"]),
+            // The reader's tokens. `tick_position_to_str` returns `none`/`above`/`below`/`both`
+            // while this published Qt's `noticks`/`left`/`right`/`ticksbothsides`. The writer
+            // parses both spellings, so only the read direction can reveal the mismatch — which
+            // is exactly why it survived until a schema-versus-reader gate existed. A caller who
+            // formatted the property, or matched it against a list built from this schema, would
+            // never have found a match for what the control reports.
             PropertySchema::enumerated(
                 "tick_position",
                 true,
                 true,
-                &["noticks", "left", "right", "ticksbothsides"],
+                &["none", "above", "below", "both"],
             ),
             PropertySchema::new("tick_interval", PropertyValueKind::Int, true, true),
             PropertySchema::new("tracking", PropertyValueKind::Bool, true, true),
@@ -352,8 +358,23 @@ macro_rules! impl_properties_input {
         #[cfg(not(alloc_frugal))]
         pub(crate) const FLOATING_LABEL_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("text", PropertyValueKind::String, true, true),
+            // The caption that floats above the field, distinct from `text` (the content
+            // the user types). Declared because the control answers it; the schema and the
+            // contract disagreeing about which properties exist is itself the defect this
+            // table is checked for.
+            PropertySchema::new("label", PropertyValueKind::String, true, true),
             PropertySchema::new("placeholder", PropertyValueKind::String, true, true),
             PropertySchema::new("focused", PropertyValueKind::Bool, true, true),
+            // The tokens are exactly what `get` returns and exactly what `set` parses;
+            // `published_enum_tokens_are_accepted_by_their_control` writes every one of
+            // them back, so a drift between this list and the parser fails rather than
+            // advertising a value a caller cannot write.
+            PropertySchema::enumerated(
+                "floating_label_behavior",
+                true,
+                true,
+                &["auto", "always", "never"],
+            ),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

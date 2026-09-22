@@ -112,6 +112,18 @@ pub trait ChartContext {
     fn draw_rect(&mut self, rect: Rect, color: Color);
     /// Draw text
     fn draw_text(&mut self, text: &str, pos: Point, font_size: f32, color: Color);
+    /// The line box one line of `font_size` occupies when centred in `band`.
+    ///
+    /// [`Self::draw_text`] takes the glyph box's **top-left** edge, so a caller
+    /// with a band in hand must not pass `band.y + band.height / 2`: that puts
+    /// that top edge on the band's middle line and draws the label half a line
+    /// low. This is the shared arithmetic that centres the box instead, so the
+    /// chart engine and the widget renderer place a label on the same row.
+    ///
+    /// The line height is carried as an `f32` because that is the engine's unit
+    /// space, while the returned `Rect` uses the same integer space as
+    /// [`Self::draw_text`], which rounds its origin to whole pixels.
+    fn text_line(&self, band: Rect, font_size: f32) -> Rect;
     /// Draw circle
     fn draw_circle(&mut self, center: Point, radius: f32, color: Color);
     /// Draw filled polygon from a list of points.

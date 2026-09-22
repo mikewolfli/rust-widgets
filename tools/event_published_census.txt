@@ -165,7 +165,7 @@ swipe_to_dismiss: dismissed
 switch: toggled
 tab_bar: current_changed, tab_close_requested, tab_moved
 tab_view: tab_changed
-tab_widget: current_changed, tab_close_requested
+tab_widget: current_changed, tab_close_requested, tab_moved
 table: selection_changed, focused_row_changed
 table_widget: selection_changed, focused_row_changed
 tag_input: tags_changed

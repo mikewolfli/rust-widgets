@@ -362,13 +362,19 @@ impl Draw for MenuBar {
             } else {
                 ink
             };
-            context.draw_text(
-                Point::new(x + w / 2, rect.y + rect.height as i32 / 2),
-                entry.title(),
-                &Font::default(),
-                fg,
-                HorizontalAlignment::Left,
-            );
+            // Centre the label inside its own entry **on both axes**.
+            //
+            // The previous form was `Point::new(x + w / 2, rect.y + rect.height / 2)` with
+            // `HorizontalAlignment::Left`. Two separate errors came out of that one line: the
+            // horizontal term computed the entry's *midpoint* and then used it as a left-hand
+            // origin, and the vertical term put the glyph box's top edge on the bar's middle
+            // line. `entry_width` is `len * 8 + 16`, so a four-character title in a 48 px entry
+            // advanced 32 px from `x + 24` — past the end of its own entry and 9.6 px over the
+            // next title. Passing the entry rectangle and asking for `Center` states the
+            // intent, and there is no midpoint left to misuse.
+            let font = Font::default();
+            let line = context.text_line(entry_rect, &font);
+            context.draw_text_fitted(line, entry.title(), &font, fg, HorizontalAlignment::Center);
             x += w;
         }
     }

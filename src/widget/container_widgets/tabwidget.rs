@@ -3,11 +3,11 @@
 
 //! Tab widget.
 use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect};
-use crate::event::{Event, EventHandler};
+use crate::event::{DragPayload, DragSession, Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 
-use crate::widget::capability::coercion::expect_usize;
+use crate::widget::capability::coercion::{expect_bool, expect_string, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -26,6 +26,16 @@ pub struct TabWidget {
     tab_shape: TabShape,
     closable: bool,
     movable: bool,
+    /// Index of the tab a move gesture started on, and the drag state machine that decides
+    /// whether the gesture has travelled far enough to count as a drag.
+    ///
+    /// Two pieces because they answer two different questions: the session says *whether*
+    /// the pointer has moved past the click threshold, and the index says *which tab* is
+    /// being carried. Tracking only the index (as `TabBar` did until it gained a session)
+    /// makes "click" and "drag" the same gesture, so a stray pixel of movement while
+    /// selecting a tab would silently reorder it.
+    drag_session: Option<DragSession>,
+    dragging_from: Option<usize>,
     /// Emitted with the new index when the selected tab changes; not emitted
     /// when the same index is re-applied.
     pub current_changed: Signal1<usize>,
@@ -34,6 +44,13 @@ pub struct TabWidget {
     /// this widget does not remove the tab itself — the host must handle the
     /// request and call `remove_tab`, so the index is still valid when emitted.
     pub tab_close_requested: Signal1<usize>,
+    /// Emitted when a movable tab is dragged to a new index; the payload is
+    /// `(old_index, new_index)`.
+    ///
+    /// `movable` was declared but read by nothing, and this signal did not exist, so a host
+    /// could neither turn reordering on nor learn that it had happened. The drag gesture in
+    /// [`TabWidget::handle_event`] is what emits it.
+    pub tab_moved: Signal1<(usize, usize)>,
     /// Optional shared registry for child widget forwarding.
     registry: Option<Rc<RefCell<SimpleRegistry>>>,
 }
@@ -58,6 +75,30 @@ pub enum TabPosition {
     West,
     /// Tabs at the right
     East,
+}
+
+impl TabPosition {
+    /// Parses a property token, accepting exactly the spellings
+    /// [`tab_position_token`] publishes.
+    pub fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "north" => Some(TabPosition::North),
+            "south" => Some(TabPosition::South),
+            "west" => Some(TabPosition::West),
+            "east" => Some(TabPosition::East),
+            _ => None,
+        }
+    }
+}
+
+/// The token `tab_position` is carried as, matching the schema row's accepted spellings.
+fn tab_position_token(position: TabPosition) -> &'static str {
+    match position {
+        TabPosition::North => "north",
+        TabPosition::South => "south",
+        TabPosition::West => "west",
+        TabPosition::East => "east",
+    }
 }
 /// Tab shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -136,8 +177,11 @@ impl TabWidget {
             tab_shape: TabShape::Rounded,
             closable: false,
             movable: false,
+            drag_session: None,
+            dragging_from: None,
             current_changed: Signal1::new(),
             tab_close_requested: Signal1::new(),
+            tab_moved: Signal1::new(),
             registry: None,
         }
     }
@@ -255,56 +299,210 @@ impl TabWidget {
         self.base.request_redraw();
     }
     /// Returns whether tabs are movable.
+    ///
+    /// When true, pressing a tab and dragging the pointer past a neighbour's midpoint
+    /// reorders the tabs and emits [`Self::tab_moved`]. When false the same gesture only
+    /// selects, so the flag decides whether a drag has any effect at all.
     pub fn movable(&self) -> bool {
         self.movable
     }
     /// Sets movable state.
+    ///
+    /// A gesture already in progress is abandoned: turning reordering off mid-drag must
+    /// not let the release that follows still move a tab, which is what dropping the live
+    /// drag state here prevents.
     pub fn set_movable(&mut self, movable: bool) {
         self.movable = movable;
+        if !movable {
+            self.cancel_tab_drag();
+        }
         self.base.request_redraw();
     }
+    /// Moves the tab at `from` to `to` and emits [`Self::tab_moved`] with `(from, to)`.
+    ///
+    /// # Why `to` is clamped rather than rejected
+    ///
+    /// A drag reports positions from pointer coordinates, and a pointer past the last tab
+    /// is "dropped at the end" — the intent — not a caller bug. An out-of-range `from`,
+    /// however, can only be a caller error, so it is rejected without emitting.
+    ///
+    /// # Why the selection travels with the tab
+    ///
+    /// `current_index` is a slot, but the user's mental model is that the *page* moved.
+    /// Leaving the index alone would silently switch to whichever tab took the slot the
+    /// dragged one vacated.
+    ///
+    /// Returns `true` when a move happened.
+    pub fn move_tab(&mut self, from: usize, to: usize) -> bool {
+        if from >= self.tabs.len() {
+            return false;
+        }
+        let to = to.min(self.tabs.len() - 1);
+        if to == from {
+            return false;
+        }
+
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(to, tab);
+
+        self.current_index = match self.current_index {
+            c if c == from => to,
+            c if from < c && c <= to => c - 1,
+            c if to <= c && c < from => c + 1,
+            c => c,
+        };
+
+        self.tab_moved.emit((from, to));
+        self.base.request_redraw();
+        true
+    }
+    /// Starts a move gesture on the tab under `pos`.
+    ///
+    /// Only a movable, enabled tab arms a drag, so a click that happens to jitter still
+    /// selects and nothing else. The session is opened with the tab's index as its payload
+    /// so a future drop target can tell which tab is being carried.
+    fn begin_tab_drag(&mut self, pos: Point) {
+        if !self.movable {
+            return;
+        }
+        let Some(index) = self.tab_at_position(pos) else {
+            return;
+        };
+        if !self.tabs[index].enabled {
+            return;
+        }
+        let payload = DragPayload::new(TAB_DRAG_TYPE, index.to_string()).with_origin(pos);
+        self.drag_session = Some(DragSession::begin(payload, pos));
+        self.dragging_from = Some(index);
+    }
+    /// Reorders the tabs as the pointer moves past a neighbour's midpoint.
+    ///
+    /// # Why the move is applied live rather than on release
+    ///
+    /// Qt's `QTabBar` swaps the two tabs the moment the pointer crosses the midpoint, so
+    /// the strip the user sees while dragging is the arrangement they will get. Deferring
+    /// it to the release makes the gesture feel unresponsive and gives no feedback about
+    /// where the tab will land.
+    fn update_tab_drag(&mut self, pos: Point) {
+        let (active, from) = {
+            let Some(session) = self.drag_session.as_mut() else {
+                return;
+            };
+            session.update(pos, TAB_DRAG_THRESHOLD);
+            (session.is_active(), self.dragging_from)
+        };
+        if !active {
+            return;
+        }
+        let Some(from) = from else {
+            return;
+        };
+        // The neighbour the pointer has passed: a move to the right lands on the next tab
+        // once the pointer is past *that* tab's midpoint, and symmetrically to the left.
+        // Deriving the target from geometry rather than from the dragged tab's own rect is
+        // what lets a fast drag cross several neighbours without stalling on each one.
+        let Some(target) = self.tab_at_position(pos) else {
+            return;
+        };
+        if target == from {
+            return;
+        }
+        // Move one step toward the target rather than jumping the whole distance: the tabs
+        // between the two indices have to shift by one, which a single `move_tab(from,
+        // target)` accomplishes, and the live `move_tab` re-emits so the host sees each
+        // swap the user saw.
+        self.move_tab(from, target);
+        self.dragging_from = Some(target);
+    }
+    /// Ends a move gesture, keeping the reordering already applied.
+    ///
+    /// The session is closed without a further move: `update_tab_drag` already placed the
+    /// tab under the pointer, so acting on the release position again would double-apply
+    /// the last step.
+    fn end_tab_drag(&mut self) {
+        self.cancel_tab_drag();
+    }
+    /// Drops any in-progress move gesture without reordering further.
+    fn cancel_tab_drag(&mut self) {
+        self.drag_session = None;
+        self.dragging_from = None;
+    }
     /// Returns tab rectangle at index.
+    ///
+    /// Tab width is **measured**, not a constant. The literal `100` meant a title longer than
+    /// ~13 characters was clipped at a fixed point and a two-character title reserved the same
+    /// 100 px as a nine-character one, so the strip's appearance had nothing to do with its
+    /// contents. Measuring the titles and clamping the result (the same `[40, 200]` window
+    /// `tab_bar` uses) is what makes the band a function of what the tabs say.
+    ///
+    /// The computed width is also what the **overflow** rule divides up: when the tabs no
+    /// longer fit the strip, every tab gets `width / count` so they all stay visible, rather
+    /// than the later ones being drawn past the control's own right edge (the SVG backend emits
+    /// absolute coordinates, so those tabs simply left the picture).
+    fn tab_widths(&self) -> crate::compat::Vec<i32> {
+        let rect = self.geometry();
+        let count = self.tabs.len();
+        if count == 0 {
+            return crate::compat::Vec::new();
+        }
+        let measured: crate::compat::Vec<i32> = self
+            .tabs
+            .iter()
+            .map(|tab| {
+                (tab.title.chars().count() as i32 * TAB_CHAR_WIDTH + TAB_TEXT_PADDING)
+                    .clamp(MIN_TAB_WIDTH, MAX_TAB_WIDTH)
+            })
+            .collect();
+        let total: i32 = measured.iter().sum::<i32>() + TAB_SPACING * (count as i32 - 1);
+        let available = match self.tab_position {
+            TabPosition::North | TabPosition::South => rect.width as i32,
+            TabPosition::West | TabPosition::East => rect.height as i32,
+        };
+        if total <= available {
+            return measured;
+        }
+        // Overflow: share the strip equally so every tab remains inside it.
+        let share =
+            ((available - TAB_SPACING * (count as i32 - 1)) / count as i32).max(MIN_TAB_WIDTH / 2);
+        crate::compat::vec![share; count]
+    }
+
     fn tab_rect(&self, index: usize) -> Option<Rect> {
         if index >= self.tabs.len() {
             return None;
         }
         let rect = self.geometry();
-        let tab_height = 24;
-        let tab_width = 100;
-        let spacing = 2;
+        let widths = self.tab_widths();
+        // Offset by the widths of the tabs before this one, so a measured strip is laid out in
+        // sequence rather than on a fixed step.
+        let offset: i32 = widths.iter().take(index).sum::<i32>() + TAB_SPACING * index as i32;
+        let tab_width = *widths.get(index)?;
+        let tab_height = TAB_HEIGHT;
         match self.tab_position {
             TabPosition::North => {
-                let x = rect.x + (tab_width + spacing) as i32 * index as i32;
-                Some(Rect::new(x, rect.y, tab_width, tab_height as u32))
+                Some(Rect::new(rect.x + offset, rect.y, tab_width as u32, tab_height as u32))
             }
-            TabPosition::South => {
-                let x = rect.x + (tab_width + spacing) as i32 * index as i32;
-                Some(Rect::new(
-                    x,
-                    rect.y + rect.height as i32 - tab_height,
-                    tab_width,
-                    tab_height as u32,
-                ))
-            }
+            TabPosition::South => Some(Rect::new(
+                rect.x + offset,
+                rect.y + rect.height as i32 - tab_height,
+                tab_width as u32,
+                tab_height as u32,
+            )),
             TabPosition::West => {
-                let y = rect.y + (tab_height + spacing as i32) * index as i32;
-                Some(Rect::new(rect.x, y, tab_width, tab_height as u32))
+                Some(Rect::new(rect.x, rect.y + offset, tab_width as u32, tab_height as u32))
             }
-            TabPosition::East => {
-                let y = rect.y + (tab_height + spacing as i32) * index as i32;
-                Some(Rect::new(
-                    rect.x + rect.width as i32 - tab_width as i32,
-                    y,
-                    tab_width,
-                    tab_height as u32,
-                ))
-            }
+            TabPosition::East => Some(Rect::new(
+                rect.x + rect.width as i32 - tab_width,
+                rect.y + offset,
+                tab_width as u32,
+                tab_height as u32,
+            )),
         }
     }
     /// Returns content rectangle.
     fn content_rect(&self) -> Rect {
         let rect = self.geometry();
-        let tab_height = 24;
+        let tab_height = TAB_HEIGHT;
         match self.tab_position {
             TabPosition::North => Rect::new(
                 rect.x,
@@ -338,6 +536,46 @@ impl TabWidget {
         None
     }
 }
+/// Height of the tab strip, in logical pixels.
+const TAB_HEIGHT: i32 = 24;
+
+/// Horizontal gap between adjacent tabs.
+const TAB_SPACING: i32 = 2;
+
+/// Widest a measured tab may become, and narrowest it may stay.
+///
+/// The same window `tab_bar` clamps to, so the two tab controls agree about what a tab looks
+/// like even though they lay their bands out differently.
+const MIN_TAB_WIDTH: i32 = 40;
+const MAX_TAB_WIDTH: i32 = 200;
+
+/// Padding added to a measured title before it is clamped.
+const TAB_TEXT_PADDING: i32 = 24;
+
+/// Width charged per character when measuring a tab title.
+///
+/// The renderer's advance model, not a `len()` estimate: this crate's shaper gives one
+/// cluster per `char` at 0.6 em for Latin text, and a tab title is a label the user reads.
+/// `len()` on a UTF-8 `String` counts bytes, so a CJK title measured by it would reserve
+/// four times the width it draws.
+const TAB_CHAR_WIDTH: i32 = 8;
+
+/// Side of a tab's close button, in logical pixels.
+const CLOSE_SIZE: i32 = 12;
+
+/// The drag payload type a tab move carries.
+///
+/// Named rather than an empty string so a drop target (or a future cross-control reorder)
+/// can recognise that this gesture is a tab move and not, say, a card drag. The payload's
+/// item id is the dragged tab's index, spelled as the same decimal the property layer uses.
+const TAB_DRAG_TYPE: &str = "tab_widget_tab";
+
+/// How far the pointer must travel before a press counts as a drag.
+///
+/// Without a threshold every click that jitters by one pixel would reorder a tab, because
+/// the press and the move are the same gesture to the OS.
+const TAB_DRAG_THRESHOLD: i32 = 4;
+
 // Implement Widget trait
 impl Widget for TabWidget {
     fn base(&self) -> &BaseWidget {
@@ -357,16 +595,28 @@ impl Widget for TabWidget {
 
 /// `TabWidget`'s property contract.
 ///
-/// Only the two indexed properties the old dispatch answered are migrated;
-/// `closable`, `movable` and `tab_position` are declared by
-/// `TAB_WIDGET_PROPERTIES` but have no arm in the centralised reader or writer, so
-/// they stay exactly as they were (not served) rather than quietly gaining
-/// behaviour in this refactor.
+/// The doc comment here used to record that `closable`, `movable` and `tab_position` were
+/// declared by `TAB_WIDGET_PROPERTIES` but answered by nothing, "so they stay exactly as
+/// they were (not served)". That was a declaration nothing reads: the schema offered a
+/// property the control refused, so a host could neither enable dragging nor learn whether
+/// it was on. All three are served now, and `movable` additionally drives the drag gesture
+/// in [`TabWidget::handle_event`] rather than merely being stored.
 impl WidgetProperties for TabWidget {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "tab_count" => Ok(CapabilityValue::UInt(self.count() as u64)),
             "current_index" => Ok(CapabilityValue::UInt(self.current_index() as u64)),
+            // Symmetric with the writer below: a value that can be set can be read back.
+            // Without this arm the property would be write-only, which is the one-directional
+            // contract rule #97 forbids.
+            "text" | "title" => Ok(CapabilityValue::String(
+                self.tabs.first().map(|tab| tab.title.clone()).unwrap_or_default(),
+            )),
+            "closable" => Ok(CapabilityValue::Bool(self.closable())),
+            "movable" => Ok(CapabilityValue::Bool(self.movable())),
+            "tab_position" => {
+                Ok(CapabilityValue::String(tab_position_token(self.tab_position).to_string()))
+            }
             _ => base_property_get(self, name),
         }
     }
@@ -377,6 +627,41 @@ impl WidgetProperties for TabWidget {
                 self.set_current_index(expect_usize(value)?);
                 Ok(())
             }
+            // The label route reaches every other control by name, and `create_tab_widget`
+            // passes the caller's text through it. Refusing `text`/`title` here meant that
+            // text was silently dropped: the factory built a tab widget, the shared label
+            // helper called `set("text", ...)`, and this match fell through to
+            // `base_property_set` — which has no such arm, so the title never reached a tab.
+            // Applying it to the first tab makes the control answer the same property name
+            // its constructor's parameter describes.
+            "text" | "title" => {
+                let text = expect_string(value)?;
+                if let Some(first) = self.tabs.first_mut() {
+                    first.title = text;
+                } else {
+                    self.add_tab(text, None);
+                }
+                self.base.request_redraw();
+                Ok(())
+            }
+            "closable" => {
+                self.set_closable(expect_bool(value)?);
+                Ok(())
+            }
+            "movable" => {
+                self.set_movable(expect_bool(value)?);
+                Ok(())
+            }
+            // An unknown token is a parse failure, not a different placement: accepting
+            // `"North"` and keeping `North` anyway would report success for a write that
+            // changed nothing. The accepted spellings are the schema row's.
+            "tab_position" => {
+                let token = expect_string(value)?;
+                let position =
+                    TabPosition::from_token(&token).ok_or(CapabilityAccessError::OutOfRange)?;
+                self.set_tab_position(position);
+                Ok(())
+            }
             // Derived from the tab list; the old writer had no arm for it either.
             "tab_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
@@ -384,7 +669,16 @@ impl WidgetProperties for TabWidget {
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["tab_count", "current_index", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "tab_count",
+            "current_index",
+            "text",
+            "title",
+            "closable",
+            "movable",
+            "tab_position",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `tab_widget` publishes.
@@ -411,8 +705,11 @@ impl EventHandler for TabWidget {
         if !self.base.is_enabled() {
             return;
         }
-        if let Event::MousePress { pos, button } = event {
-            if *button == 1 {
+        // The move gesture runs before the content forwarding below and reads only the tab
+        // strip, so a drag that started on a tab never reaches the page widget — which is
+        // what makes the strip behave as one control rather than as a set of drop targets.
+        match event {
+            Event::MousePress { pos, button } if *button == 1 => {
                 if let Some(index) = self.tab_at_position(*pos) {
                     if self.tabs[index].enabled {
                         // Check if the click is on the close button area
@@ -435,9 +732,16 @@ impl EventHandler for TabWidget {
                             }
                         }
                         self.set_current_index(index);
+                        // Selecting on press and *arming* the drag are separate: the
+                        // selection has already happened, and only a pointer that travels
+                        // past the threshold turns the same gesture into a reorder.
+                        self.begin_tab_drag(*pos);
                     }
                 }
             }
+            Event::MouseMove { pos } => self.update_tab_drag(*pos),
+            Event::MouseRelease { .. } => self.end_tab_drag(),
+            _ => {}
         }
         let allow_child_event = match event {
             Event::MousePress { pos, .. }
@@ -494,6 +798,9 @@ impl Draw for TabWidget {
         // stays at the content colour so it reads as connected to its page.
         let inactive_tab = content_background.blend(&text_color, 0.06);
         let disabled_tab = content_background.blend(&text_color, 0.14);
+        // A disabled tab's label is muted against the tab's own fill, which is what makes it
+        // read as unavailable. This is used for the label; the fill above is the other half
+        // of the same signal, so both come from the resolved pair.
         let disabled_text = text_color.blend(&disabled_tab, 0.5);
         // The close affordance is secondary chrome, not a second literal.
         let close_color = text_color.blend(&content_background, 0.4);
@@ -558,31 +865,47 @@ impl Draw for TabWidget {
                         context.draw_rect(tab_rect, border_color);
                     }
                 };
-                // Draw tab text
+                // Draw tab text.
+                //
+                // Centred on both axes and bounded to the tab. The previous form put the glyph
+                // origin at the tab's midpoint and asked for `Left`, so a title started at the
+                // tab's centre and ran off its right edge, with its top edge on the tab's
+                // vertical midpoint. `draw_text_fitted` with `Center` states the intent and
+                // elides a title that cannot fit, instead of letting it leave the control.
                 let text_color = if !is_enabled { disabled_text } else { text_color };
-                context.draw_text(
-                    Point::new(
-                        tab_rect.x + tab_rect.width as i32 / 2,
-                        tab_rect.y + tab_rect.height as i32 / 2,
-                    ),
+                let font = Font::default();
+                let tab_line = context.text_line(tab_rect, &font);
+                let title_band = Rect {
+                    x: tab_rect.x,
+                    y: tab_line.y,
+                    width: tab_rect.width.saturating_sub(if self.closable {
+                        (CLOSE_SIZE + 10) as u32
+                    } else {
+                        0
+                    }),
+                    height: tab_line.height,
+                };
+                context.draw_text_fitted(
+                    title_band,
                     &tab.title,
-                    &Font::default(),
+                    &font,
                     text_color,
-                    HorizontalAlignment::Left,
+                    HorizontalAlignment::Center,
                 );
                 // Draw close button if closable
                 if self.closable {
-                    let close_size = 12;
-                    let close_x = tab_rect.x + tab_rect.width as i32 - close_size - 5;
-                    let close_y = tab_rect.y + (tab_rect.height as i32 - close_size) / 2;
+                    // Vertically centred on the title's own line box rather than on the tab's
+                    // middle: the two ruled the same row and used to disagree by half a line.
+                    let close_x = tab_rect.x + tab_rect.width as i32 - CLOSE_SIZE - 5;
+                    let close_y = tab_line.y + (tab_line.height as i32 - CLOSE_SIZE) / 2;
                     context.draw_line(
                         Point::new(close_x, close_y),
-                        Point::new(close_x + close_size, close_y + close_size),
+                        Point::new(close_x + CLOSE_SIZE, close_y + CLOSE_SIZE),
                         close_color,
                     );
                     context.draw_line(
-                        Point::new(close_x + close_size, close_y),
-                        Point::new(close_x, close_y + close_size),
+                        Point::new(close_x + CLOSE_SIZE, close_y),
+                        Point::new(close_x, close_y + CLOSE_SIZE),
                         close_color,
                     );
                 }
@@ -610,7 +933,7 @@ mod tests {
     use super::*;
     use crate::core::{Point, Rect, Size};
     use crate::widget::svg::{render_to_svg, render_widget_to_svg};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     /// Helper to create unique test ObjectIds.
     fn wid1() -> ObjectId {
@@ -1139,9 +1462,14 @@ mod tests {
 
         tw.set_current_index(0);
 
-        // Click on tab 1's position
-        // tab_rect(1) with North at Rect(0,0,300,200): x=(100+2)*1=102, y=0
-        let event = Event::mouse_press(102, 0, 1);
+        // The second tab's position comes from the control's own layout, not from a literal:
+        // tab widths are measured from their titles, so a hardcoded x would pin this test to one
+        // font's metrics and break every time a title changed. Reading `tab_rect` is also the
+        // stronger assertion — it checks that a click lands on the tab the control believes is
+        // there, which is the property that matters.
+        let second = tw.tab_rect(1).expect("two tabs were added, so index 1 has a rectangle");
+        let click_x = second.x + second.width as i32 / 2;
+        let event = Event::mouse_press(click_x, second.y + 2, 1);
         tw.handle_event(&event);
 
         assert_eq!(tw.current_index(), 1);
@@ -1266,5 +1594,183 @@ mod tests {
         let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
         tw.add_tab("Tab".to_string(), None);
         assert!(tw.tab(0).unwrap().icon().is_none());
+    }
+
+    // ── 19. Movable tabs (drag to reorder) ─────────────────────────────────────
+
+    /// Builds a strip of `count` tabs with wide, well-separated bands.
+    fn movable_strip(count: usize) -> TabWidget {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 600, 200));
+        for i in 0..count {
+            tw.add_tab(format!("T{i}"), None);
+        }
+        tw.set_movable(true);
+        tw
+    }
+
+    fn titles(tw: &TabWidget) -> Vec<String> {
+        (0..tw.count()).map(|i| tw.tab_text(i).unwrap().to_string()).collect()
+    }
+
+    #[test]
+    fn tabwidget_move_tab_reorders_and_emits() {
+        let mut tw = movable_strip(3);
+        let captured = Arc::new(Mutex::new(None::<(usize, usize)>));
+        tw.tab_moved.connect({
+            let captured = Arc::clone(&captured);
+            move |value: Arc<(usize, usize)>| {
+                *captured.lock().unwrap() = Some(*value);
+            }
+        });
+
+        assert!(tw.move_tab(0, 2));
+        assert_eq!(titles(&tw), vec!["T1", "T2", "T0"]);
+        assert_eq!(*captured.lock().unwrap(), Some((0, 2)));
+
+        // A move to the same index is not a move, so nothing is emitted.
+        assert!(!tw.move_tab(1, 1));
+        assert_eq!(*captured.lock().unwrap(), Some((0, 2)));
+
+        // An out-of-range source is a caller error and does not reorder or emit.
+        assert!(!tw.move_tab(99, 0));
+        assert_eq!(*captured.lock().unwrap(), Some((0, 2)));
+    }
+
+    #[test]
+    fn tabwidget_move_tab_clamps_the_target_to_the_last_tab() {
+        let mut tw = movable_strip(3);
+        // "Dropped past the end" is "moved to the end", not a refusal.
+        assert!(tw.move_tab(0, 99));
+        assert_eq!(titles(&tw), vec!["T1", "T2", "T0"]);
+    }
+
+    #[test]
+    fn tabwidget_move_tab_keeps_the_selection_with_its_page() {
+        let mut tw = movable_strip(3);
+        tw.set_current_index(2);
+        // Dragging the current tab must not leave the selection on the slot it vacated.
+        assert!(tw.move_tab(2, 0));
+        assert_eq!(titles(&tw), vec!["T2", "T0", "T1"]);
+        assert_eq!(tw.current_index(), 0);
+
+        // And dragging another tab across the selection shifts it by one slot.
+        tw.set_current_index(0); // the dragged tab
+        assert!(tw.move_tab(2, 0));
+        assert_eq!(titles(&tw), vec!["T1", "T2", "T0"]);
+        assert_eq!(tw.current_index(), 1);
+    }
+
+    /// A press on a tab of a *movable* strip that then travels reorders it.
+    #[test]
+    fn tabwidget_drag_reorders_a_movable_tab() {
+        let mut tw = movable_strip(3);
+        let first = tw.tab_rect(0).expect("tab 0 has a band");
+        let third = tw.tab_rect(2).expect("tab 2 has a band");
+        let press = Point::new(first.x + first.width as i32 / 2, first.y + 5);
+
+        tw.handle_event(&Event::MousePress { pos: press, button: 1 });
+        // A press alone must not reorder: the gesture is still a click at this point.
+        assert_eq!(titles(&tw), vec!["T0", "T1", "T2"]);
+
+        // Travel past the drag threshold and onto the third tab.
+        tw.handle_event(&Event::MouseMove {
+            pos: Point::new(third.x + third.width as i32 / 2, press.y),
+        });
+        assert_eq!(
+            titles(&tw),
+            vec!["T1", "T2", "T0"],
+            "crossing two neighbours must carry the tab to the far end"
+        );
+
+        tw.handle_event(&Event::MouseRelease {
+            pos: Point::new(third.x + third.width as i32 / 2, press.y),
+            button: 1,
+        });
+        // The release settles the gesture; the live reorder already happened.
+        assert_eq!(titles(&tw), vec!["T1", "T2", "T0"]);
+    }
+
+    /// The whole point of the flag: with it off, the very same gesture must not reorder.
+    #[test]
+    fn tabwidget_drag_does_nothing_when_not_movable() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 600, 200));
+        for i in 0..3 {
+            tw.add_tab(format!("T{i}"), None);
+        }
+        assert!(!tw.movable());
+
+        let first = tw.tab_rect(0).expect("tab 0 has a band");
+        let third = tw.tab_rect(2).expect("tab 2 has a band");
+        let y = first.y + 5;
+        tw.handle_event(&Event::MousePress {
+            pos: Point::new(first.x + first.width as i32 / 2, y),
+            button: 1,
+        });
+        tw.handle_event(&Event::MouseMove { pos: Point::new(third.x + third.width as i32 / 2, y) });
+        assert_eq!(titles(&tw), vec!["T0", "T1", "T2"]);
+        // The press still selected, which is the behaviour a non-movable strip keeps.
+        assert_eq!(tw.current_index(), 0);
+    }
+
+    /// A press-and-jitter must stay a click rather than a reorder.
+    #[test]
+    fn tabwidget_a_jitter_below_the_threshold_does_not_reorder() {
+        let mut tw = movable_strip(3);
+        let first = tw.tab_rect(0).expect("tab 0 has a band");
+        let press = Point::new(first.x + first.width as i32 / 2, first.y + 5);
+        tw.handle_event(&Event::MousePress { pos: press, button: 1 });
+        tw.handle_event(&Event::MouseMove { pos: Point::new(press.x + 1, press.y) });
+        assert_eq!(titles(&tw), vec!["T0", "T1", "T2"]);
+    }
+
+    /// Turning `movable` off mid-drag must abandon the gesture, not finish it.
+    #[test]
+    fn tabwidget_set_movable_false_cancels_a_live_drag() {
+        let mut tw = movable_strip(3);
+        let first = tw.tab_rect(0).expect("tab 0 has a band");
+        let third = tw.tab_rect(2).expect("tab 2 has a band");
+        let y = first.y + 5;
+        tw.handle_event(&Event::MousePress {
+            pos: Point::new(first.x + first.width as i32 / 2, y),
+            button: 1,
+        });
+        tw.handle_event(&Event::MouseMove {
+            pos: Point::new(first.x + first.width as i32 / 2 + 10, y),
+        });
+        tw.set_movable(false);
+        tw.handle_event(&Event::MouseMove { pos: Point::new(third.x + third.width as i32 / 2, y) });
+        assert_eq!(titles(&tw), vec!["T0", "T1", "T2"]);
+    }
+
+    #[test]
+    fn tabwidget_movable_is_a_served_property() {
+        use crate::widget::capability::properties_trait::{
+            widget_property_get, widget_property_set,
+        };
+        use crate::widget::capability::CapabilityValue;
+
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        assert!(crate::widget::capability::widget_property_names(&tw)
+            .expect("a tab widget declares properties")
+            .contains(&"movable"));
+        widget_property_set(&mut tw, "movable", CapabilityValue::Bool(true)).unwrap();
+        assert!(tw.movable());
+        assert_eq!(widget_property_get(&tw, "movable"), Ok(CapabilityValue::Bool(true)));
+
+        // `tab_position` and `closable` round-trip through their tokens too.
+        widget_property_set(&mut tw, "tab_position", CapabilityValue::String("south".to_string()))
+            .unwrap();
+        assert_eq!(tw.tab_position(), TabPosition::South);
+        assert_eq!(
+            widget_property_get(&tw, "tab_position"),
+            Ok(CapabilityValue::String("south".to_string()))
+        );
+        assert!(widget_property_set(
+            &mut tw,
+            "tab_position",
+            CapabilityValue::String("South".to_string())
+        )
+        .is_err());
+        assert_eq!(tw.tab_position(), TabPosition::South);
     }
 }

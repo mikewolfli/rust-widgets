@@ -344,18 +344,34 @@ impl Draw for SignaturePad {
         // re-entrant).
         let style = self.base.style().clone();
         let theme = crate::style::resolved_theme_style("signature_pad");
-        let background = style
-            .background_color
-            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
-            .unwrap_or(Color::WHITE);
-        let border = style
-            .border_color
-            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
-            .unwrap_or_else(|| background.blend(&Color::BLACK, 0.18));
+        // `signature_pad` is absent from `WidgetRole::for_kind_name`'s table, so it classifies
+        // as `Surface` and resolves to `theme.colors.background` — the window's own fill. A pad
+        // filled with that colour is byte-identical to the frame behind it, which is why
+        // `signature_pad.svg` showed only the baseline and the two `rgba(18,18,18)` rectangles
+        // were indistinguishable. The fill is therefore derived one step from the window fill
+        // for a `Base`/`Input`-style face, so the writing area reads as a well the ink sits in.
+        // A colour the caller set explicitly still wins: it is a deliberate choice, not the
+        // window fill arriving through the resolver.
+        let window_fill = {
+            let manager = crate::style::theme_manager();
+            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
+        };
         let text_color = style
             .text_color
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))
             .unwrap_or(Color::BLACK);
+        let background = match style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+        {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => window_fill.blend(&text_color, 0.10),
+        };
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .filter(|resolved| *resolved != background)
+            .unwrap_or_else(|| background.blend(&text_color, 0.35));
         // The hint line is secondary chrome: derived from the resolved colours so it
         // stays visible against either surface.
         let hint = background.blend(&text_color, 0.4);

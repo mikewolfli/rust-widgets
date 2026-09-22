@@ -553,11 +553,26 @@ impl Draw for OtpInput {
 
         let style = self.base.style().clone();
         let enabled = self.base.is_enabled();
-        let background = style.background_color.unwrap_or(Color::WHITE);
         let text_color = style.text_color.unwrap_or(Color::BLACK);
         // A filled box is drawn in the theme's border colour so an entered
         // character reads as committed without a separate label.
         let accent = style.border_color.unwrap_or(Color::BLACK);
+        // `otp_input` is absent from `WidgetRole::for_kind_name`'s table, so it classifies as
+        // `Surface` and resolves to `theme.colors.background` — the window's own fill. A cell
+        // filled with that colour is byte-identical to the frame behind it, so in the empty
+        // state only the focused cell (which blended the accent in) had a visible face: five
+        // of the six boxes were invisible in `otp_input.svg` and the row read as one long
+        // field. The cell face is therefore derived one step from the window fill, which is
+        // what makes all six boxes visible at rest. A colour the caller set explicitly still
+        // wins over the derived one.
+        let window_fill = {
+            let manager = crate::style::theme_manager();
+            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
+        };
+        let background = match style.background_color {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => window_fill.blend(&text_color, 0.10),
+        };
         // An empty, unfocused box gets a muted outline so an empty row still reads
         // as one widget rather than as empty space.
         let hairline = background.blend(&text_color, 0.35);
@@ -577,10 +592,10 @@ impl Draw for OtpInput {
 
             if is_focused {
                 context.draw_rect(slot, accent);
-            } else if filled.is_some() {
-                context.draw_rect(slot, hairline);
             } else {
-                // Hint border: marks where the next character goes.
+                // Hint border: marks where the next character goes. The populated case
+                // shares it: a cell with a character and a cell without differ by the
+                // glyph, not by the outline, so the two branches collapsed into one.
                 context.draw_rect(slot, hairline);
             }
 
@@ -595,13 +610,11 @@ impl Draw for OtpInput {
                 None => continue,
             };
 
-            let color = if !enabled {
-                background.blend(&text_color, 0.45)
-            } else if filled.is_some() {
-                text_color
-            } else {
-                background.blend(&text_color, 0.45)
-            };
+            // Reached only for a filled cell — the `None` arm above already left the loop
+            // — so the old `else if filled.is_some()` / `else` pair was unfalsifiable: the
+            // `else` could never run and the whole chain reduced to this two-way choice
+            // between the disabled ink and the real text colour.
+            let color = if !enabled { background.blend(&text_color, 0.45) } else { text_color };
             context.draw_text(
                 Point::new(slot.x + (slot.width as i32) / 2, slot.y + (slot.height as i32) / 2),
                 &glyph.to_string(),

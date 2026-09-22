@@ -7,5 +7,5 @@
   <line x1="228" y1="56" x2="236" y2="56" stroke="rgba(0,0,0,1.00)" stroke-width="1" />
   <line x1="236" y1="56" x2="232" y2="64" stroke="rgba(0,0,0,1.00)" stroke-width="1" />
   <line x1="232" y1="64" x2="228" y2="56" stroke="rgba(0,0,0,1.00)" stroke-width="1" />
-  <text x="4" y="60" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">(Empty)</text>
+  <text x="7" y="53" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">(Empty)</text>
 </svg>

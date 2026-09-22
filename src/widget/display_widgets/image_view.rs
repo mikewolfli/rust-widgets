@@ -177,8 +177,13 @@ impl Draw for ImageView {
             let fg = self.style().text_color.unwrap_or(Color::rgb(120, 120, 120));
             let default_font = crate::core::Font::default();
             let font = self.style().font.as_ref().unwrap_or(&default_font);
-            let text_x = rect.x + rect.width as i32 / 2 - 4;
-            let text_y = rect.y + rect.height as i32 / 2 - 8;
+            // Horizontal centre from the measured glyph, vertical from the shared line box.
+            // The previous `rect.y + rect.height / 2 - 8` put the box's top edge on the
+            // placeholder's middle line, with a constant standing in for the missing calc.
+            let glyph_metrics = context.measure_text("?", font);
+            let line = context.text_line(rect, font);
+            let text_x = rect.x + (rect.width as i32 - glyph_metrics.width as i32) / 2;
+            let text_y = line.y;
             context.draw_text(Point::new(text_x, text_y), "?", font, fg, HorizontalAlignment::Left);
         }
     }

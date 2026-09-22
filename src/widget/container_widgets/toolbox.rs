@@ -17,15 +17,46 @@ use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
+
+/// The height of one tab in a vertical tool box, in logical pixels.
+const ITEM_HEIGHT: u32 = 32;
+/// The width of one tab in a horizontal tool box, in logical pixels.
+const ITEM_WIDTH: u32 = 120;
+/// The smallest page the content area is allowed to keep.
+///
+/// # Why the page cannot simply be what is left over
+///
+/// `content_rect` used to be `rect.height - item_height * items.len()`, floored at zero. At the
+/// census size (120 px) with four items that is `120 - 128 = 0`: every item's tab was drawn and
+/// the page — the whole point of a tool box — had no pixels at all, so the control rendered as a
+/// list of tabs beside nothing. Qt's `QToolBox` gives the page the remaining body and keeps at
+/// least a line of it; this constant is that rule, in the same shape as `meter`'s reserved
+/// reading band and `splitter`'s minimum pane.
+const MIN_CONTENT_EXTENT: u32 = 24;
+
 /// Tool box widget.
+///
+/// # Overflow
+///
+/// The tab strip and the page share one axis, so they cannot both have the room they would like.
+/// The page keeps [`MIN_CONTENT_EXTENT`] and the *strip* gives way: when the tabs no longer fit,
+/// the strip is scrolled by whole tabs (see [`ToolBox::scroll_offset`]) rather than letting an
+/// item be placed past the control's edge. An item is therefore either drawn whole, inside the
+/// strip, or not drawn at all.
 pub struct ToolBox {
     base: BaseWidget,
     items: Vec<ToolBoxItem>,
     current_index: usize,
     orientation: Orientation,
+    /// Index of the first tab drawn, i.e. the tab strip's scroll offset in whole tabs.
+    ///
+    /// Kept in `usize` rather than as a pixel offset because a tab is drawn as a whole unit: a
+    /// partial tab at the top of the strip would be a tab whose label is cut in half, and the
+    /// overflow rule above is deliberately "whole tabs, or none".
+    scroll_offset: usize,
     /// Emitted with the new page index whenever the current page changes through
-    /// [`ToolBox::set_current_index`] or user input. `clear()` resets the index to
-    /// `0` without emitting, because it also empties the page vector.
+    /// [`ToolBox::set_current_index`] or user input. `clear()` resets the index to `0`
+    /// without emitting, because it also empties the page vector.
     ///
     /// (An earlier version of this comment described a "collapse" notification;
     /// a toolbox page has no collapsed state, so that contract was never real.)
@@ -105,6 +136,7 @@ impl ToolBox {
             items: Vec::new(),
             current_index: 0,
             orientation: Orientation::Vertical,
+            scroll_offset: 0,
             current_changed: Signal1::new(),
             registry: None,
         }
@@ -117,6 +149,7 @@ impl ToolBox {
             self.base.add_child(widget_id);
         }
         self.items.push(item);
+        self.clamp_scroll();
         self.items.len().saturating_sub(1)
     }
     /// Inserts an item at position.
@@ -131,6 +164,7 @@ impl ToolBox {
         if !was_empty && self.current_index >= index {
             self.current_index += 1;
         }
+        self.clamp_scroll();
     }
     /// Removes an item.
     pub fn remove_item(&mut self, index: usize) {
@@ -145,6 +179,7 @@ impl ToolBox {
             if self.items.is_empty() {
                 self.current_index = 0;
             }
+            self.clamp_scroll();
         }
     }
     /// Returns number of items.
@@ -156,9 +191,13 @@ impl ToolBox {
         self.current_index
     }
     /// Sets current item index.
+    ///
+    /// The new page's tab is scrolled into view if overflow had hidden it; the selection is not
+    /// silently applied to a page the user cannot see the tab of.
     pub fn set_current_index(&mut self, index: usize) {
         if index < self.items.len() && self.current_index != index {
             self.current_index = index;
+            self.scroll_current_into_view();
             self.current_changed.emit(index);
             self.base.request_redraw();
         }
@@ -182,6 +221,9 @@ impl ToolBox {
     /// Sets orientation.
     pub fn set_orientation(&mut self, orientation: Orientation) {
         self.orientation = orientation;
+        // The other axis has a different extent and a different tab size, so an offset that was
+        // legal in one is not necessarily legal in the other.
+        self.clamp_scroll();
         self.base.request_redraw();
     }
 
@@ -193,51 +235,190 @@ impl ToolBox {
             }
         }
         self.current_index = 0;
+        self.scroll_offset = 0;
         self.base.request_redraw();
     }
+    /// The extent one tab occupies along the strip's axis.
+    fn item_extent(&self) -> u32 {
+        match self.orientation {
+            Orientation::Vertical => ITEM_HEIGHT,
+            Orientation::Horizontal => ITEM_WIDTH,
+        }
+    }
+
+    /// How much room the tab strip has, along its own axis.
+    fn strip_extent(&self) -> u32 {
+        let rect = self.geometry();
+        match self.orientation {
+            Orientation::Vertical => rect.height,
+            Orientation::Horizontal => rect.width,
+        }
+    }
+
+    /// The largest value [`Self::scroll_offset`] may take. Zero when every tab fits.
+    ///
+    /// The strip is never allowed to spend the page's own [`MIN_CONTENT_EXTENT`]: that is what
+    /// makes "the page keeps at least one line" true at *any* tab count, including the case
+    /// where the tabs alone are taller than the whole control.
+    pub fn max_scroll(&self) -> usize {
+        let extent = self.strip_extent();
+        let visible =
+            (extent.saturating_sub(MIN_CONTENT_EXTENT) / self.item_extent().max(1)) as usize;
+        self.items.len().saturating_sub(visible)
+    }
+
+    /// Returns the tab strip's scroll offset, in whole tabs.
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
+    /// Scrolls the tab strip to `offset`, clamped to [`Self::max_scroll`].
+    ///
+    /// The clamp is what makes this a total function for a caller: an offset past the end simply
+    /// shows the last full strip, which is what a scroll-into-view means. Requests a redraw only
+    /// when the offset actually changes.
+    pub fn set_scroll_offset(&mut self, offset: usize) {
+        let clamped = offset.min(self.max_scroll());
+        if self.scroll_offset != clamped {
+            self.scroll_offset = clamped;
+            self.base.request_redraw();
+        }
+    }
+
+    /// Re-clamps the scroll offset after the item list or the geometry changed.
+    ///
+    /// # Why this is needed separately from the setter
+    ///
+    /// Every other mutator on this control can shrink the strip — removing an item, clearing the
+    /// list, resizing the control — and a stale offset would then scroll a strip that fits,
+    /// which shows *fewer* tabs than there is room for. Every one of those paths ends here rather
+    /// than each remembering the clamp, because a rule that lives in one place cannot be applied
+    /// in three of four.
+    fn clamp_scroll(&mut self) {
+        let max = self.max_scroll();
+        if self.scroll_offset > max {
+            self.scroll_offset = max;
+        }
+    }
+
+    /// Keeps the page's own tab inside the visible strip, scrolling it into view when it is not.
+    ///
+    /// A selection made by keyboard or by the property contract can name a tab that overflow has
+    /// scrolled off, and a page whose tab cannot be seen is a page the user cannot tell is open.
+    fn scroll_current_into_view(&mut self) {
+        let extent = self.strip_extent();
+        let visible =
+            (extent.saturating_sub(MIN_CONTENT_EXTENT) / self.item_extent().max(1)) as usize;
+        if visible == 0 {
+            // No tab fits alongside the page's own minimum, so there is nothing to scroll to;
+            // scrolling would only hide a tab to show another.
+            return;
+        }
+        if self.current_index < self.scroll_offset {
+            self.scroll_offset = self.current_index;
+        } else if self.current_index >= self.scroll_offset + visible {
+            self.scroll_offset = self.current_index + 1 - visible;
+        }
+        self.clamp_scroll();
+    }
+
     /// Returns item rectangle at index.
+    ///
+    /// # Why the result is intersected with the strip
+    ///
+    /// The index is offset by the strip's scroll position and the rectangle is then clipped to
+    /// the strip, so an item that overflow has pushed past the strip's end yields a *partial*
+    /// rectangle — up to and including an empty one — rather than a rectangle outside the
+    /// control. That is the invariant the draw path and hit testing both rely on: an item either
+    /// has pixels inside the strip or is reported as having none. Previously the position was
+    /// `item_extent * index` with no reference to the control's extent at all, so item 5 of 6 in a
+    /// 120 px control was painted from y = 160 downward, entirely outside the control.
     fn item_rect(&self, index: usize) -> Option<Rect> {
         if index >= self.items.len() {
             return None;
         }
         let rect = self.geometry();
-        let item_height = 32;
-        let item_width = 120;
+        let extent = self.item_extent();
+        // An item scrolled above the strip's start contributes no pixels, and a `usize`
+        // subtraction would underflow here — which is why the offset is compared rather than
+        // subtracted.
+        let visible_from = self.scroll_offset;
+        if index < visible_from {
+            return None;
+        }
+        let slot = (index - visible_from) as u32;
+        let position = slot * extent;
         match self.orientation {
             Orientation::Horizontal => {
-                let x = rect.x as f32 + item_width as f32 * index as f32;
-                Some(Rect::new(x as i32, rect.y, item_width, rect.height))
+                let strip = Rect::new(rect.x, rect.y, rect.width, rect.height);
+                let full = Rect::new(
+                    rect.x.saturating_add_unsigned(position),
+                    rect.y,
+                    ITEM_WIDTH,
+                    rect.height,
+                );
+                full.intersection(&strip)
             }
             Orientation::Vertical => {
-                let y = rect.y as f32 + item_height as f32 * index as f32;
-                Some(Rect::new(rect.x, y as i32, rect.width, item_height))
+                let strip = Rect::new(rect.x, rect.y, rect.width, rect.height);
+                let full = Rect::new(
+                    rect.x,
+                    rect.y.saturating_add_unsigned(position),
+                    rect.width,
+                    ITEM_HEIGHT,
+                );
+                full.intersection(&strip)
             }
         }
     }
+
     /// Returns content rectangle.
+    ///
+    /// The page starts where the *visible* strip ends — not where an unbounded strip would have
+    /// ended — so the page cannot be pushed off the control by tabs that overflow. It keeps at
+    /// least [`MIN_CONTENT_EXTENT`], which is what stops a tab list from reducing the page to
+    /// zero height; the tabs, not the page, are what give way when both cannot fit.
+    ///
+    /// The scrolling has an important consequence worth stating: because at most
+    /// `(extent - MIN_CONTENT_EXTENT) / item_extent` tabs are visible at once, the strip's end and
+    /// the page's start are always inside the control, and their sum can never exceed it.
     fn content_rect(&self) -> Rect {
         let rect = self.geometry();
+        let extent = self.item_extent();
+        // `extent` is already the item's full slot, so the division needs no further cast: the
+        // count of whole tabs that fit beside the reserved page is what `strip_extent` reports.
+        let visible = self.strip_extent().saturating_sub(MIN_CONTENT_EXTENT) / extent.max(1);
+        // Every tab fits: the page gets whatever is left, which may be less than the minimum
+        // because the tabs are the part with a fixed size. `saturating_sub` keeps the short case
+        // from wrapping.
+        let strip_used = visible * extent;
         match self.orientation {
             Orientation::Horizontal => {
-                let item_width = 120;
-                let content_width =
-                    (rect.width as f32 - item_width as f32 * self.items.len() as f32).max(0.0);
+                let remaining = rect.width.saturating_sub(strip_used);
+                let content_width = if self.items.len() as u32 <= visible {
+                    remaining.max(MIN_CONTENT_EXTENT).min(rect.width)
+                } else {
+                    remaining
+                };
                 Rect::new(
-                    (rect.x as f32 + item_width as f32 * self.items.len() as f32) as i32,
+                    rect.x.saturating_add_unsigned(strip_used),
                     rect.y,
-                    content_width as u32,
+                    content_width,
                     rect.height,
                 )
             }
             Orientation::Vertical => {
-                let item_height = 32;
-                let content_height =
-                    (rect.height as f32 - item_height as f32 * self.items.len() as f32).max(0.0);
+                let remaining = rect.height.saturating_sub(strip_used);
+                let content_height = if self.items.len() as u32 <= visible {
+                    remaining.max(MIN_CONTENT_EXTENT).min(rect.height)
+                } else {
+                    remaining
+                };
                 Rect::new(
                     rect.x,
-                    (rect.y as f32 + item_height as f32 * self.items.len() as f32) as i32,
+                    rect.y.saturating_add_unsigned(strip_used),
                     rect.width,
-                    content_height as u32,
+                    content_height,
                 )
             }
         }
@@ -349,6 +530,10 @@ impl EventHandler for ToolBox {
                 }
             }
             Event::KeyPress { key, .. } => {
+                // A tab that overflow has scrolled off the strip is still reachable by the arrow
+                // key that walks toward it: `set_current_index` scrolls the strip to keep the
+                // selection's tab visible, so the two agree on where the strip sits and the
+                // keyboard cannot select a page whose tab is nowhere on screen.
                 let next = match (self.orientation, key) {
                     // Vertical: Up/Down; Horizontal: Left/Right
                     (Orientation::Vertical, 38) | (Orientation::Horizontal, 37) => {
@@ -395,8 +580,10 @@ impl EventHandler for ToolBox {
 }
 impl Draw for ToolBox {
     fn draw(&mut self, context: &mut RenderContext) {
-        // Draw base widget
-        let _rect = self.geometry();
+        // The page is drawn **before** the tabs, and the tabs are drawn only where `item_rect`
+        // says they are. Both are consequences of the same rule: the strip and the page share the
+        // control's axis, so anything the tabs are allowed to paint must already be inside the
+        // strip, and the page must not paint over the tabs that sit above it.
         let content_rect = self.content_rect();
         // Every colour below used to be a literal, so a themed toolbox kept a white
         // page and light tabs inside a dark window. The style is read once and each
@@ -432,6 +619,23 @@ impl Draw for ToolBox {
                 .filter(|resolved| *resolved != page)
                 .unwrap_or_else(|| page.blend(&Color::BLACK, 0.25)),
         );
+        // Draw the current widget, clipped to the page. This happens *before* the tab strip so
+        // the tabs stay on top of their own surface: a vertical tool box's page starts where the
+        // tabs end, but a page that painted a border or a background of its own could still
+        // reach into the strip, and the tabs are the control's chrome rather than its content.
+        if let Some(widget_id) = self.current_widget() {
+            if let Some(ref reg) = self.registry {
+                reg.borrow_mut().set_widget_geometry(widget_id, content_rect);
+                context.push_clip(
+                    content_rect.x,
+                    content_rect.y,
+                    content_rect.width,
+                    content_rect.height,
+                );
+                reg.borrow_mut().draw_widget(widget_id, context);
+                context.pop_clip();
+            }
+        }
         // Draw items
         for i in 0..self.items.len() {
             if let Some(item_rect) = self.item_rect(i) {
@@ -515,27 +719,18 @@ impl Draw for ToolBox {
                 let item_text_color = style.text_color.unwrap_or(Color::rgb(0, 0, 0));
                 let text_color =
                     if !is_enabled { Color::rgb(150, 150, 150) } else { item_text_color };
+                // The label is centred on the item's own line box. `item_rect.y +
+                // item_rect.height / 2` placed the glyph box's top edge on the item's middle
+                // line instead, which drew the text half a line low.
+                let text_font = Font::default();
+                let item_line = context.text_line(item_rect, &text_font);
                 context.draw_text(
-                    Point::new(text_x, item_rect.y + item_rect.height as i32 / 2),
+                    Point::new(text_x, item_line.y),
                     &item.text,
-                    &Font::default(),
+                    &text_font,
                     text_color,
                     HorizontalAlignment::Left,
                 );
-            }
-        }
-        // Draw current widget via registry
-        if let Some(widget_id) = self.current_widget() {
-            if let Some(ref reg) = self.registry {
-                reg.borrow_mut().set_widget_geometry(widget_id, content_rect);
-                context.push_clip(
-                    content_rect.x,
-                    content_rect.y,
-                    content_rect.width,
-                    content_rect.height,
-                );
-                reg.borrow_mut().draw_widget(widget_id, context);
-                context.pop_clip();
             }
         }
     }
@@ -1038,5 +1233,112 @@ mod tests {
         assert_eq!(tb.count(), 0);
         assert_eq!(tb.current_index(), 0);
         assert!(tb.children().is_empty(), "child widgets should be removed");
+    }
+
+    // ── 18. Overflow: the page's minimum and the tab strip's containment ──────
+
+    /// The defect: `content_rect` was `rect.height - item_height * items.len()`, floored at zero,
+    /// so four 32 px tabs in the 120 px census control left the page **0** px tall.
+    ///
+    /// The page is observed through the drawing, because that is what the defect was visible as:
+    /// the page rectangle the control emits must have a positive height, and it must be
+    /// *distinct* from the tab strip rather than collapsed onto it.
+    #[test]
+    fn toolbox_page_keeps_an_extent_when_the_tabs_would_consume_it() {
+        // Enough tabs to swallow the whole control at the fixed tab height.
+        for count in [4usize, 6, 20] {
+            let mut tb = ToolBox::new(Rect::new(0, 0, 240, 120));
+            for i in 0..count {
+                tb.add_item(format!("Item {i}"), None);
+            }
+            let svg = render_to_svg(&mut tb);
+            // The page is the full-width rectangle below the tab strip; the strip's own rects are
+            // only as tall as one tab. The tallest full-width rectangle is the page.
+            let page_height = svg
+                .lines()
+                .filter(|l| l.contains("<rect"))
+                .filter_map(|l| {
+                    let n: Vec<i32> = l
+                        .split(|c: char| !(c.is_ascii_digit() || c == '-'))
+                        .filter(|s| !s.is_empty())
+                        .filter_map(|s| s.parse().ok())
+                        .collect();
+                    (n.len() >= 4).then(|| (n[0], n[1], n[2], n[3]))
+                })
+                .filter(|(_, _, w, _)| *w == 240)
+                .map(|(_, _, _, h)| h)
+                .max()
+                .unwrap_or(0);
+            assert!(
+                page_height > 0,
+                "{count} tabs on a 120px box left the page {page_height}px tall"
+            );
+        }
+    }
+
+    /// The defect: `item_rect` was unclamped, so item `n` was placed at `item_height * n` with no
+    /// reference to the control's extent and later items were painted outside it.
+    #[test]
+    fn toolbox_no_item_rect_escapes_the_control() {
+        let geometry = Rect::new(0, 0, 240, 120);
+        for count in [1usize, 3, 4, 6, 20] {
+            let mut tb = ToolBox::new(geometry);
+            for i in 0..count {
+                tb.add_item(format!("Item {i}"), None);
+            }
+            for i in 0..count {
+                if let Some(r) = tb.item_rect(i) {
+                    assert!(
+                        r.y >= geometry.y && r.bottom() <= geometry.bottom(),
+                        "item {i} of {count} at {r:?} escapes {geometry:?}"
+                    );
+                    assert!(r.width > 0 && r.height > 0, "item {i} of {count} is empty: {r:?}");
+                }
+            }
+        }
+    }
+
+    /// The overflow rule must be *driven*, not just computed: with more tabs than fit, the strip
+    /// can scroll, and selecting an off-screen tab brings its tab into view.
+    #[test]
+    fn toolbox_overflow_scrolls_and_the_page_follows_the_middle_tab() {
+        let mut tb = ToolBox::new(Rect::new(0, 0, 240, 120));
+        for i in 0..10 {
+            tb.add_item(format!("Item {i}"), None);
+        }
+        assert!(tb.max_scroll() > 0, "ten 32px tabs cannot fit a 24px page in 120px");
+
+        tb.set_current_index(9);
+        assert!(tb.scroll_offset() > 0, "selecting a scrolled-off tab must bring it into view");
+        assert!(tb.item_rect(9).is_some(), "the selected tab must be on screen after scrolling");
+
+        // An out-of-range scroll request is clamped rather than leaving the strip blank.
+        tb.set_scroll_offset(usize::MAX);
+        assert_eq!(tb.scroll_offset(), tb.max_scroll());
+        tb.set_scroll_offset(0);
+        assert_eq!(tb.scroll_offset(), 0);
+    }
+
+    /// The rendered SVG must contain nothing outside the control, at any tab count.
+    #[test]
+    fn toolbox_draw_never_paints_outside_the_control() {
+        for count in [1usize, 4, 6, 20] {
+            let mut tb = ToolBox::new(Rect::new(0, 0, 240, 120));
+            for i in 0..count {
+                tb.add_item(format!("Item {i}"), None);
+            }
+            let svg = render_to_svg(&mut tb);
+            for line in svg.lines().filter(|l| l.contains("<rect") || l.contains("<line")) {
+                let nums: Vec<i32> = line
+                    .split(|c: char| !(c.is_ascii_digit() || c == '-'))
+                    .filter(|s| !s.is_empty())
+                    .filter_map(|s| s.parse().ok())
+                    .collect();
+                assert!(
+                    nums.iter().all(|v| *v >= 0),
+                    "{count} items painted outside the control: {line}"
+                );
+            }
+        }
     }
 }

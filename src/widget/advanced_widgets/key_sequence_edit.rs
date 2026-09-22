@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Key sequence editor widget for capturing keyboard shortcuts.
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -402,10 +402,20 @@ impl Draw for KeySequenceEdit {
         } else {
             Color::rgb(0, 0, 0)
         };
-        context.draw_text(
-            Point { x: rect.x + 6, y: rect.y + (rect.height as i32 / 2) },
+        // Vertically centred through the shared primitive, and bounded to the field's own
+        // width: the recorded sequence grows without limit (`Ctrl+Shift+Alt+Meta+K`), and the
+        // SVG backend emits absolute coordinates, so an unbounded one ran past the field.
+        let font = Font::default();
+        let line = context.text_line(rect, &font);
+        context.draw_text_fitted(
+            Rect {
+                x: rect.x + 6,
+                y: line.y,
+                width: rect.width.saturating_sub(12),
+                height: line.height,
+            },
             &display,
-            &Font::default(),
+            &font,
             text_color,
             HorizontalAlignment::Left,
         );
@@ -415,6 +425,7 @@ impl Draw for KeySequenceEdit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::Point;
     use crate::core::Rect;
     use crate::event::Event;
     use crate::widget::svg::render_to_svg;

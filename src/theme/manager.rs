@@ -329,6 +329,19 @@ impl ThemeManager {
         };
         let (background_color, text_color, border_color) = role_colors(theme, kind_name);
 
+        // The minimum touch target for this build's device class.
+        //
+        // `TouchTargetSize` and `Size::dimensions()` were both correct and both unused: the values
+        // lived in `style::primitives` and nothing ever wrote one into a control's style, so the
+        // hit-expansion mechanism behind them had no way to engage. Writing it here, once per
+        // resolved base style, is what makes every control's hit area follow the device class
+        // without each control having to know about device classes.
+        //
+        // A theme token may still override it (`theme.rs`'s `touch_target`), and a caller's own
+        // builder value wins last because `apply_active_theme` merges rather than overwrites;
+        // this is the base a control is born with.
+        let touch_target = Some(crate::platform::profile::recommended_touch_target().dimensions());
+
         WidgetStyle {
             background_color,
             text_color,
@@ -338,39 +351,42 @@ impl ThemeManager {
             padding: Padding::all(theme.spacing.medium),
             margin: Margin::all(theme.spacing.small),
             shadow,
-            // The theme's own base font token. A control that needs a different
-            // token (a monospace editor) overrides it through its own style or a
-            // `ThemeStyleToken`; the theme no longer leaves every font unset.
-            font: Some(theme.fonts.body.clone()),
+            touch_target,
+            // The theme's own base font token, **scaled by the device's text-size preference**.
+            //
+            // `Font::scaled` and the platform's `text_scale` accessor both existed and neither was
+            // called from here, so the field was write-only: a device that asked for larger text
+            // got the nominal size, and a control's font was one property nobody could influence
+            // through the theme it came from. Scaling at this one point is what makes it apply to
+            // every control — each of them takes this font unless it names another.
+            //
+            // A control that sets its own font is unaffected, which is correct: a monospace editor
+            // chooses its own metrics deliberately.
+            font: Some(theme.fonts.body.clone().scaled(crate::platform::profile::text_scale())),
             ..Default::default()
         }
     }
 
     /// The role-default appearance for a widget name, before any state overlay.
+    ///
+    /// # Why this delegates rather than building the style again
+    ///
+    /// This was a **second, byte-for-byte copy** of `role_base_style` plus the class-override step,
+    /// and the two had drifted: the copy was missing the `touch_target` that `role_base_style`
+    /// writes. `resolve_style` reaches this one, so the touch target never arrived at any control
+    /// styled through it — the mechanism looked implemented (a field, a value table, an
+    /// accessor, a merge rule) and was unreachable in practice. That is the same shape as the
+    /// two style chains in `switch` and `badge`: one operation with two implementations, where
+    /// only the one nobody calls is correct.
+    ///
+    /// Delegating makes the drift impossible rather than merely fixed: there is one derivation of
+    /// a role's base style, and the class override is layered on top of it.
     fn resolve_base_style(&self, class_name: &str) -> WidgetStyle {
         let Some(theme) = self.current_theme() else {
             return WidgetStyle::default();
         };
 
-        let shadow = if theme.borders.shadow {
-            Some(Shadow { x: 0, y: 2, blur: 6, color: Color::rgba(0, 0, 0, 60) })
-        } else {
-            None
-        };
-        let (background_color, text_color, border_color) = role_colors(theme, class_name);
-
-        let mut style = WidgetStyle {
-            background_color,
-            text_color,
-            border_color,
-            border_width: Some(theme.borders.width),
-            border_radius: Some(theme.borders.radius),
-            padding: Padding::all(theme.spacing.medium),
-            margin: Margin::all(theme.spacing.small),
-            shadow,
-            font: Some(theme.fonts.body.clone()),
-            ..Default::default()
-        };
+        let mut style = self.role_base_style(theme, class_name);
 
         let token = theme.overrides.styles.get(class_name).or_else(|| {
             theme.overrides.styles.get(role_key(WidgetRole::for_kind_name(class_name)))
@@ -598,6 +614,26 @@ pub fn resolved_theme_style_for(kind_name: &str, class_name: Option<&str>) -> Op
     Some(manager.resolve_style_for(kind_name, class_name, None))
 }
 
+/// Resolves a theme style from a widget **kind** name and its current [`WidgetState`].
+///
+/// The accessor that makes state overrides reachable. `resolve_style_for_state` and the
+/// `"{kind}:{state}"` key format were both implemented and both tested, but every caller passed
+/// `None` for the state, so a theme author could write `"button:hover"` and nothing would ever read
+/// it. This is the entry point that supplies the state, and `theme::apply::apply_active_theme` is its
+/// one production caller — it asks the control through `Widget::widget_state`.
+///
+/// A control in [`WidgetState::Normal`] resolves exactly as [`resolved_theme_style`] would: the
+/// resting state has no `"{kind}:normal"` override in the shipped presets, and applying one is
+/// harmless when it exists.
+pub fn resolved_theme_style_for_state(
+    kind_name: &str,
+    state: crate::style::WidgetState,
+) -> Option<WidgetStyle> {
+    let manager = global_theme_manager();
+    manager.current_theme()?;
+    Some(manager.resolve_style_for_state(kind_name, Some(state)))
+}
+
 /// A semantic state a control can be in, mapped 1:1 onto `theme.colors`.
 ///
 /// # Why this exists
@@ -708,6 +744,11 @@ impl Default for Theme {
             spacing: Spacing { small: 4, medium: 8, large: 16, extra_large: 24 },
             borders: Borders { width: 1, radius: 4, shadow: true },
             overrides: ThemeOverrides { styles: HashMap::new() },
+            // Material's own tempo: `kRadialReactionDuration` 100 ms, `kThemeChangeDuration`
+            // 200 ms, the switch's toggle 300 ms. A theme that wants a different rhythm sets
+            // `theme.motion`; every animated control reads it from there rather than carrying its
+            // own constant.
+            motion: crate::theme::Motion::default(),
         }
     }
 }
@@ -752,6 +793,11 @@ impl Theme {
             spacing: Spacing { small: 4, medium: 8, large: 16, extra_large: 24 },
             borders: Borders { width: 1, radius: 4, shadow: true },
             overrides: ThemeOverrides { styles: HashMap::new() },
+            // Material's own tempo: `kRadialReactionDuration` 100 ms, `kThemeChangeDuration`
+            // 200 ms, the switch's toggle 300 ms. A theme that wants a different rhythm sets
+            // `theme.motion`; every animated control reads it from there rather than carrying its
+            // own constant.
+            motion: crate::theme::Motion::default(),
         }
     }
 }

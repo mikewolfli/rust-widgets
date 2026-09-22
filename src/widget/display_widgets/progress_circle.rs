@@ -39,14 +39,23 @@ pub struct ProgressCircle {
 impl ProgressCircle {
     /// Creates a new ProgressCircle widget with the given geometry.
     ///
-    /// Defaults: value 0.0, determinate, light gray track, blue progress, stroke width 4.
+    /// Defaults: value 0.0, determinate, light gray track, and the theme's value-indicator
+    /// colour for the arc, stroke width 4.
+    ///
+    /// `progress_color` starts as the token `progress_bar` uses for its fill — the theme's
+    /// `Accent` role colour — rather than the `Color::PRIMARY` literal it carried before.
+    /// The two progress controls are the same reading of the same data, so a caller who
+    /// left the colour alone must not get a blue ring beside an orange bar. The literal is
+    /// still the no-theme fallback, so a build without a theme renders what it used to.
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::ProgressCircle, geometry, "ProgressCircle"),
             value: 0.0,
             indeterminate: false,
             track_color: Color::rgba(220, 220, 220, 200),
-            progress_color: Color::PRIMARY,
+            progress_color: crate::style::resolved_theme_style("progress_bar")
+                .and_then(|resolved| resolved.background_color)
+                .unwrap_or(Color::PRIMARY),
             stroke_width: 4.0,
             diameter: geometry.width.min(geometry.height),
         }
@@ -322,7 +331,13 @@ mod tests {
         assert!(!pc.is_indeterminate());
         assert!((pc.stroke_width() - 4.0).abs() < f32::EPSILON);
         assert_eq!(pc.track_color(), Color::rgba(220, 220, 220, 200));
-        assert_eq!(pc.progress_color(), Color::PRIMARY);
+        // The arc's default is the token `progress_bar` fills with, so the two progress
+        // controls agree; the literal is only the no-theme fallback. Asserting the literal
+        // here would re-assert the defect the default was changed to remove.
+        let expected = crate::style::resolved_theme_style("progress_bar")
+            .and_then(|resolved| resolved.background_color)
+            .unwrap_or(Color::PRIMARY);
+        assert_eq!(pc.progress_color(), expected);
     }
 
     #[test]

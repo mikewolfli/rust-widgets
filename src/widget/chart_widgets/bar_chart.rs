@@ -93,6 +93,18 @@ pub struct BarChart {
     max_value: Option<f64>,
 }
 
+/// Font size of the value label drawn above each bar, in points.
+const LABEL_FONT_SIZE: f32 = 10.0;
+
+/// Font size of the category label drawn below the axis, in points.
+const CATEGORY_FONT_SIZE: f32 = 9.0;
+
+/// Distance between a bar's top edge and the bottom edge of its value label.
+const LABEL_GAP: i32 = 4;
+
+/// Distance from the plot baseline down to the top of the category label row.
+const LABEL_ROW_TOP: i32 = 12;
+
 impl BarChart {
     /// Creates a new BarChart widget with the given geometry.
     ///
@@ -374,18 +386,42 @@ impl Draw for BarChart {
             }
 
             // ── Value label on top of the bar ──
+            //
+            // Placed as a **line box sitting above the bar**, not at `bar_y - 4`. The literal
+            // gap had no relation to the label's own height, so a 10 px line began 4 px above
+            // the bar's top with its glyph box still overlapping the bar, which the vertical
+            // audit reads as PUSHED-DOWN. Building the box from the measured line height and
+            // anchoring its bottom edge to the bar's top is what makes the gap actually four
+            // pixels, and it scales with the label font.
             if self.show_values && is_enabled {
                 let label = format!("{:.1}", bar.value);
                 let label_x = bar_x.max(plot_area.x) + (bar_width as i32 / 2).min(12);
-                let label_y = bar_y - 4;
-                draw_label(context, &label, label_x, label_y, 10.0);
+                let font = Font::simple("sans-serif", LABEL_FONT_SIZE);
+                let line_height = context.measure_text("M", &font).height.max(1) as i32;
+                let label_band = Rect {
+                    x: label_x,
+                    y: (bar_y - LABEL_GAP - line_height).max(plot_area.y),
+                    width: bar_width as u32,
+                    height: line_height as u32,
+                };
+                draw_label(context, &label, label_band, &font);
             }
 
             // ── Category label below the axis ──
             if is_enabled {
                 let label_x = bar_x.max(plot_area.x) + (bar_width as i32 / 2).min(12);
-                let label_y = baseline_y + 12;
-                draw_label(context, &bar.label, label_x, label_y, 9.0);
+                // Same treatment, anchored below the baseline: the line box starts where the
+                // axis label row starts, so the gap under the axis is `LABEL_ROW_TOP`, not a
+                // second hand-tuned offset that happened to equal it.
+                let font = Font::simple("sans-serif", CATEGORY_FONT_SIZE);
+                let line_height = context.measure_text("M", &font).height.max(1) as i32;
+                let label_band = Rect {
+                    x: label_x,
+                    y: baseline_y + LABEL_ROW_TOP,
+                    width: (plot_area.width as i32 - (label_x - plot_area.x)).max(0) as u32,
+                    height: line_height as u32,
+                };
+                draw_label(context, &bar.label, label_band, &font);
             }
         }
     }
@@ -398,13 +434,16 @@ impl Draw for BarChart {
 /// above the bars and the category labels below the axis rendered at **1.8:1** against
 /// their own background — present in the pixel census, unreadable to a person. The
 /// series colours are unchanged; only the framing text moves (rule #108 ③).
-fn draw_label(context: &mut RenderContext, text: &str, x: i32, y: i32, size: f32) {
-    context.draw_text(
-        Point::new(x, y),
+fn draw_label(context: &mut RenderContext, text: &str, band: Rect, font: &Font) {
+    // Fitted to the band, so a long category name cannot run into the bar beside it — the
+    // caller already knows each label's column, which is why the band is passed rather than a
+    // point.
+    context.draw_text_fitted(
+        band,
         text,
-        &Font::simple("sans-serif", size),
+        font,
         axis_chrome_color(0.70),
-        HorizontalAlignment::Left,
+        HorizontalAlignment::Center,
     );
 }
 

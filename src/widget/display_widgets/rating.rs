@@ -7,7 +7,7 @@
 //! to set a rating value. Filled stars (★) are drawn in gold for the rated
 //! portion, while unrated stars (☆) are drawn in gray outline.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -186,7 +186,14 @@ impl Draw for Rating {
         let gap = 4;
         let total_width = self.max_rating * self.star_size + (self.max_rating - 1) * gap;
         let start_x = rect.x + (rect.width as i32 - total_width as i32).max(0) / 2;
-        let center_y = rect.y + rect.height as i32 / 2;
+        // A star is a glyph, so its cell is the star's own line box centred in the control —
+        // not the control's middle line. `center_y` was used directly as the glyph origin,
+        // which is the box's top edge, so every star sat half a line low (and `★` is a wide
+        // glyph, so it read as a full line). The line box is measured, so a theme with a larger
+        // font moves the stars with their own ink.
+        let font = Font::default();
+        let line = context.text_line(rect, &font);
+        let center_y = line.y;
 
         // A filled star is the theme's accent — the slot the palette reserves for a
         // value indicator — so it moves with the appearance instead of staying a
@@ -215,10 +222,16 @@ impl Draw for Rating {
             let ch = if is_filled { "★" } else { "☆" };
             let color = if is_filled { filled_color } else { empty_color };
 
-            // Center the character vertically and horizontally within its star cell
-            let text_point = Point::new(star_x + self.star_size as i32 / 2, center_y);
-
-            context.draw_text(text_point, ch, &font, color, HorizontalAlignment::Center);
+            // `Center` positions the glyph from the cell's own midpoint, so the star needs a
+            // cell — the previous form passed the cell's midpoint as a *left-origin* point and
+            // then asked for `Center`, which shifted every star right by half its own advance.
+            context.draw_text_fitted(
+                Rect { x: star_x, y: center_y, width: self.star_size, height: line.height },
+                ch,
+                &font,
+                color,
+                HorizontalAlignment::Center,
+            );
         }
     }
 }

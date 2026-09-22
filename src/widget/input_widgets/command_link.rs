@@ -214,9 +214,23 @@ impl Draw for CommandLink {
         let padding = &style.padding;
         let text_font = Font::new("Arial", 12.0, false, true);
         let text_x = rect.x + padding.left as i32;
-        let text_y = rect.y + padding.top as i32 + 12;
-        context.draw_text(
-            Point::new(text_x, text_y),
+        // The two lines are stacked from their **measured** line boxes rather than from the
+        // literals `+ 12` and `+ 16`. Those constants pinned the layout to one particular font
+        // size: the label's offset had no relation to its own line height, so a theme or a
+        // caller passing a larger font moved the description into the label. The label sits in
+        // the top half of the content box and the description directly below it, each in its own
+        // measured line, which is the same reading a stacked link has in every toolkit.
+        let content_top = rect.y + padding.top as i32;
+        let text_band = Rect {
+            x: text_x,
+            y: content_top,
+            width: rect.width.saturating_sub(padding.left + padding.right),
+            height: rect.height.saturating_sub(padding.top + padding.bottom),
+        };
+        let line = context.text_line(text_band, &text_font);
+        let text_y = line.y;
+        context.draw_text_fitted(
+            line,
             &self.text,
             &text_font,
             current_text_color,
@@ -225,11 +239,18 @@ impl Draw for CommandLink {
         // Draw description if present
         if !self.description.is_empty() {
             let desc_font = Font::new("Arial", 10.0, false, false);
-            let desc_color = if !is_enabled { disabled_color } else { Color::GRAY };
-            let desc_x = text_x;
-            let desc_y = text_y + 16;
-            context.draw_text(
-                Point::new(desc_x, desc_y),
+            // `Color::GRAY` was a literal that never moved with the appearance; the disabled
+            // ink already follows it, so an enabled description is the same ink damped toward
+            // whatever the control was actually given to paint on.
+            let desc_color = if !is_enabled {
+                disabled_color
+            } else {
+                current_text_color.blend(&bg_color, 0.35)
+            };
+            let desc_line =
+                context.text_line(Rect { y: text_y + line.height as i32, ..text_band }, &desc_font);
+            context.draw_text_fitted(
+                desc_line,
                 &self.description,
                 &desc_font,
                 desc_color,
@@ -239,7 +260,9 @@ impl Draw for CommandLink {
         // Draw underline for hover state
         if is_hovered && is_enabled {
             let text_metrics = context.measure_text(&self.text, &text_font);
-            let underline_y = text_y + text_metrics.height as i32 + 2;
+            // The rule sits on the label's own line-box bottom edge, so it tracks the glyphs it
+            // underlines instead of a second hand-tuned offset.
+            let underline_y = text_y + line.height as i32;
             context.draw_line(
                 Point::new(text_x, underline_y),
                 Point::new(text_x + text_metrics.width as i32, underline_y),

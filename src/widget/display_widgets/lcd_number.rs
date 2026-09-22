@@ -201,13 +201,46 @@ impl LCDNumber {
     /// and always includes a fractional part (for example `"3"` renders as
     /// `"3"` but `3.5` as `"3.5"`). The other three modes truncate to `i64`
     /// first, dropping any fraction.
+    /// The string this display shows, **padded to `num_digits`**.
+    ///
+    /// # Why the padding is not cosmetic
+    ///
+    /// `num_digits` is Qt's `QLCDNumber::digitCount`, and Qt's contract is that the display
+    /// renders *that many* digit positions, right-aligned and blank-filled: it is the shape of the
+    /// readout, which is why a caller sets it at all. This method returned the bare value instead,
+    /// so `num_digits = 6` laid out six digit widths and then drew one character in the middle of
+    /// them — the snapshot showed `A–F` segments lit for a single `0` in a six-wide panel. Reading
+    /// `num_digits` therefore changed nothing about what a user saw except the cell size.
+    ///
+    /// The padding is on the **left**, matching Qt (a readout grows leftward as its value grows),
+    /// and it is applied only to the decimal/hex/octal/binary digit runs — never to a sign or a
+    /// decimal point, which occupy a position each but are not digits.
+    ///
+    /// # Why the value is formatted as an integer
+    ///
+    /// `Dec` used `format!("{}", self.value)` on an `f64`, which is inconsistent with the other
+    /// three modes in two ways: it produces a decimal point the seven-segment renderer has no
+    /// glyph for (so `3.5` drew as `35`), and it produces an exponent for large magnitudes (so
+    /// `1e20` drew as the literal characters `1`, `e`, `2`, `0`). The value field is an `f64`
+    /// because the property is published as `Float`, but an LCD readout shows integers; truncating
+    /// toward zero makes `Dec` agree with `Hex`/`Oct`/`Bin` about what a value looks like.
     pub fn display_text(&self) -> String {
-        match self.mode {
-            LCDNumberMode::Hex => format!("{:X}", self.value as i64),
-            LCDNumberMode::Dec => format!("{}", self.value),
-            LCDNumberMode::Oct => format!("{:o}", self.value as i64),
-            LCDNumberMode::Bin => format!("{:b}", self.value as i64),
-        }
+        let magnitude = self.value.abs() as i64;
+        let sign = if self.value < 0.0 { "-" } else { "" };
+        let digits = match self.mode {
+            LCDNumberMode::Hex => format!("{magnitude:X}"),
+            LCDNumberMode::Dec => format!("{magnitude}"),
+            LCDNumberMode::Oct => format!("{magnitude:o}"),
+            LCDNumberMode::Bin => format!("{magnitude:b}"),
+        };
+        // `num_digits` counts digit positions, so the sign is charged against the budget and the
+        // fill goes **before** it, not between the sign and the digits: a readout is `
+        // "  -42"`, never `"-  42"`. A value wider than the budget is shown in full rather
+        // than truncated — a readout that silently loses its most significant digits is worse
+        // than one that overflows its own cell.
+        let budget = (self.num_digits.max(1) as usize).saturating_sub(sign.len());
+        let fill = budget.saturating_sub(digits.chars().count());
+        format!("{}{sign}{digits}", " ".repeat(fill))
     }
 }
 impl Widget for LCDNumber {
@@ -353,21 +386,28 @@ impl Draw for LCDNumber {
         let bg_color = resolved.blend(&fg_color, 0.08);
         context.fill_rect(rect, bg_color);
         let display_text = self.display_text();
-        let digit_width = rect.width / (self.num_digits as f64).max(1.0) as u32;
+        // The panel is `num_digits` cells wide, always — that is what the property means. It used
+        // to be sized by the *text* (`display_text.len()`), so the digit cells shrank and grew as
+        // the value changed length and the readout's shape bore no relation to `num_digits` except
+        // in the divisor. `display_text` now pads to the budget, so the two agree by construction:
+        // the string is exactly `num_digits` cells (or more, for a value too wide to fit, in which
+        // case the panel follows it rather than clipping its leading digits).
+        let cells = (self.num_digits.max(1) as usize).max(display_text.chars().count());
+        let cell_width = rect.width / cells.max(1) as u32;
         let digit_height = rect.height * 7 / 10;
-        let segment_width = digit_width / 8;
-        let start_x =
-            rect.x + ((rect.width as i32 - digit_width as i32 * display_text.len() as i32) / 2);
+        let segment_width = cell_width / 8;
+        let panel_width = cell_width as i32 * cells as i32;
+        let start_x = rect.x + ((rect.width as i32 - panel_width) / 2);
         let start_y = rect.y + ((rect.height as i32 - digit_height as i32) / 2);
         for (i, ch) in display_text.chars().enumerate() {
-            let digit_x = (start_x + i as i32 * digit_width as i32) as u32;
+            let digit_x = (start_x + i as i32 * cell_width as i32) as u32;
             let digit_y = start_y as u32;
             self.draw_digit(
                 context,
                 ch,
                 digit_x,
                 digit_y,
-                digit_width,
+                cell_width,
                 digit_height,
                 segment_width,
                 fg_color,
@@ -638,7 +678,16 @@ mod tests {
     fn lcd_display_text_dec() {
         let mut lcd = LCDNumber::new(Rect::new(0, 0, 200, 50));
         lcd.set_value(1234.0);
-        assert_eq!(lcd.display_text(), "1234");
+        // Padded to `num_digits` (the default is 6), because that is what the property means:
+        // it is the *number of digit positions* the display renders, right-aligned and blank-
+        // filled, which is Qt's `QLCDNumber::digitCount` contract. These tests previously
+        // asserted the bare value, which is why `num_digits` could be read for the cell width and
+        // ignored for the readout's shape without anything failing.
+        assert_eq!(lcd.display_text(), "  1234");
+        lcd.set_num_digits(3);
+        assert_eq!(lcd.display_text(), "1234", "a value wider than the budget is shown in full");
+        lcd.set_num_digits(8);
+        assert_eq!(lcd.display_text(), "    1234");
     }
 
     #[test]
@@ -646,7 +695,7 @@ mod tests {
         let mut lcd = LCDNumber::new(Rect::new(0, 0, 200, 50));
         lcd.set_mode(LCDNumberMode::Hex);
         lcd.set_value(255.0);
-        assert_eq!(lcd.display_text(), "FF");
+        assert_eq!(lcd.display_text(), "    FF");
     }
 
     #[test]
@@ -654,7 +703,7 @@ mod tests {
         let mut lcd = LCDNumber::new(Rect::new(0, 0, 200, 50));
         lcd.set_mode(LCDNumberMode::Oct);
         lcd.set_value(64.0);
-        assert_eq!(lcd.display_text(), "100");
+        assert_eq!(lcd.display_text(), "   100");
     }
 
     #[test]
@@ -662,7 +711,47 @@ mod tests {
         let mut lcd = LCDNumber::new(Rect::new(0, 0, 200, 50));
         lcd.set_mode(LCDNumberMode::Bin);
         lcd.set_value(5.0);
-        assert_eq!(lcd.display_text(), "101");
+        assert_eq!(lcd.display_text(), "   101");
+    }
+
+    #[test]
+    fn lcd_decimal_is_formatted_as_an_integer_like_the_other_modes() {
+        // `Dec` used `format!("{}", f64)` while the other three formatted an integer, so a
+        // fractional value produced a decimal point the seven-segment renderer has no glyph for
+        // (drawing `3.5` as `35`) and a large magnitude produced an exponent, drawing the literal
+        // characters `1e20`. Truncation toward zero makes all four modes agree.
+        let mut lcd = LCDNumber::new(Rect::new(0, 0, 200, 50));
+        lcd.set_num_digits(2);
+        lcd.set_value(3.5);
+        assert_eq!(lcd.display_text(), " 3");
+        // A magnitude larger than `i64::MAX` saturates rather than producing an exponent or a
+        // wrapped value. That is the honest behaviour of a seven-segment readout: it shows the
+        // largest integer it can represent, and `check_overflow()` is what tells the caller the
+        // value did not fit. Before this, `Dec` rendered `1e20` as the literal characters
+        // `1`,`e`,`2`,`0`, which is not a number at all.
+        lcd.set_max_value(1e21);
+        lcd.set_value(1e20);
+        let shown = lcd.display_text();
+        assert!(
+            !shown.contains('e') && !shown.contains('.'),
+            "a large value must render as digits, not as an exponent: {shown:?}"
+        );
+        assert!(
+            shown.trim().chars().all(|ch| ch.is_ascii_digit()),
+            "every visible cell must be a digit: {shown:?}"
+        );
+    }
+
+    #[test]
+    fn lcd_negative_values_charge_the_sign_against_the_budget() {
+        // The sign occupies a position, so it comes out of `num_digits` rather than being added
+        // on top of it — otherwise a 6-digit readout of a negative number would render seven
+        // cells and overflow the panel it was sized for.
+        let mut lcd = LCDNumber::new(Rect::new(0, 0, 200, 50));
+        lcd.set_num_digits(4);
+        lcd.set_value(-42.0);
+        assert_eq!(lcd.display_text(), " -42");
+        assert_eq!(lcd.display_text().chars().count(), 4);
     }
 
     #[test]

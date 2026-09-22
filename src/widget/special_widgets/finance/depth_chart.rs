@@ -26,8 +26,9 @@ use crate::render::RenderContext;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::special_widgets::finance::layout::PlotArea;
+use crate::widget::special_widgets::finance::layout::{panel_colors, PanelColors, PlotArea};
 use crate::widget::special_widgets::finance::types::{BookLevel, OrderBook};
+use crate::widget::special_widgets::finance::volume_chart::draw_empty_pane;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -80,6 +81,20 @@ impl DepthChart {
             ask_color: Color::rgb(220, 68, 70),
             level_hovered: crate::signal::Signal1::new(),
         }
+    }
+
+    /// The plot area for this control's geometry.
+    ///
+    /// Shared by `draw` and `handle_event` rather than built twice: the pointer-to-price
+    /// mapping is only correct while the rectangle it inverts is the rectangle the curve was
+    /// drawn in, and two copies of the margin list are two chances for those to disagree.
+    fn plot_area(&self) -> PlotArea {
+        PlotArea::price_pane(self.base.geometry())
+    }
+
+    /// The pane's chrome, resolved from this control's own style first and the theme second.
+    fn chrome(&self) -> PanelColors {
+        panel_colors(Some(self.base.style()))
     }
 
     /// The book being plotted.
@@ -346,7 +361,7 @@ impl crate::event::EventHandler for DepthChart {
     fn handle_event(&mut self, event: &crate::event::Event) {
         use crate::event::Event;
         if let Event::MouseMove { pos } | Event::PointerMove { pos, .. } = event {
-            let area = PlotArea::with_margins(self.base.geometry(), 48, 8, 8, 20);
+            let area = self.plot_area();
             let (low, high) = self.price_bounds();
             if high > low && area.rect.width > 0 {
                 let fraction = (pos.x - area.rect.x) as f64 / area.rect.width as f64;
@@ -361,16 +376,37 @@ impl crate::event::EventHandler for DepthChart {
 
 impl Draw for DepthChart {
     fn draw(&mut self, context: &mut RenderContext) {
-        let area = PlotArea::with_margins(self.base.geometry(), 48, 8, 8, 20);
+        let area = self.plot_area();
         if area.rect.width == 0 || area.rect.height == 0 {
             return;
         }
-        context.fill_rect(area.rect, Color::rgb(18, 22, 28));
+        // The pane surface resolves the caller's style first and the theme second. The bid
+        // and ask colours below are which side of the book a point belongs to: they are data,
+        // and `set_colors` is the caller's way to change them.
+        let chrome = self.chrome();
+        context.fill_rect(area.rect, chrome.surface);
 
         let max_cumulative = self.max_cumulative();
+        // No usable level: the book is empty or every level is zero-size, and the curve
+        // would be two invisible hairlines on the baseline. The pane draws its frame and a
+        // message instead of leaving the slab this used to return after.
         if max_cumulative <= 0.0 {
+            draw_empty_pane(context, &area, chrome);
             return;
         }
+
+        // A price/quantity scale: the curve's whole reading is "how much is available by
+        // here", which is a comparison against the baseline, so the gridlines are what turn
+        // it from a shape into a quantity.
+        for step in 0..=3 {
+            let y = area.rect.y + area.rect.height as i32 * step / 3;
+            context.draw_line(
+                crate::core::Point { x: area.rect.x, y },
+                crate::core::Point { x: area.right(), y },
+                chrome.grid,
+            );
+        }
+
         // Bids first so the asks, drawn second, are on top where they overlap near the
         // spread — the ask side is what a buyer reads, so it should not be occluded.
         self.draw_step_curve(context, &area, DepthSide::Bid, self.bid_color, max_cumulative);

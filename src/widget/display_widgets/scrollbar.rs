@@ -144,6 +144,28 @@ impl ScrollBar {
         }
         ((self.value - self.minimum) as f32) / ((self.maximum - self.minimum) as f32)
     }
+    /// Size of the arrow cell at each end of the trough, in pixels.
+    ///
+    /// Derived from the control's **thickness** and bounded, so a scrollbar's arrows are the
+    /// same size no matter how long the bar is. `width * 0.2` on a 240 px horizontal bar gave a
+    /// 48 px arrow — wider than the trough and longer than the space before the thumb, so the
+    /// left arrow's apex landed underneath the slider. Qt's `SC_ScrollBarSubLine` cell is on the
+    /// order of the trough's thickness, and this is the same reading.
+    ///
+    /// `value_to_pixel_pos` reads this too, which is what keeps the thumb inside the trough: one
+    /// derivation, two consumers, so they cannot drift apart.
+    fn arrow_cell(&self) -> f32 {
+        let rect = self.geometry();
+        match self.orientation {
+            Orientation::Horizontal => {
+                (rect.height as f32).min((rect.width as f32) / 3.0).clamp(4.0, 16.0)
+            }
+            Orientation::Vertical => {
+                (rect.width as f32).min((rect.height as f32) / 3.0).clamp(4.0, 16.0)
+            }
+        }
+    }
+
     /// Returns value for a given pixel position.
     fn pixel_pos_to_value(&self, pos: f32) -> i32 {
         let rect = self.geometry();
@@ -170,21 +192,29 @@ impl ScrollBar {
         let clamped = ordered_clamp_i32(value, self.minimum, self.maximum);
         let slider_size = self.slider_size();
         let range = (self.maximum - self.minimum) as f32;
+        //
+        // The travel is the **trough between the two arrow cells**, not the whole control: the
+        // arrows occupy fixed cells at each end, so a thumb travelling the full length would
+        // pass underneath them. `arrow_cell()` is the same derivation `draw` uses for the arrow
+        // size, so the two cannot disagree about where the end of the track is.
+        let cell = self.arrow_cell();
         if range == 0.0 {
             return match self.orientation {
-                Orientation::Horizontal => rect.x as f32,
-                Orientation::Vertical => rect.y as f32,
+                Orientation::Horizontal => rect.x as f32 + cell,
+                Orientation::Vertical => rect.y as f32 + cell,
             };
         }
         let relative = (clamped - self.minimum) as f32 / range;
         match self.orientation {
             Orientation::Horizontal => {
-                let available_width = rect.width as f32 * (1.0 - slider_size);
-                rect.x as f32 + available_width * relative
+                let available_width =
+                    (rect.width as f32 - cell * 2.0).max(0.0) * (1.0 - slider_size);
+                rect.x as f32 + cell + available_width * relative
             }
             Orientation::Vertical => {
-                let available_height = rect.height as f32 * (1.0 - slider_size);
-                rect.y as f32 + available_height * relative
+                let available_height =
+                    (rect.height as f32 - cell * 2.0).max(0.0) * (1.0 - slider_size);
+                rect.y as f32 + cell + available_height * relative
             }
         }
     }
@@ -426,6 +456,18 @@ impl EventHandler for ScrollBar {
         }
     }
 }
+/// The active theme's window fill, or a light-theme default when no theme is installed.
+///
+/// Used only as a **guard**: a control whose resolved background equals this has not been given
+/// a surface of its own, so painting it verbatim would make the control the window. Keeping
+/// the query in one place means the guard reads the same fact every control does.
+fn color_theme_window_fill() -> Color {
+    crate::style::theme_manager()
+        .current_theme()
+        .map(|theme| theme.colors.background)
+        .unwrap_or(Color::rgb(240, 240, 240))
+}
+
 impl Draw for ScrollBar {
     fn draw(&mut self, context: &mut RenderContext) {
         // Draw base widget
@@ -440,18 +482,36 @@ impl Draw for ScrollBar {
         // to the widget, and the widget painted its own grey anyway. The slider is a
         // background, and the arrows are ink over it, so they read `text_color` —
         // the colour the theme resolves for exactly that.
-        let slider_color = style.background_color.unwrap_or(Color::rgb(180, 180, 180));
-        let slider_border_color = style.border_color.unwrap_or(Color::rgb(150, 150, 150));
-        let arrow_color = style.text_color.unwrap_or(Color::rgb(100, 100, 100));
-        // Draw background
-        context.fill_rect(
-            Rect::new(rect.x, rect.y, rect.width, rect.height),
-            style.background_color.unwrap_or(Color::rgb(240, 240, 240)),
-        );
+        // The **thumb** is the part the user drags; the **trough** is the track it travels in.
+        //
+        // Both used to read `style.background_color`. Since the theme resolves one
+        // `(bg, fg, border)` triple per role, that made them the same colour by construction: two
+        // byte-identical rectangles, so the control rendered as a plain bar with a movable
+        // region the user could not see. The trough is the control's own surface and the thumb is
+        // a raised affordance on it, so the thumb is derived one step away from the trough — the
+        // same `!= window_fill` guard the slider uses to keep its own track off the window fill.
+        // The theme's `Input` role (this control's role) already resolves the trough away from
+        // the window colour; the guard covers a style that never met the theme.
+        let window_fill = { color_theme_window_fill() };
+        let trough = match style.background_color {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => style
+                .background_color
+                .unwrap_or(Color::rgb(240, 240, 240))
+                .blend(&style.text_color.unwrap_or(Color::rgb(100, 100, 100)), 0.06),
+        };
+        let slider_color = style
+            .border_color
+            .filter(|resolved| *resolved != trough)
+            .unwrap_or_else(|| trough.blend(&trough.contrast_color(), 0.32));
+        let slider_border_color = trough.blend(&slider_color, 0.5);
+        let arrow_color = style.text_color.unwrap_or_else(|| trough.contrast_color());
+        // Draw background (the trough)
+        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), trough);
         // Draw border
         context.draw_rect(
             Rect::new(rect.x, rect.y, rect.width, rect.height),
-            style.border_color.unwrap_or(Color::rgb(200, 200, 200)),
+            style.border_color.unwrap_or_else(|| trough.contrast_color().with_alpha(80)),
         );
         // Draw slider
         match self.orientation {
@@ -477,7 +537,14 @@ impl Draw for ScrollBar {
                     slider_border_color,
                 );
                 // Draw arrows using draw_line (triangles approximated)
-                let arrow_size = (rect.height as f32).min(rect.width as f32 * 0.2) as u32;
+                //
+                // The arrow cell is sized from the control's **thickness**, not its length:
+                // `rect.width * 0.2` on a 240 px horizontal bar produced a 48 px arrow — longer
+                // than the space before the thumb, so the left arrow's apex crossed underneath
+                // the slider (`scroll_bar.svg` had its apex at x = 48 while the thumb began at
+                // x = 24). The derivation lives in `arrow_cell()`, which the thumb's travel
+                // reads too, so the two cannot disagree.
+                let arrow_size = self.arrow_cell() as u32;
                 // Left arrow head
                 context.draw_line(
                     Point::from_f32(
@@ -547,7 +614,7 @@ impl Draw for ScrollBar {
                     slider_border_color,
                 );
                 // Draw arrows using draw_line (triangles approximated)
-                let arrow_size = (rect.width as f32).min(rect.height as f32 * 0.2) as u32;
+                let arrow_size = self.arrow_cell() as u32;
                 // Up arrow head
                 context.draw_line(
                     Point::from_f32(

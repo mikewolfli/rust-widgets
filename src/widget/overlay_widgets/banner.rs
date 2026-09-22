@@ -532,8 +532,18 @@ impl Draw for Banner {
         let text_width = (controls_left - (rect.x + EDGE_PADDING as i32)).max(0) as u32;
         if text_width > 0 {
             let font = Font::simple("Sans", (rect.height as f32 * 0.3).clamp(10.0, 16.0));
-            context.draw_text(
-                Point::new(rect.x + EDGE_PADDING as i32, rect.y + (rect.height as i32) / 2),
+            // Centred through the shared primitive. The old origin was the banner's middle
+            // line, and since the origin is the glyph box's top edge the message sat half a
+            // line low — visible in `banner.svg`, where a 16 px line began at the middle of a
+            // 120 px band instead of at 52.
+            let line = context.text_line(rect, &font);
+            context.draw_text_fitted(
+                Rect {
+                    x: rect.x + EDGE_PADDING as i32,
+                    y: line.y,
+                    width: text_width,
+                    height: line.height,
+                },
                 &self.text,
                 &font,
                 text_color,
@@ -550,10 +560,16 @@ impl Draw for Banner {
                 context.fill_rect(action_rect, background.blend(&text_color, 0.16));
             }
             context.draw_rect(action_rect, border_color);
-            context.draw_text(
-                Point::new(action_rect.x + (action_rect.width as i32) / 2, action_rect.y + 16),
+            // The action label is centred in its own button, not offset by a hand-tuned 16:
+            // `action_rect.x + width / 2` with a left origin also ran the label off the right
+            // half of the button, so the two halves of a two-word label disagreed about where
+            // the button was.
+            let action_font = Font::simple("Sans", 12.0);
+            let action_line = context.text_line(action_rect, &action_font);
+            context.draw_text_fitted(
+                action_line,
                 label,
-                &Font::simple("Sans", 12.0),
+                &action_font,
                 text_color,
                 HorizontalAlignment::Center,
             );

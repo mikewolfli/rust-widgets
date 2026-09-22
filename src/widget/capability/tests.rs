@@ -514,6 +514,82 @@ fn schema_defaults_are_readable_and_writable_when_declared() {
     }
 }
 
+/// The label resolution prefers a control's dedicated caption over its content.
+///
+/// # Why this is a general assertion and not a `floating_label` special case
+///
+/// Every constructor takes a `text` parameter that becomes the control's label, and the
+/// shared helper resolves "the label" by probing the known spellings in order. For a
+/// control with both a `text` (content) and a `label` (caption) property — `floating_label`
+/// is the one such control — resolving to the first hit put the caption into the content
+/// slot and left the caption slot empty, so the control that exists to demonstrate a
+/// floating label had nothing to float.
+///
+/// # What this pins, and what it deliberately does not
+///
+/// It pins the *choice*: for a control that answers more than one of the known label
+/// spellings, the most descriptive one must win. That is what `floating_label` needed —
+/// it answers both `label` and `text`, and the caption has to outrank the content or the
+/// field has nothing to float. It does not assert that every constructor writes its text
+/// anywhere (several genuinely ignore the parameter — `web_engine_view` is empty on a fresh
+/// instance), nor that every control's answer is `label`: `message_box` truly answers both
+/// `text` and `message`, and either is a legitimate label for it.
+#[cfg(not(alloc_frugal))]
+#[test]
+fn a_control_that_answers_a_caption_and_a_content_is_labelled_by_the_caption() {
+    use crate::widget::capability::CapabilityValue as Value;
+
+    let factory = WidgetFactory::new_with_defaults();
+    let mut checked = 0usize;
+    for capability in factory.capabilities() {
+        let Some(mut widget) =
+            factory.create(capability.canonical_name, Rect::new(0, 0, 64, 48), "Sample")
+        else {
+            continue;
+        };
+        let Some(properties) = widget.properties_dyn_mut() else {
+            continue;
+        };
+        // A control is ambiguous only when it answers more than one of the known spellings
+        // with a string.
+        let answered: alloc::vec::Vec<&'static str> =
+            crate::control_backend::custom::LABEL_PROPERTY_NAMES
+                .iter()
+                .copied()
+                .filter(|name| matches!(properties.get(name), Ok(Value::String(_))))
+                .collect();
+        if answered.len() < 2 {
+            continue;
+        }
+        checked += 1;
+        // The first name in the published order is the most descriptive, so it must be the
+        // one the writer picks — otherwise the constructor's text and the control's caption
+        // are two different properties.
+        assert_eq!(
+            crate::control_backend::custom::widget_label_property_name(properties),
+            Some(answered[0]),
+            "{} answers {answered:?}, so the most descriptive one must win",
+            capability.canonical_name
+        );
+    }
+    assert!(
+        checked > 0,
+        "no control answers both a caption and a content name, so this assertion proves \
+         nothing about the ordering"
+    );
+
+    // The control this ordering exists for: it answers both, and the caption must win.
+    let mut floating = factory
+        .create("floating_label", Rect::new(0, 0, 200, 48), "Sample")
+        .expect("`floating_label` is a registered control");
+    let properties = floating.properties_dyn_mut().expect("it declares properties");
+    assert_eq!(
+        crate::control_backend::custom::widget_label_property_name(properties),
+        Some("label"),
+        "a floating-label field must be labelled by its caption, not by its content"
+    );
+}
+
 #[cfg(not(alloc_frugal))]
 #[test]
 fn default_property_value_returns_schema_defaults() {

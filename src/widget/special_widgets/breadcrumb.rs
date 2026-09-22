@@ -282,9 +282,8 @@ impl Draw for Breadcrumb {
         // `apply_active_theme` could not supply and what a light/dark switch changes
         // most. The guard is scoped to this expression and released before any other
         // theme accessor runs.
-        let theme_surface = crate::style::theme_manager()
-            .current_theme()
-            .map(|theme| theme.colors.background);
+        let theme_surface =
+            crate::style::theme_manager().current_theme().map(|theme| theme.colors.background);
         let background = style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
@@ -315,8 +314,12 @@ impl Draw for Breadcrumb {
                 context.fill_rect(segment_rect, selected_background);
             }
 
+            // A label's origin is the glyph box's top edge, so the segment's raw midpoint put
+            // that edge on the middle line and drew the label half a line low. The line box
+            // centred in the segment gives the origin instead; the separator below shares it.
+            let line = context.text_line(segment_rect, &Font::default());
             context.draw_text(
-                Point::new(x + self.segment_padding, rect.y + rect.height as i32 / 2),
+                Point::new(x + self.segment_padding, line.y),
                 &segment.label,
                 &Font::default(),
                 text_color,
@@ -326,7 +329,7 @@ impl Draw for Breadcrumb {
             x += width;
             if index + 1 < self.segments.len() {
                 context.draw_text(
-                    Point::new(x + 3, rect.y + rect.height as i32 / 2),
+                    Point::new(x + 3, line.y),
                     ">",
                     &Font::default(),
                     separator_color,

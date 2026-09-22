@@ -11,6 +11,7 @@
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::style::SemanticColor;
 use crate::widget::capability::coercion::{
     badge_level_to_str, expect_badge_level, expect_i64, expect_string,
 };
@@ -49,6 +50,13 @@ impl BadgeLevel {
 
 /// Badge widget for notification counts and status indicators.
 ///
+/// Radius of the dot-mode marker, in logical pixels.
+///
+/// The size the marker is *defined* to be, independent of the rectangle the caller laid the
+/// badge out in — Material's `smallSize` is the same value. Deriving it from the geometry drew
+/// a 60 px disc in the 240x120 census cell and a 12 px one in a 24 px row.
+const DOT_RADIUS: u32 = 5;
+
 /// Renders as a filled circle or pill with an optional text overlay.
 /// Supports dot mode (colored dot with no text) and automatic hiding
 /// when count is 0 (unless overridden with custom text).
@@ -242,18 +250,59 @@ impl Draw for Badge {
         // manager's mutex is not re-entrant.
         let style = self.base.style().clone();
         let theme = crate::style::resolved_theme_style("badge");
-        let bg_color = style
-            .background_color
-            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
-            .unwrap_or_else(|| self.level.color());
-        // The count reads against the pill, so it is the pill's own contrast colour
-        // rather than a literal white.
-        let text_color = bg_color.contrast_color();
+        // The severity colour is the badge's **subject**, so it is the base the pill is built
+        // from — not a last-resort fallback.
+        //
+        // This chain used to be `.or(themed_bg).unwrap_or(self.level.color())`, and
+        // `themed_bg` was never `None`: `badge` is absent from the theme's role table, so it
+        // resolved as `Surface` and the manager wrote the *window background* into it. The
+        // `or` therefore always won, `BadgeLevel::Info/Success/Warning/Error` were unreachable,
+        // and `badge.svg` showed a pill filled with the window's own colour — a badge that was
+        // only visible as the hole it left in the label behind it.
+        //
+        // A caller's explicit colour still wins outright. Otherwise the severity is used, and
+        // it is pushed away from the surface it sits on when the two would coincide, which is
+        // the case that made the badge invisible in the first place.
+        let surface = theme
+            .as_ref()
+            .and_then(|t| t.background_color)
+            .or(style.background_color)
+            .unwrap_or(Color::WHITE);
+        let severity = match self.level {
+            BadgeLevel::Info => SemanticColor::Info,
+            BadgeLevel::Success => SemanticColor::Success,
+            BadgeLevel::Warning => SemanticColor::Warning,
+            BadgeLevel::Error => SemanticColor::Error,
+        };
+        // The severity is resolved through the **theme's** token, not the level's own literal.
+        //
+        // `BadgeLevel::color()` returns `Color::INFO`/`WARNING`/… — fixed constants that do not
+        // participate in the appearance. Painting one made the badge's *only* visible element
+        // invariant between light and dark, which the rendering census reports as "this control
+        // stopped following the appearance". The theme carries the same four severities as
+        // tokens (`theme.colors.error/warning/success/info`), and this is precisely the axis
+        // those tokens exist for: routing through them is what lets a theme restyle its own
+        // severity scale. The literal remains as the fallback for a process with no theme
+        // installed, where there is no token to read.
+        let severity = crate::style::semantic_color(severity).unwrap_or_else(|| self.level.color());
+        let bg_color = if style.theme_derived {
+            // The style's colour came from the theme, so it describes the *surface* rather
+            // than the severity; `theme_derived` is how a caller's own colour is told apart
+            // from the manager's contribution.
+            severity.legible_on(surface, 3.0)
+        } else {
+            style.background_color.unwrap_or_else(|| severity.legible_on(surface, 3.0))
+        };
+        // The count reads against the pill, so its colour is derived per-branch below from the
+        // fill it actually lands on.
         let text_str = self.display_text();
 
         if self.dot_mode {
-            // Draw a small colored dot centered in the geometry
-            let dot_radius = (rect.height.min(rect.width) / 2).max(4);
+            // The dot is a **fixed-size** marker, not a fraction of the caller's rectangle:
+            // `min(w, h) / 2` drew a 12 px dot in a 24 px census cell and a 60 px disc in a
+            // 240x120 one, so the same badge was a different object in every layout. Material's
+            // `smallSize` is 6.0 for the same marker.
+            let dot_radius = DOT_RADIUS.min(rect.height.min(rect.width) / 2);
             let center =
                 Point::new(rect.x + (rect.width as i32) / 2, rect.y + (rect.height as i32) / 2);
             context.fill_circle(center, dot_radius, bg_color);
@@ -287,19 +336,12 @@ impl Draw for Badge {
         context.fill_rounded_rect(pill_rect, corner_radius, bg_color);
 
         // Draw text centred on the pill. The glyph origin is the glyph's **top** edge, so
-        // centring is half the difference between the pill and the line box — the extra
-        // `+ ascent` that used to be here pushed the label half a line down, out through the
-        // pill's bottom edge (`sample` sat at y = 63..74 in a box ending at 69).
-        let text_x = pill_rect.x + ((pill_rect.width as i32 - text_width as i32) / 2).max(0);
-        let text_y = pill_rect.y + ((pill_rect.height as i32 - glyph_height as i32) / 2).max(0);
-
-        context.draw_text(
-            Point::new(text_x, text_y),
-            &text_str,
-            &font,
-            text_color,
-            HorizontalAlignment::Left,
-        );
+        // centring comes from the shared line-box primitive — the extra `+ ascent` that used
+        // to be here pushed the label half a line down, out through the pill's bottom edge
+        // (`sample` sat at y = 63..74 in a box ending at 69).
+        let text_color = bg_color.contrast_color();
+        let line = context.text_line(pill_rect, &font);
+        context.draw_text_fitted(line, &text_str, &font, text_color, HorizontalAlignment::Center);
     }
 }
 

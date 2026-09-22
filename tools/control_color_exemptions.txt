@@ -53,10 +53,21 @@ radar_chart series-palette true A series colour identifies which axis polygon is
 # Red and green here encode price direction. They are information: swapping them
 # for theme colours would make "rising" and "falling" indistinguishable, which is
 # a loss of data, not a restyling.
-candlestick_chart up-down-red-green true Red/green encode the price direction of the candle; replacing them with theme colours erases which way the market moved.
-volume_chart up-down-red-green true Volume bar colour encodes whether the bar rose or fell; the direction is the data.
-depth_chart bid-ask-colours true Two colours separate bids from asks; which side is which is data, and merging them would destroy the chart.
-indicator_chart indicator-lines true Indicator line colours identify which indicator is which; the identity is the data.
+#
+# ── Removed on evidence (BLUE21, 2026-09-22) ──────────────────────────────────
+# All four financial charts were listed here. They should not have been: what
+# *dominated* their census render was not the price direction or the indicator
+# identity but the **plot pane**, which every one of them filled with the same
+# hardcoded `Color::rgb(18, 22, 28)`. On the light appearance that meant a near-black
+# slab under light-theme axis labels, and on the dark one it was indistinguishable
+# from a window fill. The four snapshot pairs differed only in the exporter's own
+# backdrop comment — four lines each — so the exemptions were excusing a *theme-blind
+# control*, which is the one thing this table exists to prevent.
+#
+# The panes now resolve through one shared derivation (`finance::layout::panel_colors`),
+# so each control differs between appearances and the check rejects all four entries.
+# The price-direction and indicator-identity colours are unchanged and are still data;
+# only the dominant colour moved, which is the judgement this table encodes.
 
 # ── Colour pickers: the spectrum is the subject ───────────────────────────────
 # A colour picker shows a colour space. The colours under the cursor are the value

@@ -13,6 +13,25 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+/// Radius of the indicator disc, in logical pixels.
+///
+/// A constant, for the same reason [`crate::widget::CheckBox`]'s indicator is: the disc is
+/// chrome the control owns, while the rectangle it is laid out in belongs to whoever placed
+/// it. `min(w, h) / 4` made a 240x120 census cell draw a 60 px circle, so the same control
+/// was a different shape in every layout. Flutter's outer radius is 8 at a 20 px indicator;
+/// this is the same size class, chosen so the disc sits comfortably inside a 24 px line.
+const INDICATOR_RADIUS: u32 = 9;
+
+/// Stroke width of the indicator's ring.
+const RING_WIDTH: u32 = 1;
+
+/// Distance from the control's left edge to the ring's outer edge.
+const INDICATOR_INSET: u32 = 1;
+
+/// Gap between the ring's right edge and the label.
+const INDICATOR_GAP: i32 = 6;
+
 /// Radio button widget.
 pub struct RadioButton {
     base: BaseWidget,
@@ -27,6 +46,44 @@ pub struct RadioButton {
     pub checked_changed: Signal1<bool>,
 }
 impl RadioButton {
+    /// The region a press must land in to select this radio button.
+    ///
+    /// The indicator plus the label beside it, **not** the whole rectangle the caller laid out.
+    ///
+    /// This handler used to ignore the pointer entirely (`MousePress { pos: _, .. }`), so a press
+    /// anywhere in the control's rectangle selected it. A radio button given a wide row by its
+    /// layout therefore selected when the user clicked empty space well to the right of its own
+    /// label. Testing the control's **contents** is what every toolkit does — `QRadioButton`
+    /// reacts to its indicator and text — and it is a different statement from "the minimum touch
+    /// target is at least N points", which then widens this region rather than replacing it.
+    fn hit_area(&self) -> Rect {
+        let rect = self.geometry();
+        let line_height = Font::default().size().max(1.0) as u32;
+        let radius = INDICATOR_RADIUS.min(rect.height / 2).min(rect.width / 2);
+        let indicator_x = rect.x + INDICATOR_INSET as i32;
+        let indicator = Rect::new(
+            indicator_x,
+            rect.y + (rect.height as i32 - (radius as i32 * 2)) / 2,
+            radius * 2,
+            radius * 2,
+        );
+        let contents = if self.text.is_empty() {
+            indicator
+        } else {
+            let label_width = self.text.chars().count() as u32 * (line_height * 3 / 5).max(1);
+            Rect::new(
+                indicator.x,
+                indicator.y,
+                indicator.width + INDICATOR_GAP as u32 + label_width,
+                indicator.height,
+            )
+        };
+        match self.style().touch_target {
+            Some(min_size) => contents.expand_to_touch_target(min_size),
+            None => contents,
+        }
+    }
+
     /// Creates an unchecked radio button with geometry.
     pub fn new(geometry: Rect) -> Self {
         Self {
@@ -168,12 +225,21 @@ impl EventHandler for RadioButton {
             return;
         }
         match event {
-            Event::MousePress { pos: _, button } if *button == 1 => {
+            Event::MousePress { pos, button } if *button == 1 => {
+                if self.hit_area().contains_point(*pos) {
+                    self.set_checked(true);
+                    self.base.clicked.emit();
+                }
+            }
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { pos, .. } if self.hit_area().contains_point(*pos) => {
                 self.set_checked(true);
                 self.base.clicked.emit();
             }
+            // A `Tap` carries no position, so it is accepted as-is: the platform has already
+            // resolved it to this control, which is the same basis `hit_area` narrows.
             #[cfg(feature = "touch")]
-            Event::TouchBegin { .. } | Event::Tap { .. } => {
+            Event::Tap { .. } => {
                 self.set_checked(true);
                 self.base.clicked.emit();
             }
@@ -188,43 +254,67 @@ impl EventHandler for RadioButton {
 }
 impl Draw for RadioButton {
     fn draw(&mut self, context: &mut RenderContext) {
-        // Draw radio button
         let rect = self.geometry();
         let style = self.style();
         let enabled = self.base.is_enabled();
-        let center = Point::new(rect.x + rect.width as i32 / 2, rect.y + rect.height as i32 / 2);
-        let radius = rect.height.min(rect.width) / 4;
-        // Draw outer circle
-        let circle_color = if enabled {
-            style.border_color.unwrap_or(Color::rgb(100u8, 100, 100))
-        } else {
-            style.border_color.unwrap_or(Color::rgb(180u8, 180, 180))
-        };
-        context.draw_circle(center, radius, circle_color);
-        // Draw inner circle if checked
-        if self.checked {
-            let inner_radius = radius / 2;
-            let fill_color = if enabled {
-                style.background_color.unwrap_or(Color::rgb(0u8, 120, 215))
-            } else {
-                style.background_color.unwrap_or(Color::rgb(150u8, 150, 150))
-            };
-            context.fill_circle(center, inner_radius, fill_color);
-        }
-        // Draw text label
-        let text_color = if enabled {
-            style.text_color.unwrap_or(Color::rgb(60u8, 60, 60))
-        } else {
-            style.text_color.unwrap_or(Color::rgb(150u8, 150, 150))
-        };
-        let text_pos = Point::new(rect.x + rect.width as i32 / 2 + radius as i32 + 4, center.y);
-        context.draw_text(
-            text_pos,
-            &self.text,
-            &Font::default(),
-            text_color,
-            HorizontalAlignment::Left,
+        let font = Font::default();
+        let line = context.text_line(rect, &font);
+
+        // The indicator is a **fixed-size** disc at the left edge, vertically centred on the
+        // label's own line box, not a fraction of the caller's rectangle. `min(w, h) / 4` made
+        // a 240x120 census cell draw a 60 px circle centred on the middle of the cell — which
+        // is neither the size nor the position of a radio button, and it moved the label to the
+        // control's centre as well. The fixed radius is the one every toolkit uses because a
+        // radio's disc is chrome the control owns, while the rectangle is the caller's.
+        let radius = INDICATOR_RADIUS.min(rect.height / 2).min(rect.width / 2);
+        let center = Point::new(
+            rect.x + INDICATOR_INSET as i32 + radius as i32,
+            line.y + line.height as i32 / 2,
         );
+
+        let ink = style.text_color.unwrap_or_else(|| {
+            // The control paints no fill of its own, so the ink is derived from the surface
+            // the theme already resolved for this control. `text_color` is normally set, so
+            // this only covers a control whose style never met the theme.
+            let surface = style.background_color.unwrap_or(Color::WHITE);
+            if enabled {
+                surface.contrast_color()
+            } else {
+                surface.contrast_color().with_alpha(150)
+            }
+        });
+
+        // The ring is a stroke, so it is drawn as one rather than as a filled disc with a
+        // second disc punched out: two stacked discs at this radius leave a seam where the
+        // anti-aliased edges meet.
+        let ring = if enabled { ink } else { ink.with_alpha(140) };
+        context.draw_circle_stroke(center, radius, ring, RING_WIDTH);
+
+        if self.checked {
+            // The dot takes the caller's or the theme's accent, or — when neither exists —
+            // the ink, which is by construction legible on this control's surface.
+            let dot = style.background_color.unwrap_or(ink);
+            let dot = if enabled { dot } else { dot.with_alpha(140) };
+            // Scaled to the ring rather than a fixed ratio of it: Flutter's inner/outer ratio
+            // is 0.5625, which is visibly fuller than a half without touching the ring.
+            context.fill_circle(center, radius.saturating_mul(9) / 16, dot);
+        }
+
+        if !self.text.is_empty() {
+            let label_x = center.x + radius as i32 + INDICATOR_GAP;
+            context.draw_text_fitted(
+                Rect::new(
+                    label_x,
+                    line.y,
+                    rect.width.saturating_sub((label_x - rect.x) as u32),
+                    line.height,
+                ),
+                &self.text,
+                &font,
+                ink,
+                HorizontalAlignment::Left,
+            );
+        }
     }
 }
 

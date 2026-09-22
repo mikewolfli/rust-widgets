@@ -12,7 +12,40 @@ pub use custom_paint::CustomPaintControlBackend;
 /// exposes `title`, a `StatusBar` exposes `message`. A backend that sets or reads
 /// "the label" has to know the spellings, so they are listed once here rather than
 /// repeated at each call site.
-pub(crate) const LABEL_PROPERTY_NAMES: &[&str] = &["text", "title", "message"];
+///
+/// # Why `label` is first
+///
+/// The list is also consulted in order, and while `text` is the most *common* spelling of a
+/// label it is not the most *descriptive* one for every control. `FloatingLabel` is the
+/// case that makes the difference visible: it publishes both `text` (what the user typed)
+/// and `label` (the caption that floats above the field), so resolving "the label" to `text`
+/// put the caption into the input and left the control with nothing to float — the exact
+/// defect a floating-label field cannot afford. Listing `label` first means a control that
+/// has a dedicated label property is asked for that property, and a control that does not
+/// (every button, checkbox and menu item, which answers `UnknownProperty` to `label`) falls
+/// through to `text` unchanged.
+pub(crate) const LABEL_PROPERTY_NAMES: &[&str] = &["label", "text", "title", "message"];
+
+/// The property a control answers "its label" with, or `None` when it has no label concept.
+///
+/// # Why this is a shared function and not a loop at each call site
+///
+/// The order of [`LABEL_PROPERTY_NAMES`] is a decision, and the three callers (the
+/// constructor helper, the backend's `set_widget_text`/`get_widget_text` pair, and
+/// `Widget::accessible_name`) each had their own loop. Spreading one decision over three
+/// copies is how a control ends up written through one spelling and read through another;
+/// the shared function makes the choice once and lets the widget it is asked about decide
+/// which of the names it actually answers.
+///
+/// A control that answers *several* of the names is resolved by the list's order, so
+/// `FloatingLabel` reports `label` while a `Button` reports `text`.
+pub(crate) fn widget_label_property_name(
+    properties: &dyn crate::widget::capability::WidgetProperties,
+) -> Option<&'static str> {
+    LABEL_PROPERTY_NAMES.iter().copied().find(|name| {
+        matches!(properties.get(name), Ok(crate::widget::capability::CapabilityValue::String(_)))
+    })
+}
 
 /// The kind used for a toggle button when the stripped profiles compile that
 /// variant out.

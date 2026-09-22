@@ -30,11 +30,15 @@ macro_rules! impl_properties_advanced {
             PropertySchema::new("selected_date", PropertyValueKind::String, true, true),
             PropertySchema::new("minimum_date", PropertyValueKind::String, true, true),
             PropertySchema::new("maximum_date", PropertyValueKind::String, true, true),
+            // `weekday_to_str` reports the three-letter forms, so these are the tokens that
+            // describe what `get` returns. The long spellings are still *accepted* by
+            // `expect_weekday` (a writer may take aliases), which is why the mismatch was only
+            // visible from the reader's side.
             PropertySchema::enumerated(
                 "first_day_of_week",
                 true,
                 true,
-                &["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"],
+                &["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
             ),
             PropertySchema::new("grid_visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("navigation_bar_visible", PropertyValueKind::Bool, true, true),

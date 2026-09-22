@@ -159,6 +159,72 @@ fn wiring_a_widget_without_a_clicked_event_reports_zero() {
     );
 }
 
+/// The wiring shortfall is **queryable**, not just countable.
+///
+/// # Why this test exists
+///
+/// `connect_event` returns `Ok` for any name a control publishes, whether or not anything will
+/// ever emit it — so "subscription accepted" and "subscription live" are different facts, and
+/// a host that could not tell them apart would read a dead wire as a working one.
+///
+/// `forward_all`'s return value is a numerator with no denominator: a caller that gets `3`
+/// cannot know whether the control published three names or thirty. This test pins the pair of
+/// facts that closes the hole — how many were offered, and how many were wired — and, just as
+/// importantly, that "never wired" is distinguishable from "fully wired".
+#[test]
+fn the_wiring_shortfall_is_queryable_after_the_binder_is_gone() {
+    let hub = Arc::new(CustomSignalHub::new());
+    let button = Button::new("Go".to_string(), Rect::new(0, 0, 80, 30));
+
+    // Before any wiring the question has no answer, which is distinct from "nothing is
+    // missing". A host must be able to tell "I have not wired this yet" from "this is fine".
+    let probe = EventSignalBinder::new(Arc::clone(&hub));
+    assert_eq!(
+        probe.unwired_events_for(&button),
+        None,
+        "a control that has never been through `forward_all` must report no answer, not zero"
+    );
+
+    // `button` is one of the three converted controls, so `forward_all` resolves every name it
+    // publishes: a fully wired control reports a zero shortfall.
+    let mut binder = EventSignalBinder::new(Arc::clone(&hub));
+    let wired = binder.forward_all(&button);
+    assert!(wired > 0, "`button` resolves at least `clicked`, so something must be wired");
+    assert_eq!(
+        binder.unwired_events_for(&button),
+        Some(0),
+        "every name `button` publishes resolves, so its shortfall must be zero"
+    );
+
+    // The answer survives the binder: it is keyed by kind in shared state, so the designer
+    // asking "which of my wires will never fire" does not need the binder that did the wiring.
+    drop(binder);
+    let asker = EventSignalBinder::detached();
+    assert_eq!(
+        asker.unwired_events_for(&button),
+        Some(0),
+        "the ledger must outlive the binder that populated it"
+    );
+
+    // And an unconverted control — one whose `event_signal_dyn` is the trait default — reports
+    // the whole of its published surface as unwired, which is the fact the ledger exists to
+    // expose rather than hide.
+    let slider =
+        rust_widgets::widget::display_widgets::slider::Slider::new(Rect::new(0, 0, 80, 30));
+    let mut binder = EventSignalBinder::new(Arc::clone(&hub));
+    let wired = binder.forward_all(&slider);
+    let published = {
+        let factory = WidgetFactory::new_with_defaults();
+        factory.capability("slider").map(|capability| capability.events.len()).unwrap_or(0)
+    };
+    assert!(published > 0, "`slider` publishes events, so this case is meaningful");
+    assert_eq!(
+        binder.unwired_events_for(&slider),
+        Some(published - wired),
+        "an unconverted control's shortfall must equal what it published minus what wired"
+    );
+}
+
 /// A detached binder is inert rather than panic-prone or silently attached.
 #[test]
 fn a_detached_binder_forwards_nothing() {

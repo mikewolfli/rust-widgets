@@ -437,6 +437,17 @@ impl TabBar {
     // ---------------------------------------------------------------------------
 
     /// Returns the rect for the tab at the given index.
+    ///
+    /// # Why the width is scaled before the position is derived
+    ///
+    /// The position used to be `(tab_width + spacing) * index`, which never mentioned
+    /// `rect.width`. With six tabs at 200 px on a 240 px strip the fifth began at x = 808 and the
+    /// sixth at x = 1010 — both drawn entirely outside the control. The clamp below is the rule
+    /// [`crate::widget::nav_widgets::tab_view`] already applies: when the tabs do not fit, they
+    /// shrink to `available / count` and every tab is on screen. The *spacing* has to be inside
+    /// the fit calculation for the same reason: `count` tabs need `count` widths plus
+    /// `count - 1` gaps, and leaving the gaps out is how "they fit now" becomes false again one
+    /// tab later.
     fn tab_rect(&self, index: usize) -> Option<Rect> {
         if index >= self.tabs.len() {
             return None;
@@ -445,14 +456,19 @@ impl TabBar {
         let spacing = TAB_SPACING;
         match self.tab_position {
             TabPosition::North | TabPosition::South => {
-                let tab_width = self.compute_tab_width(index);
+                let tab_width = self.fitted_tab_width();
                 let x = rect.x + (tab_width as i32 + spacing) * index as i32;
+                // The last tab must end *inside* the strip. `fitted_tab_width` divides by the
+                // count and subtracts the whole gap budget, so this holds for the last index by
+                // construction; the clamp is the assertion of that, and it also covers a tab
+                // whose own measured width is larger than its fitted slot.
+                let width = tab_width.min((rect.right() - x).max(0) as u32);
                 let y = if self.tab_position == TabPosition::North {
                     rect.y
                 } else {
                     rect.y + rect.height as i32 - TAB_HEIGHT
                 };
-                Some(Rect::new(x, y, tab_width, TAB_HEIGHT as u32))
+                Some(Rect::new(x, y, width, TAB_HEIGHT as u32))
             }
             TabPosition::West | TabPosition::East => {
                 let tab_height = TAB_HEIGHT as u32;
@@ -465,6 +481,27 @@ impl TabBar {
                 Some(Rect::new(x, y, TAB_HEIGHT as u32, tab_height))
             }
         }
+    }
+
+    /// The width every tab is drawn at, after shrinking to fit the strip when it has to.
+    ///
+    /// # Why the fit is applied here rather than per tab
+    ///
+    /// [`Self::compute_tab_width`] answers "how wide does this tab's own label want to be",
+    /// which is a per-tab question; whether the whole *strip* fits is not. Deciding it in one
+    /// place means every tab is scaled by the same rule, so a strip never mixes fitted and
+    /// unfitted tabs — which would show as a tab whose label is elided next to one that is not.
+    fn fitted_tab_width(&self) -> u32 {
+        let rect = self.base.geometry();
+        let count = self.tabs.len();
+        if count == 0 {
+            return 0;
+        }
+        let count = count as u32;
+        let gaps = (TAB_SPACING as u32).saturating_mul(count.saturating_sub(1));
+        let available = rect.width.saturating_sub(gaps).max(1);
+        let natural = self.compute_tab_width(0).max(self.tab_min_width).max(1);
+        natural.min(available / count).max(1)
     }
 
     /// Computes the width of a tab, taking into account whether a close button
@@ -581,27 +618,48 @@ impl TabBar {
             if !is_enabled || is_current { border } else { border.blend(&inactive_tab, 0.5) };
 
         // Draw tab shape.
+        //
+        // The three `TabShape` values were drawn *identically* — all three arms were
+        // `fill_rect` + `draw_rect` — so the property moved a value and nothing on screen, and
+        // the `Triangular` arm's comment claimed top corners were clipped by work that was never
+        // done. The shapes here are the ones [`crate::widget::container_widgets::tabwidget`]
+        // draws for the same enum: the two tab controls agree about what `TabShape` means, which
+        // is what lets a theme or a caller move a strip from one to the other unchanged.
+        //
+        // `Rectangular` is the bottom arm because it is the plain case, so a shape added later
+        // cannot silently take it over the way the wildcard arm took over `Rectangular` before.
         match self.tab_shape {
             TabShape::Rounded => {
-                // For simplicity, fill the rect then draw a border.
-                context.fill_rect(tab_rect, bg);
-                context.draw_rect(tab_rect, border);
-                // Top-left and top-right rounded corner hints (visual only via fill).
+                let radius = 4;
+                context.fill_rounded_rect(tab_rect, radius, bg);
+                context.draw_rounded_rect_stroke(tab_rect, radius, border, 1);
+                // The current tab shares its edge with what it labels, so its bottom edge is
+                // overdrawn with the tab's own fill to hide the outline there — the same
+                // "blends with the content area" idea `tabwidget` gets for free because its
+                // current tab *is* painted in the content colour.
                 if is_current {
-                    // Overdraw bottom edge so it blends with content area.
                     let bottom_rect = Rect::new(
-                        tab_rect.x,
+                        tab_rect.x + 1,
                         tab_rect.y + tab_rect.height as i32 - 1,
-                        tab_rect.width,
+                        tab_rect.width.saturating_sub(2),
                         2,
                     );
                     context.fill_rect(bottom_rect, bg);
                 }
             }
             TabShape::Triangular => {
-                // Draw a trapezoid-ish shape: fill a rect then clip top corners.
-                context.fill_rect(tab_rect, bg);
-                context.draw_rect(tab_rect, border);
+                // A real triangle: apex on the top edge at the tab's centre, base along the
+                // bottom edge of the strip. The comment used to say this and the code did not do
+                // it — it filled the whole rectangle and claimed the corners were "clipped".
+                let apex_x = tab_rect.x + tab_rect.width as i32 / 2;
+                let base_y = tab_rect.y + tab_rect.height as i32;
+                let points = [
+                    Point::new(apex_x, tab_rect.y),
+                    Point::new(tab_rect.x, base_y),
+                    Point::new(tab_rect.x + tab_rect.width as i32, base_y),
+                ];
+                context.draw_path(&points, true, bg, true, 0);
+                context.draw_path(&points, true, border, false, 1);
             }
             TabShape::Rectangular => {
                 context.fill_rect(tab_rect, bg);
@@ -1099,5 +1157,80 @@ mod tests {
         assert_eq!(tb.current_index(), Some(0));
         // Hover sets hovered_index
         tb.handle_event(&Event::MouseMove { pos: Point::new(5, 5) });
+    }
+
+    /// The defect: the tab position was `(tab_width + spacing) * index` with no reference to
+    /// `rect.width`, so tabs past the strip's end were drawn entirely outside the control.
+    ///
+    /// The expectation is read off the control's own API — every tab's rect must be inside the
+    /// control's own rectangle — rather than restating any particular fitted width.
+    #[test]
+    fn tabbar_every_tab_rect_stays_inside_the_control() {
+        let geometry = Rect::new(0, 0, 240, 120);
+        for count in [1usize, 2, 3, 6, 12] {
+            let mut tb = TabBar::new(geometry);
+            for i in 0..count {
+                tb.add_tab(format!("Tab {i}"));
+            }
+            let mut right_edge = 0i32;
+            for i in 0..count {
+                let r = tb.tab_rect(i).expect("every added tab has a rect");
+                assert!(
+                    r.x >= geometry.x && r.right() <= geometry.right(),
+                    "tab {i} of {count} at {r:?} escapes {geometry:?}"
+                );
+                assert!(r.width > 0, "tab {i} of {count} was shrunk to nothing");
+                right_edge = right_edge.max(r.right());
+            }
+            assert!(
+                right_edge <= geometry.right(),
+                "{count} tabs reach x = {right_edge} in a {}px strip",
+                geometry.width
+            );
+        }
+    }
+
+    /// Shrinking is the strip's overflow rule, and a strip that fits must **not** be shrunk: a
+    /// fit rule applied unconditionally would make two tabs on a wide bar tiny.
+    #[test]
+    fn tabbar_tabs_are_not_shrunk_while_they_fit() {
+        let mut tb = TabBar::new(Rect::new(0, 0, 400, 24));
+        tb.add_tab("One".to_string());
+        tb.add_tab("Two".to_string());
+        let fitted = tb.tab_rect(0).unwrap().width;
+        assert_eq!(tb.tab_rect(1).unwrap().width, fitted, "fitted tabs share one width");
+        assert!(fitted >= tb.tab_min_width());
+        assert!(fitted * 2 < tb.geometry().width, "two tabs must not fill a 400px strip");
+    }
+
+    /// The three `TabShape` values were drawn identically, so the property changed nothing on
+    /// screen. Each shape must now produce a different drawing.
+    #[test]
+    fn tabbar_tab_shapes_are_distinct() {
+        fn render(shape: TabShape) -> String {
+            let mut tb = TabBar::new(Rect::new(0, 0, 240, 120));
+            tb.add_tab("One".to_string());
+            tb.add_tab("Two".to_string());
+            tb.set_current_index(0);
+            tb.set_tab_shape(shape);
+            crate::widget::svg::render_to_svg(&mut tb)
+        }
+
+        let rounded = render(TabShape::Rounded);
+        let triangular = render(TabShape::Triangular);
+        let rectangular = render(TabShape::Rectangular);
+        assert_ne!(rounded, triangular, "rounded and triangular must not draw the same");
+        assert_ne!(rounded, rectangular, "rounded and rectangular must not draw the same");
+        assert_ne!(triangular, rectangular, "triangular and rectangular must not draw the same");
+        // Each shape leaves its own mark: rounded corners, a closed triangle path, plain rects.
+        assert!(rounded.contains("rx="), "a rounded tab must have rounded corners");
+        assert!(
+            triangular.contains("<polygon") || triangular.contains("<path"),
+            "a triangular tab must be drawn as a triangle"
+        );
+        assert!(
+            !rectangular.contains("rx=") && !rectangular.contains("<polygon"),
+            "a rectangular tab must be a plain rectangle"
+        );
     }
 }

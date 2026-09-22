@@ -85,17 +85,27 @@ impl Dial {
     pub fn page_step(&self) -> i32 {
         self.page_step
     }
-    /// Returns whether notches are drawn. Defaults to `false`.
+    /// Returns whether the notch ring is drawn around the dial's body. Defaults to
+    /// `false`.
     ///
-    /// Note that [`Dial::draw`] currently paints only the body and needle, so
-    /// this flag has no visible effect yet.
+    /// The ring is the scale the needle reads against; with it off the dial is a
+    /// bare disc, which is why [`Dial::notch_target`] has no effect until this is
+    /// `true`.
     pub fn notches_visible(&self) -> bool {
         self.notches_visible
     }
-    /// Returns the notch target angle, in **degrees**, used by the notch
-    /// geometry. Defaults to `3.7`.
+    /// Returns the notch target, in **pixels of arc between adjacent notches**.
+    /// Defaults to `3.7`.
     ///
-    /// The value is stored verbatim and currently not consumed by rendering.
+    /// This is Qt's own semantic for `QDial::notchTarget`, and it is the unit the
+    /// rendering uses: the notch count is the dial's sweep measured in pixels and
+    /// divided by this value. A value that would put fewer than two notches on the
+    /// sweep is raised to the two-notch minimum, so turning the target up
+    /// coarsens the scale up to that floor and then stops.
+    ///
+    /// Writing a value that is not finite, or not positive, leaves the target
+    /// unchanged — a zero target would make the spacing, and with it the notch
+    /// count, undefined.
     pub fn notch_target(&self) -> f64 {
         self.notch_target
     }
@@ -172,17 +182,21 @@ impl Dial {
         self.page_step = step.max(1);
         self.base.request_redraw();
     }
-    /// Toggles notch rendering. See [`Dial::notches_visible`] — currently has
-    /// no visual effect. Requests a redraw.
+    /// Shows or hides the notch ring. See [`Dial::notches_visible`] — the ring is
+    /// hidden by default. Requests a redraw.
     pub fn set_notches_visible(&mut self, visible: bool) {
         self.notches_visible = visible;
         self.base.request_redraw();
     }
-    /// Sets the notch target in degrees, stored verbatim. See
-    /// [`Dial::notch_target`]. Requests a redraw.
+    /// Sets the notch target in pixels of arc between adjacent notches. See
+    /// [`Dial::notch_target`] for the unit and the minimum. A non-finite or
+    /// non-positive value is ignored, so the stored target always describes a
+    /// spacing the geometry can divide by. Requests a redraw.
     pub fn set_notch_target(&mut self, target: f64) {
-        self.notch_target = target;
-        self.base.request_redraw();
+        if target.is_finite() && target > 0.0 {
+            self.notch_target = target;
+            self.base.request_redraw();
+        }
     }
     /// Enables or disables wrap-around behaviour.
     ///
@@ -196,15 +210,46 @@ impl Dial {
     }
     /// Returns value as angle in radians (from -135° to +135°, or full circle if wrapping).
     fn value_angle(&self) -> f64 {
+        Self::angle_at_fraction(self.ratio(), self.wrapping)
+    }
+    /// Returns the current value's position in the range as a `0.0 ..= 1.0` fraction.
+    ///
+    /// Zero for a degenerate range, which is the fraction whose angle both the needle and the
+    /// notch ring then use — so a dial with `minimum == maximum` still draws them *in phase*
+    /// rather than falling back to two different defaults.
+    fn ratio(&self) -> f64 {
         let range = (self.maximum - self.minimum) as f64;
         if range == 0.0 {
-            return -std::f64::consts::PI * 0.75;
-        }
-        let ratio = (self.value - self.minimum) as f64 / range;
-        if self.wrapping {
-            ratio * 2.0 * std::f64::consts::PI - std::f64::consts::PI
+            0.0
         } else {
-            -std::f64::consts::PI * 0.75 + ratio * std::f64::consts::PI * 1.5
+            (self.value - self.minimum) as f64 / range
+        }
+    }
+    /// The angle, in radians, at a `0.0 ..= 1.0` position along the dial's own sweep.
+    ///
+    /// # Why this is a function of the fraction and not of the value
+    ///
+    /// The needle and the notch ring are two readings of one scale, so they have to be placed
+    /// by the *same* mapping. When each derived its own — or, as `meter.rs` did, when one of
+    /// them omitted the sweep's phase offset — the ticks sat 90° out of phase with the needle
+    /// they annotate, which is a scale pointing at nothing. Every caller therefore comes here.
+    ///
+    /// A wrapping dial sweeps the full circle from `-π` at the bottom of the range; a
+    /// non-wrapping one sweeps 270° starting at `-135°`, leaving the gap at the bottom of the
+    /// face.
+    fn angle_at_fraction(fraction: f64, wrapping: bool) -> f64 {
+        if wrapping {
+            fraction * 2.0 * std::f64::consts::PI - std::f64::consts::PI
+        } else {
+            -std::f64::consts::PI * 0.75 + fraction * std::f64::consts::PI * 1.5
+        }
+    }
+    /// The angular sweep the dial's scale occupies, in radians.
+    fn sweep_radians(wrapping: bool) -> f64 {
+        if wrapping {
+            2.0 * std::f64::consts::PI
+        } else {
+            std::f64::consts::PI * 1.5
         }
     }
 }
@@ -340,11 +385,17 @@ impl EventHandler for Dial {
 impl Draw for Dial {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
+        if rect.width == 0 || rect.height == 0 {
+            return;
+        }
         let center = Point {
             x: rect.x + rect.width as f32 as i32 / 2,
             y: rect.y + rect.height as f32 as i32 / 2,
         };
         let radius = (rect.width.min(rect.height) / 2).saturating_sub(4);
+        if radius == 0 {
+            return;
+        }
 
         // Chrome colours resolve explicit style first, then the theme's resolved style
         // for this control, and only then fall back to a literal. Without the theme step a
@@ -403,6 +454,75 @@ impl Draw for Dial {
 
         context.fill_circle(center, radius, face);
         context.draw_circle(center, radius, rim);
+
+        // ── Notch ring ──
+        //
+        // `notches_visible` and `notch_target` were fully declared — field, accessors,
+        // setters, `get`/`set` and `property_names` — and `draw` read neither, so the control
+        // rendered a blank face whatever a caller asked for. This is the ring Qt's
+        // `QDial::notchesVisible` / `notchTarget` draws, and both properties mean what Qt means
+        // by them: the target is the *pixel spacing* between adjacent notches, and the count
+        // follows from the sweep's arc length at this radius. A dial therefore gets a coarser
+        // scale by rendering at a smaller size, which is Qt's behaviour and the reason the
+        // target is a pixel quantity rather than a count.
+        //
+        // The arithmetic is done in `f64` and clamped before it is converted, because the
+        // count becomes the bound of a loop: a rounded `NaN` is UB in that conversion, and a
+        // sub-pixel target on a large radius would overflow `usize`. The clamp also supplies
+        // the two-notch floor, so a target a caller has set very high still draws a scale.
+        const MIN_NOTCHES: usize = 2;
+        const MAX_NOTCHES: usize = 128;
+        if self.notches_visible {
+            let radius_f = radius as f64;
+            let sweep = Self::sweep_radians(self.wrapping);
+            // A zero target would make the division undefined; the setter rejects one, and
+            // this keeps a target written through a future path from reaching the divide.
+            let target_px =
+                if self.notch_target.is_finite() { self.notch_target.max(0.5) } else { 0.5 };
+            let count_f = (sweep * radius_f / target_px).round();
+            let count = if count_f.is_finite() {
+                (count_f as i64).clamp(MIN_NOTCHES as i64, MAX_NOTCHES as i64) as usize
+            } else {
+                MIN_NOTCHES
+            };
+            // # Why the ring's two radii are derived from the *rim* and not from each other
+            //
+            // The outer edge is pulled in from the rim so the ring reads as a scale drawn *on*
+            // the face rather than as a second circle whose spokes cross the rim; the inner edge
+            // is a fraction of the outer radius, so the tick length is proportional to the dial
+            // and cannot degenerate. (Deriving the inner radius from the face's own radius
+            // instead is what made the first version of this draw zero-length marks: at the
+            // default target the inset and the inner fraction landed on the same pixel.)
+            //
+            // The inset is proportional with a proportional cap, so the ring still fits inside a
+            // small dial that has a large target. Painting ticks outside the control is the
+            // bounded-extent defect the census checks for, so the outer edge is also floored at
+            // 1 px and the inner edge at 2 px less, which keeps `inner < outer` by construction.
+            let inset = (radius_f * 0.20).round().clamp(4.0, radius_f * 0.35);
+            let tick_outer = ((radius_f - inset).round() as i32).max(1);
+            let tick_inner = ((tick_outer as f64 * 0.55).round() as i32).clamp(1, tick_outer - 1);
+
+            // Every tick is placed from the *same* fraction-to-angle mapping the needle uses
+            // ([`Self::angle_at_fraction`]), so the ring cannot land out of phase with the
+            // needle it annotates — the defect `meter.rs` already had to fix once. Both ends
+            // come from that one direction, which keeps a tick the same radial length in every
+            // direction instead of two independently-rounded points whose separation varies.
+            for i in 0..count {
+                let tick_angle =
+                    Self::angle_at_fraction(i as f64 / (count - 1) as f64, self.wrapping);
+                let (dir_x, dir_y) = (tick_angle.cos(), tick_angle.sin());
+                let outer = Point {
+                    x: center.x + (tick_outer as f64 * dir_x).round() as i32,
+                    y: center.y + (tick_outer as f64 * dir_y).round() as i32,
+                };
+                let inner = Point {
+                    x: center.x + (tick_inner as f64 * dir_x).round() as i32,
+                    y: center.y + (tick_inner as f64 * dir_y).round() as i32,
+                };
+                context.draw_line(outer, inner, rim);
+            }
+        }
+
         // Draw the value needle: an accent-coloured indicator, black hub beneath it.
         let angle = self.value_angle();
         let needle_len = (radius as f32 * 0.7) as i32;
@@ -495,6 +615,111 @@ mod tests {
         assert!((d.notch_target() - 3.7).abs() < 1e-9);
         d.set_notch_target(5.0);
         assert!((d.notch_target() - 5.0).abs() < 1e-9);
+    }
+
+    /// A non-positive or non-finite target would make the notch count undefined, so the setter
+    /// keeps the previous value rather than storing a spacing the geometry cannot divide by.
+    #[test]
+    fn dial_notch_target_rejects_a_non_positive_or_non_finite_value() {
+        let mut d = Dial::new(Rect::new(0, 0, 64, 64));
+        d.set_notch_target(7.5);
+        d.set_notch_target(0.0);
+        assert!((d.notch_target() - 7.5).abs() < 1e-9, "a zero target must be refused");
+        d.set_notch_target(-2.0);
+        assert!((d.notch_target() - 7.5).abs() < 1e-9, "a negative target must be refused");
+        d.set_notch_target(f64::NAN);
+        assert!((d.notch_target() - 7.5).abs() < 1e-9, "a NaN target must be refused");
+        d.set_notch_target(f64::INFINITY);
+        assert!((d.notch_target() - 7.5).abs() < 1e-9, "an infinite target must be refused");
+    }
+
+    /// The defect: `notches_visible` and `notch_target` were fully declared and `draw` read
+    /// neither, so the ring was absent no matter what a caller asked for.
+    ///
+    /// The expectation comes from the properties' own contract rather than from a tick count
+    /// copied out of the implementation: the ring draws one mark per notch, so the `<line>` count
+    /// in the rendered SVG — which is the needle plus the notches — must grow as the target gets
+    /// smaller, and must fall to just the needle when the ring is hidden.
+    #[test]
+    fn dial_notch_ring_is_drawn_and_follows_the_target() {
+        fn line_count(visible: bool, target: f64) -> usize {
+            let mut d = Dial::new(Rect::new(0, 0, 240, 120));
+            d.set_notches_visible(visible);
+            d.set_notch_target(target);
+            crate::widget::svg::render_to_svg(&mut d).matches("<line").count()
+        }
+
+        let bare = line_count(false, 3.7);
+        let fine = line_count(true, 3.7);
+        let coarse = line_count(true, 40.0);
+        assert_eq!(bare, 1, "with notches hidden the only line is the needle");
+        assert!(fine > bare, "notches_visible must actually draw the ring");
+        assert!(fine > coarse, "a smaller target must place more notches");
+        assert!(coarse > bare, "the caller's explicit target must still draw a ring");
+    }
+
+    /// The ring and the needle are two readings of one scale, so they must be placed by the same
+    /// mapping — a ring out of phase with its own needle is the defect `meter.rs` had to fix.
+    #[test]
+    fn dial_notch_ring_is_in_phase_with_the_needle() {
+        // The first notch of an unwrapped dial sits at the start of its 270 degree sweep, which
+        // the accessor documents as `-135 deg`; the needle at `minimum` sits there too.
+        let start = Dial::angle_at_fraction(0.0, false);
+        let end = Dial::angle_at_fraction(1.0, false);
+        assert!((start - (-std::f64::consts::PI * 0.75)).abs() < 1e-9);
+        assert!((end - (std::f64::consts::PI * 0.75)).abs() < 1e-9);
+        assert!((Dial::sweep_radians(false) - std::f64::consts::PI * 1.5).abs() < 1e-9);
+
+        // A wrapping dial spans the whole circle, so its first notch is opposite its last.
+        let wrap_start = Dial::angle_at_fraction(0.0, true);
+        let wrap_end = Dial::angle_at_fraction(1.0, true);
+        assert!((wrap_end - wrap_start - 2.0 * std::f64::consts::PI).abs() < 1e-9);
+
+        // And the needle at `minimum` must land exactly on the ring's first notch.
+        let mut d = Dial::new(Rect::new(0, 0, 240, 120));
+        d.set_range(0, 100);
+        d.set_value(0);
+        assert!((d.value_angle() - Dial::angle_at_fraction(0.0, false)).abs() < 1e-9);
+        d.set_value(100);
+        assert!((d.value_angle() - Dial::angle_at_fraction(1.0, false)).abs() < 1e-9);
+    }
+
+    /// A degenerate range must not send the needle and the ring to two different fallbacks.
+    #[test]
+    fn dial_degenerate_range_keeps_needle_and_ring_in_phase() {
+        let mut d = Dial::new(Rect::new(0, 0, 240, 120));
+        d.set_range(5, 5);
+        assert!((d.value_angle() - Dial::angle_at_fraction(0.0, false)).abs() < 1e-9);
+    }
+
+    /// Zero-area geometry must not divide by zero, and the ring must stay inside the control.
+    #[test]
+    fn dial_notches_stay_inside_the_control_at_every_size() {
+        use crate::render::{PaintBackend, RenderContext, SoftwarePaintBackend};
+
+        for (w, h) in [(0u32, 0u32), (1, 1), (4, 4), (9, 9), (64, 64), (240, 120)] {
+            let mut d = Dial::new(Rect::new(0, 0, w, h));
+            d.set_notches_visible(true);
+            d.set_notch_target(0.5);
+            let mut backend = SoftwarePaintBackend::new(Size::new(w.max(1), h.max(1)), 1.0);
+            backend.begin_frame(Color::WHITE);
+            let mut ctx = RenderContext::new(&mut backend);
+            d.draw(&mut ctx);
+
+            // Every notch is placed from the ring's own radius, which is derived from the face's;
+            // the face is inset from the control, so no mark can reach its edge.
+            let svg = crate::widget::svg::render_to_svg(&mut d);
+            for line in svg.lines().filter(|l| l.contains("<line")) {
+                let nums: Vec<i32> = line
+                    .split(|c: char| !(c.is_ascii_digit() || c == '-'))
+                    .filter(|s| !s.is_empty())
+                    .filter_map(|s| s.parse().ok())
+                    .collect();
+                for value in nums {
+                    assert!(value >= 0, "a notch escaped the control at {w}x{h}: {line}");
+                }
+            }
+        }
     }
 
     #[test]

@@ -189,9 +189,20 @@ impl Draw for AppBar {
             1,
         );
 
-        // Determine font sizes based on bar height
-        let title_font_size = (bar_height as f32 * 0.38).clamp(14.0, 22.0);
-        let action_font_size = (bar_height as f32 * 0.32).clamp(12.0, 18.0);
+        // Determine font sizes based on bar height, **scaled by the device's text-size preference**.
+        //
+        // The upper clamp of 22 was a silent ceiling on text scaling: `2x` text on a standard
+        // 56 px bar asks for 42 px, the clamp returned 22, and the control looked unchanged — an
+        // accessibility setting that appears to do nothing is worse than one that is not offered.
+        // The ceiling is now raised in proportion to the requested scale, so the control follows
+        // the preference it is given while still not letting a 3x preference produce a title taller
+        // than its own bar. `bar_height` itself grows under a scaled layout, which is what makes the
+        // raised ceiling reachable rather than merely permitted.
+        let text_scale = crate::platform::profile::text_scale();
+        let title_font_size =
+            (bar_height as f32 * 0.38 * text_scale).clamp(14.0, 22.0 * text_scale);
+        let action_font_size =
+            (bar_height as f32 * 0.32 * text_scale).clamp(12.0, 18.0 * text_scale);
 
         // ── Back arrow (left side) ──
         if self.show_back {

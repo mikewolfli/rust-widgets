@@ -20,15 +20,15 @@
   <line x1="60" y1="32" x2="64" y2="32" stroke="rgba(111,111,111,1.00)" stroke-width="1" />
   <text x="20" y="36" dominant-baseline="text-before-edge" font-family="Sans" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">5.5</text>
   <rect x="71" y="47" width="28" height="21" fill="rgba(72,142,246,1.00)" />
-  <text x="83" y="43" dominant-baseline="text-before-edge" font-family="sans-serif" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">3.0</text>
-  <text x="83" y="80" dominant-baseline="text-before-edge" font-family="sans-serif" font-size="9" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">A</text>
+  <text x="88" y="33" dominant-baseline="text-before-edge" font-family="sans-serif" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">3.0</text>
+  <text x="147" y="80" dominant-baseline="text-before-edge" font-family="sans-serif" font-size="9" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">A</text>
   <rect x="107" y="35" width="28" height="33" fill="rgba(72,142,246,1.00)" />
-  <text x="119" y="31" dominant-baseline="text-before-edge" font-family="sans-serif" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">5.0</text>
-  <text x="119" y="80" dominant-baseline="text-before-edge" font-family="sans-serif" font-size="9" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">B</text>
+  <text x="124" y="32" dominant-baseline="text-before-edge" font-family="sans-serif" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">5.0</text>
+  <text x="165" y="80" dominant-baseline="text-before-edge" font-family="sans-serif" font-size="9" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">B</text>
   <rect x="143" y="53" width="28" height="15" fill="rgba(72,142,246,1.00)" />
-  <text x="155" y="49" dominant-baseline="text-before-edge" font-family="sans-serif" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">2.0</text>
-  <text x="155" y="80" dominant-baseline="text-before-edge" font-family="sans-serif" font-size="9" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">C</text>
+  <text x="160" y="39" dominant-baseline="text-before-edge" font-family="sans-serif" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">2.0</text>
+  <text x="183" y="80" dominant-baseline="text-before-edge" font-family="sans-serif" font-size="9" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">C</text>
   <rect x="179" y="41" width="28" height="27" fill="rgba(72,142,246,1.00)" />
-  <text x="191" y="37" dominant-baseline="text-before-edge" font-family="sans-serif" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">4.0</text>
-  <text x="191" y="80" dominant-baseline="text-before-edge" font-family="sans-serif" font-size="9" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">D</text>
+  <text x="196" y="32" dominant-baseline="text-before-edge" font-family="sans-serif" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">4.0</text>
+  <text x="201" y="80" dominant-baseline="text-before-edge" font-family="sans-serif" font-size="9" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">D</text>
 </svg>

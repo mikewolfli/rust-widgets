@@ -765,6 +765,87 @@ fn a_property_flagged_unservable_must_really_be_unservable() {
     );
 }
 
+/// A schema row flagged `readable: false` must not be answered by its control.
+///
+/// # Why this test exists
+///
+/// `readable` is not advisory. `WidgetFactory::read_property` looks the name up in the
+/// capability's schema and, when the row says `readable: false`, returns
+/// [`CapabilityAccessError::UnsupportedOnWidget`] **without ever asking the control**:
+///
+/// ```ignore
+/// if !property.readable {
+///     return Err(CapabilityAccessError::UnsupportedOnWidget);
+/// }
+/// ```
+///
+/// So the flag is a promise that the property cannot be read, and the control's own `get`
+/// is the only authority on whether that promise is true. When the two disagree the caller
+/// is denied a value the control is holding, and it is denied in the worst possible order:
+/// the *write* direction goes through `write_property`, which checks `writable`, so a
+/// caller can `set` a value it can never read back. The control reports the property in
+/// `property_names()`, the setter succeeds, and the getter answer is unreachable from
+/// outside.
+///
+/// A real row was in exactly this state: `candlestick_chart.overlay_count` was declared
+/// `false, true` while `CandlestickChart::get` returns `self.overlays.len()`. Nothing
+/// failed, and the row is now `true, true` — this test is what keeps it that way.
+///
+/// # Why this is a different check from its sibling
+///
+/// `a_property_flagged_unservable_must_really_be_unservable` skips every row where *either*
+/// flag is true (`if schema.readable || schema.writable { continue }`), so a `false, true`
+/// row — the only shape in which the asymmetry is reachable — was invisible to it by
+/// construction. The two tests divide the four flag combinations between them:
+/// `false,false` is the sibling's, and `readable: false` with a served reader is this one's.
+///
+/// # Why the shared four are not violations
+///
+/// A `readable: false` row is legal when the control's reader cannot answer the name. The
+/// shared four (`enabled` / `visible` / `tooltip` / `geometry`) are answered by
+/// [`base_property_get`], a fallback every control reaches from its `_` arm, so their
+/// flags are decided by policy rather than by whether some `get` can produce a value —
+/// `geometry` in particular is readable-but-deliberately-declared-non-readable so that the
+/// loader's `x`/`y`/`width`/`height` shorthand stays the only input path. They are exempt
+/// by name, and the exemption is a statement about where the answer comes from rather than
+/// a way to silence a finding: a *control-owned* property has no such fallback, so a
+/// `readable: false` row for one of those must be honoured by the control itself.
+#[test]
+fn a_readable_false_row_must_not_be_answered_by_its_control() {
+    let factory = WidgetFactory::new_with_defaults();
+    let mut wrongly_flagged = alloc::vec::Vec::new();
+
+    for capability in factory.capabilities() {
+        let Some(mut widget) =
+            factory.create(capability.canonical_name, Rect::new(0, 0, 64, 48), "x")
+        else {
+            continue;
+        };
+        for schema in capability.properties {
+            if schema.readable {
+                continue;
+            }
+            if BASE_PROPERTY_NAMES.contains(&schema.name) {
+                continue;
+            }
+            // The control's own contract is the authority. A successful read here means the
+            // row denies a value the control is willing to hand over.
+            if widget_property_get(widget.as_mut(), schema.name).is_ok() {
+                wrongly_flagged.push((capability.canonical_name, schema.name, schema.writable));
+            }
+        }
+    }
+
+    assert!(
+        wrongly_flagged.is_empty(),
+        "these schema rows are flagged `readable: false` but their control's own contract \
+         answers them, so the flag denies a read the control supports. `read_property` \
+         short-circuits on `readable` before asking the control, so the value exists and is \
+         unreachable — and a `writable: true` row among these can be written and then never \
+         read back. Set `readable: true` (widget, property, writable): {wrongly_flagged:?}"
+    );
+}
+
 /// Every `WidgetKind` claimed by more than one capability must have a tie-break.
 ///
 /// # Why this test exists
@@ -912,6 +993,106 @@ fn published_enum_tokens_are_accepted_by_their_control() {
         rejected.is_empty(),
         "a published token was refused by the control that published it, so the schema \
          advertises a value the caller cannot write (control, property, token): {rejected:?}"
+    );
+}
+
+/// A `readable` enum's `get` must return one of the tokens the schema publishes.
+///
+/// # The direction `published_enum_tokens_are_accepted_by_their_control` cannot see
+///
+/// That test writes each published token back through `set`. It is the **write** direction,
+/// and it is why six mismatches survived it: a control can accept a superset of spellings
+/// and still *return* a word that appears nowhere in its own published vocabulary. Nothing
+/// failed, because the schema was never asked what the reader produces.
+///
+/// The mismatches it read past were real, and user-visible to anyone driving the property
+/// layer:
+///
+/// | control | published | returned |
+/// |---|---|---|
+/// | `check_box` | `off` / `indeterminate` / `on` | `unchecked` / `partially_checked` / `checked` |
+/// | `toggle_button` | `off` / `indeterminate` / `on` (the checkbox's words) | `normal` / `checked` / `disabled` |
+/// | `slider` | `noticks` / `left` / `right` / `ticksbothsides` | `none` / `above` / `below` / `both` |
+/// | `calendar` | `monday` … `sunday` | `mon` … `sun` |
+/// | `mdi_area` | `list` / `icon` / `details` / `thumbnails` (a copy of `list_view`'s) | `sub_window_view` / `tabbed` |
+/// | `slider` | `centre` | `center` |
+///
+/// A designer building a combo box from `accepted_tokens` would render six values that the
+/// control never reports, and its "current value" would match none of them. `accepted_tokens`
+/// is the only machine-readable statement of a property's vocabulary, so a reader that speaks
+/// a different one makes the list a lie in the one direction a consumer actually depends on.
+///
+/// # What it asserts, and what it deliberately does not
+///
+/// For every `readable` property that publishes tokens, the value a freshly constructed
+/// control `get`s must be the string form of one of those tokens. A `Bool`/`UInt`/`Float`
+/// property publishes no tokens and is skipped.
+///
+/// It does **not** require `get` to be *usable as a `set` argument*: a reader's vocabulary may
+/// be a subset of the writer's aliases, and forcing the two to be identical would forbid
+/// accepting `center` while reporting `centre`. What it refuses is the harmful direction —
+/// reporting a word that the schema never mentions.
+#[test]
+fn readable_enum_properties_return_a_published_token() {
+    let factory = WidgetFactory::new_with_defaults();
+    let mut unexpected: alloc::vec::Vec<(&str, &str, alloc::string::String, &'static str)> =
+        alloc::vec::Vec::new();
+    let mut checked_count = 0usize;
+
+    for capability in factory.capabilities() {
+        for schema in capability.properties {
+            if !schema.readable || schema.accepted_tokens.is_empty() {
+                continue;
+            }
+            let Some(mut widget) =
+                factory.create(capability.canonical_name, Rect::new(0, 0, 64, 48), "x")
+            else {
+                continue;
+            };
+            let Ok(value) = crate::widget::capability::properties_trait::widget_property_get(
+                widget.as_mut(),
+                schema.name,
+            ) else {
+                // Published-but-unanswerable is `assert_contract`'s finding, not this one.
+                continue;
+            };
+            let CapabilityValue::String(returned) = value else {
+                // A non-string value from a token-publishing property is a different
+                // mismatch; `schema_and_contract_publish_the_same_names` covers the shape.
+                continue;
+            };
+            checked_count += 1;
+            // Compared through the same normaliser the `set` parsers use, so `partially_checked`
+            // matches a published `partial_checked` and case/separator differences are not
+            // reported as vocabulary mismatches.
+            let normalised = crate::widget::capability::coercion::normalize_key(&returned);
+            let known = schema.accepted_tokens.iter().any(|token| {
+                crate::widget::capability::coercion::normalize_key(token) == normalised
+            });
+            if !known {
+                // The schema is `&'static`, so the first token is a stable label for "the
+                // published vocabulary"; the whole list is printed by the failure message
+                // through `tokens_debug` below when the list is short enough to read.
+                unexpected.push((
+                    capability.canonical_name,
+                    schema.name,
+                    returned.clone(),
+                    schema.accepted_tokens.first().copied().unwrap_or(""),
+                ));
+            }
+        }
+    }
+
+    assert!(
+        checked_count > 0,
+        "no readable token-publishing property answered, so this test proves nothing — the \
+         readable flag, `accepted_tokens` or the property layer has stopped reaching the control"
+    );
+    assert!(
+        unexpected.is_empty(),
+        "these properties report a value their own schema never publishes, so a consumer \
+         building a control from `accepted_tokens` renders choices the reader cannot confirm \
+         (control, property, returned, first-published-token): {unexpected:?}"
     );
 }
 

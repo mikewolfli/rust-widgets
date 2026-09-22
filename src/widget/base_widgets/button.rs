@@ -31,6 +31,17 @@ pub enum ButtonState {
 }
 /// Button widget for clickable actions.
 ///
+/// # Animated interaction
+///
+/// The button interpolates its fill between the theme's resting and interactive colours instead of
+/// switching instantly. `tick` advances the interpolation by a millisecond delta and reports whether
+/// another frame is still needed — the contract this library uses for a self-animating control (see
+/// `FloatingLabel`'s `tick`, where the shape was first written): a host that receives `false` stops
+/// scheduling frames, so a settled button costs nothing per frame.
+///
+/// The duration is not a constant in this file. It comes from the active theme's `Motion::normal`,
+/// so a theme can state its own tempo and a test can shorten it to reach the end state
+/// deterministically.
 pub struct Button {
     base: BaseWidget,
     text: String,
@@ -40,6 +51,13 @@ pub struct Button {
     default_button: bool,
     focused: bool,
     hovered: bool,
+    /// Progress of the interaction transition: `0.0` at rest, `1.0` fully at the hovered/pressed
+    /// fill. Kept as a fraction rather than a colour so the target can change mid-flight — a press
+    /// during a hover transition re-aims the same progress instead of restarting from zero, which is
+    /// what makes a quick press-and-release read as one movement rather than two fades.
+    interaction_progress: f32,
+    /// The progress value the transition is travelling toward.
+    interaction_target: f32,
     /// Emitted on the rising edge of the pressed flag (button down).
     ///
     /// Suppressed entirely while the button is disabled, so a disabled button
@@ -68,6 +86,11 @@ impl Button {
             default_button: false,
             focused: false,
             hovered: false,
+            // A freshly constructed button is at rest, so its progress is at the rest end of the
+            // interpolation. Starting at the interactive end would make every button fade *out* on
+            // its first frame.
+            interaction_progress: 0.0,
+            interaction_target: 0.0,
             pressed_signal: GenericSignal::new(),
             released_signal: GenericSignal::new(),
             state_changed: Signal1::new(),
@@ -101,6 +124,109 @@ impl Button {
     pub fn is_hovered(&self) -> bool {
         self.hovered
     }
+    /// Sets the hovered flag and starts the interaction transition toward it.
+    ///
+    /// # Why this is public
+    ///
+    /// The `MouseEnter`/`MouseLeave` arms set the flag from real pointer events, but a host driving
+    /// a control from its own input layer — a touch backend that has no hover concept, a test, or a
+    /// designer previewing a state — needs a way to say "show me this control hovered". Without it
+    /// the hovered appearance was reachable only by synthesising an event, which is a heavier and
+    /// less honest way to state the same fact.
+    ///
+    /// Setting it also requests a redraw, because the flag is now something that changes what is
+    /// painted over an animation rather than only at the next event.
+    pub fn set_hovered(&mut self, hovered: bool) {
+        if self.hovered == hovered {
+            return;
+        }
+        self.hovered = hovered;
+        self.base.request_redraw();
+    }
+    /// Advances the interaction transition by `delta_ms` and reports whether another frame is needed.
+    ///
+    /// # The contract this implements
+    ///
+    /// The same one `FloatingLabel::tick` established: return `true` while there is still movement
+    /// and `false` once the value has settled, so a host can stop scheduling frames for a control
+    /// that is not moving. A `tick` that always returned `true` would keep the whole application
+    /// repainting forever, which is why the boolean is part of the signature rather than something
+    /// the caller infers.
+    ///
+    /// # Why the duration is read here rather than stored
+    ///
+    /// The length of a transition is a theme decision (`Theme::motion`), and the theme can change
+    /// while the control exists — a light/dark switch carries a different tempo. Reading it per tick
+    /// means a control already in flight finishes at the new tempo instead of the one it started
+    /// with. The engine prices at zero is the degenerate case a test uses.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        // The target comes from the control's own state, recomputed every tick so a state change
+        // that arrived without a `tick` in between is picked up rather than missed.
+        self.interaction_target = self.interaction_target_progress();
+        if (self.interaction_progress - self.interaction_target).abs() < f32::EPSILON {
+            return false;
+        }
+
+        // The transition is driven by the crate's animation engine, not by arithmetic here.
+        //
+        // `AnimationDriver`/`Animation` carry the iteration counting, the easing curve and the
+        // completion callback, and `advance_by` lets a host supply the frame delta instead of the
+        // animation reading the wall clock — which is what makes it usable from the
+        // `tick(delta_ms) -> bool` convention this library uses for every animated control.
+        //
+        // A one-shot driver is built per tick deliberately: it is a handful of map entries, the
+        // animation is a pure function of accumulated time, and holding one in the widget would
+        // require it to survive a theme switch that re-prices the duration mid-flight.
+        let duration_ms = crate::style::theme_manager()
+            .current_theme()
+            .map(|theme| theme.motion.normal)
+            .unwrap_or(200)
+            .max(1);
+        let from = self.interaction_progress;
+        let target = self.interaction_target;
+        let mut driver = crate::style::AnimationDriver::new();
+        // The driver owns its callbacks, so the value it produces has to come back through a shared
+        // cell rather than an assignment to a captured local: `move |v| observed = v` would move
+        // `observed` into the closure and leave the caller reading the pre-move value, which is how
+        // a transition silently never advances.
+        let observed = std::rc::Rc::new(core::cell::Cell::new(from));
+        let sink = std::rc::Rc::clone(&observed);
+        driver.add_float(
+            crate::style::AnimationConfig::new(core::time::Duration::from_millis(
+                duration_ms as u64,
+            )),
+            from,
+            target,
+            move |value| sink.set(value),
+        );
+        driver.advance_by(core::time::Duration::from_millis(delta_ms as u64));
+        let next = observed.get();
+        self.interaction_progress =
+            if (next - target).abs() < f32::EPSILON { target } else { next };
+
+        // Another frame is owed exactly while the value has not reached its target — the same
+        // question `advance_by`'s return value answers about the driver, asked about this control.
+        (self.interaction_progress - self.interaction_target).abs() >= f32::EPSILON
+    }
+
+    /// The progress the current interaction state calls for.
+    ///
+    /// A press is the furthest point of the transition, a hover a partial step toward it, and a
+    /// disabled control always rest. Disabled wins over pressed because a control that became
+    /// disabled mid-press is inert, which is the same precedence `Button::state` uses.
+    fn interaction_target_progress(&self) -> f32 {
+        if !self.base.is_enabled() {
+            return 0.0;
+        }
+        if self.pressed {
+            1.0
+        } else if self.hovered {
+            0.5
+        } else {
+            0.0
+        }
+    }
+
     /// Sets pressed state and emits transition signals when changed.
     ///
     /// Ignored entirely (no state change, no signals) while the button is
@@ -372,6 +498,22 @@ impl Draw for Button {
             ButtonState::Pressed => Color::rgb(200, 200, 200),
             ButtonState::Disabled => Color::rgb(220, 220, 220),
         });
+        // The fill blends from the resting colour toward the interactive one by the transition's own
+        // progress, so a hover fades in and a press deepens it rather than both snapping. The
+        // resting and pressed colours are the ones this control already used; only the *path*
+        // between them is new.
+        //
+        // At progress `0.0` — a fresh control, or one whose transition has settled at rest — the
+        // result is exactly the resting colour, so a snapshot taken without ticking is unchanged.
+        let bg = if self.interaction_progress <= 0.0 {
+            bg
+        } else {
+            let interactive = match state {
+                ButtonState::Pressed => bg,
+                _ => bg.blend(&bg.contrast_color(), 0.22),
+            };
+            bg.blend(&interactive, self.interaction_progress)
+        };
         let br = style.border_radius.unwrap_or(0);
         if br > 0 {
             context.fill_rounded_rect(rect, br, bg);
@@ -391,17 +533,33 @@ impl Draw for Button {
 
         // ── Text ──
         if !self.text.is_empty() {
-            let text_color = style.text_color.unwrap_or_else(|| {
-                if state == ButtonState::Disabled {
-                    Color::rgb(150, 150, 150)
-                } else {
-                    Color::rgb(0, 0, 0)
-                }
-            });
             let default_font = Font::default();
             let font = style.font.as_ref().unwrap_or(&default_font);
+            // The ink must be legible *on the fill this button actually got*, not on an
+            // assumption about it. The fill comes from `style.background_color`, which the
+            // theme may have set to a saturated accent: the dark appearance's `PRIMARY` is
+            // `rgb(100,181,246)`, and the old rule drew pure black on it — chosen from
+            // `state == Disabled` alone, with no reference to the background at all, so
+            // `button.svg` carried a black label on a light-blue pill. Deriving the ink from
+            // the resolved fill is what makes "one foreground per background" true for any
+            // theme, which is the same rule `badge` and `role_colors` already use.
+            let fill = style.background_color.unwrap_or(Color::WHITE);
+            let text_color = style.text_color.unwrap_or_else(|| {
+                if state == ButtonState::Disabled {
+                    // A disabled button's ink is *deliberately* low-contrast: that is what
+                    // makes it read as unavailable. It is still derived from the fill's own
+                    // luminance so it recedes in the dark appearance too instead of
+                    // disappearing into it.
+                    fill.contrast_color().with_alpha(150)
+                } else {
+                    fill.contrast_color()
+                }
+            });
+            // Vertically centred through the shared primitive, so the label sits in the
+            // button's middle instead of having its glyph-box top edge on that middle line.
+            let line = context.text_line(rect, font);
             context.draw_text(
-                Point { x: rect.x + 6, y: rect.y + rect.height as i32 / 2 },
+                Point { x: rect.x + 6, y: line.y },
                 &self.text,
                 font,
                 text_color,
@@ -1066,6 +1224,92 @@ mod tests {
             b.show();
             assert!(b.is_visible());
         }
+    }
+
+    // ── 12. Animated interaction (BLUE21 P0-4) ─────────────────────────
+
+    /// The transition advances toward the pressed state and then **stops**.
+    ///
+    /// The boolean return is the load-bearing part: a `tick` that kept reporting `true` after the
+    /// value had settled would keep the host scheduling frames forever. The engine existed and
+    /// nothing called it, so this is the first control to prove the contract end to end.
+    #[test]
+    fn the_interaction_transition_settles_and_reports_so() {
+        let mut b = make_button();
+        b.set_hovered(true);
+
+        // A hover moves the fill, so at least one tick must report more work to do.
+        assert!(
+            b.tick(30),
+            "a hover must start a transition, so the first tick reports another frame"
+        );
+
+        // Ticking well past the theme's 200 ms settles it exactly, and then reports completion.
+        let mut frames = 1;
+        while b.tick(1000) {
+            frames += 1;
+            assert!(frames < 100, "the transition must terminate rather than tick forever");
+        }
+        assert_eq!(b.interaction_progress, 0.5, "a hover settles exactly on its target");
+
+        // Settled means settled: **each** further tick reports no work. Asserted in a loop rather
+        // than once, because a single `!tick()` would also pass for an implementation that
+        // alternated between reporting work and not — the defect this pins is "keeps asking for
+        // frames after the value has stopped changing", and only repetition can see it.
+        for frame in 0..5 {
+            assert!(
+                !b.tick(16),
+                "a settled transition must report that no frame is needed (tick {frame})"
+            );
+            assert_eq!(b.interaction_progress, 0.5, "and must not drift while settled");
+        }
+    }
+
+    /// A state change that arrives mid-flight re-aims the same progress rather than restarting.
+    #[test]
+    fn a_press_during_a_hover_re_aims_rather_than_restarting() {
+        let mut b = make_button();
+        b.set_hovered(true);
+        b.tick(50);
+        let partway = b.interaction_progress;
+        assert!(partway > 0.0 && partway < 0.5, "the hover is in flight: {partway}");
+
+        b.set_pressed(true);
+        assert!(b.tick(1), "the press must continue the movement, not settle on the first frame");
+        assert!(
+            b.interaction_progress > partway,
+            "a press must move the progress onward from where the hover left it, not back to zero"
+        );
+    }
+
+    /// A disabled control rests, whatever its press flags say.
+    #[test]
+    fn a_disabled_button_rests_regardless_of_its_flags() {
+        let mut b = make_button();
+        b.set_enabled(false);
+        assert_eq!(b.interaction_target_progress(), 0.0);
+        assert!(
+            !b.tick(1000),
+            "a disabled button has nothing to animate toward, so no frame is owed"
+        );
+    }
+
+    /// The transition is visible: a fully-progressed hover paints a different fill.
+    #[test]
+    fn the_progress_changes_what_is_painted() {
+        let rect = Rect::new(0, 0, 120, 32);
+        let mut resting = Button::new("Go".to_string(), rect);
+        let rest_svg = crate::widget::svg::render_to_svg(&mut resting);
+
+        let mut hovered = Button::new("Go".to_string(), rect);
+        hovered.set_hovered(true);
+        while hovered.tick(1000) {}
+        let hover_svg = crate::widget::svg::render_to_svg(&mut hovered);
+
+        assert_ne!(
+            rest_svg, hover_svg,
+            "a completed hover transition must change the rendered fill"
+        );
     }
 
     #[test]

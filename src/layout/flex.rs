@@ -623,7 +623,17 @@ impl Layout for FlexLayout {
         context: &LayoutContext,
         widgets: &mut dyn FnMut(ObjectId, Rect),
     ) {
-        let scale = context.layout_scale;
+        // Spacing follows the **larger** of the layout scale and the text scale.
+        //
+        // `LayoutContext::font_scale` is the device's text-size preference, and the two are
+        // separate facts: a HiDPI screen needs more logical spacing, and a device whose text is set
+        // larger needs more room between controls even at the same DPI. Taking the maximum is the
+        // conservative reading — a control whose font grew but whose padding did not would have its
+        // text touching its own border, which is the defect the field exists to let a layout avoid.
+        //
+        // The field had no reader at all before this, so a 2x text preference grew the glyphs (via
+        // the theme's font token) and left every gap at its nominal size.
+        let scale = context.layout_scale.max(context.font_scale);
         let scaled_padding = (self.padding as f32 * scale).round() as i32;
         let scaled_gap = (self.gap as f32 * scale).round() as i32;
 
@@ -637,7 +647,17 @@ impl Layout for FlexLayout {
         let results = self.compute_rects(content_rect, Some(scaled_gap));
         for (widget_id, child_rect) in results {
             if let Some(wid) = widget_id {
-                widgets(wid, child_rect);
+                // Every child gets at least the device class's minimum touch area. A flex row of
+                // small controls is the case this matters most for: the layout would otherwise
+                // place a 20 px control in a 20 px slot on a phone, where the neighbouring
+                // control's own expanded hit area overlaps it.
+                widgets(
+                    wid,
+                    crate::layout::types::grow_to_min_touch_size(
+                        child_rect,
+                        context.min_touch_size,
+                    ),
+                );
             }
         }
     }
@@ -1060,12 +1080,20 @@ mod tests {
             rects.insert(id, rect);
         });
 
-        // With scale=2.0: padding=20, content area = (20,20) to (180,40)
-        // Single flex item fills: x=20, y=20, w=160, h=20
+        // With scale=2.0: padding=20, content area = (20,20) to (180,40), so the flex item is
+        // 160x20. It is then grown to the context's minimum touch height, because a 20 px target is
+        // smaller than the desktop class's 32 px minimum — that is what `min_touch_size` is for, and
+        // this test previously asserted the un-grown height, which is why the field had no reader.
         assert_eq!(rects.get(&1).map(|r| r.x), Some(20));
-        assert_eq!(rects.get(&1).map(|r| r.y), Some(20));
         assert_eq!(rects.get(&1).map(|r| r.width), Some(160));
-        assert_eq!(rects.get(&1).map(|r| r.height), Some(20));
+        let grown = rects.get(&1).copied().expect("the flex item was laid out");
+        assert_eq!(grown.height, context.min_touch_size.height.max(20));
+        // The growth is centred on the space the layout allocated, not anchored at its top.
+        assert_eq!(
+            grown.y,
+            20 - (grown.height as i32 - 20) / 2,
+            "a grown child must stay centred on its allocated slot"
+        );
     }
 
     #[test]

@@ -382,8 +382,14 @@ impl Draw for TableWidget {
                 for c in 0..col_count {
                     let x = rect.x + (col_w as i32) * c as i32;
                     if let Some(text) = model.data(r, c) {
-                        context.draw_text(
-                            crate::core::Point::new(x + 2, y + row_h / 2),
+                        // The cell is the band: a text origin of `y + row_h / 2` would put the
+                        // glyph box's *top* edge on the row's middle line and draw every label
+                        // half a line low. `text_line` derives the centred line box instead, and
+                        // it also bounds the label so a long cell value cannot run into the next
+                        // column.
+                        let cell = crate::core::Rect::new(x, y, col_w, row_h as u32);
+                        context.draw_text_fitted(
+                            context.text_line(cell, &crate::core::Font::default()),
                             &text,
                             &crate::core::Font::default(),
                             ink,

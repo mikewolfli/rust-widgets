@@ -4,622 +4,167 @@
   <img src="snapshots/header.jpg" alt="rust_widgets" width="800">
 </p>
 
-纯 Rust 编写的跨平台 GUI 库。支持桌面、平板、手机、嵌入式以及精简特性（**mini**）目标。
+一个用纯 Rust 编写的跨平台 GUI 库。**所有控件都由库自己绘制**——整个 crate 里没有一处
+`CreateWindowExW`、`NSButton`、`gtk_button_new` 或 `android.widget.Button`——并且可以渲染到窗口、
+PNG 或 SVG。支持桌面、平板、移动、嵌入式，以及最小化的 `mini` 配置。
 
-## ✨ 所有控件均为自绘
+自绘控件换来的是：
 
-**本库 100% 自绘全部控件，在任何平台上都不创建操作系统原生控件。**
-
-整个 crate 中没有任何 `CreateWindowExW`／`NSButton`／`gtk_button_new`／
-`android.widget.Button` 调用。后端唯一的职责是把一块**绘图表面**交给渲染器；
-下文列出的每一个按钮、列表、编辑器、菜单与图表，都由同一套 Rust 光栅化器绘制，
-因此无论在 Windows、macOS、Linux、iOS、Android 还是 Web 上，控件的外观与行为完全一致。
-
-```
-        ┌──────────────────────────────────────────┐
-        │  rust_widgets  —  自绘全部控件            │
-        └──────────────────────────────────────────┘
-             │  光栅化输出（RGBA / SVG / GPU）
-             ▼
-  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐
-  │ Windows HWND │   │ macOS NSView │   │  GTK widget  │   … 每个后端一块表面
-  └──────────────┘   └──────────────┘   └──────────────┘
-```
-
-### 为什么这很重要
-
-| 特性 | 自绘（本库） | 原生控件 |
+| | 自绘（本库） | 原生控件 |
 |---|---|---|
-| 外观 | **跨 OS 完全一致** | 随各 OS 工具包与版本变化 |
-| 控件数量 | **180 种，全平台可用** | 仅限该 OS 工具包提供的 |
-| 依赖体积 | **不链接任何 GUI 工具包** | GTK / AppKit / Win32 / Android SDK |
-| 无OS与嵌入式 | **无 OS 也能运行**（`mini`、SVG） | 不可能 |
-| 测试确定性 | **像素／序列化快照** | 需要真实显示器 |
+| 外观 | 每个操作系统完全一致 | 随工具链与版本变化 |
+| 控件数量 | 各平台都是 180 种 | 只有工具链提供的那些 |
+| 依赖 | 不链接任何 GUI 工具链 | GTK / AppKit / Win32 / Android SDK |
+| 无头 / 嵌入式 | 完全不需要操作系统（`mini`、SVG） | 不可能 |
+| 测试 | 像素与 SVG 快照 | 需要真实显示器 |
 
-### 每个后端*仍*负责什么
+后端仍然负责真正属于操作系统的部分：窗口创建与事件循环、输入转换，以及平台服务（输入法、
+剪贴板、文件对话框、DPI）。若某后端连绘制面都提供不了（例如裸帧缓冲），库会改为绘制到内存
+缓冲区。详见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
 
-自绘不等于「不需要后端」。后端仍拥有真正属于操作系统的部分，且仅限于此：
+## 安装
 
-- **表面与事件循环** — 创建窗口、绘制回调、resize。
-- **输入** — 键盘／鼠标／触摸，转换为统一的 `Event`。
-- **平台服务** — IME、剪贴板、无障碍桥、文件对话框、DPI 缩放。
-
-连表面都无法提供的目标（例如裸帧缓冲）同样可用：它改为绘制到内存缓冲区。
-参见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
-
-> **从 1.x 升级？** 2.0.0 已从全部十个后端移除原生控件构造。
-> 参见 [`CHANGELOG.md`](CHANGELOG.md) 与 [`docs/MIGRATION_GUIDE.md`](docs/MIGRATION_GUIDE.md)。
-
----
-
-## OS 支持矩阵
-
-### 1. 各 OS 的平台服务
-
-以下是后端对*操作系统*能力的报告。全部可通过运行时接口
-`PlatformCapabilities`（`rust_widgets::PlatformCapabilities`）查询——
-请读取它而不要假设：后端若运行在编译时未匹配的 OS 上，会如实返回 `false`。
-
-| OS | 后端 | 家族 | DPI 缩放 | IME | 无障碍 | 原生菜单 | 可配置 |
-|----|------|------|:-------:|:---:|:------:|:-------:|:------:|
-| **Windows** | `WindowsPlatform` | Desktop | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **macOS** | `cocoa` | Desktop | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **macOS**（objc2 预览） | `macos-objc2-preview` | Desktop | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Linux / GTK** | GTK 后端 | Desktop | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Linux / Wayland** | `wayland` | Desktop | ✅ | ✅ | ✅ | ❌ | ✅ |
-| **iOS** | `ios-state-backend` | Mobile | ✅ | ✅ | ✅ | ❌ | ❌ |
-| **Android** | `android-state-backend` | Mobile | ✅ | ✅ | ✅ | ❌ | ❌ |
-| **HarmonyOS** | `harmony-desktop` | Desktop | ✅ | ✅ | ✅ | ❌ | ❌ |
-| **Web (WASM)** | `wasm-state-backend` | Embedded | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **Portable / 无 OS** | `portable` | Embedded | ❌ | ❌ | ❌ | ❌ | ❌ |
-
-**说明。** *原生菜单* 指该 OS 提供菜单栏协议。Wayland 没有该协议，
-故其后端把菜单树保存在进程内、由宿主渲染——声称支持原生菜单将是虚假的。
-*可配置* 指后端除能力标志外还暴露 OS 级设置（主题、强调色、通知器）。
-
-> **如何读 `native_menu` 一列。** 未覆写 `Platform::capabilities` 的后端会继承 trait 默认值，
-> 即「若后端报告 `Desktop` 家族则为 `true`」。Wayland、iOS、Android、HarmonyOS
-> 显式覆写为 `false`，因为它们确实没有菜单协议；Windows、macOS、GTK 保持默认。
-> 上表数值由测试（`published_os_capability_matrix_matches_the_trait_default`）钉住，不会脱节。
->
-> **控件集刻意*不在*此表中。** 因为所有控件均自绘，控件可用性不随 OS 变化，
-> 而是随 **profile** 变化——即下一张表。
-
-### 2. 各 profile 的控件可用性
-
-跨目标真正有差异的，是**编译进来多少控件**，而非 OS 能画什么。
-
-| Profile | 控件集 | 注册表 | 自绘控件托管 | GPU | i18n |
-|---------|-------|:------:|:-----------:|:---:|:----:|
-| `desktop` | **180 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
-| `tablet` | **180 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
-| `mobile` | **180 种**（完整） | ✅ | ✅ | ✅ wgpu | ✅ |
-| `embedded` | 精简核心集 | — | — | — 软件 | — |
-| `mini` | 精简核心集 | — | — | — 软件 | — |
-
-`—` 表示**被编译移除，而非降级**：模块不存在，
-故 `supports_custom_widgets()` 返回 `false`，调用方应拒绝该操作，
-而不是挂载到空白表面上。
-
-精简集（`embedded`／`mini`）包含：Window、Button、CheckBox、RadioButton、Label、
-LineEdit、ComboBox、SpinBox、ListBox、ProgressBar、Slider、ScrollBar、ScrollArea、
-Panel、Frame、GroupBox、Line、Meter、MiniChart、ImageView、MiniCanvas、
-Arc、Spinner、Roller、Dropdown、TextArea、Keyboard、Switch。
-
-### 3. 「支持」在两表中的含义
-
-| 关注点 | 随 OS 变化？ | 随 profile 变化？ |
-|---|:---:|:---:|
-| 控件外观 | ❌（自绘） | ❌ |
-| 哪些控件存在 | ❌ | ✅ |
-| DPI 缩放 / IME / 无障碍 | ✅ | ❌ |
-| 原生菜单栏 | ✅ | ❌ |
-| 文件／颜色／字体对话框 | ✅（宿主提供） | ❌ |
-| 渲染后端 | ❌ | ✅（GPU 或软件） |
-
-因此，避开 OS 专有 API 的应用天然可移植：按 profile 构建一次，处处渲染一致。
-
----
-
-180 种控件全部为自绘。每一种都能通过 `factory_name_for_kind` 解析出构造器
-（含别名共 **377** 个可解析名称）；
-新增 kind 若无法归类、或解析不出任何构造器，`tools/check_widget_registration_fidelity.sh`
-会直接失败 —— 后者已捕获 4 类 `create_*` 永远返回 id `0` 的缺陷
-（`Frame`、`DockPanel`、`CupertinoSwitch` 与 9 个 WebEngine 名称），而当时其余门禁全绿；
-平台能力矩阵
-（`docs/plans/platform_capability_matrix.md`）由源码机械派生，并在 CI 中设有防脱节门禁。
-
-[![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.5.3-blue)]()
-[![tests](https://img.shields.io/badge/tests-5500%2B-brightgreen)]()
-[![license](https://img.shields.io/badge/license-MIT-blue)]()
-
-**2.5.1 实测：** 控件的**渲染结果**现在是一个被验证的维度，而不再只验证它的*声明*。
-曾有四类用户**亲眼可见**的缺陷，躲过了当时已有的全部 64 个门禁——因为那些门禁都在问控件「声明了什么」，没有一条去看像素。
-2.5.1 用五层补上这个维度：
-
-- **渲染黄金表** —— 全部 **188** 个控件在 light/dark 下各渲染一次，断言四件事：确实画出了东西、颜色不等于它所在的表面、随外观变化、
-  四个语义 token（`error`/`warning`/`success`/`info`）都有真实消费者。
-- **声明与实现对齐门禁** —— 每个声明的属性确实被回答、每个 `draw` 确实作画、每个已发布事件确实存在。
-- **376 个入库 SVG 快照**（[`snapshots/svg/`](snapshots/svg/)）—— 每个控件两种外观各一份，配「重新生成并逐字节比对」门禁，
-  于是「看着不对」会显示为 diff。
-- **`heatmap`** 新控件（两个轴都是分类轴）与 **`spin_box` 小数支持**（`set_decimals(n)`）。
-- **诚实的 WebEngine**。`WebEngineView` 是「模拟」一个页面，不渲染页面，现在也如实这么说了：
-  `supports_web_engine()` 与 `has_real_engine()` 给出真话，那 76 行从未显示过任何内容的 WebKitGTK 包装已删除。
-
-另外，**三个本已损坏**的构建配置现在能构建了：`--features mini`、`--features embedded`、
-以及 `--features "windows desktop-runtime controls-native controls-custom"`（上一个版本上有 78 个编译错误）。
-五个档位均 0 error、0 warning，`clippy -D warnings` 干净。
-
-**2.5.3（当前版本）实测：两个文本后端终于一致了。** 软件光栅化器把 `DrawText` 的 origin 当作字形框的**上边缘**；
-而 SVG 后端把同一个值直接写进了 SVG 的 `y`——在那里 `y` 是**基线**。于是按「上边缘」契约居中的标题
-在屏幕上位置正确、在所有快照里却高了半行：**本该用来复核的产物，显示的是光栅器从来没画过的样子**，
-而且 `P5` 读的是同一个错误模型，所以它也看不见。受影响 7 个控件，**376 个快照中有 220 个变了**。
-
-修法是一个属性（`dominant-baseline="text-before-edge"`）——这正是它能只改一处的原因：
-约 40 个本来就按「上边缘」契约做过偏移的调用点全部保持正确。
-
-同一轮还关掉两类问题。**图表坐标轴 chrome**：`bar_chart` 即使开了 `chart` feature 也自己画轴，
-它的标签仍是浅色图表的 `DARK_GRAY`（**1.81:1**）；同一个字面量还活在两个 `not(feature = "chart")` 回退路径里，
-所以 tablet/mobile 上画出来的是看不见的图表。**语义色**：`calendar` 的周末红（**1.64:1**）与
-今日高亮（**1.30:1**）现在读 `theme.colors.*`；`terminal_view` 不再在亮色主题上画一块深色板——
-它的 **1.13:1** 错的是**承载面**，不是文字色。
-
-一次对照 Qt/Flutter/SwiftUI 的容器审计还发现三个「画了等于没画」的分组控件：
-`splitter` 完全没有分隔条（被 `pane_count() > 1` 挡住，而 `Splitter::new` 建的是 0 个 pane）、
-`tool_box` 用窗口底色填充内容区（与背景逐字节相同）、`image_gallery` 的空态是主题盲的 **2.02:1**。
-声明式层也补上了它的**完整性条件**——`child_if`、`child_if_else`、`children_if`、`children_keyed`——
-因为 `Node` 之前能表达「列表」却不能表达「条件」。
-
-同一轮还关掉了 **`P5` 看不见的那个判据**：文本原点就是字形框的**上边缘**，所以它里面出现
-`+ metrics.ascent` 永远是错的——居中时把字形盒下移半行，顶对齐时下移整整一个 ascent。
-第 61 轮只修了「字形盒溢出**控件**」的 8 处（那正是 `P5` 量的东西），留在控件内部的对所有门禁
-**都是隐形的**，于是还有约 40 处活在二十多个文件里（`app_bar`、`video_player`、`number_picker`、
-`search_bar`、`bottom_navigation_bar`、`modal_bottom_sheet`、`navigation_drawer`、`tab_view` 等）。
-现在全部修完，并且 **`tools/check_text_origin_is_a_top_edge.sh`** 让这一类**无法再被写出来**：
-它把每个绘制调用的实参追溯回 `let` 定义，只要出现 `ascent` 就失败。这道门禁做过**反向注入**验证，
-而它的第一版只读调用自身的实参、对注入的缺陷**保持绿色**——**不能失败的门禁不是门禁。**
-
-主题盲这类问题也被**度量**而不是被判定了。有三个控件之所以满足「亮≠暗」，只是因为**某个**像素变了，
-而主导整个渲染的面板没有变——`chart` 是硬编码白板上面画着暗色主题的轴标签（**2.52:1**），
-`emoji_picker` 与 `color_picker` 是整套亮色面板、两种外观唯一的差别只是背后的窗口。
-三者现在都走主题解析，而**门禁自己**报出了它们三条已失效的数据色豁免并要求删除。
-一个共享原语 `Color::legible_on(surface, min_ratio)` 取代了 `terminal_view` 里那份私有的
-「保色相、保对比度」实现，并在另外约十五处投入使用——取代了「把颜色按固定比例混向另一个色」的写法。
-
-该证据工具从 **131** 条低于 4.5:1 降到 **28** 条，最差从 **1.13:1** 升到 **4.04:1**——
-剩下的没有一条低于大字底线，且全部是刻意的次级文字。
-
-**2.5.2 实测：第五条渲染判据。** 上面四条都是读**栅格**，而栅格**有边界**——
-一个「画到自己矩形之外」的控件会得到一个**看起来完全正常**的普查结果：越界像素被裁掉，框内像素照常计数。
-而 SVG 快照带**绝对坐标、无边界**，同一个缺陷在那里就是**画出了画面**。
-**两个后端对「墨在哪里」给出不同答案，这本身就是缺陷。**
-
-`P5` 现在把每个控件走 SVG 后端渲染，要求它发出的每个元素都落在控件矩形内。
-一次抓出 **68 个控件**的真实缺陷并全部修复，归为六个根因：
-
-- **两套坐标系混用**（标题矩形在父空间算出、却按本地空间绘制）；
-- **估算与度量不一致**（`TabBar` 用字节长度布局、用 14 pt 绘制）；
-- **把行盒的 `ascent` 当成基线之上**——它在行盒**之内**，于是八个控件的 `+ ascent` 居中把文字下移半行、推出底边；
-- **大元素的半宽算漏**——描边、圆盘、投影；
-- **文本完全没有宽度约束**（约四十处），现在统一走一个新的入口
-  `RenderContext::draw_text_fitted`，它接收文本应处的**矩形**；
-- **`map_view` 硬编码浅色 chrome** 却被登记为「地图内容」——它根本不画地图，
-  所以暗色窗口里的地图是一块任何主题都改不动的白板。
-
-`P5` 的**第一版判据本身**也经过同样审计：它报出的 68 项里有 **25 项是判据自己的错**
-（文本宽度按「1 em/字符」估算、把 `stroke-width` 缺省值当成半宽），两处均已修正。
-详见 [`CHANGELOG.md`](CHANGELOG.md)、
-[`docs/log/log-20260921-4.md`](docs/log/log-20260921-4.md)（含每条断言的反向注入证据）。
-
-<p align="center">
-  <a href="README.md">
-    <img src="https://img.shields.io/badge/lang-English-blue" alt="English">
-  </a>
-</p>
-
----
-
-## 快速开始
-
-```bash
-# 桌面（默认）
-cargo check
-
-# Mini（精简 std 特性，最小控件集）
-cargo check --no-default-features --features mini
-
-# 嵌入式
-cargo check --no-default-features --features embedded
-
-# 测试（lib 套件；CI 实际命令为 `cargo test --all-features -q`）
-cargo test --lib
-
-# CI 使用的交叉编译检查（无需系统库）
-cargo check --target wasm32-unknown-unknown --no-default-features --features wasm
-cargo check --target x86_64-pc-windows-msvc --no-default-features \
-  --features "windows desktop-runtime wgpu touch i18n controls-native controls-custom serde serde_json advanced-widgets quality-management"
+```toml
+[dependencies]
+rust_widgets = "2.6.0"
 ```
 
-> **Android**：用 `./tools/build_android_testapp.sh` 构建 JNI 测试 APK
-> （`ANDROID_SDK_ROOT` 默认 `~/Android/Sdk`；NDK 取自 `$ANDROID_SDK_ROOT/ndk`）。
-> 详见[构建要求](#构建要求)。
+设备配置**只能选一个**。它们互斥——`mini` 和 `embedded` 会把 crate 的一部分**编译掉**，所以把
+它们和 `desktop` 叠在一起不是「取最小公分母」，而是构建失败：
 
-### 设备配置
-
-**只能选一个。** 设备配置之间互斥：`mini`/`embedded` 会将部分模块**整体编译移除**，
-因此与 `desktop` 同时开启不是「取最小集」，而是直接构建失败。
-
-```bash
-# ✅ 正确
-cargo check                                        # desktop（默认）
-cargo check --no-default-features --features mini
-cargo check --no-default-features --features embedded
-
-# ❌ 错误：desktop 仍然生效，精简配置要移除的模块照样被编译
-cargo check --features mini
+```toml
+rust_widgets = { version = "2.6.0", features = ["desktop"] }                       # 默认
+rust_widgets = { version = "2.6.0", default-features = false, features = ["tablet"] }
+rust_widgets = { version = "2.6.0", default-features = false, features = ["mobile"] }
+rust_widgets = { version = "2.6.0", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "2.6.0", default-features = false, features = ["mini"] }
 ```
 
-| 配置 | 命令 | 渲染后端 | 控件数 | i18n | GPU |
-|------|------|----------|--------|------|-----|
-| 桌面 | `cargo check` | 原生 OS | 完整控件集 | ✅ | ✅（desktop 默认启用 wgpu） |
-| 平板 | `--no-default-features --features tablet` | 原生 OS | 完整控件集 | ✅ | ✅（tablet 默认启用 wgpu） |
-| 手机 | `--no-default-features --features mobile` | 手机 API | 完整控件集 | ✅ | ✅（mobile 默认启用 wgpu） |
-| 嵌入式 | `--no-default-features --features embedded` | 软件 | 核心控件集 | — | — |
-| **Mini** | `--no-default-features --features mini` | **精简 std** + alloc | **核心控件集** | — | — |
+> `cargo check --features embedded` 是**错的**：`desktop` 是默认特性，这条命令会同时打开两个互斥
+> 配置。选择 `desktop` 以外的任何配置时，都必须加 `--no-default-features`。
 
-#### 各配置关闭了什么
-
-各配置的 API 完全一致，差别只在**能力是否存在**。只有同时具备平台后端且保留
-`widget::runtime` 的配置，才能承载自绘型控件：
-
-| 能力 | 桌面 | 嵌入式 | Mini |
-|------|:----:|:------:|:----:|
-| `widget::runtime`（控件注册表） | ✅ | — | — |
-| 自绘型控件（`mount_custom_widget`） | ✅ | — | — |
-| `supports_custom_widgets()` | `true` | `false` | `false` |
-| 菜单 / 工具栏 / 状态栏 | ✅ | ✅ | ✅ |
-| 菜单快捷键（显示） | ✅ | ✅ | ✅ |
-| 菜单快捷键（真的能用） | ✅ | ✅ | ✅ |
-
-表中 `—` 表示能力**不存在，而非降级**：模块已被编译移除，因此
-`supports_custom_widgets()` 返回 `false`，调用方应据此拒绝操作，而不是挂载后得到一个
-空白窗口（参见 `demo/code_editor` 的启动检查）。
-
-菜单与快捷键**刻意不受影响**：它们的代码没有 `mini` 门控。所以 `mini` 准确说是
-「**无自绘型控件承载能力，但菜单完整可用**」。
-
-> CI 的 `cargo test --all-features` 会打开所有特性，即 `desktop` 与 `mini` **同时生效**。
-> 这个组合就是本约束的回归探针；完整论证与验证矩阵见
-> [`docs/plans/platform_differences.md`](docs/plans/platform_differences.md)。
-
-#### `tablet` / `mobile` 需显式指定操作系统后端
-
-与 `desktop` 不同，`tablet` 与 `mobile` 配置**自身不会选中任何 OS 后端** —— 它们唯一
-的后端入口是 `os-auto`，而该 feature 目前是空的。使用时必须显式指定后端：
-
-```bash
-# ⚠️ 在所有 OS 上都会落到 stub 后端：没有任何真实控件
-cargo check --no-default-features --features tablet
-
-# ✅ 真实后端
-cargo check --no-default-features --features "tablet,macos"
-```
-
-依赖这两个配置前需要注意两点：
-
-* 不指定后端时**不会报错**，而是静默使用 `macos-fallback-stub`（其他 OS 同理）。
-  不确定时可调用 `rust_widgets::backend_name()` 确认。
-* 在 macOS 上，`tablet`/`mobile` 选中的是 **objc2 预览后端**，它**尚未实现自绘型控件的
-  承载**。目前 macOS 上承载自绘型控件需使用 `desktop` 配置（`cocoa` 后端）。请查询
-  `supports_custom_widgets()` 而不要臆测。
-
-### 操作系统支持
-
-| 系统 | 特性 | 自动检测 | 已在 macOS 上做交叉验证 |
-|------|------|:--------:|:----------------------:|
-| Windows (Win32) | `windows` | ✅ | ✅ `x86_64-pc-windows-gnu`（0 warning）|
-| macOS (Cocoa/objc2) | `macos` | ✅ | 不适用（本机）|
-| iOS (UIKit) | `ios` | ✅ | ✅ 真机与模拟器，含 `--all-targets` |
-| Linux (GTK) | `linux-gtk` | — | 需要 cross sysroot（见 CI）|
-| Linux (Wayland) | `linux-wayland` | — | 需要 cross sysroot（见 CI）|
-| Android (JNI) | `android` | ✅ | 需要 NDK（见 CI）|
-| Web (WASM) | `wasm` | — | ✅ `wasm32-unknown-unknown`，含 `--all-targets` |
-| HarmonyOS | `harmony` | — | ✅ `aarch64`/`armv7`/`x86_64-unknown-linux-ohos`，**已编译并链接** |
-
-> **「交叉验证」指的是真的编译过，不是声明。** HarmonyOS 一行不仅 `check`，还对着
-> OpenHarmony SDK sysroot **完成链接**，并断言产物 `librust_widgets.so` 的机器类型
-> （`AArch64` / `ARM` / `X86-64`）——`cargo check` 从不链接，因此它无法发现工具链缺失
-> 或架构不对。
->
-> `loongarch64-unknown-linux-ohos` **不可构建**：rustup 没有该 target 的 std（Tier 3），
-> SDK 也没有该架构的 libc。`tools/check_harmony_cross.sh` 不会为一个它从未真正碰过的
-> target 报告通过，而是**正向钉住这个特定结果**，一旦情况变化就报错。
->
-
----
-
-## 架构
-
-```
-┌────────────────────────────────────────────────────────────┐
-│  API 层 — lib.rs + compat.rs（core/alloc 桥接）          │
-├────────────────────────────────────────────────────────────┤
-│  控件库  │  事件系统    │  布局引擎                         │
-│  (30-80) │  (EventLoop,│  (Box, Grid, Flow,               │
-│          │   Gesture)  │   Stack, Absolute)                │
-├──────────┴─────────────┴──────────────────────────────────┤
-│  i18n │ 主题 │ 信号系统 │ 控制后端                          │
-├────────────────────────────────────────────────────────────┤
-│  渲染：SoftwarePaintBackend / SvgPaintBackend / GPU         │
-├────────────────────────────────────────────────────────────┤
-│  平台：Windows │ macOS │ Linux │ iOS │ Android │ WASM      │
-└────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 特性
-
-### Rust 原生设计
-- no_std 就绪架构：所有文件经 `compat.rs`（`core`/`alloc`）导入共享类型，启用 `#![cfg_attr(feature = "mini", no_std)]` 是已跟踪的后续步骤——当前 `mini` profile 在 std 上编译。
-- `compat.rs` 桥接：`HashMap→BTreeMap`，轻量 profile 使用兼容锁实现，`MiniVec<T,64>`，`MiniString<256>`，`MiniArena`
-- `enum WidgetKind` + `trait Widget/Draw/EventHandler` — 零成本抽象
-- Builder 模式：`Style::new().bg_color(RED).pad_all(8).build()`
-
-### 渲染后端
-- **SoftwarePaintBackend**：CPU 光栅化（RGBA 帧缓冲），用于 mini/嵌入式
-- **SvgPaintBackend**：SVG 管线输出，用于测试和文档
-- **GPU (wgpu)**：硬件加速，用于桌面/平板/手机
-
-### 触摸与手势
-- 11 个手势识别器：点击、双击、长按、滑动、平移、甩动、双指点击、双指滑动、长按拖拽、捏合、旋转
-- 触摸目标自动扩展，适配小控件
-
-### 布局
-- Box、HBox、VBox、Grid、Form、Stack、Flow、Absolute、Anchor、Masonry
-- 设备自适应布局缩放、字体缩放、最小触摸尺寸
-
-### CSS 样式
-- CSS 解析器 + 选择器引擎（`CssParser`、`CssSelector`）
-- `Widget::apply_css(css, class)` — 控件级 CSS 应用
-- `StyleSheetManager` — 全局样式表注册
-- `CssWatcher` — 轮询式 CSS 热加载
-
-### 主题系统
-- `ThemeManager` — 具名主题、明暗切换、JSON 存取
-- 语义令牌（颜色、字体、间距、边框）按控件角色解析
-- `HighContrastMode` — 强制前景/背景配对，对比度可实测
-- 对所有由本库创建的控件**自动生效**
-
-### 声明式 JSON UI（仅库 API）
-- `JsonLoader` — 由 JSON 描述构建控件树
-- 属性应用走控件**自身**的属性契约
-- 节点可选 `class` / `css`，由样式表驱动外观
-- **不经 C ABI 暴露** —— 加载器没有生成的入口点
-
-### 声明式视图层（`view`，设备档位）
-
-把控件树描述为**状态的函数**，由库算出变了什么。
+## 第一个控件
 
 ```rust
-use rust_widgets::view::{Node, View, ViewEngine};
-use rust_widgets::widget::capability::CapabilityValue;
+use rust_widgets::core::{Color, Rect};
+use rust_widgets::style::WidgetStyle;
+use rust_widgets::widget::base_widgets::button::Button;
+use rust_widgets::widget::Widget;   // 把 `set_style` 带入作用域
 
-struct Counter { count: i64 }
+fn main() {
+    // 控件就是放在 `Rect` 里的普通值。渲染成 SVG 是看到它最短的路径；
+    // 换后端只改变像素去哪里，不改变控件怎么画。
+    let mut button = Button::new("点击我".to_string(), Rect::new(0, 0, 160, 36));
 
-impl View for Counter {
-    fn build(&self) -> Node {
-        Node::new("group_box").key("root").child(
-            Node::new("label")
-                .key("count")
-                .prop("text", CapabilityValue::String(format!("Count: {}", self.count))),
-        )
-    }
+    // 样式是一个字段全为可选值的普通结构体，因此未设置的字段是「继承」，
+    // 而不会覆盖主题为该控件已解析出的颜色。
+    let style = WidgetStyle {
+        background_color: Some(Color::rgb(33, 150, 243)),
+        text_color: Some(Color::WHITE),
+        border_radius: Some(6),
+        ..WidgetStyle::default()
+    };
+    button.set_style(style);
+
+    println!("{}", rust_widgets::widget::svg::render_to_svg(&mut button));
 }
-
-let mut engine = ViewEngine::new();
-engine.mount(&state, &create);                  // 建树
-// ……状态变化……
-let report = engine.update(&state, &create);    // 只施加差异
-assert_eq!(report.patches.len(), 1);            // 一个 SetProperty，别无其它
 ```
 
-**为什么用它。** 没有它时，每个改状态的地方还得同时够到正确的控件、知道该设哪个属性 ——
-于是「`count == 3` 时屏幕该是什么样」在任何地方都得不到回答。有了它，这个问题只有一个答案：
-`build`。更新也随之变便宜、变局部：引擎把新树与旧树求差，只碰不同的部分，
-因此某个兄弟节点被编辑时，控件的焦点、滚动偏移与内部状态依然存活。
+窗口创建、事件循环、布局、主题、国际化与 C ABI 各有独立章节，从
+[`cookbook/zh-CN/src/README.md`](cookbook/zh-CN/src/README.md) 开始。
 
-**保留式模型不变。** 控件仍是带 `ObjectId` 的长期对象，`add_child` 仍然可用，两者可混用。
-本层增加的是对**结构**的描述，不取代任何东西。
+## 渲染
 
-**怎么用**
+| 后端 | 用途 | 说明 |
+|---|---|---|
+| 软件光栅化器 | 各处的默认后端 | 抗锯齿，不需要 GPU，可无头运行 |
+| SVG | 快照、打印、矢量输出 | 逐字节可复现；`snapshots/svg/` 就是它产出的 |
+| wgpu | GPU 加速 | 显式降级阶梯：Vulkan/Metal/DX12/WebGPU → GL → CPU |
 
-1. 实现 `View::build` —— 从状态返回一棵 `Node` 树。用与 JSON 加载器相同的工厂名与属性名。
-2. 提供构造器：`Fn(&Node) -> Option<ObjectId>`，通常是 `WidgetFactory::create` 加
-   `runtime::register`。它是**注入**的而非硬连，因此本层可以**无窗口**测试。
-3. 先 `engine.mount(&state, &create)` 一次，之后状态变化时 `engine.update(&state, &create)`。
-4. 给列表项加 **`key`**。key 是 diff 在重建之间认出同一控件的依据；没有 key 时匹配退化为按位置，
-   头部插入会使其后每个节点的身份漂移到错误的控件上。`report.positional_matches > 0` 即「该补 key」。
+渲染器的文本原点是字形框的**左上角**，不是基线。两个后端对这一契约的实现完全一致（SVG 后端会写
+`dominant-baseline="text-before-edge"`），因此按其中一个后端测出的标签位置，在另一个后端也落在
+同一处。正是这个性质让 `snapshots/svg/` 成为可用的评审产物，而不是第二个会漂移的渲染器。
 
-**由响应式状态驱动** —— `ReactiveHost` 用 `Binding` 驱动 `update`。因为
-`BindingListener` 必须 `Send` 而引擎是 `!Send`，监听器只把变更记入队列，
-由 UI 线程的 `pump()` 做实际工作，因此工作线程里的 `Binding::set` 能抵达活控件。
-
-| 档位 | `view` |
-|---|---|
-| `desktop` / `tablet` / `mobile` | ✅ **默认编译**；加 `no-declarative-view` 可排除 |
-| `mini` / `embedded` | ❌ **不存在** —— 仅 `add_child`（分配预算 + 无逐帧重求值调用方） |
-
-> 不经 C ABI 暴露 —— 与 JSON 加载器一样仅 Rust 可用。
-> 完整指南：[cookbook/zh-CN/src/chapters/declarative-view.md](cookbook/zh-CN/src/chapters/declarative-view.md)。
-
-> **金融控件：** 六个自绘行情控件 —— 带指标叠加的 K 线图、成交量面板、深度曲线、
-> 盘口报价表、行情表与振荡指标面板 —— 以及它们共用的技术指标计算。
-> 详见 [cookbook/zh-CN/src/chapters/finance.md](cookbook/zh-CN/src/chapters/finance.md)。
-
-> **C ABI 覆盖范围。** C ABI（`include/rw_generated.h`，130 个 `rw_*` 函数）
-> 覆盖窗口管理、控件创建、逐控件属性与主题选择。创建与属性访问都是**通用**的：
-> `rw_create_widget_of_kind(parent, "tree_view", ...)` 可触及每一个已注册控件
-> （`rw_widget_kind_names` 列出全部），`rw_set_widget_property(id, "tooltip", ...)`
-> 可触及每一个已发布属性（`rw_widget_property_names` 列出这些名称）。
-> 主题经 `rw_set_theme` / `rw_theme_names` / `rw_set_high_contrast` 可达。
->
-> 仍为仅 Rust 的两项：**JSON 布局加载器**（无生成入口），以及
-> **作为文档的 CSS 样式表**（单个样式属性可按控件设置，但没有传递样式表的 ABI）。
-
-### C ABI 能力一览
-
-| 能力 | 入口 |
-|---|---|
-| 窗口生命周期 | `rw_create_window`、`rw_run`、`rw_quit` |
-| 通用创建 | `rw_create_widget_of_kind`、`rw_widget_kind_names` |
-| 逐类型创建 | `rw_create_button`、`rw_create_slider` … |
-| 生命周期 | `rw_destroy_widget`、`rw_show_widget`、`rw_hide_widget` |
-| 通用属性 | `rw_get_widget_property`、`rw_set_widget_property`、`rw_widget_property_names` |
-| 文本与几何 | `rw_set_widget_text`、`rw_get_widget_text`、`rw_set_widget_geometry` |
-| 集合 | `rw_widget_list_add`、`rw_widget_list_clear`、`rw_widget_list_count`、`rw_list_box_add_item`、`rw_combo_box_add_item` … |
-| 滚动 | `rw_widget_set_scroll_position`、`rw_widget_scroll_to` |
-| 主题 | `rw_set_theme`、`rw_theme_names`、`rw_set_high_contrast` |
-| 错误 | `rw_error_code`、`rw_error_message` |
-
-`bindings/` 下的每个绑定都由 `tools/check_binding_symbol_coverage.sh` 按此清单校验，
-因此新增的 ABI 函数不会在某个语言中静默地不可达。
-
-### 局部刷新（自动判定，已连进帧循环）
-- `DirtyRegionTracker` 脏矩形追踪与合并；`render_dirty_regions()` 基于 `push_clip` / `pop_clip` 的局部重绘
-- **由 `widget::runtime::RepaintMode` 驱动**：`mark_dirty_rect` 记录损坏区域，
-  `render_frame_incremental` 只重绘受损区域，其余部分沿用上一帧
-- **自动判定：由库决定是否启用。** 挂载时会经 `should_track_damage` 判定，
-  仅在区域化确实划算时才启用 `RepaintMode::Adaptive` —— 即面积够大、承载不止一个控件、
-  且确实请求过重绘。面积低于 `AUTO_REPAINT_MIN_PIXELS`（≈500×500）或无子控件的表面保持
-  `Full` 且不付任何簿记开销，因为对它们来说区域化的成本高于收益
-- damage 由 `BaseWidget::request_redraw` 记录 —— 库中每一次外观变化汇聚的唯一咽喉点，
-  因此局部重绘**由构造保证**正确，而不依赖一份变更点清单
-- `Adaptive` 会自我修正：某一帧的 damage 覆盖整个表面时该帧回退为整幅重绘，
-  待 damage 缩小后自动恢复区域重绘 —— 所以自动判定不可能产出错误的一帧，只有有界簿记开销
-- 判定可观察，不是黑盒：`should_track_damage`、`enable_damage_tracking_if_useful`、
-  `adaptive_large_damage_run`，以及可用 `set_repaint_mode` 覆盖
-
-### 国际化（i18n）
-- `tr!()` 宏实现编译期键值翻译
-- 中 / 英 / 繁 翻译包（各 30+ UI 字符串）
-- 上下文翻译与复数形式支持
-- `audit_keys()` 翻译覆盖率验证
-
----
-
-## 控件库
-
-### 桌面/平板/手机（180 种控件）
-
-**核心**：Window、Dialog、MessageBox、FileDialog、ColorDialog、FontDialog、InputDialog、ProgressDialog、PopupWindow、Button、CheckBox、RadioButton、Label、LineEdit、TextEdit、RichEdit、ComboBox、SpinBox、ListBox、ListView、TreeView、TreeTable、ProgressBar、Slider、ScrollBar、ScrollArea、TabWidget、Splitter、GroupBox、Frame、MenuBar、Menu、MenuItem、ContextMenu、ToolBar、StatusBar、Canvas、Table、Grid、Chart、ToggleButton
-
-**日期与时间**：Calendar、DateEdit、TimeEdit、DateTimeEdit、DatePicker、TimePicker、DateTimePicker、CupertinoDatePicker、DateRangePicker、MobileDatePicker
-
-**容器**：CollapsiblePane、DockWidget、MdiArea、StackedWidget、ToolBox、TabBar、NavigationStack、Carousel、BottomSheet、ModalBottomSheet
-
-**移动端**：BottomNavigationBar、NavigationDrawer、AppBar、SafeArea、PullToRefresh、RefreshControl、SearchBar、CupertinoSwitch、CupertinoSlider、CupertinoNavigationBar、CupertinoSegmentedControl、AdaptiveScaffold
-
-**输入**：CommandLink、FontComboBox、KeySequenceEdit、MaskedEdit、AutoCompleteEdit、MultiSelectComboBox、EditableComboBox、RangeSlider、FloatingLabel、TagInput、InplaceEditor、SearchBox、ShortcutEditor
-
-**显示**：LCDNumber、Dial、ProgressCircle、Rating、Icon、Sparkline、Tooltip、Badge、Chip、Avatar、SkeletonLoader、EmptyState
-
-**图表**：LineChart、BarChart、PieChart、Sparkline
-
-**网页**：WebView、WebEngineView、WebEnginePage、WebEngineSettings、WebEngineDownloadItem、WebEngineCookieStore、WebEngineWebChannel、WebEngineFindTextResult、WebEngineNotification、WebEngineScriptDialog、WebEngineContextMenuRequest
-
-**菜单**：PieMenu、RibbonBar、MenuButton、DropdownMenu、Popover、SegmentedButton
-
-**特殊**：FreeformShape、QRCode、ColorHistory、ColorWell、MasonryLayout、Stepper、Divider、SwipeToDismiss、Toolbox、PropertiesPanel、PropertyGrid、WizardDialog、Wizard、AnimatedImage、HeroAnimation、BezierCurveEditor、LottieWidget、RiveWidget、VideoPlayer、ImageGallery、AudioVisualizer、CameraPreview、BarcodeScanner、Breadcrumb、SignaturePad、DropZone、CodeEditor、ColorPicker、CommandEntry、CommandPalette、DiffViewer、MapView、MediaPlayer、NotificationCenter、Snackbar、SplitButton、TerminalView、ToastStack
-
-### Mini / Embedded（精简核心控件集）
-
-Window、Button、CheckBox、RadioButton、Label、LineEdit、ComboBox、SpinBox、ListBox、ProgressBar、Slider、ScrollBar、ScrollArea、Panel、Frame、GroupBox、Line、Meter、MiniChart、ImageView、MiniCanvas、Arc、Spinner、Roller、Dropdown、TextArea、Keyboard、Switch
-
----
-
-## C ABI 与语言绑定
+## 验证一次改动
 
 ```bash
-cargo build --release
-clang -Iexamples examples/c_abi_poll_demo.c -Ltarget/release -lrust_widgets -o target/release/c_abi_poll_demo
-python examples/python/demo_basic.py
+cargo test --no-default-features --features desktop            # 全量测试
+cargo clippy --no-default-features --features desktop --all-targets -- -D warnings
+cargo run  --no-default-features --features desktop --example export_control_svgs
+bash tools/run_all_gates.sh                                    # 全部门禁，输出 PASS/FAIL 表
 ```
 
-| 语言 | 状态 |
-|------|:----:|
-| C | ✅ |
-| C++ | ✅ |
-| Python | ✅ |
-| Java (JNI) | ✅ |
+[`snapshots/svg/`](snapshots/svg/) 下的 376 个 SVG 是「每个控件 × 明暗两种外观」各一份。它们**被提交
+也被重新生成**，只要控件的绘制变了而快照没更新，`tools/check_svg_snapshots.sh` 就会逐字节失败。
+于是一个「看起来不对」的控件会在评审里以 diff 的形式出现；而两个文件完全相同的控件，就是肉眼可见
+的主题盲。
 
----
+`tools/run_all_gates.sh` 会跑遍 `tools/check_*.sh` 并打印每个门禁的通过情况与耗时。每个门禁都必须
+**能失败**；其中最关键的那些都用反向注入验证过——故意把缺陷改回去，确认门禁会变红。
 
-## 核心模块
+## 「180 个控件」覆盖什么
 
-| 模块 | 说明 | 可用范围 |
-|------|------|:--------:|
-| `core` | Point、Rect、Size、Color、Font、ObjectId | 全部 |
-| `widget` | 控件实现 | 全部 |
-| `event` | 事件类型、EventLoop、GestureEngine | 全部 |
-| `compat` | core/alloc 桥接、MiniVec、MiniString、MiniArena | 全部 |
-| `render` | SoftwarePaintBackend、SvgPaintBackend、GPU | 全部 |
-| `layout` | Box、Grid、Flow、Stack、Absolute、Masonry | 全部 |
-| `signal` | GenericSignal、Signal1、ConnectionScope | 全部 |
-| `style` | WidgetStyle、CSS 解析器、动画、主题状态 | 全部 |
-| `object` | 对象/类名系统 | 全部 |
-| `platform` | Windows、macOS、Linux、iOS、Android、WASM、Harmony | 桌面+ |
-| `gesture` | 11 个手势识别器 | 桌面+ (touch) |
-| `i18n` | `tr!()` 宏、I18nManager、中/英/繁 | 桌面+ |
-| `theme` | 主题管理器、深色/浅色模式 | 桌面+ |
-| `gpu` | GPU 适配器检测、缓冲池 | 桌面+ |
-| `chart` | 折线图、柱状图、饼图、散点图 | 桌面+ |
-| `web` | WebEngine、WebView、JS 引擎 | 桌面+ |
-| `pdf` | PDF 文档创建 | 桌面+ |
-| `print` | 打印支持 | 桌面+ |
-| `performance` | 性能分析器、帧率监控 | 桌面+ |
-| `memory` | ObjectPool、ArenaAllocator、BufferPool | 桌面+ |
+控件库覆盖：文本与输入（按钮、开关、输入框、掩码/一次性验证码/日期/时间编辑器、搜索框、标签输入、
+虚拟键盘、富文本、Markdown、代码编辑器、终端）；选择与展示（列表、表格与支持冻结列虚拟化的数据网格、
+树、chip、badge、评分、进度、骨架屏）；容器与框架（标签页、分割条、停靠面板、MDI、工具栏、菜单、
+状态栏、功能带、工具箱）；对话框与浮层（消息框、文件/字体/取色器、向导、气泡、提示、横幅、吐司、
+Snackbar、底部面板）；导航、媒体，以及 Material 没有对应物的图表族：K 线、成交量、盘口深度、指标、
+雷达、热力图、仪表、迷你走势图。
 
----
+会裁剪控件集合的配置（`mini`、`embedded`）保留精简核心；每个配置的确切集合是生成并被门禁校验的，
+列在 [`docs/plans/platform_capability_matrix.md`](docs/plans/platform_capability_matrix.md)。
 
-## 构建要求
+## 平台说明
 
-| 配置 | Rust 版本 | 依赖 |
-|------|:---------:|------|
-| 桌面 | 1.87+ | wgpu、GTK/Wayland (Linux)、objc2 (macOS) |
-| Mini | 1.87+ | heapless、hashbrown、bumpalo（no_std 就绪；profile 在 std 上编译） |
-| 嵌入式 | 1.87+ | 无 |
+- **Windows / macOS / Linux** —— 完整配置，真实绘制面与事件循环。
+- **Linux/Wayland** —— 合成相关测试在 `tools/run_wayland_compositor_tests.sh`。
+- **iOS / Android** —— 完整配置；JNI 测试 APK 用 `tools/build_android_testapp.sh` 构建。
+- **Web (wasm32)** —— WebGL/WebGPU 绘制面；`cfg(target_arch = "wasm32")` 描述的是沙箱约束而非操作
+  系统，操作系统相关的知识全部留在 `src/platform/` 内。
+- **嵌入式 / mini** —— 仅软件光栅化器，无操作系统服务。
 
-### 图像编解码与交叉编译
+目前确实做不到的能力，会通过运行时能力查询诚实地返回 `false`，而不是假装支持。
+`supports_custom_widgets()`、`supports_web_engine()`、`has_real_engine()` 给的是真实答案，不是
+编译期桩。
 
-AVIF 支持使用**纯 Rust** 的 `avif` 编解码器（ravif），而非 `avif-native`，因此为
-异种目标构建 `mobile`/`tablet`/`desktop` 时**不需要** `dav1d` sysroot，也无需手工配置
-交叉 `pkg-config`。早期版本会引入 `dav1d-sys`，除非手工配好 pkg-config sysroot，
-否则 Android/iOS/wasm 的交叉编译会失败。
+## 语言绑定
 
-代价是解码速度：纯 Rust 编解码器慢于 C 版 `dav1d` 后端，并增加约 15 个构建期
-crate（`rav1e` 等）。
+`C ABI` 位于 `src/bindings/`，通过 `rw_*` 符号暴露每个控件，并提供基于能力的属性与事件模型。C、C++、
+Python 与 Java（JNI）绑定都在 CI 中运行；生成的头文件由 `tools/check_abi.sh` 检查漂移。
 
----
+见 [`cookbook/zh-CN/src/chapters/language-bindings.md`](cookbook/zh-CN/src/chapters/language-bindings.md)。
 
-## 性能
+## 文档
 
-| 指标 | 桌面 | Mini（目标值） |
-|------|------|----------------|
-| 二进制体积 | ~5MB | < 100KB |
-| 内存占用（典型） | < 100MB | < 32KB |
-| 帧率 | 60 FPS | 30 FPS |
-| 控件创建耗时 | < 1ms | < 0.1ms |
+| 文档 | 内容 |
+|---|---|
+| [`cookbook/`](cookbook/) | 手册 —— 英文、简体中文、繁體中文 |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 模块划分与分层规则 |
+| [`docs/MIGRATION_GUIDE.md`](docs/MIGRATION_GUIDE.md) | 从 1.x 迁移（2.0 起移除原生控件创建） |
+| [`CHANGELOG.md`](CHANGELOG.md) | 发行说明，含每项修复的证据 |
+| [`docs/reports/`](docs/reports/) | 审计与质量报告 |
+| [`docs/log/`](docs/log/) | 逐轮的工程日志 |
 
----
+## 环境要求
 
-## 许可
+Rust **1.87+**。默认构建不需要任何系统 GUI 库；Linux 额外用 Wayland/X11 提供绘制面。图像编解码器是
+纯 Rust 的，因此交叉编译到 Android、iOS 或 wasm 不需要 `pkg-config` sysroot。
 
-MIT License — 详见 [LICENSE](LICENSE)。
+## 许可证
+
+MIT —— 见 [LICENSE](LICENSE)。
 
 ## 支持
 
-- Issues：[GitHub Issues](https://github.com/mikewolfli/rust-widgets/issues)
-- **Cookbook 手册**：[cookbook/](cookbook/) —— 主文档，提供英文（`cookbook/en/`）、
-  简体中文（`cookbook/zh-CN/`）与繁体中文（`cookbook/zh-TW/`）三个版本
+- 问题反馈：[GitHub Issues](https://github.com/mikewolfli/rust-widgets/issues)
+
+[![build](https://img.shields.io/badge/build-passing-brightgreen)]()
+[![version](https://img.shields.io/badge/version-2.6.0-blue)]()
+[![tests](https://img.shields.io/badge/tests-5600%2B-brightgreen)]()
+[![license](https://img.shields.io/badge/license-MIT-blue)]()
+
+<p align="center">
+  <a href="README.md">
+    <img src="https://img.shields.io/badge/English-English-blue" alt="English">
+  </a>
+</p>

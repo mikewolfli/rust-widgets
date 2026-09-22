@@ -12,6 +12,7 @@ use crate::style::theme_state::{StatefulTheme, WidgetState};
 /// [`Self::BackOut`], [`Self::ElasticIn`] and [`Self::ElasticOut`] deliberately
 /// overshoot outside it, which is how the "pull back" and "spring past" effects
 /// are produced. Input outside `0.0..=1.0` is clamped first.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum EasingFunction {
     #[default]
     /// Constant speed: the output equals the input.
@@ -239,6 +240,13 @@ pub struct Animation {
     /// Progress frozen at the moment of pause, so progress() returns the
     /// correct value while the animation is paused.
     frozen_progress: Option<f32>,
+    /// Virtual elapsed time accumulated by [`Animation::advance_by`].
+    ///
+    /// When this is non-zero the animation is **delta-driven**: `progress_inner` reads it instead of
+    /// the clock, so a host supplying frame deltas gets reproducible pacing and a test can reach an
+    /// animation's end state without sleeping. An animation never advanced by a delta leaves it at
+    /// zero and stays clock-driven, so an existing caller's behaviour is unchanged.
+    elapsed_override: Duration,
 }
 impl Animation {
     /// Creates a stopped animation in iteration `0` with no completion callback.
@@ -252,6 +260,7 @@ impl Animation {
             current_iteration: 0,
             on_complete_callback: None,
             frozen_progress: None,
+            elapsed_override: Duration::ZERO,
         }
     }
     /// Starts the animation from now, clearing any pause and resetting the
@@ -388,7 +397,13 @@ impl Animation {
         if !self.is_running {
             return 0.0;
         }
-        let elapsed = self.start_time.map(|t| t.elapsed()).unwrap_or_default();
+        // Delta-driven when a caller has advanced this animation explicitly; clock-driven
+        // otherwise. One source or the other, never a mix — see `advance_by`.
+        let elapsed = if self.elapsed_override > Duration::ZERO {
+            self.elapsed_override
+        } else {
+            self.start_time.map(|t| t.elapsed()).unwrap_or_default()
+        };
         if elapsed < self.config.delay {
             return 0.0;
         }
@@ -447,6 +462,45 @@ impl Animation {
             }
         }
     }
+    /// Advances this animation by an explicit `delta`, ignoring the wall clock.
+    ///
+    /// # Why an animation needs its own delta-driven advance
+    ///
+    /// `update` derives elapsed time from `start_time`, so progress depends on real time passing
+    /// between calls. That makes the engine unusable from a control whose host supplies a frame delta
+    /// — the crate's own `tick(delta_ms)` convention — and it makes an animation unreproducible in a
+    /// test without sleeping.
+    ///
+    /// This moves a **virtual** elapsed time forward instead: `elapsed_override` accumulates the
+    /// deltas the caller supplies, and the progress computation reads it in preference to the clock.
+    /// An animation is therefore driven by exactly one source or the other, never a mix, which is
+    /// what keeps one config producing the same curve either way.
+    ///
+    /// The delay, the iteration count and the completion callback all behave as they do in `update`,
+    /// because both paths read the same configuration and the same accumulated time.
+    pub fn advance_by(&mut self, delta: Duration) {
+        if !self.is_running || self.is_paused {
+            // Same rule as `update`: a paused animation keeps its frozen progress and does not
+            // advance its iteration count.
+            return;
+        }
+        self.elapsed_override += delta;
+        let elapsed = self.elapsed_override;
+        if elapsed > self.config.delay {
+            let animation_elapsed = elapsed - self.config.delay;
+            let raw_progress = animation_elapsed.as_secs_f32() / self.config.duration.as_secs_f32();
+            if raw_progress >= 1.0 {
+                self.current_iteration = raw_progress.floor() as u32;
+                if !self.config.infinite && self.current_iteration >= self.config.iteration_count {
+                    self.is_running = false;
+                    if let Some(mut callback) = self.on_complete_callback.take() {
+                        callback();
+                    }
+                }
+            }
+        }
+    }
+
     /// Borrows the configuration this animation runs with.
     pub fn config(&self) -> &AnimationConfig {
         &self.config
@@ -577,6 +631,16 @@ struct ActiveAnimation {
     last_progress: f32,
 }
 
+impl ActiveAnimation {
+    /// Forwards a caller-supplied delta to the wrapped animation.
+    ///
+    /// A forwarding method rather than reaching through `entry.anim.advance_by` at the call site,
+    /// so the one place that knows what "advancing an active animation" means stays the one place.
+    fn advance_by(&mut self, delta: Duration) {
+        self.anim.advance_by(delta);
+    }
+}
+
 /// Global animation driver that manages and advances active animations.
 ///
 /// Call `advance()` from your event loop or render loop to tick all animations.
@@ -591,6 +655,83 @@ impl AnimationDriver {
     /// Creates a new empty animation driver.
     pub fn new() -> Self {
         Self { animations: HashMap::new(), property_animations: HashMap::new(), next_id: 1 }
+    }
+
+    /// Advances every active animation by a caller-supplied delta instead of by the clock.
+    ///
+    /// # Why the engine needed this
+    ///
+    /// `advance` reads `Instant::now()`, which makes an animation's progress depend on how long the
+    /// host took to call it. That is right for a real frame loop and wrong for everything else: a
+    /// test cannot drive an animation to its end state without sleeping, a host that renders on
+    /// demand cannot reproduce a frame, and the crate's own `tick(delta_ms) -> bool` convention
+    /// (established by `floating_label`) has no way to feed an engine that only reads the clock.
+    ///
+    /// So the engine shipped complete and uncallable from any control. This is the entry point that
+    /// makes it callable: progress moves by exactly `delta`, and the return value answers the same
+    /// question `advance`'s does — how many animations are still running — so a control can report
+    /// "another frame is needed" without a second bookkeeping field.
+    ///
+    /// Easing and iteration still come from each animation's own config, so a delta-driven advance
+    /// follows the same curve as a clock-driven one; only the source of elapsed time differs.
+    pub fn advance_by(&mut self, delta: Duration) -> usize {
+        // Which animations were in flight *before* this advance. Recorded up front because an
+        // animation that reaches its end during this call flips `is_running` to `false` inside
+        // `advance_by`, and filtering the snapshot on `is_running` afterwards would therefore drop
+        // exactly the frame that carries the final value: a caller watching a transition would see
+        // it stop one step short of its target and never be told the last step. The set answers
+        // "was this animating when the frame started", which is the question the snapshot needs.
+        let was_running: Vec<AnimationId> = self
+            .animations
+            .iter()
+            .filter(|(_, e)| e.anim.is_running())
+            .map(|(&id, _)| id)
+            .collect();
+        for id in &was_running {
+            if let Some(entry) = self.animations.get_mut(id) {
+                entry.advance_by(delta);
+            }
+        }
+
+        // Snapshot progress without holding a mutable borrow, then fire the callbacks — the same
+        // two-phase shape `advance` uses, and for the same reason: a callback may add or remove
+        // animations, which cannot happen while the map is borrowed.
+        let snap: Vec<(AnimationId, f32)> = was_running
+            .iter()
+            .filter_map(|id| self.animations.get(id).map(|e| (*id, e.anim.progress())))
+            .collect();
+        for (id, progress) in &snap {
+            if let Some(entry) = self.animations.get_mut(id) {
+                if (progress - entry.last_progress).abs() > 0.001 || *progress == 0.0_f32 {
+                    if let Some(ref mut cb) = entry.tick {
+                        cb(*progress);
+                    }
+                    entry.last_progress = *progress;
+                }
+            }
+        }
+        for (id, progress) in &snap {
+            if let Some(prop_anim) = self.property_animations.get_mut(id) {
+                let range = prop_anim.to - prop_anim.from;
+                prop_anim.current = prop_anim.from + range * progress;
+            }
+        }
+        // Completed animations are removed and their completion callbacks fired, exactly as a
+        // clock-driven advance does, so the two paths leave the driver in the same state.
+        let finished: Vec<AnimationId> = self
+            .animations
+            .iter()
+            .filter(|(_, e)| e.anim.is_completed() && !e.anim.config().infinite)
+            .map(|(&id, _)| id)
+            .collect();
+        for id in &finished {
+            if let Some(mut entry) = self.animations.remove(id) {
+                if let Some(mut cb) = entry.on_complete.take() {
+                    cb();
+                }
+            }
+        }
+        self.animations.len()
     }
 
     /// Register a new animation and return its ID.
@@ -661,18 +802,26 @@ impl AnimationDriver {
         // Phase 1: Advance internal animation state (iteration counting,
         // on_complete callbacks) by calling update() on every active animation.
         // This must happen before progress snapshots so is_completed() is accurate.
-        for entry in self.animations.values_mut() {
-            if entry.anim.is_running() {
+        //
+        // The in-flight set is captured first for the same reason `advance_by` captures it: an
+        // animation that finishes during this call clears `is_running`, so a snapshot filtered on
+        // `is_running` afterwards would silently skip the frame that carries its final value.
+        let was_running: Vec<AnimationId> = self
+            .animations
+            .iter()
+            .filter(|(_, e)| e.anim.is_running())
+            .map(|(&id, _)| id)
+            .collect();
+        for id in &was_running {
+            if let Some(entry) = self.animations.get_mut(id) {
                 entry.anim.update();
             }
         }
 
         // Snapshot: collect progress without mutable borrows
-        let snap: Vec<(AnimationId, f32)> = self
-            .animations
+        let snap: Vec<(AnimationId, f32)> = was_running
             .iter()
-            .filter(|(_, e)| e.anim.is_running())
-            .map(|(&id, e)| (id, e.anim.progress()))
+            .filter_map(|id| self.animations.get(id).map(|e| (*id, e.anim.progress())))
             .collect();
         // Fire tick callbacks with mutable access
         for (id, progress) in &snap {
@@ -1299,6 +1448,113 @@ impl SpringAnimation {
     }
 }
 
+/// The half-period a text cursor spends in each of its two visible states.
+///
+/// Half a second is the tempo every platform's text field converged on, and it is what the
+/// controls in this crate document. It is a named constant rather than a literal repeated at
+/// each cursor so a future change of tempo moves them all together.
+pub const CURSOR_BLINK_HALF_PERIOD_MS: u32 = 500;
+
+/// The on/off state of a blinking text cursor, advanced by frame deltas.
+///
+/// # Why this is a type rather than a timer inside each control
+///
+/// Eight controls in this crate draw a caret, and each one used to draw a solid line while its
+/// documentation claimed the cursor blinked. Giving every one of them its own `Instant`, its own
+/// half-period literal and its own phase reset would be eight chances to disagree — and it is the
+/// exact shape that produced the discrepancy: the comment described behaviour no code had.
+///
+/// So the state lives here, once, and a control owns a field of this type and forwards its
+/// frame delta. The type is deliberately independent of any widget: it holds no `ObjectId`, no
+/// geometry and no appearance, only "which half of the cycle are we in", so the same logic serves
+/// a caret in a single-line field and one in a code editor.
+///
+/// # Why it is delta-driven
+///
+/// The convention every animated control in this crate follows is `tick(delta_ms) -> bool`, which
+/// lets a host supply the frame delta instead of the control reading the wall clock. That keeps a
+/// test able to reach a blink state without sleeping, and keeps a host that renders on demand in
+/// control of the clock.
+#[derive(Debug, Clone, Copy)]
+pub struct CursorBlink {
+    /// Milliseconds elapsed within the current half-period, in `0..half_period_ms`.
+    elapsed_in_half: u32,
+    /// Whether the cursor is drawn in the current half-period.
+    visible: bool,
+    /// Whether the cursor is animating at all. A blurred or read-only field holds a steady
+    /// cursor and must not ask its host for frames.
+    running: bool,
+}
+
+impl Default for CursorBlink {
+    /// A cursor that is visible and not yet animating — the state of a field that has just been
+    /// constructed but not focused.
+    fn default() -> Self {
+        Self { elapsed_in_half: 0, visible: true, running: false }
+    }
+}
+
+impl CursorBlink {
+    /// A cursor that is visible and not animating.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Starts blinking, showing the cursor.
+    ///
+    /// Called when a field gains focus. Restarting the phase on every focus is what makes the
+    /// cursor immediately visible when a reader clicks into a field, rather than possibly appearing
+    /// on the far side of an invisible half-period.
+    pub fn start(&mut self) {
+        self.elapsed_in_half = 0;
+        self.visible = true;
+        self.running = true;
+    }
+
+    /// Stops blinking and leaves the cursor visible.
+    ///
+    /// Called when a field loses focus. The cursor is left *visible* rather than hidden because a
+    /// blurred field still shows where editing would resume; a hidden caret would read as a
+    /// rendering failure.
+    pub fn stop(&mut self) {
+        self.elapsed_in_half = 0;
+        self.visible = true;
+        self.running = false;
+    }
+
+    /// Whether the cursor is currently drawn.
+    pub fn is_visible(&self) -> bool {
+        self.visible
+    }
+
+    /// Whether the cursor is animating.
+    pub fn is_running(&self) -> bool {
+        self.running
+    }
+
+    /// Advances the blink by `delta_ms` and reports whether another frame is needed.
+    ///
+    /// The same contract [`AnimationDriver::advance_by`] and `FloatingLabel::tick` follow: the
+    /// return value answers "is there still work", so a host stops scheduling frames for a field
+    /// whose cursor is not blinking. A `delta_ms` larger than one half-period is consumed
+    /// half-period by half-period rather than snapping, so a stalled frame loop resumes at the
+    /// correct phase instead of silently skipping a whole cycle's worth of flips.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        if !self.running {
+            return false;
+        }
+        self.elapsed_in_half += delta_ms;
+        while self.elapsed_in_half >= CURSOR_BLINK_HALF_PERIOD_MS {
+            self.elapsed_in_half -= CURSOR_BLINK_HALF_PERIOD_MS;
+            self.visible = !self.visible;
+        }
+        // A running cursor always owes the next frame: the blink is periodic, so the frame that
+        // shows it is never the last one. Reporting `false` here would be the "settled" signal,
+        // and a blink never settles.
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1503,6 +1759,108 @@ mod tests {
         let mut driver = AnimationDriver::new();
         // Advance on an empty driver should return 0 (no active animations).
         assert_eq!(driver.advance(), 0);
+    }
+
+    /// A cursor blinks on the documented half-period and only while it is running.
+    ///
+    /// The defect this pins is not arithmetic — it is that the feature did not exist while three
+    /// doc comments said it did. The assertions are therefore about observable state transitions:
+    /// a stopped cursor is visible and owes no frames, a started one flips exactly at the
+    /// half-period, and a delayed frame resumes at the right phase instead of skipping a flip.
+    #[test]
+    fn a_cursor_blinks_on_its_half_period_and_stops_when_told() {
+        let mut blink = CursorBlink::new();
+
+        // Blurred: visible, and it must not ask the host for frames.
+        assert!(blink.is_visible());
+        assert!(!blink.is_running());
+        assert!(!blink.tick(10_000), "a stopped cursor owes no frame, however large the delta");
+        assert!(blink.is_visible(), "a stopped cursor stays visible");
+
+        // Focused: it flips on the boundary and holds the phase in between.
+        blink.start();
+        assert!(blink.is_visible());
+        assert!(blink.tick(CURSOR_BLINK_HALF_PERIOD_MS - 1), "still running");
+        assert!(blink.is_visible(), "one millisecond short of the boundary is not yet a flip");
+        assert!(blink.tick(1), "still running");
+        assert!(!blink.is_visible(), "the boundary is where it flips");
+        assert!(blink.tick(CURSOR_BLINK_HALF_PERIOD_MS), "still running");
+        assert!(blink.is_visible(), "and it flips back");
+
+        // A long frame must consume the elapsed time half-period by half-period rather than
+        // snapping to one flip, or a stalled host would come back out of phase.
+        let mut delayed = CursorBlink::new();
+        delayed.start();
+        // Visible at 0. One half-period flips it to hidden...
+        delayed.tick(CURSOR_BLINK_HALF_PERIOD_MS);
+        assert!(!delayed.is_visible());
+        // ...and three further half-periods in a single frame flip it three more times, ending
+        // visible. Snapping to a single flip would leave it hidden, so this distinguishes the two.
+        delayed.tick(CURSOR_BLINK_HALF_PERIOD_MS * 3);
+        assert!(delayed.is_visible(), "three flips from hidden lands on visible");
+
+        // Blurring returns it to the steady, visible state.
+        blink.stop();
+        assert!(blink.is_visible());
+        assert!(!blink.tick(CURSOR_BLINK_HALF_PERIOD_MS * 10), "a stopped cursor owes no frame");
+        assert!(blink.is_visible());
+    }
+
+    /// An animation that completes on a frame still reports that frame's final value.
+    ///
+    /// The driver used to snapshot progress from animations that were *still* running once the
+    /// advance had finished. A one-shot animation clears `is_running` the moment it reaches its
+    /// end, so the very frame that carried the value `to` was filtered out of the snapshot: the
+    /// tick callback never fired for it, and a caller watching a transition saw it stop one step
+    /// short of its target forever. `add_float` is used because it is the API a control reaches
+    /// for, and it makes the arithmetic visible — the callback receives `from + (to - from) * p`,
+    /// so a missing final callback is an observable value rather than an absent event.
+    #[test]
+    fn a_completing_animation_still_delivers_its_final_value() {
+        use core::cell::RefCell;
+        use std::rc::Rc;
+
+        let seen = Rc::new(RefCell::new(Vec::<f32>::new()));
+        let sink = Rc::clone(&seen);
+
+        let mut driver = AnimationDriver::new();
+        driver.add_float(
+            AnimationConfig::new(Duration::from_millis(200)),
+            0.0,
+            1.0,
+            move |value| sink.borrow_mut().push(value),
+        );
+
+        // One advance that overshoots the whole duration: the animation begins and ends here.
+        assert_eq!(
+            driver.advance_by(Duration::from_millis(1000)),
+            0,
+            "it finished, so nothing runs"
+        );
+        assert_eq!(
+            seen.borrow().last().copied(),
+            Some(1.0),
+            "the completing frame must deliver the end value, not the last running value"
+        );
+
+        // And the same through the clock-driven path, which carried the identical defect.
+        let seen_clock = Rc::new(RefCell::new(Vec::<f32>::new()));
+        let sink_clock = Rc::clone(&seen_clock);
+        let mut clock_driver = AnimationDriver::new();
+        clock_driver.add_float(
+            // Zero duration: the animation is already past its end on the first `advance`.
+            AnimationConfig::new(Duration::ZERO),
+            0.0,
+            4.0,
+            move |value| sink_clock.borrow_mut().push(value),
+        );
+        std::thread::sleep(Duration::from_millis(5));
+        clock_driver.advance();
+        assert_eq!(
+            seen_clock.borrow().last().copied(),
+            Some(4.0),
+            "the clock-driven advance must deliver the end value on the completing frame too"
+        );
     }
 
     #[test]

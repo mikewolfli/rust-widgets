@@ -344,12 +344,11 @@ impl EventHandler for ComboBox {
 }
 impl Draw for ComboBox {
     fn draw(&mut self, context: &mut RenderContext) {
-        // Draw base widget
         let rect = self.geometry();
         let style = self.style();
-        let padding = 4;
-        let text_x = rect.x + padding;
-        let text_y = rect.y as f32 + rect.height as f32 / 2.0;
+        const PADDING: i32 = 4;
+        const ARROW_SIZE: i32 = 8;
+
         // Draw background
         let bg = style.background_color.unwrap_or(Color::rgb(255, 255, 255));
         context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), bg);
@@ -357,45 +356,58 @@ impl Draw for ComboBox {
         if let Some(border_color) = style.border_color {
             context.draw_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), border_color);
         }
-        // Draw dropdown arrow
-        let arrow_color = style.text_color.unwrap_or(Color::rgb(100, 100, 100));
-        let arrow_size = 8;
-        let arrow_x_f = rect.x as f32 + rect.width as f32 - padding as f32 - arrow_size as f32;
-        let arrow_y_f = rect.y as f32 + rect.height as f32 / 2.0;
-        let arrow_size_f = arrow_size as f32;
-        // Draw arrow (triangle)
-        context.draw_line(
-            Point::from_f32(arrow_x_f, arrow_y_f - arrow_size_f / 2.0),
-            Point::from_f32(arrow_x_f + arrow_size_f, arrow_y_f - arrow_size_f / 2.0),
-            arrow_color,
-        );
-        context.draw_line(
-            Point::from_f32(arrow_x_f + arrow_size_f, arrow_y_f - arrow_size_f / 2.0),
-            Point::from_f32(arrow_x_f + arrow_size_f / 2.0, arrow_y_f + arrow_size_f / 2.0),
-            arrow_color,
-        );
-        context.draw_line(
-            Point::from_f32(arrow_x_f + arrow_size_f / 2.0, arrow_y_f + arrow_size_f / 2.0),
-            Point::from_f32(arrow_x_f, arrow_y_f - arrow_size_f / 2.0),
-            arrow_color,
-        );
-        // Draw current text
-        let text_color = style.text_color.unwrap_or(Color::rgb(0, 0, 0));
+
         let default_font = crate::core::Font::default();
         let font = style.font.as_ref().unwrap_or(&default_font);
+        // One line box for both the current value and the arrow, so the two cannot end up at
+        // different heights. The previous form used the control's middle for the text origin
+        // — which is the glyph box's top edge, so the value sat half a line low — and the same
+        // point for the arrow, which is why they agreed with each other while both being wrong.
+        let line = context.text_line(rect, font);
+        let mid_y = line.y + line.height as i32 / 2;
+
+        // Draw dropdown arrow, vertically centred on the same line box as the value.
+        let arrow_color = style.text_color.unwrap_or(Color::rgb(100, 100, 100));
+        let arrow_x = rect.x + rect.width as i32 - PADDING - ARROW_SIZE;
+        let arrow_top = mid_y - ARROW_SIZE / 2;
+        let arrow_bottom = mid_y + ARROW_SIZE / 2;
+        context.draw_line(
+            Point::new(arrow_x, arrow_top),
+            Point::new(arrow_x + ARROW_SIZE, arrow_top),
+            arrow_color,
+        );
+        context.draw_line(
+            Point::new(arrow_x + ARROW_SIZE, arrow_top),
+            Point::new(arrow_x + ARROW_SIZE / 2, arrow_bottom),
+            arrow_color,
+        );
+        context.draw_line(
+            Point::new(arrow_x + ARROW_SIZE / 2, arrow_bottom),
+            Point::new(arrow_x, arrow_top),
+            arrow_color,
+        );
+
+        // Draw current text, or the placeholder when the list is empty. Bounded to end before
+        // the arrow so a long value cannot run under it.
+        let text_color = style.text_color.unwrap_or(Color::rgb(0, 0, 0));
+        let text_box = Rect::new(
+            rect.x + PADDING,
+            line.y,
+            rect.width.saturating_sub((PADDING + ARROW_SIZE + PADDING) as u32),
+            line.height,
+        );
         let current_text = self.current_text();
         if !current_text.is_empty() {
-            context.draw_text(
-                Point::new(text_x, text_y as i32),
+            context.draw_text_fitted(
+                text_box,
                 &current_text,
                 font,
                 text_color,
                 HorizontalAlignment::Left,
             );
         } else if self.items.is_empty() {
-            // Draw placeholder
-            context.draw_text(
-                Point::new(text_x, text_y as i32),
+            context.draw_text_fitted(
+                text_box,
                 "(Empty)",
                 font,
                 text_color,

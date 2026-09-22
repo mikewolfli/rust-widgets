@@ -597,7 +597,7 @@ impl Draw for InputDialog {
         let ok_x = (cancel_x - BTN_STEP).max(rect.x);
         let ok_rect = Rect::new(ok_x, btn_y, BTN_W as u32, 28);
         context.fill_rect(ok_rect, accent);
-        context.draw_text_fitted(
+        context.draw_text_line(
             ok_rect,
             &tr!("common.button.ok"),
             &Font::default(),
@@ -607,7 +607,7 @@ impl Draw for InputDialog {
         let cancel_rect = Rect::new(cancel_x, btn_y, BTN_W as u32, 28);
         context.fill_rect(cancel_rect, surface.blend(&ink, 0.1));
         context.draw_rect(cancel_rect, border);
-        context.draw_text_fitted(
+        context.draw_text_line(
             cancel_rect,
             &tr!("common.button.cancel"),
             &Font::default(),

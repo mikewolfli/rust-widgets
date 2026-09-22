@@ -309,10 +309,23 @@ impl Draw for GroupBox {
         // Draw checkbox if checkable
         if self.checkable {
             if let Some(checkbox_rect) = self.checkbox_rect() {
-                // Draw checkbox border
-                context.draw_rect(checkbox_rect, Color::rgb(100, 100, 100));
+                // The box takes the frame's own border colour rather than the near-invisible
+                // mid-grey literal it carried (`Color::rgb(100, 100, 100)`). And the tick is
+                // painted in the **contrast colour of that box's fill**, not pure black: a
+                // pure-black stroke on a dark appearance is the least readable mark in the
+                // control, and it is the very part the user toggles. Same rule as
+                // `mdiarea.rs`, which draws its active title in `primary.contrast_color()`.
+                let box_color = style.border_color.unwrap_or(Color::rgb(100, 100, 100));
+                context.draw_rect(checkbox_rect, box_color);
                 // Draw checkmark if checked
                 if self.checked {
+                    // The box above is an outline, so the fill the tick sits on is the
+                    // control's own background — the colour the contrast decision must be
+                    // made against.
+                    let tick_color = style
+                        .background_color
+                        .unwrap_or_else(|| box_color.contrast_color())
+                        .contrast_color();
                     context.draw_line(
                         Point::from_f32(
                             checkbox_rect.x as f32 + 2.0,
@@ -322,7 +335,7 @@ impl Draw for GroupBox {
                             checkbox_rect.x as f32 + checkbox_rect.width as f32 * 0.5,
                             checkbox_rect.y as f32 + checkbox_rect.height as f32 - 2.0,
                         ),
-                        Color::rgb(0, 0, 0),
+                        tick_color,
                     );
                     context.draw_line(
                         Point::from_f32(
@@ -333,7 +346,7 @@ impl Draw for GroupBox {
                             checkbox_rect.x as f32 + checkbox_rect.width as f32 - 2.0,
                             checkbox_rect.y as f32 + 2.0,
                         ),
-                        Color::rgb(0, 0, 0),
+                        tick_color,
                     );
                 }
             }

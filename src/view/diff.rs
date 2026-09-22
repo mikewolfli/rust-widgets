@@ -133,11 +133,23 @@ impl Patch {
 pub struct DiffReport {
     /// The patches, in the order they must be applied.
     pub patches: Vec<Patch>,
-    /// How many nodes were matched by position rather than by key.
+    /// How many nodes were matched by **position** rather than by key.
     ///
     /// A non-zero value is not an error, but it is the exact measure of how much
-    /// identity stability the caller gave up by not declaring keys.
+    /// identity stability the caller gave up by not declaring keys: a keyless child
+    /// whose position happened to line up keeps its control (and its focus, scroll
+    /// offset and selection), but that is luck rather than identity — insert one row at
+    /// the head and every subsequent child shifts.
     pub positional_matches: usize,
+    /// How many keyless children were **new**: they had no key and no positional match,
+    /// so a control is created for them where the old tree had none.
+    ///
+    /// Split out from [`Self::positional_matches`] because the two answer different
+    /// questions and the combined counter answered neither: "how much identity did I give
+    /// up" (every keyless match, including a perfectly stable list) versus "how much is
+    /// being built from nothing" (a genuine insertion). Reporting one number for both made
+    /// a stable keyless list and a list that appends twice per frame look identical.
+    pub new_keyless_children: usize,
     /// How many subtrees were torn down and rebuilt.
     ///
     /// Each one is state that was destroyed: focus inside it, scroll offset, text
@@ -223,6 +235,30 @@ pub fn diff(
     report
 }
 
+/// Whether a schema-declared property can be **written** at all.
+///
+/// Used to suppress a patch that is guaranteed to be refused. The diff's deletion pass emits
+/// `SetProperty { value: Null }` for every name the old node had and the new one does not,
+/// on the reasoning that `Null` is the documented "not set" value and the contract decides
+/// what it means. That is true for a *writable* property — but `geometry` is declared
+/// `false, false` in every schema, and `properties_trait.rs` answers `ReadOnlyProperty` for it
+/// unconditionally, so the patch could **never** succeed. It was logged as a warning and
+/// dropped, which made the report describe a write the engine silently discarded.
+///
+/// `true` is the answer for a name the factory cannot resolve: an unknown control or property
+/// is not evidence that the write is impossible, and suppressing it would hide a real
+/// mismatch behind silence.
+fn property_is_writable(widget: &str, name: &str) -> bool {
+    #[cfg(not(alloc_frugal))]
+    {
+        let factory = crate::widget::WidgetFactory::new_with_defaults();
+        if let Ok(schema) = factory.property_schema(widget, name) {
+            return schema.writable;
+        }
+    }
+    true
+}
+
 /// Whether two creation names denote the same control.
 ///
 /// `Node.widget` is a name, not a `WidgetKind`, and the factory accepts several
@@ -299,9 +335,20 @@ fn diff_node(
             // the patch could never succeed and the only trace was an
             // `UnknownParent` error that `ViewEngine::update` throws away. Recording it
             // and emitting nothing makes the condition visible instead of inert.
-            (None, None) => {}
-            (Some(id), None) => {
-                let _ = id;
+            //
+            // A root whose old control produced no id (a `spacer`/transparent node) and
+            // whose new node is a real control is the *same* condition and was reported as
+            // "unchanged": the old tree had nothing mounted and the new one needs something,
+            // so the trees differ in the most consequential way possible — there is a control
+            // now where there was none. The separate arm below records it. Reaching `(None,
+            // None)` therefore means neither side produced a control, which is the only case
+            // where there is genuinely nothing to report.
+            (None, None) => {
+                if !same_control_kind(&old.widget, &new.widget) {
+                    report.root_replaced = true;
+                }
+            }
+            (Some(_id), None) => {
                 report.root_replaced = true;
             }
         }
@@ -332,6 +379,15 @@ fn diff_node(
             // rejects it. `apply` therefore substitutes the schema-declared default
             // before writing — it is the layer that can see the live control's kind,
             // which is what the schema lookup is keyed on. See `apply_one`.
+            //
+            // A name the schema declares non-writable is skipped entirely. Emitting it
+            // produced a patch that could not succeed — `geometry` is the case in point,
+            // so a view that merely stopped declaring a `geometry` binding always
+            // generated one refused write, and the engine's only trace was a warning it
+            // discarded. A report should not describe patches the contract forbids.
+            if !property_is_writable(&old.widget, name) {
+                continue;
+            }
             report.patches.push(Patch::SetProperty {
                 id: old_id,
                 name: name.clone(),
@@ -424,19 +480,30 @@ fn diff_children(
                 //
                 // "Same type" is the resolved kind, not the declared spelling: an alias
                 // respelling must not turn a positional match into a `Replace`.
-                old.children
-                    .iter()
-                    .enumerate()
-                    .position(|(i, c)| !consumed[i] && same_control_kind(&c.widget, &child.widget))
+                let positional =
+                    old.children.iter().enumerate().position(|(i, c)| {
+                        !consumed[i] && same_control_kind(&c.widget, &child.widget)
+                    });
+                // This is the branch the field measures, so this is where it is counted.
+                //
+                // `positional_matches` used to be incremented in the *not-found* arm below,
+                // which inverted its meaning: a stable keyless list — every child matched by
+                // position, exactly the case the field documents — reported **0**, while a
+                // genuinely appended child reported 1. A keyed match is not a positional one
+                // and is not counted here; `b4_8b_keyed_children_do_not_count_as_positional`
+                // pins that.
+                if positional.is_some() {
+                    report.positional_matches += 1;
+                }
+                positional
             }
         };
         if let Some(i) = found {
             consumed[i] = true;
         } else if child.key.is_none() {
-            // A keyless child with no positional match is genuinely new. It is counted as a
-            // degradation because the *next* diff will have to match it positionally, which
-            // is what the counter exists to make measurable.
-            report.positional_matches += 1;
+            // A keyless child with no positional match is genuinely new: a control is created
+            // for it where the old tree had none.
+            report.new_keyless_children += 1;
         }
         matches.push(found);
     }
@@ -444,11 +511,6 @@ fn diff_children(
     // Step 2: emit for each new child, in order.
     let mut last_matched_old: Option<usize> = None;
     for (new_index, child) in new.children.iter().enumerate() {
-        let child_path: Vec<usize> = {
-            let mut p = path.to_vec();
-            p.push(new_index);
-            p
-        };
         match matches[new_index] {
             Some(old_index) => {
                 let moved = match last_matched_old {
@@ -470,21 +532,27 @@ fn diff_children(
                         index: new_index,
                     });
                 }
-                // Recurse. `diff_node` receives the *new* index path for the id lookup so
-                // that the id map is addressed consistently (it describes the previous
-                // build, and the previous build's shape is what `old` records).
+                // Recurse against the child's **old** index path.
+                //
+                // The old path is the right one to pass: `old` is the tree the previous build
+                // produced, `id_of` addresses that build, and the child being updated still
+                // occupies its old slot in it. The two indices differ exactly when a move
+                // happened — the case this branch exists for — so passing the new index would
+                // have the recursion read a different child's properties and emit writes
+                // against the wrong control. The comment here previously said the opposite of
+                // what the code did, and a dead `child_path` for the new index kept the
+                // misleading shape alive; both are gone.
                 let mut old_child_path = path.to_vec();
                 old_child_path.push(old_index);
                 diff_node(
                     &old.children[old_index],
                     child,
                     &old_child_path,
-                    Some(parent_id),
-                    old_index,
+                    id_of(&old_child_path, old_index),
+                    new_index,
                     id_of,
                     report,
                 );
-                let _ = child_path;
                 last_matched_old = Some(old_index);
             }
             None => {
@@ -498,7 +566,7 @@ fn diff_children(
     }
 
     // Step 3: whatever is left in the old list was not adopted.
-    for (i, child) in old.children.iter().enumerate() {
+    for (i, _child) in old.children.iter().enumerate() {
         if consumed[i] {
             continue;
         }
@@ -507,7 +575,6 @@ fn diff_children(
         if let Some(id) = id_of(&p, i) {
             report.patches.push(Patch::Remove { id });
         }
-        let _ = child;
     }
 }
 
@@ -530,16 +597,17 @@ mod tests {
         fn assign(&mut self, server: &Node) -> &mut Self {
             self.by_path.clear();
             self.next = 1;
-            let mut stack: Vec<(Vec<usize>, &Node, usize)> = vec![(Vec::new(), server, 0)];
-            while let Some((path, node, index)) = stack.pop() {
+            // Only the path and the node matter here: this fixture mirrors a pre-order walk,
+            // and a child's own index is already encoded in the path pushed onto the stack.
+            let mut stack: Vec<(Vec<usize>, &Node)> = vec![(Vec::new(), server)];
+            while let Some((path, node)) = stack.pop() {
                 self.by_path.insert(path.clone(), self.next);
                 self.next += 1;
                 for (i, child) in node.children.iter().enumerate().rev() {
                     let mut p = path.clone();
                     p.push(i);
-                    stack.push((p, child, i));
+                    stack.push((p, child));
                 }
-                let _ = index;
             }
             self
         }
@@ -934,6 +1002,106 @@ mod tests {
         let new = Node::new("vbox").key("root").child(Node::new("label").prop("text", s("after")));
         let report = run(&old, &new);
         assert_eq!(report.written_properties(), ["text"]);
+        // …and the counter has to say *how* that match was made. This test is precisely the
+        // scenario `positional_matches` documents — a stable keyless child found by position —
+        // and it asserted nothing about the field, which is how the field came to be counted in
+        // the opposite branch and read 0 here.
+        assert_eq!(
+            report.positional_matches, 1,
+            "the keyless label was matched by position, so the field must report one"
+        );
+        assert_eq!(
+            report.new_keyless_children, 0,
+            "nothing was created, so nothing may be reported as new"
+        );
+    }
+
+    #[test]
+    fn an_appended_keyless_child_is_new_rather_than_a_positional_match() {
+        // The other side of the same pair of counters. An appended row has no positional match
+        // at all: a control is created for it. Reporting that as a "positional match" is what
+        // the combined counter used to do, and it told a caller the opposite of what happened —
+        // "your identity is holding" instead of "you are rebuilding a row every update".
+        let old = Node::new("vbox").key("root").child(Node::new("label").prop("text", s("a")));
+        let new = Node::new("vbox")
+            .key("root")
+            .child(Node::new("label").prop("text", s("a")))
+            .child(Node::new("label").prop("text", s("b")));
+        let report = run(&old, &new);
+        assert_eq!(report.positional_matches, 1, "only the surviving row matched");
+        assert_eq!(report.new_keyless_children, 1, "the appended row is new");
+    }
+
+    // ── The root arms (E4) ─────────────────────────────────
+
+    #[test]
+    fn a_root_that_gains_a_control_is_reported_as_replaced() {
+        // Old root produces no control (`spacer` is a transparent node with no capability, so
+        // it has no live id) and the new root is a real control. The trees differ in the most
+        // consequential way there is — something is mounted where nothing was — and the arm that
+        // handles `(None, None)` used to return without setting `root_replaced`, so `update`
+        // reported the view unchanged and the control never appeared.
+        let old = Node::new("spacer").key("root");
+        let new = Node::new("button").key("root");
+        let report = run(&old, &new);
+        assert!(
+            report.root_replaced,
+            "a root that goes from no control to a control is a remount, not an unchanged view"
+        );
+    }
+
+    #[test]
+    fn a_root_with_no_control_on_either_side_is_genuinely_unchanged() {
+        // The reverse direction, so the fix above cannot be satisfied by always reporting a
+        // remount: two roots that both produce nothing have nothing to rebuild.
+        let old = Node::new("spacer").key("root");
+        let new = Node::new("spacer").key("root");
+        let report = run(&old, &new);
+        assert!(!report.root_replaced);
+        assert!(report.is_unchanged());
+    }
+
+    #[test]
+    fn a_root_type_change_whose_old_side_has_no_id_is_reported_as_replaced() {
+        let old = Node::new("spacer").key("root");
+        let new = Node::new("label").key("root").prop("text", s("x"));
+        let report = run(&old, &new);
+        assert!(report.root_replaced);
+    }
+
+    // ── The deletion pass does not emit impossibilities (E3) ─
+
+    #[test]
+    fn dropping_a_read_only_binding_emits_no_patch() {
+        // `geometry` is declared `false, false` in every schema and `properties_trait.rs`
+        // answers `ReadOnlyProperty` for it unconditionally, so a `Null` write against it can
+        // never succeed. The deletion pass used to emit one anyway, which made the report
+        // describe a patch the engine could only warn about and drop — a wrong description of
+        // what the update does, in the direction that hides a real problem: a caller reading
+        // `patch_count()` saw a write that never reached a control.
+        let old = Node::new("label").key("a").prop("geometry", s("0,0,10,10"));
+        let new = Node::new("label").key("a");
+        let report = run(&old, &new);
+        assert!(
+            report.patches.is_empty(),
+            "a read-only property cannot be reset, so no patch may be promised: {:?}",
+            report.patches
+        );
+    }
+
+    #[test]
+    fn dropping_a_writable_binding_still_emits_the_reset() {
+        // The reverse direction, so the fix above cannot pass by suppressing every deletion.
+        // `text` is writable, so removing the binding is a real change that must be emitted.
+        let old = Node::new("label").key("a").prop("text", s("hello"));
+        let new = Node::new("label").key("a");
+        let report = run(&old, &new);
+        assert_eq!(report.patches.len(), 1);
+        assert_eq!(report.written_properties(), ["text"]);
+        assert!(matches!(
+            report.patches[0],
+            Patch::SetProperty { value: CapabilityValue::Null, .. }
+        ));
     }
 
     // ── Property comparison is exact (B-5) ─────────────────

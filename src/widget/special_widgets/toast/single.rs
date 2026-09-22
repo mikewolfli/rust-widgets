@@ -291,10 +291,22 @@ impl Draw for Toast {
         context.fill_rect(Rect::new(rect.x, rect.y, 4, rect.height), accent);
 
         let text_x = rect.x + 12;
-        context.draw_text(
-            Point::new(text_x, rect.y + (rect.height as i32 + 12) / 2),
+        // Centred through the shared primitive. The previous origin carried a hand-tuned
+        // `(height + 12) / 2`, i.e. half a line box added to the band's middle — the same
+        // half-line error as `height / 2`, only in the opposite shape. The close button on
+        // this same toast already sat at the true centre, so the message and its own dismiss
+        // control disagreed about the row they shared.
+        let font = Font::default();
+        let line = context.text_line(rect, &font);
+        // Bounded to end before the close button, so a long message cannot run under it.
+        let text_width = self
+            .close_rect()
+            .map(|close| (close.x - text_x - 4).max(0) as u32)
+            .unwrap_or_else(|| rect.width.saturating_sub(12));
+        context.draw_text_fitted(
+            Rect { x: text_x, y: line.y, width: text_width, height: line.height },
             &self.message,
-            &Font::default(),
+            &font,
             text_color,
             HorizontalAlignment::Left,
         );

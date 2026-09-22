@@ -59,12 +59,25 @@ pub(crate) fn write_property(
     } else {
         value
     };
-    match crate::widget::runtime::with_widget_mut(id, |widget| {
+    let written = match crate::widget::runtime::with_widget_mut(id, |widget| {
         widget_property_set(widget, name, value).map_err(|e| format!("{e:?}"))
     }) {
         Some(result) => result,
         None => Err("the control is not registered with the runtime".to_string()),
+    };
+    // Ask for a repaint when the write succeeded.
+    //
+    // `with_widget_mut`'s own documentation requires it: it mutates the control in place and
+    // does *not* invalidate anything, so a caller that skips this step changes the widget and
+    // leaves the previous frame on screen. The name-based path in
+    // `capability::access::write_widget_property` already does this, which made the same
+    // logical `SetProperty` reach the screen or not depending only on whether it arrived
+    // through a `Node` or through a name — two routes to one operation with two different
+    // visible outcomes.
+    if written.is_ok() {
+        crate::widget::runtime::request_repaint(id);
     }
+    written
 }
 
 /// The schema-declared default for `name` on the live control's kind, if it has one.
@@ -431,6 +444,44 @@ mod tests {
             crate::widget::capability::properties_trait::widget_property_get(widget, name).ok()
         })
         .flatten()
+    }
+
+    #[test]
+    fn both_write_routes_agree_on_what_a_property_write_does() {
+        // One logical operation, two routes: `set_widget_property(widget_id, name, value)` in
+        // the capability layer, and `write_property` in this module for a `Node`-driven
+        // `Patch::SetProperty`. They must leave the control in the same state — and, since
+        // `with_widget_mut` invalidates nothing, they must both ask for the repaint that makes
+        // the change visible.
+        //
+        // The declarative route used to omit the repaint. Nothing errored and the widget really
+        // did change, which is why only a test that compares the two routes can see it: the
+        // stale-frame half of the defect is invisible from either route alone.
+        //
+        // The repaint request itself is inert here (no backend is mounted, so
+        // `invalidate_surface` does nothing), so what is asserted is what a unit test can
+        // honestly observe — that the routes agree on the resulting value — while
+        // `tools/check_declarative_path_repaints.sh` guards the call's presence in the source,
+        // which is the half that cannot be observed without a live platform.
+        let id = crate::widget::runtime::register(
+            crate::widget::WidgetFactory::new_with_defaults()
+                .create("label", crate::core::Rect::new(0, 0, 80, 24), "r")
+                .expect("label is a registered control"),
+        )
+        .expect("the runtime accepts a freshly created control");
+
+        // Route A: by id/name, through the capability layer.
+        crate::widget::capability::write_widget_property_by_id(id, "text", s("from-name"))
+            .expect("a writable property on a live control must accept the write");
+        assert_eq!(read(id, "text"), Some(s("from-name")));
+
+        // Route B: by `Patch`, through this module.
+        write_property(id, "text", s("from-node")).expect("the declarative route must succeed");
+        assert_eq!(
+            read(id, "text"),
+            Some(s("from-node")),
+            "the declarative write and the by-name write must reach the same implementation"
+        );
     }
 
     /// A dropped property must reach the value the schema declares, not be refused.

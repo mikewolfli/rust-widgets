@@ -29,7 +29,9 @@ macro_rules! impl_properties_other {
             PropertySchema::new("max_value", PropertyValueKind::Float, true, true),
             PropertySchema::new("num_digits", PropertyValueKind::Int, true, true),
             PropertySchema::new("small_decimal_point", PropertyValueKind::Bool, true, true),
-            PropertySchema::enumerated("mode", true, true, &["hex", "decimal", "octal", "binary"]),
+            // `lcd_mode_to_str` returns `hex`/`dec`/`oct`/`bin`; the writer also accepts the
+            // long forms, so the published list must be the reader's four.
+            PropertySchema::enumerated("mode", true, true, &["hex", "dec", "oct", "bin"]),
             PropertySchema::enumerated("segment_style", true, true, &["outline", "filled", "flat"]),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
@@ -665,6 +667,12 @@ macro_rules! impl_properties_other {
         pub(crate) const QR_CODE_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("data", PropertyValueKind::String, true, true),
             PropertySchema::new("size", PropertyValueKind::UInt, true, true),
+            // The margin around the symbol, in modules. It has to be published for the same
+            // reason `qrencode`'s `margin` and every other QR library expose it: a decoder
+            // needs a light border to find the finder patterns, so the value is a caller's
+            // correctness knob rather than a cosmetic one. The control already stored and drew
+            // with it; without a schema row there was no way to read or set it.
+            PropertySchema::new("quiet_zone", PropertyValueKind::UInt, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -859,7 +867,13 @@ macro_rules! impl_properties_other {
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
             PropertySchema::new("series", PropertyValueKind::String, true, true),
-            PropertySchema::new("overlay_count", PropertyValueKind::UInt, false, true),
+            // `readable: true`, because the control **answers** it: `CandlestickChart::get`
+            // returns `self.overlays.len()`. It was declared `false`, and that flag is not
+            // advisory — `capability.rs` turns a non-readable schema into
+            // `UnsupportedOnWidget`, so a caller could `set` the overlay count and then could
+            // not read it back. "Wrote it, cannot read it" is the one-directional contract
+            // the schema exists to prevent.
+            PropertySchema::new("overlay_count", PropertyValueKind::UInt, true, true),
             PropertySchema::new("show_price_levels", PropertyValueKind::Bool, true, true),
         ];
         /// Property schema for `volume_chart`.

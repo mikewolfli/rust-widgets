@@ -19,6 +19,60 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
+/// When the label floats above the field instead of resting inside it.
+///
+/// The three variants are Material's [`FloatingLabelBehavior`], and each one names a
+/// genuinely different *drawing* rule rather than a preference:
+///
+/// * [`Always`](FloatingLabelBehavior::Always) — Material's outlined/filled field with a
+///   permanently visible caption. The label is above the field even while it is empty and
+///   unfocused, so the field always says what it wants.
+/// * [`Never`](FloatingLabelBehavior::Never) — the label is a plain inline placeholder and
+///   never moves. This is what a caller who wants `<input placeholder>` semantics asks for.
+/// * [`Auto`](FloatingLabelBehavior::Auto) — the classic behaviour: float once the field is
+///   focused or holds text.
+///
+/// # Why this is a control property rather than three constructors
+///
+/// The behaviour changes *where the same label is drawn*, not what the control is, so a
+/// single control with a switch keeps the widget identity (and every id, signal and
+/// property binding) stable across the change — the same shape `TabWidget::tab_position`
+/// and `FloatingLabel::focused` already use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FloatingLabelBehavior {
+    /// Float the label only while the field is focused or non-empty.
+    #[default]
+    Auto,
+    /// Always float the label above the field, even when unfocused and empty.
+    Always,
+    /// Never float the label; it always rests inside the field.
+    Never,
+}
+
+impl FloatingLabelBehavior {
+    /// The token this behaviour is carried as across the property boundary.
+    ///
+    /// The spelling matches the entries in `FLOATING_LABEL_PROPERTIES`'s `floating_label_behavior`
+    /// row, so the token a caller reads is the token a caller may write back.
+    pub fn to_token(self) -> &'static str {
+        match self {
+            FloatingLabelBehavior::Auto => "auto",
+            FloatingLabelBehavior::Always => "always",
+            FloatingLabelBehavior::Never => "never",
+        }
+    }
+
+    /// Parses a property token, accepting the same spellings [`Self::to_token`] returns.
+    pub fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "auto" => Some(FloatingLabelBehavior::Auto),
+            "always" => Some(FloatingLabelBehavior::Always),
+            "never" => Some(FloatingLabelBehavior::Never),
+            _ => None,
+        }
+    }
+}
+
 /// A text input with a floating label (Material Design TextInputLayout style).
 ///
 /// The label floats above the text field when the field is focused or contains
@@ -27,13 +81,22 @@ use crate::{impl_widget_property_hooks, property_names_of};
 /// two states is animated: [`FloatingLabel::tick`] advances an interpolation
 /// value (`0.0` = label inside, `1.0` = label fully above) that [`FloatingLabel`]
 /// consumes when drawing, so the label smoothly rises rather than teleporting.
+///
+/// [`FloatingLabel::behavior`] selects which of the three policies decides whether the
+/// label floats; see [`FloatingLabelBehavior`].
 pub struct FloatingLabel {
     base: BaseWidget,
     text: String,
     label: String,
     placeholder: String,
     is_focused: bool,
+    /// Whether the label currently floats, as resolved from `behavior`, focus and the
+    /// text content. Derived state: every write that can change one of those three
+    /// re-derives it through [`FloatingLabel::update_label_state`], so it cannot be
+    /// written independently of them.
     show_label_above: bool,
+    /// The policy that decides when the label floats. See [`FloatingLabelBehavior`].
+    behavior: FloatingLabelBehavior,
     /// Interpolated float position, advanced toward `target_progress` by
     /// [`FloatingLabel::tick`] and consumed by the draw pass. `0.0` draws the
     /// label inline; `1.0` draws it fully above the field.
@@ -48,7 +111,8 @@ pub struct FloatingLabel {
 impl FloatingLabel {
     /// Creates a new FloatingLabel widget with the given geometry.
     ///
-    /// By default, no text, empty label, empty placeholder, unfocused.
+    /// By default, no text, empty label, empty placeholder, unfocused, and
+    /// [`FloatingLabelBehavior::Auto`].
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::FloatingLabel, geometry, "FloatingLabel"),
@@ -57,6 +121,7 @@ impl FloatingLabel {
             placeholder: String::new(),
             is_focused: false,
             show_label_above: false,
+            behavior: FloatingLabelBehavior::Auto,
             animation_progress: 0.0,
             target_progress: 0.0,
             text_changed: Signal1::new(),
@@ -105,6 +170,28 @@ impl FloatingLabel {
         self.is_focused
     }
 
+    /// Returns whether the label is currently drawn floating above the field.
+    ///
+    /// Resolved from the [`Self::behavior`] policy together with focus and content, so it
+    /// is the answer the draw pass acts on rather than a second copy of the policy.
+    pub fn show_label_above(&self) -> bool {
+        self.show_label_above
+    }
+
+    /// Returns the floating-label policy.
+    pub fn behavior(&self) -> FloatingLabelBehavior {
+        self.behavior
+    }
+
+    /// Sets the floating-label policy and re-derives whether the label floats.
+    pub fn set_behavior(&mut self, behavior: FloatingLabelBehavior) {
+        if self.behavior != behavior {
+            self.behavior = behavior;
+            self.update_label_state();
+            self.base.request_redraw();
+        }
+    }
+
     /// Returns whether the text content is empty.
     pub fn is_empty(&self) -> bool {
         self.text.is_empty()
@@ -119,9 +206,17 @@ impl FloatingLabel {
         }
     }
 
-    /// Updates whether the label should float above based on focus and content.
+    /// Updates whether the label should float above, from the policy, focus and content.
+    ///
+    /// The policy is consulted first because both of the fixed behaviours override the
+    /// focus/content rule entirely: `Never` pins the label inline, `Always` pins it above.
+    /// Only `Auto` falls through to the focus/content test.
     fn update_label_state(&mut self) {
-        let should_float = self.is_focused || !self.text.is_empty();
+        let should_float = match self.behavior {
+            FloatingLabelBehavior::Always => true,
+            FloatingLabelBehavior::Never => false,
+            FloatingLabelBehavior::Auto => self.is_focused || !self.text.is_empty(),
+        };
         if should_float != self.show_label_above {
             self.show_label_above = should_float;
             // Retarget, rather than jump: `tick` then interpolates the visible
@@ -168,6 +263,106 @@ impl FloatingLabel {
     pub fn animation_progress(&self) -> f32 {
         self.animation_progress
     }
+
+    /// The resolved field fill.
+    ///
+    /// Explicit style first, then the theme's resolved style for this control, then the
+    /// input role's, then a literal. The label's muted colour is derived from this fill, so
+    /// it has to be reachable from `draw_label` as well as from `draw` — a second copy of
+    /// the four-step chain would let the two disagree and the label blend toward a colour
+    /// the field does not have.
+    fn field_background_color(&self) -> Color {
+        self.base
+            .style()
+            .background_color
+            .or_else(|| {
+                crate::style::resolved_theme_style("floating_label")
+                    .and_then(|t| t.background_color)
+            })
+            .or_else(|| {
+                // The label kind classifies as plain text, so the theme leaves its
+                // background unset; a floating *label* decorates an editable field, so the
+                // field interior is read from the input role, which resolves a colour in
+                // every appearance.
+                crate::style::resolved_theme_style("line_edit")
+                    .and_then(|input| input.background_color)
+            })
+            .unwrap_or(Color::rgba(255, 255, 255, 255))
+    }
+
+    /// The label colour for the current state.
+    ///
+    /// Shared by both label placements in `draw_label` so the inline and floating forms of
+    /// the same label cannot drift apart in colour as the state changes around them.
+    fn label_color(&self, ink: Color, field_background: Color, is_enabled: bool) -> Color {
+        if self.is_focused {
+            ink
+        } else if is_enabled {
+            ink.blend(&field_background, 0.3)
+        } else {
+            Color::rgba(180, 180, 180, 255)
+        }
+    }
+
+    /// Draws the label, either floating above the field or resting inside it.
+    ///
+    /// # Why the placement is derived rather than branched at the call site
+    ///
+    /// The label has exactly two positions and `animation_progress` interpolates between
+    /// them, so every case — floating, in transit, inline, inline-as-placeholder — is one
+    /// expression of (font, y) rather than four separate draw calls that could disagree
+    /// about the geometry. It is also what makes `FloatingLabelBehavior::Never` correct by
+    /// construction: that policy pins `show_label_above` false and the animation at `0.0`,
+    /// so this draws at the inline position and there is no path that raises the label.
+    fn draw_label(&self, context: &mut RenderContext, rect: Rect, ink: Color) {
+        if self.label.is_empty() {
+            return;
+        }
+        let field_background = self.field_background_color();
+        let is_enabled = self.base.is_enabled();
+        let input_font = Font::simple("sans-serif", INPUT_FONT_SIZE);
+        let label_font = Font::simple("sans-serif", LABEL_FONT_SIZE);
+        let label_x = rect.x + LABEL_PADDING;
+        // Both text origins come from `text_line`, which centres the line box in the band.
+        // The inline origin sits on the band the input text occupies, the floating one on
+        // the caption band above it; deriving them from the same bands the rest of the
+        // layout uses is what keeps the label on the input line rather than beside it.
+        let inline_band = Rect::new(rect.x, rect.y + INLINE_BAND_TOP, 1, FIELD_LINE_HEIGHT);
+        let inline_line = context.text_line(inline_band, &input_font);
+        let floating_band = Rect::new(rect.x, rect.y + LABEL_TOP_MARGIN, 1, LABEL_LINE_HEIGHT);
+        let floating_line = context.text_line(floating_band, &label_font);
+
+        if self.show_label_above || self.animation_progress > 0.0 {
+            // Float: interpolate the origin from the inline line up to the caption line. The
+            // caption font is used only once the label has fully risen, so the glyphs do not
+            // change size mid-flight.
+            let font = if self.animation_progress >= 1.0 { &label_font } else { &input_font };
+            let float_y = inline_line.y
+                + ((floating_line.y - inline_line.y) as f32 * self.animation_progress) as i32;
+            context.draw_text(
+                Point::new(label_x, float_y),
+                &self.label,
+                font,
+                self.label_color(ink, field_background, is_enabled),
+                HorizontalAlignment::Left,
+            );
+        } else {
+            // Inline: the label sits on the input line and blends into the field the way a
+            // placeholder does, which is what distinguishes it from the input text itself.
+            let inline_ink = if is_enabled {
+                ink.blend(&field_background, 0.45)
+            } else {
+                Color::rgba(180, 180, 180, 255)
+            };
+            context.draw_text(
+                Point::new(label_x, inline_line.y),
+                &self.label,
+                &input_font,
+                inline_ink,
+                HorizontalAlignment::Left,
+            );
+        }
+    }
 }
 
 impl Widget for FloatingLabel {
@@ -191,12 +386,26 @@ impl Widget for FloatingLabel {
 /// Read/write semantics are carried over unchanged from the centralised
 /// `access_read_input.in.rs` / `access_write_input.in.rs` dispatch, so callers see
 /// the same coercions and the same errors as before.
+///
+/// # Why `label` is published separately from `text`
+///
+/// `text` is the *content the user typed or the host set*; `label` is the caption that
+/// floats above it. They are two different things and this control is the one place where
+/// conflating them is visibly wrong: without a `label` name the widget's own label was
+/// unreachable, so a floating-label field had nothing to float. The shared constructor
+/// helper writes a label into `text` (the first name in `LABEL_PROPERTY_NAMES`) and
+/// [`crate::widget::capability::widget_label_property_name`] now prefers `label` for this
+/// kind, so the constructor's string lands where the caption is drawn.
 impl WidgetProperties for FloatingLabel {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "text" => Ok(CapabilityValue::String(self.text().to_string())),
+            "label" => Ok(CapabilityValue::String(self.label().to_string())),
             "placeholder" => Ok(CapabilityValue::String(self.placeholder().to_string())),
             "focused" => Ok(CapabilityValue::Bool(self.is_focused())),
+            "floating_label_behavior" => {
+                Ok(CapabilityValue::String(self.behavior().to_token().to_string()))
+            }
             _ => base_property_get(self, name),
         }
     }
@@ -207,6 +416,10 @@ impl WidgetProperties for FloatingLabel {
                 self.set_text(expect_string(value)?);
                 Ok(())
             }
+            "label" => {
+                self.set_label(expect_string(value)?);
+                Ok(())
+            }
             "placeholder" => {
                 self.set_placeholder(expect_string(value)?);
                 Ok(())
@@ -215,12 +428,31 @@ impl WidgetProperties for FloatingLabel {
                 self.set_focused(expect_bool(value)?);
                 Ok(())
             }
+            // An unknown token is a parse failure rather than a silently different
+            // behaviour: a caller that wrote `"Always"` must be told the spelling is
+            // `"always"` instead of having the write accepted and ignored. The accepted
+            // spellings are the schema row's, so a caller reading the schema can write
+            // back exactly what `get` returned.
+            "floating_label_behavior" => {
+                let token = expect_string(value)?;
+                let behavior = FloatingLabelBehavior::from_token(&token)
+                    .ok_or(CapabilityAccessError::OutOfRange)?;
+                self.set_behavior(behavior);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["text", "placeholder", "focused", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "text",
+            "label",
+            "placeholder",
+            "focused",
+            "floating_label_behavior",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 
@@ -238,28 +470,23 @@ impl Draw for FloatingLabel {
         // `resolved_theme_style`, so none is held across the draw or across another
         // accessor — the global manager's mutex is not re-entrant.
         let style = self.base.style().clone();
-        let theme = crate::style::resolved_theme_style("floating_label");
-        // The label kind classifies as plain text, so the theme leaves its background
-        // unset; a floating *label* decorates an editable field, so the field interior is
-        // read from the input role, which resolves a colour in every appearance.
-        let field_background = style
-            .background_color
-            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
-            .or_else(|| {
-                crate::style::resolved_theme_style("line_edit")
-                    .and_then(|input| input.background_color)
-            })
-            .unwrap_or(Color::rgba(255, 255, 255, 255));
+        let field_background = self.field_background_color();
         // The label is a `Text` role, so its resolved ink is the theme's foreground; the
         // border colour carries the underline and the focused accent.
         let ink = style
             .text_color
-            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .or_else(|| {
+                crate::style::resolved_theme_style("floating_label").and_then(|t| t.text_color)
+            })
             .unwrap_or(Color::BLACK);
         let border_color = style
             .border_color
-            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
-            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .or_else(|| {
+                crate::style::resolved_theme_style("floating_label").and_then(|t| t.border_color)
+            })
+            .or_else(|| {
+                crate::style::resolved_theme_style("floating_label").and_then(|t| t.text_color)
+            })
             .unwrap_or_else(|| ink.blend(&field_background, 0.55));
 
         // Draw the text field background
@@ -273,68 +500,32 @@ impl Draw for FloatingLabel {
         let underline_rect = Rect::new(rect.x + 2, underline_y, rect.width.saturating_sub(4), 2);
         context.fill_rounded_rect(underline_rect, 1, underline_color);
 
-        // Fonts
-        let input_font = Font::simple("sans-serif", 14.0);
-        let label_font = Font::simple("sans-serif", 11.0);
-        let padding = 8i32;
-        let label_top_margin = 4i32;
-
-        // Calculate positions
+        // The band the input text occupies. Which band that is depends only on whether the
+        // caption is taking the top of the field, so the input line is resolved once here
+        // and handed to every string that shares it. Deriving the origin from `text_line`
+        // (rather than a literal y) is what keeps "centred in its band" true when the
+        // constants change.
         let has_label = !self.label.is_empty();
-        let text_field_top_offset = if has_label && self.show_label_above {
-            16i32 // space for floating label
-        } else {
-            6i32
-        };
+        let floats = has_label && self.show_label_above;
+        let input_font = Font::simple("sans-serif", INPUT_FONT_SIZE);
+        let input_band = Rect::new(
+            rect.x,
+            rect.y + if floats { FLOATED_BAND_TOP } else { INLINE_BAND_TOP },
+            1,
+            if floats { INLINE_LINE_HEIGHT } else { FIELD_LINE_HEIGHT },
+        );
+        let input_line = context.text_line(input_band, &input_font);
 
-        // Draw the label (floating above or inline), interpolating its vertical
-        // position by `animation_progress` so the float transition is smooth.
-        if has_label {
-            let label_color = if self.is_focused {
-                ink
-            } else if is_enabled {
-                ink.blend(&field_background, 0.3)
-            } else {
-                Color::rgba(180, 180, 180, 255)
-            };
+        // Draw the label (floating above, or inline acting as the placeholder).
+        self.draw_label(context, rect, ink);
 
-            // The two resting positions for the label baseline.
-            let above_y = rect.y + label_top_margin + 10;
-            let inline_y = rect.y + 6i32 + 14;
-            if self.show_label_above || self.animation_progress > 0.0 {
-                // Interpolate from the inline position up to the floating position.
-                let label_y =
-                    inline_y + ((above_y - inline_y) as f32 * self.animation_progress) as i32;
-                let label_x = rect.x + padding;
-                context.draw_text(
-                    Point::new(label_x, label_y),
-                    &self.label,
-                    &label_font,
-                    label_color,
-                    HorizontalAlignment::Left,
-                );
-            } else if self.text.is_empty() && !self.is_focused {
-                // Label inline acts as placeholder
-                let label_x = rect.x + padding;
-                context.draw_text(
-                    Point::new(label_x, inline_y),
-                    &self.label,
-                    &input_font,
-                    ink.blend(&field_background, 0.45),
-                    HorizontalAlignment::Left,
-                );
-            }
-        }
-
-        // Show placeholder when empty, unfocused, and label is not shown inline
+        // Show placeholder when empty, unfocused, and the label is not occupying the input
+        // line itself — otherwise the two strings would be drawn on top of each other.
         let show_placeholder =
             self.text.is_empty() && !self.is_focused && (!has_label || self.show_label_above);
-
         if show_placeholder && !self.placeholder.is_empty() {
-            let placeholder_x = rect.x + padding;
-            let placeholder_y = rect.y + text_field_top_offset + 14;
             context.draw_text(
-                Point::new(placeholder_x, placeholder_y),
+                Point::new(rect.x + LABEL_PADDING, input_line.y),
                 &self.placeholder,
                 &input_font,
                 ink.blend(&field_background, 0.55),
@@ -344,11 +535,9 @@ impl Draw for FloatingLabel {
 
         // Draw input text
         if !self.text.is_empty() {
-            let text_x = rect.x + padding;
-            let text_y = rect.y + text_field_top_offset + 14;
             let text_color = if is_enabled { ink } else { Color::rgba(160, 160, 160, 255) };
             context.draw_text(
-                Point::new(text_x, text_y),
+                Point::new(rect.x + LABEL_PADDING, input_line.y),
                 &self.text,
                 &input_font,
                 text_color,
@@ -357,6 +546,41 @@ impl Draw for FloatingLabel {
         }
     }
 }
+
+/// Padding from the field's left edge to the label and the input text.
+const LABEL_PADDING: i32 = 8;
+
+/// Font size of the label once it has floated above the field.
+const LABEL_FONT_SIZE: f32 = 11.0;
+
+/// Font size of the input text, and of the label while it is inline.
+const INPUT_FONT_SIZE: f32 = 14.0;
+
+/// Space between the field's top edge and the floated caption's line box.
+const LABEL_TOP_MARGIN: i32 = 4;
+
+/// Height of the floated caption's line box.
+///
+/// Pinned rather than measured: this band is what reserves room for the caption, so it has
+/// to be known before anything is drawn in it, and a measured height would make the input
+/// line's position depend on the font backend.
+const LABEL_LINE_HEIGHT: u32 = 12;
+
+/// Space between the field's top edge and the input line's box when nothing floats.
+const INLINE_BAND_TOP: i32 = 6;
+
+/// Height of the input line's box when nothing floats above it.
+const FIELD_LINE_HEIGHT: u32 = 28;
+
+/// Space between the floated caption and the input line's box.
+///
+/// The floated layout splits the field into a caption band and an input band; this constant
+/// and [`INLINE_LINE_HEIGHT`] are the second band, and together with [`LABEL_TOP_MARGIN`]
+/// and [`LABEL_LINE_HEIGHT`] they are the whole vertical layout of the control.
+const FLOATED_BAND_TOP: i32 = 20;
+
+/// Height of the input line's box below a floated caption.
+const INLINE_LINE_HEIGHT: u32 = 16;
 
 const KEYCODE_TAB: u32 = 9;
 const KEYCODE_ENTER: u32 = 13;
@@ -534,5 +758,141 @@ mod tests {
         let svg = render_to_svg(&mut fl);
         assert!(svg.starts_with("<svg"));
         assert!(svg.ends_with("</svg>"));
+    }
+
+    #[test]
+    fn floating_label_publishes_its_label_as_a_property() {
+        use crate::widget::capability::properties_trait::{
+            widget_property_get, widget_property_set,
+        };
+
+        let mut fl = FloatingLabel::new(Rect::new(0, 0, 200, 50));
+        // The defect this pins: `label` was absent from the contract, so the caption the
+        // control exists to float was unreachable through the property API.
+        assert!(fl.property_names().contains(&"label"));
+        assert!(fl.property_names().contains(&"floating_label_behavior"));
+
+        widget_property_set(&mut fl, "label", CapabilityValue::String("Username".into()))
+            .expect("`label` must be writable");
+        assert_eq!(fl.label(), "Username");
+        assert_eq!(
+            widget_property_get(&fl, "label"),
+            Ok(CapabilityValue::String("Username".to_string()))
+        );
+        // `label` and `text` are separate: writing the caption must not become content.
+        assert!(fl.text().is_empty());
+    }
+
+    #[test]
+    fn floating_label_behavior_round_trips_as_tokens() {
+        use crate::widget::capability::properties_trait::{
+            widget_property_get, widget_property_set,
+        };
+
+        let mut fl = FloatingLabel::new(Rect::new(0, 0, 200, 50));
+        for behavior in [
+            FloatingLabelBehavior::Auto,
+            FloatingLabelBehavior::Always,
+            FloatingLabelBehavior::Never,
+        ] {
+            let token = behavior.to_token();
+            widget_property_set(
+                &mut fl,
+                "floating_label_behavior",
+                CapabilityValue::String(token.to_string()),
+            )
+            .unwrap_or_else(|error| panic!("token {token:?} must be accepted, got {error:?}"));
+            assert_eq!(fl.behavior(), behavior);
+            // The read must return the same token, so a caller can write back what it read.
+            assert_eq!(
+                widget_property_get(&fl, "floating_label_behavior"),
+                Ok(CapabilityValue::String(token.to_string()))
+            );
+        }
+    }
+
+    #[test]
+    fn floating_label_behavior_rejects_an_unknown_token() {
+        use crate::widget::capability::properties_trait::widget_property_set;
+
+        let mut fl = FloatingLabel::new(Rect::new(0, 0, 200, 50));
+        // Accepting `"Always"` and silently doing nothing would leave the caller believing
+        // the behaviour changed, and it is the spelling the schema does not publish.
+        assert!(widget_property_set(
+            &mut fl,
+            "floating_label_behavior",
+            CapabilityValue::String("Always".to_string())
+        )
+        .is_err());
+        assert_eq!(fl.behavior(), FloatingLabelBehavior::Auto);
+    }
+
+    #[test]
+    fn floating_label_always_floats_even_when_empty_and_unfocused() {
+        let mut fl = FloatingLabel::new(Rect::new(0, 0, 200, 50));
+        fl.set_label("Email".to_string());
+        fl.set_behavior(FloatingLabelBehavior::Always);
+        assert!(!fl.is_focused());
+        assert!(fl.text().is_empty());
+        assert!(fl.show_label_above);
+        // The float is a real state change, not just a flag: the animation targets 1.0.
+        assert!(fl.tick(1000));
+        assert_eq!(fl.animation_progress(), 1.0);
+    }
+
+    #[test]
+    fn floating_label_never_floats_even_when_focused_with_text() {
+        let mut fl = FloatingLabel::new(Rect::new(0, 0, 200, 50));
+        fl.set_label("Email".to_string());
+        fl.set_behavior(FloatingLabelBehavior::Never);
+        fl.set_text("not-an-email".to_string());
+        fl.set_focused(true);
+        assert!(fl.is_focused());
+        assert!(!fl.text().is_empty());
+        assert!(!fl.show_label_above);
+        // Nothing is pending, so the label is pinned inline and `tick` has no work to do.
+        assert!(!fl.tick(1000));
+        assert_eq!(fl.animation_progress(), 0.0);
+    }
+
+    /// The three behaviours must produce three *different* drawings, which is the whole
+    /// point of publishing the property: a flag that does not reach the paint pass is the
+    /// declaration-without-behaviour defect this control already had once.
+    #[test]
+    fn floating_label_behavior_changes_the_drawn_label_position() {
+        fn label_y_for(behavior: FloatingLabelBehavior, focused: bool) -> i32 {
+            let mut fl = FloatingLabel::new(Rect::new(0, 0, 200, 50));
+            fl.set_label("Email".to_string());
+            fl.set_behavior(behavior);
+            fl.set_focused(focused);
+            // Settle the animation at whatever target the policy chose.
+            fl.tick(1000);
+            let svg = render_to_svg(&mut fl);
+            svg.lines()
+                .find(|line| line.contains(">Email<") || line.contains(">Email…<"))
+                .and_then(|line| line.split(" y=\"").nth(1))
+                .and_then(|rest| rest.split('"').next())
+                .and_then(|y| y.parse::<i32>().ok())
+                .expect("the label must be drawn as a text element")
+        }
+
+        let auto_unfocused = label_y_for(FloatingLabelBehavior::Auto, false);
+        let auto_focused = label_y_for(FloatingLabelBehavior::Auto, true);
+        let always_unfocused = label_y_for(FloatingLabelBehavior::Always, false);
+        let never_focused = label_y_for(FloatingLabelBehavior::Never, true);
+
+        // Floating means a smaller y (higher on the field) than resting inline.
+        assert!(
+            auto_focused < auto_unfocused,
+            "auto must float on focus: {auto_unfocused} -> {auto_focused}"
+        );
+        assert_eq!(
+            always_unfocused, auto_focused,
+            "`always` must float a field that `auto` would leave inline"
+        );
+        assert_eq!(
+            never_focused, auto_unfocused,
+            "`never` must keep the label where an unfocused `auto` field draws it"
+        );
     }
 }

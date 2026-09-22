@@ -8,7 +8,7 @@
 //! Supports filter text for search, editable values (text, number, bool, color,
 //! choice, file), and emits `property_changed` on edits.
 
-use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -368,11 +368,18 @@ impl Draw for PropertiesPanel {
             // ── Category header ──
             let header_rect = Rect::new(geom.x, y, geom.width, ROW_HEIGHT);
             context.fill_rect(header_rect, header_background);
-            context.draw_text(
-                Point::new(
-                    header_rect.x + CATEGORY_PADDING,
-                    header_rect.y + ROW_HEIGHT as i32 / 2 + 4,
-                ),
+            // Centred through the shared primitive. Every row of this panel used to draw at
+            // `y + ROW_HEIGHT / 2 + 4`: the `+ 4` was meant to compensate for the top-edge
+            // origin but only halved the error, so a 12 px label in a 26 px row occupied
+            // `17..29` and its descenders crossed the divider drawn at `y + ROW_HEIGHT - 1`.
+            let header_line = context.text_line(header_rect, &font);
+            context.draw_text_fitted(
+                Rect {
+                    x: header_rect.x + CATEGORY_PADDING,
+                    y: header_line.y,
+                    width: header_rect.width.saturating_sub(CATEGORY_PADDING as u32),
+                    height: header_line.height,
+                },
                 category,
                 &font,
                 text_color,
@@ -392,10 +399,17 @@ impl Draw for PropertiesPanel {
                 // Alternate row background
                 let row_rect = Rect::new(geom.x, y, geom.width, ROW_HEIGHT);
                 context.fill_rect(row_rect, row_background);
+                let row_line = context.text_line(row_rect, &font);
 
                 // Property name
-                context.draw_text(
-                    Point::new(geom.x + NAME_COL_LEFT, y + ROW_HEIGHT as i32 / 2 + 4),
+                let name_x = geom.x + NAME_COL_LEFT;
+                context.draw_text_fitted(
+                    Rect {
+                        x: name_x,
+                        y: row_line.y,
+                        width: (geom.x + VALUE_COL_LEFT - name_x).max(0) as u32,
+                        height: row_line.height,
+                    },
                     &entry.name,
                     &font,
                     text_color,
@@ -411,8 +425,14 @@ impl Draw for PropertiesPanel {
                 );
                 let display = Self::value_display_text(&entry.value);
                 context.fill_rect(value_rect, value_background);
-                context.draw_text(
-                    Point::new(value_rect.x + 2, y + ROW_HEIGHT as i32 / 2 + 4),
+                let value_line = context.text_line(value_rect, &font);
+                context.draw_text_fitted(
+                    Rect {
+                        x: value_rect.x + 2,
+                        y: value_line.y,
+                        width: value_rect.width.saturating_sub(4),
+                        height: value_line.height,
+                    },
                     &display,
                     &font,
                     if entry.editable { value_color } else { readonly_value_color },
@@ -490,6 +510,7 @@ impl EventHandler for PropertiesPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::Point;
     use crate::widget::svg::render_to_svg;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;

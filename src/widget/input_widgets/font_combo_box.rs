@@ -513,8 +513,12 @@ impl Draw for FontComboBox {
             arrow_color,
         );
         let font_name = self.current_font().family().to_string();
+        // The field's own line box. A glyph origin is the box's top-left edge, so the old
+        // `g.y + g.height / 2 + 5` put that edge on the field's middle line and drew the
+        // selected family half a line low.
+        let value_line = ctx.text_line(g, &Font::default_ui());
         ctx.draw_text(
-            Point::new(g.x + 4, g.y + g.height as i32 / 2 + 5),
+            Point::new(g.x + 4, value_line.y),
             &font_name,
             &Font::default_ui(),
             ink,
@@ -539,13 +543,16 @@ impl Draw for FontComboBox {
                 let item_y = popup_rect.y + (i as i32) * popup_item_height;
                 let item_rect =
                     Rect::new(popup_rect.x, item_y, popup_rect.width, popup_item_height as u32);
+                // One line box per row, shared by the highlighted and plain arms so the two
+                // cannot drift by half a line while the row also changes colour.
+                let item_line = ctx.text_line(item_rect, &display_font);
                 if i as i32 == self.current_index {
                     ctx.fill_rect(item_rect, highlight);
                     if let Some(name) = self.fonts.get(i) {
                         // The label contrasts with the highlight it sits on, so it stays legible
                         // whatever the theme's primary is.
                         ctx.draw_text(
-                            Point::new(g.x + 4, item_y + popup_item_height / 2 + 3),
+                            Point::new(g.x + 4, item_line.y),
                             name,
                             &display_font,
                             highlight.contrast_color(),
@@ -554,7 +561,7 @@ impl Draw for FontComboBox {
                     }
                 } else if let Some(name) = self.fonts.get(i) {
                     ctx.draw_text(
-                        Point::new(g.x + 4, item_y + popup_item_height / 2 + 3),
+                        Point::new(g.x + 4, item_line.y),
                         name,
                         &display_font,
                         ink,

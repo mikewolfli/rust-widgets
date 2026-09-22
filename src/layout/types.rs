@@ -39,14 +39,61 @@ pub struct LayoutContext {
     /// Derived from device DPI and font scale factors.
     pub layout_scale: f32,
     /// Scale factor applied to font/metric sizes.
+    ///
+    /// # Why the default is not a literal
+    ///
+    /// A hardcoded `1.0` here meant this field could not express a device's text-scale
+    /// preference at all: a caller building a context from `Default::default()` got "no scaling"
+    /// on hardware that had asked for scaling. The default now reads the platform's text-scale
+    /// report (`platform::profile::text_scale`), so a context a caller does not customise already
+    /// reflects the device it is running on.
     pub font_scale: f32,
     /// Minimum touch-target size in logical pixels.
-    /// Defaults to 32×32 (recommended minimum for touch).
+    ///
+    /// Defaults to the **device class's** recommended minimum (`TouchTargetSize::dimensions()`),
+    /// not a fixed 32×32: the value is a platform fact, and a phone context that claimed a desktop
+    /// minimum would let a layout place controls closer together than a finger can address.
     pub min_touch_size: Size,
 }
+/// Applies the context's `min_touch_size` to a child rectangle.
+///
+/// # Why a layout grows a child rather than leaving it alone
+///
+/// `LayoutContext::min_touch_size` is a platform fact — the smallest area a finger can
+/// reliably address on this device class — and a layout is the layer that decides how much
+/// room each child gets. A layout that ignores it places controls closer together than the
+/// hardware can address, and no amount of hit-test expansion recovers a target the *neighbouring
+/// control* is drawn on top of.
+///
+/// The growth is centred, so a control stays where the layout put it and gains reach on both
+/// sides; and it is **clamped to the parent's rectangle at the caller**, because a child that
+/// grew past its container would be clipped there instead of being reachable.
+///
+/// This deliberately does not shrink anything. A layout that has less space than the minimum
+/// returns the rectangle it computed; the alternative would be to make a control smaller than
+/// its own content to satisfy a floor, which trades one unusable control for another.
+pub fn grow_to_min_touch_size(child: Rect, min_touch_size: Size) -> Rect {
+    if child.width >= min_touch_size.width && child.height >= min_touch_size.height {
+        return child;
+    }
+    let width = child.width.max(min_touch_size.width);
+    let height = child.height.max(min_touch_size.height);
+    Rect::new(
+        child.x - (width - child.width) as i32 / 2,
+        child.y - (height - child.height) as i32 / 2,
+        width,
+        height,
+    )
+}
+
+
 impl Default for LayoutContext {
     fn default() -> Self {
-        Self { layout_scale: 1.0, font_scale: 1.0, min_touch_size: Size::new(32, 32) }
+        Self {
+            layout_scale: 1.0,
+            font_scale: crate::platform::profile::text_scale(),
+            min_touch_size: crate::platform::profile::recommended_touch_target().dimensions(),
+        }
     }
 }
 

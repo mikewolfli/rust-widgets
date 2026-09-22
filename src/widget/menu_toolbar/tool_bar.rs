@@ -547,28 +547,43 @@ impl Draw for ToolBar {
         // stayed light in a dark theme: the theme resolved a toolbar's colour, handed it
         // to the widget, and the widget ignored it — a light band across the top of a
         // dark window with no way for the caller to change it.
-        context.fill_rect(
-            Rect::new(rect.x, rect.y, rect.width, rect.height),
-            style.background_color.unwrap_or(Color::rgb(245, 245, 245)),
-        );
+        // The toolbar's own surface, resolved once, is the **base every item state is
+        // derived from**. The comment above records the first half of this fix (the strip's
+        // background was a literal); these six literals are the other half — with the
+        // background themed and the items not, a dark toolbar kept a row of pale blue buttons
+        // whose checked and hover states were inverted against their own strip (checked
+        // `rgb(180,210,255)` was *lighter* than hover `rgb(210,230,255)`'s neighbours and both
+        // were lighter than the surface they sat on, so a checked item read as a hole).
+        let surface = style.background_color.unwrap_or(Color::rgb(245, 245, 245));
+        let border = style.border_color.unwrap_or_else(|| surface.contrast_color().with_alpha(60));
+        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), surface);
         // Draw bottom border line
         let y = rect.y + rect.height as f32 as i32 - 1;
-        context.draw_line(
-            Point::new(rect.x, y),
-            Point::new(rect.x + rect.width as i32, y),
-            style.border_color.unwrap_or(Color::rgb(200, 200, 200)),
-        );
+        context.draw_line(Point::new(rect.x, y), Point::new(rect.x + rect.width as i32, y), border);
+        // A selection indicator is a step from the item's own rest fill, so it stays a
+        // selection in either appearance. `primary` is the palette's active/selected slot.
+        let accent = crate::style::theme_manager()
+            .current_theme()
+            .map(|theme| theme.colors.primary)
+            .unwrap_or(Color::rgb(0, 120, 215));
+        let resting = surface.blend(&surface.contrast_color(), 0.04);
+        let hovered_fill = resting.blend(&accent, 0.18);
+        let checked_fill = resting.blend(&accent, 0.34);
+
         for i in 0..self.items.len() {
             let item_r = self.item_rect(i);
             let item = &self.items[i];
             if item.is_separator() {
+                // Both separators read the same resolved border colour. The horizontal one
+                // already did; the vertical one was a literal `rgb(200,200,200)`, so the same
+                // toolbar drew its two dividers in two different colours.
                 match self.orientation {
                     ToolBarOrientation::Horizontal => {
                         let mid_x = item_r.x + (item_r.width as i32) / 2;
                         context.draw_line(
                             Point::new(mid_x, rect.y + 4),
                             Point::new(mid_x, rect.y + rect.height as i32 - 4),
-                            style.border_color.unwrap_or(Color::rgb(200, 200, 200)),
+                            border,
                         );
                     }
                     ToolBarOrientation::Vertical => {
@@ -576,7 +591,7 @@ impl Draw for ToolBar {
                         context.draw_line(
                             Point::new(rect.x + 4, mid_y),
                             Point::new(rect.x + rect.width as i32 - 4, mid_y),
-                            Color::rgb(200, 200, 200),
+                            border,
                         );
                     }
                 }
@@ -584,28 +599,24 @@ impl Draw for ToolBar {
             }
             let is_hovered = self.hovered_index == Some(i);
             let bg = if item.is_checked() {
-                Color::rgb(180, 210, 255)
+                checked_fill
             } else if is_hovered {
-                Color::rgb(210, 230, 255)
+                hovered_fill
             } else {
-                Color::rgb(245, 245, 245)
+                resting
             };
-            context.fill_rect(Rect::new(item_r.x, item_r.y, item_r.width, item_r.height), bg);
+            let item_band = Rect::new(item_r.x, item_r.y, item_r.width, item_r.height);
+            context.fill_rect(item_band, bg);
             if is_hovered || item.is_checked() {
-                context.draw_rect(
-                    Rect::new(item_r.x, item_r.y, item_r.width, item_r.height),
-                    Color::rgb(0, 120, 215),
-                );
+                context.draw_rect(item_band, accent);
             }
-            let fg =
-                if !item.is_enabled() { Color::rgb(150, 150, 150) } else { Color::rgb(0, 0, 0) };
-            context.draw_text(
-                Point::new(item_r.x + item_r.width as i32 / 2, item_r.y + item_r.height as i32 / 2),
-                item.text(),
-                &Font::default(),
-                fg,
-                HorizontalAlignment::Left,
-            );
+            // The ink is chosen from the fill it lands on. The old rule was "black, or grey
+            // when disabled", which on a dark strip was black text on a near-black button.
+            let ink = surface.contrast_color();
+            let fg = if item.is_enabled() { bg.contrast_color() } else { ink.with_alpha(130) };
+            let font = Font::default();
+            let line = context.text_line(item_band, &font);
+            context.draw_text_fitted(line, item.text(), &font, fg, HorizontalAlignment::Center);
         }
     }
 }

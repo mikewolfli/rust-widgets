@@ -32,10 +32,14 @@ fn label(geometry: Rect, text: &str, widget: Box<dyn Widget>) -> Box<dyn Widget>
     let mut widget = widget;
     let value = crate::widget::capability::CapabilityValue::String(text.to_string());
     // Whichever spelling the control publishes wins; none being known means the
-    // control has no label concept, which is not an error.
-    for property in crate::control_backend::custom::LABEL_PROPERTY_NAMES {
-        if crate::widget::capability::widget_property_set(widget.as_mut(), property, value.clone())
-            .is_ok()
+    // control has no label concept, which is not an error. The *choice* belongs to
+    // `widget_label_property_name`, so this writer and the backend's readers cannot
+    // disagree about which name carries a control's label.
+    let property = widget
+        .properties_dyn()
+        .and_then(crate::control_backend::custom::widget_label_property_name);
+    if let Some(property) = property {
+        if crate::widget::capability::widget_property_set(widget.as_mut(), property, value).is_ok()
         {
             return widget;
         }
@@ -828,9 +832,17 @@ pub fn create_scroll_area(geometry: Rect, text: &str) -> Box<dyn Widget> {
 }
 
 #[cfg(full_widgets)]
-/// Creates a tab widget with no pages. `text` is applied as the control's label.
+/// Creates a tab widget with two pages. `text` is applied to the first tab's page.
+///
+/// Two tabs, for the same reason `create_tab_bar` adds two: a tab widget with an empty tab
+/// list has no boxes to draw at all, so `Draw`'s `for i in 0..self.tabs.len()` ran zero times
+/// and the control was a bare content rectangle. The pair also makes the control's defining
+/// affordance — selecting between pages — visible in its own snapshot.
 pub fn create_tab_widget(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    label(geometry, text, Box::new(TabWidget::new(geometry)))
+    let mut widget = TabWidget::new(geometry);
+    widget.add_tab("Tab 1".to_string(), None);
+    widget.add_tab("Tab 2".to_string(), None);
+    label(geometry, text, Box::new(widget))
 }
 
 #[cfg(full_widgets)]

@@ -776,9 +776,13 @@ impl Draw for GridTableWidget {
                     ""
                 };
 
-                let header_text = format!("Col {ci}{label}");
-                context.draw_text(
-                    Point::new(hx + 4, rect.y + header_h / 2),
+                // The header names a *data* column, so the label is derived from the column's
+                // real index in the source — the same index the cells below are fetched with —
+                // and not from the loop counter, which under a horizontal scroll would name a
+                // different column than the one it sits above.
+                let header_text = format!("Column {}{label}", ci + 1);
+                context.draw_text_fitted(
+                    context.text_line(cell_rect, &Font::default()),
                     &header_text,
                     &Font::default(),
                     header_text_color,
@@ -802,8 +806,10 @@ impl Draw for GridTableWidget {
                 context.fill_rect(cell_rect, header_bg);
                 context.draw_rect(cell_rect, grid_color);
 
-                context.draw_text(
-                    Point::new(rect.x + rnw - 6, y + rh / 2),
+                // The row-number cell is the band; centring by hand drew the digits half a line
+                // low. Right alignment keeps the numbers flush with the gutter's inner edge.
+                context.draw_text_fitted(
+                    context.text_line(cell_rect, &Font::default()),
                     &abs_row.to_string(),
                     &Font::default(),
                     header_text_color,
@@ -856,11 +862,12 @@ impl Draw for GridTableWidget {
 
                 // Cell text
                 if let Some(text) = source.data(abs_row, ci) {
-                    // Offset text slightly inside the cell
-                    let text_x = cx + 3;
-                    let text_y = cy + rh / 2;
-                    context.draw_text(
-                        Point::new(text_x, text_y),
+                    // The cell is the band. `cy + rh / 2` as a `draw_text` origin put the glyph
+                    // box's *top* edge on the cell's middle line, drawing every value half a line
+                    // low; `text_line` derives the centred box, and fitting keeps a long value
+                    // inside its column instead of running under the next one.
+                    context.draw_text_fitted(
+                        context.text_line(cell_rect, &Font::default()),
                         &text,
                         &Font::default(),
                         cell_text_color,

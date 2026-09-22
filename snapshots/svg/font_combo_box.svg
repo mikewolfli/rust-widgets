@@ -6,5 +6,5 @@
   <rect x="0" y="0" width="240" height="120" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
   <line x1="223" y1="58" x2="226" y2="62" stroke="rgba(170,170,170,1.00)" stroke-width="1" />
   <line x1="226" y1="62" x2="229" y2="58" stroke="rgba(170,170,170,1.00)" stroke-width="1" />
-  <text x="4" y="65" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(225,225,225,1.00)">Arial</text>
+  <text x="4" y="53" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(225,225,225,1.00)">Arial</text>
 </svg>

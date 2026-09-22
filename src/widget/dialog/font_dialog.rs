@@ -289,8 +289,36 @@ impl Draw for FontDialog {
         let header_metrics = context.measure_text("M", &Font::default());
         let header_h = header_metrics.height.max(1);
         let list_y = rect.y + TITLE_BAR_HEIGHT as i32 + 2 + header_h as i32 + 2;
-        let col_area = (button_top - 46 - list_y).max(0) as u32;
-        let list_h = col_area.saturating_sub(28);
+        // The columns are the dialog's primary content, so they take the space left
+        // between the list's real top and the rows reserved *below* it, and the preview
+        // well is the band that yields when there is not room for both.
+        //
+        // The old form subtracted a second copy of `list_y` as the literal 46 —
+        // `(button_top - 46 - list_y)` — which is the 28 px title-bar offset plus the
+        // 8 px header strip plus the 2 px margins, i.e. the *same* 46 that `list_y`
+        // already was. The subtrahend therefore cancelled the minuend exactly and every
+        // column collapsed to `height="0"` in `font_dialog.svg` while its header still
+        // painted at y=30: a reservation subtracted a second time is the defect.
+        //
+        // The preview band is then offered only what is genuinely left over, and only
+        // if that is a whole line's worth. At the 120 px box there is no room for it and
+        // it is dropped rather than squeezing the columns back to zero, which would be
+        // the same defect with a different constant.
+        let preview_gap = 8i32;
+        let preview_metrics = context.measure_text("AaBbYyZz 0123", &self.current_font);
+        let min_preview_h = preview_metrics.height as i32 + 4;
+        let wanted_preview_h = 36i32;
+        // Height a preview band would take if drawn, including the gap above it.
+        let preview_band = wanted_preview_h + preview_gap;
+        let space_below_list = (button_top - list_y).max(0);
+        let (list_h, preview_h) = if space_below_list >= preview_band + min_preview_h {
+            // Both the columns and the preview fit: the columns take the remainder.
+            ((space_below_list - preview_band) as u32, wanted_preview_h)
+        } else {
+            // Not enough for both. The columns keep the whole remainder and the preview
+            // is dropped; a band that cannot hold a line is not worth a column.
+            (space_below_list as u32, 0)
+        };
         let header_top = list_y - 2 - header_h as i32;
         // Family, Style, Size columns
         let col_labels =
@@ -307,27 +335,33 @@ impl Draw for FontDialog {
             context.fill_rect(Rect::new(col_x as i32, list_y, col_w, list_h), field);
             context.draw_rect(Rect::new(col_x as i32, list_y, col_w, list_h), border);
         }
-        // Preview area
-        let prev_y = list_y + list_h as i32 + 8;
-        let bw = rect.width.saturating_sub(8);
-        context.fill_rect(Rect::new(rect.x + 4, prev_y, bw, 36), field);
-        context.draw_rect(Rect::new(rect.x + 4, prev_y, bw, 36), border);
-        // The sample is fitted to the preview well, so a caller-selected font larger than
-        // the well is truncated there instead of marching out of the dialog.
+        // Preview area. Placed on the same gap the columns reserved above, so the two
+        // derivations cannot drift apart into an overlap or a hole between them. It has
+        // zero height exactly when the layout above decided it did not fit, and is not
+        // drawn at all in that case — a zero-height well would be the same
+        // invisible-rectangle defect the columns had.
         let preview_font = self.current_font.clone();
-        let preview_metrics = context.measure_text("AaBbYyZz 0123", &preview_font);
-        context.draw_text_fitted(
-            Rect::new(
-                rect.x + 10,
-                prev_y + ((36 - preview_metrics.height as i32) / 2).max(0),
-                rect.width.saturating_sub(20),
-                preview_metrics.height.max(1),
-            ),
-            "AaBbYyZz 0123",
-            &preview_font,
-            ink,
-            HorizontalAlignment::Left,
-        );
+        if preview_h > 0 {
+            let prev_y = list_y + list_h as i32 + preview_gap;
+            let bw = rect.width.saturating_sub(8);
+            context.fill_rect(Rect::new(rect.x + 4, prev_y, bw, preview_h as u32), field);
+            context.draw_rect(Rect::new(rect.x + 4, prev_y, bw, preview_h as u32), border);
+            // The sample is fitted to the preview well, so a caller-selected font larger
+            // than the well is truncated there instead of marching out of the dialog.
+            // Centred via the shared primitive rather than by repeating the well's height
+            // in a second subtraction, which is what the literal 36 here would have
+            // become if the well ever changed size.
+            let band =
+                Rect::new(rect.x + 10, prev_y, rect.width.saturating_sub(20), preview_h as u32);
+            let line = context.text_line(band, &preview_font);
+            context.draw_text_fitted(
+                Rect::new(band.x, line.y, band.width, preview_metrics.height.max(1)),
+                "AaBbYyZz 0123",
+                &preview_font,
+                ink,
+                HorizontalAlignment::Left,
+            );
+        }
         // OK/Cancel. Right-aligned inside the frame and floored at its left edge, so a
         // control narrower than the two 80 px buttons keeps them on screen; the labels are
         // centred in their buttons and fitted to them.
@@ -338,7 +372,7 @@ impl Draw for FontDialog {
         let ok_x = (cancel_x - BTN_STEP).max(rect.x);
         let ok_rect = Rect::new(ok_x, btn_y, BTN_W as u32, btn_h as u32);
         context.fill_rect(ok_rect, accent);
-        context.draw_text_fitted(
+        context.draw_text_line(
             ok_rect,
             &tr!("dialog.ok"),
             &Font::default(),
@@ -348,7 +382,7 @@ impl Draw for FontDialog {
         let cancel_rect = Rect::new(cancel_x, btn_y, BTN_W as u32, btn_h as u32);
         context.fill_rect(cancel_rect, surface.blend(&ink, 0.1));
         context.draw_rect(cancel_rect, border);
-        context.draw_text_fitted(
+        context.draw_text_line(
             cancel_rect,
             &tr!("dialog.cancel"),
             &Font::default(),

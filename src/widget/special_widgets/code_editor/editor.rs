@@ -179,6 +179,12 @@ pub struct CodeEditor {
     /// Lines whose fold marker is currently collapsed, for O(1) gutter queries.
     folded_lines: MiniVec<usize>,
     pub(crate) mouse_selecting: bool,
+    /// The caret's blink state, advanced by [`CodeEditor::tick`].
+    ///
+    /// A code editor's caret is the single strongest signal that the buffer will receive typing, and
+    /// a solid one reads as a frozen selection instead. The tempo and phase come from
+    /// [`crate::style::CursorBlink`] so this caret cannot drift from the one in a text field.
+    pub(crate) caret_blink: crate::style::CursorBlink,
     undo_stack: UndoStack,
     restoring_history: bool,
 
@@ -245,6 +251,7 @@ impl CodeEditor {
             markers: Vec::new(),
             folded_lines: MiniVec::new(),
             mouse_selecting: false,
+            caret_blink: crate::style::CursorBlink::new(),
             undo_stack: UndoStack::new(),
             restoring_history: false,
             text_changed: Signal1::new(),
@@ -272,7 +279,38 @@ impl CodeEditor {
     /// Enables or disables editing.
     pub fn set_read_only(&mut self, read_only: bool) {
         self.config.read_only = read_only;
+        // A read-only editor shows no caret at all, so there is nothing to animate; an editable one
+        // resumes blinking from a visible caret.
+        if read_only {
+            self.caret_blink.stop();
+        } else {
+            self.caret_blink.start();
+        }
         self.base.request_redraw();
+    }
+
+    /// Advances the caret's blink by `delta_ms` and reports whether another frame is needed.
+    ///
+    /// The crate's `tick(delta_ms) -> bool` convention. The caret here was drawn at full strength
+    /// unconditionally, so a host had no reason to keep scheduling frames and the caret read as a
+    /// frozen marker rather than a live insertion point.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        if self.config.read_only {
+            return false;
+        }
+        let running = self.caret_blink.tick(delta_ms);
+        if running {
+            self.base.request_redraw();
+        }
+        running
+    }
+
+    /// Whether the caret is in the visible half of its blink cycle.
+    ///
+    /// Exposed so a test can assert the blink without capturing pixels, and so a host that draws
+    /// its own overlay caret can follow the same phase.
+    pub fn is_caret_visible(&self) -> bool {
+        self.caret_blink.is_visible()
     }
 
     /// Returns the current tab width in spaces.

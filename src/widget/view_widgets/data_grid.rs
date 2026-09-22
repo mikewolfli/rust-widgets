@@ -651,8 +651,13 @@ impl Draw for DataGrid {
                 }
                 context.draw_rect(Rect::new(x, y, self.column_width, self.row_height), cell_border);
                 if let Some(text) = cell {
-                    context.draw_text(
-                        Point::new(x + 4, y + row_h / 2),
+                    // The cell is the band. Centring by handing `y + row_h / 2` to `draw_text`
+                    // put the glyph box's *top* edge on the cell's middle line, so every value
+                    // sat half a line low; `text_line` derives the real centred box. Fitting as
+                    // well keeps a long value inside its own column instead of bleeding right.
+                    let cell_rect = Rect::new(x, y, self.column_width, self.row_height);
+                    context.draw_text_fitted(
+                        context.text_line(cell_rect, &Font::default()),
                         text,
                         &Font::default(),
                         ink,

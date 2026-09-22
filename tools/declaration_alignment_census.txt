@@ -11,7 +11,7 @@
 # failed  = declarations that disagree with the implementation
 
 controls   188
-skipped    199
+skipped    197
 failed     0
 
 ## skipped entries (each with its reason)
@@ -97,8 +97,6 @@ failed     0
 - popup_window::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - dialog::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - scroll_area::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- tab_widget::closable: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- tab_widget::movable: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - tab_widget::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - stacked_widget::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - collapsible_pane::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered

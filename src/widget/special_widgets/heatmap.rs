@@ -612,9 +612,12 @@ impl Draw for Heatmap {
         if rows == 0 || columns == 0 || grid.width == 0 || grid.height == 0 {
             // Nothing to plot. The frame above still painted, so the control is visible
             // (P1/P2) and a caller sees where it will go — rather than the census having
-            // to excuse a control that draws nothing at all.
+            // to excuse a control that draws nothing at all. The placeholder is centred
+            // through the shared primitive, because a glyph origin is a top edge and
+            // `rect.y + rect.height / 2` put it half a line low.
+            let line = context.text_line(rect, font);
             context.draw_text(
-                Point::new(rect.x + 6, rect.y + rect.height as i32 / 2),
+                Point::new(rect.x + 6, line.y),
                 "Heatmap",
                 font,
                 text_color,

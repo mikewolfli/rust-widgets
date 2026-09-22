@@ -172,18 +172,34 @@ impl Draw for DropZone {
         // manager's mutex is not re-entrant.
         let style = self.base.style().clone();
         let theme = crate::style::resolved_theme_style("drop_zone");
-        let surface = style
-            .background_color
-            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
-            .unwrap_or(Color::rgb(248, 250, 252));
         let ink = style
             .text_color
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))
             .unwrap_or(Color::rgb(36, 107, 201));
+        // `drop_zone` is absent from `WidgetRole::for_kind_name`'s table, so it classifies as
+        // `Surface` and resolves to `theme.colors.background` — the window's own fill. A well
+        // painted in that colour would be byte-identical to the frame behind it, so the drop
+        // target had no visible face at rest: `drop_zone.svg` carried `rgba(18,18,18)` twice and
+        // only the dashed outline said a control was there. A resolved surface equal to the
+        // window fill is therefore re-derived a visible step toward the ink, the same guard
+        // `dial.rs` and `slider.rs` apply to their own faces. A drop zone has to show a well it
+        // drops into, so the fallback steps *away* from the window rather than landing on it.
+        let window_fill = {
+            let manager = crate::style::theme_manager();
+            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
+        };
+        let surface = match style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+        {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => window_fill.blend(&ink, 0.10),
+        };
         let outline = style
             .border_color
             .or_else(|| theme.as_ref().and_then(|t| t.border_color))
-            .unwrap_or(Color::rgb(170, 180, 195));
+            .filter(|resolved| *resolved != surface)
+            .unwrap_or_else(|| surface.blend(&ink, 0.45));
 
         // Base fill: the theme's surface, lifted toward its ink while hovering so the
         // drop target reads as active.

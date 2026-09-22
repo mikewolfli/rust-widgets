@@ -28,8 +28,28 @@
 //! chart that looks plausible and is upside down, which is the single most common mistake
 //! in chart code. [`PriceAxis::y_for`] is the only place the inversion happens, so there
 //! is one place for it to be right.
+//!
+//! # Why the pane chrome resolves here too
+//!
+//! The same argument applies to colour. Four panes that must agree about where bar 17 is
+//! must also agree about what the surface behind it looks like, because a stacked chart
+//! whose panes disagree about their backdrop reads as four unrelated rectangles. The four
+//! finance panes each carried their own literal `rgb(18, 22, 28)`, so the appearance could
+//! not reach any of them and the plot area was a black slab in a white window. The
+//! derivation is named once here, beside the geometry, so the two cannot drift apart.
+//!
+//! # Why the margin presets are named and not parameters
+//!
+//! [`PlotArea::of`], [`PlotArea::indicator_pane`] and [`PlotArea::volume_pane`] exist
+//! because a margin typed at the call site is a margin that can be typed differently at
+//! the next call site. That had already happened: the indicator pane reserved 52 px on the
+//! left where the K-line, volume and depth panes reserved 48, so the same bar index landed
+//! four pixels apart in two stacked panes. Naming the preset is what makes "the price
+//! panes agree with each other" a property of the type rather than of four call sites
+//! having been edited together.
 
-use crate::core::Rect;
+use crate::core::{Color, Rect};
+use crate::style::WidgetStyle;
 
 /// The horizontal mapping from bar index to screen x.
 ///
@@ -263,6 +283,91 @@ mod tests {
         assert_eq!(axis.y_for(110.0), 0);
         assert_eq!(axis.y_for(90.0), 100);
     }
+
+    /// Every stacked pane must reserve the **same** horizontal margins, or a bar index
+    /// lands at two different x values in two panes that are meant to line up.
+    ///
+    /// Regression: the indicator pane reserved 52 px on the left while the K-line, volume
+    /// and depth panes reserved 48, so an indicator at bar 17 was drawn four pixels to the
+    /// right of the candle at bar 17.
+    #[test]
+    fn every_stacked_pane_reserves_the_same_horizontal_margins() {
+        let rect = Rect::new(0, 0, 240, 120);
+        let reference = PlotArea::price_pane(rect);
+        for (name, area) in [
+            ("volume", PlotArea::volume_pane(rect)),
+            ("indicator", PlotArea::indicator_pane(rect)),
+            ("generic", PlotArea::of(rect)),
+        ] {
+            assert_eq!(area.rect.x, reference.rect.x, "{name} pane's left edge");
+            assert_eq!(area.rect.width, reference.rect.width, "{name} pane's width");
+        }
+    }
+
+    /// An indicator pane still reuses the shared margins after the fix, and the vertical
+    /// reservation stays smaller than a price pane's because it carries no index labels.
+    #[test]
+    fn an_indicator_pane_keeps_the_shared_margins_and_a_shorter_bottom() {
+        let area = PlotArea::indicator_pane(Rect::new(0, 0, 240, 120));
+        assert_eq!(area.left_margin, PlotArea::DEFAULT_LEFT_MARGIN);
+        assert_eq!(area.right_margin, PlotArea::DEFAULT_RIGHT_MARGIN);
+        assert!(area.bottom_margin < PlotArea::DEFAULT_BOTTOM_MARGIN);
+    }
+
+    /// The panel's ink must be legible on the panel, whatever pairing the caller supplies.
+    ///
+    /// This is the property the literal could not have: `rgb(18, 22, 28)` produced one
+    /// surface for both appearances, so a light appearance drew light-surface ink onto a
+    /// dark slab while a dark appearance drew dark-surface ink onto it.
+    #[test]
+    fn the_panel_ink_is_legible_on_the_panel_it_is_painted_on() {
+        let style = WidgetStyle::default()
+            .with_background(Color::rgb(18, 22, 28))
+            .with_text_color(Color::rgb(30, 34, 40));
+        let colors = panel_colors(Some(&style));
+        assert_eq!(colors.surface, Color::rgb(18, 22, 28), "the caller's surface wins");
+        assert!(
+            colors.ink.contrast_ratio(colors.surface) >= PANEL_MIN_CONTRAST,
+            "ink {} on surface {},{},{} measured {:.2}:1",
+            colors.ink.r,
+            colors.surface.r,
+            colors.surface.g,
+            colors.surface.b,
+            colors.ink.contrast_ratio(colors.surface)
+        );
+    }
+
+    /// A gridline is a hairline of the ink in the surface, so it must be neither invisible
+    /// against the panel nor as strong as the text.
+    #[test]
+    fn the_gridline_sits_between_the_surface_and_the_ink() {
+        let colors =
+            panel_colors(Some(&WidgetStyle::default().with_background(Color::rgb(18, 22, 28))));
+        assert_ne!(colors.grid, colors.surface, "a gridline in the panel colour is not a gridline");
+        assert_ne!(colors.grid, colors.ink, "a gridline at full ink is a rule, not a grid");
+    }
+
+    /// A surface the theme would make identical to the window behind it is stepped away from
+    /// it, so the pane has a visible extent — while a colour the caller set is never moved.
+    #[test]
+    fn a_surface_equal_to_the_window_fill_is_stepped_away_from_it() {
+        let window_fill = crate::style::theme_manager()
+            .current_theme()
+            .map(|active| active.colors.background)
+            .unwrap_or(Color::rgb(240, 240, 240));
+        let theme_derived = panel_colors(None);
+        assert_ne!(
+            theme_derived.surface, window_fill,
+            "a panel painted in the window fill has no visible extent"
+        );
+        let caller_choice = Color::rgb(1, 2, 3);
+        let caller_derived =
+            panel_colors(Some(&WidgetStyle::default().with_background(caller_choice)));
+        assert_eq!(
+            caller_derived.surface, caller_choice,
+            "the caller's colour is honoured verbatim"
+        );
+    }
 }
 
 /// The plot area inside a control's rectangle, after margins.
@@ -287,9 +392,74 @@ pub struct PlotArea {
 }
 
 impl PlotArea {
+    /// The horizontal margin every stacked price pane reserves on its left.
+    ///
+    /// Wide enough for a four-character price label at the 10 pt axis font plus the tick
+    /// gap. A **reservation**, not a measurement, for the same reason the chart's own label
+    /// column is: a column sized to the widest label would move the whole plot area every
+    /// time a digit boundary is crossed, which reads as the chart jumping when a price
+    /// updates.
+    const DEFAULT_LEFT_MARGIN: i32 = 48;
+    /// The right margin, so the last bar is not flush against the pane's edge.
+    const DEFAULT_RIGHT_MARGIN: i32 = 8;
+    /// The top margin.
+    const DEFAULT_TOP_MARGIN: i32 = 8;
+    /// The bottom margin: room for the index axis labels under a price pane.
+    pub(crate) const DEFAULT_BOTTOM_MARGIN: i32 = 20;
+
     /// Splits `rect` into a plot area and the margins around it.
     pub fn of(rect: Rect) -> Self {
-        Self::with_margins(rect, 48, 8, 8, 20)
+        Self::with_margins(
+            rect,
+            Self::DEFAULT_LEFT_MARGIN,
+            Self::DEFAULT_RIGHT_MARGIN,
+            Self::DEFAULT_TOP_MARGIN,
+            Self::DEFAULT_BOTTOM_MARGIN,
+        )
+    }
+
+    /// The plot area of a **price pane** — a K-line pane, a depth pane, or any other pane
+    /// that is stacked with them and carries the index axis labels itself.
+    ///
+    /// Not just `of(rect)` spelled differently: this is the named entry point for "this
+    /// pane is one of the stacked ones", and it is the same reservation [`Self::of`] makes,
+    /// so a pane that switches between the two cannot shift its bars.
+    pub fn price_pane(rect: Rect) -> Self {
+        Self::of(rect)
+    }
+
+    /// The plot area of a **volume pane**, which carries no index labels of its own.
+    ///
+    /// The price pane above already has them, and a second copy would be misleading about
+    /// which rows they belong to, so the bottom reservation is reduced. The **horizontal**
+    /// margins are deliberately [`Self::DEFAULT_LEFT_MARGIN`] and
+    /// [`Self::DEFAULT_RIGHT_MARGIN`] rather than the caller's own numbers: a volume pane's
+    /// bar 17 has to sit under the price pane's bar 17, which is arithmetic here or nowhere.
+    pub fn volume_pane(rect: Rect) -> Self {
+        Self::with_margins(rect, Self::DEFAULT_LEFT_MARGIN, Self::DEFAULT_RIGHT_MARGIN, 6, 6)
+    }
+
+    /// The plot area of an **indicator pane**.
+    ///
+    /// The vertical margins are reduced for the same reason the volume pane's are: an
+    /// oscillator pane reads against reference levels and zero, not against an index axis,
+    /// so it does not need the label row. The horizontal margins are the shared ones.
+    ///
+    /// This used to reserve 52 px on the left while the panes above and below it reserved
+    /// 48. Four pixels is small enough to miss on inspection and large enough to matter:
+    /// the indicator at bar 17 was drawn under a different x from the candle at bar 17, so
+    /// the marker a reader lined up with a price bar was describing a different bar. The
+    /// mapping came from [`Self::index_axis`] either way — what was wrong was the rectangle
+    /// it was handed, which is why the fix is a named preset and not a corrected number at
+    /// one call site.
+    pub fn indicator_pane(rect: Rect) -> Self {
+        Self::with_margins(
+            rect,
+            Self::DEFAULT_LEFT_MARGIN,
+            Self::DEFAULT_RIGHT_MARGIN,
+            Self::DEFAULT_TOP_MARGIN,
+            Self::DEFAULT_TOP_MARGIN,
+        )
     }
 
     /// Splits `rect` with explicit margins.
@@ -344,4 +514,104 @@ impl PlotArea {
     pub fn label_x(&self) -> i32 {
         self.rect.x - 4
     }
+}
+
+/// The whole chrome of one financial pane: the surface it is painted on, the ink drawn on
+/// top of that surface, and the hairline its frame and gridlines are drawn in.
+///
+/// # Why this is a type and not three more `Color` parameters
+///
+/// The three colours are not independent: `ink` is only legible *against `surface`*, and
+/// `grid` is a blend of the two. Passing them as separate arguments is how a caller supplies
+/// an ink derived from the window behind the panel rather than from the panel itself — which
+/// is exactly the defect that made the K-line pane's price labels unreadable in earlier
+/// rounds, and the same one that made this crate's `chart` control paint the dark theme's
+/// ink onto a hardcoded white slab (2.52:1). One value carries all three, so they cannot be
+/// taken from different derivations.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PanelColors {
+    /// The colour the plot panel is filled with.
+    pub surface: Color,
+    /// The colour text is drawn in on `surface`, already pushed to legibility.
+    pub ink: Color,
+    /// The colour the frame and gridlines are drawn in: `ink` blended into `surface`.
+    pub grid: Color,
+}
+
+/// How far the ink used for axis text and labels is stepped toward legibility.
+///
+/// WCAG's AA threshold for normal text, so an axis label is not merely *present* on the
+/// panel but readable on it. Named rather than inlined because the empty-state message and
+/// the axis labels must be legible by the same standard — a chart whose labels pass and
+/// whose "No data" message does not is a chart that fails in the state a new user sees.
+pub const PANEL_MIN_CONTRAST: f32 = 4.5;
+
+/// Resolves the plot panel's chrome from the active theme.
+///
+/// # Resolution order
+///
+/// A control's own explicit (caller-authored) style wins, then the theme's resolved style
+/// for that control, then a value derived from the theme's palette, and only then a literal.
+/// The literal is never the sole answer: `Color::rgb(18, 22, 28)` standing alone is what
+/// made these panes theme-blind, so it is demoted to a last resort for a build with no theme
+/// registered at all.
+///
+/// `style` is the caller's override for this widget when the paint path has one — the four
+/// `draw` methods pass `Some(self.base.style())`. Callers that are reading a panel somebody
+/// else already resolved pass `None`.
+///
+/// # Why the widget name does not select the panel
+///
+/// `resolved_theme_style` classifies by *control kind*, and none of `candlestick_chart`,
+/// `volume_chart`, `depth_chart` or `indicator_chart` is in `WidgetRole::for_kind_name`'s
+/// table, so all four classify as [`WidgetRole::Surface`]
+/// (`src/theme/types.rs`) and the theme writes **the window fill itself** into
+/// `style.background_color`. Painting the panel in that colour would make a pane on a window
+/// byte-identical to the window behind it — geometrically correct, visually absent — so a
+/// resolved surface that *equals* the theme background is re-derived a visible step away from
+/// the ink, while a colour a caller set is honoured verbatim. This is the rule
+/// `OrderBookWidget` already applies; it lives here now so four panes cannot each get it
+/// slightly wrong.
+///
+/// The theme reads are separate manager lock acquisitions, taken and released inside
+/// `resolved_theme_style` and `theme_manager()`, so no guard is held across the caller's
+/// draw. Colour decisions go through [`Color::contrast_color`] and the derived ink via
+/// [`Color::legible_on`], the crate's single pair of contrast rules.
+pub fn panel_colors(style: Option<&WidgetStyle>) -> PanelColors {
+    let theme = crate::style::resolved_theme_style("chart");
+    // Read as its own lock acquisition and copied out as values, so the guard is dropped
+    // before anything else touches the theme. Only the theme's *background* is taken: it is
+    // needed to detect a surface the resolver has made identical to the window. The ink is
+    // derived from the surface itself below, so that a theme declaring a dark foreground for
+    // a light window still produces ink that reads on the panel it is actually painted on.
+    let window_fill = {
+        let manager = crate::style::theme_manager();
+        manager
+            .current_theme()
+            .map(|active| active.colors.background)
+            .unwrap_or(Color::rgb(240, 240, 240))
+    };
+
+    let resolved = style
+        .and_then(|s| s.background_color)
+        .or_else(|| theme.as_ref().and_then(|t| t.background_color));
+    let surface = match resolved {
+        Some(colour) if colour != window_fill => colour,
+        // Either nothing was resolved, or what was resolved is the window's own fill.
+        _ => {
+            let base = resolved.unwrap_or(window_fill);
+            base.blend(&base.contrast_color(), 0.08)
+        }
+    };
+
+    // Deriving the fallback ink from the *surface* is the point of the ordering: a theme
+    // that declares a dark foreground for a light window still gets ink that reads on the
+    // panel it is actually painted on.
+    let ink = style
+        .and_then(|s| s.text_color)
+        .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+        .unwrap_or_else(|| surface.contrast_color());
+    let ink = ink.legible_on(surface, PANEL_MIN_CONTRAST);
+
+    PanelColors { surface, ink, grid: surface.blend(&ink, 0.22) }
 }

@@ -60,6 +60,30 @@ impl QRCode {
         self.module_size
     }
 
+    /// Returns the size of the **quiet zone** — the light margin around the symbol — in
+    /// modules.
+    ///
+    /// The quiet zone is a first-class parameter of a QR symbol, not decoration: the
+    /// specification requires a margin of at least four modules for a decoder to locate the
+    /// finder patterns, and both `qrencode`'s `margin` and every other QR library expose it. This
+    /// control had the field and drew with it, but published no way to read or set it, so a
+    /// caller could not satisfy a scanner that needed a wider margin.
+    pub fn quiet_zone(&self) -> u32 {
+        self.quiet_zone
+    }
+
+    /// Sets the quiet-zone width in modules.
+    ///
+    /// Zero is accepted and means "no margin" — legitimate when the caller is composing the
+    /// symbol into a layout that supplies its own padding. The value is stored as given rather
+    /// than clamped to the specification's minimum four: this control draws a symbol, and
+    /// refusing a margin a caller explicitly asked for would be a different kind of wrong. The
+    /// default is two, unchanged, so existing renders are unaffected.
+    pub fn set_quiet_zone(&mut self, modules: u32) {
+        self.quiet_zone = modules;
+        self.base.request_redraw();
+    }
+
     /// Returns the rendered side length of the whole symbol in pixels,
     /// including the quiet zone on both edges.
     pub fn size(&self) -> u32 {
@@ -142,6 +166,7 @@ impl WidgetProperties for QRCode {
         match name {
             "data" => Ok(CapabilityValue::String(self.data().to_string())),
             "size" => Ok(CapabilityValue::UInt(self.size() as u64)),
+            "quiet_zone" => Ok(CapabilityValue::UInt(self.quiet_zone() as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -158,12 +183,16 @@ impl WidgetProperties for QRCode {
                 self.set_module_size(module);
                 Ok(())
             }
+            "quiet_zone" => {
+                self.set_quiet_zone(expect_usize(value)? as u32);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["data", "size", BASE_PROPERTY_NAMES]
+        property_names_of!["data", "size", "quiet_zone", BASE_PROPERTY_NAMES]
     }
 }
 
@@ -194,26 +223,29 @@ impl Draw for QRCode {
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))
             .unwrap_or(Color::BLACK);
 
-        // Center the QR code in the available geometry.
-        let offset_x = rect.x + (rect.width.saturating_sub(total_pixels) / 2) as i32;
-        let offset_y = rect.y + (rect.height.saturating_sub(total_pixels) / 2) as i32;
+        // Center the symbol in the available geometry, then **clamp the origin once** and use
+        // that single value for both the quiet-zone face and every module.
+        //
+        // The face was clamped (`offset_x.max(rect.x)`) while the module loop used the raw
+        // `offset_x`, so a symbol larger than its control painted its modules outside the light
+        // margin it had just drawn. The two must not be derived separately: the margin only
+        // reads as a margin if the modules sit inside the same rectangle.
+        let available_x = (rect.width.saturating_sub(total_pixels) / 2) as i32;
+        let available_y = (rect.height.saturating_sub(total_pixels) / 2) as i32;
+        let symbol_x = (rect.x + available_x).max(rect.x);
+        let symbol_y = (rect.y + available_y).max(rect.y);
+        let symbol_side = total_pixels.min(rect.width).min(rect.height);
 
-        // Draw the quiet-zone surface for the entire QR code area.
-        let bg_rect = Rect::new(
-            offset_x.max(rect.x),
-            offset_y.max(rect.y),
-            total_pixels.min(rect.width),
-            total_pixels.min(rect.height),
-        );
-        context.fill_rect(bg_rect, surface);
+        // Draw the quiet-zone surface for the entire symbol area.
+        context.fill_rect(Rect::new(symbol_x, symbol_y, symbol_side, symbol_side), surface);
 
         let matrix = self.generate_matrix();
 
         // Draw each module.
         for row in 0..MATRIX_SIZE {
             for col in 0..MATRIX_SIZE {
-                let x = offset_x + (self.quiet_zone + col) as i32 * module as i32;
-                let y = offset_y + (self.quiet_zone + row) as i32 * module as i32;
+                let x = symbol_x + (self.quiet_zone + col) as i32 * module as i32;
+                let y = symbol_y + (self.quiet_zone + row) as i32 * module as i32;
 
                 // Clamp to widget bounds.
                 if x + module as i32 <= rect.x

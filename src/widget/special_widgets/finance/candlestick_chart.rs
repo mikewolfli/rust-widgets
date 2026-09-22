@@ -42,7 +42,9 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::special_widgets::finance::indicators;
-use crate::widget::special_widgets::finance::layout::PlotArea;
+use crate::widget::special_widgets::finance::layout::{
+    panel_colors, PanelColors, PlotArea, PANEL_MIN_CONTRAST,
+};
 use crate::widget::special_widgets::finance::types::{Bar, PriceLevelKind, PriceLine, PriceSeries};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -250,7 +252,12 @@ impl CandlestickChart {
 
     /// The plot area for this control's current geometry.
     fn plot_area(&self) -> PlotArea {
-        PlotArea::of(self.base.geometry())
+        PlotArea::price_pane(self.base.geometry())
+    }
+
+    /// The pane's chrome, resolved from this control's own style first and the theme second.
+    fn chrome(&self) -> PanelColors {
+        panel_colors(Some(self.base.style()))
     }
 
     /// The colour of the rising-body series.
@@ -473,35 +480,73 @@ impl CandlestickChart {
         }
     }
 
-    /// Draws the price-axis labels on the left.
+    /// Draws the four price labels down the left edge.
     fn draw_price_labels(&self, context: &mut RenderContext, area: &PlotArea) {
-        let bar = match self.series.bars().first() {
-            Some(bar) => bar,
-            None => return,
-        };
-        // The fractional part follows the instrument's own precision, which the first
-        // bar's prices reveal: a 2-decimal instrument and a 4-decimal one both get
-        // sensible labels without a configuration knob.
+        // The fractional part follows the instrument's own precision, which the series' prices
+        // reveal: a 2-decimal instrument and a 4-decimal one both get sensible labels without
+        // a configuration knob.
         let decimals = self.inferred_decimals();
         let (low, high) = self.effective_price_extent();
         let price_axis = area.price_axis(low, high);
+        // The axis's own hairline is the pane's grid colour, so the scale a reader measures
+        // a candle against cannot be a fixed slate that only reads on a dark backdrop.
+        let grid = self.chrome().grid;
         // Four gridlines, at the ends and two inside.
         for step in 0..=3 {
             let fraction = step as f64 / 3.0;
             let price = price_axis.low + fraction * (price_axis.high - price_axis.low);
             let y = price_axis.y_for(price);
             let text = format_fixed(price, decimals);
+            context.draw_line(
+                crate::core::Point { x: area.rect.x, y },
+                crate::core::Point { x: area.right(), y },
+                grid,
+            );
             // Right-aligned against the plot edge so the digits line up in a column.
             let width = text.len() as i32 * 7;
             context.draw_text(
                 crate::core::Point { x: area.rect.x - 6 - width, y: y - 6 },
                 &text,
                 &Font::simple("Sans", 10.0),
-                Color::rgb(158, 158, 158),
+                self.chrome().ink.with_alpha(190),
                 HorizontalAlignment::Left,
             );
-            let _ = bar;
         }
+    }
+
+    /// Draws the pane's frame and a `No data` message, for a series with nothing in it.
+    ///
+    /// # Why an empty pane still draws chrome
+    ///
+    /// This control used to fill its rectangle with a slab and return, so a K-line pane with
+    /// no feed was a black rectangle: no axis, no gridline, and nothing that said *why* it
+    /// was empty. That state is not an edge case — it is what every chart shows before the
+    /// first tick arrives — and it is the state a reader is most likely to mistake for a
+    /// rendering failure. Drawing the frame the pane will use once data arrives is what makes
+    /// the two states read as the same control, and it is what every charting toolkit does:
+    /// the axes belong to the chart, not to a series.
+    fn draw_empty_state(&self, context: &mut RenderContext, area: &PlotArea) {
+        let chrome = self.chrome();
+        context.draw_rect(area.rect, chrome.grid);
+        // A single hairline at mid-height, where a flat series would plot, so the pane reads
+        // as "a scale with nothing on it" rather than "a filled rectangle".
+        let mid_y = area.rect.y + area.rect.height as i32 / 2;
+        context.draw_line(
+            crate::core::Point { x: area.rect.x, y: mid_y },
+            crate::core::Point { x: area.right(), y: mid_y },
+            chrome.grid,
+        );
+        let font = Font::simple("Sans", 12.0);
+        let line = context.text_line(area.rect, &font);
+        context.draw_text_fitted(
+            line,
+            "No data",
+            &font,
+            // Legibility is derived, not assumed: this is the same 4.5:1 floor the axis
+            // labels use, so the message cannot be invisible on the panel it sits on.
+            chrome.ink.legible_on(chrome.surface, PANEL_MIN_CONTRAST).with_alpha(160),
+            HorizontalAlignment::Center,
+        );
     }
 
     /// How many decimals the series' prices appear to use.
@@ -743,8 +788,18 @@ impl Draw for CandlestickChart {
         if area.rect.width == 0 || area.rect.height == 0 {
             return;
         }
-        // A frame so the pane reads as one region even when it is empty.
-        context.fill_rect(area.rect, Color::rgb(18, 22, 28));
+        // The pane surface resolves the caller's style first and the theme second, so it is
+        // no longer one literal shared by both appearances. The reds and greens below are the
+        // price direction and stay exactly as they are: they are data, not chrome.
+        let chrome = self.chrome();
+        context.fill_rect(area.rect, chrome.surface);
+
+        // An empty series gets the frame and a message rather than a bare slab.
+        if self.series.bars().is_empty() {
+            self.draw_empty_state(context, &area);
+            return;
+        }
+
         self.draw_price_labels(context, &area);
         self.draw_candles(context, &area);
         self.draw_overlays(context, &area);

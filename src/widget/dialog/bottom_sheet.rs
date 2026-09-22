@@ -209,8 +209,41 @@ impl Draw for BottomSheet {
         // painted nothing at all and the census reported `ink = 0`; the scrim is drawn at
         // partial opacity in both states, which reads as a dimmed backdrop in either
         // appearance and still leaves the sheet itself the opaque element when open.
+        //
+        // The scrim darkens the *backdrop it covers* toward an absolute black. Blending
+        // toward black is what every platform's modal scrim does (Material's
+        // `Colors.black54`, UIKit, Qt and SwiftUI all dim toward black); none blends toward
+        // the foreground colour.
+        //
+        // The old `ink.blend(&sheet_color, 0.55)` blended toward the *foreground*, so on the
+        // dark appearance it brightened the backdrop instead of dimming it — the SVG showed
+        // `rgba(121,121,121)` over an `rgba(18,18,18)` frame, so the modal backplate was lit
+        // up while the sheet it was meant to sit behind ended up darker than its own scrim.
+        //
+        // # Why the old value looked plausible
+        //
+        // With the two presets this ships with, the old expression happened to produce 120 on
+        // the dark appearance and 122 on the light one — nearly identical values in both. That
+        // is not agreement but coincidence: `ink` and `sheet_color` *swap roles* between the
+        // presets (dark ink is the light preset's surface and vice versa), so the same weights
+        // land on nearly the same bytes from opposite directions. A quantity that only
+        // coincides because the two inputs are mirror images of each other is derived from
+        // nothing — which is exactly why it could invert the scrim's direction on one
+        // appearance without the number changing.
+        //
+        // # Why the source is the window fill and not the sheet colour
+        //
+        // The scrim covers the *window*, so the colour it must darken is the window fill.
+        // Deriving it from the panel's own colour instead leaves it lighter than the frame
+        // wherever the panel itself is lighter than the window — which is the dark preset,
+        // where the panel is `rgb(35,35,35)` over a `rgb(18,18,18)` window and a scrim of
+        // `rgb(24,24,24)` would still read as a lift rather than a dimming.
         let overlay_height = rect.height - sheet_height;
-        let scrim_color = ink.blend(&sheet_color, 0.55);
+        const SCRIM_DARKEN: f32 = 0.32;
+        // Drawn as an explicit darkened fill rather than as a translucent overlay, which
+        // is how this control already painted it; `blend` carries the window fill's own
+        // alpha through, so the scrim stays as opaque as the surface it stands in for.
+        let scrim_color = window_fill.blend(&Color::BLACK, SCRIM_DARKEN);
         if overlay_height > 0 {
             let overlay_rect = Rect::new(rect.x, rect.y, rect.width, overlay_height);
             context.fill_rect(overlay_rect, scrim_color);

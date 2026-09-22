@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Chart widget.
-use crate::core::{HorizontalAlignment, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -393,6 +393,7 @@ impl Draw for ChartWidget {
         // and its chrome now come from one derivation, so they cannot disagree.
         let style = self.base.style().clone();
         let (surface, ink) = Self::panel_colors_with(Some(&style));
+        let plot = PlotArea::of(rect);
         let border = style
             .border_color
             .or_else(|| crate::style::resolved_theme_style("chart").and_then(|t| t.border_color))
@@ -403,16 +404,22 @@ impl Draw for ChartWidget {
         context.draw_rect(rect, border);
 
         if self.series.is_empty() {
-            // No data — draw placeholder text, in whatever reads on this panel.
-            let text_origin =
-                crate::core::Point { x: rect.x + 4, y: rect.y + rect.height as i32 / 2 };
+            // Empty state: axis chrome plus a message, centred on the panel.
+            //
+            // The control used to paint only its own rectangle and return, leaving a bare
+            // slab — no axes, no gridline, nothing that says "this is a chart with no data"
+            // rather than "this is a rectangle". Drawing the frame it will use once data
+            // arrives is what makes the two states read as the same control, and it is what
+            // every charting toolkit does: the axes belong to the chart, not to a series.
+            self.draw_value_axis(context, &plot, ink, surface);
             let font = Font::simple("Sans", 12.0);
-            context.draw_text(
-                text_origin,
+            let line = context.text_line(rect, &font);
+            context.draw_text_fitted(
+                line,
                 "No data",
                 &font,
                 ink.legible_on(surface, 4.5).with_alpha(160),
-                HorizontalAlignment::Left,
+                HorizontalAlignment::Center,
             );
             return;
         }
@@ -422,6 +429,7 @@ impl Draw for ChartWidget {
             // drawn beside the first rather than being ignored. The single-series
             // callers pass `0` and stop.
             ChartType::Bar => {
+                self.draw_value_axis(context, &plot, ink, surface);
                 for index in 0..self.series.len() {
                     self.draw_bar_chart(context, rect, index);
                 }
@@ -464,6 +472,10 @@ struct PlotArea {
     baseline_y: i32,
     /// Top edge, where value `max` is drawn.
     top_y: i32,
+    /// Left edge of the control. The strip between this and [`Self::left`] is the value-axis
+    /// label column, and naming it here is what lets the axis draw its labels without
+    /// re-deriving the control's rectangle — the two would otherwise be free to disagree.
+    outer_left: i32,
 }
 
 /// Distance from the plot baseline down to the top of the axis label row.
@@ -471,6 +483,15 @@ const LABEL_ROW_TOP: i32 = 12;
 /// Line-box height of an axis label, in pixels. The label font is 10 pt, and the renderer's
 /// line box is one em, so the two agree by construction.
 const LABEL_ROW_HEIGHT: i32 = 10;
+
+/// Width of the value-axis label column, in pixels.
+///
+/// Wide enough for a four-character label at the axis font plus the tick gap: `1000`,
+/// `-250`, `0.75` all fit. It is a **reservation**, not a measurement, because the column has
+/// to be the same width for every tick — a column sized to the widest tick would shift the
+/// whole plot area every time the data range crossed a digit boundary, which reads as the
+/// chart jumping when a value updates.
+const AXIS_LABEL_COLUMN: i32 = 34;
 
 impl PlotArea {
     /// Derives the plot area from the control's rectangle.
@@ -481,11 +502,20 @@ impl PlotArea {
         // exactly on the control's last pixel and any extra (a taller font, a scaled DPI)
         // pushed it past. `12 + 10` states the reservation in the same units the label uses.
         const BOTTOM_MARGIN: i32 = LABEL_ROW_TOP + LABEL_ROW_HEIGHT;
-        let left = rect.x.saturating_add(PADDING);
+        // The left margin is the value-axis label column, not just the panel padding: the axis
+        // draws its tick values in this strip, so the plot region has to start after them. It
+        // was `PADDING` alone, which left no room for a label and is why the axis could not be
+        // drawn at all before it was widened.
+        let left = rect.x.saturating_add(AXIS_LABEL_COLUMN);
         let right = rect.x.saturating_add(rect.width as i32).saturating_sub(PADDING);
         let baseline_y = rect.y.saturating_add(rect.height as i32).saturating_sub(BOTTOM_MARGIN);
         let top_y = rect.y.saturating_add(PADDING);
-        Self { left, right, baseline_y, top_y }
+        Self { left, right, baseline_y, top_y, outer_left: rect.x }
+    }
+
+    /// Left edge of the strip the value-axis labels are drawn in.
+    fn axis_margin_left(&self) -> i32 {
+        self.outer_left + 2
     }
 
     /// The height available to a mark, never zero (a zero height draws nothing and
@@ -515,6 +545,24 @@ impl PlotArea {
         }
         let span = (self.right - self.left).saturating_sub(inset * 2).max(1);
         self.left + inset + (index as i32 * span) / (count as i32 - 1).max(1)
+    }
+}
+
+/// Formats one value-axis tick label.
+///
+/// Rounding is deliberate rather than `{:?}`-style: a tick is a *reading*, and the extra
+/// precision of the underlying `f64` is noise on a 10 px label (`0.30000000000000004`).
+/// Integers print without a decimal point, which is the common case for this control's data,
+/// and fractional ticks keep one decimal — enough to tell two adjacent ticks apart, and short
+/// enough to fit [`AXIS_LABEL_COLUMN`].
+fn format_axis_value(value: f64) -> String {
+    if !value.is_finite() {
+        return "—".to_string();
+    }
+    if (value - value.round()).abs() < 1e-9 {
+        format!("{}", value.round() as i64)
+    } else {
+        format!("{value:.1}")
     }
 }
 
@@ -628,6 +676,65 @@ impl ChartWidget {
             (0.0, if max > 0.0 { max } else { 1.0 })
         } else {
             (min, max)
+        }
+    }
+
+    /// Draws the **value axis**: a tick column down the left of the plot area with four
+    /// rounded value labels, plus the gridlines they belong to.
+    ///
+    /// # Why this exists
+    ///
+    /// This control published a `y_axis_label` property and its module documentation described
+    /// a y axis, but `draw` had no left margin and no value labels at all: the highest bar
+    /// simply reached `rect.y + PADDING`, with nothing on screen saying what value that was.
+    /// A chart with no measurable scale is a picture, not a chart — every other toolkit (Qt
+    /// `QValueAxis`, `fl_chart`'s `leftTitles`, SwiftUI's default `AxisMarks`) draws one by
+    /// default. The axis is chrome, so it reads the same `ink`/`surface` pair the panel and the
+    /// category labels use and cannot disagree with them about the appearance.
+    ///
+    /// # Tick values
+    ///
+    /// Four evenly spaced steps include both extremes, so the top label is exactly the value
+    /// the tallest mark reaches and the bottom one is the axis minimum. They come from the same
+    /// [`Self::plot_range`] the marks are mapped through, which is what keeps a label and the
+    /// bar it labels on the same scale.
+    fn draw_value_axis(
+        &self,
+        context: &mut RenderContext,
+        area: &PlotArea,
+        ink: Color,
+        surface: Color,
+    ) {
+        const TICKS: i32 = 4;
+        let (min, max) = self.plot_range();
+        let axis_ink = ink.legible_on(surface, 4.5).with_alpha(190);
+        let grid_ink = surface.blend(&axis_ink, 0.18);
+        let font = Font::simple("Sans", 10.0);
+
+        for step in 0..TICKS {
+            let fraction = step as f64 / (TICKS - 1) as f64;
+            let value = min + (max - min) * fraction;
+            let y = area.y_for(value, min, max);
+            // The axis line and its ticks are one hairline; the gridline runs from the axis to
+            // the right edge of the plot so a bar can be read against it.
+            context.draw_line(Point::new(area.left, y), Point::new(area.right, y), grid_ink);
+            // The label sits in the margin the plot area reserved, vertically centred on its
+            // tick. `text_line` is given a one-line-tall band around the tick's own row so a
+            // tick at the top or bottom of the axis keeps its label inside the panel.
+            let band = Rect {
+                x: area.axis_margin_left(),
+                y: y - LABEL_ROW_HEIGHT / 2,
+                width: (area.left - area.axis_margin_left()).max(0) as u32,
+                height: LABEL_ROW_HEIGHT as u32,
+            };
+            let line = context.text_line(band, &font);
+            context.draw_text_fitted(
+                line,
+                &format_axis_value(value),
+                &font,
+                axis_ink,
+                HorizontalAlignment::Right,
+            );
         }
     }
 

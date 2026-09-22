@@ -6,7 +6,7 @@ use crate::core::{Color, Font};
 #[cfg(not(alloc_frugal))]
 use serde::{Deserialize, Serialize};
 
-use crate::style::Shadow;
+use crate::style::{EasingFunction, Shadow};
 
 /// High-level theme definition used by runtime style resolution.
 #[cfg_attr(not(alloc_frugal), derive(Serialize, Deserialize))]
@@ -37,6 +37,52 @@ pub struct Theme {
     pub borders: Borders,
     /// Class-level style overrides applied after base resolution.
     pub overrides: ThemeOverrides,
+    /// Animation timing tokens.
+    ///
+    /// # Why motion is themed at all
+    ///
+    /// Durations are a design decision, not a constant: a platform that respects a user's
+    /// reduced-motion preference shortens them, a game-like skin lengthens them, and a test harness
+    /// sets them to zero to make an animated control reach its end state deterministically. Before
+    /// this, `src/style/animation.rs` carried a complete engine whose durations could only be passed
+    /// in per call site, so "how fast does this library feel" was not something a theme could state.
+    ///
+    /// The defaults are the Material values Flutter uses (`kThemeChangeDuration` 200 ms,
+    /// `kRadialReactionDuration` 100 ms, the switch's 300 ms toggle), so an unstyled theme moves at
+    /// the tempo a Material application is expected to.
+    #[cfg_attr(not(alloc_frugal), serde(default))]
+    pub motion: Motion,
+}
+
+/// How long an interaction takes, and how it eases.
+///
+/// Values are milliseconds, matching [`AnimationConfig::duration`](crate::style::AnimationConfig).
+/// Grouped by *role* rather than by control so a theme describes its rhythm once: a hover reaction
+/// and a press ripple are both `fast`, and a control's own state transition is `normal` regardless
+/// of which control it is.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(not(alloc_frugal), serde(default))]
+pub struct Motion {
+    /// A direct reaction to the pointer — a highlight, a ripple. Material's
+    /// `kRadialReactionDuration` is 100 ms.
+    pub fast: u32,
+    /// A control's own state change — a toggle moving, a colour settling. Material's
+    /// `kThemeChangeDuration` is 200 ms.
+    pub normal: u32,
+    /// A larger transition — a sheet opening, a panel expanding. Material's switch toggle is
+    /// 300 ms, which is the longest any control interaction should take before it reads as slow.
+    pub slow: u32,
+    /// The easing applied to a state transition.
+    ///
+    /// `EaseOut` by default: an interaction should start immediately and settle, because a slow
+    /// start reads as a missed input. This is the shape Material's standard curve has.
+    pub easing: EasingFunction,
+}
+
+impl Default for Motion {
+    fn default() -> Self {
+        Self { fast: 100, normal: 200, slow: 300, easing: EasingFunction::EaseOut }
+    }
 }
 
 /// Which appearance a theme provides.
@@ -150,6 +196,15 @@ impl WidgetRole {
             // cursor in" versus "this rectangle is bare surface", and only `Input` carries it.
             "listbox" | "listview" | "tableview" | "treeview" | "scrollarea" | "textbrowser"
             | "plaintextedit" => Self::Input,
+            // A scrollbar's trough is a control surface with a movable thumb in it, so it
+            // belongs with the fields above rather than with bare surface.
+            //
+            // It used to reach the `_` arm and resolve to `theme.colors.background` — the window
+            // fill. That mattered twice over, because this control read the *same* field for its
+            // thumb and its trough: with both resolving to the window colour, the thumb was
+            // separated from its groove by nothing at all, and `scroll_bar.svg` carried two
+            // byte-identical `rgba(18,18,18)` rectangles where a scrollbar should be.
+            "scrollbar" | "scroll_bar" => Self::Input,
             // Destructive or error presentation.
             "errordialog" | "trash" | "deletebutton" => Self::Danger,
             _ => Self::Surface,

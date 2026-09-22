@@ -398,6 +398,12 @@ impl Draw for MaskedEdit {
         // states were fixed light greys and the box stayed light in a dark theme. The state
         // ladder is preserved but *derived*: focused is the resolved colour brightened toward
         // white, disabled is faded, so the states stay distinguishable and follow the theme.
+        //
+        // This covers the field's **fill and border only**. The five pieces of *ink* below —
+        // body text, mask literals, placeholders, the caret and the glyph drawn on the caret —
+        // were still fixed literals until they were derived from the same resolved pair, so a
+        // themed field carried unthemed text: `rgb(33,33,33)` on the dark theme's `rgb(69,69,69)`
+        // field is ~1.35:1, which is present in the SVG and unreadable to a person.
         let style = self.style().clone();
         let themed = crate::style::resolved_theme_style("masked_edit");
         let themed_bg = themed.as_ref().and_then(|resolved| resolved.background_color);
@@ -424,6 +430,45 @@ impl Draw for MaskedEdit {
         };
         context.draw_rounded_rect_stroke(geom, 4, border_color, if self.focused { 2 } else { 1 });
 
+        // ── Ink ──
+        //
+        // Every piece of text ink below resolves `style.text_color` (the theme writes the
+        // resolved text colour for an `Input`-role control) and then pushes that ink away from
+        // the field's own fill until it is legible on it. `style.text_color` is the right source
+        // because the field's interior is what the text sits on — that is exactly Qt's
+        // `QPalette::Text` over `QPalette::Base` relationship — and `legible_on` is what makes
+        // the result a property of the resolved pair rather than of a guessed lightness. Three
+        // states are then derived from that one ink: enabled is the ink itself, disabled is
+        // faded toward the fill, and a *placeholder* is a placeholder rather than a value, so it
+        // is a further step toward the fill. The caret is the control's *emphasis* colour, so it
+        // reads the theme's primary token rather than the text ink, and the glyph drawn inside
+        // it is that colour's contrast partner.
+        //
+        // WCAG AA for normal text. Mask literals and placeholders are deliberately below it —
+        // they are not values the user is reading — but not *arbitrarily* below: both are a fixed
+        // fraction of the distance to the fill, so on any appearance they stay visibly weaker
+        // than the entered text without ever collapsing into it.
+        const INK_MIN_RATIO: f32 = 4.5;
+        let ink = style
+            .text_color
+            .or_else(|| themed.as_ref().and_then(|resolved| resolved.text_color))
+            .unwrap_or_else(|| bg_color.contrast_color())
+            .legible_on(bg_color, INK_MIN_RATIO);
+        let disabled_ink = ink.blend(&bg_color, 0.45);
+        let mask_ink = ink.blend(&bg_color, 0.55);
+        let placeholder_ink = ink.blend(&bg_color, 0.70);
+        // The caret is chrome in the semantic sense — it is the control saying "the cursor is
+        // here" — so it takes the accent the theme assigns emphasis (`primary`) rather than the
+        // text ink, and pushes it clear of the field. The glyph inside it is read off the caret
+        // itself, so a light caret cannot carry a light glyph.
+        let caret_color = crate::style::semantic_color(crate::style::SemanticColor::Info)
+            .or_else(|| {
+                crate::style::resolved_theme_style("button").and_then(|b| b.background_color)
+            })
+            .unwrap_or_else(|| bg_color.contrast_color())
+            .legible_on(bg_color, INK_MIN_RATIO);
+        let caret_ink = caret_color.contrast_color();
+
         // ── Draw display text with mask placeholders ──
         //
         // Each character is positioned by advancing a fixed `char_width` rather than by the
@@ -448,8 +493,7 @@ impl Draw for MaskedEdit {
         let inner_height = (geom.height as i32 - padding).max(0) as u32;
 
         if self.mask.is_empty() {
-            let text_color =
-                if !is_enabled { Color::rgba(150, 150, 150, 200) } else { Color::rgb(33, 33, 33) };
+            let text_color = if !is_enabled { disabled_ink } else { ink };
             // An unmasked field needs a string, so the census hands this one "Sample" — but so
             // does a real caller entering past the field's width, and the text was drawn at the
             // call site with no bound at all. Unlike the masked branch below, which walks one
@@ -495,12 +539,11 @@ impl Draw for MaskedEdit {
             if remaining_w > 0 {
                 match seg {
                     MaskSegment::Literal { ch } => {
-                        let lit_color = Color::rgba(160, 160, 160, 200);
                         context.draw_text(
                             Point::new(draw_x, inner_top),
                             &ch.to_string(),
                             &font,
-                            lit_color,
+                            mask_ink,
                             HorizontalAlignment::Left,
                         );
                         display_x += char_width as i32;
@@ -514,11 +557,11 @@ impl Draw for MaskedEdit {
                         };
 
                         let char_color = if !is_enabled {
-                            Color::rgba(150, 150, 150, 200)
+                            disabled_ink
                         } else if has_input {
-                            Color::rgb(33, 33, 33)
+                            ink
                         } else {
-                            Color::rgba(180, 180, 180, 200)
+                            placeholder_ink
                         };
 
                         // Draw cursor if at this segment position
@@ -530,13 +573,13 @@ impl Draw for MaskedEdit {
                                     (char_width as i32).min(remaining_w) as u32,
                                     geom.height.saturating_sub(4),
                                 ),
-                                Color::rgb(25, 118, 210),
+                                caret_color,
                             );
                             context.draw_text(
                                 Point::new(draw_x, inner_top),
                                 &ch.to_string(),
                                 &font,
-                                Color::WHITE,
+                                caret_ink,
                                 HorizontalAlignment::Left,
                             );
                         } else {
@@ -853,5 +896,133 @@ mod tests {
         let svg = render_to_svg(&mut me);
         assert!(svg.starts_with("<svg"), "SVG should start with <svg, got: {svg:.60}");
         assert!(svg.ends_with("</svg>"), "SVG should end with </svg>");
+    }
+
+    /// The five chrome colours were fixed literals, so a themed field carried unthemed text:
+    /// `rgb(33,33,33)` on the dark theme's `rgb(69,69,69)` field is ~1.35:1.
+    ///
+    /// The expectation is read off the rendered drawing rather than a copied-out colour: the body
+    /// ink must move with the appearance, and it must actually be legible on the field the control
+    /// painted behind it. Legibility is asserted with the crate's own `contrast_ratio`, so the
+    /// test states the property the fix is for rather than the numbers it happened to produce.
+    ///
+    /// # Why the guard is held for the whole body, and the theme restored at the end
+    ///
+    /// The theme is process-wide and the guard is what serialises tests that switch it. A test
+    /// that takes it once per render releases it between the two appearances, and another test
+    /// running at that moment then switches the active theme underneath this one — the "dark" SVG
+    /// comes back drawn in the light palette and the comparison below is meaningless. Holding it
+    /// once around the whole body is what makes both renders observe the appearances they asked
+    /// for.
+    ///
+    /// This test leaves the process on the **dark** theme, and it restores the light default
+    /// before releasing the guard rather than leaving the choice to whichever test runs next: a
+    /// theme left behind by a new test is exactly how an unrelated control's rendering assertion
+    /// starts failing for a reason that has nothing to do with it.
+    #[test]
+    fn masked_edit_body_ink_is_legible_on_its_own_field() {
+        let _guard = crate::theme::theme_test_guard();
+        // Whatever this test does, the process goes back to the light default on the way out.
+        struct RestoreOnDrop;
+        impl Drop for RestoreOnDrop {
+            fn drop(&mut self) {
+                crate::theme::global_theme_manager()
+                    .set_appearance(crate::theme::AppearanceMode::Light);
+            }
+        }
+        let _restore = RestoreOnDrop;
+
+        fn render(appearance: crate::theme::AppearanceMode, text: &str) -> String {
+            crate::theme::global_theme_manager().set_appearance(appearance);
+            let mut me = MaskedEdit::new(Rect::new(0, 0, 240, 120));
+            me.set_text(text);
+            render_to_svg(&mut me)
+        }
+
+        fn fills(svg: &str) -> Vec<String> {
+            svg.lines()
+                .filter_map(|l| {
+                    l.split("fill=\"")
+                        .nth(1)
+                        .and_then(|rest| rest.split('"').next())
+                        .map(|s| s.to_string())
+                })
+                .collect()
+        }
+
+        /// Parses the `rgba(r,g,b,a)` spelling the SVG backend emits.
+        fn parse_rgba(value: &str) -> Option<Color> {
+            let inner = value.strip_prefix("rgba(")?.strip_suffix(')')?;
+            let parts: Vec<&str> = inner.split(',').collect();
+            if parts.len() < 3 {
+                return None;
+            }
+            let channel = |s: &str| s.trim().parse::<f32>().ok().map(|v| v.round() as u8);
+            Some(Color::rgba(
+                channel(parts[0])?,
+                channel(parts[1])?,
+                channel(parts[2])?,
+                parts
+                    .get(3)
+                    .and_then(|a| a.trim().parse::<f32>().ok())
+                    .map_or(255, |a| (a * 255.0).round() as u8),
+            ))
+        }
+
+        let dark = render(crate::theme::AppearanceMode::Dark, "Sample");
+        let light = render(crate::theme::AppearanceMode::Light, "Sample");
+        assert_ne!(dark, light, "the field's ink must respond to the appearance");
+
+        // The text element's fill is the ink; the second `<rect>` fill is the field.
+        let ink = |svg: &str| -> Color {
+            svg.lines()
+                .find(|l| l.contains("<text") && l.contains("fill="))
+                .and_then(|l| l.split("fill=\"").nth(1))
+                .and_then(|rest| rest.split('"').next())
+                .and_then(parse_rgba)
+                .expect("the body text must be drawn with a parseable fill")
+        };
+        let field = |svg: &str| -> Color {
+            fills(svg)
+                .iter()
+                .skip(1)
+                .find_map(|f| parse_rgba(f))
+                .expect("the field background must be a parseable fill")
+        };
+
+        for (svg, name) in [(&dark, "dark"), (&light, "light")] {
+            let ratio = ink(svg).contrast_ratio(field(svg));
+            assert!(
+                ratio >= 4.5,
+                "{name}: body ink {:?} on field {:?} is only {ratio:.2}:1",
+                ink(svg),
+                field(svg)
+            );
+        }
+
+        // A placeholder is deliberately weaker than an entered value, but never invisible.
+        let with_mask = {
+            crate::theme::global_theme_manager().set_appearance(crate::theme::AppearanceMode::Dark);
+            let mut me = MaskedEdit::new(Rect::new(0, 0, 240, 120));
+            me.set_mask("000-0000");
+            render_to_svg(&mut me)
+        };
+        // A placeholder must still be distinguishable from the field it sits on.
+        let placeholders: Vec<Color> = with_mask
+            .lines()
+            .filter(|l| l.contains("<text"))
+            .filter_map(|l| l.split("fill=\"").nth(1))
+            .filter_map(|rest| rest.split('"').next())
+            .filter_map(parse_rgba)
+            .collect();
+        assert!(!placeholders.is_empty(), "a masked field must render its mask characters");
+        for colour in placeholders {
+            let field_colour =
+                fills(&with_mask).iter().skip(1).find_map(|f| parse_rgba(f)).expect("field fill");
+            assert!(
+                colour.contrast_ratio(field_colour) >= 1.5,
+                "a mask character at {colour:?} is indistinguishable from its field"
+            );
+        }
     }
 }
