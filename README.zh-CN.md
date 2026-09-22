@@ -130,7 +130,7 @@ Arc、Spinner、Roller、Dropdown、TextArea、Keyboard、Switch。
 （`docs/plans/platform_capability_matrix.md`）由源码机械派生，并在 CI 中设有防脱节门禁。
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.5.2-blue)]()
+[![version](https://img.shields.io/badge/version-2.5.3-blue)]()
 [![tests](https://img.shields.io/badge/tests-5500%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
@@ -151,7 +151,27 @@ Arc、Spinner、Roller、Dropdown、TextArea、Keyboard、Switch。
 以及 `--features "windows desktop-runtime controls-native controls-custom"`（上一个版本上有 78 个编译错误）。
 五个档位均 0 error、0 warning，`clippy -D warnings` 干净。
 
-**2.5.2（当前版本）实测：第五条渲染判据。** 上面四条都是读**栅格**，而栅格**有边界**——
+**2.5.3（当前版本）实测：两个文本后端终于一致了。** 软件光栅化器把 `DrawText` 的 origin 当作字形框的**上边缘**；
+而 SVG 后端把同一个值直接写进了 SVG 的 `y`——在那里 `y` 是**基线**。于是按「上边缘」契约居中的标题
+在屏幕上位置正确、在所有快照里却高了半行：**本该用来复核的产物，显示的是光栅器从来没画过的样子**，
+而且 `P5` 读的是同一个错误模型，所以它也看不见。受影响 7 个控件，**376 个快照中有 220 个变了**。
+
+修法是一个属性（`dominant-baseline="text-before-edge"`）——这正是它能只改一处的原因：
+约 40 个本来就按「上边缘」契约做过偏移的调用点全部保持正确。
+
+同一轮还关掉两类问题。**图表坐标轴 chrome**：`bar_chart` 即使开了 `chart` feature 也自己画轴，
+它的标签仍是浅色图表的 `DARK_GRAY`（**1.81:1**）；同一个字面量还活在两个 `not(feature = "chart")` 回退路径里，
+所以 tablet/mobile 上画出来的是看不见的图表。**语义色**：`calendar` 的周末红（**1.64:1**）与
+今日高亮（**1.30:1**）现在读 `theme.colors.*`；`terminal_view` 不再在亮色主题上画一块深色板——
+它的 **1.13:1** 错的是**承载面**，不是文字色。
+
+一次对照 Qt/Flutter/SwiftUI 的容器审计还发现三个「画了等于没画」的分组控件：
+`splitter` 完全没有分隔条（被 `pane_count() > 1` 挡住，而 `Splitter::new` 建的是 0 个 pane）、
+`tool_box` 用窗口底色填充内容区（与背景逐字节相同）、`image_gallery` 的空态是主题盲的 **2.02:1**。
+声明式层也补上了它的**完整性条件**——`child_if`、`child_if_else`、`children_if`、`children_keyed`——
+因为 `Node` 之前能表达「列表」却不能表达「条件」。
+
+**2.5.2 实测：第五条渲染判据。** 上面四条都是读**栅格**，而栅格**有边界**——
 一个「画到自己矩形之外」的控件会得到一个**看起来完全正常**的普查结果：越界像素被裁掉，框内像素照常计数。
 而 SVG 快照带**绝对坐标、无边界**，同一个缺陷在那里就是**画出了画面**。
 **两个后端对「墨在哪里」给出不同答案，这本身就是缺陷。**

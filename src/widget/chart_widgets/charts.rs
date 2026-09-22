@@ -97,7 +97,7 @@ impl CartesianLayout {
 /// (labels strongest, gridlines faintest) is preserved on either surface. Only the *chrome* is
 /// derived — a series colour is still whatever the caller supplied, because it identifies data
 /// rather than framing it (rule #108, class ③).
-fn axis_chrome() -> (Color, Color, Color) {
+pub(crate) fn axis_chrome() -> (Color, Color, Color) {
     // The plot sits on the chart's own surface; fall back to a light one when no theme is
     // active, which is where the previous literals came from.
     let surface = crate::style::theme_manager()
@@ -109,6 +109,26 @@ fn axis_chrome() -> (Color, Color, Color) {
         .map(|active| active.colors.foreground)
         .unwrap_or(Color { r: 0, g: 0, b: 0, a: 255 });
     (surface.blend(&ink, 0.45), surface.blend(&ink, 0.70), surface.blend(&ink, 0.16))
+}
+
+/// A single chrome colour stepped along the surface-to-ink axis, for callers that need
+/// one of the three rather than all of them (a label, a border).
+///
+/// `axis_chrome` returns the trio a cartesian plot needs. A widget that only paints one
+/// kind of chrome — `bar_chart`'s value labels, `pie_chart`'s outline — used to re-derive
+/// the same blend locally, which is how the literal it replaced kept coming back in one
+/// file at a time. This is the same derivation, named once (rule #51: a shared abstraction
+/// earns its place by removing a real duplication, and this one removes four).
+pub(crate) fn axis_chrome_color(strength: f32) -> Color {
+    let surface = crate::style::theme_manager()
+        .current_theme()
+        .map(|active| active.colors.background)
+        .unwrap_or(Color { r: 255, g: 255, b: 255, a: 255 });
+    let ink = crate::style::theme_manager()
+        .current_theme()
+        .map(|active| active.colors.foreground)
+        .unwrap_or(Color { r: 0, g: 0, b: 0, a: 255 });
+    surface.blend(&ink, strength)
 }
 
 /// Computes the plot and legend placement for a chart occupying `rect`.

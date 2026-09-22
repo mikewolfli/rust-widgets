@@ -5,8 +5,8 @@
   <rect x="0" y="0" width="50" height="24" fill="rgba(221,221,221,1.00)" />
   <rect x="0" y="0" width="50" height="24" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
   <rect x="0" y="23" width="50" height="2" fill="rgba(221,221,221,1.00)" />
-  <text x="6" y="5" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">Tab 1</text>
+  <text x="6" y="5" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">Tab 1</text>
   <rect x="52" y="0" width="50" height="24" fill="rgba(208,208,208,1.00)" />
   <rect x="52" y="0" width="50" height="24" fill="none" stroke="rgba(183,183,183,1.00)" stroke-width="1" />
-  <text x="58" y="5" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">Tab 2</text>
+  <text x="58" y="5" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">Tab 2</text>
 </svg>

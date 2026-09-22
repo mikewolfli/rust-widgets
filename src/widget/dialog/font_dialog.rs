@@ -273,22 +273,32 @@ impl Draw for FontDialog {
         // the last column's label leave the frame.
         let btn_h = 28i32;
         let button_top = (rect.y + rect.height as i32 - btn_h - 12).max(rect.y);
-        let col_area = (button_top - 46 - (rect.y + 38)).max(0) as u32;
         let col_w = (rect.width / 3).saturating_sub(6);
-        let list_y = rect.y + 38;
+        // The header strip is sized from the font's own line box first, then the columns
+        // start below it. Deriving `list_y` from the strip (instead of the strip from
+        // `list_y`) is what removes the collision at the source: the old form hardcoded
+        // `list_y = rect.y + 38` and then placed the header 10 px above it, which is
+        // `rect.y + 28` — exactly the title bar's bottom edge, and one pixel short of the
+        // 14 px line box the default font needs. The label was therefore drawn touching the
+        // accent bar and hanging out of its own 12 px strip.
+        //
+        // A column header in Qt (`QHeaderView`), Flutter (`DataTable`) and SwiftUI
+        // (`TableColumn`) sits wholly inside its own header row, and the row is at least as
+        // tall as the text it holds. Sizing from `measure_text` is what makes those two
+        // agree by construction rather than by a tuned pair of literals.
+        let header_metrics = context.measure_text("M", &Font::default());
+        let header_h = header_metrics.height.max(1);
+        let list_y = rect.y + TITLE_BAR_HEIGHT as i32 + 2 + header_h as i32 + 2;
+        let col_area = (button_top - 46 - list_y).max(0) as u32;
         let list_h = col_area.saturating_sub(28);
-        // Header labels live in a 12 px strip above the columns. That strip is narrower
-        // than a 14 px font's line box on purpose: the label's top edge is flush with the
-        // column's own top edge, and `draw_text_fitted` clamps to the box's left/right
-        // edges, which is the dimension that overflowed.
-        let header_h = 12u32;
+        let header_top = list_y - 2 - header_h as i32;
         // Family, Style, Size columns
         let col_labels =
             [tr!("dialog.font.font_family"), tr!("dialog.font.style"), tr!("dialog.font.size")];
         for (i, label) in col_labels.iter().enumerate() {
             let col_x = rect.x as f32 + 4.0 + i as f32 * (col_w as f32 + 4.0);
             context.draw_text_fitted(
-                Rect::new(col_x as i32, list_y - 10, col_w, header_h),
+                Rect::new(col_x as i32, header_top, col_w, header_h),
                 label.as_str(),
                 &Font::default(),
                 ink,

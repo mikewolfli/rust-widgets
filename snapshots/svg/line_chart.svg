@@ -6,29 +6,29 @@
   <line x1="64" y1="32" x2="64" y2="68" stroke="rgba(90,90,90,1.00)" stroke-width="1" />
   <line x1="64" y1="68" x2="216" y2="68" stroke="rgba(51,51,51,1.00)" stroke-width="1" />
   <line x1="60" y1="68" x2="64" y2="68" stroke="rgba(111,111,111,1.00)" stroke-width="1" />
-  <text x="20" y="72" font-family="Sans" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">-0.2</text>
+  <text x="20" y="72" dominant-baseline="text-before-edge" font-family="Sans" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">-0.2</text>
   <line x1="64" y1="59" x2="216" y2="59" stroke="rgba(51,51,51,1.00)" stroke-width="1" />
   <line x1="60" y1="59" x2="64" y2="59" stroke="rgba(111,111,111,1.00)" stroke-width="1" />
-  <text x="20" y="63" font-family="Sans" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">0.3</text>
+  <text x="20" y="63" dominant-baseline="text-before-edge" font-family="Sans" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">0.3</text>
   <line x1="64" y1="50" x2="216" y2="50" stroke="rgba(51,51,51,1.00)" stroke-width="1" />
   <line x1="60" y1="50" x2="64" y2="50" stroke="rgba(111,111,111,1.00)" stroke-width="1" />
-  <text x="20" y="54" font-family="Sans" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">0.7</text>
+  <text x="20" y="54" dominant-baseline="text-before-edge" font-family="Sans" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">0.7</text>
   <line x1="64" y1="41" x2="216" y2="41" stroke="rgba(51,51,51,1.00)" stroke-width="1" />
   <line x1="60" y1="41" x2="64" y2="41" stroke="rgba(111,111,111,1.00)" stroke-width="1" />
-  <text x="20" y="45" font-family="Sans" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">1.2</text>
+  <text x="20" y="45" dominant-baseline="text-before-edge" font-family="Sans" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">1.2</text>
   <line x1="64" y1="32" x2="216" y2="32" stroke="rgba(51,51,51,1.00)" stroke-width="1" />
   <line x1="60" y1="32" x2="64" y2="32" stroke="rgba(111,111,111,1.00)" stroke-width="1" />
-  <text x="20" y="36" font-family="Sans" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">1.6</text>
+  <text x="20" y="36" dominant-baseline="text-before-edge" font-family="Sans" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">1.6</text>
   <line x1="64" y1="68" x2="64" y2="72" stroke="rgba(111,111,111,1.00)" stroke-width="1" />
-  <text x="64" y="80" font-family="Sans" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">-0.3</text>
+  <text x="64" y="80" dominant-baseline="text-before-edge" font-family="Sans" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">-0.3</text>
   <line x1="102" y1="68" x2="102" y2="72" stroke="rgba(111,111,111,1.00)" stroke-width="1" />
-  <text x="93" y="80" font-family="Sans" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">0.6</text>
+  <text x="93" y="80" dominant-baseline="text-before-edge" font-family="Sans" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">0.6</text>
   <line x1="140" y1="68" x2="140" y2="72" stroke="rgba(111,111,111,1.00)" stroke-width="1" />
-  <text x="131" y="80" font-family="Sans" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">1.5</text>
+  <text x="131" y="80" dominant-baseline="text-before-edge" font-family="Sans" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">1.5</text>
   <line x1="178" y1="68" x2="178" y2="72" stroke="rgba(111,111,111,1.00)" stroke-width="1" />
-  <text x="169" y="80" font-family="Sans" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">2.4</text>
+  <text x="169" y="80" dominant-baseline="text-before-edge" font-family="Sans" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">2.4</text>
   <line x1="216" y1="68" x2="216" y2="72" stroke="rgba(111,111,111,1.00)" stroke-width="1" />
-  <text x="207" y="80" font-family="Sans" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">3.3</text>
+  <text x="207" y="80" dominant-baseline="text-before-edge" font-family="Sans" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">3.3</text>
   <line x1="76" y1="65" x2="118" y2="44" stroke="rgba(72,142,246,1.00)" stroke-width="2" />
   <line x1="118" y1="44" x2="161" y2="55" stroke="rgba(72,142,246,1.00)" stroke-width="2" />
   <line x1="161" y1="55" x2="203" y2="34" stroke="rgba(72,142,246,1.00)" stroke-width="2" />

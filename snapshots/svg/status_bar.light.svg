@@ -4,7 +4,7 @@
   <rect x="0" y="0" width="240" height="120" fill="rgba(240,240,240,1.00)" />
   <rect x="0" y="0" width="240" height="120" fill="rgba(240,240,240,1.00)" />
   <line x1="0" y1="0" x2="240" y2="0" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
-  <text x="6" y="60" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">Sample</text>
+  <text x="6" y="60" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">Sample</text>
   <line x1="226" y1="118" x2="238" y2="106" stroke="rgba(160,160,160,1.00)" stroke-width="1" />
   <line x1="230" y1="118" x2="238" y2="110" stroke="rgba(160,160,160,1.00)" stroke-width="1" />
   <line x1="234" y1="118" x2="238" y2="114" stroke="rgba(160,160,160,1.00)" stroke-width="1" />

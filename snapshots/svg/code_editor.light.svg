@@ -7,16 +7,16 @@
   <rect x="0" y="0" width="240" height="28" fill="rgba(169,169,169,1.00)" />
   <rect x="6" y="2" width="104" height="24" fill="rgba(180,180,180,1.00)" />
   <rect x="6" y="2" width="104" height="24" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
-  <text x="12" y="24" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">untitled •</text>
+  <text x="12" y="24" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">untitled •</text>
   <line x1="0" y1="28" x2="240" y2="28" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
   <rect x="0" y="28" width="36" height="64" fill="rgba(175,175,175,1.00)" />
   <line x1="36" y1="28" x2="36" y2="92" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
-  <text x="16" y="40" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">1</text>
-  <text x="2" y="40" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(158,158,158,1.00)">.</text>
+  <text x="16" y="40" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">1</text>
+  <text x="2" y="40" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(158,158,158,1.00)">.</text>
   <clipPath id="clip_0"><rect x="40" y="28" width="162" height="64" /></clipPath>
   <g clip-path="url(#clip_0)">
   <rect x="0" y="28" width="240" height="16" fill="rgba(173,173,173,1.00)" />
-  <text x="40" y="40" font-family="Menlo" font-size="13" font-style="normal" font-weight="400" fill="rgba(43,55,74,1.00)">Sample</text>
+  <text x="40" y="40" dominant-baseline="text-before-edge" font-family="Menlo" font-size="13" font-style="normal" font-weight="400" fill="rgba(43,55,74,1.00)">Sample</text>
   <rect x="40" y="28" width="2" height="16" fill="rgba(33,150,243,1.00)" />
   </g>
   <rect x="208" y="28" width="32" height="64" fill="rgba(177,177,177,1.00)" />
@@ -24,7 +24,7 @@
   <rect x="208" y="28" width="32" height="64" fill="none" stroke="rgba(33,150,243,1.00)" stroke-width="1" />
   <rect x="0" y="92" width="240" height="28" fill="rgba(169,169,169,1.00)" />
   <line x1="0" y1="92" x2="240" y2="92" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
-  <text x="149" y="97" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(81,81,81,1.00)">Ln 1, Col…</text>
-  <text x="11" y="97" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(81,81,81,1.00)">Plain Text  1 lin…</text>
-  <text x="165" y="97" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(81,81,81,1.00)">E0 W0 I0</text>
+  <text x="149" y="97" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(81,81,81,1.00)">Ln 1, Col…</text>
+  <text x="11" y="97" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(81,81,81,1.00)">Plain Text  1 lin…</text>
+  <text x="165" y="97" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(81,81,81,1.00)">E0 W0 I0</text>
 </svg>

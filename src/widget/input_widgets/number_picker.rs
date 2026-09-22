@@ -496,6 +496,11 @@ impl Draw for NumberPicker {
         // identifiable without a separate label.
         let selected_color =
             style.border_color.unwrap_or_else(|| background.blend(&text_color, 0.12));
+        // The band replaces the surface under the centre row, so the centre label's ink has
+        // to be chosen against the *band*, not against the picker's surface. Using the
+        // surface ink put `rgb(225,225,225)` on the `rgb(130,130,130)` band — 2.94:1, below
+        // even the 3:1 large-text floor, on the one row the control exists to show.
+        let selected_text_color = selected_color.contrast_color();
 
         context.fill_rect(rect, background);
 
@@ -530,10 +535,15 @@ impl Draw for NumberPicker {
             };
             let faded = offset != 0;
             let color = if faded {
-                // Dim the neighbours so the selection reads at a glance.
-                background.blend(&text_color, 0.45)
+                // The neighbours are *deliberately* dimmer than the selection, but "dimmer"
+                // is a relation to the surface, not a blend toward a fixed colour: the old
+                // 45% blend toward the ink produced `rgb(111,111,111)` on the dark surface,
+                // which is 3.73:1 — a neighbour that is hard to read while *also* failing to
+                // look secondary. Dimming the resolved ink by alpha keeps it below the
+                // selection's contrast while staying above the legibility floor.
+                text_color.legible_on(background, 4.5).with_alpha(191)
             } else {
-                text_color
+                selected_text_color
             };
             let label = if faded { value.to_string() } else { format!("{value}{}", self.suffix) };
             // The row's centre is where the glyph *box* centres, not where its top edge goes:

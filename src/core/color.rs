@@ -453,6 +453,38 @@ impl Color {
             Self::WHITE
         }
     }
+
+    /// Pushes this colour away from `surface` until it is legible on it, keeping the hue.
+    ///
+    /// A semantic token is chosen for its *meaning* (green means "ready", blue means
+    /// "this is the active line"), not for its lightness against whatever surface a
+    /// particular control happens to paint. A token whose luminance matches the surface is
+    /// invisible however correct its hue — the terminal's success green measured 1.13:1 on
+    /// the terminal body, and the markdown editor's primary-blue caret line measured 1.51:1
+    /// on the editor surface. Stepping the token toward white on a dark surface and toward
+    /// black on a light one keeps the hue recognisable while guaranteeing the glyph is not
+    /// the same colour as what is behind it.
+    ///
+    /// The step is applied in sixteenths and the loop is bounded, so the function is total:
+    /// the worst case returns `surface.contrast_color()`, which by construction contrasts
+    /// with anything. Returns `self` unchanged when it already meets `min_ratio`.
+    ///
+    /// This is the shared home for the rule; `Color::contrast_color` remains the right call
+    /// when the hue carries no meaning and only legibility matters.
+    pub fn legible_on(&self, surface: Self, min_ratio: f32) -> Self {
+        if self.contrast_ratio(surface) >= min_ratio {
+            return *self;
+        }
+        let target = surface.contrast_color();
+        for step in 1..=12 {
+            let weight = step as f32 / 16.0;
+            let candidate = self.blend(&target, weight);
+            if candidate.contrast_ratio(surface) >= min_ratio {
+                return candidate;
+            }
+        }
+        target
+    }
     /// Returns the inverted color (RGB channels negated, alpha preserved).
     pub fn invert(&self) -> Self {
         Self::rgba(255 - self.r, 255 - self.g, 255 - self.b, self.a)

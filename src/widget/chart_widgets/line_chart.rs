@@ -31,6 +31,10 @@ use crate::widget::chart_widgets::adapter::ChartContextAdapter;
 use crate::widget::chart_widgets::charts::{
     compute_cartesian_layout, draw_cartesian_axes, draw_x_ticks, draw_y_ticks, CartesianLayout,
 };
+// Shared with the engine-backed path so the `not(feature = "chart")` fallback cannot
+// reintroduce the light-chart literals the engine path moved off.
+#[cfg(not(feature = "chart"))]
+use crate::widget::chart_widgets::charts::axis_chrome;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -440,7 +444,11 @@ impl LineChart {
         disabled_color: Color,
     ) -> Rect {
         let plot_area = self.plot_area();
-        let axis_color = if is_enabled { Color::DARK_GRAY } else { disabled_color };
+        // Same derivation as the engine-backed path (`charts::axis_chrome`): this fallback
+        // runs on tablet/mobile, where the dark appearance used to get a `DARK_GRAY` axis
+        // and near-black labels on a near-black surface.
+        let (axis_chrome_color, axis_label, _) = axis_chrome();
+        let axis_color = if is_enabled { axis_chrome_color } else { disabled_color };
         let bottom = plot_area.y + plot_area.height as i32;
         let right = plot_area.x + plot_area.width as i32;
 
@@ -491,7 +499,7 @@ impl LineChart {
                     Point::new((plot_area.x - 44).max(0), text_y),
                     &label,
                     &label_font,
-                    Color::DARK_GRAY,
+                    axis_label,
                     crate::core::HorizontalAlignment::Left,
                 );
             }
@@ -504,7 +512,7 @@ impl LineChart {
                     Point::new((x_pos - 12).max(plot_area.x), bottom + 16),
                     &label,
                     &label_font,
-                    Color::DARK_GRAY,
+                    axis_label,
                     crate::core::HorizontalAlignment::Left,
                 );
             }

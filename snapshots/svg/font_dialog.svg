@@ -5,22 +5,22 @@
   <rect x="0" y="0" width="240" height="120" fill="rgba(30,30,30,1.00)" />
   <rect x="0" y="0" width="240" height="120" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
   <rect x="0" y="0" width="240" height="28" fill="rgba(100,181,246,1.00)" />
-  <text x="11" y="7" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">dialog.font.select_font</text>
-  <text x="7" y="28" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(225,225,225,1.00)">dialog.…</text>
-  <rect x="4" y="38" width="74" height="0" fill="rgba(48,48,48,1.00)" />
-  <rect x="4" y="38" width="74" height="0" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
-  <text x="85" y="28" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(225,225,225,1.00)">dialog.…</text>
-  <rect x="82" y="38" width="74" height="0" fill="rgba(48,48,48,1.00)" />
-  <rect x="82" y="38" width="74" height="0" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
-  <text x="163" y="28" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(225,225,225,1.00)">dialog.…</text>
-  <rect x="160" y="38" width="74" height="0" fill="rgba(48,48,48,1.00)" />
-  <rect x="160" y="38" width="74" height="0" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
-  <rect x="4" y="46" width="232" height="36" fill="rgba(48,48,48,1.00)" />
-  <rect x="4" y="46" width="232" height="36" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
-  <text x="13" y="57" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(225,225,225,1.00)">AaBbYyZz 0123</text>
+  <text x="11" y="7" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">dialog.font.select_font</text>
+  <text x="7" y="30" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(225,225,225,1.00)">dialog.…</text>
+  <rect x="4" y="46" width="74" height="0" fill="rgba(48,48,48,1.00)" />
+  <rect x="4" y="46" width="74" height="0" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
+  <text x="85" y="30" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(225,225,225,1.00)">dialog.…</text>
+  <rect x="82" y="46" width="74" height="0" fill="rgba(48,48,48,1.00)" />
+  <rect x="82" y="46" width="74" height="0" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
+  <text x="163" y="30" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(225,225,225,1.00)">dialog.…</text>
+  <rect x="160" y="46" width="74" height="0" fill="rgba(48,48,48,1.00)" />
+  <rect x="160" y="46" width="74" height="0" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
+  <rect x="4" y="54" width="232" height="36" fill="rgba(48,48,48,1.00)" />
+  <rect x="4" y="54" width="232" height="36" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
+  <text x="13" y="65" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(225,225,225,1.00)">AaBbYyZz 0123</text>
   <rect x="64" y="80" width="80" height="28" fill="rgba(100,181,246,1.00)" />
-  <text x="66" y="80" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">dialog.ok</text>
+  <text x="66" y="80" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">dialog.ok</text>
   <rect x="152" y="80" width="80" height="28" fill="rgba(50,50,50,1.00)" />
   <rect x="152" y="80" width="80" height="28" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
-  <text x="154" y="80" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(225,225,225,1.00)">dialog.c…</text>
+  <text x="154" y="80" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(225,225,225,1.00)">dialog.c…</text>
 </svg>

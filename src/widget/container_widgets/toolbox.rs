@@ -403,15 +403,34 @@ impl Draw for ToolBox {
         // literal becomes that field's fallback, so nothing that was visible before
         // becomes invisible now.
         let style = self.base.style();
+        // Draw content background.
+        //
+        // `tool_box` is absent from the role table, so it classifies as `Surface` and the
+        // active theme writes the *window fill* into `style.background_color`. Taking that
+        // value at face value painted the content area in the window's own colour — the two
+        // rectangles in the snapshot were byte-identical, so an empty toolbox read as a bare
+        // border with a hole in it. `splitter`, `stacked_widget`, `mdi_area` and `carousel`
+        // all detect exactly this case and re-derive a visible step; this one did not.
+        let window_fill = crate::style::theme_manager()
+            .current_theme()
+            .map(|active| active.colors.background)
+            .unwrap_or(Color::WHITE);
+        let page = match style.background_color {
+            Some(resolved) if resolved != window_fill => resolved,
+            _ => window_fill.blend(&style.text_color.unwrap_or(Color::BLACK), 0.08),
+        };
         // Draw content background
         context.fill_rect(
             Rect::new(content_rect.x, content_rect.y, content_rect.width, content_rect.height),
-            style.background_color.unwrap_or(Color::rgb(255, 255, 255)),
+            page,
         );
         // Draw content border
         context.draw_rect(
             Rect::new(content_rect.x, content_rect.y, content_rect.width, content_rect.height),
-            style.border_color.unwrap_or(Color::rgb(200, 200, 200)),
+            style
+                .border_color
+                .filter(|resolved| *resolved != page)
+                .unwrap_or_else(|| page.blend(&Color::BLACK, 0.25)),
         );
         // Draw items
         for i in 0..self.items.len() {

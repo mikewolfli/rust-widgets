@@ -56,6 +56,8 @@ compares all three and names the file to update when they disagree.
 | `smoke_demos.sh` | Smoke-runs every demo. |
 | `gtk_check.py`, `gtk_property_check.py` | Inspect a live GTK widget tree (needs a display). |
 | `missing_docs_report.py` | Reports public items lacking docs; a report, not a gate. |
+| `audit_text_contrast.py` | Reads the committed `snapshots/svg/` files and reports the WCAG contrast ratio of every `<text>` against the element painted under it. **Deliberately not a gate**: a disabled label and a watermark are *supposed* to be faint, so a low ratio is not by itself a defect. It is the evidence generator that says which of 188 controls deserve a look. |
+| `audit_appearance.py`, `audit_theme_tokens.py`, `audit_kind_sharing.py`, `audit_control_gaps.py`, `audit_platform_create_coverage.py`, `audit_text_y.py` | Audits, not gates — they quantify a class of defect so the fixes can be prioritised. `audit_platform_create_coverage.sh` (the gate) is what asserts `UNRESOLVED (0)`. |
 | `platform_impl_scan.py` | Feeds the platform implementation matrix. |
 | `rename_prefix.py` | Renames the crate prefix across bindings. |
 | `verify_window_pixels.py` | Reads back pixels from a live window. |

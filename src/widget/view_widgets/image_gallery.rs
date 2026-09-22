@@ -244,12 +244,31 @@ impl Draw for ImageGallery {
         let is_enabled = self.base.is_enabled();
 
         if self.images.is_empty() {
-            // Empty state.
-            let bg = if !is_enabled {
+            // Empty state. Both colours resolve the theme rather than a literal pair.
+            //
+            // The previous form hardcoded a near-white panel and a light-grey label, so the
+            // control was **theme-blind** (P3: both appearances byte-identical) *and* its
+            // label measured **2.02:1** — below the 4.5:1 text floor and below even the
+            // 3:1 large-text bar. A gallery inside a dark window was a white rectangle that
+            // no theme could change, which is the same class of defect as `map_view`'s
+            // hardcoded palette.
+            //
+            // The placeholder is *chrome* (it frames absent content and is not itself
+            // content), so it follows `style.*` then the theme's resolved style, with the
+            // old literals kept only as the last fallback (rule #21: an unstyled gallery
+            // looks exactly as it did). The label is derived from the panel it sits on, so
+            // it cannot repeat the 2.02:1 mistake on any surface.
+            let style = self.base.style().clone();
+            let theme = crate::style::resolved_theme_style("image_gallery");
+            let fallback_bg = if !is_enabled {
                 Color::rgba(230, 230, 230, 200)
             } else {
                 Color::rgba(240, 240, 240, 255)
             };
+            let bg = style
+                .background_color
+                .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+                .unwrap_or(fallback_bg);
             context.fill_rect(rect, bg);
             let font = Font::default();
             let text = "No images in gallery";
@@ -259,13 +278,13 @@ impl Draw for ImageGallery {
             let metrics = context.measure_text(text, &font);
             let text_y = rect.y + (rect.height as i32 - metrics.height as i32) / 2;
             let line = Rect::new(rect.x, text_y, rect.width, metrics.height);
-            context.draw_text_fitted(
-                line,
-                text,
-                &font,
-                Color::rgba(160, 160, 160, 220),
-                HorizontalAlignment::Center,
-            );
+            // One step from the panel toward the panel's own contrast colour: a placeholder
+            // should read as secondary, but "secondary" has to stay legible, and the light
+            // grey it used to be was neither derived nor legible.
+            let panel_ink = bg.contrast_color();
+            let label_color =
+                if is_enabled { bg.blend(&panel_ink, 0.62) } else { bg.blend(&panel_ink, 0.38) };
+            context.draw_text_fitted(line, text, &font, label_color, HorizontalAlignment::Center);
             return;
         }
 

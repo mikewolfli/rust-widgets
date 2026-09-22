@@ -713,7 +713,19 @@ impl CodeEditor {
                 TokenKind::Comment | TokenKind::BlockComment => font.clone().with_italic(true),
                 _ => font.clone(),
             };
-            let mut color = palette.color_for(span.kind);
+            // The palette carries the *syntax hues*, but three of its categories are not
+            // hues at all — `Plain`, `Identifier` and `Operator` are the default running
+            // text, and the preset paints all of them with the same near-black literal
+            // `rgb(43,55,74)`. Taking that literal at face value made ordinary source text
+            // 1.38:1 against the editor's own resolved surface, while the identical glyph
+            // in `plain` spans just above was correctly drawn in `chrome.ink`. Kinds with
+            // no syntax meaning therefore defer to the resolved ink; the rest keep their
+            // palette hue but are pushed clear of the surface, so a theme swap cannot make
+            // a keyword unreadable.
+            let mut color = match span.kind {
+                TokenKind::Plain | TokenKind::Identifier | TokenKind::Operator => chrome.ink,
+                _ => palette.color_for(span.kind).legible_on(chrome.surface, 4.5),
+            };
             // Bracket-pair highlight: repaint both glyphs in the bracket colour.
             if let Some((open, close)) = brackets {
                 if (open.line == line && open.column == from)

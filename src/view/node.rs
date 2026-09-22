@@ -93,6 +93,99 @@ impl Node {
         self
     }
 
+    /// Append `child` only when `condition` holds. Chainable.
+    ///
+    /// # Why this exists
+    ///
+    /// Conditional rendering is the *completeness condition* of a declarative tree: every
+    /// declarative UI layer has one — Flutter's `if` inside a children list, React's
+    /// `cond && <X/>`, SwiftUI's `if`/`else` in a `ViewBuilder`. Without it a caller has to
+    /// interrupt the builder chain with an imperative `if` around the whole expression,
+    /// which is both unreadable and easy to get wrong: the natural workaround,
+    /// `children_of(if cond { vec![node] } else { Vec::new() })`, allocates a `Vec` per
+    /// branch for one node.
+    ///
+    /// The `None` branch is deliberately *not* a "hidden" node. A node that exists but is
+    /// invisible still occupies an identity, so a keyed diff would match it across an
+    /// appearance and disappear cycle; dropping it from the tree entirely means the diff
+    /// sees an `Insert`/`Remove`, which is what the caller's state actually changed.
+    ///
+    /// ```
+    /// use rust_widgets::view::Node;
+    /// let show_badge = true;
+    /// let node = Node::new("row").child_if(show_badge, Node::new("badge").key("b"));
+    /// assert_eq!(node.children.len(), 1);
+    /// ```
+    pub fn child_if(mut self, condition: bool, child: Node) -> Self {
+        if condition {
+            self.children.push(child);
+        }
+        self
+    }
+
+    /// Append one of two alternatives, chosen by `condition`. Chainable.
+    ///
+    /// The `if/else` counterpart of [`Node::child_if`], and the reason it takes both nodes
+    /// rather than an `Option`: the two branches are usually *different controls*
+    /// (SwiftUI's `if isLoading { ProgressView() } else { Content() }`), so returning the
+    /// same node on both sides would not express the intent. Whichever branch is not taken
+    /// contributes nothing to the tree, for the reason given on `child_if`.
+    pub fn child_if_else(self, condition: bool, then_child: Node, else_child: Node) -> Self {
+        if condition {
+            self.child(then_child)
+        } else {
+            self.child(else_child)
+        }
+    }
+
+    /// Append the children produced by `make`, but only when `condition` holds. Chainable.
+    ///
+    /// The list-valued counterpart of [`Node::child_if`]: `condition` decides whether a
+    /// whole *group* of siblings (a `for` over a collection, a section) is in the tree. The
+    /// closure is not called when the condition is false, so an expensive or allocating
+    /// generator is skipped entirely rather than being built and discarded.
+    pub fn children_if(mut self, condition: bool, make: impl FnOnce() -> Vec<Node>) -> Self {
+        if condition {
+            self.children.extend(make());
+        }
+        self
+    }
+
+    /// Append one child per element of `items`, matched across rebuilds by `key_of`.
+    ///
+    /// # Why this is not just `children_of(items.map(..))`
+    ///
+    /// That spelling works, and every existing caller uses it, but it makes the key the
+    /// *last* thing a reader notices while being the single most load-bearing decision in
+    /// the list: BLUE18 rule #87's identity drift — where inserting at the head renumbers
+    /// every later sibling — happens exactly when the keys are missing or unstable. Naming
+    /// the keying function as a required argument means a list cannot be built keylessly by
+    /// accident; the `Vec<Node>` case (no keys) is still available through `children_of`,
+    /// and the diff reports positional matches when it is used, so the degradation stays
+    /// visible rather than silent.
+    ///
+    /// ```
+    /// use rust_widgets::view::Node;
+    /// use rust_widgets::widget::capability::CapabilityValue;
+    /// let names = ["a", "b"];
+    /// let list = Node::new("list").children_keyed(&names, |n| (*n).to_string(), |n| {
+    ///     Node::new("label").prop("text", CapabilityValue::String((*n).to_string()))
+    /// });
+    /// assert_eq!(list.children.len(), 2);
+    /// assert_eq!(list.children[0].key_str(), Some("a"));
+    /// ```
+    pub fn children_keyed<T>(
+        mut self,
+        items: &[T],
+        key_of: impl Fn(&T) -> String,
+        make: impl Fn(&T) -> Node,
+    ) -> Self {
+        for item in items {
+            self.children.push(make(item).key(key_of(item)));
+        }
+        self
+    }
+
     /// Read one property back, for tests and for views that branch on their own state.
     pub fn prop_value(&self, name: &str) -> Option<&CapabilityValue> {
         self.props.get(name)
@@ -224,6 +317,74 @@ mod tests {
         let seen: Vec<(&str, usize)> =
             n.walk().into_iter().map(|(node, d)| (node.widget.as_str(), d)).collect();
         assert_eq!(seen, [("vbox", 0), ("a", 1), ("a1", 2), ("b", 1)]);
+    }
+
+    #[test]
+    fn child_if_includes_or_omits_the_node() {
+        // The completeness condition of a declarative tree: a node that is not shown must
+        // not be *present but hidden*, or a keyed diff would match it across the toggle
+        // instead of seeing the insert/remove the state change actually is.
+        let shown = Node::new("row").child_if(true, Node::new("badge").key("b"));
+        assert_eq!(shown.children.len(), 1);
+        assert_eq!(shown.children[0].key_str(), Some("b"));
+
+        let hidden = Node::new("row").child_if(false, Node::new("badge").key("b"));
+        assert!(hidden.children.is_empty(), "the absent branch must contribute no node");
+    }
+
+    #[test]
+    fn child_if_else_picks_exactly_one_branch() {
+        let loading =
+            Node::new("body").child_if_else(true, Node::new("spinner"), Node::new("content"));
+        assert_eq!(loading.children.len(), 1);
+        assert_eq!(loading.children[0].widget, "spinner");
+
+        let ready =
+            Node::new("body").child_if_else(false, Node::new("spinner"), Node::new("content"));
+        assert_eq!(ready.children.len(), 1);
+        assert_eq!(ready.children[0].widget, "content");
+    }
+
+    #[test]
+    fn children_if_does_not_evaluate_the_generator_when_false() {
+        // Not calling the closure is the observable difference from
+        // `children_of(if c { make() } else { Vec::new() })`: the generator may allocate or
+        // read state, and skipping it is the point of the helper.
+        let evaluated = core::cell::Cell::new(false);
+        let node = Node::new("section").children_if(false, || {
+            evaluated.set(true);
+            vec![Node::new("a")]
+        });
+        assert!(node.children.is_empty());
+        assert!(!evaluated.get(), "the generator must not run for a false condition");
+
+        let node = Node::new("section").children_if(true, || vec![Node::new("a"), Node::new("b")]);
+        assert_eq!(node.children.len(), 2);
+    }
+
+    #[test]
+    fn children_keyed_assigns_a_stable_key_per_item() {
+        let names = ["alpha", "beta", "gamma"];
+        let list = Node::new("list").children_keyed(
+            &names,
+            |n| (*n).to_string(),
+            |n| Node::new("label").prop("text", s(n)),
+        );
+        assert_eq!(list.children.len(), 3);
+        let keys: Vec<&str> = list.children.iter().filter_map(|c| c.key_str()).collect();
+        assert_eq!(keys, ["alpha", "beta", "gamma"]);
+        assert!(
+            list.duplicate_sibling_keys().is_empty(),
+            "distinct items must not collide, or the diff would refuse to move either"
+        );
+    }
+
+    #[test]
+    fn children_keyed_on_an_empty_slice_adds_nothing() {
+        let empty: [u8; 0] = [];
+        let list =
+            Node::new("list").children_keyed(&empty, |n| n.to_string(), |_| Node::new("label"));
+        assert!(list.children.is_empty());
     }
 
     #[test]

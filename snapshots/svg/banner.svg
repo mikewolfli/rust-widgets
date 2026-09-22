@@ -3,7 +3,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
   <rect x="0" y="0" width="240" height="120" fill="rgba(36,42,52,1.00)" />
-  <text x="8" y="60" font-family="Sans" font-size="16" font-style="normal" font-weight="400" fill="rgba(225,225,225,1.00)">Sample</text>
+  <text x="8" y="60" dominant-baseline="text-before-edge" font-family="Sans" font-size="16" font-style="normal" font-weight="400" fill="rgba(225,225,225,1.00)">Sample</text>
   <rect x="208" y="48" width="24" height="24" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
   <line x1="215" y1="55" x2="225" y2="65" stroke="rgba(225,225,225,1.00)" stroke-width="1" />
   <line x1="225" y1="55" x2="215" y2="65" stroke="rgba(225,225,225,1.00)" stroke-width="1" />

@@ -10,5 +10,5 @@
   <line x1="66" y1="20" x2="70" y2="16" stroke="rgba(166,99,0,1.00)" stroke-width="1" />
   <line x1="43" y1="43" x2="67" y2="67" stroke="rgba(140,84,0,1.00)" stroke-width="2" />
   <circle cx="43" cy="43" r="4" fill="rgba(140,84,0,1.00)" />
-  <text x="40" y="102" font-family="Sans" font-size="12" font-style="normal" font-weight="400" fill="rgba(140,84,0,1.00)">0</text>
+  <text x="40" y="102" dominant-baseline="text-before-edge" font-family="Sans" font-size="12" font-style="normal" font-weight="400" fill="rgba(140,84,0,1.00)">0</text>
 </svg>

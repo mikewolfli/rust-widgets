@@ -57,7 +57,7 @@ capability matrix
 is generated from source and gated for drift in CI.
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.5.2-blue)]()
+[![version](https://img.shields.io/badge/version-2.5.3-blue)]()
 [![tests](https://img.shields.io/badge/tests-5500%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 
@@ -84,7 +84,31 @@ Three build configurations that were **already broken** before this release now 
 controls-custom"` (78 compile errors at the previous tag). All five profiles are 0 errors, 0 warnings,
 and `clippy -D warnings` is clean.
 
-**Verified in 2.5.2 (current):** the fifth rendering judgement. The four above are all measured from a
+**Verified in 2.5.3 (current):** the two text backends finally agree. The software rasteriser treats
+`DrawText`'s origin as the glyph box's **top** edge; the SVG backend was writing the same value into
+SVG's `y`, where SVG means **baseline**. So a title centred against the top-origin contract sat
+correctly on screen and half a line too high in every snapshot — the reviewable artifact was showing
+chrome the rasteriser never produced, and `P5` read the same wrong model so it could not see them
+either. Seven controls were affected; **220 of 376 snapshots changed**.
+
+The fix is one attribute (`dominant-baseline="text-before-edge"`), which is what keeps it a
+one-place change: the ~40 call sites that already offset against the top-origin contract stay correct.
+
+Two more classes were closed in the same round. **Chart axis chrome**: `bar_chart` draws its own axes
+even with `chart` on, and its labels were still a light-chart `DARK_GRAY` at **1.81:1**; the same
+literal lived in both `not(feature = "chart")` fallbacks, so tablet and mobile drew invisible charts.
+**Semantic colour**: `calendar`'s weekend red (**1.64:1**) and today-highlight (**1.30:1**) now read
+`theme.colors.*`, and `terminal_view` stopped painting a dark slab on a light theme — its **1.13:1**
+was a wrong *surface*, not a wrong text colour.
+
+A container audit against Qt/Flutter/SwiftUI found three grouping controls that rendered as nothing:
+`splitter` had no divider at all (guarded by `pane_count() > 1`, and `Splitter::new` builds zero
+panes), `tool_box` filled its content area with the window fill (byte-identical to the backdrop), and
+`image_gallery`'s empty state was theme-blind at **2.02:1**. The declarative layer also gained its
+completeness conditions — `child_if`, `child_if_else`, `children_if`, `children_keyed` — because a
+`Node` could express a list but not a condition.
+
+**Verified in 2.5.2:** the fifth rendering judgement. The four above are all measured from a
 **raster**, and a raster is bounded by the surface it was rendered into — so a control that paints
 *outside its own rectangle* produces a normal-looking census, with the escaped pixels simply clipped
 away. The SVG snapshots carry absolute coordinates and no bound, so the same defect shows up there as

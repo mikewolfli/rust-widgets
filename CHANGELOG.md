@@ -5,6 +5,129 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 2.5.3 (2026-09-22) — Both Backends Now Agree About Where Text Is, and the Declarative Layer Gains Conditions
+
+Backward compatible: no public signature was removed. The additions are new builder methods on
+`Node`, one new audit tool, and colour/geometry corrections inside existing controls.
+
+---
+
+### 1. The two text backends disagreed, and the snapshots showed the wrong one
+
+The root finding of this round. The software rasteriser treats `DrawText`'s `origin.y` as the glyph
+box's **top** edge — `draw_bitmap_glyph` blits rows downward from it — and every call site in the
+crate positions text against that contract. The SVG backend wrote the same value straight into SVG's
+`y` attribute, where SVG means **baseline**.
+
+So the two backends put the same ink in different places. A title centred with
+`rect.y + (band - height) / 2` sat correctly on screen and half a line too high in every snapshot,
+which means `snapshots/svg/` — the human-reviewable artifact this project added precisely to catch
+what assertions cannot — was showing chrome the rasteriser never produced. Seven controls were
+affected (`dock_widget`, `tab_bar`, `popup_window`, `collapsible_pane` ×2 sites, `group_box`,
+`navigation_stack`), and the `P5` overflow judgement was reading the same wrong model, so it could
+not see them either.
+
+The fix is one attribute: the backend now emits `dominant-baseline="text-before-edge"`, which
+restates SVG's semantics as the renderer's — `y` is the top edge of the text box. Emitting it rather
+than adding an ascent to the number is what keeps this a one-place change: the ~40 call sites that
+already measured and offset against the top-origin contract stay correct, and none of them has to
+know which backend it is painting into.
+
+**220 of the 376 committed snapshots changed.** That number is the measure of how long the two
+backends had been disagreeing.
+
+### 2. Chart axis chrome: the `bar_chart` half of a fix that had only been applied to `line_chart`
+
+2.5.2 moved the cartesian axes off three fixed light-chart greys and onto a surface-to-ink
+derivation (`axis_chrome`). `bar_chart` was missed: it draws its **own** axes even with the `chart`
+feature on, and its value labels and category labels were still `Color::DARK_GRAY` — **1.81:1** on
+the dark appearance's surface, present in the pixel census and unreadable to a person.
+
+The same literal was also in both `not(feature = "chart")` fallbacks (`bar_chart`, `line_chart`)
+and in `pie_chart`'s outline, so the tablet and mobile profiles drew near-invisible charts. The
+derivation is now shared (`axis_chrome_color`), which is what stops the literal coming back in one
+file at a time.
+
+### 3. `terminal_view` was a dark slab on a light theme
+
+The worst text ratio in the snapshot set (**1.13:1**) was not a text defect. The terminal's body was
+`text_edit`'s resolved fill stepped 8 % toward the ink, and on the light appearance that lands at
+`rgb(166,166,166)` — a mid-grey slab on a light theme, onto which a success-green prompt was then
+drawn. The surface was wrong; the text ratio was the symptom.
+
+A terminal body is a *field*, so it is now derived the way every other field in the crate derives
+one: from the window fill, stepped toward the ink, with a caller's own colour still winning. The
+prompt colour additionally goes through `nudge_apart`, which keeps a semantic token's *hue* while
+rejecting a lightness that would render it invisible.
+
+### 4. `calendar`: a header band that became mid-grey, and a `1.30:1` today-highlight
+
+Three defects, all from a light-theme assumption written as arithmetic:
+
+* the weekday header blended the fill **halfway toward a literal white**, so on the dark appearance
+  `rgb(18,18,18)` became `rgb(137,137,137)` — a heavy band no mainstream calendar has (Flutter's
+  `onSurfaceVariant`, Qt's `QCalendarWidget` and SwiftUI's graphical picker all keep the header
+  within a few percent of the body). It is now a small step toward the calendar's own ink.
+* the weekend columns carried a literal `rgb(180,60,60)` which measured **1.64:1** on that band. The
+  weekend indicator is *semantic* (it says "not a working day"), so it now reads
+  `theme.colors.error` and is nudged away from the calendar surface — 4.42:1 light, 6.53:1 dark.
+* the "today" highlight was 39 %-opaque amber with a near-white day number on top: **1.30:1**, the
+  worst text ratio in the set. It now reads the theme's `warning` token, and both the selected and
+  today day-numbers take the contrast colour of their own composited tint.
+
+### 5. Grouping containers that rendered as nothing
+
+An audit of every container control against Qt/Flutter/SwiftUI found three that failed "an empty
+container must still show its structure":
+
+* **`splitter`** guarded its divider with `pane_count() > 1`, and `Splitter::new` builds **zero**
+  panes — so the default-rendered control had no handle at all, `detail = 0` in the census. The
+  divider *is* the affordance; it is now always drawn, centred when there are no ratios to place it
+  by.
+* **`tool_box`** filled its content area with the *window* fill, so the two rectangles in its
+  snapshot were byte-identical and the toolbox read as a bare border with a hole. The other four
+  containers already detect exactly this case; `tool_box` now does too.
+* **`image_gallery`**'s empty state hardcoded a near-white panel and a light-grey label: theme-blind
+  *and* **2.02:1**. Both now resolve the theme. The gate reported the control's now-stale
+  data-colour exemption itself, and it was removed.
+
+### 6. `font_dialog`: column headers that collided with the title bar
+
+`list_y` was a fixed `rect.y + 38` and the headers were placed 10 px above it — `rect.y + 28`,
+which is exactly the title bar's bottom edge, in a 12 px strip shorter than the 14 px font it held.
+The headers are now derived from the font's own line box and the columns follow them, which is what
+makes the strip and the text agree by construction instead of by a tuned pair of literals.
+
+### 7. The declarative layer gains its completeness conditions
+
+`Node` could express a *list* (`children_of`) but not a *condition*. Conditional rendering is the
+completeness condition of a declarative tree — Flutter's `if` inside a children list, React's
+`cond && <X/>`, SwiftUI's `if`/`else` in a `ViewBuilder` — and without it a caller had to interrupt
+the builder chain with an imperative `if`.
+
+Four methods added, each with tests that assert the *diff* behaves correctly and not merely that the
+node is built:
+
+* `child_if(condition, child)` — include or omit one child. The `false` branch drops the node from
+  the tree entirely rather than marking it hidden, so a keyed diff sees the `Insert`/`Remove` the
+  state change actually is instead of matching a node that was never really there.
+* `child_if_else(condition, then, else)` — the two branches are usually *different controls*, which
+  is why both are required rather than one `Option`.
+* `children_if(condition, make)` — a whole group, with the generator **not called** when the
+  condition is false.
+* `children_keyed(items, key_of, make)` — the key becomes a required argument, so a list cannot be
+  built keylessly by accident. Keylessness is the precondition for BLUE18 rule #87's identity drift;
+  it stays available through `children_of`, and the diff still reports positional matches when it is
+  used.
+
+### 8. A new evidence tool: `tools/audit_text_contrast.py`
+
+Reads the committed SVGs, finds the element painted under every `<text>` origin, and reports the WCAG
+contrast ratio. It is deliberately **not** a gate — a disabled label and a watermark are *supposed*
+to be faint — it is the fact generator that says which of 188 controls deserve a look. This round
+used it to go from **131** sub-4.5:1 occurrences to **113**, with every one of the worst cases fixed
+and the remainder classified as data colours or intentional secondary text.
+
 ## 2.5.2 (2026-09-21) — The Fifth Rendering Judgement: Every Control Now Has to Paint Inside Itself
 
 Backward compatible: no public signature was removed and no existing behaviour was changed. The one

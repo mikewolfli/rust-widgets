@@ -277,47 +277,65 @@ impl Draw for Splitter {
                 context.pop_clip();
             }
         }
-        // Draw splitter handles between panes
+        // Draw splitter handles between panes.
+        //
+        // The count guard used to be `pane_count() > 1`, so a splitter with no panes yet —
+        // which is exactly what `Splitter::new` builds, and what the factory produces — drew
+        // no handle at all. It then rendered as a featureless slab: two full-area rectangles
+        // and no chrome, `detail = 0` in the rendering census. Qt's `QSplitter`, Flutter's
+        // `Flex`/`NestedScrollView` and SwiftUI's `HSplitView` all draw the divider
+        // regardless of how many panes exist, because the divider *is* the affordance — an
+        // invisible one is a control a user cannot find or drag.
+        //
+        // So the handle count is `max(pane_count - 1, 1)`, and when there are no ratios to
+        // place it by, it sits at the midpoint rather than not existing. A caller with real
+        // panes gets exactly the previous geometry: `pane_count - 1` handles at the
+        // accumulated ratios.
         let handle_width = 5;
+        let handle_slots = self.pane_count().saturating_sub(1).max(1);
         match self.orientation() {
             Orientation::Horizontal => {
-                // Draw vertical splitter handles
-                if self.pane_count() > 1 {
-                    let total_width = rect.width as f32;
-                    let mut x = rect.x as f32;
-                    for i in 0..self.pane_count() - 1 {
-                        let ratio = self.ratio(i).unwrap_or(0.0);
-                        x += total_width * ratio;
-                        let handle_rect = Rect::new(
-                            x as i32 - handle_width / 2,
-                            rect.y,
-                            handle_width as u32,
-                            rect.height,
-                        );
-                        // Draw splitter handle
-                        context.fill_rect(handle_rect, handle_fill);
-                        context.draw_rect(handle_rect, handle_border);
-                    }
+                // Draw vertical splitter handles.
+                let total_width = rect.width as f32;
+                let mut x = rect.x as f32;
+                for i in 0..handle_slots {
+                    // No ratios to consult (0 or 1 panes): split the width evenly so the
+                    // divider lands mid-control instead of at the left edge.
+                    let ratio = if self.pane_count() > 1 {
+                        self.ratio(i).unwrap_or(0.0)
+                    } else {
+                        1.0 / (handle_slots as f32 + 1.0)
+                    };
+                    x += total_width * ratio;
+                    let handle_rect = Rect::new(
+                        x as i32 - handle_width / 2,
+                        rect.y,
+                        handle_width as u32,
+                        rect.height,
+                    );
+                    context.fill_rect(handle_rect, handle_fill);
+                    context.draw_rect(handle_rect, handle_border);
                 }
             }
             Orientation::Vertical => {
-                // Draw horizontal splitter handles
-                if self.pane_count() > 1 {
-                    let total_height = rect.height as f32;
-                    let mut y = rect.y as f32;
-                    for i in 0..self.pane_count() - 1 {
-                        let ratio = self.ratio(i).unwrap_or(0.0);
-                        y += total_height * ratio;
-                        let handle_rect = Rect::new(
-                            rect.x,
-                            y as i32 - handle_width / 2,
-                            rect.width,
-                            handle_width as u32,
-                        );
-                        // Draw splitter handle
-                        context.fill_rect(handle_rect, handle_fill);
-                        context.draw_rect(handle_rect, handle_border);
-                    }
+                // Draw horizontal splitter handles.
+                let total_height = rect.height as f32;
+                let mut y = rect.y as f32;
+                for i in 0..handle_slots {
+                    let ratio = if self.pane_count() > 1 {
+                        self.ratio(i).unwrap_or(0.0)
+                    } else {
+                        1.0 / (handle_slots as f32 + 1.0)
+                    };
+                    y += total_height * ratio;
+                    let handle_rect = Rect::new(
+                        rect.x,
+                        y as i32 - handle_width / 2,
+                        rect.width,
+                        handle_width as u32,
+                    );
+                    context.fill_rect(handle_rect, handle_fill);
+                    context.draw_rect(handle_rect, handle_border);
                 }
             }
         }

@@ -385,13 +385,26 @@ impl Draw for ChartWidget {
         let rect = self.base.geometry();
         use crate::core::Color;
         use crate::core::Font;
+        // The plot panel is a surface, so it resolves like every other control's: the
+        // caller's style first, then the theme's resolved style for this control, then a
+        // literal. It used to be a fixed `rgb(255,255,255)` for the fill and `rgb(200,200,200)`
+        // for the border, which made a dark-appearance chart a white slab — and, worse,
+        // `draw_truncated_label` *did* read the theme, so on the dark appearance it painted the
+        // dark theme's ink onto that white slab: `rgb(163,163,163)` on white, 2.52:1. The panel
+        // and its chrome now come from one derivation, so they cannot disagree.
+        let style = self.base.style().clone();
+        let (surface, ink) = Self::panel_colors();
+        let border = style
+            .border_color
+            .or_else(|| crate::style::resolved_theme_style("chart").and_then(|t| t.border_color))
+            .unwrap_or_else(|| surface.blend(&ink, 0.2));
         // Draw chart background
-        context.fill_rect(rect, Color::rgb(255, 255, 255));
+        context.fill_rect(rect, surface);
         // Draw border to make chart area visible
-        context.draw_rect(rect, Color::rgb(200, 200, 200));
+        context.draw_rect(rect, border);
 
         if self.series.is_empty() {
-            // No data — draw placeholder text
+            // No data — draw placeholder text, in whatever reads on this panel.
             let text_origin =
                 crate::core::Point { x: rect.x + 4, y: rect.y + rect.height as i32 / 2 };
             let font = Font::simple("Sans", 12.0);
@@ -399,7 +412,7 @@ impl Draw for ChartWidget {
                 text_origin,
                 "No data",
                 &font,
-                Color::rgb(180, 180, 180),
+                ink.legible_on(surface, 4.5).with_alpha(160),
                 HorizontalAlignment::Left,
             );
             return;
@@ -534,27 +547,42 @@ fn draw_truncated_label(
     let font = Font::simple("Sans", 10.0);
     let width = context.measure_text(&text, &font).width as i32;
     let origin_x = (x - width / 2).min(right_bound - width).max(0);
-    // Axis chrome, derived from the active surface. The literal `80,80,80` is a light chart's
-    // label colour and rendered at 1.8:1 on the dark appearance's `18,18,18` surface — the
+    // Axis chrome, derived from the **panel the label is painted on**. The literal `80,80,80`
+    // is a light chart's label colour and rendered at 1.8:1 on the dark appearance — the
     // category names were effectively invisible while the chart itself looked correct.
-    let surface = crate::style::theme_manager()
-        .current_theme()
-        .map(|active| active.colors.background)
-        .unwrap_or(Color::rgb(255, 255, 255));
-    let ink = crate::style::theme_manager()
-        .current_theme()
-        .map(|active| active.colors.foreground)
-        .unwrap_or(Color::rgb(0, 0, 0));
+    //
+    // This used to read `theme.colors.background`, which is the *window* colour, while the
+    // panel was a hardcoded white: on the dark appearance the label therefore used the dark
+    // theme's ink on a white slab. Both now come from `ChartWidget::panel_colors`, so the
+    // label cannot disagree with the panel it sits on.
+    let (surface, ink) = ChartWidget::panel_colors();
     context.draw_text(
         crate::core::Point { x: origin_x, y: baseline_y + LABEL_ROW_TOP },
         &text,
         &font,
-        surface.blend(&ink, 0.70),
+        ink.legible_on(surface, 4.5).with_alpha(191),
         HorizontalAlignment::Left,
     );
 }
 
 impl ChartWidget {
+    /// The plot panel's surface and its ink, resolved the same way for every renderer.
+    ///
+    /// The caller's style wins, then the theme's resolved style for `chart`, then a literal.
+    /// Factored out because the panel fill and the axis labels are painted in two different
+    /// functions: when each derived its own colour they drifted, and on the dark appearance
+    /// the labels used the theme's ink while the panel stayed hardcoded white.
+    pub(crate) fn panel_colors() -> (crate::core::Color, crate::core::Color) {
+        let theme = crate::style::resolved_theme_style("chart");
+        let surface = theme
+            .as_ref()
+            .and_then(|t| t.background_color)
+            .unwrap_or(crate::core::Color::rgb(255, 255, 255));
+        let ink =
+            theme.as_ref().and_then(|t| t.text_color).unwrap_or_else(|| surface.contrast_color());
+        (surface, ink)
+    }
+
     /// The palette every renderer draws from.
     ///
     /// Shared rather than repeated so a bar and the line beside it cannot be

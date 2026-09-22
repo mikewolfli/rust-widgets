@@ -5,15 +5,15 @@
   <rect x="0" y="0" width="240" height="120" fill="rgba(226,226,226,1.00)" />
   <rect x="0" y="0" width="240" height="120" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
   <rect x="0" y="0" width="240" height="28" fill="rgba(208,208,208,1.00)" />
-  <text x="11" y="7" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">color_dialog.title</text>
+  <text x="11" y="7" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">color_dialog.title</text>
   <rect x="10" y="38" width="220" height="0" fill="rgba(200,200,200,1.00)" />
   <rect x="10" y="38" width="220" height="0" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
   <rect x="10" y="40" width="60" height="30" fill="rgba(255,255,255,1.00)" />
   <rect x="10" y="40" width="60" height="30" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
-  <text x="83" y="55" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">color_dialog.cur…</text>
+  <text x="83" y="55" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">color_dialog.cur…</text>
   <rect x="64" y="80" width="80" height="28" fill="rgba(240,240,240,1.00)" />
-  <text x="66" y="80" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">common.b…</text>
+  <text x="66" y="80" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">common.b…</text>
   <rect x="152" y="80" width="80" height="28" fill="rgba(240,240,240,1.00)" />
   <rect x="152" y="80" width="80" height="28" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
-  <text x="154" y="80" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">common.b…</text>
+  <text x="154" y="80" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">common.b…</text>
 </svg>

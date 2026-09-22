@@ -5,11 +5,11 @@
   <rect x="0" y="0" width="240" height="120" fill="rgba(255,255,255,1.00)" />
   <rect x="0" y="0" width="240" height="120" fill="none" stroke="rgba(200,200,200,1.00)" stroke-width="1" />
   <rect x="8" y="76" width="54" height="22" fill="rgba(66,133,244,1.00)" />
-  <text x="33" y="110" font-family="Sans" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">A</text>
+  <text x="33" y="110" dominant-baseline="text-before-edge" font-family="Sans" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">A</text>
   <rect x="64" y="31" width="54" height="67" fill="rgba(66,133,244,1.00)" />
-  <text x="89" y="110" font-family="Sans" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">B</text>
+  <text x="89" y="110" dominant-baseline="text-before-edge" font-family="Sans" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">B</text>
   <rect x="120" y="53" width="54" height="45" fill="rgba(66,133,244,1.00)" />
-  <text x="145" y="110" font-family="Sans" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">C</text>
+  <text x="145" y="110" dominant-baseline="text-before-edge" font-family="Sans" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">C</text>
   <rect x="176" y="8" width="54" height="90" fill="rgba(66,133,244,1.00)" />
-  <text x="201" y="110" font-family="Sans" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">D</text>
+  <text x="201" y="110" dominant-baseline="text-before-edge" font-family="Sans" font-size="10" font-style="normal" font-weight="400" fill="rgba(163,163,163,1.00)">D</text>
 </svg>

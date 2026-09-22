@@ -350,10 +350,17 @@ impl Draw for MarkdownEditor {
         // The header is the dimmest ink that still reads, and the caret line is the
         // accent: both derived from the resolved ink and surface, so they move with
         // the appearance instead of being fixed literals.
+        //
+        // The caret line is the accent colour because it *means* "the line being edited",
+        // so the hue is part of the information and must survive. It cannot be pushed
+        // straight onto the surface unchecked, though: on the light appearance the editor
+        // surface resolves to a mid grey and `colors.primary` is the saturated Material
+        // blue, which measured 1.51:1 — the very line the caret is on became the least
+        // readable line in the editor. `legible_on` keeps the hue and guarantees the ratio.
         let header_ink = ink.blend(&surface, 0.35);
         let cursor_ink = crate::style::theme_manager()
             .current_theme()
-            .map(|active| active.colors.primary)
+            .map(|active| active.colors.primary.legible_on(surface, 4.5))
             .unwrap_or_else(|| ink.contrast_color());
 
         context.fill_rect(rect, surface);

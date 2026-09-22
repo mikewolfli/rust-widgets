@@ -5,9 +5,9 @@
   <rect x="0" y="0" width="240" height="120" fill="rgba(226,226,226,1.00)" />
   <rect x="0" y="0" width="240" height="120" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
   <rect x="0" y="0" width="240" height="28" fill="rgba(208,208,208,1.00)" />
-  <text x="11" y="7" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)"></text>
-  <text x="15" y="60" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">Sample</text>
+  <text x="11" y="7" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)"></text>
+  <text x="15" y="60" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">Sample</text>
   <rect x="152" y="80" width="80" height="28" fill="rgba(240,240,240,1.00)" />
   <rect x="152" y="80" width="80" height="28" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
-  <text x="154" y="80" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">common.b…</text>
+  <text x="154" y="80" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">common.b…</text>
 </svg>

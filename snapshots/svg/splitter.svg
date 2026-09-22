@@ -3,4 +3,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
   <rect x="0" y="0" width="240" height="120" fill="rgba(35,35,35,1.00)" />
+  <rect x="118" y="0" width="5" height="120" fill="rgba(62,62,62,1.00)" />
+  <rect x="118" y="0" width="5" height="120" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
 </svg>

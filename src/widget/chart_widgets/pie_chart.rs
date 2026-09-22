@@ -436,18 +436,9 @@ impl Draw for PieChart {
         let pct_font = Font::new("sans-serif", 9.0, false, false);
         // Chart chrome, derived from the active surface: `DARK_GRAY` was a light-chart literal
         // and rendered at 1.8:1 on the dark appearance's surface. The *slice* colours are
-        // untouched — those identify the data (rule #108 ③).
-        let slice_label_color = {
-            let surface = crate::style::theme_manager()
-                .current_theme()
-                .map(|active| active.colors.background)
-                .unwrap_or(Color::WHITE);
-            let ink = crate::style::theme_manager()
-                .current_theme()
-                .map(|active| active.colors.foreground)
-                .unwrap_or(Color::BLACK);
-            surface.blend(&ink, 0.75)
-        };
+        // untouched — those identify the data (rule #108 ③). Shared with `bar_chart` and the
+        // cartesian axes so the three cannot drift apart again.
+        let slice_label_color = crate::widget::chart_widgets::charts::axis_chrome_color(0.75);
 
         // Draw sectors
         let mut start_angle = -std::f32::consts::FRAC_PI_2; // Start at 12 o'clock
@@ -544,8 +535,14 @@ impl Draw for PieChart {
             start_angle = end_angle;
         }
 
-        // Draw outer circle stroke (border)
-        let border_color = if is_enabled { Color::DARK_GRAY } else { Color::DISABLED_FOREGROUND };
+        // Draw outer circle stroke (border). Derived from the surface like the labels:
+        // `DARK_GRAY` is a light chart's outline and vanished into the dark appearance's
+        // surface, so the pie lost its outer edge exactly when the slices needed framing.
+        let border_color = if is_enabled {
+            crate::widget::chart_widgets::charts::axis_chrome_color(0.45)
+        } else {
+            Color::DISABLED_FOREGROUND
+        };
         context.draw_circle_stroke(center, outer_radius as u32, border_color, 1);
 
         // Draw inner circle stroke for donut mode

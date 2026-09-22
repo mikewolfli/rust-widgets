@@ -4,5 +4,5 @@
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
   <rect x="0" y="52" width="16" height="16" fill="rgba(69,69,69,1.00)" />
   <rect x="0" y="52" width="16" height="16" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
-  <text x="20" y="60" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(225,225,225,1.00)">Sample</text>
+  <text x="20" y="60" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(225,225,225,1.00)">Sample</text>
 </svg>

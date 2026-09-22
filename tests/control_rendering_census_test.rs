@@ -216,10 +216,12 @@ fn element_bounds(svg: &str) -> Vec<(String, Option<ElementBounds>)> {
                     out.push((line.to_string(), None));
                     continue;
                 };
-                // The origin is the glyph's **top-left**: the rasteriser paints downward
-                // and advances rightward, so the extent is (advance x line height). Reading
-                // it as a baseline would let a title start above the box and look in bounds,
-                // which is precisely the `group_box` defect.
+                // The emitted `y` is the glyph box's **top edge**, because the backend writes
+                // `dominant-baseline="text-before-edge"` alongside it — that attribute is what
+                // makes SVG's `y` mean the same thing the rasteriser's `origin.y` means. The
+                // extent is therefore (advance x line height) measured *downward* from `y`.
+                // Reading `y` as a baseline would report every label `ascent` too low and let
+                // a title whose box began above its frame pass (the `group_box` defect).
                 //
                 // The advance must be the **same model the renderer uses**, not an estimate.
                 // `PaintBackend::shape_text` gives one cluster per `char`, each advancing by
@@ -227,7 +229,7 @@ fn element_bounds(svg: &str) -> Vec<(String, Option<ElementBounds>)> {
                 // else `0.6` em, and a space `0.33` em. Assuming one whole em per character
                 // reported a 106 px title as 182 px, which demanded that ~40 controls
                 // truncate text that fits perfectly well — a gate whose judgement is wrong
-                // in the strict direction is as bad as one that passes everything.
+                // in the strict direction is as good as one that passes everything.
                 let size = attr(line, "font-size=").map(|s| s as f32).unwrap_or(14.0);
                 let label = element_text(line);
                 let advance: f32 = label.chars().map(|ch| glyph_advance(ch, size)).sum();

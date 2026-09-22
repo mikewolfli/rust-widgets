@@ -5,5 +5,5 @@
   <rect x="0" y="0" width="240" height="120" rx="6" ry="6" fill="rgba(180,180,180,1.00)" />
   <rect x="0" y="0" width="240" height="120" rx="6" ry="6" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
   <rect x="6" y="4" width="228" height="24" rx="4" ry="4" fill="rgba(255,255,255,0.71)" />
-  <text x="13" y="4" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(160,160,160,0.78)">Type and press Enter…</text>
+  <text x="13" y="4" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(160,160,160,0.78)">Type and press Enter…</text>
 </svg>

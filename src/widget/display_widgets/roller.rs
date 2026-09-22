@@ -281,9 +281,14 @@ impl Draw for Roller {
         let selected_bg = crate::style::resolved_theme_style("button")
             .and_then(|button| button.background_color)
             .unwrap_or_else(|| bg_color.blend(&text_color, 0.6));
-        // Its label stays a tint of the surface rather than a fixed white, so it
-        // keeps contrast against whatever the selection resolves to.
-        let selected_text_color = selected_bg.blend(&bg_color, 0.92);
+        // Its label must be legible **on the selection band itself**, so it takes whichever
+        // of black/white contrasts with that band. The previous form blended the label 92% of
+        // the way toward the wheel's own surface, which is a light-theme assumption baked into
+        // arithmetic: on the light theme the band resolves to the theme's primary
+        // `rgb(33,150,243)` while the surface is `rgb(221,221,221)`, so the label came out
+        // `rgb(206,215,223)` — 2.14:1 against the band it sits on (below the 3:1 large-text
+        // floor, let alone the 4.5:1 body floor). Same rule as the theme's `Primary` role.
+        let selected_text_color = selected_bg.contrast_color();
         let muted_color = text_color.blend(&bg_color, 0.47);
 
         let font =

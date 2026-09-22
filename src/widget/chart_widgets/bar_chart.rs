@@ -31,6 +31,11 @@ use crate::widget::chart_widgets::adapter::ChartContextAdapter;
 use crate::widget::chart_widgets::charts::{
     compute_cartesian_layout, draw_y_ticks, CartesianLayout,
 };
+// The chrome derivation is shared with the engine-backed path deliberately: the
+// `not(feature = "chart")` backdrop used to write its own light-chart literals, so a
+// tablet/mobile build in the dark appearance drew a near-invisible chart. One
+// derivation, both paths.
+use crate::widget::chart_widgets::charts::{axis_chrome, axis_chrome_color};
 #[cfg(feature = "chart")]
 use crate::widget::chart_widgets::types::ChartContext;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -312,7 +317,7 @@ impl Draw for BarChart {
             let plot_area = plot_rect(&layout);
             let mut adapter = ChartContextAdapter::new(context);
 
-            let axis_color = if is_enabled { Color::DARK_GRAY } else { disabled_color };
+            let axis_color = if is_enabled { axis_chrome().0 } else { disabled_color };
             let bottom = layout.plot_y() + layout.plot_h();
             adapter.draw_line(
                 Point::new(layout.plot_x() as i32, layout.plot_y() as i32),
@@ -387,12 +392,18 @@ impl Draw for BarChart {
 }
 
 /// Draws a single-line label with the chart's shared styling.
+///
+/// The colour is derived from the active surface rather than written as `DARK_GRAY`:
+/// that literal is a *light* chart's ink, so on the dark appearance the value labels
+/// above the bars and the category labels below the axis rendered at **1.8:1** against
+/// their own background — present in the pixel census, unreadable to a person. The
+/// series colours are unchanged; only the framing text moves (rule #108 ③).
 fn draw_label(context: &mut RenderContext, text: &str, x: i32, y: i32, size: f32) {
     context.draw_text(
         Point::new(x, y),
         text,
         &Font::simple("sans-serif", size),
-        Color::DARK_GRAY,
+        axis_chrome_color(0.70),
         HorizontalAlignment::Left,
     );
 }
@@ -411,7 +422,8 @@ impl BarChart {
         disabled_color: Color,
     ) -> Rect {
         let plot_area = self.plot_area();
-        let axis_color = if is_enabled { Color::DARK_GRAY } else { disabled_color };
+        let (axis_color, _, grid_color) = axis_chrome();
+        let axis_color = if is_enabled { axis_color } else { disabled_color };
         let bottom = plot_area.y + plot_area.height as i32;
 
         context.draw_line_stroke(
@@ -428,8 +440,7 @@ impl BarChart {
         );
 
         if self.show_grid {
-            let grid_color =
-                if is_enabled { Color::rgba(200, 200, 200, 120) } else { disabled_color };
+            let grid_color = if is_enabled { grid_color } else { disabled_color };
             for tick in 0..=4 {
                 let t = tick as f64 / 4.0;
                 let gy = plot_area.y + (plot_area.height as f64 * (1.0 - t)) as i32;

@@ -208,17 +208,33 @@ impl Draw for TerminalView {
         let style = self.base.style().clone();
         let theme = crate::style::resolved_theme_style("terminal_view")
             .or_else(|| crate::style::resolved_theme_style("text_edit"));
-        // `terminal_view` is not a control kind in the role table, so it classifies
-        // as `Surface`, whose background is `theme.colors.background` — byte-identical
-        // to the window behind it. `TerminalView` is built on `WidgetKind::TextEdit`,
-        // so its prominent surface is the *editor* treatment the rest of the crate's
-        // text controls use: a step toward the foreground, which is lighter on a light
-        // theme and darker on a dark one, so the terminal reads as a field in both
-        // rather than as a hardcoded dark slab.
-        let resolved = style
-            .background_color
-            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
-            .unwrap_or(Color::rgb(22, 27, 34));
+        // `terminal_view` is not a control kind in the role table, so it classifies as
+        // `Surface`, whose background is `theme.colors.background` — byte-identical to the
+        // window behind it. That is why the field is derived rather than taken from the
+        // resolved style when the two coincide:
+        //
+        // The previous form stepped the resolved fill 8 % toward the ink, where the
+        // resolved fill had itself come from `text_edit` (`rgb(180,180,180)` on the light
+        // appearance). Two mid-grey steps of 8 % land at `rgb(166,166,166)` — a dark slab
+        // on a light theme, and the 1.13:1 background the success-green prompt was then
+        // drawn onto. The worst text ratio in the snapshot set was therefore not a text
+        // defect at all: the *surface* was wrong, and the text was a symptom.
+        //
+        // A terminal body is a field, so it is derived the same way every other text
+        // field in the crate derives one: from the window fill, stepped toward the ink.
+        // The step is large enough to read as a distinct surface (a terminal is *not* the
+        // window) and is applied to the window colour rather than to a value that may
+        // already be a step. A caller's own colour still wins (rule #21).
+        let window_fill = crate::style::theme_manager()
+            .current_theme()
+            .map(|active| active.colors.background)
+            .unwrap_or(Color::WHITE);
+        let field_from_theme = theme
+            .as_ref()
+            .and_then(|t| t.background_color)
+            .filter(|resolved| *resolved != window_fill)
+            .unwrap_or_else(|| window_fill.blend(&Color::BLACK, 0.14));
+        let resolved = style.background_color.unwrap_or(field_from_theme);
         let border = style
             .border_color
             .or_else(|| theme.as_ref().and_then(|t| t.border_color))
@@ -227,14 +243,23 @@ impl Draw for TerminalView {
             .text_color
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))
             .unwrap_or(Color::rgb(217, 224, 236));
-        let background = resolved.blend(&text_color, 0.08);
-        // Output text is the resolved foreground itself, so it keeps the contrast the
-        // theme pair was chosen for instead of the literal near-white it used to be.
-        let output_color = text_color;
-        // The prompt line is a *success* state — the shell is ready for input — so it
-        // reads the theme's success token rather than a literal green.
+        let background = resolved;
+        // Output text is the *theme's* ink or, failing that, whatever contrasts with the
+        // terminal body itself — not the resolved fill's own contrast, because the terminal
+        // body is a deliberate step away from the window and the two must stay legible
+        // together.
+        let output_color = if style.text_color.is_some() || theme.is_some() {
+            text_color
+        } else {
+            background.contrast_color()
+        };
+        // The prompt line is a *success* state — the shell is ready for input — so it reads
+        // the theme's success token rather than a literal green. The token is then pushed
+        // away from the terminal body until it clears the legibility floor: at full
+        // saturation the green was 1.13:1 on a mid-grey body, which is a colour that exists
+        // in the file and not on the screen.
         let prompt_color = crate::style::semantic_color(crate::style::SemanticColor::Success)
-            .map(|token| token.blend(&background, 0.15))
+            .map(|token| nudge_apart(token, background))
             .unwrap_or_else(|| background.blend(&text_color, 0.6));
 
         context.fill_rect(rect, background);
@@ -275,6 +300,15 @@ impl Draw for TerminalView {
             HorizontalAlignment::Left,
         );
     }
+}
+
+/// Pushes `ink` away from `surface` until it is legible on it, preserving the hue.
+///
+/// Retained as a named call site for the prompt colour: the rule itself lives on
+/// [`Color::legible_on`] so the terminal, the calendar and the text editors share one
+/// implementation rather than three drifting copies.
+fn nudge_apart(ink: Color, surface: Color) -> Color {
+    ink.legible_on(surface, 4.5)
 }
 
 #[cfg(test)]

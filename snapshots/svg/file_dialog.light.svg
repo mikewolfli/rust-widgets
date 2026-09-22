@@ -5,17 +5,17 @@
   <rect x="0" y="0" width="240" height="120" fill="rgba(226,226,226,1.00)" />
   <rect x="0" y="0" width="240" height="120" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
   <rect x="0" y="0" width="240" height="28" fill="rgba(33,150,243,1.00)" />
-  <text x="11" y="7" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">Sample</text>
+  <text x="11" y="7" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">Sample</text>
   <rect x="10" y="38" width="220" height="8" fill="rgba(212,212,212,1.00)" />
   <rect x="10" y="38" width="220" height="8" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
-  <text x="19" y="44" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(106,106,106,1.00)">dialog.file_dialog.file…</text>
-  <text x="13" y="54" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">dialog…</text>
+  <text x="19" y="44" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(106,106,106,1.00)">dialog.file_dialog.file…</text>
+  <text x="13" y="54" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">dialog…</text>
   <rect x="80" y="50" width="150" height="22" fill="rgba(212,212,212,1.00)" />
   <rect x="80" y="50" width="150" height="22" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
-  <text x="87" y="54" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)"></text>
+  <text x="87" y="54" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)"></text>
   <rect x="64" y="80" width="80" height="28" fill="rgba(33,150,243,1.00)" />
-  <text x="66" y="80" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">common.b…</text>
+  <text x="66" y="80" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">common.b…</text>
   <rect x="152" y="80" width="80" height="28" fill="rgba(203,203,203,1.00)" />
   <rect x="152" y="80" width="80" height="28" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
-  <text x="154" y="80" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">common.b…</text>
+  <text x="154" y="80" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">common.b…</text>
 </svg>

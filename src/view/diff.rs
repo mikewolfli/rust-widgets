@@ -645,6 +645,93 @@ mod tests {
         }
     }
 
+    // ── The conditional/list completeness primitives drive the diff ───────────
+
+    /// Toggling `child_if` on must read as an `Insert`, not as a property write on a node
+    /// that was always there. This is the whole reason the helper omits the node rather
+    /// than marking it hidden: a hidden node would keep its identity, so the diff would
+    /// find a match and the control would never actually appear.
+    #[test]
+    fn a_toggled_child_if_is_an_insert_not_a_hidden_match() {
+        let old = Node::new("row").key("root").child(Node::new("label").key("a"));
+        let new = old.clone().child_if(true, Node::new("badge").key("b"));
+        let report = run(&old, &new);
+        assert_eq!(report.patch_count(), 1, "got {:?}", report.patches);
+        match &report.patches[0] {
+            Patch::Insert { index, node, .. } => {
+                assert_eq!(*index, 1);
+                assert_eq!(node.key_str(), Some("b"));
+            }
+            other => panic!("expected Insert, got {other:?}"),
+        }
+
+        // And the reverse direction removes exactly that control.
+        let report = run(&new, &old);
+        assert_eq!(report.patch_count(), 1, "got {:?}", report.patches);
+        assert!(matches!(report.patches[0], Patch::Remove { .. }));
+    }
+
+    /// `child_if_else` swapping branches must be a replacement, because the two branches
+    /// are different controls — not a property write on one control that happens to be
+    /// reused.
+    #[test]
+    fn a_swapped_child_if_else_branch_is_not_a_property_write() {
+        let loading = Node::new("body").key("root").child_if_else(
+            true,
+            Node::new("spinner").key("s"),
+            Node::new("content").key("c"),
+        );
+        let ready = Node::new("body").key("root").child_if_else(
+            false,
+            Node::new("spinner").key("s"),
+            Node::new("content").key("c"),
+        );
+        let report = run(&loading, &ready);
+        // The two branches carry different keys, so the correct reading is "the old node
+        // went away and the new one appeared" — an `Insert` plus a `Remove`, each naming
+        // the control it acts on. (`Replace` is for a node that *matched* — same key or
+        // position — and then changed type; there the identity is meant to be kept and only
+        // the control swapped.) What would be wrong in every reading is a `SetProperty`,
+        // because that would mean one branch's control had been silently reused as the
+        // other.
+        assert!(
+            report.patches.iter().all(|p| !matches!(p, Patch::SetProperty { .. })),
+            "branches must not be merged into a property update: {:?}",
+            report.patches
+        );
+        assert_eq!(report.patches_of_kind("Insert").len(), 1, "got {:?}", report.patches);
+        assert_eq!(report.patches_of_kind("Remove").len(), 1, "got {:?}", report.patches);
+        assert!(!report.root_replaced, "the root is the same body");
+    }
+
+    /// A keyed list must survive a head insertion without renumbering its siblings — the
+    /// property `children_keyed` exists to make the default rather than an opt-in.
+    #[test]
+    fn a_children_keyed_list_head_insert_does_not_renumber_its_siblings() {
+        let keys = ["b", "c"];
+        let old = Node::new("list").key("root").children_keyed(
+            &keys,
+            |k| (*k).to_string(),
+            |k| Node::new("label").prop("text", s(k)),
+        );
+        let grown = ["a", "b", "c"];
+        let new = Node::new("list").key("root").children_keyed(
+            &grown,
+            |k| (*k).to_string(),
+            |k| Node::new("label").prop("text", s(k)),
+        );
+        let report = run(&old, &new);
+        assert_eq!(report.patch_count(), 1, "one insert, no renumbering: {:?}", report.patches);
+        assert_eq!(report.positional_matches, 0, "every node was matched by key");
+        match &report.patches[0] {
+            Patch::Insert { index, node, .. } => {
+                assert_eq!(*index, 0, "the new item goes to the head");
+                assert_eq!(node.key_str(), Some("a"));
+            }
+            other => panic!("expected Insert, got {other:?}"),
+        }
+    }
+
     // ── B-4 case ④: head insert with keys ──────────────────
 
     #[test]

@@ -476,9 +476,14 @@ impl Draw for Pagination {
                 Cell::Next => "\u{203a}".to_string(),
             };
             let color = if is_current {
-                // Invert the label on the filled cell so it stays readable for any
-                // accent colour the theme supplies.
-                background
+                // The label sits on the filled cell, so it must contrast with **that**
+                // fill, not with the bar behind it. Using the bar's own background was
+                // only correct while the accent was darker than the surface: on the light
+                // theme the accent is `rgb(158,158,158)` and the bar `rgb(240,240,240)`,
+                // which measured 2.35:1 — below even the 3:1 large-text floor.
+                // `contrast_color` picks whichever of black/white is legible on the fill,
+                // which is the same rule the theme's own `Primary` role uses.
+                selected_background.contrast_color()
             } else if is_affordance {
                 background.blend(&text_color, 0.6)
             } else {

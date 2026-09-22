@@ -274,8 +274,27 @@ impl PaintBackend for SvgPaintBackend {
 
             // ── Text ───────────────────────────────────────────────────
             RenderCommand::DrawText { origin, text, font, color, .. } => {
+                // `origin` is the glyph box's **top-left**: that is the contract the software
+                // rasteriser implements (`SoftwareRasterizer::draw_text` passes `origin.y`
+                // straight to the glyph blitter, which paints downward from it), and the
+                // contract every call site in the crate positions text against.
+                //
+                // SVG's `y` defaults to the **baseline**, so emitting `origin.y` verbatim
+                // made the two backends disagree about where the ink is: the rasteriser put
+                // the glyph 0..line_height *below* the origin, the SVG put most of it
+                // *above*. A title centred with `rect.y + (band - height) / 2` then sat
+                // correctly on the screen and half a line too high in every snapshot, so
+                // the committed SVG showed chrome the raster never produced.
+                //
+                // `dominant-baseline="text-before-edge"` re-states SVG's own semantics as
+                // the renderer's: it makes `y` the *top* edge of the text box, which is
+                // exactly what `origin.y` means here. Doing it in the attribute rather than
+                // by adding an ascent to the number is what keeps this a one-place fix —
+                // the ~40 call sites that already measured and offset against the top-origin
+                // contract stay correct, and none of them has to know which backend it is
+                // painting into.
                 self.push_element(format!(
-                    r#"<text x="{}" y="{}" font-family="{}" font-size="{}" font-style="{}" font-weight="{}" fill="{}">{}</text>"#,
+                    r#"<text x="{}" y="{}" dominant-baseline="text-before-edge" font-family="{}" font-size="{}" font-style="{}" font-weight="{}" fill="{}">{}</text>"#,
                     origin.x,
                     origin.y,
                     escape_xml(font.family()),
