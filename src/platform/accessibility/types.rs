@@ -91,7 +91,21 @@ pub struct A11yState {
     /// Whether the element is expanded (tree nodes, disclosure triangles).
     pub expanded: bool,
     /// Current value (slider position, progress percent, text content).
+    ///
+    /// Empty means "this element has no value", which is a different statement from "its value is
+    /// zero": a screen reader must not announce a value for a plain button.
     pub value: String,
+    /// Whether the element is checked, for roles that have a checked state.
+    ///
+    /// `None` means the role has no checked state at all (a button or a slider); `Some(false)` is a
+    /// checkbox that is genuinely off. Collapsing those two into a bool is what makes a screen reader
+    /// announce "unchecked" for controls that are not checkable.
+    pub checked: Option<bool>,
+    /// Whether a partially-checked element is in the mixed state.
+    ///
+    /// Only meaningful alongside `checked(Some(true))`; a tri-state parent whose children are partly
+    /// selected is the canonical case, and it is neither on nor off.
+    pub mixed: bool,
     /// Child node IDs in traversal order.
     pub children: Vec<ObjectId>,
 }

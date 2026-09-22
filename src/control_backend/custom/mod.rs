@@ -26,6 +26,23 @@ pub use custom_paint::CustomPaintControlBackend;
 /// through to `text` unchanged.
 pub(crate) const LABEL_PROPERTY_NAMES: &[&str] = &["label", "text", "title", "message"];
 
+/// The property names a control may use for its user-visible **value**.
+///
+/// Separate from [`LABEL_PROPERTY_NAMES`] because a label and a value are different facts even when
+/// they share a spelling for a particular control: a slider's label is its caption and its value is
+/// where the handle sits, and a screen reader announces both. The order is the order of decreasing
+/// specificity — `value` is the property the controls in this crate publish for exactly this
+/// purpose, and the rest are the domain names a gauge-like control uses.
+///
+/// # Why `text` is deliberately absent
+///
+/// `text` is the most common spelling of a *label* in this crate, so including it would make every
+/// button, menu item and tab announce its caption twice — once as its name and once as its value.
+/// A field whose content genuinely is its value has a dedicated `value` property for that, and a
+/// control that stores its content under `text` says so by overriding `Widget::accessible_value`.
+/// The generic walk must not guess, because guessing here is indistinguishable from being wrong.
+pub(crate) const VALUE_PROPERTY_NAMES: &[&str] = &["value", "progress", "rating", "level"];
+
 /// The property a control answers "its label" with, or `None` when it has no label concept.
 ///
 /// # Why this is a shared function and not a loop at each call site
@@ -45,6 +62,25 @@ pub(crate) fn widget_label_property_name(
     LABEL_PROPERTY_NAMES.iter().copied().find(|name| {
         matches!(properties.get(name), Ok(crate::widget::capability::CapabilityValue::String(_)))
     })
+}
+
+/// The property a control answers "its current value" with, or `None` when it has none.
+///
+/// # Why the value is read as text
+///
+/// Assistive technology receives a value as an announcement, not as a number to compute with, so
+/// the property is rendered here rather than handed over as a `CapabilityValue`. That rendering is
+/// the contract's own job: [`crate::widget::capability::coercion::capability_value_to_str`] knows
+/// how each variant spells itself, so a slider reporting `0.5` and a rating reporting `3` are both
+/// announced the way the control itself would report them, instead of through a second formatting
+/// scheme invented here.
+///
+/// A property that errors is skipped rather than treated as a value: `UnknownProperty` means the
+/// control does not have that concept, which is exactly the case this walk exists to fall past.
+pub(crate) fn widget_value_property_name(
+    properties: &dyn crate::widget::capability::WidgetProperties,
+) -> Option<&'static str> {
+    VALUE_PROPERTY_NAMES.iter().copied().find(|name| properties.get(name).is_ok())
 }
 
 /// The kind used for a toggle button when the stripped profiles compile that

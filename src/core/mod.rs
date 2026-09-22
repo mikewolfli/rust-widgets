@@ -48,12 +48,14 @@ mod font;
 mod geometry;
 mod mutex_ext;
 pub mod rect_merge;
+mod text_direction;
 mod types;
 pub use alignment::{Alignment, HorizontalAlignment, VerticalAlignment};
 pub use color::Color;
 pub use font::Font;
 pub use geometry::{deg_to_rad, Orientation, Point, Rect, Size};
 pub use mutex_ext::MutexExt;
+pub use text_direction::TextDirection;
 pub use types::{
     CoreConfig, CoreError, CoreObject, CoreResult, DeviceClass, ObjectId, PlatformCapabilities,
     PlatformFamily, RuntimeProfile, Version,

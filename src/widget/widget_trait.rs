@@ -224,6 +224,36 @@ pub trait Widget: EventHandler + Any {
     fn accessible_role(&self) -> AccessibleRole {
         AccessibleRole::from(self.kind())
     }
+    /// Returns the value assistive technology announces for this widget, or an empty string.
+    ///
+    /// # Why this is separate from the name
+    ///
+    /// A name and a value are different facts, and a screen reader announces both: "Volume,
+    /// slider, 40 percent" is name + role + value. Before this existed every control announced only
+    /// its name, so a slider, a progress bar and a rating were indistinguishable to assistive
+    /// technology — a user could hear *what* the control was but never *where it stood*, which is
+    /// the one thing those controls exist to communicate.
+    ///
+    /// # How it resolves
+    ///
+    /// Through the property contract, so a control added later is announced correctly without
+    /// editing this method and a control that has no value concept simply answers empty rather than
+    /// a fabricated `0`. The spellings are [`VALUE_PROPERTY_NAMES`]'s decision, made once.
+    fn accessible_value(&self) -> String {
+        // A disabled control's value is still its value: a reader inspecting a greyed-out slider
+        // benefits from knowing where it sits, and suppressing it would make "disabled" and
+        // "valueless" announce identically.
+        if let Some(props) = self.properties_dyn() {
+            if let Some(property) =
+                crate::control_backend::custom::widget_value_property_name(props)
+            {
+                if let Ok(value) = props.get(property) {
+                    return value.to_announcement_string();
+                }
+            }
+        }
+        String::new()
+    }
     /// Returns a short accessibility description with current visibility/enabled state.
     fn accessible_description(&self) -> String {
         let mut state_flags: Vec<&str> = Vec::new();
@@ -692,5 +722,84 @@ mod tests {
         let a = Button::new("A".to_string(), Rect::new(0, 0, 80, 24));
         let b = Button::new("B".to_string(), Rect::new(0, 0, 80, 24));
         assert_ne!(a.id(), b.id());
+    }
+
+    // ── The announced value (BLUE21 P2-8) ──────────────────────────────
+
+    /// A value-bearing control announces where it stands, and a control without a value
+    /// concept announces nothing.
+    ///
+    /// # The defect this pins
+    ///
+    /// Every control was announced by name only, so assistive technology could say *what* a
+    /// slider was but never *where its handle sat* — and a slider, a progress bar and a rating are
+    /// exactly the controls whose entire purpose is to communicate a magnitude. The value was
+    /// reachable through the property contract all along; nothing carried it to the a11y layer.
+    ///
+    /// # Why both directions are asserted
+    ///
+    /// "A slider announces 40" is only half the contract. The other half is that a plain button
+    /// announces *no* value: a resolver that fell back to any property it could find would announce
+    /// the button's own label as its value, and a screen reader would then read "Open, button,
+    /// Open". The negative case is what keeps a label and a value from being conflated.
+    #[test]
+    fn a_value_bearing_control_announces_its_value_and_a_plain_one_does_not() {
+        use crate::widget::display_widgets::progressbar::ProgressBar;
+        use crate::widget::display_widgets::slider::Slider;
+
+        let mut slider = Slider::new(Rect::new(0, 0, 200, 24));
+        slider.set_range(0, 100);
+        slider.set_value(40);
+        assert!(
+            slider.accessible_value().contains("40"),
+            "a slider must announce where its handle sits, got {:?}",
+            slider.accessible_value()
+        );
+
+        // Moving the control must move what is announced; a value baked in at construction would
+        // pass the assertion above and still be useless.
+        slider.set_value(75);
+        assert!(
+            slider.accessible_value().contains("75"),
+            "the announcement must track the control, got {:?}",
+            slider.accessible_value()
+        );
+
+        let mut bar = ProgressBar::new(Rect::new(0, 0, 200, 8));
+        bar.set_range(0, 100);
+        bar.set_value(25);
+        assert!(
+            bar.accessible_value().contains("25"),
+            "a progress bar announces its progress, got {:?}",
+            bar.accessible_value()
+        );
+        assert!(!bar.accessible_value().is_empty(), "a progress bar announces its progress");
+
+        // A button has a label but no value, and must not announce its label twice.
+        let button = Button::new("Open".to_string(), Rect::new(0, 0, 100, 32));
+        assert_eq!(button.accessible_value(), "", "a button has no value; its label is its name");
+    }
+
+    /// A control that publishes a value announces it through the contract, not a per-kind table.
+    ///
+    /// The resolver walks [`crate::control_backend::custom::VALUE_PROPERTY_NAMES`], so this checks
+    /// the property the walk settles on is one the control genuinely answers — the mechanism that
+    /// lets a control added later be announced without editing the trait method.
+    #[test]
+    fn the_announced_value_comes_from_the_property_contract() {
+        use crate::widget::display_widgets::rating::Rating;
+
+        let mut rating = Rating::new(Rect::new(0, 0, 120, 24));
+        rating.set_rating(3);
+
+        // The value must be rendered the way a person reads it: a whole number, not `3.0`.
+        assert_eq!(rating.accessible_value(), "3", "an integral rating is announced as an integer");
+
+        let properties = rating.properties_dyn().expect("rating publishes a contract");
+        let resolved = crate::control_backend::custom::widget_value_property_name(properties);
+        assert!(
+            resolved.is_some_and(|name| properties.get(name).is_ok()),
+            "the resolved name must be one the control actually answers"
+        );
     }
 }

@@ -262,6 +262,11 @@ impl CodeEditor {
             fold_changed: Signal1::new(),
             completion_changed: Signal1::new(),
         };
+        // An editable editor is an active insertion point the moment it exists, so its caret blinks
+        // from construction rather than waiting for a focus event this widget has no notion of.
+        if !editor.config.read_only {
+            editor.caret_blink.start();
+        }
         editor.refresh_derived_state();
         editor
     }
@@ -3049,6 +3054,21 @@ impl Widget for CodeEditor {
             self.cursor.head.line + 1,
             self.cursor.head.column + 1
         )
+    }
+
+    /// The editor announces its selection, or the line the caret is on.
+    ///
+    /// A generic value lookup would find nothing useful here: the editor publishes no `value`
+    /// property (its buffer is far too large to read on every announcement), so the default would
+    /// announce empty and a screen-reader user would hear the editor's name with no sense of where
+    /// they are. The line under the caret is the fact a user is actually navigating by, and a
+    /// selection supersedes it because that is what the next command will act on.
+    fn accessible_value(&self) -> String {
+        let (start, end) = self.cursor.bounds();
+        if start != end {
+            return self.selected_text().unwrap_or_default();
+        }
+        self.line_text(self.cursor.head.line).unwrap_or_default()
     }
 
     impl_widget_property_hooks!();

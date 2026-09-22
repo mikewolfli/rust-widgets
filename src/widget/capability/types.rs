@@ -118,6 +118,87 @@ impl CapabilityValue {
             _ => None,
         }
     }
+
+    /// Renders this value the way it would be announced to a person.
+    ///
+    /// # Why a presentation method lives on the value
+    ///
+    /// [`Self::as_str`] is deliberately narrow — it returns text only for a `String`, because
+    /// inventing a rendering at each call site is how two call sites come to disagree. Accessibility
+    /// needs the opposite: a slider holds a `Float` and a progress bar a `UInt`, and a screen reader
+    /// must be told something for both. Putting the rendering here means one spelling for a number,
+    /// shared by every caller that has to speak a value.
+    ///
+    /// A float is written without a trailing `.0` when it is integral, so a rating of 3 is announced
+    /// as `3` rather than `3.0`, matching how the control itself draws it.
+    /// `Null` renders as the empty string: the documented "not set" value has nothing to announce,
+    /// and an empty announcement is what makes a caller treat it as absent.
+    pub fn to_announcement_string(&self) -> alloc::string::String {
+        match self {
+            Self::Bool(value) => {
+                if *value {
+                    alloc::string::String::from("true")
+                } else {
+                    alloc::string::String::from("false")
+                }
+            }
+            Self::Int(value) => alloc::format!("{}", value),
+            Self::UInt(value) => alloc::format!("{}", value),
+            Self::Float(value) => {
+                if value.is_finite() && value.fract() == 0.0 {
+                    // An integral float is announced as the integer it is.
+                    alloc::format!("{}", *value as i64)
+                } else {
+                    alloc::format!("{}", value)
+                }
+            }
+            Self::String(text) => text.clone(),
+            // A colour and a rectangle are not announcements: they have no spoken form a person
+            // could act on, and the roles that carry them (a swatch, a layout box) are already
+            // named by their label. Rendering them as empty is deliberate, and it is spelled out
+            // per variant rather than hidden behind a wildcard so a variant added later has to make
+            // the same decision consciously.
+            Self::Color(_) | Self::Rect(_) => alloc::string::String::new(),
+            Self::Null => alloc::string::String::new(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod announcement_tests {
+    use super::CapabilityValue;
+
+    /// Values are rendered the way a person reads them, and values with no spoken form render empty.
+    ///
+    /// # The two rules this pins
+    ///
+    /// An integral float is announced as an integer, because a rating of `3.0` is drawn as `3` and a
+    /// screen reader saying "three point zero" would be describing a number the user never saw.
+    /// A colour and a rectangle render empty, because inventing text for them would put noise into
+    /// an announcement; `Null` is the documented "not set" and must be distinguishable from a
+    /// genuine zero, which is why it renders empty rather than `"0"`.
+    #[test]
+    fn values_render_the_way_they_are_read() {
+        assert_eq!(CapabilityValue::Int(40).to_announcement_string(), "40");
+        assert_eq!(CapabilityValue::UInt(7).to_announcement_string(), "7");
+        assert_eq!(CapabilityValue::Float(3.0).to_announcement_string(), "3");
+        assert_eq!(CapabilityValue::Float(3.5).to_announcement_string(), "3.5");
+        assert_eq!(CapabilityValue::Bool(true).to_announcement_string(), "true");
+        assert_eq!(CapabilityValue::Bool(false).to_announcement_string(), "false");
+        assert_eq!(CapabilityValue::String("Hello".into()).to_announcement_string(), "Hello");
+
+        // Not set is not zero.
+        assert_eq!(CapabilityValue::Null.to_announcement_string(), "");
+        // These have no spoken form.
+        assert_eq!(
+            CapabilityValue::Color(crate::core::Color::rgb(1, 2, 3)).to_announcement_string(),
+            ""
+        );
+        assert_eq!(
+            CapabilityValue::Rect(crate::core::Rect::new(0, 0, 10, 10)).to_announcement_string(),
+            ""
+        );
+    }
 }
 
 /// Why a capability-based property read or write did not happen.
